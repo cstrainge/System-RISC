@@ -2,13 +2,13 @@
 //! lifetime of the real production driver registry. No alternative ID issuer.
 use core::ops::{Deref, DerefMut};
 
-use super::{Registry, interfaces};
+use super::{Registry, dependencies, interfaces};
 use crate::toolbox::handles::{OwnerRef, cleanup::context::Context};
 
 pub(crate) struct Fixture
 {
     registry:          Registry,
-    pub(crate) _kinds: crate::toolbox::handles::Registry<dyn Context>
+    pub(crate) _kinds: alloc::sync::Arc<crate::toolbox::handles::Registry<dyn Context>>
 }
 
 impl Fixture
@@ -26,7 +26,18 @@ impl Fixture
                                      interfaces::specification(true),
                                      interfaces::ReleaseInterfaces(true))
                            .unwrap();
-        let registry = Registry::new(target, owner, (interfaces, storage)).unwrap();
+        let dependency = kinds.register(&owner,
+                                        dependencies::specification(false),
+                                        dependencies::ReleaseDependencies(false))
+                              .unwrap();
+        let dependency_storage = kinds.register(&owner,
+                                                dependencies::specification(true),
+                                                dependencies::ReleaseDependencies(true))
+                                      .unwrap();
+        let kinds = alloc::sync::Arc::try_new(kinds).unwrap();
+        let mut registry = Registry::new(target, owner,
+            [interfaces, storage, dependency, dependency_storage]).unwrap();
+        registry.fixture_catalog = Some(kinds.clone());
         Self { registry,
                _kinds: kinds }
     }

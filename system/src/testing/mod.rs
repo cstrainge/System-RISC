@@ -190,7 +190,11 @@ impl Default for Session
                     .unwrap();
         let modules = crate::drivers::Registry::new(mac_module::Target::RVA23U64,
                                                     registrar.clone(),
-                                                    (interface_kind, interface_storage)).unwrap();
+                                                    [interface_kind, interface_storage,
+            registry.register(&registrar, crate::drivers::registry::dependencies::specification(false),
+                crate::drivers::registry::dependencies::ReleaseDependencies(false)).unwrap(),
+            registry.register(&registrar, crate::drivers::registry::dependencies::specification(true),
+                crate::drivers::registry::dependencies::ReleaseDependencies(true)).unwrap()]).unwrap();
         Self { worlds: crate::toolbox::quickdraw::worlds::Worlds::new((worlds, world_storage)).unwrap(),
                registry,
                menus: RefCell::new(std::vec::Vec::new()),

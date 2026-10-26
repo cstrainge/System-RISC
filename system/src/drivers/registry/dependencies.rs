@@ -1,0 +1,194 @@
+//! Admitted dependencies bind exact provider incarnations in the module ledger.
+//! A declaration cannot silently switch to a different provider after startup.
+#![forbid(unsafe_code)]
+use mac_object_table::{domain::{ReleasedResource, ResourceKey},
+                       registry::{Release, Source, Specification}};
+
+use super::{Error, Registry, Result};
+use crate::toolbox::handles::{CapacityPolicy, KindCode,
+                              cleanup::{Failure, context::Context}};
+
+pub(super) struct Binding
+{
+    pub(super) dependent:     u64,
+    pub(super) provider:      u64,
+    pub(super) interface:     u64,
+    pub(super) interface_key: ResourceKey,
+    pub(super) class:         mac_module::ClassId,
+    pub(super) version:       u32
+}
+
+pub(crate) fn specification(storage: bool) -> Specification<'static>
+{
+    Specification { kind:     KindCode(if storage { *b"DDST" } else { *b"DDEP" }),
+                    label:    if storage
+                    {
+                        "Module dependency storage"
+                    }
+                    else
+                    {
+                        "Module dependency claims"
+                    },
+                    provider: "System Module Manager",
+                    capacity: if storage
+                    {
+                        CapacityPolicy::HardBound { slots:  1,
+                                                    reason: "One dependency backing per module \
+                                                             domain" }
+                    }
+                    else
+                    {
+                        CapacityPolicy::GrowableUntilMemory
+                    },
+                    source:   Source::Resident }
+}
+
+pub(crate) struct ReleaseDependencies(pub bool);
+impl<C: Context + ?Sized> Release<C, Failure> for ReleaseDependencies
+{
+    fn release(&self, context: &mut C, ticket: ReleasedResource)
+               -> core::result::Result<(), Failure>
+    {
+        let Some(registry) = context.driver_registry()
+        else
+        {
+            return Err(Failure::context_unavailable(ticket, "driver registry"));
+        };
+        if self.0
+        {
+            registry.dependencies.release_storage(ticket).map_err(Failure::from)
+        }
+        else
+        {
+            drop(registry.dependencies.release(ticket).map_err(Failure::from)?);
+            Ok(())
+        }
+    }
+}
+
+impl Registry
+{
+    pub(super) fn bind_dependencies(&mut self, dependent: u64) -> Result<()>
+    {
+        let owner = self.module_ledger(dependent)?;
+        let count = self.modules.get(dependent).ok_or(Error::Stale)?.dependencies.len();
+        for index in 0..count
+        {
+            let declaration = self.modules.get(dependent).ok_or(Error::Stale)?.dependencies[index];
+            let provider = self.find(declaration.class, declaration.version)
+                               .find(|(_, interface)| {
+                                   interface.module != 0
+                                   && self.modules.get(interface.module).is_some_and(|module| {
+                                                                            declaration.module
+                                                                            == [0; 16]
+                                                                            || module.identity
+                                                                               == declaration.module
+                                                                        })
+                               });
+            let Some((interface, provider)) = provider
+            else
+            {
+                if declaration.optional
+                {
+                    continue;
+                }
+                return Err(Error::Contract(mac_module::Error::MissingDependency));
+            };
+            let binding =
+                Binding { dependent,
+                          provider: provider.module,
+                          interface,
+                          interface_key: self.interfaces.key(interface).ok_or(Error::Stale)?,
+                          class: declaration.class,
+                          version: declaration.version };
+            let id = self.dependencies.insert(&owner, binding).map_err(Error::Owner)?;
+            // Admission reserved this index for every declaration before the
+            // domain was published. It contains IDs, never a second payload.
+            self.modules.get_mut(dependent).ok_or(Error::Stale)?.dependency_ids.push(id);
+        }
+        Ok(())
+    }
+
+    pub(super) fn drain_module(&mut self, module: u64) -> Result<()>
+    {
+        let owner = self.module_ledger(module)?;
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(catalog) = self.fixture_catalog.clone()
+        {
+            return self.drain_module_with(module, &owner, move |_, key| {
+                           catalog.dispatch(key.kind())
+                       });
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            self.drain_module_with(module, &owner, |_, key| {
+                crate::toolbox::handles::registry(|registry| registry.dispatch(key.kind()))
+                    .and_then(|result| result.map_err(crate::toolbox::handles::KindAccessError::Registry))
+            })
+        }
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            // The host transport's Session owns its actual typed catalog and
+            // drives that same walk outside this narrower Registry borrow.
+            // Never fabricate a second catalog or acknowledge its resources.
+            self.modules
+                .get(module)
+                .ok_or(Error::Stale)?
+                .cleanup
+                .ensure_settled()
+                .map_err(Error::Cleanup)?;
+            Self::module_drained(&owner)
+        }
+    }
+
+    fn drain_module_with<E: core::fmt::Display>(&mut self, module: u64,
+                                                owner: &crate::toolbox::handles::OwnerRef,
+                                                mut resolve: impl FnMut(&(dyn Context + 'static), ResourceKey)
+            -> core::result::Result<mac_object_table::registry::Invocation<dyn Context,
+                crate::toolbox::handles::InvocationGate, Failure>, E>)
+                                                -> Result<()>
+    {
+        let checkpoint = self.modules.get(module).ok_or(Error::Stale)?.cleanup.clone();
+        let mut failed = |key: ResourceKey, failure: &mac_object_table::walk::Failure<E,
+            crate::toolbox::handles::cleanup::Cause>| {
+            #[cfg(target_arch = "riscv64")]
+            serial!("MODULE_CLEANUP_QUARANTINED owner={} kind={} slot={} generation={} {failure}",
+                key.owner(), key.kind(), key.slot(), key.generation());
+            #[cfg(not(target_arch = "riscv64"))]
+            let _ = (key, failure);
+        };
+        checkpoint.run(owner, || {
+                      mac_object_table::walk::drain(self as &mut dyn Context, owner, &mut resolve,
+                                                    &mut failed)
+                  })
+                  .map_err(Error::Cleanup)?;
+        checkpoint.run(owner, || {
+                      mac_object_table::walk::retry(self as &mut dyn Context, owner, &mut resolve,
+                                                    &mut failed)
+                  })
+                  .map_err(Error::Cleanup)?;
+        checkpoint.ensure_settled().map_err(Error::Cleanup)?;
+        Self::module_drained(owner)
+    }
+
+    fn module_drained(owner: &crate::toolbox::handles::OwnerRef) -> Result<()>
+    {
+        let summary = owner.summary();
+        if summary.live != 0
+        {
+            return Err(Error::Domain(mac_object_table::domain::DirectoryError::LiveResources {
+                owner: owner.owner(), live: summary.live }));
+        }
+        if summary.pending != 0
+        {
+            return Err(Error::Domain(mac_object_table::domain::DirectoryError::PendingResources {
+                owner: owner.owner(), pending: summary.pending }));
+        }
+        if summary.completion_faults != 0
+        {
+            return Err(Error::Domain(mac_object_table::domain::DirectoryError::CompletionFaults {
+                owner: owner.owner(), faults: summary.completion_faults }));
+        }
+        Ok(())
+    }
+}

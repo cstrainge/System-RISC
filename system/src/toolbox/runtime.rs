@@ -557,7 +557,8 @@ impl Desktop
                             super::handles::cleanup::Cause::Facility(_) => BAD_ARGUMENT,
                             super::handles::cleanup::Cause::Alias(_)
                             | super::handles::cleanup::Cause::ContextUnavailable { .. }
-                            | super::handles::cleanup::Cause::DriverInterfaceBusy { .. } =>
+                            | super::handles::cleanup::Cause::DriverInterfaceBusy { .. }
+                            | super::handles::cleanup::Cause::DriverDependencyBusy { .. } =>
                             {
                                 SERVICE_BUSY
                             }

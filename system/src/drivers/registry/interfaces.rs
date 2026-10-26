@@ -58,6 +58,12 @@ impl<C: Context + ?Sized> Release<C, Failure> for ReleaseInterfaces
             {
                 return Err(Failure::driver_interface_busy(ticket, interface.module, pending));
             }
+            if let Some(binding) =
+                registry.dependencies.retained_values().find(|b| b.interface_key == key)
+            {
+                return Err(Failure::driver_dependency_busy(ticket, interface.module,
+                                                           binding.dependent));
+            }
             drop(registry.interfaces.release(ticket).map_err(Failure::from)?);
             Ok(())
         }

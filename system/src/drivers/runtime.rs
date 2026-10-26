@@ -159,8 +159,10 @@ pub(crate) fn initialize(arena: core::ops::Range<u64>, target: Target) -> Result
     }
     let owner = crate::toolbox::handles::system_owner()?;
     let kinds = crate::toolbox::handles::registry(|registry| {
-                    Ok((registry.get(crate::toolbox::handles::KindCode(*b"DIFC"))?,
-                        registry.get(crate::toolbox::handles::KindCode(*b"DIFS"))?))
+                    Ok([registry.get(crate::toolbox::handles::KindCode(*b"DIFC"))?,
+                        registry.get(crate::toolbox::handles::KindCode(*b"DIFS"))?,
+                        registry.get(crate::toolbox::handles::KindCode(*b"DDEP"))?,
+                        registry.get(crate::toolbox::handles::KindCode(*b"DDST"))?])
                 }).map_err(|error| error.status())?
                   .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
     RUNTIME.publish(Runtime { registry:  Registry::new(target, owner, kinds).map_err(status)?,

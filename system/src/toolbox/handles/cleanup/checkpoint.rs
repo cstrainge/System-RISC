@@ -1,4 +1,5 @@
 //! Retain a failed walk capability without holding locks across callbacks.
+#![forbid(unsafe_code)]
 use mac_object_table::shared::InvocationGate as _;
 
 use crate::toolbox::handles::{InvocationGate, OwnerRef};
@@ -19,7 +20,7 @@ enum CheckpointState
     Interrupted
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CheckpointError
+pub enum CheckpointError
 {
     Busy,
     Retained,
@@ -56,9 +57,17 @@ impl Checkpoint
         InvocationGate::run(|| action(&mut self.state.lock()))
     }
 
-    pub(crate) fn settled(&self) -> bool
+    pub(crate) fn ensure_settled(&self) -> Result<(), CheckpointError>
     {
-        self.access(|state| matches!(state, CheckpointState::Ready))
+        self.access(|state| {
+                match state
+                {
+                    CheckpointState::Ready => Ok(()),
+                    CheckpointState::Running => Err(CheckpointError::Busy),
+                    CheckpointState::Retained(_) => Err(CheckpointError::Retained),
+                    CheckpointState::Interrupted => Err(CheckpointError::Interrupted)
+                }
+            })
     }
 
     pub(crate) fn run(&self, owner: &OwnerRef,
@@ -180,7 +189,7 @@ mod tests
                                                    CompletionError::registration_mismatch(ticket) })
                              }),
                    Err(CheckpointError::Retained));
-        assert!(!pin.settled());
+        assert_eq!(pin.ensure_settled(), Err(CheckpointError::Retained));
         assert!(alloc::format!("{pin}").contains("death barrier remains closed"));
         assert_eq!(owner.summary().pending, 1);
         assert_eq!(pin.run(&foreign, || panic!("foreign restoration ran cleanup")),
@@ -194,7 +203,7 @@ mod tests
                Ok(Report::default())
            })
            .unwrap();
-        assert!(checkpoint.settled());
+        assert!(checkpoint.ensure_settled().is_ok());
         assert_eq!((owner.summary().live, owner.summary().pending), (0, 0));
     }
     #[test]
@@ -203,13 +212,13 @@ mod tests
         let owner = owner();
         let checkpoint = Checkpoint::try_new().unwrap();
         checkpoint.run(&owner, || {
-                      assert!(!checkpoint.settled());
+                      assert_eq!(checkpoint.ensure_settled(), Err(CheckpointError::Busy));
                       assert_eq!(checkpoint.run(&owner, || panic!("nested cleanup ran")),
                                  Err(CheckpointError::Busy));
                       Ok(Report::default())
                   })
                   .unwrap();
-        assert!(checkpoint.settled());
+        assert!(checkpoint.ensure_settled().is_ok());
     }
     #[cfg(feature = "test-support")]
     #[test]
@@ -224,7 +233,7 @@ mod tests
                                                                      });
                                                }));
         assert!(failure.is_err());
-        assert!(!checkpoint.settled());
+        assert_eq!(checkpoint.ensure_settled(), Err(CheckpointError::Interrupted));
         assert_eq!(checkpoint.run(&owner, || panic!("unproven recovery attempted")),
                    Err(CheckpointError::Interrupted));
         assert!(alloc::format!("{checkpoint}").contains("unproven"));

@@ -255,7 +255,7 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        if !self.cleanup_checkpoint(id)?.settled()
+        if self.cleanup_checkpoint(id)?.ensure_settled().is_err()
         {
             return Err(SERVICE_BUSY);
         }

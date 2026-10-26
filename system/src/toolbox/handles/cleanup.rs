@@ -15,6 +15,11 @@ pub(crate) enum Cause
         module:  u64,
         pending: usize
     },
+    DriverDependencyBusy
+    {
+        provider:  u64,
+        dependent: u64
+    },
     Facility(PoolError),
     Alias(mac_object_table::aliases::ReleaseCause),
     RetirementStorage
@@ -62,6 +67,14 @@ impl core::fmt::Display for Cause
                         cleanup")
             }
             Self::Facility(error) => error.fmt(f),
+            Self::DriverDependencyBusy { provider,
+                                         dependent } =>
+            {
+                write!(f,
+                       "driver module {provider} still supplies a declared dependency to module \
+                        {dependent}; unload the dependent module first; interface payload and \
+                        cleanup ticket remain retained")
+            }
             Self::Alias(error) => error.fmt(f),
             Self::RetirementStorage { provider,
                                       owner,
@@ -132,6 +145,14 @@ impl Failure
         Self { ticket,
                cause: Cause::DriverInterfaceBusy { module,
                                                    pending } }
+    }
+
+    pub(crate) fn driver_dependency_busy(ticket: ReleasedResource, provider: u64, dependent: u64)
+                                         -> Self
+    {
+        Self { ticket,
+               cause: Cause::DriverDependencyBusy { provider,
+                                                    dependent } }
     }
 
     pub(crate) fn document_retirement_storage(ticket: ReleasedResource, pending: usize,
@@ -247,7 +268,6 @@ impl<C: ?Sized, R: Release<C>> Release<C, Failure> for Complete<R>
     }
 }
 
-#[cfg(any(target_arch = "riscv64", test))]
 mod checkpoint;
-#[cfg(target_arch = "riscv64")]
 pub(crate) use checkpoint::Checkpoint;
+pub use checkpoint::CheckpointError;

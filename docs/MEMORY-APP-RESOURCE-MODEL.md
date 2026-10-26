@@ -1890,3 +1890,32 @@ This container milestone does not establish original 68k execution, arbitrary
 privileged-fault containment, dynamic process capacity, page-backed heaps or MMU
 activation. Lower driver-request/device/source lifetimes remain the next model
 migration.
+
+## Module dependency claims join registered cleanup
+
+`DDEP`/`DDST` register dependency claims and their backing in the dependent's
+actual module ledger, beginning before entry. Each claim binds the selected
+provider/interface incarnation and its genuine registration key. Per-module
+issued-ID indexes keep resolution and authorization bounded by that module's
+declarations; they contain no duplicate payload or separate ID authority.
+Optional absent dependencies remain absent, and wildcard claims do not retarget
+when a provider withdraws. The retained claim, including one already invalidated
+by a cleanup walk, blocks provider/interface retirement until actual release.
+Refusals identify the dependent and instruct the caller to unload it first.
+
+Module rollback and finalization use the registered owner walk. A checkpoint is
+allocated before publication and retains a unique ticket if quarantine itself
+refuses; typed checkpoint state distinguishes busy, retained and interrupted
+cleanup. Unknown release providers keep their real tickets pending. The host SDK
+transport drives its actual catalog in its full Session context, outside a
+narrow Registry borrow; it does not construct another catalog or ID issuer.
+
+Scoped host/failure checks and canonical public inspection acceptance pass,
+including registered claim enumeration, refused admission, exact provider
+selection, invalidated-claim retention and repeated rollback. Native external
+module, writable host-volume, StuffIt, process lifecycle, aggregate SDK, cursor
+and panic campaigns pass, as do compiled boundaries, formatting and public docs.
+Physical module code still remains resident until reboot. This slice establishes
+logical provider/interface retention; broker requests, owned jobs, devices/DMA,
+backing sources, physical code reclamation and the remaining invocation/page/heap
+gates retain their separate migration work.

@@ -580,10 +580,6 @@ fn provider_interfaces_are_real_module_resources_and_pending_calls_hold_cleanup_
             let busy = fixture::finish_module(module).unwrap_err();
             assert!(busy.to_string().contains("actual completion"));
             fixture::complete_module_request(request).unwrap();
-            let awaiting_walk = fixture::finish_module(module).unwrap_err();
-            assert!(awaiting_walk.to_string().contains("still pending"));
-            let retried = fixture::walk_module(module, true);
-            assert!(retried.failures.is_empty(), "{:?}", retried.failures);
             fixture::finish_module(module).unwrap();
             let done = snapshot.ledger(index).unwrap().domain();
             assert_eq!((done.live, done.pending, done.quarantined), (0, 0, 0));
@@ -594,6 +590,65 @@ fn provider_interfaces_are_real_module_resources_and_pending_calls_hold_cleanup_
             assert!(fixture::module_request(provider).unwrap_err().to_string().contains("retired"));
             let fresh_request = fixture::module_request(fresh_provider).unwrap();
             fixture::complete_module_request(fresh_request).unwrap();
+        });
+    });
+}
+
+#[test]
+fn dependency_claims_are_enumerable_and_pin_exact_providers_until_the_owner_walk()
+{
+    with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let reader = fixture::add("Dependency inspector", mac_abi::inspection::INSPECT_DOMAINS);
+        with_owner(reader, || {
+            let (first, interface) =
+                fixture::publish_module_interface(*b"dependency-one!!", "First provider");
+            let (second, alternate) =
+                fixture::publish_module_interface(*b"dependency-two!!", "Second provider");
+            let consumer =
+                fixture::stage_dependent_module(*b"dependency-user!", "Dependent", [0; 16]);
+            assert_eq!(fixture::resolve_module_dependency(consumer).unwrap(), interface);
+            let snapshot = system.inspection().snapshot(Scope::All).unwrap();
+            let index =
+                (0..snapshot.count).find(|&i| snapshot.at(i).unwrap().incarnation == consumer)
+                                   .unwrap();
+            let ledger = snapshot.ledger(index).unwrap();
+            assert_eq!((ledger.domain().live, ledger.domain().pending), (2, 0));
+            for code in [*b"DDEP", *b"DDST"]
+            {
+                let pool = (0..ledger.len()).map(|i| ledger.at(i).unwrap())
+                                            .find(|p| p.kind == code)
+                                            .unwrap();
+                assert_eq!((pool.live, pool.pending), (1, 0));
+                let kind = system.inspection()
+                                 .object_kinds()
+                                 .unwrap()
+                                 .get(pool.registration.unwrap())
+                                 .unwrap();
+                assert_eq!(kind.namespace, code);
+                assert!(kind.label.as_str().contains("dependency"));
+                assert_eq!(kind.provider.as_str(), "System Module Manager");
+            }
+            fixture::quiesce_module(first).unwrap();
+            let error = fixture::finish_module(first).unwrap_err();
+            assert!(matches!(error, mac_system::drivers::Error::DependencyInUse {
+                provider, dependent } if provider == first && dependent == consumer));
+            assert!(error.to_string().contains("unload the dependent module before retrying"),
+                    "{error}");
+            let error = fixture::resolve_module_dependency(consumer).unwrap_err();
+            assert!(error.to_string().contains("lifecycle state"), "{error}");
+            assert_ne!(interface, alternate);
+            fixture::retire_module(consumer).unwrap();
+            fixture::finish_module(first).unwrap();
+            let fresh = fixture::stage_dependent_module(*b"dependency-next!", "Next dependent",
+                                                        *b"dependency-two!!");
+            assert_ne!(fresh, consumer);
+            assert_eq!(fixture::resolve_module_dependency(fresh).unwrap(), alternate);
+            let request = fixture::module_request(alternate).unwrap();
+            fixture::complete_module_request(request).unwrap();
+            fixture::retire_module(fresh).unwrap();
+            fixture::quiesce_module(second).unwrap();
+            fixture::finish_module(second).unwrap();
         });
     });
 }

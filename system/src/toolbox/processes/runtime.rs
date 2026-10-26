@@ -828,7 +828,7 @@ impl Desktop
                 continue;
             };
             let remaining = ledger.summary();
-            if !checkpoint.settled()
+            if checkpoint.ensure_settled().is_err()
                || remaining.quarantined != 0
                || remaining.live != 0
                || remaining.completion_faults != 0

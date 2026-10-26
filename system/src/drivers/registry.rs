@@ -5,9 +5,11 @@ use alloc::vec::Vec;
 
 use mac_module::{Available, ClassId, Contract, Offer, PackageKind, Policy, Service, Target};
 
+pub use crate::toolbox::handles::cleanup::CheckpointError;
 use crate::toolbox::handles::{Kind, KindLease, OwnerRef, Store, Table};
 mod modules;
 pub(crate) mod interfaces;
+pub(crate) mod dependencies;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod fixture;
 
@@ -22,6 +24,12 @@ pub enum Error
     State,
     Access,
     Busy,
+    DependencyInUse
+    {
+        provider:  u64,
+        dependent: u64
+    },
+    Cleanup(CheckpointError),
     Domain(mac_object_table::domain::DirectoryError),
     Identity(mac_object_table::domain::IncarnationsExhausted),
     Owner(mac_object_table::domain::PoolError)
@@ -67,9 +75,17 @@ impl core::fmt::Display for Error
                 f.write_str("module still owns outstanding or active requests; wait for actual \
                              completion before retrying")
             }
+            Self::DependencyInUse { provider,
+                                    dependent } =>
+            {
+                write!(f,
+                       "module {provider} still supplies a declared dependency to module \
+                        {dependent}; unload the dependent module before retrying")
+            }
             Self::Domain(error) => error.fmt(f),
             Self::Identity(error) => error.fmt(f),
-            Self::Owner(error) => error.fmt(f)
+            Self::Owner(error) => error.fmt(f),
+            Self::Cleanup(error) => error.fmt(f)
         }
     }
 }
@@ -87,16 +103,19 @@ pub enum State
 }
 struct Module
 {
-    name:          alloc::string::String,
-    identity:      [u8; 16],
-    kind:          PackageKind,
-    state:         State,
-    offers:        Vec<Offer>,
-    dependencies:  Vec<mac_module::Dependency>,
-    services:      Vec<Service>,
-    devices:       Vec<mac_module::DeviceMatch>,
-    requests:      usize,
-    file_handlers: Vec<mac_module::file_handlers::Rule>
+    name:             alloc::string::String,
+    identity:         [u8; 16],
+    kind:             PackageKind,
+    state:            State,
+    offers:           Vec<Offer>,
+    dependencies:     Vec<mac_module::Dependency>,
+    dependency_ids:   Vec<u64>,
+    services:         Vec<Service>,
+    devices:          Vec<mac_module::DeviceMatch>,
+    requests:         usize,
+    file_handlers:    Vec<mac_module::file_handlers::Rule>,
+    cleanup:          crate::toolbox::handles::cleanup::Checkpoint,
+    rollback_pending: bool
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Interface
@@ -140,6 +159,9 @@ pub struct Registry
     interfaces: Store<Interface>,
     system:     OwnerRef,
     requests:   Table<Request>,
+    dependencies: Store<dependencies::Binding>,
+    #[cfg(any(test, feature = "test-support"))]
+    fixture_catalog: Option<alloc::sync::Arc<crate::toolbox::handles::Registry<dyn crate::toolbox::handles::cleanup::context::Context>>>,
     target:     Target,
     services:   Vec<Service>
 }
@@ -157,11 +179,15 @@ impl Registry
                                                          call)
     }
 
-    pub(crate) fn new(target: Target, system: OwnerRef, kinds: (KindLease, KindLease))
-                      -> Result<Self>
+    pub(crate) fn new(target: Target, system: OwnerRef, kinds: [KindLease; 4]) -> Result<Self>
     {
+        let [interfaces, interface_storage, dependencies, dependency_storage] = kinds;
         Ok(Self { modules: modules::Modules::new(),
-                  interfaces: Store::owned(kinds.0, kinds.1).map_err(Error::Owner)?,
+                  interfaces: Store::owned(interfaces, interface_storage).map_err(Error::Owner)?,
+                  dependencies:
+                      Store::owned(dependencies, dependency_storage).map_err(Error::Owner)?,
+                  #[cfg(any(test, feature = "test-support"))]
+                  fixture_catalog: None,
                   system,
                   requests: Table::new(Kind::DriverRequests),
                   target,
@@ -305,21 +331,34 @@ impl Registry
             }
         }
         let dependencies = contract.dependencies().collect::<mac_module::Result<Vec<_>>>()?;
+        let mut dependency_ids = Vec::new();
+        dependency_ids.try_reserve_exact(dependencies.len()).map_err(|_| Error::Exhausted)?;
         let services = contract.services().collect::<mac_module::Result<Vec<_>>>()?;
         let devices = contract.devices().collect::<mac_module::Result<Vec<_>>>()?;
         let mut name = alloc::string::String::new();
         name.try_reserve_exact(contract.name.len()).map_err(|_| Error::Exhausted)?;
         name.push_str(contract.name);
-        self.modules.insert(Module { name,
-                                     identity: contract.identity,
-                                     kind: contract.kind,
-                                     state: State::Initializing,
-                                     offers,
-                                     dependencies,
-                                     services,
-                                     devices,
-                                     requests: 0,
-                                     file_handlers: Vec::new() })
+        let cleanup =
+            crate::toolbox::handles::cleanup::Checkpoint::try_new().map_err(|_| Error::Exhausted)?;
+        let module = self.modules.insert(Module { name,
+                                                   identity: contract.identity,
+                                                   kind: contract.kind,
+                                                   state: State::Initializing,
+                                                   offers,
+                                                   dependencies,
+                                                   dependency_ids,
+                                                   services,
+                                                   devices,
+                                                   requests: 0,
+                                                   file_handlers: Vec::new(),
+                                                   cleanup,
+                                                   rollback_pending: false })?;
+        if let Err(error) = self.bind_dependencies(module)
+        {
+            self.rollback(module)?;
+            return Err(error);
+        }
+        Ok(module)
     }
 
     /// Transactional publication: reserve every interface first and roll back
@@ -364,16 +403,19 @@ impl Registry
     {
         let record = self.modules.get(module).ok_or(Error::Stale)?;
         if record.state != State::Initializing
+           && !(record.state == State::Quiescing && record.rollback_pending)
         {
             return Err(Error::State);
         }
+        let record = self.modules.get_mut(module).ok_or(Error::Stale)?;
+        record.rollback_pending = true;
+        record.state = State::Quiescing;
+        self.modules.stop(module)?;
         if self.requests.iter().any(|(_, r)| r.caller == u64::from(module))
         {
-            self.modules.get_mut(module).ok_or(Error::Stale)?.state = State::Quiescing;
-            self.modules.stop(module)?;
             return Err(Error::Busy);
         }
-        self.interfaces.remove_owner(module);
+        self.drain_module(module)?;
         self.modules.remove(module)?;
         Ok(())
     }
@@ -494,24 +536,21 @@ impl Registry
         {
             return Ok(id);
         }
-        for dependency in &module.dependencies
+        for &id in &module.dependency_ids
         {
-            if dependency.class != class || dependency.version != version
+            let Some(binding) = self.dependencies.get(id)
+            else
             {
                 continue;
-            }
-            for (id, interface) in self.find(class, version)
+            };
+            if binding.dependent == caller && binding.class == class && binding.version == version
             {
-                if interface.module == 0
-                {
-                    continue;
-                }
-                let provider = self.modules.get(interface.module).ok_or(Error::Stale)?;
-                if dependency.module == [0; 16] || dependency.module == provider.identity
-                {
-                    return Ok(id);
-                }
+                self.interface(binding.interface)?;
+                return Ok(binding.interface);
             }
+        }
+        if module.dependencies.iter().any(|d| d.class == class && d.version == version)
+        {
             return Err(Error::Stale);
         }
         Err(Error::Access)
@@ -557,12 +596,10 @@ impl Registry
             }
             else
             {
-                let identity = self.modules.get(provider.module).ok_or(Error::Stale)?.identity;
-                owner.dependencies.iter().any(|d| {
-                                             d.class == provider.offer.class
-                                             && d.version == provider.offer.version
-                                             && (d.module == [0; 16] || d.module == identity)
-                                         })
+                owner.dependency_ids
+                     .iter()
+                     .filter_map(|&id| self.dependencies.get(id))
+                     .any(|binding| binding.dependent == caller && binding.interface == interface)
             };
             if !allowed
             {
@@ -713,21 +750,12 @@ impl Registry
         {
             return Err(Error::Busy);
         }
-        self.interfaces.remove_owner(module);
-        let owner = self.module_ledger(module)?;
-        let summary = owner.summary();
-        if summary.live != 0
+        if let Some(binding) = self.dependencies.retained_values().find(|b| b.provider == module)
         {
-            return Err(Error::Domain(mac_object_table::domain::DirectoryError::LiveResources { owner: owner.owner(), live: summary.live }));
+            return Err(Error::DependencyInUse { provider:  module,
+                                                dependent: binding.dependent });
         }
-        if summary.pending != 0
-        {
-            return Err(Error::Domain(mac_object_table::domain::DirectoryError::PendingResources { owner: owner.owner(), pending: summary.pending }));
-        }
-        if summary.completion_faults != 0
-        {
-            return Err(Error::Domain(mac_object_table::domain::DirectoryError::CompletionFaults { owner: owner.owner(), faults: summary.completion_faults }));
-        }
+        self.drain_module(module)?;
         self.modules.get_mut(module).ok_or(Error::Stale)?.state = State::Failed;
         Ok(())
     }
@@ -849,11 +877,13 @@ mod tests
         let key = owner.allocate(kind).unwrap();
         let refused = registry.rollback(id).unwrap_err();
         assert!(matches!(refused,
-                         Error::Domain(DirectoryError::LiveResources { live: 1,
-                                                                       .. })));
-        assert!(refused.to_string().contains("live ledger resources remain"));
-        assert_eq!(registry.state(id), Ok(State::Initializing));
-        let ticket = owner.invalidate(key).unwrap();
+                         Error::Domain(DirectoryError::PendingResources { pending: 1,
+                                                                          .. })));
+        assert!(refused.to_string().contains("still pending"));
+        assert_eq!(registry.state(id), Ok(State::Quiescing));
+        assert_eq!((owner.summary().live, owner.summary().quarantined), (0, 1));
+        let ticket = owner.resume_quarantined().unwrap();
+        assert_eq!(ticket.key(), key);
         let pending = registry.rollback(id).unwrap_err();
         assert!(matches!(pending,
                          Error::Domain(DirectoryError::PendingResources { pending: 1,
@@ -1008,9 +1038,96 @@ mod tests
         assert_eq!(registry.finish_quiesce(consumer), Err(Error::Busy));
         assert_eq!(registry.begin(u64::from(consumer), interface, 1, 0, 0), Err(Error::State));
         registry.complete(u64::from(consumer), ticket, 0).unwrap();
+        registry.quiesce(provider).unwrap();
+        let refused = registry.finish_quiesce(provider).unwrap_err();
+        assert_eq!(refused,
+                   Error::DependencyInUse { provider,
+                                            dependent: consumer });
+        assert!(refused.to_string().contains("unload the dependent module"));
         registry.finish_quiesce(consumer).unwrap();
+        registry.finish_quiesce(provider).unwrap();
         assert_eq!(registry.state(consumer), Ok(State::Failed));
         assert_eq!(registry.request(u64::from(consumer), ticket), Err(Error::Stale));
+    }
+
+    #[test]
+    fn refused_dependency_registration_rolls_back_the_unentered_module_domain()
+    {
+        use mac_object_table::domain::{KindCode, PoolError};
+        let mut registry = fixture::Fixture::new(Target::RVA23U64);
+        let provider = stage(&mut registry, &metadata(*b"test-module-uuid", &[OFFER], &[]));
+        registry.commit(provider).unwrap();
+        let before = registry.modules.iter().count();
+        let registrar = registry.system.clone();
+        drop(registry.fixture_catalog.take());
+        let withdrawn =
+            alloc::sync::Arc::get_mut(&mut registry._kinds).unwrap()
+                                                           .unregister(&registrar,
+                                                                       KindCode(*b"DDEP"))
+                                                           .unwrap();
+        drop(withdrawn);
+        registry.fixture_catalog = Some(registry._kinds.clone());
+        let declaration = mac_module::Dependency { module:   [0; 16],
+                                                   class:    OFFER.class,
+                                                   version:  1,
+                                                   optional: false };
+        let bytes = metadata(*b"consumer-module!", &[], &[declaration]);
+        let error =
+            registry.stage(Contract::decode(&bytes).unwrap(), PackageKind::Driver, *b"DRVR")
+                    .unwrap_err();
+        assert!(matches!(error, Error::Owner(PoolError::RegistrationUnavailable { .. })),
+                "{error}");
+        assert!(error.to_string().contains("registration"), "{error}");
+        assert_eq!(registry.modules.iter().count(), before);
+        assert_eq!(registry.dependencies.retained_values().count(), 0);
+        registry.quiesce(provider).unwrap();
+        registry.finish_quiesce(provider).unwrap();
+    }
+
+    #[test]
+    fn invalidated_provider_interfaces_retain_dependency_tickets_until_real_release()
+    {
+        use mac_object_table::registry::CleanupFailure;
+
+        use crate::toolbox::handles::cleanup::{Cause, context::Context};
+        let mut registry = fixture::Fixture::new(Target::RVA23U64);
+        let provider = stage(&mut registry, &metadata(*b"test-module-uuid", &[OFFER], &[]));
+        registry.commit(provider).unwrap();
+        let interface = registry.find(OFFER.class, 1).next().unwrap().0;
+        let declaration = mac_module::Dependency { module:   [0; 16],
+                                                   class:    OFFER.class,
+                                                   version:  1,
+                                                   optional: false };
+        let consumer = stage(&mut registry, &metadata(*b"consumer-module!", &[], &[declaration]));
+        let binding = registry.dependencies.iter().next().unwrap().0;
+        assert!(binding > u64::from(u32::MAX));
+        let dependent = registry.module_ledger(consumer).unwrap();
+        let dependency_key = registry.dependencies.key(binding).unwrap();
+        let dependency_ticket = dependent.invalidate(dependency_key).unwrap();
+        assert!(registry.dependencies.get(binding).is_none());
+        let owner = registry.module_ledger(provider).unwrap();
+        let key = registry.interfaces.key(interface).unwrap();
+        let ticket = owner.invalidate(key).unwrap();
+        let dispatch = registry._kinds.dispatch(key.kind()).unwrap();
+        let error = dispatch.invoke(&mut *registry as &mut dyn Context, ticket).unwrap_err();
+        assert!(error.to_string().contains("unload the dependent module first"));
+        let (ticket, cause) = error.into_parts();
+        assert_eq!(cause,
+                   Cause::DriverDependencyBusy { provider,
+                                                 dependent: consumer });
+        assert_eq!(ticket.key(), key);
+        owner.quarantine(ticket).unwrap();
+        assert_eq!(owner.summary().quarantined, 1);
+        assert!(registry.interface(interface).is_err());
+        let waiting = registry.rollback(consumer).unwrap_err();
+        assert!(waiting.to_string().contains("still pending"), "{waiting}");
+        let dispatch = registry._kinds.dispatch(dependency_key.kind()).unwrap();
+        dispatch.invoke(&mut *registry as &mut dyn Context, dependency_ticket).unwrap();
+        registry.rollback(consumer).unwrap();
+        assert!(registry.dependencies.get(binding).is_none());
+        registry.quiesce(provider).unwrap();
+        registry.finish_quiesce(provider).unwrap();
+        assert_eq!((owner.summary().live, owner.summary().pending), (0, 0));
     }
 
     #[test]

@@ -868,6 +868,14 @@ published provider, not directory ordering. Duplicate identity/class requirement
 are rejected, including conflicting versions. Optional dependencies may be absent;
 they do not waive validation on calls to a provider that is present.
 
+Admission registers each present dependency as a `DDEP` claim in the dependent
+module's ledger, with `DDST` backing. The claim names the exact provider and
+interface incarnation, including its registered resource key. A wildcard selects
+once at admission; it does not silently retarget after provider withdrawal.
+Retained claims block provider/interface retirement until the dependent's
+registered cleanup actually releases them. Admission stop or ordinary-ID
+invalidation alone is not release acknowledgement.
+
 A resident service requirement is16 bytes: service FourCC at 0, exact version at 4,
 optional flag(u32,0 or1) at 8, zero at 12. Service/version are nonzero and duplicate
 service requirements are rejected. A device match is40 bytes: bus FourCC at 0,

@@ -330,6 +330,33 @@ pub fn stage_module(identity: [u8; 16], name: &str) -> u64
 }
 fn stage_module_with_offers(identity: [u8; 16], name: &str, offers: &[mac_module::Offer]) -> u64
 {
+    stage_module_with_requirements(identity, name, offers, &[])
+}
+pub fn stage_dependent_module(identity: [u8; 16], name: &str, provider: [u8; 16]) -> u64
+{
+    stage_module_with_requirements(identity,
+                                   name,
+                                   &[],
+                                   &[mac_module::Dependency { module:   provider,
+                                                              class:
+                                                                  mac_module::ClassId(*b"TEST"),
+                                                              version:  1,
+                                                              optional: false }])
+}
+pub fn resolve_module_dependency(module: u64) -> Result<u64, crate::drivers::Error>
+{
+    super::SESSION.with(|slot| {
+                      slot.borrow()
+                          .as_ref()
+                          .unwrap()
+                          .modules
+                          .resolve(module, mac_module::ClassId(*b"TEST"), 1)
+                  })
+}
+fn stage_module_with_requirements(identity: [u8; 16], name: &str, offers: &[mac_module::Offer],
+                                  dependencies: &[mac_module::Dependency])
+                                  -> u64
+{
     let spec = mac_module::Spec { kind: mac_module::PackageKind::Driver,
                                   kernel_abi: mac_abi::ABI_VERSION,
                                   target: mac_module::Target::RVA23U64,
@@ -342,7 +369,7 @@ fn stage_module_with_offers(identity: [u8; 16], name: &str, offers: &[mac_module
                                   version: "0.1.0",
                                   provenance: "inspection fixture",
                                   offers,
-                                  dependencies: &[],
+                                  dependencies,
                                   services: &[],
                                   devices: &[] };
     let mut bytes = std::vec![0;spec.encoded_len().unwrap()];
@@ -359,7 +386,7 @@ fn stage_module_with_offers(identity: [u8; 16], name: &str, offers: &[mac_module
 }
 pub fn retire_module(module: u64) -> Result<(), crate::drivers::Error>
 {
-    super::SESSION.with(|slot| slot.borrow_mut().as_mut().unwrap().modules.rollback(module))
+    finish_with_module_walk(module, false)
 }
 
 /// Production registry publication, with only the absent hardware callback
@@ -404,7 +431,43 @@ pub fn quiesce_module(module: u64) -> Result<(), crate::drivers::Error>
 }
 pub fn finish_module(module: u64) -> Result<(), crate::drivers::Error>
 {
-    super::SESSION.with(|slot| slot.borrow_mut().as_mut().unwrap().modules.finish_quiesce(module))
+    finish_with_module_walk(module, true)
+}
+fn finish_with_module_walk(module: u64, published: bool) -> Result<(), crate::drivers::Error>
+{
+    let finish = || {
+        super::SESSION.with(|slot| {
+                          let mut slot = slot.borrow_mut();
+                          let registry = &mut slot.as_mut().unwrap().modules;
+                          if published
+                          {
+                              registry.finish_quiesce(module)
+                          }
+                          else
+                          {
+                              registry.rollback(module)
+                          }
+                      })
+    };
+    let result = finish();
+    use mac_object_table::domain::DirectoryError;
+
+    use crate::drivers::Error;
+    if matches!(result,
+                Err(Error::Domain(DirectoryError::LiveResources { .. }
+                                  | DirectoryError::PendingResources { .. }
+                                  | DirectoryError::CompletionFaults { .. })))
+    {
+        // The transport's one real catalog needs the Session context, not a
+        // fabricated Registry-only context. Release its RefCell borrow first.
+        walk_module(module, false);
+        walk_module(module, true);
+        finish()
+    }
+    else
+    {
+        result
+    }
 }
 pub fn walk_module(module: u64, retry: bool) -> WalkOutcome
 {
