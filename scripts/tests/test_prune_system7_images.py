@@ -5,9 +5,12 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 spec = importlib.util.spec_from_file_location(
     'image_cleanup', Path(__file__).resolve().parents[1] / 'prune_system7_images.py')

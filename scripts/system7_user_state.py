@@ -5,7 +5,6 @@ snapshot; replacing the writable desktop disk always snapshots it first.
 """
 import argparse
 from contextlib import contextmanager
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -17,15 +16,22 @@ import tempfile
 import uuid
 
 from hfs_b_tool import tool
-from riscv_vm import qmp
+from riscv_vm import qmp, image_executable
 from system7_paths import ROOT, build_dir
+from system7_host import exclusive_lock, process_exists, sync_directory, sync_file
 
 TREES = {'Preferences': ('/System Folder/Preferences', '/System Folder'),
          'Documents': ('/Documents', '/')}
 
 
 def command(args):
-    result = subprocess.run(list(map(str, args)), capture_output=True, text=True)
+    args = list(map(str, args))
+    if args[0] == 'qemu-img':
+        args[0] = image_executable()
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, encoding='utf-8')
+    except OSError as error:
+        raise RuntimeError(f'User-file preservation could not run {shlex.join(args)}: {error}') from error
     if result.returncode:
         raise RuntimeError(f'User-file preservation failed: {shlex.join(list(map(str,args)))}\n'
                            f'{result.stderr.strip() or result.stdout.strip()}')
@@ -45,10 +51,15 @@ def running(state):
         except (OSError, ValueError, RuntimeError):
             pass
     try:
-        os.kill(int((state / 'pid').read_text().strip()), 0)
-        return True
-    except (OSError, ValueError):
+        pid = int((state / 'pid').read_text().strip())
+    except FileNotFoundError:
         return False
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f'Cannot determine VM ownership in {state}: {error}; stop the VM and repair its process record before replacing user files') from error
+    try:
+        return process_exists(pid)
+    except OSError as error:
+        raise RuntimeError(f'Cannot query VM process {pid}: {error}; user files were not replaced') from error
 
 
 def default_state(build):
@@ -62,11 +73,7 @@ def default_state(build):
 def locked(build):
     root = build / 'user-state'
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with (root / 'lock').open('a') as handle:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise RuntimeError(f'User-file preservation is already active in {root}; retry when it finishes') from error
+    with exclusive_lock(root / 'lock'):
         yield root
 
 
@@ -94,14 +101,6 @@ def current(root):
 
 def children(raw, parent):
     return [json.loads(line) for line in hfs('list', raw, parent).splitlines() if line]
-
-
-def sync_directory(path):
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def snapshot_raw(root, raw, source):
@@ -132,8 +131,7 @@ def snapshot_raw(root, raw, source):
             if path.is_dir():
                 directories.append(path)
             else:
-                with path.open('rb') as stream:
-                    os.fsync(stream.fileno())
+                sync_file(path)
         for path in reversed(directories):
             sync_directory(path)
         value = {'version': 1, 'snapshot': name, 'trees': present, 'source': str(source)}
@@ -216,7 +214,9 @@ def replace_disk(build, state, base):
                 replacement = Path(file.name)
             try:
                 shutil.copyfile(base, replacement)
+                sync_file(replacement)
                 os.replace(replacement, disk)
+                sync_directory(state)
             finally:
                 replacement.unlink(missing_ok=True)
             return
@@ -229,7 +229,9 @@ def replace_disk(build, state, base):
             try:
                 command(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', raw, replacement])
                 command(['qemu-img', 'check', replacement])
+                sync_file(replacement)
                 os.replace(replacement, disk)
+                sync_directory(state)
             finally:
                 replacement.unlink(missing_ok=True)
 

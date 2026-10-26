@@ -79,11 +79,21 @@ before and after the gate; reports, screenshots and original reference media
 remain. Its QMP port is4447;
 the classic Mac and old QuickDraw machines keep their own state and ports.
 
-From WSL, set `SYSTEM7_WINDOWS_QEMU` to the WSL path of
-`qemu-system-riscv64.exe` to select an extracted Windows QEMU distribution.
-For example, `SYSTEM7_WINDOWS_QEMU=/mnt/d/tools/qemu/qemu-system-riscv64.exe`
-selects that binary for `--frontend native` or `--frontend native-headless`.
-An invalid configured path reports an error before launch.
+On Windows, run `python ./scripts/system7_vm.py start` directly from PowerShell.
+Install Python 3.11 or newer, the nightly Rust MSVC toolchain with the
+`riscv64imac-unknown-none-elf` target and its native linker prerequisites, and
+Windows QEMU including `qemu-img.exe`. The launcher selects the nightly toolchain
+unless `RUSTUP_TOOLCHAIN` explicitly selects another one, and uses the same Python
+interpreter for build and saved-file preservation helpers. WSL is not required.
+
+Windows QEMU is discovered on `PATH`, through `working/vm/windows-qemu.json`
+in the enclosing workspace, or in its standard Program Files location. For a
+portable distribution, set
+`$env:SYSTEM7_WINDOWS_QEMU = 'D:\tools\qemu\qemu-system-riscv64.exe'` before
+launching. Its sibling `qemu-img.exe` supplies disk conversion. From WSL the
+same setting accepts a Windows path or its `/mnt/d/...` path. An invalid
+configured path reports an error before launch. Linux and WSL launch commands
+continue to use their existing host tools and frontend selection.
 
 Normal startup initializes `System7/transfer` on first use and exposes it as a
 read/write **Transfer** volume. It is ignored by Git and survives disk rebuilds.

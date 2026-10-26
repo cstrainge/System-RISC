@@ -56,7 +56,25 @@ impl Workspace
 
     fn command(&self, program: impl AsRef<OsStr>) -> Command
     {
-        let mut command = Command::new(program);
+        let program = program.as_ref();
+        let python = if program == OsStr::new("python3")
+        {
+            Some(env::var_os("SYSTEM7_PYTHON").unwrap_or_else(|| {
+                                                  if cfg!(windows)
+                                                  {
+                                                      "python".into()
+                                                  }
+                                                  else
+                                                  {
+                                                      "python3".into()
+                                                  }
+                                              }))
+        }
+        else
+        {
+            None
+        };
+        let mut command = Command::new(python.as_deref().unwrap_or(program));
         command.env(mac_build::paths::BUILD_DIR_ENV, &self.build);
         command.env(mac_build::platform::PLATFORM_ENV, &self.platform.name);
         command

@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+from system7_host import process_exists
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -30,7 +31,8 @@ def prune():
     for base in (results, build):
         for pid in base.rglob('pid'):
             try:
-                os.kill(int(pid.read_text().strip()), 0)
+                if not process_exists(int(pid.read_text().strip())):
+                    continue
             except (OSError, ValueError):
                 continue
             relative = pid.relative_to(base)
@@ -59,12 +61,12 @@ def prune():
             # A fixture owner or another cleanup may finish between enumeration
             # and deletion. Already removed media needs no further work.
             continue
-        removed.append(str(path.relative_to(ROOT)))
-        freed += stat.st_blocks * 512
+        removed.append(path.relative_to(ROOT).as_posix())
+        freed += getattr(stat, 'st_blocks', (stat.st_size + 511) // 512) * 512
     report = {'removed_files': len(removed), 'allocated_bytes_freed': freed,
-              'protected_live_captures': [str(p.relative_to(ROOT)) for p in protected],
-              'protected_user_exports': [str(p.relative_to(ROOT)) for p in user_state],
-              'protected_persistent_vms': [str(p.relative_to(ROOT)) for p in persistent],
+              'protected_live_captures': [p.relative_to(ROOT).as_posix() for p in protected],
+              'protected_user_exports': [p.relative_to(ROOT).as_posix() for p in user_state],
+              'protected_persistent_vms': [p.relative_to(ROOT).as_posix() for p in persistent],
               'files': removed}
     (results / 'image-cleanup.json').write_text(json.dumps(report, indent=2) + '\n')
     print(f'Removed {len(removed)} obsolete generated images; freed {freed / 2**30:.2f} GiB.')

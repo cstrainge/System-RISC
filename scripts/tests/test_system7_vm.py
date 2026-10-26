@@ -20,7 +20,7 @@ class LauncherTests(unittest.TestCase):
             with self.subTest(normal=normal), tempfile.TemporaryDirectory() as folder:
                 state = Path(folder) / 'vm'
                 selected = vm.ROOT / 'build/system7' if normal else Path(folder)
-                expected = vm.ROOT / 'System7/transfer' if normal else selected / 'transfer'
+                expected = vm.SOURCE / 'transfer' if normal else selected / 'transfer'
                 from unittest.mock import Mock
                 companion = Mock(pid=123)
                 process = Mock(pid=456)
@@ -67,10 +67,10 @@ class LauncherTests(unittest.TestCase):
             try:
                 expected = Path(folder) / 'host'
                 self.assertEqual(paths.host_dir(), expected)
-                self.assertEqual(hfs_b_tool.tool(), expected / 'debug/hfs-b')
+                self.assertEqual(hfs_b_tool.tool(), paths.host_tool('hfs-b'))
                 command = run.call_args.args[0]
                 self.assertEqual(command[-2:], ['--target-dir', str(expected)])
-                self.assertEqual(run.call_args.kwargs['cwd'], vm.ROOT / 'System7')
+                self.assertEqual(run.call_args.kwargs['cwd'], vm.SOURCE)
             finally:
                 hfs_b_tool.tool.cache_clear()
 

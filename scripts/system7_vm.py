@@ -10,13 +10,14 @@ from pathlib import Path
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import uuid
 
 from riscv_vm import native_executable, qmp as send_qmp, windows_path
-from system7_paths import BUILD_DIR_ENV, build_dir, dist_dir, describe
+from system7_paths import SOURCE, ROOT, BUILD_DIR_ENV, build_dir, dist_dir, describe
+from system7_host import process_options
 
-ROOT = Path(__file__).resolve().parents[2]
 STATE = ROOT / 'working/system7-vm'
 DIST = dist_dir()
 
@@ -29,8 +30,8 @@ def qmp(command, arguments=None, endpoint=None):
 
 def build():
     subprocess.run(['cargo', 'xtask', 'image', '--build-dir', str(build_dir())],
-                   cwd=ROOT / 'System7', check=True,
-                   env=dict(os.environ, SYSTEM7_VM_STATE_DIR=str(STATE)))
+                   cwd=SOURCE, check=True,
+                   env=dict(os.environ, SYSTEM7_VM_STATE_DIR=str(STATE), SYSTEM7_PYTHON=sys.executable))
 
 
 def launch(state, frontend='headless', extra_disks=(), *, writable=False, preserve=False,
@@ -42,6 +43,8 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     retiring that copy; obsolete boot disks are not retained.
     """
     state = Path(state).resolve()
+    if os.name == 'nt':
+        frontend = {'headless': 'native-headless', 'gtk': 'native'}.get(frontend, frontend)
     if host_bridge is not None and (type(host_bridge) is not int or not 0 < host_bridge < 65536):
         raise ValueError('host bridge must be an explicit loopback TCP port')
     if expected_exports is not None and (type(expected_exports) is not int
@@ -51,7 +54,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     state.mkdir(parents=True, exist_ok=True)
     native = frontend in ('native', 'native-headless')
     if native and not native_executable():
-        raise FileNotFoundError('Portable qemu-system-riscv64.exe missing; use --frontend gtk')
+        raise FileNotFoundError('qemu-system-riscv64.exe missing; install Windows QEMU or set SYSTEM7_WINDOWS_QEMU')
     if native:
         try:
             connection = socket.create_connection(('127.0.0.1', qmp_port), timeout=.5)
@@ -124,14 +127,14 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     (state / 'qmp-endpoint.json').write_text(json.dumps(endpoint, indent=2) + '\n')
     with (state / 'qemu.log').open('wb') as log:
         process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                   env=env, start_new_session=True)
+                                   env=env, **process_options())
     (state / 'pid').write_text(str(process.pid) + '\n')
     # Native Windows QEMU reads WSL-hosted media through UNC paths. Its GTK
     # profile cold-boots this image in ~33 seconds, beyond the Linux budget.
     deadline = time.monotonic() + (60 if native else 25)
     try:
         while time.monotonic() < deadline:
-            log = serial.read_text(errors='replace')
+            log = serial.read_text(encoding='utf-8', errors='replace')
             if process.poll() is not None:
                 raise RuntimeError((state / 'qemu.log').read_text() + '\n' + log)
             if 'DESKTOP_READY' in log:
@@ -178,14 +181,14 @@ def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_
     if rebuild:
         build()
     if frontend == 'auto':
-        frontend = 'native' if native_executable() else 'gtk'
+        frontend = 'native' if os.name == 'nt' or native_executable() else 'gtk'
     companion = None
     port = None
     initialize = None
     if transfer:
         # Private build profiles get private exports; tests never touch the
         # user's persistent source-root transfer volume.
-        initialize = ((ROOT / 'System7') if build_dir() == ROOT / 'build/system7'
+        initialize = (SOURCE if build_dir() == ROOT / 'build/system7'
                       else build_dir()) / 'transfer'
         exports = [f'Transfer={initialize}', *exports]
     try:
@@ -208,7 +211,7 @@ def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_
     print(json.dumps({'pid': process.pid, 'frontend': 'native-gtk' if frontend == 'native' else frontend,
                       'bootrom': describe(STATE / 'bootrom.bin'),
                       'disk': describe(STATE / 'system7.qcow2'), 'build_dir': str(build_dir())}))
-    print((STATE / 'serial.log').read_text())
+    print((STATE / 'serial.log').read_text(encoding='utf-8', errors='replace'))
     return process, endpoint
 
 
@@ -260,11 +263,15 @@ def check(rebuild=True, state=None):
 
 def main():
     global STATE, DIST
+    if os.name == 'nt':
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, 'reconfigure'):
+                stream.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
     build_parser = sub.add_parser('build')
     launch_parser = sub.add_parser('start')
-    launch_parser.add_argument('--frontend', choices=['auto', 'native', 'gtk', 'headless'], default='auto')
+    launch_parser.add_argument('--frontend', choices=['auto', 'native', 'native-headless', 'gtk', 'headless'], default='auto')
     launch_parser.add_argument('--no-build', action='store_true')
     launch_parser.add_argument('--no-transfer', action='store_true',
                                help='Disable the default Transfer volume for this VM')
@@ -287,6 +294,16 @@ def main():
         command.add_argument('--state-dir', type=Path,
                              help='Working VM state; custom builds default to BUILD_DIR/vm')
     args = parser.parse_args()
+    if os.name == 'nt':
+        # The guest and Windows host adapter use nightly APIs. Keep a caller's
+        # explicit toolchain, and propagate this interpreter through xtask.
+        os.environ.setdefault('RUSTUP_TOOLCHAIN', 'nightly')
+        os.environ['SYSTEM7_PYTHON'] = sys.executable
+        if args.action in ('start', 'build', 'check'):
+            executable = native_executable()
+            if executable is None:
+                parser.error('Windows QEMU is required; install it or set SYSTEM7_WINDOWS_QEMU')
+            os.environ['PATH'] = str(executable.parent) + os.pathsep + os.environ.get('PATH', '')
     if args.build_dir:
         os.environ[BUILD_DIR_ENV] = str(args.build_dir.resolve())
     elif args.action == 'check':

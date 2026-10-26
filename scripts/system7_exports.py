@@ -1,10 +1,41 @@
 """Explicit host exports and the lifetime of one VM's companion process."""
 import argparse
 from pathlib import Path
-import select
+import queue
 import subprocess
+import threading
 
-from system7_paths import ROOT, host_dir
+from system7_paths import SOURCE, host_dir, host_tool
+from system7_host import process_options
+
+
+def readiness(process, log_path, timeout=10):
+    result = queue.Queue(maxsize=1)
+    def read():
+        try:
+            result.put(process.stdout.readline(256))
+        except Exception as error:
+            result.put(error)
+    reader = threading.Thread(target=read, name='host-companion-readiness', daemon=True)
+    reader.start()
+    try:
+        line = result.get(timeout=timeout)
+    except queue.Empty as error:
+        raise TimeoutError('host companion did not become ready') from error
+    if isinstance(line, Exception):
+        raise RuntimeError(f'cannot read host companion readiness: {line}') from line
+    ready = line.decode('utf-8', errors='replace').strip()
+    prefix = 'HOST_BRIDGE_READY 127.0.0.1:'
+    if not ready.startswith(prefix):
+        raise RuntimeError('host companion failed: ' + log_path.read_text(errors='replace'))
+    try:
+        port = int(ready[len(prefix):])
+    except ValueError as error:
+        raise RuntimeError(f'invalid companion loopback port: {ready}') from error
+    if not 0 < port < 65536:
+        raise RuntimeError('invalid companion loopback port')
+    reader.join()
+    return port
 
 
 def export_argument(value):
@@ -37,31 +68,23 @@ def start(state, writable, readonly, *, initialize=None):
     command = ['cargo', 'build', '--locked', '--release', '-p', 'risc-host']
     if initialize is not None:
         command.extend(['-p', 'risc-forks'])
-    subprocess.run([*command, '--target-dir', str(host_dir())], cwd=ROOT / 'System7', check=True)
+    subprocess.run([*command, '--target-dir', str(host_dir())], cwd=SOURCE, check=True)
     if initialize is not None and not (initialize / '.system-risc-root').exists():
         # The Rust formatter refuses nonempty directories. Never erase/import
         # ordinary host files implicitly or replace an existing volume record.
-        subprocess.run([str(host_dir() / 'release/risc-forks'), 'init', str(initialize),
+        subprocess.run([str(host_tool('risc-forks', 'release')), 'init', str(initialize),
                         'Transfer'], check=True)
     state.mkdir(parents=True, exist_ok=True)
-    arguments = [str(host_dir() / 'release/risc-host'), '--one-session']
+    arguments = [str(host_tool('risc-host', 'release')), '--one-session']
     for flag, values in [('--export', writable), ('--read-only-export', readonly)]:
         for value in values:
             arguments.extend([flag, value])
     log_path = state / 'host-companion.log'
     with log_path.open('wb') as log:
         process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=log, start_new_session=True)
+                                   stdout=subprocess.PIPE, stderr=log, **process_options())
     try:
-        if not select.select([process.stdout], [], [], 10)[0]:
-            raise TimeoutError('host companion did not become ready')
-        ready = process.stdout.readline().decode('utf-8').strip()
-        prefix = 'HOST_BRIDGE_READY 127.0.0.1:'
-        if not ready.startswith(prefix):
-            raise RuntimeError('host companion failed: ' + log_path.read_text(errors='replace'))
-        port = int(ready[len(prefix):])
-        if not 0 < port < 65536:
-            raise RuntimeError('invalid companion loopback port')
+        port = readiness(process, log_path)
         # There is exactly one readiness line; ordinary diagnostics go to stderr.
         process.stdout.close()
         return process, port

@@ -19,3 +19,11 @@ reference corpus and hfsutils/QEMU tools from the RE development environment.
 The three `capture_system7_*` scripts collect inputs, serial results and frames;
 canonical Rust tests in the aggregate Toolbox crate own new acceptance decisions.
 Older Python visual checkers remain migration work recorded in TOOLBOX-PLAN.md.
+
+`system7_vm.py start` also runs under native Windows Python from PowerShell.
+The launcher uses native Rust host tools and Windows QEMU, TCP QMP, nonblocking
+Windows preservation locks, and real file/directory flushes. It invokes build
+helpers with its own interpreter. Linux/WSL retain their existing process,
+locking and path adapters. See the root README for prerequisites and QEMU
+discovery. `--build-dir` selects a separate installation and writable VM;
+Preferences/Documents exports stay under that build's `user-state` directory.

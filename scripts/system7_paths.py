@@ -2,7 +2,8 @@
 import os
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+SOURCE = Path(__file__).resolve().parents[1]
+ROOT = SOURCE.parent
 BUILD_DIR_ENV = 'SYSTEM7_BUILD_DIR'
 
 
@@ -18,6 +19,10 @@ def dist_dir():
 def host_dir():
     """One compiler cache for host tools/examples within the selected build."""
     return build_dir() / 'host'
+
+
+def host_tool(name, profile='debug'):
+    return host_dir() / profile / (name + ('.exe' if os.name == 'nt' else ''))
 
 
 def describe(path):
