@@ -895,7 +895,8 @@ The generic C entry receives a borrowed Host descriptor and initializes Instance
 Host exposes the full u64 boot-unique module incarnation, dependency resolution
 and broker invocation; it and the code stay pinned until reboot. Resolve writes a
 u64 provider identity and Broker accepts that complete u64 value. The contract
-fingerprint includes a provider-reference signature flag in bit56 in addition to
+fingerprint includes a provider-reference signature flag in bit56 and a native
+64-bit request-ticket flag in bit57, in addition to
 pointer width and structure sizes; a Host with the same size but the obsolete
 32-bit provider signature is rejected through contract admission. The development
 ABI remains1; rebuild System and every module together. Instance carries an opaque u64 state and a
@@ -903,7 +904,7 @@ module-local executable dispatch address, validated before publication. Rust
 traits, String/Vec, allocator ownership and private struct layouts never cross
 this boundary. The SDK exposes borrowed slices to ordinary driver bodies.
 
-Call carries a generation-tagged resident ticket, phase, class, class operation,
+Call is 64 bytes and carries a full-width u64 native resident ticket, phase, class, class operation,
 borrowed input and exclusive output bytes. START allocates a ticket; POLL and
 CANCEL validate the same caller/provider/request incarnation. QUIESCE has no
 class or buffers. Each callback returns a terminal status/length or PENDING(1).
@@ -927,27 +928,46 @@ Only an admitted DRVR with a matching bus key can claim physical hardware.
 
 `mac-device-interface` owns this class's byte layouts; `mac-driver::devices`
 provides the Rust binding. These payloads do not alter the generic C entry ABI.
-All fields are little-endian. Description is 48 bytes: claim handle u32 (zero
-for probe), bus class four bytes, 16-byte match key, register base u64, register
-length u64, interrupt u32, flags u32. Flags are coherent DMA=1, MMIO=2,
-resident-owned=4. Mapping is 24 bytes: generation-tagged handle u32, zero u32,
-device address u64, length u64. Invalid lengths, overflow and reserved bits fail.
+All fields are little-endian. Description is 52 bytes: native claim alias u64
+(zero for probe) at 0, bus class four bytes at 8, 16-byte match key at 12,
+register base u64 at 28, register length u64 at 36, interrupt u32 at 44, flags
+u32 at 48. Flags are coherent DMA=1, MMIO=2, resident-owned=4. Mapping is
+24 bytes: native mapping ID u64 at 0, device address u64 at 8, length u64 at 16.
+Nonzero handles must be outside the classic 32-bit projection space. Invalid
+lengths, overflow and unknown flag bits fail. The module layout fingerprint
+includes the full-width device contract (bit 58); development ABI stays 1.
+Stale packages must be rebuilt, rather than decoded through a second layout.
 
 | Op | Input | Output |
 | --- | --- | --- |
-| 0 Probe | bus ordinal u32 | 48-byte description, no claim |
-| 1 Claim | bus ordinal u32 | 48-byte description with owned claim |
-| 2 Map | claim u32, zero u32, module RAM address u64, length u64 | 24-byte mapping |
-| 3 Reset | START: claim u32; POLL/CANCEL: empty | empty; Pending until stopped acknowledgement |
-| 4 Unmap | mapping u32 | empty; refused while DMA can still run |
-| 5 Release | claim u32 | empty; requires no mappings/pending reset and stopped device |
+| 0 Probe | bus ordinal u32 | 52-byte description, no claim |
+| 1 Claim | bus ordinal u32 | 52-byte description with owned claim alias |
+| 2 Map | claim u64, module RAM address u64, length u64 | 24-byte mapping |
+| 3 Reset | START: claim u64; POLL/CANCEL: empty | empty; Pending until stopped acknowledgement |
+| 4 Unmap | mapping u64 | empty; refused while DMA can still run |
+| 5 Release | claim u64 | empty; requires no mappings/pending reset and stopped device |
+| 6 Count | empty | inventory slot count u32; slots may be empty |
 
-Claims and mappings use centrally registered shared handle namespaces plus
-independent module-owner checks. A reset associates its broker-issued ticket
-with the claim; polling and cancellation use that incarnation without retaining
-input pointers. No operation spins waiting for hardware. RAM mappings are
-restricted to the caller's pinned native module reservation. The current QEMU
-virt bus uses coherent identity DMA; this is not an IOMMU/isolation claim.
+Physical targets belong to the System domain (`DVOB`/`DVOS`); modules receive
+facility-owned aliases (`DVAL`/`DVAB`), never global target IDs. DMA mappings
+(`DMAP`/`DMST`) belong to the actual module domain and retain the exact claim's
+admission receipt. All six kinds use the public registration catalog and common
+invalidate-first owner walk. An invalidated claim remains exclusive until its
+mappings and hardware stop settle, regardless of callback ordering.
+
+Reset polling/cancellation uses only the original broker-issued ticket and
+owner. Ordinary stale aliases remain invalid. Cleanup submits one successful
+reset per claim, probes once per retry, and retains the original ticket, payload
+and backing on failed writes, failed probes or absent stop acknowledgement.
+Mapping cleanup precedes last-claim reclamation by an explicit count, rather
+than reliance on pool ordering. A positive stop permits retiring a dead claim;
+a late reset callback cannot reset or bind a replacement claim. Losing the
+manager quarantines its claims, maps and System targets; destruction is never
+a hardware acknowledgement. No operation spins waiting for hardware.
+
+RAM mappings are restricted to the caller's pinned native module reservation.
+The current QEMU virt bus uses coherent identity DMA; this is not physical-page
+pinning, IOMMU isolation, module-image reclamation or multi-hart qualification.
 
 The board bus class is `VMMI`; its match key is device ID u32, vendor ID u32,
 then eight zero bytes. Probe ordinals 0..7 describe the board's eight 4 KiB
@@ -1179,7 +1199,7 @@ identities; IDs/revisions are not restored as another live object's identity.
 ## Host directory wire protocol (RSHOST04, version 4)
 
 `mac-host-protocol` owns the allocation-free codec and incremental reply decoder.
-The VM byte channel carries a 48-byte little-endian header followed by exactly
+The VM byte channel carries a 52-byte little-endian header followed by exactly
 `payload_length` bytes (maximum 65536). There are no native pointers, Rust enum
 layouts or implicit host paths on the wire. Unsupported versions require a
 matching rebuild; there is no older decoder.
@@ -1188,18 +1208,18 @@ matching rebuild; there is no older decoder.
 | --- | --- | --- |
 | 0 | 8 | `RSHOST04` |
 | 8 | 2 | whole protocol version, 4 |
-| 10 | 2 | header length, 48 |
+| 10 | 2 | header length, 52 |
 | 12 | 4 | payload length, at most 65536 |
-| 16 | 4 | nonzero correlation ticket, echoed unchanged in reply |
-| 20 | 2 | operation below |
-| 22 | 2 | 0 request, 1 reply; other bits invalid |
-| 24 | 4 | session capability; zero only during Hello |
-| 28 | 4 | object capability |
-| 32 | 8 | operation-specific offset |
-| 40 | 4 | operation-specific value |
-| 44 | 4 | signed status; requests must contain zero |
+| 16 | 8 | nonzero u64 correlation ticket, echoed unchanged in reply |
+| 24 | 2 | operation below |
+| 26 | 2 | 0 request, 1 reply; other bits invalid |
+| 28 | 4 | session capability; zero only during Hello |
+| 32 | 4 | object capability |
+| 36 | 8 | operation-specific offset |
+| 44 | 4 | operation-specific value |
+| 48 | 4 | signed status; requests must contain zero |
 
-The guest broker's generation-tagged request ticket supplies correlation; it
+The guest broker's complete native request ticket supplies correlation; it
 confers no object authority. The companion issues session/file/directory/iterator/
 transaction capabilities through the shared object table. Owners are validated
 separately. Disconnect discards the old session; a new transport incarnation
@@ -1298,7 +1318,7 @@ argument record followed by its exact payload:
 | 24 | variable | Payload |
 
 The broker's live request ticket supplies wire correlation; callers cannot choose
-it. POLL/CANCEL have empty inputs. A completed output is the full checked 48-byte
+it. POLL/CANCEL have empty inputs. A completed output is the full checked 52-byte
 `RSHOST04` reply header followed by its exact payload. Transport errors and host
 operation status are distinct: a completed transport can carry a failed host
 operation. Each callback transfers at most two 4 KiB fragments in each direction,

@@ -49,7 +49,8 @@ fn failed(mut flight: Flight, mut state: State, error: Status) -> Progress
     }
     state.stage = Stage::Abort;
     state.error = error;
-    let job = submit_args(flight.provider,
+    let job = submit_args(flight.job.subject(),
+                          flight.provider,
                           Operation::AbortWrite,
                           Arguments { volume: state.volume,
                                       token: state.handle,
@@ -104,7 +105,8 @@ fn begin(flight: Flight, mut state: State) -> Progress
     {
         let op = Operation::BeginReplace;
         (op,
-         submit_args(flight.provider,
+         submit_args(flight.job.subject(),
+                     flight.provider,
                      op,
                      Arguments { parent: 0,
                                  node: plan.expected,
@@ -132,7 +134,8 @@ fn begin(flight: Flight, mut state: State) -> Progress
             bytes.try_reserve_exact(count).map_err(|_| NO_MEMORY)?;
             bytes.resize(count, 0);
             props.encode(&mut bytes).map_err(|_| BAD_ARGUMENT)?;
-            submit_args(flight.provider,
+            submit_args(flight.job.subject(),
+                        flight.provider,
                         Operation::BeginCreate,
                         Arguments { payload: &bytes,
                                     flags: if plan.directory { fs::CREATE_DIRECTORY } else { 0 },
@@ -149,7 +152,8 @@ fn write_next(flight: Flight, mut state: State) -> Progress
     if state.written == plan.data.len()
     {
         state.stage = Stage::Finish;
-        let job = submit_args(flight.provider,
+        let job = submit_args(flight.job.subject(),
+                              flight.provider,
                               Operation::FinishWrite,
                               Arguments { volume: state.volume,
                                           token: state.handle,
@@ -159,7 +163,8 @@ fn write_next(flight: Flight, mut state: State) -> Progress
     else
     {
         let end = (state.written + fs::MAX_TRANSFER).min(plan.data.len());
-        let job = submit_args(flight.provider,
+        let job = submit_args(flight.job.subject(),
+                              flight.provider,
                               Operation::WriteChunk,
                               Arguments { volume: state.volume,
                                           token: state.handle,
@@ -275,7 +280,8 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
             {
                 return failed(flight, state, error);
             }
-            let job = submit_args(flight.provider,
+            let job = submit_args(flight.job.subject(),
+                                  flight.provider,
                                   Operation::Lookup,
                                   Arguments { volume: state.volume,
                                               parent: plan.parent,
@@ -385,11 +391,12 @@ pub(super) fn folder_flight<'a>(owner: impl Into<crate::toolbox::files::subject:
     {
         plan.finder_info[8..10].copy_from_slice(&0x4000u16.to_be_bytes());
     }
-    let job = match submit_args(plan.provider,
-                                Operation::Catalog,
-                                Arguments { volume: plan.volume,
-                                            node: plan.parent,
-                                            ..Default::default() })
+    let job = match submit_object(IoObject::Write(plan.handle),
+                                  plan.provider,
+                                  Operation::Catalog,
+                                  Arguments { volume: plan.volume,
+                                              node: plan.parent,
+                                              ..Default::default() })
     {
         Ok(job) => job,
         Err(error) =>
@@ -450,11 +457,12 @@ pub(in crate::toolbox::files) fn request(owner: u64, call: &mut DataWriteCall) -
             Ok(plan) => plan,
             Err(error) => return error
         };
-        let job = submit_args(plan.provider,
-                              Operation::Catalog,
-                              Arguments { volume: plan.volume,
-                                          node: plan.parent,
-                                          ..Default::default() });
+        let job = submit_object(IoObject::Write(plan.handle),
+                                plan.provider,
+                                Operation::Catalog,
+                                Arguments { volume: plan.volume,
+                                            node: plan.parent,
+                                            ..Default::default() });
         let state = State { handle:      plan.handle,
                             volume:      plan.volume,
                             stage:       Stage::Parent,
@@ -473,11 +481,12 @@ pub(in crate::toolbox::files) fn request(owner: u64, call: &mut DataWriteCall) -
                 Ok(value) => value,
                 Err(error) => return error
             };
-        let job = submit_args(provider,
-                              Operation::AbortWrite,
-                              Arguments { volume,
-                                          token: call.handle,
-                                          ..Default::default() });
+        let job = submit_object(IoObject::Write(call.handle),
+                                provider,
+                                Operation::AbortWrite,
+                                Arguments { volume,
+                                            token: call.handle,
+                                            ..Default::default() });
         (provider,
          State { plan: None,
                  handle: call.handle,
@@ -560,11 +569,12 @@ pub(super) fn pump_cleanup()
         }
     };
     WRITE_CLEANUP.store(true, Ordering::Release);
-    match submit_args(provider,
-                      Operation::AbortWrite,
-                      Arguments { volume,
-                                  token: handle,
-                                  ..Default::default() })
+    match submit_object(IoObject::Write(handle),
+                        provider,
+                        Operation::AbortWrite,
+                        Arguments { volume,
+                                    token: handle,
+                                    ..Default::default() })
     {
         Ok(job) =>
         {

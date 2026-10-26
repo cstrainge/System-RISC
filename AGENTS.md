@@ -20,6 +20,9 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
 - Commit completed, verified milestones with descriptive messages. Do not push
   or publish without an explicit request. Keep generated targets, ROMs, disks,
   private working captures, and unrelated Strange Forth code outside this repo.
+- Remove finished auxiliary worktrees and merged task branches after checking
+  clean status, ancestry and user files. Never force-remove dirty, unmerged or
+  active work; retain the current worktree until its remaining work is merged.
 - Prune obsolete generated HD images at check boundaries, including on failure.
   Include HFS and other raw disk formats; retain only current build/live VM disks
   and original reference media. Reports and screenshots do not require old disks.

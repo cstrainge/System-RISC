@@ -57,7 +57,7 @@ def _prepare(output, sdk=False, restore=False, disconnect=None):
                     '--target-dir', str(vm.build_dir() / 'host')], cwd=vm.ROOT / 'System7', check=True)
 
 
-def capture(output, sdk=False, disconnect=None, *, timeout=30):
+def capture(output, sdk=False, disconnect=None, *, timeout=120):
     if not 0 < timeout <= 600:
         raise ValueError("SDK timeout must be greater than zero and at most 600 seconds")
     output.mkdir(parents=True, exist_ok=False)
@@ -160,15 +160,36 @@ def capture(output, sdk=False, disconnect=None, *, timeout=30):
             vm.DIST = dist
             process, endpoint = vm.launch(output / 'vm', writable=sdk, host_bridge=port)
             termination = 'desktop-ready'
+            fixture_progress = []
             if sdk:
                 termination = 'timeout'
-                deadline = time.monotonic() + timeout
+                began = time.monotonic()
+                inactivity_timeout = min(30, timeout)
+                deadline = began + inactivity_timeout
+                absolute_deadline = began + timeout
+                milestones = set()
+                consumed = 0
                 watch_changes = set()
                 snapshot_changes = set()
                 application_releases = {}
                 disconnected = False
-                while time.monotonic() < deadline:
+                while time.monotonic() < min(deadline, absolute_deadline):
                     text = (output / 'vm/serial.log').read_text(errors='replace')
+                    complete = text.rfind('\n') + 1
+                    for line in text[consumed:complete].splitlines():
+                        if line.startswith(('HOST_FS_STAGE ', 'FILE_TRANSFER_STAGE ',
+                                            'FILE_TRANSFER_EXIT_PASS', 'HOST_FILESYSTEM_')):
+                            fixture_progress.append({'seconds': time.monotonic() - began,
+                                                     'marker': line})
+                        # This guards a stuck transport, not the total duration
+                        # of an expanding correctness campaign. Only a new
+                        # finite fixture milestone extends the stall budget;
+                        # kernel logging/event storms cannot keep it alive.
+                        if line.startswith(('HOST_FS_STAGE ', 'FILE_TRANSFER_STAGE ',
+                                            'FILE_TRANSFER_EXIT_PASS')) and line not in milestones:
+                            milestones.add(line)
+                            deadline = time.monotonic() + inactivity_timeout
+                    consumed = complete
                     if disconnect and not disconnected and 'TRANSFER_DISCONNECT_READY\n' in text:
                         companion.terminate()
                         companion.wait(timeout=10)
@@ -228,6 +249,9 @@ def capture(output, sdk=False, disconnect=None, *, timeout=30):
             (output / 'capture.json').write_text(json.dumps({
                 'termination': termination, 'command': command, 'reboot': reboot,
                 'sdk_timeout_seconds': timeout if sdk else None,
+                'fixture_progress': fixture_progress,
+                'watchdog': {'inactivity_seconds': min(30, timeout), 'absolute_seconds': timeout,
+                             'progress': 'unique fixture milestones only'},
                 'serial': str(output / 'vm/serial.log'),
                 'original_before': before,
                 'original_after': {name: digest(base / name) for name in before}
@@ -254,7 +278,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--sdk', action='store_true')
-    parser.add_argument('--timeout', type=float, default=30, help='SDK deadline per boot in seconds (default: 30; maximum: 600)')
+    parser.add_argument('--timeout', type=float, default=120, help='SDK absolute deadline per boot in seconds; unique milestones reset a 30-second inactivity watchdog (default: 120; maximum: 600)')
     parser.add_argument('--disconnect', choices=['source', 'destination'])
     args = parser.parse_args()
     capture(args.output.resolve(), args.sdk or bool(args.disconnect), args.disconnect, timeout=args.timeout)

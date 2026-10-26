@@ -558,14 +558,15 @@ impl Desktop
                             super::handles::cleanup::Cause::Alias(_)
                             | super::handles::cleanup::Cause::ContextUnavailable { .. }
                             | super::handles::cleanup::Cause::DriverInterfaceBusy { .. }
-                            | super::handles::cleanup::Cause::DriverDependencyBusy { .. } =>
-                            {
-                                SERVICE_BUSY
-                            }
+                            | super::handles::cleanup::Cause::DriverDependencyBusy { .. }
+                            | super::handles::cleanup::Cause::DeviceStop { .. }
+                            | super::handles::cleanup::Cause::DevicePending { .. } => SERVICE_BUSY,
                             super::handles::cleanup::Cause::DragEffectStorage { .. }
                             | super::handles::cleanup::Cause::RetirementStorage { .. } => NO_MEMORY,
                             super::handles::cleanup::Cause::MemoryManagerUnavailable(error)
-                            | super::handles::cleanup::Cause::FileManagerUnavailable(error) =>
+                            | super::handles::cleanup::Cause::FileManagerUnavailable(error)
+                            | super::handles::cleanup::Cause::RequestRegistryUnavailable(error)
+                            | super::handles::cleanup::Cause::DeviceManagerUnavailable(error) =>
                             {
                                 error.status()
                             }

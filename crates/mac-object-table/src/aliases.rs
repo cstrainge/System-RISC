@@ -394,6 +394,13 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         Ok(())
     }
 
+    /// Keep live aliases and their System targets pinned when a manager with
+    /// an unfinished external protocol is abandoned. This is not cleanup ACK.
+    pub fn quarantine_live(&self)
+    {
+        self.aliases.quarantine_live();
+    }
+
     pub fn release_alias(&mut self, ticket: ReleasedResource) -> Result<(), ReleaseError>
     {
         let removed = self.aliases.release(ticket)?;

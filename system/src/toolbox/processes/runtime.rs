@@ -883,6 +883,15 @@ impl Desktop
                     continue;
                 }
             }
+            // A partial asynchronous ACK is progress, not a failed retirement.
+            // Retained uses and the common walk own their wakeups; do not ask
+            // the directory to reject the same pending barrier or enumerate
+            // every pool for a diagnostic on each child completion.
+            let remaining = ledger.summary();
+            if remaining.live != 0 || remaining.pending != 0 || remaining.completion_faults != 0
+            {
+                continue;
+            }
             if let Err(status) = self.processes.remove(owner)
             {
                 let remaining = ledger.summary();
@@ -891,6 +900,24 @@ impl Desktop
                         remaining.live,
                         remaining.pending,
                         remaining.quarantined);
+                #[cfg(feature = "event-trace")]
+                for at in 0..remaining.kinds
+                {
+                    let Ok(pool) = ledger.pool_at(remaining.revision, at)
+                    else
+                    {
+                        break;
+                    };
+                    if pool.live != 0 || pool.pending != 0
+                    {
+                        serial!("PROCESS_RETIRE_POOL app={owner} kind={} live={} pending={} \
+                                 scoped={}",
+                                pool.kind,
+                                pool.live,
+                                pool.pending,
+                                pool.scoped_children);
+                    }
+                }
                 continue;
             }
             // enter(previous) in EXIT saved the dying owner's actual managers

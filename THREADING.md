@@ -457,3 +457,37 @@ notifications. Futures never retain manager guards across await. UI task polling
 stays on the owning OS thread; Send/Sync object mobility does not waive
 WrongThread checks. Worker-safe I/O can later use native worker threads.
 Cancellation must distinguish confirmed cleanup from a racing committed mutation.
+
+
+Broker request state is now a registered scoped `DREQ` resource, with `DRQS`
+backing, rather than a private request table. The synchronous thread frame carries
+the admitted I/O subject across nested module calls and the bootstrap stack
+handoff. The runtime's exclusive registry borrow protects request metadata;
+no borrow crosses a callback. Continuations validate the retained publication
+receipt and the same admitted scope independently of caller policy. The common
+walk retains unique tickets through actual lower acknowledgement, and native
+cleanup uses owned state admission so a busy registry cannot discard a ticket.
+Serialized-provider occupancy changes on admission/terminal reply; polling does
+not scan all requests. This establishes neither full four-part invocation
+accounting nor arbitrary privileged-fault containment or multi-hart activation.
+
+
+Native driver-job wake identities now carry the shared facility's complete u64
+job ID. The typed defer key keeps them distinct from file-transfer IDs. Admission
+reserves return/notice storage for all retained jobs before publication, including
+callbacks already detached while later jobs enter. Owner discard uses ordered
+completion receipts with no fixed-size cleanup scratch array. The queue retains
+its existing IRQ/preemption gate and borrowed origin guard; foreign callbacks
+hold neither queue nor registry guards. This removes a projection/capacity limit,
+not the remaining physical DMA/source, page, accounting or isolation gates.
+
+
+Device/DMA policy now uses System-domain physical targets and native module
+aliases/maps from the same registered facility. The short exclusive device-state
+borrow covers claim counts and bus reset/probe bookkeeping; it never waits for
+hardware. Cleanup retries probe once, keeping unique tickets quarantined until
+a positive stop and actual mapping retirement. Ordinary invalidated IDs cannot
+be revived by reset continuations. Losing the manager quarantines its live uses
+without acknowledging DMA completion. This is a lifetime/ACK policy, not a proof
+of physical page pinning, reclaimable module images, IRQ-driven reset progress
+or multi-hart device synchronization.

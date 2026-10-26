@@ -2,15 +2,13 @@
 //! returns its work through Drop. No app pointer or registry guard crosses a
 //! callback. Every live job has a shared generation ID.
 #![forbid(unsafe_code)]
-use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 
 use mac_abi::{ACCESS_DENIED, BAD_ABI, BAD_ARGUMENT, NO_MEMORY, NOT_FOUND, SERVICE_BUSY, Status};
 use mac_module::ClassId;
 
-use crate::toolbox::handles::{Kind, Table};
 const MAX_PAYLOAD: usize = 1024 * 1024;
 const MAX_OWNED_BYTES: usize = 1024 * 1024;
-const MAX_JOBS: usize = Kind::DriverJobs.capacity();
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Owner
 {
@@ -36,14 +34,15 @@ pub enum Outcome
 }
 pub struct Call<'a>
 {
-    pub owner:     Owner,
-    pub provider:  u64,
-    pub class:     ClassId,
-    pub operation: u32,
-    pub ticket:    &'a mut u32,
-    pub phase:     Phase,
-    pub input:     &'a [u8],
-    pub output:    &'a mut [u8]
+    pub(crate) subject: &'a subjects::Subject,
+    pub owner:          Owner,
+    pub provider:       u64,
+    pub class:          ClassId,
+    pub operation:      u32,
+    pub ticket:         &'a mut u64,
+    pub phase:          Phase,
+    pub input:          &'a [u8],
+    pub output:         &'a mut [u8]
 }
 pub trait Broker
 {
@@ -57,7 +56,7 @@ pub struct Work
     operation:    u32,
     input:        Vec<u8>,
     output:       Vec<u8>,
-    ticket:       u32,
+    ticket:       u64,
     forced_error: Option<Status>
 }
 impl Work
@@ -114,17 +113,20 @@ pub struct CompletionNotice
 {
     pub owner:  Owner,
     pub waiter: Option<u64>,
-    pub job:    u32
+    pub job:    u64
 }
 enum State
 {
+    Admitting,
     Ready(Box<Node>),
     Running,
     Finished(Completed),
-    Quarantined
+    Quarantined,
+    Released
 }
 struct Record
 {
+    receipt:   Option<mac_object_table::store::CompletionKey>,
     owner:     Owner,
     waiter:    Option<u64>,
     state:     State,
@@ -134,26 +136,33 @@ struct Record
 }
 struct Node
 {
-    id:       u32,
+    id:       u64,
+    receipt:  Option<mac_object_table::store::CompletionKey>,
     owner:    Owner,
     work:     Option<Work>,
     cancel:   bool,
     outcome:  Option<Outcome>,
     next:     Option<Box<Node>>,
     failure:  Option<ReturnCause>,
-    reported: bool
+    reported: bool,
+    // Release buffers before the final operation use and its cleanup ACK.
+    _subject: subjects::Subject
 }
 struct Core
 {
-    records:     Table<Record>,
-    ready:       VecDeque<u32>,
+    records:     records::Records,
+    ready:       VecDeque<mac_object_table::store::CompletionKey>,
     owned_bytes: usize,
     notices:     VecDeque<CompletionNotice>,
     quarantined: Option<Box<Node>>,
-    unreported:  usize
+    unreported:  usize,
+    #[cfg(test)]
+    fixture:     Option<tests::Fixture>
 }
 
 mod state;
+pub(crate) mod subjects;
+pub(crate) mod records;
 mod dispatch;
 mod queue;
 pub use dispatch::{Dispatch, ReturnCause, ReturnFailure};

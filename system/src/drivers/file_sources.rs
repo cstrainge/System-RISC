@@ -21,7 +21,7 @@ pub struct Identity
 enum Phase
 {
     Ready,
-    Reading(u32),
+    Reading(u64),
     Closing,
     Quarantined
 }
@@ -44,14 +44,14 @@ pub struct Sources<B>
 {
     entries: Table<Source<B>>
 }
-impl<B: Copy> Default for Sources<B>
+impl<B: Clone> Default for Sources<B>
 {
     fn default() -> Self
     {
         Self::new()
     }
 }
-impl<B: Copy> Sources<B>
+impl<B: Clone> Sources<B>
 {
     pub const fn new() -> Self
     {
@@ -134,7 +134,7 @@ impl<B: Copy> Sources<B>
 
     /// The ticket is issued/validated by the generic request broker. This core
     /// records it to prevent a different request from acknowledging this read.
-    pub fn begin_read(&mut self, owner: u64, source: u32, ticket: u32, offset: u64,
+    pub fn begin_read(&mut self, owner: u64, source: u32, ticket: u64, offset: u64,
                       capacity: usize)
                       -> Result<Read<B>, Status>
     {
@@ -150,7 +150,7 @@ impl<B: Copy> Sources<B>
         }
         let length =
             entry.length.checked_sub(offset).ok_or(BAD_ARGUMENT)?.min(capacity as u64) as usize;
-        let read = Read { backing: entry.backing,
+        let read = Read { backing: entry.backing.clone(),
                           offset,
                           length };
         self.entries.get_mut(source).ok_or(NOT_FOUND)?.phase = Phase::Reading(ticket);
@@ -158,7 +158,7 @@ impl<B: Copy> Sources<B>
     }
 
     /// A read error/cancellation also waits for actual backend acknowledgement.
-    pub fn finish_read(&mut self, owner: u64, source: u32, ticket: u32) -> Result<(), Status>
+    pub fn finish_read(&mut self, owner: u64, source: u32, ticket: u64) -> Result<(), Status>
     {
         if self.owned(owner, source)?.phase != Phase::Reading(ticket)
         {
@@ -170,7 +170,7 @@ impl<B: Copy> Sources<B>
 
     /// An adapter lost evidence of the lower completion. Retain the binding;
     /// an uncertain read must never make its backing mark reusable.
-    pub fn quarantine_read(&mut self, owner: u64, source: u32, ticket: u32) -> Result<(), Status>
+    pub fn quarantine_read(&mut self, owner: u64, source: u32, ticket: u64) -> Result<(), Status>
     {
         if self.owned(owner, source)?.phase != Phase::Reading(ticket)
         {
@@ -189,7 +189,7 @@ impl<B: Copy> Sources<B>
         {
             return Err(SERVICE_BUSY);
         }
-        let backing = entry.backing;
+        let backing = entry.backing.clone();
         self.entries.get_mut(source).ok_or(NOT_FOUND)?.phase = Phase::Closing;
         Ok(backing)
     }

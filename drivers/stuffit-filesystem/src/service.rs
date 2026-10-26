@@ -298,7 +298,7 @@ impl Task
 }
 struct Active
 {
-    ticket:    u32,
+    ticket:    u64,
     operation: u32,
     volume:    u32,
     token:     u64,

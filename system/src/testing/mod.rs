@@ -188,13 +188,27 @@ impl Default for Session
                               crate::drivers::registry::interfaces::specification(true),
                               crate::drivers::registry::interfaces::ReleaseInterfaces(true))
                     .unwrap();
-        let modules = crate::drivers::Registry::new(mac_module::Target::RVA23U64,
+        let mut modules = crate::drivers::Registry::new(mac_module::Target::RVA23U64,
                                                     registrar.clone(),
                                                     [interface_kind, interface_storage,
             registry.register(&registrar, crate::drivers::registry::dependencies::specification(false),
                 crate::drivers::registry::dependencies::ReleaseDependencies(false)).unwrap(),
             registry.register(&registrar, crate::drivers::registry::dependencies::specification(true),
-                crate::drivers::registry::dependencies::ReleaseDependencies(true)).unwrap()]).unwrap();
+                crate::drivers::registry::dependencies::ReleaseDependencies(true)).unwrap(),
+            registry.register(&registrar, crate::drivers::registry::requests::specification(false),
+                crate::drivers::registry::requests::ReleaseRequests(false)).unwrap(),
+            registry.register(&registrar, crate::drivers::registry::requests::specification(true),
+                crate::drivers::registry::requests::ReleaseRequests(true)).unwrap()]).unwrap();
+        let io_root = registry.register(&registrar,
+                                        crate::drivers::jobs::subjects::specification(false),
+                                        crate::drivers::registry::fixture::ReleaseIo(false))
+                              .unwrap();
+        let io_backing = registry.register(&registrar,
+                                           crate::drivers::jobs::subjects::specification(true),
+                                           crate::drivers::registry::fixture::ReleaseIo(true))
+                                 .unwrap();
+        modules.fixture_operations =
+            Some(crate::drivers::jobs::subjects::Operations::new((io_root, io_backing)).unwrap());
         Self { worlds: crate::toolbox::quickdraw::worlds::Worlds::new((worlds, world_storage)).unwrap(),
                registry,
                menus: RefCell::new(std::vec::Vec::new()),

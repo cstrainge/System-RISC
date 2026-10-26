@@ -56,12 +56,13 @@ fn close(mut flight: Flight, mut state: Box<State>, outcome: Result<Box<Loaded>,
         state.reading = false;
     }
     let result = files(|m| m.cleanup_provider_file(state.handle)).and_then(|volume| {
-                                                                     submit_args(flight.provider,
+                     submit_args(flight.job.subject(),
+                                 flight.provider,
                                  Operation::Close,
                                  Arguments { volume,
                                              token: u64::from(state.handle),
                                              ..Default::default() })
-                                                                 });
+                 });
     match result
     {
         Ok(job) =>
@@ -83,14 +84,15 @@ fn close(mut flight: Flight, mut state: Box<State>, outcome: Result<Box<Loaded>,
 fn read(provider: u64, state: &State) -> Result<OwnedJob, Status>
 {
     let (offset, count) = state.loader.as_ref().and_then(Loader::request).ok_or(BAD_ABI)?;
-    submit_args(provider,
-                Operation::Read,
-                Arguments { volume: state.volume,
-                            token: u64::from(state.handle),
-                            flags: RESOURCE_FORK,
-                            offset,
-                            length: count as u64,
-                            ..Default::default() })
+    submit_object(IoObject::Fork(state.handle),
+                  provider,
+                  Operation::Read,
+                  Arguments { volume: state.volume,
+                              token: u64::from(state.handle),
+                              flags: RESOURCE_FORK,
+                              offset,
+                              length: count as u64,
+                              ..Default::default() })
 }
 pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never_sent: bool)
                       -> Progress
@@ -139,7 +141,8 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
                     return Err(BAD_ARGUMENT);
                 }
                 state.catalog = Some(catalog);
-                let job = submit_args(flight.provider,
+                let job = submit_args(flight.job.subject(),
+                                      flight.provider,
                                       Operation::Open,
                                       Arguments { volume: state.volume,
                                                   node: catalog.id,
@@ -258,11 +261,12 @@ pub(crate) fn request(owner: u64, volume: u32, cnid: u32,
     let (provider, handle) =
         files(|m| m.reserve_provider_file_for(owner, &authority, volume, cnid, RESOURCE_FORK))?;
     state.handle = handle;
-    let job = match submit_args(provider,
-                                Operation::Catalog,
-                                Arguments { volume,
-                                            node: cnid,
-                                            ..Default::default() })
+    let job = match submit_object(IoObject::Fork(handle),
+                                  provider,
+                                  Operation::Catalog,
+                                  Arguments { volume,
+                                              node: cnid,
+                                              ..Default::default() })
     {
         Ok(job) => job,
         Err(error) =>

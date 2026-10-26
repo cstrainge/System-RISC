@@ -11,15 +11,17 @@ use crate::toolbox::handles::OwnerRef;
 pub(crate) mod lifetime;
 pub(super) struct Group
 {
-    pub owner:     u64,
-    pub authority: super::subject::Authority,
-    pub volume:    u32,
-    pub when:      u64,
-    pub revision:  u64,
-    pub rows:      spinning_top::Spinlock<Vec<IconMove>>,
-    pub parents:   Vec<u32>,
-    pub provider:  Option<u64>,
-    pub state:     spinning_top::Spinlock<State>
+    pub owner:             u64,
+    pub authority:         super::subject::Authority,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) io_subject: Option<crate::drivers::jobs::subjects::Subject>,
+    pub volume:            u32,
+    pub when:              u64,
+    pub revision:          u64,
+    pub rows:              spinning_top::Spinlock<Vec<IconMove>>,
+    pub parents:           Vec<u32>,
+    pub provider:          Option<u64>,
+    pub state:             spinning_top::Spinlock<State>
 }
 #[derive(Clone, Copy)]
 pub(super) struct State
@@ -36,6 +38,12 @@ impl super::objects::Payload for Group
     type Storage = crate::toolbox::files::objects::storage::Native<Self>;
 
     const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FIGR");
+
+    #[cfg(target_arch = "riscv64")]
+    fn io_subject(&self) -> Option<&crate::drivers::jobs::subjects::Subject>
+    {
+        self.io_subject.as_ref()
+    }
 
     fn cleanup_pending(&self) -> bool
     {
@@ -161,10 +169,21 @@ impl Manager
                                   completed: 0,
                                   total:     rows.len() as u32,
                                   changed:   false };
+        #[cfg(target_arch = "riscv64")]
+        let io_subject = if provider.is_some()
+        {
+            Some(crate::drivers::jobs::subjects::resident()?.admit(authority)?)
+        }
+        else
+        {
+            None
+        };
         call.handle =
             self.groups
                 .insert_authorized(authority,
-                                   Group { owner: owner.label(),
+                                   Group { #[cfg(target_arch = "riscv64")]
+                                           io_subject,
+                                           owner: owner.label(),
                                            authority: authority.clone(),
                                            volume: call.volume,
                                            when: call.when,

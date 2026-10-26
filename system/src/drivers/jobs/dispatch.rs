@@ -9,7 +9,9 @@ pub enum ReturnCause
     Interrupted,
     MissingOrForeign,
     RejectedCompletion,
-    MissingPayload
+    MissingPayload,
+    CleanupRefused(mac_object_table::domain::PoolError),
+    CleanupStoreMissing
 }
 impl fmt::Display for ReturnCause
 {
@@ -38,13 +40,24 @@ impl fmt::Display for ReturnCause
                             "dispatch has no admitted payload; job remains quarantined rather than \
                              acknowledging completion"
                         }
+                        Self::CleanupStoreMissing =>
+                        {
+                            "driver job cleanup storage is unavailable; exact cleanup ticket \
+                             remains retained for retry"
+                        }
+                        Self::CleanupRefused(cause) =>
+                        {
+                            return write!(f,
+                                          "driver job cleanup refused: {cause}; exact cleanup \
+                                           ticket and payload remain retained for retry");
+                        }
                     })
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReturnFailure
 {
-    pub job:   u32,
+    pub job:   u64,
     pub owner: Owner,
     pub cause: ReturnCause
 }
@@ -110,7 +123,8 @@ impl Dispatch<'_>
         };
         let input = if phase == Phase::Start { work.input.as_slice() } else { &[] };
         self.in_callback = true;
-        let outcome = broker.invoke(Call { owner: node.owner,
+        let outcome = broker.invoke(Call { subject: &node._subject,
+                                           owner: node.owner,
                                            provider: work.provider,
                                            class: work.class,
                                            operation: work.operation,
@@ -124,7 +138,7 @@ impl Dispatch<'_>
     }
 
     #[cfg(test)]
-    pub(super) fn ticket(&self) -> Option<u32>
+    pub(super) fn ticket(&self) -> Option<u64>
     {
         self.node.as_ref()?.work.as_ref().map(|work| work.ticket)
     }

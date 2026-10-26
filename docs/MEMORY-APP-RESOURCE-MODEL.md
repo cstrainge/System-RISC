@@ -1949,6 +1949,269 @@ native recovery from an arbitrary privileged fault.
 Scoped host tests, the origin-lifetime compile-fail check, host-thread cancellation
 during a live callback and native provider/archive/module/process/aggregate/
 cursor/panic campaigns pass. Compiled boundaries, formatting and public docs pass.
-Job IDs still use their existing shared generation table and numeric delivery
-policy; registered job/request owner and resource-scope receipts remain the next
-lower-I/O migration. This is not completion of that stage, MMU activation or SMP.
+That guard milestone retained the generation table and numeric delivery policy.
+The following migration establishes registered job subjects and receipts; broker
+requests and other lower I/O remain staged. Neither milestone activates MMU or SMP.
+
+## Owned driver I/O subjects and job receipts
+
+Queued driver jobs use registered `DJOB`/`DJST` stores in the real subject's
+resource scope. Native u64 IDs and publication receipts travel through the queue,
+owned jobs and typed scheduler wake/defer identity; there is no projected native
+job transport or separate payload table/ID issuer. Publication captures a
+completion receipt before ordinary invalidation; detached callbacks and resident
+continuations retain that receipt. A stale public ID fails immediately while
+only the original receipt can reach a retained completion. Native payloads and
+unique cleanup tickets remain held until the lower ticket actually terminates.
+Pending jobs stay in their authoritative backing; extracting removal guards
+before ACK could detach that backing and reject a legitimate follow-up Abort.
+Only terminal completion takes and destroys the payload guard. Refused
+acknowledgements retain their exact ticket and typed cause, with a bounded
+change-driven report rather than repeated polling or fabricated success.
+A cancellation request, timeout or missing waiter never constitutes that ACK.
+The native queue grows until memory within its explicit owned-buffer budget.
+
+`DIOP`/`DIOB` provide an admitted root for a resident operation on behalf of a
+client. An existing transfer inherits its real scope instead. Persistent provider
+forks, writers, streams and icon groups retain their I/O subject before publication,
+so post-exit Close/Abort does not reopen ordinary app admission or charge work to
+a guessed current thread/System owner. Follow-up provider jobs clone the original
+subject. A synchronous broker frame now carries that admitted subject through
+nested module calls and the bootstrap I/O stack handoff. Provider-backed source
+reads inherit the incoming operation, while the source retains its admitted
+module subject for independent close/cleanup. Delivery policy and waiter identity
+remain separate from this allocation/lifetime authority. Full execution, fault,
+resource-search and byte-accounting context remains a later requirement.
+
+The root store owns only a weak reference to the operation's retained-use state.
+An owner walk transfers the actual removal guard to that state while owned uses
+remain; the final use releases the guard after its payload use ends. There is no
+strong-reference cycle, reference-count guess, cleanup allocation or invented
+completion. A dispatcher arriving after the final use still owns and settles its
+unique outstanding ticket. All accesses use the architecture invocation gate;
+foreign callbacks hold neither the queue nor registry lock. Ready entries carry
+their original receipts directly, and empty queues retain their atomic early-out.
+
+The shared facility reports actual stopped-owner completion after payload
+destruction and metadata unlock. Its native adapter posts a coalesced retirement
+wake; live-owner releases do not wake the reaper. Completion retry and delayed
+ticket routing use the same notification. This closes the gap where a final I/O
+root/backing could finish after the old manager-specific wake and leave an exited
+process waiting indefinitely. Notification cannot acknowledge I/O or run teardown.
+
+Devices/DMA and backing-source records still require their own registered
+ownership/ACK migration. Full module invocation/accounting, physical
+module reclamation, dynamic process capacity, pages/MMU, page-backed heaps,
+privilege separation and multihart remain subsequent gates. These job and scope
+mechanisms do not establish arbitrary privileged-fault containment (M-D04).
+
+Qualification: 574 scoped host cases pass (67 native-only gates excluded),
+including 33 focused job/scope cases, foreign-ticket refusal/retry and the exact
+stopped-owner follow-up admission regression. Native provider acceptance passes
+twice, including real owned scope counts, transfer exit rollback, forgotten
+forks/writers/watches, successful final retirement and unmount/retry. Both
+endpoint-disconnect cases, classic archives, module admission, both process
+campaigns, aggregate SDK, original cursor sprites and panic recovery pass.
+Compiled boundaries, formatting and 52-library public API generation pass.
+These checks qualify this job/subject slice; they do not close the remaining
+lower-I/O, memory/accounting, privilege or multihart gates listed above.
+
+
+## Synchronous I/O subject frames
+
+The native broker installs its queue's admitted subject in the executing OS
+thread's context for exactly the synchronous callback. Nested broker/source
+calls read that capability rather than resolving a numeric caller or charging a
+stacked read to the provider module. The bootstrap I/O stack handoff transports
+the same subject independently of its resource-selection metadata; the executor
+identity remains the actual System I/O thread.
+
+The shared selection slot now supports owned capabilities as well as copyable
+metadata. RAII restores the previous selection on every normal/error return;
+the slot's genuine thread identity prevents an old restore from modifying a
+reused context. Replacement/reset destruction runs after unlocking the slot.
+Cloning an admitted subject does not allocate another root or reopen ordinary
+client admission. Pending operations retain their own subject in owned job state;
+no stack-frame guard or borrowed buffer survives callback return.
+
+This is subject transport, not completed broker-request registration, all four
+invocation identities, byte accounting or arbitrary privileged-fault containment.
+M-D04 still applies: host unwind tests demonstrate the Rust guard, not recovery
+from arbitrary native privileged faults. Those faults remain a required future
+recovery gate. Thread-local transport does not establish multi-hart activation.
+
+Qualification for the frame transport: the scoped host suite passes 580 cases
+(67 native-only gates excluded), plus an additional destruction-under-lock
+regression and the final Start/Poll/Cancel subject assertion. All 11 context
+selection cases pass. Native provider workflow, classic archives, module
+admission, both process campaigns, aggregate SDK, cursor sprites and panic
+recovery pass; compiled boundaries and the optimized image pass. One overlapping
+provider run reached the unchanged host outcome deadline before lifecycle
+completion; its sequential retry passes. Concurrent acceptance-harness timing is
+not qualified by that retry. No deadline was increased, and the failed attempt
+remains part of the evidence.
+
+
+## Registered broker requests
+
+Broker requests publish `DREQ` payloads and `DRQS` per-domain backing through
+the native shared facility. They inherit the incoming admitted I/O scope;
+resident caller policy, module declarations and the executor's identity remain
+separate. A top-level module callback outside a queued operation admits its real
+module ledger once, and nested callbacks inherit that frame. The request store
+is growable until memory; it no longer has the projected 256-request ceiling.
+
+The System retains each publication receipt with the request. A continuation
+requires that receipt, the original admitted scope and the unchanged caller,
+provider, class and operation. The wire ticket only correlates the invocation.
+Ordinary IDs fail immediately on invalidation; another operation in the same
+process cannot drain a request by presenting its ticket. Wrong-subject refusal
+retains typed identity and reports that the original operation capability is
+required. Existing module-policy and owner checks remain in force.
+
+A preallocated slot retains the walk's unique cleanup ticket while lower work
+is pending. Payload and backing stay in their authoritative store until actual
+terminal acknowledgement, including acknowledged cancellation. If completion
+precedes dispatch, released metadata remains until the unique ticket arrives.
+Refused retirement retains its typed cause and ticket for the storage walk's
+retry; unchanged failures do not flood the log. Request records retain exact
+interface pins through actual cleanup. A missing provider acknowledgement leaves
+quarantine pending rather than reporting that cancellation completed.
+
+Serialized-provider occupancy is cached by the facility-issued interface ID.
+Only admission and terminal acknowledgement change it; admission does not scan
+all requests. Terminal transport acknowledgement releases serialization even
+when the ledger's cleanup ticket has not yet reached its dispatcher. Interface
+and module teardown inspect retained requests at their change boundaries.
+
+The common catalog dispatches request cleanup with either the module registry
+context or the native runtime adapter. The latter uses `TryState::with_owned`,
+returning the unique ticket and typed access refusal if it cannot enter. Neither
+queue nor registry borrows cross a foreign callback; cleanup does not allocate.
+
+Native broker Call is 64 bytes with a u64 request ticket. The SDK, device/source
+correlation, driver implementations and host companion all carry it without
+narrowing. The host packet header is 52 bytes. Current development ABI stays 1;
+contract fingerprints and explicit header-size validation require a complete
+matching rebuild. There is no older decoder. Classic external file formats and
+legacy object reference projections are unaffected.
+
+Public SDK conformance enumerates both request registrations without inspector
+privilege. Native provider tests inspect real request births in the requesting
+app ledger and require requests/scoped children to be drained after ordinary
+fork operations and process exit. Internal tests cover wrong subjects, stale and
+foreign IDs/tickets, invalidation before and after completion, retained backing,
+interface pins, serialized admission, common owner-walk retry and growth past
+300 simultaneous requests. These mechanisms do not close device/DMA/source
+ownership, full invocation/accounting, physical
+module reclamation, pages/MMU, heaps, isolation or multihart gates. M-D04's
+arbitrary privileged-fault containment remains unproven.
+
+
+Process retirement treats partial asynchronous acknowledgement as progress.
+The native reaper still runs image-origin completion, genuine quarantine retry
+and saved-manager parking. It then checks the ledger's death barrier before
+asking the directory to remove a process. Pending resources no longer cause a
+failed removal and a full per-pool diagnostic on each child completion. Actual
+cleanup failures remain typed and reported, and the shared post-ACK wake still
+drives final retirement. Canonical native provider acceptance rejects premature
+directory-retirement attempts during otherwise valid exit cleanup.
+
+
+Qualification: 680 host cases pass across the shared facility/model, System,
+public Toolbox, driver SDKs/providers and host protocol (67 native-only gates
+excluded). All 23 focused registry cases pass, including 300 simultaneous native
+request identities and the actual common owner walk. Ten native acceptance cases
+pass: provider read/write/lifecycle and cold restore, classic archives, both
+endpoint disconnects, module admission, both process campaigns, aggregate SDK,
+cursor, panic recovery and external power restart/shutdown/refusal. Optimized
+image, compiled ownership boundaries, formatting and 52-library API docs pass.
+
+The provider campaign's transport watchdog now allows 30 seconds without a new
+unique fixture milestone, with a 120-second total cap. Repeated kernel logs cannot
+extend it. This replaces the old blanket 30-second limit on the entire expanding
+correctness campaign; it is not a UI latency claim. The guest's five-second exit
+cleanup assertion and all functional/ownership acceptance remain unchanged.
+Phase timing is retained as evidence. The power capture also uses the checked
+display width for application-menu input, matching the 800-pixel desktop.
+
+
+## Native job capacity and return reservations
+
+`DJOB` now uses the native shared store directly. All job identifiers, owned
+completion receipts and scheduler `DeferredIo::DriverJob` keys retain their full
+u64 identity; file-transfer and job wakeups remain distinct typed variants.
+Classic object projections retain their own original contracts. There is no
+native 32-bit job projection or 128-job slot ceiling.
+
+Admission reserves ready/completion-notice capacity for every retained job before
+publication. A callback detached earlier may return after more jobs are admitted;
+its RAII guard can restore or notify without allocating. Metadata/retirement
+reservation failure still returns the original unsent owned work. The existing
+1 MiB aggregate owned-buffer budget and per-request payload bounds remain explicit;
+page-backed per-domain byte accounting is a later gate.
+
+Thread-owner discard walks the original completion receipts in native-ID order.
+The cursor remains valid as entries are removed, uses no fixed scratch array or
+cleanup allocation, detaches dead waiters from resident-owned mutations and waits
+for actual provider cancellation acknowledgement. Ordinary IDs still fail after
+invalidation; only retained receipts drain late results. Tests force native slot
+reuse using the actual slot/generation keys rather than interpreting ID bits.
+
+Focused tests admit 320 jobs with older detached pending callbacks, then discard
+all through actual cancellation ACK. Another case returns 300 completed guards
+and verifies every exact notice/result while the deque capacities remain unchanged.
+Existing foreign-return, refusal, unwind, stopped-owner, fairness, no-change and
+scope cases continue to exercise the same queue and shared facility.
+
+
+Qualification for native jobs: 593 scoped host cases pass (67 native gates
+excluded), including all 36 focused job/scope cases, plus 10 native cases covering
+provider read/write/exit/cold restore, classic archives, both endpoint disconnects,
+module admission, lifecycle, aggregate SDK, cursor, panic and power recovery.
+Optimized image, compiled boundaries, formatting and 52-library docs pass.
+This removes the native job projection/capacity gate; device/DMA/backing-source
+ownership, complete owner-walk recovery, dynamic concurrent processes, pages/MMU,
+heaps, full invocation/accounting and isolation remain staged.
+
+
+### Registered device aliases and DMA retirement
+
+Physical device targets now live in the System ledger (`DVOB`/`DVOS`). Admitted
+modules receive native full-width aliases (`DVAL`/`DVAB`) through the shared
+alias facility, with independent original bus-match and owner checks. Native
+DMA records (`DMAP`/`DMST`) retain the exact claim's authenticated publication
+receipt. There is no per-manager ID issuer, 64-claim ceiling or 128-map ceiling.
+Probe ordinals remain inventory labels, not object authority.
+
+All six kinds use the ordinary public registry and common cleanup walk. A
+mapping counter prevents releasing a claim before its actual dependent mappings
+settle. Cleanup issues one successfully submitted reset per claim, probes once
+per retry, and retains typed refusals and the unique ticket in the existing
+quarantine when reset or acknowledgement fails. An invalidated claim remains
+exclusive; late work cannot attach to a newly issued claim. The real hardware
+stop ACK permits retiring a dead claim even if its reset waiter was lost. That
+does not acknowledge an outstanding broker request: its separate DREQ ledger
+barrier still applies. Abandoning the manager invalidates and quarantines live
+maps/aliases before store destruction; the System targets remain pinned.
+
+The VDEV SDK, resident service and both hardware drivers use u64 native IDs;
+the 52-byte description and unchanged-size 24-byte mapping are documented in
+FORMAT.md. The module layout fingerprint rejects pre-change packages before
+entry; the unreleased ABI remains 1 and all packages rebuild together.
+
+This closes registered device/map identity and positive-stop retirement policy.
+It does not claim physical DMA-page pins, reclaimable module images, autonomous
+hot-unload, IRQ-driven reset progress, arbitrary privileged-fault recovery or
+multi-hart safety. The platform bus owns hardware access; invocation/context
+and the later page/heap stages retain their explicit gates. Backing-source
+records and full teardown/Finder recovery remain in the current lifetime stage.
+
+Qualification covers forced single-slot claim/map reuse, stale and foreign IDs,
+320 simultaneous mappings, delayed/absent hardware ACK, failed reset writes and
+stop probes, arbitrary cleanup order, retained unique tickets, late reset work
+and manager abandonment. Canonical public-SDK conformance reads all six ordinary
+registrations. Native campaigns exercise the actual transport/power device SDK,
+old-device-layout rejection before module entry, both transport disconnects,
+provider operations, classic archives, process cleanup, cursor latency and panic
+recovery. These are the current hardware/SDK cases, not exhaustive bus support.

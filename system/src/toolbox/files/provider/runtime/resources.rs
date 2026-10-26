@@ -151,14 +151,15 @@ fn read(provider: u64, state: &mut State, offset: u64, count: usize) -> Result<O
         return Err(BAD_ARGUMENT);
     }
     state.expected = count;
-    submit_args(provider,
-                Operation::Read,
-                Arguments { volume: state.volume,
-                            token: u64::from(state.handle),
-                            flags: state.fork,
-                            offset,
-                            length: count as u64,
-                            ..Default::default() })
+    submit_object(IoObject::Fork(state.handle),
+                  provider,
+                  Operation::Read,
+                  Arguments { volume: state.volume,
+                              token: u64::from(state.handle),
+                              flags: state.fork,
+                              offset,
+                              length: count as u64,
+                              ..Default::default() })
 }
 fn finish(owner: u64, mut state: Box<State>, result: Result<(), Status>) -> Progress
 {

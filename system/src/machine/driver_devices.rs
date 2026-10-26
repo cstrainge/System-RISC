@@ -136,13 +136,21 @@ fn word(input: &[u8]) -> Result<u32, Status>
 }
 pub(crate) fn initialize() -> Result<(), Status>
 {
-    DEVICES.publish(Devices::new(PlatformBus)).map_err(crate::state::AccessError::status)?;
+    use crate::drivers::devices::lifetime::Registration;
+    let kinds = crate::toolbox::handles::registry(|registry| {
+                    let [a, b, c, d, e, f] =
+                        Registration::ALL.map(|kind| registry.get(kind.specification().kind));
+                    Ok::<_, mac_object_table::registry::Error>([a?, b?, c?, d?, e?, f?])
+                }).map_err(|error| error.status())?
+                  .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
+    let devices = Devices::new(PlatformBus, crate::toolbox::handles::system_owner()?, kinds)?;
+    DEVICES.publish(devices).map_err(crate::state::AccessError::status)?;
     drivers::register_service(Offer { class:          wire::CLASS,
                                       version:        wire::VERSION,
                                       request_schema: 1,
                                       reply_schema:   1,
                                       max_request:    24,
-                                      max_reply:      48,
+                                      max_reply:      wire::DESCRIPTION_BYTES as u32,
                                       flags:          Offer::KERNEL_ONLY | Offer::EXCLUSIVE,
                                       capabilities:   0 },
                               request)?;
@@ -150,13 +158,14 @@ pub(crate) fn initialize() -> Result<(), Status>
 }
 fn request(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompletion, Status>
 {
+    let owner = drivers::module_authority(call.caller)?;
     if call.operation == wire::RESET && matches!(call.phase, abi::POLL | abi::CANCEL)
     {
         if !call.input.is_empty()
         {
             return Err(BAD_ARGUMENT);
         }
-        return Ok(if with(|devices| devices.reset_pending(call.caller, call.ticket))?
+        return Ok(if with(|devices| devices.reset_pending(&owner, call.ticket))?
                   {
                       ResidentCompletion::Complete(0)
                   }
@@ -191,7 +200,7 @@ fn request(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompleti
             let description = if call.operation == wire::CLAIM
             {
                 drivers::device_allowed(call.caller, description.bus, description.key)?;
-                with(|devices| devices.claim(call.caller, ordinal, description))?
+                with(|devices| devices.claim(&owner, ordinal, description))?
             }
             else
             {
@@ -202,26 +211,24 @@ fn request(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompleti
         }
         wire::MAP =>
         {
-            if call.input.len() != 24
-               || call.input[4..8] != [0; 4]
-               || output.len() < wire::MAPPING_BYTES
+            if call.input.len() != 24 || output.len() < wire::MAPPING_BYTES
             {
                 return Err(BAD_ARGUMENT);
             }
-            let device = word(&call.input[..4])?;
+            let device = token(&call.input[..8])?;
             let address =
                 u64::from_le_bytes(call.input[8..16].try_into().map_err(|_| BAD_ARGUMENT)?);
             let length =
                 u64::from_le_bytes(call.input[16..24].try_into().map_err(|_| BAD_ARGUMENT)?);
             drivers::owns_memory(call.caller, address, length)?;
-            let mapping = with(|devices| devices.map(call.caller, device, address, length))?;
+            let mapping = with(|devices| devices.map(&owner, device, address, length))?;
             output[..wire::MAPPING_BYTES].copy_from_slice(&mapping.encode());
             Ok(ResidentCompletion::Complete(wire::MAPPING_BYTES))
         }
         wire::RESET =>
         {
-            let device = word(call.input)?;
-            Ok(if with(|devices| devices.reset(call.caller, device, call.ticket, true))?
+            let device = token(call.input)?;
+            Ok(if with(|devices| devices.start_reset(&owner, device, call.ticket))?
                {
                    ResidentCompletion::Complete(0)
                }
@@ -232,16 +239,31 @@ fn request(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompleti
         }
         wire::UNMAP =>
         {
-            let id = word(call.input)?;
-            with(|devices| devices.unmap(call.caller, id))?;
+            let id = token(call.input)?;
+            with(|devices| devices.unmap(&owner, id))?;
             Ok(ResidentCompletion::Complete(0))
         }
         wire::RELEASE =>
         {
-            let id = word(call.input)?;
-            with(|devices| devices.release(call.caller, id))?;
+            let id = token(call.input)?;
+            with(|devices| devices.release(&owner, id))?;
             Ok(ResidentCompletion::Complete(0))
         }
         _ => Err(NOT_SUPPORTED)
     }
+}
+
+fn token(input: &[u8]) -> Result<u64, Status>
+{
+    Ok(u64::from_le_bytes(input.try_into().map_err(|_| BAD_ARGUMENT)?))
+}
+
+pub(crate) fn cleanup(ticket: mac_object_table::domain::ReleasedResource,
+                      kind: crate::drivers::devices::lifetime::Registration)
+                      -> Result<(), crate::toolbox::handles::cleanup::Failure>
+{
+    DEVICES.with_owned(ticket, |ticket, devices| devices.cleanup(ticket, kind))
+           .unwrap_or_else(|(error, ticket)| {
+               Err(crate::toolbox::handles::cleanup::Failure::devices_unavailable(ticket, error))
+           })
 }

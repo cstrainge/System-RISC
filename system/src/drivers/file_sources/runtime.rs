@@ -8,11 +8,26 @@ use spinning_top::Spinlock;
 use super::*;
 use crate::drivers::{ResidentCall, ResidentCompletion};
 mod reads;
+#[derive(Clone)]
+struct Backing
+{
+    file:    u32,
+    subject: crate::drivers::jobs::subjects::Subject
+}
+fn backing(owner: u64, file: u32) -> Result<Backing, Status>
+{
+    let authority = crate::drivers::module_authority(owner)?;
+    let subject = crate::drivers::jobs::subjects::resident()?.admit(
+        &crate::toolbox::handles::subject::Authority::Client(authority))?;
+    Ok(Backing { file,
+                 subject })
+}
+
 pub(crate) struct Closing
 {
     owner:   u64,
     source:  u32,
-    backing: u32
+    backing: Backing
 }
 pub(crate) fn begin_release(provider: u64, source: u32)
                             -> Result<Option<(Closing, crate::drivers::OwnedJob)>, Status>
@@ -21,17 +36,21 @@ pub(crate) fn begin_release(provider: u64, source: u32)
     let backing = SOURCES.lock().begin_close(owner, source)?;
     let close = Closing { owner,
                           source,
-                          backing };
-    let result =
-        files(|manager| manager.source_mark_provider(backing)).and_then(|provider| {
-            if provider.is_none()
-            {
-                files(|manager| manager.close_block_source(backing))?;
-                return Ok(None);
-            }
-            let (provider, args) = files(|manager| manager.close_provider_source(backing, false))?;
-            reads::submit(provider, mac_filesystem_interface::Operation::Close, args, 0).map(Some)
-        });
+                          backing: backing.clone() };
+    let result = files(|manager| manager.source_mark_provider(backing.file)).and_then(|provider| {
+                     if provider.is_none()
+                     {
+                         files(|manager| manager.close_block_source(backing.file))?;
+                         return Ok(None);
+                     }
+                     let (provider, args) =
+                         files(|manager| manager.close_provider_source(backing.file, false))?;
+                     reads::submit(&backing.subject,
+                                   provider,
+                                   mac_filesystem_interface::Operation::Close,
+                                   args,
+                                   0).map(Some)
+                 });
     match result
     {
         Ok(Some(job)) => Ok(Some((close, job))),
@@ -42,7 +61,7 @@ pub(crate) fn begin_release(provider: u64, source: u32)
         }
         Err(error) =>
         {
-            let _ = files(|m| m.quarantine_provider_source(backing));
+            let _ = files(|m| m.quarantine_provider_source(backing.file));
             SOURCES.lock().quarantine(owner, source)?;
             Err(error)
         }
@@ -53,18 +72,18 @@ pub(crate) fn finish_release(close: Closing, result: Result<alloc::vec::Vec<u8>,
 {
     if matches!(&result, Ok(bytes) if bytes.is_empty()) || matches!(result, Err(mac_abi::NOT_FOUND))
     {
-        if let Err(error) = files(|m| m.retire_provider_source(close.backing))
+        if let Err(error) = files(|m| m.retire_provider_source(close.backing.file))
         {
             SOURCES.lock().quarantine(close.owner, close.source)?;
             return Err(error);
         }
         return SOURCES.lock().finish_close(close.owner, close.source);
     }
-    let _ = files(|m| m.quarantine_provider_source(close.backing));
+    let _ = files(|m| m.quarantine_provider_source(close.backing.file));
     SOURCES.lock().quarantine(close.owner, close.source)?;
     Err(result.err().unwrap_or(mac_abi::BAD_ABI))
 }
-static SOURCES: Spinlock<Sources<u32>> = Spinlock::new(Sources::new());
+static SOURCES: Spinlock<Sources<Backing>> = Spinlock::new(Sources::new());
 pub(crate) fn files<T>(call: impl FnOnce(&mut crate::toolbox::files::Manager) -> Result<T, Status>)
                        -> Result<T, Status>
 {
@@ -82,11 +101,12 @@ pub(crate) fn adopt(provider: u64, volume: u32, cnid: u32, handle: u32, length: 
                     -> Result<u32, Status>
 {
     let owner = crate::drivers::provider_module(provider)?;
+    let backing = backing(owner, handle)?;
     SOURCES.lock().publish(owner,
                            Identity { volume,
                                       cnid,
                                       fork: mac_abi::files::DATA_FORK },
-                           handle,
+                           backing,
                            length)
 }
 pub(crate) fn initialize() -> Result<(), Status>
@@ -113,7 +133,9 @@ pub(crate) fn lease(provider: u64, volume: u32, cnid: u32) -> Result<(u32, bool)
         return Ok((source, false));
     }
     let (file, length) = files(|files| files.open_block_source(volume, cnid))?;
-    let published = SOURCES.lock().publish(owner, identity, file, length);
+    let published = backing(owner, file).and_then(|backing| {
+                                            SOURCES.lock().publish(owner, identity, backing, length)
+                                        });
     match published
     {
         Ok(source) => Ok((source, true)),

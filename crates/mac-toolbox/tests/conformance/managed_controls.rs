@@ -39,9 +39,44 @@ pub fn ledger_pools(system: &System<'_>, window: WindowId) -> Result<(), Failure
     assert!(registration.admitting && registration.uses >= before.live);
     assert_eq!(registration.source, inspection::RegistrationSource::Resident);
     let mut dependencies = 0;
+    let mut requests = 0;
+    #[cfg(target_arch = "riscv64")]
+    let mut io = 0;
+    #[cfg(target_arch = "riscv64")]
+    let mut devices = 0;
     for index in 0..registrations.count
     {
         let kind = registrations.at(index).map_err(map)?;
+        #[cfg(target_arch = "riscv64")]
+        for (bit, code) in [*b"DIOP", *b"DIOB", *b"DJOB", *b"DJST"].into_iter().enumerate()
+        {
+            if kind.namespace == code
+            {
+                assert_eq!(kind.provider.as_str(), "System I/O Manager");
+                assert!(kind.admitting);
+                assert_eq!(kind.source, inspection::RegistrationSource::Resident);
+                io |= 1 << bit;
+            }
+        }
+        #[cfg(target_arch = "riscv64")]
+        for (bit, code) in
+            [*b"DVAL", *b"DVAB", *b"DVOB", *b"DVOS", *b"DMAP", *b"DMST"].into_iter().enumerate()
+        {
+            if kind.namespace == code
+            {
+                assert_eq!(kind.provider.as_str(), "System Device Manager");
+                assert!(kind.admitting);
+                assert_eq!(kind.source, inspection::RegistrationSource::Resident);
+                devices |= 1 << bit;
+            }
+        }
+        if kind.namespace == *b"DREQ" || kind.namespace == *b"DRQS"
+        {
+            assert_eq!(kind.provider.as_str(), "System Module Manager");
+            assert!(kind.admitting);
+            assert_eq!(kind.source, inspection::RegistrationSource::Resident);
+            requests |= if kind.namespace == *b"DREQ" { 1 } else { 2 };
+        }
         if kind.namespace == *b"DDEP" || kind.namespace == *b"DDST"
         {
             assert!(kind.label.as_str().contains("dependency"));
@@ -51,6 +86,12 @@ pub fn ledger_pools(system: &System<'_>, window: WindowId) -> Result<(), Failure
             dependencies |= if kind.namespace == *b"DDEP" { 1 } else { 2 };
         }
     }
+    #[cfg(target_arch = "riscv64")]
+    assert_eq!(io, 15, "I/O kinds must be ordinary public registrations");
+    #[cfg(target_arch = "riscv64")]
+    assert_eq!(devices, 63,
+               "physical devices, claim aliases and DMA must share the public registry");
+    assert_eq!(requests, 3, "broker requests must use the public registry");
     assert_eq!(dependencies, 3, "module dependency kinds must use the public registry");
     assert_eq!(system.inspection().snapshot(inspection::Scope::All).err().unwrap().cause,
                Error::AccessDenied,

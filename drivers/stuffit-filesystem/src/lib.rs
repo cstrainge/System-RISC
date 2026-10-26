@@ -14,7 +14,7 @@ use mac_driver::{Completion, Error, Phase, Result, file_sources::FileSources};
 pub trait Sources: Send
 {
     fn length(&self, source: u32) -> Result<u64>;
-    fn read(&mut self, source: u32, offset: u64, ticket: &mut u32, phase: Phase, output: &mut [u8])
+    fn read(&mut self, source: u32, offset: u64, ticket: &mut u64, phase: Phase, output: &mut [u8])
             -> Result<Completion>;
 }
 impl Sources for FileSources
@@ -24,7 +24,7 @@ impl Sources for FileSources
         Ok(self.info(source)?.length)
     }
 
-    fn read(&mut self, source: u32, offset: u64, ticket: &mut u32, phase: Phase, output: &mut [u8])
+    fn read(&mut self, source: u32, offset: u64, ticket: &mut u64, phase: Phase, output: &mut [u8])
             -> Result<Completion>
     {
         FileSources::read(*self, source, offset, ticket, phase, output)

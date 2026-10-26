@@ -6,7 +6,9 @@ use std::{collections::VecDeque,
 
 use mac_driver::{Completion, Error, Phase};
 use mac_host_protocol::{self as wire, Arguments, Header, Operation};
-use mac_object_table::{Kind, Table};
+#[path = "../../../crates/mac-object-table/tests/support/native_requests.rs"]
+mod native_requests;
+use native_requests::Requests as NativeRequests;
 use vhost_filesystem::{Cause, Rpc,
                        transport::{Cancellation, Channel, DirectoryRpc}};
 #[derive(Clone, Copy)]
@@ -25,7 +27,7 @@ enum Step
 struct Script
 {
     steps:  VecDeque<Step>,
-    ids:    Table<()>,
+    ids:    NativeRequests,
     header: Option<Header>,
     trace:  Vec<Phase>
 }
@@ -34,14 +36,14 @@ impl Script
     fn new(steps: &[Step]) -> Self
     {
         Self { steps:  steps.iter().copied().collect(),
-               ids:    Table::new(Kind::DriverRequests),
+               ids:    NativeRequests::new(),
                header: None,
                trace:  Vec::new() }
     }
 }
 impl Channel for Script
 {
-    fn invoke(&mut self, ticket: &mut u32, phase: Phase, operation: u32, input: &[u8],
+    fn invoke(&mut self, ticket: &mut u64, phase: Phase, operation: u32, input: &[u8],
               output: &mut [u8])
               -> mac_driver::Result<Completion>
     {

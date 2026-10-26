@@ -41,24 +41,28 @@ fn descriptions_separate_incarnation_revision_and_checked_dates()
     stale[..8].copy_from_slice(b"RSHOST01");
     stale[8..10].copy_from_slice(&1u16.to_le_bytes());
     assert_eq!(Header::decode(&stale), Err(Error::Version));
+    let mut wrong_layout = Header::request(Operation::Hello, 0x1_0000_0001, 0, 0).encode().unwrap();
+    wrong_layout[10..12].copy_from_slice(&48u16.to_le_bytes());
+    wrong_layout[26..28].copy_from_slice(&65535u16.to_le_bytes());
+    assert_eq!(Header::decode(&wrong_layout), Err(Error::Version));
     assert!(Error::Version.to_string().contains("rebuild"));
 }
 #[test]
 fn fixed_little_endian_layout_and_every_truncation_are_checked()
 {
-    let mut header = Header::request(Operation::Read, 0x10001, 0x20002, 0x30003);
+    let mut header = Header::request(Operation::Read, 0x1122_3344_5566_7788, 0x20002, 0x30003);
     header.offset = 0x1020_3040_5060_7080;
     header.value = 4096;
     let bytes = header.encode().unwrap();
-    assert_eq!(&bytes[..12], b"RSHOST04\x04\x00\x30\x00");
-    assert_eq!(&bytes[16..24], b"\x01\x00\x01\x00\x07\x00\x00\x00");
-    assert_eq!(&bytes[32..40], b"\x80\x70\x60\x50\x40\x30\x20\x10");
+    assert_eq!(&bytes[..12], b"RSHOST04\x04\x00\x34\x00");
+    assert_eq!(&bytes[16..24], &0x1122_3344_5566_7788u64.to_le_bytes());
+    assert_eq!(&bytes[36..44], b"\x80\x70\x60\x50\x40\x30\x20\x10");
     assert_eq!(Header::decode(&bytes), Ok(header));
     for len in 0..HEADER_BYTES
     {
         assert!(Header::decode(&bytes[..len]).is_err());
     }
-    for (offset, value) in [(0, b'x'), (8, 1), (10, 47), (21, 1), (22, 2), (23, 1)]
+    for (offset, value) in [(0, b'x'), (8, 1), (10, 51), (25, 1), (26, 2), (27, 1)]
     {
         let mut bad = bytes;
         bad[offset] = value;
@@ -90,7 +94,8 @@ fn only_bounded_portable_components_can_name_host_children()
 #[test]
 fn receiver_assembles_arbitrary_fragments_without_consuming_the_next_frame()
 {
-    let mut reply = Header::request(Operation::Read, 0x10001, 0x20002, 0x30003).response();
+    let mut reply =
+        Header::request(Operation::Read, 0x1122_3344_5566_7788, 0x20002, 0x30003).response();
     reply.payload = 6000;
     let mut bytes = reply.encode().unwrap().to_vec();
     bytes.extend((0..6000).map(|i| (i * 17) as u8));

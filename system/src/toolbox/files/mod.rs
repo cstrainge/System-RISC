@@ -268,6 +268,8 @@ struct OpenFile
     fork:           spinning_top::Spinlock<FileFork>,
     position:       core::sync::atomic::AtomicU64,
     authority:      subject::Authority,
+    #[cfg(target_arch = "riscv64")]
+    io_subject:     Option<crate::drivers::jobs::subjects::Subject>,
     #[cfg_attr(not(any(target_arch = "riscv64", feature = "test-support")), allow(dead_code))]
     resource_index: Option<mac_formats::resource::index::Index>
 }
@@ -916,7 +918,7 @@ impl Manager
                    }.ok_or(NOT_SUPPORTED)?;
         let length = fork.length;
         let handle = self.handles.insert_authorized(authority,
-                                          OpenFile { owner:access.label(),
+                                          OpenFile { #[cfg(target_arch = "riscv64")] io_subject: None, owner:access.label(),
                                                      id,
                                                      volume,
                                                      fork: spinning_top::Spinlock::new(FileFork::Block(fork)),

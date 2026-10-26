@@ -8,7 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub const VERSION: u16 = 4;
-pub const HEADER_BYTES: usize = 48;
+pub const HEADER_BYTES: usize = 52;
 pub const MAX_PAYLOAD: usize = 64 * 1024;
 pub const MAGIC: [u8; 8] = *b"RSHOST04";
 pub const LOCK_SHARED: u32 = 0;
@@ -263,7 +263,7 @@ pub struct Header
     pub operation: Operation,
     pub reply:     bool,
     pub payload:   u32,
-    pub request:   u32,
+    pub request:   u64,
     pub session:   u32,
     pub object:    u32,
     pub offset:    u64,
@@ -272,7 +272,7 @@ pub struct Header
 }
 impl Header
 {
-    pub fn request(operation: Operation, request: u32, session: u32, object: u32) -> Self
+    pub fn request(operation: Operation, request: u64, session: u32, object: u32) -> Self
     {
         Self { operation,
                reply: false,
@@ -319,22 +319,20 @@ impl Header
         bytes[8..10].copy_from_slice(&VERSION.to_le_bytes());
         bytes[10..12].copy_from_slice(&(HEADER_BYTES as u16).to_le_bytes());
         bytes[12..16].copy_from_slice(&self.payload.to_le_bytes());
-        bytes[16..20].copy_from_slice(&self.request.to_le_bytes());
-        bytes[20..22].copy_from_slice(&(self.operation as u16).to_le_bytes());
-        bytes[22..24].copy_from_slice(&u16::from(self.reply).to_le_bytes());
-        bytes[24..28].copy_from_slice(&self.session.to_le_bytes());
-        bytes[28..32].copy_from_slice(&self.object.to_le_bytes());
-        bytes[32..40].copy_from_slice(&self.offset.to_le_bytes());
-        bytes[40..44].copy_from_slice(&self.value.to_le_bytes());
-        bytes[44..48].copy_from_slice(&self.status.to_le_bytes());
+        bytes[16..24].copy_from_slice(&self.request.to_le_bytes());
+        bytes[24..26].copy_from_slice(&(self.operation as u16).to_le_bytes());
+        bytes[26..28].copy_from_slice(&u16::from(self.reply).to_le_bytes());
+        bytes[28..32].copy_from_slice(&self.session.to_le_bytes());
+        bytes[32..36].copy_from_slice(&self.object.to_le_bytes());
+        bytes[36..44].copy_from_slice(&self.offset.to_le_bytes());
+        bytes[44..48].copy_from_slice(&self.value.to_le_bytes());
+        bytes[48..52].copy_from_slice(&self.status.to_le_bytes());
         Ok(bytes)
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, Error>
     {
         if bytes.len() != HEADER_BYTES
-           || bytes[10..12] != (HEADER_BYTES as u16).to_le_bytes()
-           || u16::from_le_bytes(bytes[22..24].try_into().unwrap()) > 1
         {
             return Err(Error::Header);
         }
@@ -343,20 +341,25 @@ impl Header
             return Err(if &bytes[..6] == b"RSHOST" { Error::Version } else { Error::Header });
         }
         if bytes[8..10] != VERSION.to_le_bytes()
+           || bytes[10..12] != (HEADER_BYTES as u16).to_le_bytes()
         {
             return Err(Error::Version);
         }
+        if u16::from_le_bytes(bytes[26..28].try_into().unwrap()) > 1
+        {
+            return Err(Error::Header);
+        }
         let header = Self { payload:   u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
-                            request:   u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+                            request:   u64::from_le_bytes(bytes[16..24].try_into().unwrap()),
                             operation:
-                                Operation::try_from(u16::from_le_bytes(bytes[20..22].try_into()
+                                Operation::try_from(u16::from_le_bytes(bytes[24..26].try_into()
                                                                                     .unwrap()))?,
-                            reply:     bytes[22] != 0,
-                            session:   u32::from_le_bytes(bytes[24..28].try_into().unwrap()),
-                            object:    u32::from_le_bytes(bytes[28..32].try_into().unwrap()),
-                            offset:    u64::from_le_bytes(bytes[32..40].try_into().unwrap()),
-                            value:     u32::from_le_bytes(bytes[40..44].try_into().unwrap()),
-                            status:    i32::from_le_bytes(bytes[44..48].try_into().unwrap()) };
+                            reply:     bytes[26] != 0,
+                            session:   u32::from_le_bytes(bytes[28..32].try_into().unwrap()),
+                            object:    u32::from_le_bytes(bytes[32..36].try_into().unwrap()),
+                            offset:    u64::from_le_bytes(bytes[36..44].try_into().unwrap()),
+                            value:     u32::from_le_bytes(bytes[44..48].try_into().unwrap()),
+                            status:    i32::from_le_bytes(bytes[48..52].try_into().unwrap()) };
         header.validate()?;
         Ok(header)
     }
@@ -396,13 +399,13 @@ pub struct Receiver
     header_used: usize,
     body_used:   usize,
     parsed:      Option<Header>,
-    request:     u32,
+    request:     u64,
     operation:   Operation,
     failed:      bool
 }
 impl Receiver
 {
-    pub const fn new(request: u32, operation: Operation) -> Self
+    pub const fn new(request: u64, operation: Operation) -> Self
     {
         Self { header: [0; HEADER_BYTES],
                header_used: 0,
@@ -532,7 +535,7 @@ impl<'a> Arguments<'a>
                   payload: &bytes[24..] })
     }
 
-    pub fn header(&self, operation: Operation, ticket: u32) -> Result<Header, Error>
+    pub fn header(&self, operation: Operation, ticket: u64) -> Result<Header, Error>
     {
         let header = Header { offset: self.offset,
                               value: self.value,

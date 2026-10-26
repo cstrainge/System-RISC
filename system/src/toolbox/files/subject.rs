@@ -5,7 +5,8 @@
 use mac_abi::Status;
 use mac_object_table::scope;
 
-use crate::toolbox::handles::{InvocationGate, OwnerRef};
+use crate::toolbox::handles::InvocationGate;
+pub(super) use crate::toolbox::handles::subject::Authority;
 
 pub(super) type Lease = scope::Lease<InvocationGate>;
 pub(super) type Root = scope::Reservation<InvocationGate>;
@@ -100,12 +101,6 @@ impl Subject
     }
 }
 
-#[derive(Clone)]
-pub(super) enum Authority
-{
-    Client(OwnerRef),
-    Operation(Lease)
-}
 impl Authority
 {
     pub(super) fn flight_subject(&self, label: u64) -> Subject

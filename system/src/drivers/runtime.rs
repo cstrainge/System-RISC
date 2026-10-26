@@ -36,7 +36,7 @@ struct Binding
 pub(crate) struct ResidentCall<'a>
 {
     pub caller:    u64,
-    pub ticket:    u32,
+    pub ticket:    u64,
     pub phase:     u32,
     pub operation: u32,
     pub input:     &'a [u8]
@@ -106,6 +106,12 @@ pub(crate) fn device_allowed(module: u64, bus: ClassId, key: [u8; 16]) -> Result
            .map_err(crate::state::AccessError::status)?
 }
 
+pub(crate) fn module_authority(module: u64) -> Result<crate::toolbox::handles::OwnerRef, Status>
+{
+    RUNTIME.with(|runtime| runtime.registry.module_ledger(module).map_err(status))
+           .map_err(crate::state::AccessError::status)?
+}
+
 pub(crate) fn provider_module(interface: u64) -> Result<u64, Status>
 {
     RUNTIME.with(|runtime| {
@@ -162,7 +168,9 @@ pub(crate) fn initialize(arena: core::ops::Range<u64>, target: Target) -> Result
                     Ok([registry.get(crate::toolbox::handles::KindCode(*b"DIFC"))?,
                         registry.get(crate::toolbox::handles::KindCode(*b"DIFS"))?,
                         registry.get(crate::toolbox::handles::KindCode(*b"DDEP"))?,
-                        registry.get(crate::toolbox::handles::KindCode(*b"DDST"))?])
+                        registry.get(crate::toolbox::handles::KindCode(*b"DDST"))?,
+                        registry.get(crate::toolbox::handles::KindCode(*b"DREQ"))?,
+                        registry.get(crate::toolbox::handles::KindCode(*b"DRQS"))?])
                 }).map_err(|error| error.status())?
                   .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
     RUNTIME.publish(Runtime { registry:  Registry::new(target, owner, kinds).map_err(status)?,
@@ -343,6 +351,31 @@ unsafe extern "C" fn broker(caller: u64, provider: u64, pointer: *mut abi::Call)
 }
 unsafe fn invoke(caller: u64, provider: u64, pointer: *mut abi::Call) -> Result<Status, Status>
 {
+    if let Some(subject) = crate::context::io_subject()
+    {
+        return unsafe { invoke_scoped(&subject, caller, provider, pointer) };
+    }
+    // A module may call its declared services during entry, outside a queued
+    // operation. Admit that real module once; nested calls inherit its frame.
+    let owner = if caller == 0
+    {
+        crate::toolbox::handles::system_owner()?
+    }
+    else
+    {
+        module_authority(caller)?
+    };
+    let subject = super::jobs::subjects::resident()?.admit(
+        &crate::toolbox::handles::subject::Authority::Client(owner))?;
+    crate::context::with_io_subject(subject.clone(), || {
+        unsafe { invoke_scoped(&subject, caller, provider, pointer) }
+    }).and_then(core::convert::identity)
+}
+unsafe fn invoke_scoped(subject: &super::jobs::subjects::Subject, caller: u64, provider: u64,
+                        pointer: *mut abi::Call)
+                        -> Result<Status, Status>
+{
+    use super::registry::requests::Access;
     let call = unsafe { checked_call(pointer) }?;
     call.output_len = 0;
     let (module, ticket, target) =
@@ -353,7 +386,11 @@ unsafe fn invoke(caller: u64, provider: u64, pointer: *mut abi::Call) -> Result<
                                    }
                                    else
                                    {
-                                       runtime.registry.interface_for_request(caller, call.ticket)
+                                       runtime.registry
+                                  .interface_for_request(caller,
+                                                         Access::Continuing { subject,
+                                                                              ticket:
+                                                                                  call.ticket })
                                    }.map_err(status)?;
                    if interface.offer.class.0 != call.class
                    {
@@ -364,14 +401,18 @@ unsafe fn invoke(caller: u64, provider: u64, pointer: *mut abi::Call) -> Result<
                        abi::START if call.ticket == 0 =>
                        {
                            runtime.registry
-                                  .begin(caller, provider, call.operation, call.input_len as usize,
-                                         call.output_capacity as usize)
+                                  .begin_scoped(subject, caller, provider, call.operation,
+                                                call.input_len as usize,
+                                                call.output_capacity as usize)
                                   .map_err(status)?
                        }
                        abi::POLL | abi::CANCEL =>
                        {
-                           let request =
-                               runtime.registry.request(caller, call.ticket).map_err(status)?;
+                           let request = runtime.registry
+                                                .request(caller,
+                                                         Access::Continuing { subject,
+                                                                              ticket: call.ticket })
+                                                .map_err(status)?;
                            if request.interface != provider
                               || request.class.0 != call.class
                               || request.operation != call.operation
@@ -400,7 +441,11 @@ unsafe fn invoke(caller: u64, provider: u64, pointer: *mut abi::Call) -> Result<
                                                      .and_then(|b| b.instance)
                                                      .ok_or(NOT_FOUND)?)
                    };
-                   runtime.registry.enter_request(caller, ticket).map_err(status)?;
+                   runtime.registry
+                          .enter_request(caller,
+                                         Access::Continuing { subject,
+                                                              ticket })
+                          .map_err(status)?;
                    Ok((interface.module, ticket, target))
                })
                .map_err(crate::state::AccessError::status)??;
@@ -474,21 +519,32 @@ unsafe fn invoke(caller: u64, provider: u64, pointer: *mut abi::Call) -> Result<
                     || call.output_len > call.output_capacity
                     || result == abi::PENDING && call.output_len != 0;
     call.ticket = ticket;
-    RUNTIME.with(|runtime| runtime.registry.leave_request(caller, ticket).map_err(status))
+    RUNTIME.with(|runtime| {
+               runtime.registry
+                      .leave_request(caller,
+                                     Access::Continuing { subject,
+                                                          ticket })
+                      .map_err(status)
+           })
            .map_err(crate::state::AccessError::status)??;
     if result == abi::PENDING && !malformed
     {
         return Ok(result);
     }
     RUNTIME.with(|runtime| {
-               let request = runtime.registry.request(caller, ticket).map_err(status)?;
+               let request = runtime.registry
+                                    .request(caller,
+                                             Access::Continuing { subject,
+                                                                  ticket })
+                                    .map_err(status)?;
                if request.module != module
                {
                    return Err(BAD_ARGUMENT);
                }
                runtime.registry
                       .complete(caller,
-                                ticket,
+                                Access::Continuing { subject,
+                                                     ticket },
                                 if malformed { 0 } else { call.output_len as usize })
                       .map_err(status)?;
                Ok(())
@@ -580,7 +636,9 @@ impl super::jobs::Broker for NativeBroker
         // SAFETY: Call and both disjoint borrowed slices remain live only for
         // this invocation. checked_call validates the broker wire contract;
         // no registry or job-queue guard survives the callback.
-        let result = unsafe { invoke(caller, request.provider, &mut call) };
+        let result = crate::context::with_io_subject(request.subject.clone(), || {
+                         unsafe { invoke(caller, request.provider, &mut call) }
+                     }).and_then(core::convert::identity);
         *request.ticket = call.ticket;
         // Provider errors are Ok(negative_status). Err(Busy) is admission or
         // registry contention: the callback was not dispatched at this boundary.
@@ -605,8 +663,8 @@ static JOBS: super::jobs::Queue = super::jobs::Queue::new();
 
 /// Resident adapters enqueue only owned bytes. The owner comes from trusted
 /// execution context, never from the application's request payload.
-fn enqueue_job(owner: super::jobs::Owner, class: ClassId, version: u32, operation: u32,
-               input: Vec<u8>, output_bytes: usize)
+fn enqueue_job(subject: super::jobs::subjects::Subject, owner: super::jobs::Owner, class: ClassId,
+               version: u32, operation: u32, input: Vec<u8>, output_bytes: usize)
                -> Result<OwnedJob, Status>
 {
     let provider = match owner
@@ -622,17 +680,21 @@ fn enqueue_job(owner: super::jobs::Owner, class: ClassId, version: u32, operatio
     };
     let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
     let queue = &JOBS;
-    let id = queue.submit(owner, work).map_err(|error| error.status)?;
+    let (id, receipt) =
+        queue.submit(&subject, owner, work).map_err(|error| error.status)?.into_parts();
     Ok(OwnedJob { owner,
-                  id })
+                  id,
+                  receipt,
+                  subject })
 }
 
-fn take_job(owner: super::jobs::Owner, id: u32) -> Result<Option<super::jobs::Completed>, Status>
+pub(crate) fn release_job(ticket: mac_object_table::domain::ReleasedResource, storage: bool)
+                          -> Result<(), crate::toolbox::handles::cleanup::Failure>
 {
-    JOBS.take(owner, id)
+    JOBS.release(ticket, storage)
 }
 
-pub(crate) fn job_pending(thread: u64, id: u32) -> Result<bool, Status>
+pub(crate) fn job_pending(thread: u64, id: u64) -> Result<bool, Status>
 {
     JOBS.pending_waiter(thread, id)
 }
@@ -702,7 +764,7 @@ fn dispatch_job(mut dispatch: super::jobs::Dispatch<'_>)
 /// Ask the outer native service boundary to park and replay this call. Resident
 /// adapters return SERVICE_BUSY immediately after this succeeds. Nested drawing
 /// and definition calls cannot park while their caller may own a manager guard.
-fn defer_current_job(id: u32) -> Result<(), Status>
+fn defer_current_job(id: u64) -> Result<(), Status>
 {
     let context = crate::context::current_thread_context();
     job_pending(context.identity().thread.0, id)?;
@@ -715,16 +777,23 @@ fn defer_current_job(id: u32) -> Result<(), Status>
 /// provider acknowledges cancellation; no borrowed application buffer is pinned.
 pub struct OwnedJob
 {
-    owner: super::jobs::Owner,
-    id:    u32
+    owner:   super::jobs::Owner,
+    id:      u64,
+    subject: super::jobs::subjects::Subject,
+    receipt: mac_object_table::store::CompletionKey
 }
 impl OwnedJob
 {
+    pub(crate) fn subject(&self) -> &super::jobs::subjects::Subject
+    {
+        &self.subject
+    }
+
     /// Run one bounded callback of this job immediately. Pending work remains
     /// owned by this guard; Drop requests cancellation through the same queue.
     pub(crate) fn run_once(&mut self) -> Result<Option<super::jobs::Completed>, Status>
     {
-        let dispatch = JOBS.dispatch_for(self.owner, self.id)?;
+        let dispatch = JOBS.dispatch_completion(self.owner, self.receipt)?;
         if let Some(dispatch) = dispatch
         {
             dispatch_job(dispatch);
@@ -738,7 +807,7 @@ impl OwnedJob
         {
             return Err(NOT_FOUND);
         }
-        let result = take_job(self.owner, self.id)?;
+        let result = JOBS.take_completion(self.owner, self.receipt)?;
         if result.is_some()
         {
             self.id = 0;
@@ -776,8 +845,8 @@ impl OwnedJob
         }
         let waiter = {
             let queue = &JOBS;
-            queue.cancel(self.owner, self.id)?;
-            queue.completed_waiter(self.owner, self.id)?
+            queue.cancel_completion(self.owner, self.receipt)?;
+            queue.completed_waiter_completion(self.owner, self.receipt)?
         };
         if let Some(thread) = waiter
         {
@@ -796,7 +865,7 @@ impl Drop for OwnedJob
             return;
         }
         let queue = &JOBS;
-        let _ = queue.discard(self.owner, self.id);
+        let _ = queue.discard_completion(self.owner, self.receipt);
     }
 }
 
@@ -812,7 +881,10 @@ pub fn submit_job(class: ClassId, version: u32, operation: u32, input: Vec<u8>,
     {
         return Err(WRONG_THREAD);
     }
-    enqueue_job(super::jobs::Owner::Thread(thread.0),
+    let subject = super::jobs::subjects::resident()?.admit(
+        &crate::toolbox::handles::subject::Authority::Client(crate::context::current_owner()?))?;
+    enqueue_job(subject,
+                super::jobs::Owner::Thread(thread.0),
                 class,
                 version,
                 operation,
@@ -820,17 +892,10 @@ pub fn submit_job(class: ClassId, version: u32, operation: u32, input: Vec<u8>,
                 output_bytes)
 }
 
-/// Background resident services own their own result and cancellation lifetime.
-pub fn submit_background_job(class: ClassId, version: u32, operation: u32, input: Vec<u8>,
-                             output_bytes: usize)
-                             -> Result<OwnedJob, Status>
-{
-    enqueue_job(super::jobs::Owner::Kernel, class, version, operation, input, output_bytes)
-}
-
 /// Submit to the exact provider incarnation retained by a resident mount.
-pub(crate) fn submit_background_to(provider: u64, class: ClassId, version: u32, operation: u32,
-                                   input: Vec<u8>, output_bytes: usize)
+pub(crate) fn submit_background_to(subject: &super::jobs::subjects::Subject, provider: u64,
+                                   class: ClassId, version: u32, operation: u32, input: Vec<u8>,
+                                   output_bytes: usize)
                                    -> Result<OwnedJob, Status>
 {
     RUNTIME.with(|runtime| {
@@ -847,12 +912,16 @@ pub(crate) fn submit_background_to(provider: u64, class: ClassId, version: u32, 
            .map_err(crate::state::AccessError::status)??;
     let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
     let queue = &JOBS;
-    let id = queue.submit(super::jobs::Owner::Kernel, work).map_err(|error| error.status)?;
+    let (id, receipt) = queue.submit(subject, super::jobs::Owner::Kernel, work)
+                             .map_err(|error| error.status)?
+                             .into_parts();
     Ok(OwnedJob { owner: super::jobs::Owner::Kernel,
-                  id })
+                  id,
+                  receipt,
+                  subject: subject.clone() })
 }
 
-pub(crate) fn abandon_deferred_job(thread: u64, id: u32)
+pub(crate) fn abandon_deferred_job(thread: u64, id: u64)
 {
     let queue = &JOBS;
     // A kernel-owned operation still has to observe publication and clean its
@@ -861,4 +930,13 @@ pub(crate) fn abandon_deferred_job(thread: u64, id: u32)
     {
         let _ = queue.detach_waiter(thread, id);
     }
+}
+
+
+pub(crate) fn release_request(ticket: mac_object_table::domain::ReleasedResource, storage: bool)
+                              -> Result<(), crate::toolbox::handles::cleanup::Failure>
+{
+    use crate::toolbox::handles::cleanup::Failure;
+    RUNTIME.with_owned(ticket, |ticket, runtime| runtime.registry.release_request(ticket, storage))
+           .map_err(|(cause, ticket)| Failure::request_registry_unavailable(ticket, cause))?
 }

@@ -10,6 +10,12 @@ impl super::objects::Payload for Pending
 
     const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FDWR");
 
+    #[cfg(target_arch = "riscv64")]
+    fn io_subject(&self) -> Option<&crate::drivers::jobs::subjects::Subject>
+    {
+        self.io_subject.as_ref()
+    }
+
     fn cleanup_pending(&self) -> bool
     {
         self.provider.as_ref().is_some_and(provider::writes::State::needs_cleanup)
@@ -49,20 +55,22 @@ impl lifetime::WriteHost for Manager
 }
 pub(super) struct Pending
 {
-    pub authority:     super::subject::Authority,
-    pub owner:         u64,
-    pub volume:        u32,
-    pub parent:        u32,
-    pub expected_cnid: u32,
-    pub file_type:     [u8; 4],
-    pub creator:       [u8; 4],
-    pub when:          u64,
-    pub name:          Vec<u8>,
-    pub comparison:    Vec<u8>,
-    pub length:        usize,
-    pub data:          Vec<u8>,
-    pub provider:      Option<provider::writes::State>,
-    pub directory:     bool
+    pub authority:         super::subject::Authority,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) io_subject: Option<crate::drivers::jobs::subjects::Subject>,
+    pub owner:             u64,
+    pub volume:            u32,
+    pub parent:            u32,
+    pub expected_cnid:     u32,
+    pub file_type:         [u8; 4],
+    pub creator:           [u8; 4],
+    pub when:              u64,
+    pub name:              Vec<u8>,
+    pub comparison:        Vec<u8>,
+    pub length:            usize,
+    pub data:              Vec<u8>,
+    pub provider:          Option<provider::writes::State>,
+    pub directory:         bool
 }
 pub(super) fn status(error: MutationError) -> Status
 {
@@ -177,7 +185,9 @@ impl Manager
             call.handle =
                 self.writes
                     .insert(authority,
-                            Pending { authority:
+                            Pending { #[cfg(target_arch = "riscv64")]
+                                      io_subject: None,
+                                      authority:
                                           super::subject::Authority::Client(authority.clone()),
                                       owner,
                                       volume: call.volume,

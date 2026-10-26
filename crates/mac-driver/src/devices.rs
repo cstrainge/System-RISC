@@ -71,14 +71,14 @@ impl DeviceService
         Ok(description)
     }
 
-    pub fn map(self, device: u32, address: u64, length: u64) -> Result<Mapping>
+    pub fn map(self, device: u64, address: u64, length: u64) -> Result<Mapping>
     {
         if length == 0 || address.checked_add(length).is_none()
         {
             return Err(Error(BAD_ARGUMENT));
         }
         let mut input = [0; 24];
-        input[..4].copy_from_slice(&device.to_le_bytes());
+        input[..8].copy_from_slice(&device.to_le_bytes());
         input[8..16].copy_from_slice(&address.to_le_bytes());
         input[16..24].copy_from_slice(&length.to_le_bytes());
         let mut output = [0; wire::MAPPING_BYTES];
@@ -89,7 +89,7 @@ impl DeviceService
     /// START uses ticket zero. Pending retains that live ticket; POLL/CANCEL use
     /// the same ticket and no retained input buffer. Keep polling cancellation
     /// until terminal acknowledgement before reclaiming hardware-owned storage.
-    pub fn reset(self, device: u32, ticket: &mut u32, phase: Phase) -> Result<Completion>
+    pub fn reset(self, device: u64, ticket: &mut u64, phase: Phase) -> Result<Completion>
     {
         let input = device.to_le_bytes();
         self.provider.invoke(ticket,
@@ -99,13 +99,13 @@ impl DeviceService
                              &mut [])
     }
 
-    pub fn unmap(self, mapping: u32) -> Result<()>
+    pub fn unmap(self, mapping: u64) -> Result<()>
     {
         self.synchronous(wire::UNMAP, &mapping.to_le_bytes(), &mut [])?;
         Ok(())
     }
 
-    pub fn release(self, device: u32) -> Result<()>
+    pub fn release(self, device: u64) -> Result<()>
     {
         self.synchronous(wire::RELEASE, &device.to_le_bytes(), &mut [])?;
         Ok(())

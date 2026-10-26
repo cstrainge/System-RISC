@@ -8,6 +8,7 @@ import subprocess
 import time
 
 from capture_system7_applications_ui import Driver
+from system7_platform import display_size
 from hfs_b_tool import Image
 import system7_vm as vm
 
@@ -50,13 +51,13 @@ def capture(output, windows=False):
                     driver.application('Cursor Test');driver.wait('CURSOR_TEST_READY\n')
                     cursor=driver.app_id('Cursor Test');finder=driver.app_id('Finder')
                     active=driver.log().count(f'PROCESS_ACTIVE app={finder}\n')
-                    driver.menu(618,111,popup_x=580);driver.wait(f'PROCESS_ACTIVE app={finder}\n',active)
+                    driver.menu(display_size()[0]-22,111,popup_x=display_size()[0]-60);driver.wait(f'PROCESS_ACTIVE app={finder}\n',active)
                     driver.menu(255,140,popup_x=270)
                     driver.wait('Save your documents')
                     vm.qmp('screendump',{'filename':str(base/'refused.png'),'format':'png'},endpoint)
                     driver.key('ret');driver.wait('FINDER_ALERT_DISMISSED\n')
                     active=driver.log().count(f'PROCESS_ACTIVE app={cursor}\n')
-                    driver.menu(618,93,popup_x=580);driver.wait(f'PROCESS_ACTIVE app={cursor}\n',active)
+                    driver.menu(display_size()[0]-22,93,popup_x=display_size()[0]-60);driver.wait(f'PROCESS_ACTIVE app={cursor}\n',active)
                     driver.key('q',('ctrl',));driver.wait(f'PROCESS_EXIT app={cursor}\n')
                     driver.menu(255,140,popup_x=270)
                     process.wait(timeout=20);guest_shutdown=True

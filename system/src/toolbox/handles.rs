@@ -2,6 +2,7 @@
 //! Keep memory's original high16 generation/low16 one-based slot wire contract.
 #![forbid(unsafe_code)]
 pub(crate) mod cleanup;
+pub(crate) mod subject;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use mac_object_table::domain::{DirectoryError, DomainKind, OwnerIndex};
 #[cfg(target_arch = "riscv64")]
@@ -171,11 +172,24 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                }
                                for storage in [false, true]
                                {
+                                   registry.register(&owner, crate::drivers::jobs::records::specification(storage),
+                                       crate::drivers::jobs::records::ReleaseJobs(storage))
+                                       .map_err(KindAccessError::Registry)?;
+                                   registry.register(&owner, crate::drivers::jobs::subjects::specification(storage),
+                                       crate::drivers::jobs::subjects::ReleaseOperations(storage))
+                                       .map_err(KindAccessError::Registry)?;
                                    registry.register(&owner, crate::drivers::registry::interfaces::specification(storage),
                                        crate::drivers::registry::interfaces::ReleaseInterfaces(storage))
                                        .map_err(KindAccessError::Registry)?;
+                                   registry.register(&owner, crate::drivers::registry::requests::specification(storage),
+                                       crate::drivers::registry::requests::ReleaseRequests(storage))
+                                       .map_err(KindAccessError::Registry)?;
                                    registry.register(&owner, crate::drivers::registry::dependencies::specification(storage),
                                        crate::drivers::registry::dependencies::ReleaseDependencies(storage))
+                                       .map_err(KindAccessError::Registry)?;
+                               }
+                               for kind in crate::drivers::devices::lifetime::Registration::ALL {
+                                   registry.register(&owner, kind.specification(), kind)
                                        .map_err(KindAccessError::Registry)?;
                                }
                                for kind in crate::images::Registration::ALL {

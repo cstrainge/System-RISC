@@ -57,8 +57,10 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
+        #[cfg(target_arch = "riscv64")]
+        let io_subject = Some(crate::drivers::jobs::subjects::resident()?.admit(authority)?);
         let handle = self.streams
-                         .insert_authorized(authority, Stream { owner:owner.label(),
+                         .insert_authorized(authority, Stream { #[cfg(target_arch = "riscv64")] io_subject, owner:owner.label(),
                                           authority: authority.clone(),
                                           volume: call.volume,
                                           parent: call.parent,

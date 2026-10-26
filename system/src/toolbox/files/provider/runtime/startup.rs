@@ -12,7 +12,9 @@ pub(super) enum HostMount
     Pending(u32, OwnedJob)
 }
 
-pub(super) fn host_mount(provider: u64, index: u32) -> Result<HostMount, Status>
+pub(super) fn host_mount(owner: super::super::super::subject::Access<'_>, provider: u64,
+                         index: u32)
+                         -> Result<HostMount, Status>
 {
     let source = super::super::Source::Export(u64::from(index));
     if let Some(info) = files(|manager| manager.existing_provider_mount(provider, source))?
@@ -20,7 +22,13 @@ pub(super) fn host_mount(provider: u64, index: u32) -> Result<HostMount, Status>
         return Ok(HostMount::Existing(info));
     }
     let volume = files(|manager| manager.reserve_provider_mount(provider, source))?;
-    match submit(provider, Operation::Mount, volume, u64::from(index))
+    match io_subject(owner).and_then(|subject| {
+                               submit(&subject,
+                                      provider,
+                                      Operation::Mount,
+                                      volume,
+                                      u64::from(index))
+                           })
     {
         Ok(job) => Ok(HostMount::Pending(volume, job)),
         Err(error) => retire_unstarted_export(volume).and(Err(error))
@@ -87,7 +95,8 @@ pub(crate) fn mount_startup_exports() -> Result<(), Status>
     };
     // No callbacks or jobs exist until their cleanup storage is reserved.
     reserve_flight_storage(&mut FLIGHTS.lock())?;
-    let job = submit(provider, Operation::Exports, 0, 0)?;
+    let subject = io_subject(0u64.into())?;
+    let job = submit(&subject, provider, Operation::Exports, 0, 0)?;
     let Reply::Count(count) = complete(provider, Step::Count, job)?
     else
     {
@@ -99,9 +108,8 @@ pub(crate) fn mount_startup_exports() -> Result<(), Status>
     }
     for index in 0..count
     {
-        let result =
-            host_mount(provider, index).and_then(|mount| {
-                                           match mount
+        let result = host_mount(0u64.into(), provider, index).and_then(|mount| {
+                                                                 match mount
                                            {
                                                HostMount::Existing(info) =>
                                                {
@@ -112,7 +120,7 @@ pub(crate) fn mount_startup_exports() -> Result<(), Status>
                                                    complete(provider, Step::Mount(volume), job)
                                                }
                                            }
-                                       });
+                                                             });
         match result
         {
             Ok(Reply::Mounted(info)) =>

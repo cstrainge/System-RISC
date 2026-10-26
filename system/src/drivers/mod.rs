@@ -9,7 +9,7 @@ mod runtime;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use runtime::*;
 #[cfg(target_arch = "riscv64")]
-pub use runtime::{OwnedJob, submit_background_job, submit_job};
+pub use runtime::{OwnedJob, submit_job};
 
 pub(crate) fn status(error: Error) -> mac_abi::Status
 {
@@ -22,7 +22,7 @@ pub(crate) fn status(error: Error) -> mac_abi::Status
         Error::Domain(mac_object_table::domain::DirectoryError::Storage { .. }) => NO_MEMORY,
         Error::Domain(mac_object_table::domain::DirectoryError::NotFound { .. }) => NOT_FOUND,
         Error::Domain(_) => SERVICE_BUSY,
-        Error::Access => ACCESS_DENIED,
+        Error::Access | Error::RequestSubject => ACCESS_DENIED,
         Error::Busy | Error::State | Error::DependencyInUse { .. } | Error::Cleanup(_) => SERVICE_BUSY,
         Error::Exhausted => NO_MEMORY,
         Error::Contract(_) => BAD_ABI,

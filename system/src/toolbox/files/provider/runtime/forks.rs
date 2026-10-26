@@ -37,12 +37,13 @@ fn quarantine(handle: u32)
 fn cleanup(mut flight: Flight, handle: u32, error: Status) -> Progress
 {
     let job = files(|manager| manager.cleanup_provider_file(handle)).and_then(|volume| {
-                                                                        submit_args(flight.provider,
+                  submit_args(flight.job.subject(),
+                              flight.provider,
                               Operation::Close,
                               Arguments { volume,
                                           token: u64::from(handle),
                                           ..Default::default() })
-                                                                    });
+              });
     match job
     {
         Ok(job) =>
@@ -213,7 +214,18 @@ pub(super) fn begin<'a>(owner: impl Into<crate::toolbox::files::subject::Access<
             .map(|(position, length)| Reply::Read { bytes: Vec::new(), position, length });
         return Progress::Done(result);
     }
-    let job = match submit_args(provider, operation, args)
+    let job = match submit_object(IoObject::Fork(match action
+                                                 {
+                                                     Action::Open { handle }
+                                                     | Action::Read { handle,
+                                                                    .. }
+                                                     | Action::Close { handle }
+                                                     | Action::Cleanup { handle,
+                                                                       .. } => handle
+                                                 }),
+                                  provider,
+                                  operation,
+                                  args)
     {
         Ok(job) => job,
         Err(error) =>
@@ -294,11 +306,12 @@ pub(super) fn pump_cleanup()
     // Check another mark next time. A concurrent signal cannot be cleared by
     // the empty-queue observation above (the flag was consumed before querying).
     FORK_CLEANUP.store(true, Ordering::Release);
-    match submit_args(provider,
-                      Operation::Close,
-                      Arguments { volume,
-                                  token: u64::from(handle),
-                                  ..Default::default() })
+    match submit_object(IoObject::Fork(handle),
+                        provider,
+                        Operation::Close,
+                        Arguments { volume,
+                                    token: u64::from(handle),
+                                    ..Default::default() })
     {
         Ok(job) =>
         {

@@ -41,7 +41,7 @@ pub struct Engine
 {
     tx_len:        usize,
     tx_sent:       usize,
-    ticket:        u32,
+    ticket:        u64,
     operation:     u32,
     receiver:      Option<Receiver>,
     poisoned:      bool,

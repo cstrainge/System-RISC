@@ -6,6 +6,8 @@ use mac_object_table::{domain::{CompletionError, PoolError, ReleasedResource},
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cause
 {
+    #[cfg(target_arch = "riscv64")]
+    RequestRegistryUnavailable(crate::state::AccessError),
     ContextUnavailable
     {
         required: &'static str
@@ -20,6 +22,20 @@ pub(crate) enum Cause
         provider:  u64,
         dependent: u64
     },
+    DeviceStop
+    {
+        ordinal: u32,
+        status:  mac_abi::Status
+    },
+    DevicePending
+    {
+        ordinal:  u32,
+        stopped:  bool,
+        mappings: usize,
+        reset:    Option<u64>
+    },
+    #[cfg(target_arch = "riscv64")]
+    DeviceManagerUnavailable(crate::state::AccessError),
     Facility(PoolError),
     Alias(mac_object_table::aliases::ReleaseCause),
     RetirementStorage
@@ -52,6 +68,13 @@ impl core::fmt::Display for Cause
     {
         match self
         {
+            #[cfg(target_arch = "riscv64")]
+            Self::RequestRegistryUnavailable(cause) =>
+            {
+                write!(f,
+                       "driver request cleanup could not enter its registry ({cause:?}); exact \
+                        ticket and pending request remain retained for retry")
+            }
             Self::ContextUnavailable { required } =>
             {
                 write!(f,
@@ -65,6 +88,31 @@ impl core::fmt::Display for Cause
                        "driver module {module} still has {pending} requests using this interface; \
                         wait for actual completion or acknowledged cancellation before retrying \
                         cleanup")
+            }
+            Self::DeviceStop { ordinal,
+                               status } =>
+            {
+                write!(f,
+                       "device {ordinal} reset/stop probe failed with status {status}; no stop \
+                        acknowledgement exists; DMA, claim and unique cleanup ticket remain \
+                        retained for retry")
+            }
+            Self::DevicePending { ordinal,
+                                  stopped,
+                                  mappings,
+                                  reset } =>
+            {
+                write!(f,
+                       "device {ordinal} retirement awaits hardware stop or dependent cleanup \
+                        (stopped={stopped}, mappings={mappings}, reset={reset:?}); claim, DMA and \
+                        unique cleanup ticket remain retained for retry")
+            }
+            #[cfg(target_arch = "riscv64")]
+            Self::DeviceManagerUnavailable(cause) =>
+            {
+                write!(f,
+                       "device cleanup could not enter its manager ({cause:?}); claim, DMA and \
+                        unique cleanup ticket remain retained for retry")
             }
             Self::Facility(error) => error.fmt(f),
             Self::DriverDependencyBusy { provider,
@@ -133,6 +181,42 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn request_registry_unavailable(ticket: ReleasedResource,
+                                               cause: crate::state::AccessError)
+                                               -> Self
+    {
+        Self { ticket,
+               cause: Cause::RequestRegistryUnavailable(cause) }
+    }
+
+    pub(crate) fn device_stop(ticket: ReleasedResource, ordinal: u32, status: mac_abi::Status)
+                              -> Self
+    {
+        Self { ticket,
+               cause: Cause::DeviceStop { ordinal,
+                                          status } }
+    }
+
+    pub(crate) fn device_pending(ticket: ReleasedResource, ordinal: u32, stopped: bool,
+                                 mappings: usize, reset: Option<u64>)
+                                 -> Self
+    {
+        Self { ticket,
+               cause: Cause::DevicePending { ordinal,
+                                             stopped,
+                                             mappings,
+                                             reset } }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn devices_unavailable(ticket: ReleasedResource, cause: crate::state::AccessError)
+                                      -> Self
+    {
+        Self { ticket,
+               cause: Cause::DeviceManagerUnavailable(cause) }
+    }
+
     pub(crate) fn context_unavailable(ticket: ReleasedResource, required: &'static str) -> Self
     {
         Self { ticket,
@@ -162,6 +246,18 @@ impl Failure
         let key = ticket.key();
         Self { ticket,
                cause: Cause::RetirementStorage { provider: "Process Manager",
+                                                 owner: key.owner(),
+                                                 kind: key.kind(),
+                                                 pending,
+                                                 capacity } }
+    }
+
+    pub(crate) fn job_retirement_storage(ticket: ReleasedResource, pending: usize, capacity: usize)
+                                         -> Self
+    {
+        let key = ticket.key();
+        Self { ticket,
+               cause: Cause::RetirementStorage { provider: "System I/O Manager",
                                                  owner: key.owner(),
                                                  kind: key.kind(),
                                                  pending,

@@ -21,6 +21,7 @@ pub(super) enum Acquire
 #[derive(Clone)]
 struct Context
 {
+    subject:   IoSubject,
     owner:     super::super::super::subject::Subject,
     thread:    u64,
     key:       Key,
@@ -59,7 +60,8 @@ impl Context
 
     fn from(flight: &Flight) -> Self
     {
-        Self { owner:     flight.owner.clone(),
+        Self { subject:   flight.job.subject().clone(),
+               owner:     flight.owner.clone(),
                thread:    flight.thread,
                key:       flight.key,
                provider:  flight.provider,
@@ -111,7 +113,8 @@ impl Context
             Ok(volume) => volume,
             Err(error) => return self.release(source, None, error)
         };
-        match submit_args(self.provider,
+        match submit_args(&self.subject,
+                          self.provider,
                           Operation::Mount,
                           Arguments { volume,
                                       auxiliary: source.into(),
@@ -126,7 +129,8 @@ impl Context
     fn cleanup(self, handle: u32, status: Status) -> Progress
     {
         let job = files(|m| m.close_provider_source(handle, true)).and_then(|(provider, args)| {
-                                                                      submit_args(provider,
+                                                                      submit_args(&self.subject,
+                                                                                  provider,
                                                                                   Operation::Close,
                                                                                   args)
                                                                   });
@@ -155,7 +159,13 @@ pub(super) fn release(flight: Flight, source: u32, volume: Option<u32>, status: 
 pub(super) fn start_file(owner: u64, thread: u64, key: Key, call: &mut FileCall, output: &mut [u8])
                          -> Status
 {
-    let mut ctx = Context { owner: owner.into(),
+    let subject = match io_subject(owner.into())
+    {
+        Ok(subject) => subject,
+        Err(error) => return error
+    };
+    let mut ctx = Context { subject,
+                            owner: owner.into(),
                             thread,
                             key,
                             provider: 0,
@@ -202,7 +212,7 @@ pub(super) fn start_file(owner: u64, thread: u64, key: Key, call: &mut FileCall,
                 let _ = files(|m| m.retire_provider_source(handle));
                 return BAD_ABI;
             }
-            match submit_args(source_provider,
+            match submit_args(&ctx.subject, source_provider,
                               Operation::Catalog,
                               Arguments { volume: call.volume,
                                           node: call.cnid,
@@ -284,7 +294,8 @@ pub(super) fn advance(flight: Flight, result: Result<Vec<u8>, Status>, never_sen
                     return Progress::Done(retired.and(terminal).and_then(|r| r.ok_or(BAD_ABI)));
                 }
             }
-            match submit_args(provider,
+            match submit_args(&ctx.subject,
+                              provider,
                               Operation::Open,
                               Arguments { volume: ctx.key.volume,
                                           node: ctx.key.cnid,

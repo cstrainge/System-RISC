@@ -14,13 +14,13 @@ use crate::{Cause, Reply, Result, Rpc, rpc::buffer};
 /// dependency capability, not a code pointer or a global transport instance.
 pub trait Channel: Send
 {
-    fn invoke(&mut self, ticket: &mut u32, phase: Phase, operation: u32, input: &[u8],
+    fn invoke(&mut self, ticket: &mut u64, phase: Phase, operation: u32, input: &[u8],
               output: &mut [u8])
               -> mac_driver::Result<Completion>;
 }
 impl Channel for Provider
 {
-    fn invoke(&mut self, ticket: &mut u32, phase: Phase, operation: u32, input: &[u8],
+    fn invoke(&mut self, ticket: &mut u64, phase: Phase, operation: u32, input: &[u8],
               output: &mut [u8])
               -> mac_driver::Result<Completion>
     {
@@ -55,7 +55,7 @@ impl Cancellation
 }
 struct Flight
 {
-    ticket:    u32,
+    ticket:    u64,
     operation: Operation,
     forced:    Option<Cause>
 }

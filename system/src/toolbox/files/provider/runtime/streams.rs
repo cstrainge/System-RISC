@@ -24,8 +24,10 @@ fn retire(handle: u64) -> Result<(), Status>
 {
     files(|manager| manager.retire_remote_stream(handle))
 }
-fn quarantine(handle: u64)
+fn quarantine(handle: u64, error: Status, stage: &str)
 {
+    serial!("FILE_STREAM_QUARANTINED handle={handle} stage={stage} status={error}; staged file, \
+             I/O subject and cleanup guard remain retained");
     let _ = files(|manager| {
         manager.quarantine_remote_stream(handle);
         Ok(())
@@ -40,7 +42,8 @@ fn failed(mut flight: Flight, mut state: State, error: Status) -> Progress
         Ok(v) => v,
         Err(error) => return Progress::Done(Err(error))
     };
-    match submit_args(flight.provider,
+    match submit_args(flight.job.subject(),
+                      flight.provider,
                       Operation::AbortWrite,
                       Arguments { volume,
                                   token: state.handle,
@@ -52,9 +55,9 @@ fn failed(mut flight: Flight, mut state: State, error: Status) -> Progress
             flight.step = Step::Stream(state);
             Progress::Pending(flight)
         }
-        Err(_) =>
+        Err(error) =>
         {
-            quarantine(state.handle);
+            quarantine(state.handle, error, "submit rollback");
             Progress::Done(Err(ROLLBACK_FAILED))
         }
     }
@@ -95,9 +98,9 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
                                                        }
                                                    }))
             }
-            Err(_) =>
+            Err(error) =>
             {
-                quarantine(state.handle);
+                quarantine(state.handle, error, "acknowledge rollback");
                 Progress::Done(Err(ROLLBACK_FAILED))
             }
         };
@@ -312,10 +315,11 @@ pub(super) fn begin<'a>(owner: impl Into<crate::toolbox::files::subject::Access<
             (provider, call.handle, op, args, count)
         };
         let payload = if call.operation == BEGIN_FORK_WRITE { properties.as_slice() } else { data };
-        let submitted = submit_args(provider,
-                                    op,
-                                    Arguments { payload,
-                                                ..args });
+        let submitted = submit_object(IoObject::Stream(handle),
+                                      provider,
+                                      op,
+                                      Arguments { payload,
+                                                  ..args });
         let job = match submitted
         {
             Ok(job) => job,
@@ -402,11 +406,12 @@ pub(super) fn pump_cleanup()
     {
         return;
     };
-    match submit_args(provider,
-                      Operation::AbortWrite,
-                      Arguments { volume,
-                                  token: handle,
-                                  ..Default::default() })
+    match submit_object(IoObject::Stream(handle),
+                        provider,
+                        Operation::AbortWrite,
+                        Arguments { volume,
+                                    token: handle,
+                                    ..Default::default() })
     {
         Ok(job) =>
         {
@@ -441,6 +446,6 @@ pub(super) fn pump_cleanup()
                                                                     error: OK }) });
             REAP.store(true, Ordering::Release);
         }
-        Err(_) => quarantine(handle)
+        Err(error) => quarantine(handle, error, "submit exit cleanup")
     }
 }

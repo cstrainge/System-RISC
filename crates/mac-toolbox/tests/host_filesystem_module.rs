@@ -207,6 +207,9 @@ fn assert_public_host_filesystem_capture(output: &std::path::Path)
     assert_eq!(capture["original_before"], capture["original_after"]);
     let serial = fs::read_to_string(output.join("vm/serial.log")).unwrap();
     assert_eq!(capture["termination"], "guest-outcome", "{serial}");
+    assert!(!serial.contains("PROCESS_DOMAIN_RETIRE_REFUSED"),
+            "ordinary asynchronous cleanup must wait on its barrier, not repeatedly attempt a \
+             premature directory retirement: {serial}");
     assert!(serial.contains("HOST_FS_NATIVE_WRITE_GROWTH_PASS count=20 width=64 reuse=passed \
                              cleanup=passed\n"),
             "{serial}");
@@ -219,6 +222,8 @@ fn assert_public_host_filesystem_capture(output: &std::path::Path)
                2,
                "{serial}");
     assert!(serial.contains("HOST_FS_EXIT_WORKER_READY"), "{serial}");
+    assert!(serial.contains("HOST_FS_IO_SUBJECTS_PASS owner=app roots=owned jobs=scoped"),
+            "{serial}");
     assert!(serial.contains("HOST_FS_METADATA_PASS native=passed legacy=passed protected=passed \
                              retry=passed"),
             "{serial}");

@@ -9,6 +9,14 @@ impl mac_object_table::shared::InvocationGate for NativeInvocationGate
     {
         with_masked(operation)
     }
+
+    fn released(owner: mac_object_table::domain::DomainId)
+    {
+        if owner.kind() == mac_object_table::domain::DomainKind::Process
+        {
+            crate::toolbox::processes::retirement::resources_released();
+        }
+    }
 }
 
 /// Keeps a bounded synchronous operation on this hart. Nested entry preserves

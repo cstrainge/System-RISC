@@ -13,6 +13,12 @@ impl super::objects::Payload for OpenFile
     const KIND: crate::toolbox::handles::KindCode = crate::toolbox::handles::KindCode(*b"FFRK");
     const WIRE: Option<Kind> = Some(Kind::Files);
 
+    #[cfg(target_arch = "riscv64")]
+    fn io_subject(&self) -> Option<&crate::drivers::jobs::subjects::Subject>
+    {
+        self.io_subject.as_ref()
+    }
+
     fn cleanup_pending(&self) -> bool
     {
         matches!(&*self.fork.lock(),FileFork::Provider(fork) if !fork.closed())

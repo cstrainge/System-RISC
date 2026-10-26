@@ -1,4 +1,6 @@
 mod common;
+#[path = "../../../crates/mac-object-table/tests/support/native_requests.rs"]
+mod native_requests;
 use std::{future::Future,
           path::PathBuf,
           pin::pin,
@@ -9,6 +11,7 @@ use std::{future::Future,
 use mac_fork_file::{Fork, Kind};
 use mac_host_protocol::{Arguments, Operation};
 use mac_object_table::{Kind as ObjectKind, Table};
+use native_requests::Requests as NativeRequests;
 use risc_forks::{Volume, io::Slice};
 use risc_host::{Export, Session};
 use vhost_filesystem::{Cause, Filesystem, Reply, Result, Rpc};
@@ -49,7 +52,7 @@ struct Host
 {
     session:                   Session,
     session_id:                u32,
-    tickets:                   Table<()>,
+    tickets:                   NativeRequests,
     calls:                     Vec<Operation>,
     trace:                     Vec<(Operation, u32, u64, usize)>,
     commits:                   Vec<Vec<u8>>,
@@ -65,7 +68,7 @@ impl Host
         Self {
             session: Session::new(Arc::new(vec![Export::open("Share", &temp.0, writable).unwrap()])).unwrap(),
             session_id: 0,
-            tickets: Table::new(ObjectKind::DriverRequests),
+            tickets: NativeRequests::new(),
             calls: Vec::new(), trace: Vec::new(), commits: Vec::new(), fail_next: None, fail_resource_read_after: None,
             reached_child: Arc::new(AtomicBool::new(false)),
             modify_before_description: None

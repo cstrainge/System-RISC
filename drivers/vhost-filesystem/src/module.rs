@@ -28,7 +28,7 @@ enum Progress<C: Channel>
 }
 struct Active<C: Channel>
 {
-    ticket:    u32,
+    ticket:    u64,
     operation: u32,
     progress:  Progress<C>
 }

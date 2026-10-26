@@ -103,8 +103,8 @@ impl Queue
 pub(crate) struct Device
 {
     service:         DeviceService,
-    claim:           u32,
-    mapping:         u32,
+    claim:           u64,
+    mapping:         u64,
     registers:       usize,
     dma:             u64,
     queues:          [Queue; 4],
@@ -112,7 +112,7 @@ pub(crate) struct Device
     pending_control: u8,
     connected:       bool,
     lost:            bool,
-    reset_ticket:    u32,
+    reset_ticket:    u64,
     live:            bool
 }
 fn fence()
