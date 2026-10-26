@@ -56,6 +56,12 @@ def build():
 
 
 def native_executable():
+    configured = os.environ.get('SYSTEM7_WINDOWS_QEMU')
+    if configured:
+        executable = Path(configured).expanduser().resolve()
+        if not executable.is_file():
+            raise FileNotFoundError(f'SYSTEM7_WINDOWS_QEMU does not name a file: {executable}')
+        return executable
     config = ROOT / 'working/vm/windows-qemu.json'
     if config.exists():
         exe = Path(json.loads(config.read_text())['executable']).with_name('qemu-system-riscv64.exe')

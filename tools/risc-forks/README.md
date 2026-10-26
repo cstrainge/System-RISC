@@ -28,6 +28,9 @@ identities, malformed bytes, unwrapped entries and interrupted stages explicitly
 The tool follows no source symlinks and confines managed paths to its opened root.
 
 A writable root requires file and directory sync plus atomic publication. A flush
-failure is an error. The tool does not claim Windows host-filesystem durability
-from the separately successful Windows QEMU channel test. See
+failure is an error. Linux and native Windows use the companion's shared
+directory-flush, revision, identity and cooperating-lock adapters. Windows
+requires nightly Rust; close returned folder/record snapshots before renaming
+their parent through another host program. Host round-trip tests are separate
+from guest acceptance and physical power-loss testing. See
 [FORMAT.md](../../FORMAT.md) and [HOST-FOLDERS.md](../../docs/HOST-FOLDERS.md).

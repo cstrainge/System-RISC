@@ -3,23 +3,10 @@ use std::{fs::File,
           io::{Read, Seek, SeekFrom, Write}};
 
 use mac_fork_file::{Error, ReadAt, Result, WriteAt};
-#[derive(PartialEq, Eq)]
-struct Revision
-{
-    length:   u64,
-    modified: std::time::SystemTime,
-    #[cfg(unix)]
-    changed:  (i64, i64)
-}
+type Revision = [u8; 32];
 fn revision(file: &File) -> std::io::Result<Revision>
 {
-    let metadata = file.metadata()?;
-    #[cfg(unix)]
-    use std::os::unix::fs::MetadataExt;
-    Ok(Revision { length:               metadata.len(),
-                  modified:             metadata.modified()?,
-                  #[cfg(unix)]
-                  changed:              (metadata.ctime(), metadata.ctime_nsec()) })
+    risc_host::file_revision(file).map_err(std::io::Error::other)
 }
 pub struct FileIo
 {
@@ -39,9 +26,15 @@ impl FileIo
 
     pub fn snapshot(file: File) -> std::io::Result<Self>
     {
-        file.lock_shared()?;
+        // Folder snapshots track metadata, while the volume's dedicated lock
+        // record coordinates writers. Windows does not support byte locks on
+        // directory handles.
+        if file.metadata()?.is_file()
+        {
+            risc_host::try_lock_file(&file, false).map_err(std::io::Error::other)?;
+        }
         let expected = revision(&file)?;
-        Ok(Self { length: expected.length,
+        Ok(Self { length: file.metadata()?.len(),
                   file,
                   expected: Some(expected) })
     }

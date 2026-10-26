@@ -185,6 +185,23 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
             "capture failed:\n{}\n{}",
             String::from_utf8_lossy(&result.stdout),
             String::from_utf8_lossy(&result.stderr));
+    assert_public_host_filesystem_capture(&output);
+    fs::copy(output.join("rust-acceptance.json"),
+             root.join("results/system7/host-filesystem-mount-checks.json")).unwrap();
+}
+
+#[test]
+#[ignore = "validates a prepared guest capture, including a native Windows companion"]
+fn prepared_host_filesystem_capture_passes_public_sdk_acceptance()
+{
+    let output = std::env::var_os("SYSTEM7_HOST_FILESYSTEM_CAPTURE")
+        .map(PathBuf::from)
+        .expect("SYSTEM7_HOST_FILESYSTEM_CAPTURE must name a completed private capture");
+    assert_public_host_filesystem_capture(&output);
+}
+
+fn assert_public_host_filesystem_capture(output: &std::path::Path)
+{
     let capture: serde_json::Value =
         serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
     assert_eq!(capture["original_before"], capture["original_after"]);
@@ -313,8 +330,6 @@ fn native_userspace_mounts_reuses_and_unmounts_host_volumes_through_public_files
         "transfer_and_mutation_acceptance":"native and provider property edits; empty/nonempty/readonly removal; recursive two-fork host-to-native move and native-to-host copy; identity-preserving moves; forced same-folder copy names; cycles/collisions/readonly refusal; partial-copy cancellation with exact date restoration; RAII Drop and actual app-exit cleanup followed by retry; recursive Trash/Put Away/Empty; cold-boot identity and metadata restoration",
         "not_covered":"classic notification trap compatibility, file-specific watches, exhaustive failure injection at every provider phase and sustained-I/O latency; disconnect and actual Finder gestures have separate native gates", "capture":capture});
     fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
-    fs::write(root.join("results/system7/host-filesystem-mount-checks.json"),
-              serde_json::to_vec_pretty(&report).unwrap()).unwrap();
 }
 
 #[test]

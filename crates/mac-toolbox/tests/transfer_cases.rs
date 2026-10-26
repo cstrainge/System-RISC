@@ -19,9 +19,34 @@ fn tick(system: &System<'_>) -> ToolboxResult<()>
 pub fn finish(system: &System<'_>, owner: &mut FileTransfer<'_>)
               -> core::result::Result<TransferProgress, TransferFailure>
 {
+    let mut recovery = None;
+    let mut current = None;
     for _ in 0..10000
     {
         let progress = owner.step()?;
+        current = progress.current;
+        if progress.recovery != recovery
+        {
+            recovery = progress.recovery;
+            if let Some(state) = recovery
+            {
+                crate::diagnostics::error(system, "TRANSFER_RECOVERY", state.error);
+                system.log(if state.committed
+                           {
+                               "TRANSFER_RECOVERY_COMMITTED\n"
+                           }
+                           else
+                           {
+                               "TRANSFER_RECOVERY_ROLLBACK\n"
+                           })
+                      .ok();
+                if let Some(entry) = state.current
+                {
+                    system.log(entry.name()).ok();
+                    system.log("\n").ok();
+                }
+            }
+        }
         if progress.finished()
         {
             return Ok(progress);
@@ -32,25 +57,28 @@ pub fn finish(system: &System<'_>, owner: &mut FileTransfer<'_>)
                                           current: None }
                     })?;
     }
-    Err(TransferFailure { cause:   Error::ServiceBusy,
-                          cleanup: None,
-                          current: None })
+    Err(TransferFailure { cause: recovery.and_then(|state| state.original)
+                                         .unwrap_or(Error::ServiceBusy),
+                          cleanup: recovery.map(|state| state.error),
+                          current })
 }
 fn success(system: &System<'_>, spec: TransferSpec, sources: &[TransferSource])
            -> ToolboxResult<()>
 {
     let mut owner = system.files().begin_transfer(spec, sources)?;
     let outcome = finish(system, &mut owner).map_err(|failure| {
-                                                if let Some(entry) = failure.current
-                                                {
-                                                    system.log(entry.name()).ok();
-                                                    system.log("\n").ok();
-                                                }
-                                                crate::diagnostics::error(system,
-                                                                          "TRANSFER_FAILED",
-                                                                          failure.cause);
-                                                failure.cause
-                                            })?;
+                      if let Some(entry) = failure.current
+                      {
+                          system.log(entry.name()).ok();
+                          system.log("\n").ok();
+                      }
+                      crate::diagnostics::error(system, "TRANSFER_FAILED", failure.cause);
+                      if let Some(cleanup) = failure.cleanup
+                      {
+                          crate::diagnostics::error(system, "TRANSFER_CLEANUP_FAILED", cleanup);
+                      }
+                      failure.cause
+                  })?;
     require(outcome.phase == TransferPhase::Committed)
 }
 fn destination(volume: VolumeId, parent: Cnid, mode: TransferMode) -> TransferSpec

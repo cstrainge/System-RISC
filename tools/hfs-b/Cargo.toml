@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+getrandom = "=0.3.4"
 mac-block.workspace = true
 mac-hfs-b.workspace = true
 mac-formats.workspace = true

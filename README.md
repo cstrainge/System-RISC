@@ -79,6 +79,12 @@ before and after the gate; reports, screenshots and original reference media
 remain. Its QMP port is4447;
 the classic Mac and old QuickDraw machines keep their own state and ports.
 
+From WSL, set `SYSTEM7_WINDOWS_QEMU` to the WSL path of
+`qemu-system-riscv64.exe` to select an extracted Windows QEMU distribution.
+For example, `SYSTEM7_WINDOWS_QEMU=/mnt/d/tools/qemu/qemu-system-riscv64.exe`
+selects that binary for `--frontend native` or `--frontend native-headless`.
+An invalid configured path reports an error before launch.
+
 Normal startup initializes `System7/transfer` on first use and exposes it as a
 read/write **Transfer** volume. It is ignored by Git and survives disk rebuilds.
 System detects and mounts the driver's exports before launching Finder; Finder
@@ -99,10 +105,15 @@ cargo run --release -p risc-forks -- export transfer /Documents /tmp/saved-docum
   --read-only-export 'Reference=/path/to/readonly-volume'
 ```
 
-Read/write exports use the Linux companion, including with native Windows QEMU.
-Provider application loading, folder/rename/delete mutations, full Finder copy
-operations and external-change refresh remain implementation work; a mounted
-volume does not imply those paths are complete. Restart the VM to change its
+Read/write exports have Linux and native Windows companion adapters; Windows
+requires nightly Rust and a filesystem that passes the real file/directory
+flush and publication probes. See [the companion contracts](tools/risc-host/README.md)
+for Windows requirements, open-handle restrictions and verified coverage.
+Public-SDK guest checks cover provider application loading, folder mutations,
+recursive two-fork transfers, Trash/Put Away, external-change refresh and
+cold-boot metadata restore against native Windows companions, including a
+native Windows QEMU GTK run. Physical power-loss testing remains a separate gate.
+Restart the VM to change its
 export configuration. An existing unprepared, nonempty transfer directory is
 rejected rather than reformatted.
 

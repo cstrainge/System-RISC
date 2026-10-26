@@ -241,6 +241,7 @@ dependencies = [
 name = "hfs-b"
 version = "0.1.0"
 dependencies = [
+ "getrandom",
  "mac-block",
  "mac-formats",
  "mac-hfs-b",
@@ -280,6 +281,26 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "kqueue"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d763e5b24120b4ddf50de6c92308156765aabfbbccebf401da7cff2d70a41ea"
+dependencies = [
+ "kqueue-sys",
+ "libc",
+]
+
+[[package]]
+name = "kqueue-sys"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07293a4e297ac234359b510362495713f75ea345d5307140414f20c69ffeb087"
+dependencies = [
+ "bitflags",
+ "libc",
+]
 
 [[package]]
 name = "libc"
@@ -792,11 +813,14 @@ version = "0.1.0"
 dependencies = [
  "cap-std",
  "getrandom",
+ "kqueue",
+ "libc",
  "mac-hfs-b",
  "mac-host-protocol",
  "mac-object-table",
  "rustix",
  "sha2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1303,6 +1327,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "getrandom",
  "hfs-b",
  "mac-abi",
  "mac-build",

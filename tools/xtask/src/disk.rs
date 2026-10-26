@@ -1,6 +1,5 @@
 //! Native System-volume builder using the shared HFS-B filesystem.
-use std::{env,
-          fs::{self, File},
+use std::{env, fs,
           path::{Path, PathBuf},
           process::Command,
           time::{SystemTime, UNIX_EPOCH}};
@@ -71,8 +70,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
         Err(e) => return Err(e.into())
     };
     let mut uuid = [0; 16];
-    use std::io::Read;
-    File::open("/dev/urandom")?.read_exact(&mut uuid)?;
+    getrandom::fill(&mut uuid).map_err(|e| error(format!("cannot create filesystem UUID: {e}")))?;
     mac_hfs_b::format(&mut image,
                       partition,
                       mac_hfs_b::FormatOptions { name: "System RISC",

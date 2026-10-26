@@ -67,6 +67,17 @@ impl State
         {
             // Keep the ledger/leases for retry, at a bounded 250 ms cadence.
             // The primary cause and cleanup failure remain separate.
+            if self.stats.cleanup_error != error
+            {
+                serial!("FILE_TRANSFER_RECOVERY transfer={} stage={:?} cause={} committed={} \
+                         volume={} node={}",
+                        self.handle,
+                        self.stage,
+                        error,
+                        self.committed,
+                        self.stats.current.volume,
+                        self.stats.current.id);
+            }
             self.stats.cleanup_error = error;
             self.retry_stage = self.stage;
             self.retry_at = crate::platform::ticks().saturating_add(2_500_000);

@@ -65,6 +65,10 @@ impl Session
             move_noreplace(&r.from.root, &r.old, &r.to.root, &r.new)?;
             // No fallible work or allocation between rename and this marker.
             self.renames.get_mut(id).unwrap().published = true;
+            #[cfg(windows)]
+            let r = self.renames.get(id).ok_or(Failure(status::STALE))?;
+            #[cfg(windows)]
+            changes::windows_renamed(&r.from.changes, &r.old, &r.to.changes, &r.new)?;
         }
         let r = self.renames.get(id).unwrap();
         if !r.verified
@@ -73,11 +77,13 @@ impl Session
             self.renames.get_mut(id).unwrap().verified = true;
         }
         let r = self.renames.get(id).unwrap();
-        sync(&r.from.root)?;
+        sync_directory(&r.from.root)?;
         if !Arc::ptr_eq(&r.from.root, &r.to.root)
         {
-            sync(&r.to.root)?;
+            sync_directory(&r.to.root)?;
         }
+        r.from.changes.acknowledge_child(&r.old)?;
+        r.to.changes.acknowledge_child(&r.new)?;
         Ok(())
     }
 }

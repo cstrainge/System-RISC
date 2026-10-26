@@ -57,7 +57,9 @@ def _prepare(output, sdk=False, restore=False, disconnect=None):
                     '--target-dir', str(vm.build_dir() / 'host')], cwd=vm.ROOT / 'System7', check=True)
 
 
-def capture(output, sdk=False, disconnect=None):
+def capture(output, sdk=False, disconnect=None, *, timeout=30):
+    if not 0 < timeout <= 600:
+        raise ValueError("SDK timeout must be greater than zero and at most 600 seconds")
     output.mkdir(parents=True, exist_ok=False)
     (output / 'pid').write_text(str(os.getpid()))
     prepare(output, sdk, disconnect=disconnect)
@@ -160,7 +162,7 @@ def capture(output, sdk=False, disconnect=None):
             termination = 'desktop-ready'
             if sdk:
                 termination = 'timeout'
-                deadline = time.monotonic() + 30
+                deadline = time.monotonic() + timeout
                 watch_changes = set()
                 snapshot_changes = set()
                 application_releases = {}
@@ -209,7 +211,7 @@ def capture(output, sdk=False, disconnect=None):
                 subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2',
                                 str(raw), str(dist / 'system7.qcow2')], check=True)
                 process, endpoint = vm.launch(output / 'restore-vm', host_bridge=port)
-                deadline = time.monotonic() + 30
+                deadline = time.monotonic() + timeout
                 restore_termination = 'timeout'
                 while time.monotonic() < deadline:
                     restored = (output / 'restore-vm/serial.log').read_text(errors='replace')
@@ -225,6 +227,7 @@ def capture(output, sdk=False, disconnect=None):
             command = json.loads((output / 'vm/command.json').read_text())
             (output / 'capture.json').write_text(json.dumps({
                 'termination': termination, 'command': command, 'reboot': reboot,
+                'sdk_timeout_seconds': timeout if sdk else None,
                 'serial': str(output / 'vm/serial.log'),
                 'original_before': before,
                 'original_after': {name: digest(base / name) for name in before}
@@ -251,6 +254,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--sdk', action='store_true')
+    parser.add_argument('--timeout', type=float, default=30, help='SDK deadline per boot in seconds (default: 30; maximum: 600)')
     parser.add_argument('--disconnect', choices=['source', 'destination'])
     args = parser.parse_args()
-    capture(args.output.resolve(), args.sdk or bool(args.disconnect), args.disconnect)
+    capture(args.output.resolve(), args.sdk or bool(args.disconnect), args.disconnect, timeout=args.timeout)

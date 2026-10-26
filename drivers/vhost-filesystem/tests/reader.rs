@@ -48,6 +48,7 @@ fn run<T>(future: impl Future<Output = T>) -> T
 struct Host
 {
     session:                   Session,
+    session_id:                u32,
     tickets:                   Table<()>,
     calls:                     Vec<Operation>,
     trace:                     Vec<(Operation, u32, u64, usize)>,
@@ -63,6 +64,7 @@ impl Host
     {
         Self {
             session: Session::new(Arc::new(vec![Export::open("Share", &temp.0, writable).unwrap()])).unwrap(),
+            session_id: 0,
             tickets: Table::new(ObjectKind::DriverRequests),
             calls: Vec::new(), trace: Vec::new(), commits: Vec::new(), fail_next: None, fail_resource_read_after: None,
             reached_child: Arc::new(AtomicBool::new(false)),
@@ -125,6 +127,10 @@ impl Rpc for Host
         let ticket = self.tickets.insert(()).unwrap();
         let header = arguments.header(operation, ticket).unwrap();
         let (header, body) = self.session.respond(header, arguments.payload);
+        if operation == Operation::Hello && header.status == mac_host_protocol::status::OK
+        {
+            self.session_id = header.session;
+        }
         if operation == Operation::ListNext
            && (!body.starts_with(b".system-risc-") && !body.is_empty())
         {
@@ -135,6 +141,48 @@ impl Rpc for Host
                    body })
     }
 }
+#[cfg(windows)]
+fn settle_host_notifications(filesystem: &mut Filesystem<Host>)
+{
+    // Windows completion delivery is asynchronous. Drain the real recursive
+    // watcher before asserting the result of a completed external edit; this
+    // is test synchronization, not a production delay or weakened assertion.
+    use std::time::{Duration, Instant};
+
+    use mac_host_protocol::{Header, status};
+    let host = filesystem.transport();
+    let session = host.session_id;
+    let mut request = |operation, object| {
+        let ticket = host.tickets.insert(()).unwrap();
+        let response =
+            host.session.respond(Header::request(operation, ticket, session, object), &[]);
+        host.tickets.remove(ticket);
+        response
+    };
+    let root = request(Operation::Export, 0).0;
+    assert_eq!(root.status, status::OK);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut stable = Instant::now();
+    let mut previous = None;
+    loop
+    {
+        let (reply, revision) = request(Operation::Stat, root.object);
+        assert_eq!(reply.status, status::OK, "cannot synchronize native directory notifications");
+        if previous.as_ref() != Some(&revision)
+        {
+            stable = Instant::now();
+            previous = Some(revision);
+        }
+        if stable.elapsed() >= Duration::from_millis(100)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "native notifications did not settle");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(request(Operation::Close, root.object).0.status, status::OK);
+}
+
 fn seeded() -> (Temp, u32, Vec<u8>, Vec<u8>)
 {
     let temp = Temp::new();
@@ -268,6 +316,8 @@ fn raw_host_folders_and_files_are_readable_without_records_on_writable_and_reado
         run(fs.close_file(volume, u64::from(token))).unwrap();
         // A refresh and rename preserve identity; replacement cannot alias it.
         std::fs::rename(temp.0.join("Test/Plain.txt"), temp.0.join("Test/Renamed.txt")).unwrap();
+        #[cfg(windows)]
+        settle_host_notifications(&mut fs);
         run(fs.refresh(volume)).unwrap();
         let again = run(fs.lookup(volume, 2, "Test")).unwrap().metadata.catalog_id;
         assert_eq!(again, folder.metadata.catalog_id);
@@ -275,6 +325,8 @@ fn raw_host_folders_and_files_are_readable_without_records_on_writable_and_reado
                    file.metadata.catalog_id);
         std::fs::remove_file(temp.0.join("Test/Renamed.txt")).unwrap();
         std::fs::write(temp.0.join("Test/Renamed.txt"), b"replacement").unwrap();
+        #[cfg(windows)]
+        settle_host_notifications(&mut fs);
         run(fs.refresh(volume)).unwrap();
         run(fs.lookup(volume, 2, "Test")).unwrap();
         let replacement = run(fs.lookup(volume, again, "Renamed.txt")).unwrap().metadata.catalog_id;
@@ -649,6 +701,8 @@ fn external_changes_report_stale_then_refresh_preserves_existing_fork_leases()
                     &mut Slice(&[]),
                     None)
             .unwrap();
+    #[cfg(windows)]
+    settle_host_notifications(&mut fs);
     assert_eq!(run(fs.lookup(volume, parent, "From Host")).unwrap_err().cause, Cause::Stale);
     run(fs.refresh(volume)).unwrap();
     let parent = run(fs.lookup(volume, 2, "Tools")).unwrap().metadata.catalog_id;
