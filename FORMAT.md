@@ -917,6 +917,22 @@ return; the interface does not authorize waiting on hardware with interrupts
 masked. Current broker polling is caller-driven; deferred I/O scheduling and
 class-specific cancellation/progress gates accompany the storage providers.
 
+The resident records trusted call provenance independently of this wire. An
+active callback installs its genuine request receipt in the I/O subject frame;
+nested direct admissions validate that active parent, executor and root scope.
+An owned queue starts its own frame. Module entry keeps one I/O root across
+Start/Poll/Cancel. None of these authorities is accepted from mutable Call fields.
+
+Failed entry withdraws publication and starts the ordinary ledger walk. Only
+abandoned direct roots enter resident cancellation; nested protocols and owned
+queue jobs retain their original coordinators. Direct-root reply capacity and
+return-queue storage are reserved before publication. Pending cancellation keeps
+its exact receipt and scope. A real terminal reply ends serialized occupancy;
+nonempty opaque results remain pinned for class-specific reconciliation rather
+than discarding already committed effects. Uncertain invocation outcomes retain
+original reply storage and never manufacture acknowledgement. Physical module
+unload and arbitrary privileged-fault recovery remain separate gates.
+
 ### Resident device service (VDEV, version 1)
 
 Resident class providers use the same generated interface/request capabilities

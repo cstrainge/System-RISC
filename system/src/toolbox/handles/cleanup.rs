@@ -41,6 +41,19 @@ pub(crate) enum Cause
         provider:  u64,
         dependent: u64
     },
+    DriverReplyPending
+    {
+        request: u64,
+        module:  u64,
+        bytes:   usize,
+        status:  mac_abi::Status
+    },
+    DriverCancellationUncertain
+    {
+        request: u64,
+        module:  u64,
+        status:  mac_abi::Status
+    },
     Facility(PoolError),
     Alias(mac_object_table::aliases::ReleaseCause),
     RetirementStorage
@@ -128,6 +141,25 @@ impl core::fmt::Display for Cause
                         dependency and original cleanup ticket remain retained")
             }
             Self::Facility(error) => error.fmt(f),
+            Self::DriverReplyPending { request,
+                                       module,
+                                       bytes,
+                                       status } =>
+            {
+                write!(f,
+                       "module {module} abandoned request {request} with {bytes} acknowledged \
+                        reply bytes (status {status}); committed effects require class recovery; \
+                        reply, provider pin and unique cleanup ticket remain retained")
+            }
+            Self::DriverCancellationUncertain { request,
+                                                module,
+                                                status } =>
+            {
+                write!(f,
+                       "module {module} request {request} has an uncertain cancellation result \
+                        (status {status}); no terminal acknowledgement is proven; reply storage, \
+                        provider pin and unique cleanup ticket remain retained")
+            }
             Self::DriverDependencyBusy { provider,
                                          dependent } =>
             {
@@ -259,6 +291,27 @@ impl Failure
         Self { ticket,
                cause: Cause::DriverDependencyScopeActive { provider,
                                                            dependent } }
+    }
+
+    pub(crate) fn driver_reply_pending(ticket: ReleasedResource, request: u64, module: u64,
+                                       bytes: usize, status: mac_abi::Status)
+                                       -> Self
+    {
+        Self { ticket,
+               cause: Cause::DriverReplyPending { request,
+                                                  module,
+                                                  bytes,
+                                                  status } }
+    }
+
+    pub(crate) fn driver_cancellation_uncertain(ticket: ReleasedResource, request: u64,
+                                                module: u64, status: mac_abi::Status)
+                                                -> Self
+    {
+        Self { ticket,
+               cause: Cause::DriverCancellationUncertain { request,
+                                                           module,
+                                                           status } }
     }
 
     pub(crate) fn document_retirement_storage(ticket: ReleasedResource, pending: usize,

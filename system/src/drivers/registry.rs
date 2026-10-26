@@ -25,6 +25,7 @@ pub enum Error
     State,
     Access,
     RequestSubject,
+    RequestParent,
     Busy,
     BackingInUse
     {
@@ -82,6 +83,11 @@ impl core::fmt::Display for Error
                 f.write_str("request belongs to a different I/O operation; use the original \
                              admitted operation capability for completion")
             }
+            Self::RequestParent =>
+            {
+                f.write_str("nested broker call has no matching active parent invocation; use the \
+                             original scoped callback or its owned queue")
+            }
             Self::Busy =>
             {
                 f.write_str("module still owns outstanding or active requests; wait for actual \
@@ -135,7 +141,8 @@ struct Module
     requests:         usize,
     file_handlers:    Vec<mac_module::file_handlers::Rule>,
     cleanup:          crate::toolbox::handles::cleanup::Checkpoint,
-    rollback_pending: bool
+    rollback_pending: bool,
+    recovery_refusal: Option<Error>
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Interface
@@ -146,6 +153,7 @@ pub struct Interface
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Request
 {
+    origin:        requests::Origin,
     pub module:    u64,
     pub interface: u64,
     pub caller:    u64,
@@ -155,6 +163,13 @@ pub struct Request
     interface_key: mac_object_table::domain::ResourceKey,
     offer:         mac_module::Offer,
     active:        bool
+}
+impl Request
+{
+    pub(crate) fn origin(self) -> requests::Origin
+    {
+        self.origin
+    }
 }
 impl crate::toolbox::inspection::Subject for Module
 {
@@ -249,7 +264,13 @@ impl Registry
                         -> Result<u64>
     {
         let subject = self.fixture_subject(caller)?;
-        self.begin_scoped(&subject, caller, interface, operation, input_len, output_len)
+        self.begin_scoped(&subject,
+                          caller,
+                          interface,
+                          operation,
+                          input_len,
+                          output_len,
+                          requests::Origin::Direct)
     }
 
     /// Resident services use the same capability/request machinery as modules.
@@ -410,7 +431,8 @@ impl Registry
                                                    requests: 0,
                                                    file_handlers: Vec::new(),
                                                    cleanup,
-                                                   rollback_pending: false })?;
+                                                   rollback_pending: false,
+                                                   recovery_refusal: None })?;
         if let Err(error) = self.bind_dependencies(module)
         {
             self.rollback(module)?;
@@ -466,14 +488,25 @@ impl Registry
             return Err(Error::State);
         }
         let record = self.modules.get_mut(module).ok_or(Error::Stale)?;
+        let first = !record.rollback_pending;
         record.rollback_pending = true;
         record.state = State::Quiescing;
         self.modules.stop(module)?;
+        #[cfg(target_arch = "riscv64")]
+        if first
+        {
+            crate::drivers::recovery_changed();
+        }
+        #[cfg(not(target_arch = "riscv64"))]
+        let _ = first;
+        let owner = self.module_ledger(module)?;
+        self.requests.cancel_entry(module, owner.owner());
+        let drained = self.drain_module(module);
         if self.requests.iter().any(|(_, r)| r.caller == u64::from(module))
         {
             return Err(Error::Busy);
         }
-        self.drain_module(module)?;
+        drained?;
         self.modules.remove(module)?;
         Ok(())
     }
@@ -629,7 +662,7 @@ impl Registry
     /// declared in their own admitted contract; applications use class services.
     pub(crate) fn begin_scoped(&mut self, subject: &crate::drivers::jobs::subjects::Subject,
                                caller: u64, interface: u64, operation: u32, input_len: usize,
-                               output_len: usize)
+                               output_len: usize, origin: requests::Origin)
                                -> Result<u64>
     {
         let provider = self.interface(interface)?;
@@ -684,7 +717,8 @@ impl Registry
                 .ok_or(Error::Exhausted)?
         };
         let ticket = self.requests.insert(subject,
-                                           Request { module: provider.module,
+                                           Request { origin,
+                                                     module: provider.module,
                                                      interface,
                                                      caller,
                                                      class: provider.offer.class,
@@ -751,6 +785,87 @@ impl Registry
             return Err(Error::Busy);
         }
         self.requests.active(access, true)
+    }
+
+    pub(crate) fn request_invocation<'a>(&self, caller: u64,
+                                         access: impl Into<requests::Access<'a>>)
+                                         -> Result<crate::drivers::jobs::subjects::Subject>
+    {
+        let access = access.into();
+        self.request(caller, access)?;
+        self.requests.invoking(access)
+    }
+
+    pub(crate) fn next_cancellation(&mut self) -> Result<Option<requests::cancellation::Plan>>
+    {
+        self.requests.next_cancellation()
+    }
+
+    pub(crate) fn return_cancellation(
+        &mut self, plan: requests::cancellation::Plan)
+        -> core::result::Result<(), requests::cancellation::Refusal>
+    {
+        self.requests.return_cancellation(plan)
+    }
+
+    pub(crate) fn retain_uncertain_cancellation(
+        &mut self, plan: requests::cancellation::Plan, status: mac_abi::Status)
+        -> core::result::Result<(), requests::cancellation::Refusal>
+    {
+        self.requests.retain_uncertain_cancellation(plan, status)
+    }
+
+    pub(crate) fn acknowledge_cancellation(
+        &mut self, plan: requests::cancellation::Plan, status: mac_abi::Status, length: usize)
+        -> core::result::Result<requests::cancellation::Acknowledged,
+                                requests::cancellation::Refusal>
+    {
+        let request = plan.request();
+        let count = if request.module != 0
+        {
+            let Some(module) = self.modules.get_mut(request.module)
+            else
+            {
+                return Err(requests::cancellation::Refusal { cause: Error::Stale,
+                                                             plan });
+            };
+            let Some(remaining) = module.requests.checked_sub(1)
+            else
+            {
+                return Err(requests::cancellation::Refusal { cause: Error::State,
+                                                             plan });
+            };
+            Some((&mut module.requests, remaining))
+        }
+        else
+        {
+            None
+        };
+        let result = self.requests.acknowledge_cancellation(plan, status, length)?;
+        if let Some((count, remaining)) = count
+        {
+            *count = remaining;
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn rollback_after(&self, previous: u64) -> Option<u64>
+    {
+        self.modules
+            .iter()
+            .filter_map(|(id, module)| (id > previous && module.rollback_pending).then_some(id))
+            .min()
+    }
+
+    pub(crate) fn recovery_refusal(&mut self, module: u64, cause: Error) -> Option<&str>
+    {
+        let module = self.modules.get_mut(module)?;
+        if module.recovery_refusal == Some(cause)
+        {
+            return None;
+        }
+        module.recovery_refusal = Some(cause);
+        Some(&module.name)
     }
 
     pub(crate) fn leave_request<'a>(&mut self, caller: u64,
@@ -857,16 +972,17 @@ mod tests
     use mac_module::{BROKER_ABI, Spec};
 
     use super::*;
-    const OFFER: Offer = Offer { class:          ClassId(*b"TEST"),
-                                 version:        1,
-                                 request_schema: 1,
-                                 reply_schema:   1,
-                                 max_request:    16,
-                                 max_reply:      16,
-                                 flags:          0,
-                                 capabilities:   0 };
-    fn metadata(identity: [u8; 16], offers: &[Offer], dependencies: &[mac_module::Dependency])
-                -> Vec<u8>
+    pub(super) const OFFER: Offer = Offer { class:          ClassId(*b"TEST"),
+                                            version:        1,
+                                            request_schema: 1,
+                                            reply_schema:   1,
+                                            max_request:    16,
+                                            max_reply:      16,
+                                            flags:          0,
+                                            capabilities:   0 };
+    pub(super) fn metadata(identity: [u8; 16], offers: &[Offer],
+                           dependencies: &[mac_module::Dependency])
+                           -> Vec<u8>
     {
         metadata_with_requirements(identity, offers, dependencies, &[], &[])
     }
@@ -894,7 +1010,7 @@ mod tests
         spec.encode(&mut bytes).unwrap();
         bytes
     }
-    fn stage(registry: &mut Registry, bytes: &[u8]) -> u64
+    pub(super) fn stage(registry: &mut Registry, bytes: &[u8]) -> u64
     {
         registry.stage(Contract::decode(bytes).unwrap(), PackageKind::Driver, *b"DRVR").unwrap()
     }
@@ -1119,23 +1235,26 @@ mod tests
                                                   optional: false };
         let bytes = metadata(*b"consumer-module!", &[], &[dependency]);
         let consumer = stage(&mut registry, &bytes);
-        let ticket = registry.begin(u64::from(consumer), interface, 1, 0, 0).unwrap();
+        let subject = registry.fixture_subject(consumer).unwrap();
+        let ticket =
+            registry.begin_scoped(&subject, consumer, interface, 1, 0, 0, requests::Origin::Direct)
+                    .unwrap();
+        drop(subject);
         assert_eq!(registry.commit(consumer), Err(Error::Busy));
         assert_eq!(registry.rollback(consumer), Err(Error::Busy));
         assert_eq!(registry.state(consumer), Ok(State::Quiescing));
-        assert_eq!(registry.finish_quiesce(consumer), Err(Error::Busy));
-        assert_eq!(registry.begin(u64::from(consumer), interface, 1, 0, 0), Err(Error::State));
-        registry.complete(u64::from(consumer), ticket, 0).unwrap();
+        assert_eq!(registry.request(consumer, ticket), Err(Error::Stale));
         registry.quiesce(provider).unwrap();
         let refused = registry.finish_quiesce(provider).unwrap_err();
-        assert_eq!(refused,
-                   Error::DependencyInUse { provider,
-                                            dependent: consumer });
-        assert!(refused.to_string().contains("unload the dependent module"));
-        registry.finish_quiesce(consumer).unwrap();
+        assert_eq!(refused, Error::Busy);
+        assert!(refused.to_string().contains("actual completion"));
+        let plan = registry.next_cancellation().unwrap().unwrap();
+        assert_eq!(plan.ticket(), ticket);
+        registry.acknowledge_cancellation(plan, mac_abi::OPERATION_CANCELLED, 0).unwrap();
+        registry.rollback(consumer).unwrap();
         registry.finish_quiesce(provider).unwrap();
-        assert_eq!(registry.state(consumer), Ok(State::Failed));
-        assert_eq!(registry.request(u64::from(consumer), ticket), Err(Error::Stale));
+        assert_eq!(registry.state(consumer), Err(Error::Stale));
+        assert_eq!(registry.state(provider), Ok(State::Failed));
     }
 
     #[test]

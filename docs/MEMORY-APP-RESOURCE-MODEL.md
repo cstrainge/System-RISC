@@ -2276,3 +2276,50 @@ application panic recovery, and power restart/shutdown/refusal. The direct
 initialization probe exposed and verifies the entry-root correction above.
 Private transport coordinates and host disk-space failures were corrected and
 the interrupted cases rerun; they were not counted as guest successes.
+
+### Failed module entry and direct-request recovery
+
+Broker admissions distinguish queue-owned calls from direct calls. Each active
+callback installs its authenticated receipt in a scoped subject view; a nested
+admission validates that parent, its active executor and the original resource
+scope. Queued work deliberately starts an independent frame. This records real
+protocol ancestry without scanning all requests on each call or inventing IDs.
+
+Failed entry withdraws the module and starts the same invalidate-first owner
+walk immediately. Its direct roots have preallocated reply reservations and a
+FIFO of genuine receipts. Owned cancellation plans carry the original subject,
+provider and buffers. Nested calls remain their parent's responsibility; queued
+requests remain with their owning queue. No second coordinator steals them.
+Dropping a plan leaves its original request uncertain and pinned. Foreign or
+malformed completion refusals return the same plan intact.
+
+Maintenance performs one bounded cancellation or rollback checkpoint. Positive
+resource releases coalesce rollback retries; an empty actor does atomic checks
+only. Pending work backs off, and unchanged refusals are not logged per poll.
+Actual callback results survive temporary registry contention without calling
+the provider twice. A proven terminal ACK releases serialized occupancy.
+
+A cancellation can deliver a result for an operation that already committed.
+The generic core retains opaque nonempty replies, their original request and
+provider pin until class-specific recovery can reconcile those effects. The
+failed domain stays inspectable; unrelated service requests may proceed after
+the real terminal ACK. Without that reconciliation, full domain retirement is
+refused with an informative retained-reply diagnostic. An uncertain invocation
+retains its reply reservation and claim, with no guessed ACK. These are explicit
+cleanup refusals, not successful recovery or physical code reclamation.
+
+The walk provides resource containment. Arbitrary privileged-fault containment
+is **unproven** and is a **required future gate**. Until a recovery contract
+exists and passes, the System must not claim it can safely recover from every
+mid-call module fault.
+
+Qualification: 31 registry cases, including six new ancestry/cancellation cases,
+and the broader 689-test host suite pass. Sixteen distinct native tests pass,
+including three failed-entry scenarios: delayed terminal ACK completes the common
+rollback, absent ACK keeps the original request pinned, and a committed reply
+remains retained. Physical mouse input is acknowledged in all three guests.
+Existing module admission, provider/archives/disconnect, process cleanup, panic,
+cursor, power and public Toolbox conformance remain verified. The optimized
+image, compiled boundaries, formatting and 52-library API documentation pass.
+Finder restart and opaque class-result reconciliation remain separate recovery
+work; no full isolation or physical-unload claim follows from these results.

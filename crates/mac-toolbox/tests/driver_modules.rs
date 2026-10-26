@@ -247,6 +247,86 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
               serde_json::to_vec_pretty(&acceptance).unwrap()).unwrap();
 }
 
+#[test]
+#[ignore = "requires current private optimized image, QEMU and recovery module fixtures"]
+fn failed_module_entries_cancel_with_original_authority_and_retain_unclaimed_replies()
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let output =
+        root.join("results/system7").join(format!("module-recovery-{}", std::process::id()));
+    let script = root.join("System7/scripts/capture_driver_modules.py");
+    python(&script, &["--output".as_ref(), output.as_os_str(), "--prepare-recovery".as_ref()]);
+    let cases: Vec<_> = [("ack", "MODULE_ROLLBACK_COMPLETE module="),
+                        ("no-ack", "MODULE_CANCEL_WAITING ticket="),
+                        ("reply", "MODULE_CANCEL_REPLY_RETAINED ticket=")]
+        .into_iter().map(|(mode, marker)| json!({
+            "name":mode,"until":marker,"input":true,"files":[
+                {"source":output.join("packages/ModuleEcho.bin"),"directory":"/System Folder/Drivers"},
+                {"source":output.join("packages").join(mode).join("Module Abandon.bin"),"directory":"/System Folder/Drivers"}]
+        })).collect();
+    let path = output.join("cases.json");
+    fs::write(&path, serde_json::to_vec_pretty(&cases).unwrap()).unwrap();
+    python(&script,
+           &["--output".as_ref(), output.as_os_str(), "--cases".as_ref(), path.as_os_str()]);
+    let capture: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(capture["original_before"], capture["original_after"]);
+    for case in capture["cases"].as_array().unwrap()
+    {
+        let name = case["name"].as_str().unwrap();
+        let serial = fs::read_to_string(output.join(name).join("vm/serial.log")).unwrap();
+        assert_eq!(case["termination"], "requested-marker", "{name}: {serial}");
+        assert_eq!(case["mouse"], "115,96", "failed module blocked physical input: {serial}");
+        assert!(serial.contains("MODULE_PUBLISHED name=ModuleEcho")
+                && serial.contains("DESKTOP_READY"),
+                "{serial}");
+        assert!(serial.contains("MODULE_INIT_CLEANUP_RETAINED")
+                && serial.contains("original=-2 reason="),
+                "{serial}");
+        for failure in ["SYSTEM_PANIC:", "SYSTEM_TRAP:", "SYSTEM_ALLOCATION_FAILED:",
+                        "MODULE_CANCEL_RETURN_RETAINED", "MODULE_CANCEL_PLAN_MISSING"]
+        {
+            assert!(!serial.contains(failure), "{name}: {serial}");
+        }
+        if name == "ack"
+        {
+            assert!(serial.contains("MODULE_CANCEL_ACK ticket=")
+                    && serial.contains("original request released"),
+                    "{serial}");
+            assert!(serial.contains("MODULE_ROLLBACK_COMPLETE module="), "{serial}");
+            assert!(!serial.contains("MODULE_CANCEL_REPLY_RETAINED")
+                    && !serial.contains("MODULE_CANCEL_UNCERTAIN"),
+                    "{serial}");
+        }
+        else
+        {
+            assert!(!serial.contains("MODULE_ROLLBACK_COMPLETE module=")
+                    && !serial.contains("MODULE_CANCEL_ACK ticket="),
+                    "unacknowledged work or an unclaimed committed receipt was discarded: \
+                     {serial}");
+            if name == "no-ack"
+            {
+                assert!(serial.contains("awaiting actual provider acknowledgement"), "{serial}");
+                assert_eq!(serial.matches("MODULE_CANCEL_WAITING ticket=").count(),
+                           1,
+                           "per-poll logging storm: {serial}");
+            }
+            else
+            {
+                assert!(serial.contains("bytes=8 status=0; committed results require class \
+                                         recovery; provider remains pinned"),
+                        "{serial}");
+            }
+        }
+    }
+    let report = json!({"status":"passed","cases":3,
+        "coverage":"actual failed module entry; delayed terminal cancellation; absent ACK; committed reply retention; original subject; common rollback completion; physical input remains usable",
+        "not_claimed":"arbitrary privileged fault recovery, opaque committed-result reconciliation, physical module unload or MMU", "capture":capture});
+    fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    fs::write(root.join("results/system7/module-recovery-checks.json"),
+              serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+}
+
 fn budget_package(heap_bytes: u32, stack_bytes: u32, reservation: u64) -> Vec<resource::Resource>
 {
     let descriptor = native::Descriptor { role:        native::Role::CodeResource,

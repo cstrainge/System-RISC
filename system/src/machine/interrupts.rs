@@ -15,6 +15,7 @@ impl mac_object_table::shared::InvocationGate for NativeInvocationGate
         if owner.kind() == mac_object_table::domain::DomainKind::Module
         {
             crate::drivers::dependencies_changed();
+            crate::drivers::recovery_changed();
         }
     }
 
@@ -23,6 +24,10 @@ impl mac_object_table::shared::InvocationGate for NativeInvocationGate
         if owner.kind() == mac_object_table::domain::DomainKind::Process
         {
             crate::toolbox::processes::retirement::resources_released();
+        }
+        else if owner.kind() == mac_object_table::domain::DomainKind::Module
+        {
+            crate::drivers::recovery_changed();
         }
     }
 }

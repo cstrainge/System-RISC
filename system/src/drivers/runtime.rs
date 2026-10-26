@@ -11,8 +11,10 @@ use super::{Error, Registry, status};
 use crate::state::TryState;
 mod discovery;
 mod file_handlers;
+mod recovery;
 pub(crate) use discovery::discover;
 pub(crate) use file_handlers::{file_handler_icon, file_handler_provider};
+pub(crate) use recovery::changed as recovery_changed;
 static RUNTIME: TryState<Runtime> = TryState::new();
 struct Runtime
 {
@@ -58,6 +60,12 @@ enum DispatchTarget
 {
     Module(abi::Instance),
     Resident(ResidentCallback)
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompletionPolicy
+{
+    Caller,
+    Recovery
 }
 
 pub(crate) fn inspect<T: crate::toolbox::inspection::Subject>(processes:&mac_object_table::domain::Directory<T,crate::toolbox::handles::InvocationGate>,
@@ -289,7 +297,14 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
     RUNTIME.with(|runtime| {
                if result != OK || !valid
                {
-                   runtime.registry.rollback(module).map_err(status)?;
+                   if let Err(cleanup) = runtime.registry.rollback(module)
+                   {
+                       serial!("MODULE_INIT_CLEANUP_RETAINED module={} original={} reason={}",
+                               module,
+                               if result < 0 { result } else { BAD_ABI },
+                               cleanup);
+                       return Err(status(cleanup));
+                   }
                    return Err(if result < 0 { result } else { BAD_ABI });
                }
                let binding =
@@ -365,9 +380,23 @@ unsafe extern "C" fn broker(caller: u64, provider: u64, pointer: *mut abi::Call)
 }
 unsafe fn invoke(caller: u64, provider: u64, pointer: *mut abi::Call) -> Result<Status, Status>
 {
+    unsafe { invoke_origin(super::registry::requests::Origin::Direct, caller, provider, pointer) }
+}
+unsafe fn invoke_origin(origin: super::registry::requests::Origin, caller: u64, provider: u64,
+                        pointer: *mut abi::Call)
+                        -> Result<Status, Status>
+{
     if let Some(subject) = crate::context::io_subject()
     {
-        return unsafe { invoke_scoped(&subject, caller, provider, pointer) };
+        return unsafe {
+            invoke_scoped(origin,
+                          &subject,
+                          caller,
+                          provider,
+                          pointer,
+                          CompletionPolicy::Caller,
+                          &mut false)
+        };
     }
     // A module may call its declared services during entry, outside a queued
     // operation. Admit that real module once; nested calls inherit its frame.
@@ -382,17 +411,26 @@ unsafe fn invoke(caller: u64, provider: u64, pointer: *mut abi::Call) -> Result<
     let subject = super::jobs::subjects::resident()?.admit(
         &crate::toolbox::handles::subject::Authority::Client(owner))?;
     crate::context::with_io_subject(subject.clone(), || {
-        unsafe { invoke_scoped(&subject, caller, provider, pointer) }
+        unsafe {
+            invoke_scoped(origin,
+                          &subject,
+                          caller,
+                          provider,
+                          pointer,
+                          CompletionPolicy::Caller,
+                          &mut false)
+        }
     }).and_then(core::convert::identity)
 }
-unsafe fn invoke_scoped(subject: &super::jobs::subjects::Subject, caller: u64, provider: u64,
-                        pointer: *mut abi::Call)
+unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
+                        subject: &super::jobs::subjects::Subject, caller: u64, provider: u64,
+                        pointer: *mut abi::Call, policy: CompletionPolicy, started: &mut bool)
                         -> Result<Status, Status>
 {
     use super::registry::requests::Access;
     let call = unsafe { checked_call(pointer) }?;
     call.output_len = 0;
-    let (module, ticket, target) =
+    let (module, ticket, target, invocation) =
         RUNTIME.with(|runtime| {
                    let interface = if call.phase == abi::START
                                    {
@@ -417,7 +455,7 @@ unsafe fn invoke_scoped(subject: &super::jobs::subjects::Subject, caller: u64, p
                            runtime.registry
                                   .begin_scoped(subject, caller, provider, call.operation,
                                                 call.input_len as usize,
-                                                call.output_capacity as usize)
+                                                call.output_capacity as usize, origin)
                                   .map_err(status)?
                        }
                        abi::POLL | abi::CANCEL =>
@@ -427,7 +465,8 @@ unsafe fn invoke_scoped(subject: &super::jobs::subjects::Subject, caller: u64, p
                                                          Access::Continuing { subject,
                                                                               ticket: call.ticket })
                                                 .map_err(status)?;
-                           if request.interface != provider
+                           if request.origin() != origin
+                              || request.interface != provider
                               || request.class.0 != call.class
                               || request.operation != call.operation
                               || call.input_len > interface.offer.max_request
@@ -460,59 +499,81 @@ unsafe fn invoke_scoped(subject: &super::jobs::subjects::Subject, caller: u64, p
                                          Access::Continuing { subject,
                                                               ticket })
                           .map_err(status)?;
-                   Ok((interface.module, ticket, target))
+                   let invocation = match runtime.registry
+                                                 .request_invocation(caller,
+                                                                     Access::Continuing { subject,
+                                                                                          ticket })
+                   {
+                       Ok(invocation) => invocation,
+                       Err(error) =>
+                       {
+                           runtime.registry
+                                  .leave_request(caller,
+                                                 Access::Continuing { subject,
+                                                                      ticket })
+                                  .map_err(status)?;
+                           return Err(status(error));
+                       }
+                   };
+                   Ok((interface.module, ticket, target, invocation))
                })
                .map_err(crate::state::AccessError::status)??;
     call.ticket = ticket;
     let original = *call;
-    let result = match target
-    {
-        DispatchTarget::Module(instance) =>
-        {
-            let dispatch = instance.dispatch.ok_or(NOT_SUPPORTED)?;
-            unsafe { dispatch(instance.state, call) }
-        }
-        DispatchTarget::Resident(callback) =>
-        {
-            // checked_call validated lengths, non-null pointers and disjoint
-            // live borrows. No registry guard survives into this safe callback.
-            let input = if call.input_len == 0
+    let result =
+        crate::context::with_io_subject(invocation, || -> Result<Status, Status> {
+            Ok(match target
             {
-                &[]
-            }
-            else
-            {
-                unsafe { core::slice::from_raw_parts(call.input, call.input_len as usize) }
-            };
-            let output = if call.output_capacity == 0
-            {
-                &mut []
-            }
-            else
-            {
-                unsafe {
-                    core::slice::from_raw_parts_mut(call.output, call.output_capacity as usize)
-                }
-            };
-            match callback(ResidentCall { caller,
-                                          ticket,
-                                          phase: call.phase,
-                                          operation: call.operation,
-                                          input },
-                           output)
-            {
-                Ok(ResidentCompletion::Complete(length)) if length <= output.len() =>
+                DispatchTarget::Module(instance) =>
                 {
-                    call.output_len = length as u32;
-                    OK
+                    let dispatch = instance.dispatch.ok_or(NOT_SUPPORTED)?;
+                    *started = true;
+                    unsafe { dispatch(instance.state, call) }
                 }
-                Ok(ResidentCompletion::Complete(_)) => BAD_ABI,
-                Ok(ResidentCompletion::Pending) => abi::PENDING,
-                Err(status) if status < 0 => status,
-                Err(_) => BAD_ABI
-            }
-        }
-    };
+                DispatchTarget::Resident(callback) =>
+                {
+                    // checked_call validated lengths, non-null pointers and disjoint
+                    // live borrows. No registry guard survives into this safe callback.
+                    let input = if call.input_len == 0
+                    {
+                        &[]
+                    }
+                    else
+                    {
+                        unsafe { core::slice::from_raw_parts(call.input, call.input_len as usize) }
+                    };
+                    let output = if call.output_capacity == 0
+                    {
+                        &mut []
+                    }
+                    else
+                    {
+                        unsafe {
+                            core::slice::from_raw_parts_mut(call.output,
+                                                            call.output_capacity as usize)
+                        }
+                    };
+                    *started = true;
+                    match callback(ResidentCall { caller,
+                                                  ticket,
+                                                  phase: call.phase,
+                                                  operation: call.operation,
+                                                  input },
+                                   output)
+                    {
+                        Ok(ResidentCompletion::Complete(length)) if length <= output.len() =>
+                        {
+                            call.output_len = length as u32;
+                            OK
+                        }
+                        Ok(ResidentCompletion::Complete(_)) => BAD_ABI,
+                        Ok(ResidentCompletion::Pending) => abi::PENDING,
+                        Err(status) if status < 0 => status,
+                        Err(_) => BAD_ABI
+                    }
+                }
+            })
+        }).and_then(core::convert::identity);
     let output_len = call.output_len;
     let mutated = call.header.version != original.header.version
                   || call.header.size != original.header.size
@@ -531,7 +592,7 @@ unsafe fn invoke_scoped(subject: &super::jobs::subjects::Subject, caller: u64, p
     let malformed = mutated
                     || call.ticket != ticket
                     || call.output_len > call.output_capacity
-                    || result == abi::PENDING && call.output_len != 0;
+                    || result == Ok(abi::PENDING) && call.output_len != 0;
     call.ticket = ticket;
     RUNTIME.with(|runtime| {
                runtime.registry
@@ -541,6 +602,17 @@ unsafe fn invoke_scoped(subject: &super::jobs::subjects::Subject, caller: u64, p
                       .map_err(status)
            })
            .map_err(crate::state::AccessError::status)??;
+    let result = result?;
+    if policy == CompletionPolicy::Recovery
+    {
+        if malformed || result > abi::PENDING
+        {
+            return Err(BAD_ABI);
+        }
+        // The owned recovery plan, not a borrowed wire call, must retain and
+        // classify the real reply before retiring its request/provider pin.
+        return Ok(result);
+    }
     if result == abi::PENDING && !malformed
     {
         return Ok(result);
@@ -650,8 +722,13 @@ impl super::jobs::Broker for NativeBroker
         // SAFETY: Call and both disjoint borrowed slices remain live only for
         // this invocation. checked_call validates the broker wire contract;
         // no registry or job-queue guard survives the callback.
-        let result = crate::context::with_io_subject(request.subject.clone(), || {
-                         unsafe { invoke(caller, request.provider, &mut call) }
+        let result = crate::context::with_io_subject(request.subject.queued(), || {
+                         unsafe {
+                             invoke_origin(super::registry::requests::Origin::Queued,
+                                           caller,
+                                           request.provider,
+                                           &mut call)
+                         }
                      }).and_then(core::convert::identity);
         *request.ticket = call.ticket;
         // Provider errors are Ok(negative_status). Err(Busy) is admission or
@@ -740,6 +817,7 @@ pub(crate) fn pin_backing_provider(dependent: u64, provider: u64,
 
 pub(crate) fn pump_jobs()
 {
+    recovery::pump();
     if DEPENDENCIES_CHANGED.swap(false, core::sync::atomic::Ordering::AcqRel)
        && RUNTIME.with(|runtime| runtime.registry.reap_closed_dependencies()).is_err()
     {

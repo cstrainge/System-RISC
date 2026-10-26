@@ -1,17 +1,14 @@
 #![no_std]
 #![no_main]
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
 use mac_driver::{ClassId, Client, Completion, Driver, Error, Phase, Request, Result};
+static ACTIVE: AtomicU64 = AtomicU64::new(0);
+static CANCELS: AtomicU32 = AtomicU32::new(0);
 struct Device;
 static DEVICE: Device = Device;
 mac_driver::export_driver!(DEVICE);
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo<'_>) -> !
-{
-    loop
-    {
-        core::hint::spin_loop();
-    }
-}
+mac_driver::driver_panic_handler!();
 impl Driver for Device
 {
     fn initialize(&self, host: Client) -> Result<()>
@@ -28,11 +25,13 @@ impl Driver for Device
                     // admission rule and must reject the real service call.
                     if info.flags & mac_driver::devices::interface::RESIDENT_OWNED == 0
                        || devices.claim(ordinal) != Err(Error(-12))
-                    { return Err(Error(-1)); }
+                    {
+                        return Err(Error(-1));
+                    }
                     return Ok(());
                 }
                 Ok(_) | Err(Error(-3)) => (),
-                Err(error) => return Err(error),
+                Err(error) => return Err(error)
             }
         }
         Err(Error(-3))
@@ -40,6 +39,40 @@ impl Driver for Device
 
     fn request(&self, call: Request<'_>, output: &mut [u8]) -> Result<Completion>
     {
+        if call.class == ClassId(*b"TEST") && matches!(call.operation, 8..=10)
+        {
+            if call.phase == Phase::Start
+            {
+                if ACTIVE.compare_exchange(0, call.ticket, Ordering::AcqRel, Ordering::Acquire)
+                         .is_err()
+                {
+                    return Err(Error(-7));
+                }
+                CANCELS.store(0, Ordering::Release);
+                return Ok(Completion::Pending);
+            }
+            if ACTIVE.load(Ordering::Acquire) != call.ticket
+            {
+                return Err(Error(-3));
+            }
+            if call.phase != Phase::Cancel
+            {
+                return Ok(Completion::Pending);
+            }
+            if call.operation == 9 || CANCELS.fetch_add(1, Ordering::AcqRel) < 2
+            {
+                return Ok(Completion::Pending);
+            }
+            ACTIVE.store(0, Ordering::Release);
+            if call.operation == 10
+            {
+                output.get_mut(..8).ok_or(Error(-2))?.copy_from_slice(b"COMMIT!!");
+                return Ok(Completion::Complete(8));
+            }
+            // The test provider has stopped the operation before this terminal
+            // error. Its error is an actual ACK, unlike absence or a timeout.
+            return Err(Error(-4));
+        }
         if call.class != ClassId(*b"TEST")
            || call.operation != 7
            || call.phase != Phase::Start

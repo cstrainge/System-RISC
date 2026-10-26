@@ -38,12 +38,256 @@ fn fixture(serialized: bool) -> (Fixture, OwnerRef, Subject, u64)
 }
 fn begin(registry: &mut Fixture, subject: &Subject, interface: u64) -> u64
 {
-    registry.begin_scoped(subject, 0, interface, 7, 3, 64).unwrap()
+    registry.begin_scoped(subject, 0, interface, 7, 3, 64, Origin::Direct).unwrap()
 }
 fn access(subject: &Subject, ticket: u64) -> Access<'_>
 {
     Access::Continuing { subject,
                          ticket }
+}
+
+fn entry_fixture(serialized: bool) -> (Fixture, Subject, u64, u64, u64)
+{
+    use super::super::tests::{OFFER, metadata, stage};
+    let mut registry = Fixture::new(Target::RVA23U64);
+    let bytes = metadata(*b"cancel-provider!",
+                         &[Offer { flags: if serialized { Offer::SERIALIZED } else { 0 },
+                                   ..OFFER }],
+                         &[]);
+    let provider = stage(&mut registry, &bytes);
+    registry.commit(provider).unwrap();
+    let interface = registry.resolve(0, ClassId(*b"TEST"), 1).unwrap();
+    let dependency = mac_module::Dependency { module:   [0; 16],
+                                              class:    ClassId(*b"TEST"),
+                                              version:  1,
+                                              optional: false };
+    let bytes = metadata(*b"cancel-consumer!", &[], &[dependency]);
+    let consumer = stage(&mut registry, &bytes);
+    let subject = registry.fixture_subject(consumer).unwrap();
+    (registry, subject, provider, interface, consumer)
+}
+
+#[test]
+fn active_broker_parent_is_authenticated_and_queued_work_starts_an_independent_frame()
+{
+    let (mut registry, owner, subject, interface) = fixture(false);
+    let parent = begin(&mut registry, &subject, interface);
+    assert_eq!(registry.request_invocation(0, access(&subject, parent)).err(),
+               Some(Error::RequestParent));
+    registry.enter_request(0, access(&subject, parent)).unwrap();
+    let invoking = registry.request_invocation(0, access(&subject, parent)).unwrap();
+    let child = registry.begin_scoped(&invoking, 0, interface, 7, 0, 16, Origin::Direct).unwrap();
+    let at = registry.requests.at(child).unwrap();
+    let receipt = registry.requests.slots[at].receipt;
+    assert_eq!(registry.requests.store.completing(&receipt).unwrap().parent.unwrap().id(), parent);
+    assert!(registry.requests.slots[at].cancellation.is_none(),
+            "nested protocol was given a second cancellation owner");
+    let error =
+        registry.begin_scoped(&invoking, 0, interface, 7, 0, 16, Origin::Queued).unwrap_err();
+    assert_eq!(error, Error::RequestParent);
+    assert!(format!("{error}").contains("matching active parent invocation"));
+    let other =
+        registry.fixture_operations.as_ref().unwrap().admit(&Authority::Client(owner)).unwrap();
+    let forged = other.in_request(invoking.current_request().unwrap());
+    assert_eq!(registry.begin_scoped(&forged, 0, interface, 7, 0, 16, Origin::Direct),
+               Err(Error::RequestParent));
+    let queued = invoking.queued();
+    let independent =
+        registry.begin_scoped(&queued, 0, interface, 7, 0, 16, Origin::Queued).unwrap();
+    let at = registry.requests.at(independent).unwrap();
+    assert!(registry.requests.slots[at].cancellation.is_none(),
+            "queue-owned request was given a second cancellation owner");
+    registry.leave_request(0, access(&subject, parent)).unwrap();
+    assert_eq!(registry.begin_scoped(&invoking, 0, interface, 7, 0, 16, Origin::Direct),
+               Err(Error::RequestParent));
+    registry.complete(0, access(&queued, independent), 0).unwrap();
+    registry.complete(0, access(&invoking, child), 0).unwrap();
+    registry.complete(0, access(&subject, parent), 0).unwrap();
+}
+
+#[test]
+fn failed_entry_cancels_only_its_direct_root_after_invalidation_and_actual_ack_drains_the_owner()
+{
+    let (mut registry, subject, provider, interface, consumer) = entry_fixture(false);
+    let owner = registry.module_ledger(consumer).unwrap();
+    let root =
+        registry.begin_scoped(&subject, consumer, interface, 7, 0, 16, Origin::Direct).unwrap();
+    registry.enter_request(consumer, access(&subject, root)).unwrap();
+    let invoking = registry.request_invocation(consumer, access(&subject, root)).unwrap();
+    // A real nested provider call has this executor as caller, even though the
+    // subject remains the failed consumer. Kernel-only resident resolution is
+    // covered separately; this test verifies its provenance at the core store.
+    let request = Request { module: 0,
+                            interface,
+                            caller: provider,
+                            class: ClassId(*b"TEST"),
+                            operation: 7,
+                            max_reply: 16,
+                            interface_key: registry.interfaces.key(interface).unwrap(),
+                            offer: registry.interface(interface).unwrap().offer,
+                            active: false,
+                            origin: Origin::Direct };
+    let child = registry.requests.insert(&invoking, request).unwrap();
+    let queued =
+        registry.begin_scoped(&subject.queued(), consumer, interface, 7, 0, 16, Origin::Queued)
+                .unwrap();
+    registry.leave_request(consumer, access(&subject, root)).unwrap();
+    assert_eq!(registry.rollback(consumer), Err(Error::Busy));
+    assert_eq!(registry.request(consumer, root), Err(Error::Stale));
+    let plan = registry.next_cancellation().unwrap().unwrap();
+    assert_eq!(plan.ticket(), root);
+    assert!(registry.next_cancellation().unwrap().is_none(),
+            "nested or queue-owned protocol was stolen");
+    assert!(owner.summary().pending != 0);
+    registry.requests.finish(access(&invoking, child)).unwrap();
+    registry.complete(consumer, access(&subject, queued), 0).unwrap();
+    drop(invoking);
+    drop(subject);
+    registry.acknowledge_cancellation(plan, mac_abi::OPERATION_CANCELLED, 0).unwrap();
+    registry.rollback(consumer).unwrap();
+    assert_eq!(registry.state(consumer), Err(Error::Stale));
+    assert_eq!(registry.modules.get(provider).unwrap().requests, 0);
+    assert_eq!((owner.summary().live, owner.summary().pending), (0, 0));
+}
+
+#[test]
+fn cancellation_refusal_returns_the_original_plan_and_no_reply_is_accepted_before_validation()
+{
+    let (mut registry, subject, _, interface, consumer) = entry_fixture(false);
+    let ticket =
+        registry.begin_scoped(&subject, consumer, interface, 7, 0, 16, Origin::Direct).unwrap();
+    drop(subject);
+    assert_eq!(registry.rollback(consumer), Err(Error::Busy));
+    let plan = registry.next_cancellation().unwrap().unwrap();
+    let (mut foreign, _, _, _, _) = entry_fixture(false);
+    let refusal = foreign.return_cancellation(plan).unwrap_err();
+    assert!(format!("{refusal}").contains("original plan remains owned"));
+    assert_eq!(refusal.plan.ticket(), ticket);
+    let refusal = registry.acknowledge_cancellation(refusal.plan, 0, 17).unwrap_err();
+    assert_eq!(refusal.cause, Error::Contract(mac_module::Error::Limit));
+    registry.return_cancellation(refusal.plan).unwrap();
+    let plan = registry.next_cancellation().unwrap().unwrap();
+    assert_eq!(plan.ticket(), ticket);
+    registry.acknowledge_cancellation(plan, mac_abi::OPERATION_CANCELLED, 0).unwrap();
+    registry.rollback(consumer).unwrap();
+}
+
+#[test]
+fn lost_or_uncertain_cancellation_keeps_the_original_reply_reservation_and_provider_pin()
+{
+    let (mut registry, subject, provider, interface, consumer) = entry_fixture(true);
+    let owner = registry.module_ledger(consumer).unwrap();
+    let ticket =
+        registry.begin_scoped(&subject, consumer, interface, 7, 0, 16, Origin::Direct).unwrap();
+    drop(subject);
+    assert_eq!(registry.rollback(consumer), Err(Error::Busy));
+    let mut plan = registry.next_cancellation().unwrap().unwrap();
+    plan.output[..8].copy_from_slice(b"maybe???");
+    registry.retain_uncertain_cancellation(plan, mac_abi::BAD_ABI).unwrap();
+    let at = registry.requests.at(ticket).unwrap();
+    assert_eq!(&registry.requests.slots[at].cancellation
+                                           .as_ref()
+                                           .unwrap()
+                                           .output
+                                           .as_ref()
+                                           .unwrap()[..8],
+               b"maybe???");
+    assert!(registry.next_cancellation().unwrap().is_none());
+    assert!(owner.summary().pending != 0);
+    assert_eq!(registry.modules.get(provider).unwrap().requests, 1);
+    let new = registry.fixture_subject(0).unwrap();
+    assert_eq!(registry.begin_scoped(&new, 0, interface, 7, 0, 16, Origin::Queued),
+               Err(Error::Busy));
+    let (mut other, subject, _, interface, consumer) = entry_fixture(false);
+    let other_owner = other.module_ledger(consumer).unwrap();
+    let ticket =
+        other.begin_scoped(&subject, consumer, interface, 7, 0, 16, Origin::Direct).unwrap();
+    drop(subject);
+    other.requests.cancel_entry(consumer, other_owner.owner());
+    let plan = other.next_cancellation().unwrap().unwrap();
+    drop(plan);
+    assert!(other.requests.slots[other.requests.at(ticket).unwrap()].uncertainty().is_some());
+    assert!(other.next_cancellation().unwrap().is_none());
+    other_owner.stop_admission();
+    let key = other.requests.store.key(ticket).unwrap();
+    let failure = other.requests.release(other_owner.invalidate(key).unwrap(), false).unwrap_err();
+    let detail = format!("{failure}");
+    assert!(detail.contains("uncertain cancellation result")
+            && detail.contains("no terminal acknowledgement is proven"),
+            "{detail}");
+    other_owner.quarantine(failure.into_parts().0).unwrap();
+}
+
+#[test]
+fn committed_cancellation_reply_is_retained_while_serialized_admission_is_released()
+{
+    let (mut registry, subject, provider, interface, consumer) = entry_fixture(true);
+    let owner = registry.module_ledger(consumer).unwrap();
+    let ticket =
+        registry.begin_scoped(&subject, consumer, interface, 7, 0, 16, Origin::Direct).unwrap();
+    drop(subject);
+    registry.requests.cancel_entry(consumer, owner.owner());
+    let mut plan = registry.next_cancellation().unwrap().unwrap();
+    plan.output[..8].copy_from_slice(b"COMMIT!!");
+    assert_eq!(registry.acknowledge_cancellation(plan, 0, 8).unwrap(),
+               cancellation::Acknowledged::ReplyRetained { bytes:  8,
+                                                           status: 0 });
+    assert_eq!(registry.modules.get(provider).unwrap().requests, 0);
+    let at = registry.requests.at(ticket).unwrap();
+    assert_eq!(registry.requests.slots[at].reply.as_ref().unwrap().bytes, b"COMMIT!!");
+    owner.stop_admission();
+    let key = registry.requests.store.key(ticket).unwrap();
+    let failure = registry.requests.release(owner.invalidate(key).unwrap(), false).unwrap_err();
+    let detail = format!("{failure}");
+    assert!(detail.contains("acknowledged reply bytes")
+            && detail.contains("require class recovery")
+            && detail.contains("unique cleanup ticket remain retained"),
+            "{detail}");
+    owner.quarantine(failure.into_parts().0).unwrap();
+    assert!(owner.summary().pending != 0 && registry.next_cancellation().unwrap().is_none());
+    let new = registry.fixture_subject(0).unwrap();
+    let next = registry.begin_scoped(&new, 0, interface, 7, 0, 16, Origin::Queued).unwrap();
+    registry.complete(0, access(&new, next), 0).unwrap();
+    assert!(registry.rollback(consumer).is_err());
+}
+
+#[test]
+fn direct_cancel_returns_are_preallocated_fifo_and_grow_past_old_limits()
+{
+    let (mut registry, subject, _, interface, consumer) = entry_fixture(false);
+    let mut tickets = Vec::new();
+    for _ in 0..320
+    {
+        tickets.push(registry.begin_scoped(&subject,
+                                           consumer,
+                                           interface,
+                                           7,
+                                           0,
+                                           16,
+                                           Origin::Direct)
+                             .unwrap());
+    }
+    let capacity = registry.requests.cancel_ready.capacity();
+    drop(subject);
+    assert_eq!(registry.rollback(consumer), Err(Error::Busy));
+    let first = registry.next_cancellation().unwrap().unwrap();
+    let id = first.ticket();
+    registry.return_cancellation(first).unwrap();
+    let second = registry.next_cancellation().unwrap().unwrap();
+    assert_ne!(second.ticket(), id, "one pending cancellation starved another root");
+    registry.acknowledge_cancellation(second, mac_abi::OPERATION_CANCELLED, 0).unwrap();
+    for _ in 0..319
+    {
+        let plan = registry.next_cancellation().unwrap().unwrap();
+        registry.acknowledge_cancellation(plan, mac_abi::OPERATION_CANCELLED, 0).unwrap();
+    }
+    assert!(registry.next_cancellation().unwrap().is_none());
+    assert_eq!(registry.requests.cancel_ready.capacity(), capacity);
+    registry.rollback(consumer).unwrap();
+    for id in tickets
+    {
+        assert_eq!(registry.request(consumer, id), Err(Error::Stale));
+    }
 }
 #[test]
 fn invalidated_request_rejects_ordinary_ids_and_requires_its_exact_original_subject()
@@ -117,7 +361,7 @@ fn serialized_offer_remains_busy_until_actual_terminal_reply_after_invalidation(
     let ticket = begin(&mut registry, &subject, interface);
     let key = registry.requests.store.key(ticket).unwrap();
     registry.requests.release(owner.invalidate(key).unwrap(), false).unwrap();
-    let error = registry.begin_scoped(&subject, 0, interface, 7, 0, 0).unwrap_err();
+    let error = registry.begin_scoped(&subject, 0, interface, 7, 0, 0, Origin::Direct).unwrap_err();
     assert_eq!(error, Error::Busy);
     assert!(format!("{error}").contains("actual completion"));
     registry.complete(0, access(&subject, ticket), 0).unwrap();

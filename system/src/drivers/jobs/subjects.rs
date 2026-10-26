@@ -70,7 +70,8 @@ impl Operations
                     owner: scope.subject(), kind: KindCode(*b"DIOP"), cause })
                                   })?;
                 Ok(Subject { scope:      scope.clone(),
-                             _retention: None })
+                             _retention: None,
+                             request:    None })
             }
             Authority::Client(owner) =>
             {
@@ -88,7 +89,8 @@ impl Operations
                              .map_err(pool_status)?;
                 retention.id.store(id, Ordering::Release);
                 Ok(Subject { scope,
-                             _retention: Some(retention) })
+                             _retention: Some(retention),
+                             request: None })
             }
         }
     }
@@ -136,13 +138,37 @@ impl Drop for Retention
 pub(crate) struct Subject
 {
     scope:      Lease,
-    _retention: Option<Arc<Retention>>
+    _retention: Option<Arc<Retention>>,
+    request:    Option<mac_object_table::store::CompletionKey>
 }
 impl Subject
 {
     pub(crate) fn scope(&self) -> &Lease
     {
         &self.scope
+    }
+
+    pub(crate) fn current_request(&self) -> Option<mac_object_table::store::CompletionKey>
+    {
+        self.request
+    }
+
+    /// The broker validates the receipt and active frame before installing
+    /// this view. An invocation frame never creates a different resource root.
+    pub(crate) fn in_request(&self, receipt: mac_object_table::store::CompletionKey) -> Self
+    {
+        let mut subject = self.clone();
+        subject.request = Some(receipt);
+        subject
+    }
+
+    /// A queue owns its request independently of the frame that submitted it.
+    /// Its callback will install its own authenticated active frame.
+    pub(crate) fn queued(&self) -> Self
+    {
+        let mut subject = self.clone();
+        subject.request = None;
+        subject
     }
 }
 
