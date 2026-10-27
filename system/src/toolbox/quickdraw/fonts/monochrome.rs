@@ -2,6 +2,7 @@
 use alloc::vec::Vec;
 
 use ab_glyph_rasterizer::{Point, point};
+use mac_abi::{BAD_ARGUMENT, NO_MEMORY, Status};
 use skrifa::outline::pen::PathElement;
 
 fn midpoint(a: Point, b: Point) -> Point
@@ -9,22 +10,22 @@ fn midpoint(a: Point, b: Point) -> Point
     point((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
 }
 fn quadratic(edges: &mut Vec<(Point, Point)>, a: Point, b: Point, c: Point, depth: u8)
+             -> Result<(), Status>
 {
     if depth >= 12 || ((a.x - 2.0 * b.x + c.x).abs() + (a.y - 2.0 * b.y + c.y).abs()) < 0.03125
     {
-        edges.push((a, c));
-        return;
+        return super::scratch::push(edges, (a, c));
     }
     let ab = midpoint(a, b);
     let bc = midpoint(b, c);
     let mid = midpoint(ab, bc);
-    quadratic(edges, a, ab, mid, depth + 1);
-    quadratic(edges, mid, bc, c, depth + 1);
+    quadratic(edges, a, ab, mid, depth + 1)?;
+    quadratic(edges, mid, bc, c, depth + 1)
 }
 
 pub(super) fn rasterize(path: &[PathElement], width: usize, height: usize,
                         transform: &impl Fn(f32, f32) -> Point)
-                        -> Vec<bool>
+                        -> Result<Vec<bool>, Status>
 {
     let mut edges = Vec::new();
     let mut previous = point(0.0, 0.0);
@@ -43,7 +44,7 @@ pub(super) fn rasterize(path: &[PathElement], width: usize, height: usize,
                                   y } =>
             {
                 let p = transform(x, y);
-                edges.push((previous, p));
+                super::scratch::push(&mut edges, (previous, p))?;
                 previous = p;
             }
             PathElement::QuadTo { cx0,
@@ -52,7 +53,7 @@ pub(super) fn rasterize(path: &[PathElement], width: usize, height: usize,
                                   y } =>
             {
                 let p = transform(x, y);
-                quadratic(&mut edges, previous, transform(cx0, cy0), p, 0);
+                quadratic(&mut edges, previous, transform(cx0, cy0), p, 0)?;
                 previous = p;
             }
             PathElement::CurveTo { cx0,
@@ -78,19 +79,21 @@ pub(super) fn rasterize(path: &[PathElement], width: usize, height: usize,
                                   + 3.0 * u * u * t * b.y
                                   + 3.0 * u * t * t * c.y
                                   + t * t * t * d.y);
-                    edges.push((previous, p));
+                    super::scratch::push(&mut edges, (previous, p))?;
                     previous = p;
                 }
             }
             PathElement::Close =>
             {
-                edges.push((previous, first));
+                super::scratch::push(&mut edges, (previous, first))?;
                 previous = first;
             }
         }
     }
-    let mut coverage = alloc::vec![false;width*height];
+    let mut coverage =
+        super::scratch::filled(width.checked_mul(height).ok_or(BAD_ARGUMENT)?, false)?;
     let mut crossings = Vec::new();
+    crossings.try_reserve_exact(edges.len()).map_err(|_| NO_MEMORY)?;
     for row in 0..height
     {
         crossings.clear();
@@ -103,7 +106,8 @@ pub(super) fn rasterize(path: &[PathElement], width: usize, height: usize,
                                 if b.y > a.y { 1i32 } else { -1 }));
             }
         }
-        crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // Equal-x crossings span zero pixels regardless of their order.
+        crossings.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
         let mut winding = 0;
         let mut start = 0.0;
         for &(x, sign) in &crossings
@@ -125,5 +129,5 @@ pub(super) fn rasterize(path: &[PathElement], width: usize, height: usize,
             }
         }
     }
-    coverage
+    Ok(coverage)
 }

@@ -1,6 +1,4 @@
 //! Desktop adapter; no application callbacks or recursive ECALLs under its guard.
-use alloc::string::String;
-
 use mac_abi::{controls::*, dialogs::*, quickdraw::*, *};
 
 use crate::toolbox::{dialogs,
@@ -418,56 +416,47 @@ impl super::Desktop
         let advance =
             metrics.ascent.saturating_add(metrics.descent).saturating_add(metrics.leading).max(1);
         let mut y = item.bounds.top.saturating_add(metrics.ascent);
-        let mut line = String::new();
-        // Preserve explicit Mac paragraphs, then wrap at resource-defined width.
-        for paragraph in item.text.split(['\r', '\n'])
+        // Preserve the original paragraph/wrap rules without candidate copies.
+        dialogs::wrapped_lines(&item.text,
+                               item.bounds.right - item.bounds.left - 2,
+                               |candidate| {
+                                   fonts.text_width(fonts_service::selection(selection), candidate)
+                               },
+                               |line, wrapped| {
+                                   if wrapped || y <= item.bounds.bottom.saturating_add(2)
+                                   {
+                                       self.font_draw(&mut FontCall { target: mac_abi::quickdraw::Target::window(WindowId(window)),
+                                                                       selection,
+                                                                       baseline: Point { h: item.bounds.left.saturating_add(1), v: y },
+                                                                       ..Default::default() },
+                                                       line,
+                                                       fonts)?;
+                                   }
+                                   y = y.saturating_add(advance);
+                                   Ok(())
+                               })?;
+        Ok(())
+    }
+
+    /// Discard only this System-owned paint transaction. Its committed scene and
+    /// hover bindings remain live; consumed full-update damage is restored for retry.
+    pub(super) fn cancel_system_window_update(&mut self, id: WindowId) -> Result<(), Status>
+    {
+        let window = self.windows.window(id).ok_or(NOT_FOUND)?;
+        if !self.owns(id)
         {
-            for word in paragraph.split(' ')
-            {
-                let candidate = if line.is_empty()
-                {
-                    String::from(word)
-                }
-                else
-                {
-                    alloc::format!("{} {}", line, word)
-                };
-                if fonts.text_width(fonts_service::selection(selection), &candidate)?
-                   > item.bounds.right - item.bounds.left - 2
-                   && !line.is_empty()
-                {
-                    self.font_draw(&mut FontCall { target: mac_abi::quickdraw::Target::window(WindowId(window)),
-                                                   selection,
-                                                   baseline: Point { h: item.bounds
-                                                                            .left
-                                                                            .saturating_add(1),
-                                                                     v: y },
-                                                   ..Default::default() },
-                                   &line,
-                                   fonts)?;
-                    y = y.saturating_add(advance);
-                    line.clear();
-                }
-                if !line.is_empty()
-                {
-                    line.push(' ');
-                }
-                line.push_str(word);
-            }
-            if y <= item.bounds.bottom.saturating_add(2)
-            {
-                self.font_draw(&mut FontCall { target: mac_abi::quickdraw::Target::window(WindowId(window)),
-                                               selection,
-                                               baseline: Point { h: item.bounds
-                                                                        .left
-                                                                        .saturating_add(1),
-                                                                 v: y },
-                                               ..Default::default() },
-                               &line,
-                               fonts)?;
-            }
-            line.clear();
-            y = y.saturating_add(advance);
+            return Err(ACCESS_DENIED);
+        }
+        let bounds = window.local_bounds();
+        let index =
+            self.pending_content.iter().position(|content| content.id == id).ok_or(BAD_ARGUMENT)?;
+        let full = !self.pending_content[index].is_patch();
+        self.pending_content.swap_remove(index);
+        self.textedit.begin_cursor_update(id);
+        self.windows.end_update(id);
+        if full
+        {
+            self.windows.invalidate(id, bounds);
         }
         Ok(())
     }
@@ -548,8 +537,21 @@ impl super::Desktop
             }
             Ok(())
         })();
-        checked(self.window(END_UPDATE, &mut request))?;
-        result
+        let finished = if result.is_ok()
+        {
+            checked(self.window(END_UPDATE, &mut request))
+        }
+        else
+        {
+            self.cancel_system_window_update(WindowId(window))
+        };
+        if let (Err(original), Err(cleanup)) = (result, finished)
+        {
+            serial!("ALERT_PAINT_CANCEL_REFUSED window={} original={} cleanup={}", window,
+                    original, cleanup);
+        }
+        result?;
+        finished
     }
 }
 

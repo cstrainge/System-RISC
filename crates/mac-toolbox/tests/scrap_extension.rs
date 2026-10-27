@@ -191,7 +191,7 @@ fn import_requires_writable_exact_session_pin_and_cas_then_suppresses_only_its_o
         message(&stale, &["changed", "keep the current Scrap", "retry"]);
         assert_eq!(system.scrap().info().unwrap(), info);
         let current = module.snapshot(origin).unwrap();
-        let observed = Observe::fail_nth(1);
+        let observed = Observe::fail_at(1);
         let refusal = module.import(origin, current, "incoming host Ω");
         let allocated = observed.finish();
         assert!(allocated > 0);

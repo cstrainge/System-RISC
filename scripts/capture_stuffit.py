@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Private public-SDK classic StuffIt transport; Rust owns assertions."""
-from system7_platform import guest_env
+from system7_fixture_build import guest_env as fixture_guest_env, host_env as fixture_host_env
 import argparse
 import hashlib
 import json
@@ -42,19 +42,19 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
         raise ValueError('--archive requires --finder')
     output.mkdir(parents=True, exist_ok=False)
     (output / 'pid').write_text(str(os.getpid()))
-    target = vm.build_dir() / 'fixtures/modules'
     for fixture, binary in ([] if finder else [('stuffit-app', 'Finder')]):
-        manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
+        target = vm.build_dir() / 'fixtures' / fixture
+        manifest = vm.SOURCE / 'crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
         subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(manifest),
                         '--release', '--target', 'riscv64imac-unknown-none-elf', '--bin', binary,
-                        '--target-dir', str(target)], env=guest_env(), check=True)
+                        '--target-dir', str(target)], env=fixture_guest_env(target), check=True)
         subprocess.run(['cargo', 'run', '--locked', '--manifest-path', str(manifest),
-                        '--bin', 'package', '--target-dir', str(vm.build_dir() / 'host'), '--',
+                        '--bin', 'package', '--target-dir', str(target), '--',
                         str(target / 'riscv64imac-unknown-none-elf/release' / binary),
-                        str(output / 'packages')], check=True)
+                        str(output / 'packages')], env=fixture_host_env(target), check=True)
     base = vm.DIST
     subprocess.run(['cargo', 'build', '--locked', '-p', 'risc-host', '-p', 'risc-forks',
-                    '--target-dir', str(vm.build_dir() / 'host')], cwd=vm.ROOT / 'System7', check=True)
+                    '--target-dir', str(vm.build_dir() / 'host')], cwd=vm.SOURCE, check=True)
     before = {name: digest(base / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
     dist = output / 'dist'
     dist.mkdir()
@@ -79,7 +79,7 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
             folder = output / directory
             subprocess.run([str(host / 'risc-forks'), 'init', str(folder), directory], check=True)
             source = output / 'Examples.sit'
-            shutil.copyfile(archive or (vm.ROOT / 'System7/crates/mac-sit/tests/fixtures/nested-v1.sit'), source)
+            shutil.copyfile(archive or (vm.SOURCE / 'crates/mac-sit/tests/fixtures/nested-v1.sit'), source)
             if finder_error:
                 # Raw host files, rather than only pre-imported fork containers.
                 # The failed open must not poison selection or the next open.
@@ -91,9 +91,9 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
             else:
                 subprocess.run([str(host / 'risc-forks'), 'import', str(folder), str(source)], check=True)
             if not finder:
-                shutil.copyfile(vm.ROOT / 'System7/crates/mac-sit/tests/fixtures/arsenic-v5.sit', folder / 'Arsenic.sit')
+                shutil.copyfile(vm.SOURCE / 'crates/mac-sit/tests/fixtures/arsenic-v5.sit', folder / 'Arsenic.sit')
                 for variant in ['shared-v2', 'separate-v5', 'bad-crc-v5']:
-                    shutil.copyfile(vm.ROOT / f'System7/crates/mac-sit/tests/fixtures/method13-{variant}.sit',
+                    shutil.copyfile(vm.SOURCE / f'crates/mac-sit/tests/fixtures/method13-{variant}.sit',
                                     folder / f'Method13-{variant}.sit')
                 if reference is not None:
                     shutil.copyfile(reference, folder / 'Reference.sit')

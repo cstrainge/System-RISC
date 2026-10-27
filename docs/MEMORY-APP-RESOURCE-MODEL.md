@@ -222,6 +222,14 @@ paging gate.
 | TE2 owned threshold | Tunable 0–100%, default 40%, bounded by a tunable **~3.2 MiB default ceiling** | Ratified 2026-10-23 calibration: owns strictly below both limits; at either limit uses view. The ceiling is 3,355,443 bytes (3.2 MiB rounded down), even if control space grows |
 | Process/thread/handle counts | Grow until account or memory refusal | No fixed-eight or guessed high replacement constant |
 
+Separate module-worker defaults were selected on **2026-10-27**: a configurable
+**4 MiB worker stack** and **16 MiB kernel budget per module**. They are distinct
+module policy values, independent of process budgets and the module metadata's
+existing callback-stack declaration (at most 64 KiB). This selects defaults, not
+new minimum/maximum ranges. Worker activation still requires actual rounded
+stack/CPU/metadata backing charges, original-account receipts, native context
+admission and recovery support; policy selection alone supplies none of those.
+
 Selected values must satisfy cross-profile constraints: reserve <= fixed heap,
 Finder portion <= reserve, control space <= kernel budget, growth <= app budget,
 stack budget available before spawn. The current constructors do not select a
@@ -2784,3 +2792,91 @@ entry paths do not silently discard the failed command or replace its cause.
 This is payload/queue admission, not a claim that complete replay is
 allocation-free. Region clips and algebra, retained port geometry and the full
 recovery-service graph remain in the pre-heap fallibility audit.
+
+
+### Region and replay heap preflight
+
+Empty and rectangular Regions keep their bands/spans inline. Complex immutable
+clips share admitted backing, so retained port snapshots do not deep-copy their
+geometry. Rectangle clipping uses rectangle arithmetic; complex construction,
+Boolean algebra, offset/inset/map and classic serialization report allocation
+refusal. Compact classic trap replies write their ten-byte record without a
+resident heap buffer. Normalization and original big-endian bytes stay unchanged.
+
+Caret geometry and partial hover bindings are prepared before publication. Owned
+plans retain exclusive access through commit; refused scene/geometry admission
+leaves the previous visible state. Window exposure scratch refusal retains an
+update bounded to the affected object's content. Scene damage capacity is admitted
+with its window lifetime, and exhaustion during exact damage coalescing uses the
+bounded union for that same object. Healthy updates retain their exact masks and
+ordinary occlusion; this is not a full-scene repaint policy.
+
+Retained graphics/control/bitmap/icon/Picture/font replay errors propagate through
+the cache admission barrier. Partial back-buffer pixels are not published as valid
+cache entries or presented; pending damage remains available for retry. PICT text
+and font-name conversion use bounded stack output. This does not establish a
+complete recovery policy for every permanent rendering refusal or the full
+transitive font/emergency graph; those remain pre-heap qualification work.
+
+
+### Font scratch and catalog admission
+
+The Font Manager admits its complete family/name/association catalog before moving
+font resources from the System fork. Refusal leaves the original resource vector,
+order and payload ownership intact. Successful extraction moves payloads without
+copying them. Immutable source validity is cached at admission, so width/drawing
+requests do not repeat source-format validation. Existing bitmap strikes and the
+bundled glyf TrueType faces retain their previous selection and pixels. Unaudited
+preferred VARC/CFF/CFF2 sources return NotSupported rather than entering hidden
+allocation paths or silently selecting a different outline source.
+
+Synthetic/scaled bitmap pixels, embedded hinting state, supplied glyph scratch,
+outline commands, coverage, scan edges/crossings and underline exclusions admit
+backing fallibly. Exact unstyled bitmap strikes and validated empty text need no
+raster/hinter allocation. Glyph scratch is reused across a string. Small pinned
+upstream source patches expose admitted raster storage and fallible embedded
+interpreter construction; hint instructions and raster arithmetic are unchanged.
+The dependency licenses, original archive checksums and local patch boundaries
+are retained with those sources.
+
+Canonical SDK refusal-prefix tests preserve typed NoMemory, single-glyph destination
+pixels and retry behavior for real simple and compound TrueType glyphs. Measurement
+checks include different glyph scratch sizes. This is not transactional painting
+of an arbitrary multi-glyph string, native CFF/VARC/OpenType qualification, installed
+emergency-service backing, or recovery from arbitrary privileged faults. Protected
+account/reserve enforcement and the complete failure-service kit remain heap-stage
+gates.
+
+
+### System-owned failure-UI formatting
+
+Resource-backed Alert substitution computes its UTF-8 extent before allocation,
+and text wrapping borrows paragraph spans. Crash labels use their existing bounded
+resource reply storage; diagnostic formatting grows fallibly, and tab expansion
+reuses one admitted visible-line buffer. Failure of a full System-owned paint
+discards only its own staged transaction, preserves the committed content/hover
+policy and restores that window's consumed damage for retry. Partial mask updates
+retain their existing cancellation path.
+
+These paths preserve ordinary refusal and retry. They still allocate window,
+control, retained drawing and other ordinary backing; fallible formatting alone
+is not an installed allocation-free emergency kit. The current resident panic and
+infallible-allocation handlers report through serial and halt. A graphical System
+Panic/Restart path, protected emergency/Finder backing, and all-allocation-refused
+Save/Alert/crash service qualification remain explicit heap-stage work.
+
+
+### Prepared application-menu and focus presentation
+
+Application-menu refresh reuses a second definition state admitted at startup;
+owner-group focus reuses geometry storage admitted with its windows. Neither
+constructs a new process/window vector during exit. A failed menu measure retains
+the accepted snapshot and cancels stale tracking. This does not change the existing
+menu presentation capacity or impose a new process-admission count.
+
+Hide Others validates its surviving foreground process before one metadata pass
+and one menu refresh. Window hiding batches generation-checked IDs in admitted
+geometry scratch. The normal foreground plane requires no Region allocation or
+content update; interleaved planes compute exposure once from final survivors.
+Scratch refusal conservatively preserves affected-object damage without treating
+a bounding box as occluding cover. Repeated/empty changes do no geometry work.

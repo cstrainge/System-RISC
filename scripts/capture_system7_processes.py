@@ -5,7 +5,7 @@ Canonical contract assertions execute in Rust userspace on RV64. Python supplies
 only build/package/clone/boot/input/frame/serial transport and artifact identities.
 """
 from hfs_b_tool import Image as NativeImage
-from system7_platform import guest_env
+from system7_fixture_build import guest_env as fixture_guest_env, host_env as fixture_host_env
 import argparse
 import json
 import os
@@ -21,13 +21,13 @@ def child(output, fixture, binary, *, package_arguments=()):
     target = vm.build_dir() / 'fixtures' / fixture
     subprocess.run(['cargo', 'build', '--manifest-path', str(manifest), '--locked',
                     '--release', '--target', 'riscv64imac-unknown-none-elf',
-                    '--bin', binary, '--target-dir', str(target)], cwd=vm.ROOT, env=guest_env(), check=True)
+                    '--bin', binary, '--target-dir', str(target)], cwd=vm.ROOT, env=fixture_guest_env(target), check=True)
     elf = target / 'riscv64imac-unknown-none-elf/release' / binary
     package = output / fixture
     extra = [str(vm.DIST / 'System.rsrc')] if fixture == 'image-probe' else []
     subprocess.run(['cargo', 'run', '--manifest-path', str(manifest), '--locked',
                     '--bin', 'package', '--target-dir', str(target), '--', str(elf),
-                    str(package), *extra, *map(str, package_arguments)], cwd=vm.ROOT, check=True)
+                    str(package), *extra, *map(str, package_arguments)], cwd=vm.ROOT, env=fixture_host_env(target), check=True)
     return package / (binary + '.bin'), elf
 
 

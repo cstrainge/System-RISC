@@ -237,7 +237,7 @@ fn real_projection_allocation_refusal_preserves_the_package_and_retry_reads_the_
 {
     let resources = part(PackageKind::Extension, 0);
     let code_bytes = resources[0].data.len();
-    let observed = Observe::fail_nth(1);
+    let observed = Observe::fail_at(1);
     let index = mac_formats::module::validate_index(*b"INIT", resources.iter().map(mac_formats::module::ResourceHeader::from));
     let allocations = observed.finish();
     index.unwrap();
@@ -251,7 +251,7 @@ fn real_projection_allocation_refusal_preserves_the_package_and_retry_reads_the_
             let file = system.files().lookup(volume, Cnid(2), "good").unwrap();
             // The first real HFS-B allocation occurs in the mounted volume's
             // name admission. Its cause must survive both filesystem adapters.
-            let observed = Observe::fail_nth(1);
+            let observed = Observe::fail_at(1);
             let refusal = testing::files::module_resources(volume.0, file.id.0);
             let attempts = observed.finish();
             assert!(attempts > 0);

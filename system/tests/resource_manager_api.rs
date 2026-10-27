@@ -46,7 +46,7 @@ fn fixture() -> &'static Fixture
                                  None,
                                  0,
                                  include_bytes!("../assets/fonts/sfnt-9217.ttf"))];
-               let fonts = FontManager::take_resources(&mut font_resources);
+               let fonts = FontManager::take_resources(&mut font_resources).unwrap();
                assert!(font_resources.is_empty());
                Fixture { system: vec![resource(b"PICT",
                                                -32510,

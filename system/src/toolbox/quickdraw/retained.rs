@@ -145,6 +145,7 @@ impl RenderCommand
 
     fn paint(&self, canvas: &mut Canvas, fonts: Option<&FontManager>,
              legacy: &mut impl FnMut(&mut Canvas, &DrawCommand))
+             -> Result<(), Status>
     {
         match self
         {
@@ -161,26 +162,23 @@ impl RenderCommand
                 }
             }
             Self::Legacy(c) => legacy(canvas, c),
-            Self::Control(c) => c.paint(canvas),
-            Self::ScrollBox(c) => c.paint(canvas),
+            Self::Control(c) => c.paint_clipped(canvas)?,
+            Self::ScrollBox(c) => c.paint(canvas)?,
             Self::Graphics(d) =>
             {
-                let _ = d.paint(canvas);
+                d.paint(canvas)?;
             }
             Self::Bitmap(d) =>
             {
-                let _ = d.paint(canvas);
+                d.paint(canvas)?;
             }
             Self::Icon(d) =>
             {
-                let _ = d.paint(canvas);
+                d.paint(canvas)?;
             }
             Self::Picture(d) =>
             {
-                if let Some(fonts) = fonts
-                {
-                    let _ = d.paint(canvas, fonts);
-                }
+                d.paint(canvas, fonts.ok_or(mac_abi::NOT_FOUND)?)?;
             }
             Self::Image(d) => d.paint(canvas),
             Self::Text { font,
@@ -190,9 +188,13 @@ impl RenderCommand
                          port,
                          vertical_ink } =>
             {
-                if let Some(fonts) = fonts
+                let mut result = Ok(());
                 {
                     service::with_clip(canvas, port, |canvas| {
+                        if result.is_err()
+                        {
+                            return;
+                        }
                         // Reject clipped-out text before decoding/rasterizing its
                         // glyphs. A narrow viewport update must not execute the
                         // fixed header's font renderer merely to discard pixels.
@@ -207,15 +209,24 @@ impl RenderCommand
                                 return;
                             }
                         }
-                        let _ = fonts.draw(fonts_service::selection(*font),
-                                           canvas,
-                                           *baseline,
-                                           text.as_str(),
-                                           *color);
+                        let Some(fonts) = fonts
+                        else
+                        {
+                            result = Err(mac_abi::NOT_FOUND);
+                            return;
+                        };
+                        result = fonts.draw(fonts_service::selection(*font),
+                                            canvas,
+                                            *baseline,
+                                            text.as_str(),
+                                            *color)
+                                      .map(|_| ());
                     });
                 }
+                result?;
             }
         }
+        Ok(())
     }
 }
 
@@ -264,6 +275,11 @@ impl Content
                ..Self::new(id) }
     }
 
+    pub(crate) fn patch_mask(&self) -> Option<&Region>
+    {
+        self.patch.as_ref()
+    }
+
     pub fn is_patch(&self) -> bool
     {
         self.patch.is_some()
@@ -281,11 +297,12 @@ impl Content
 
     pub fn blink_caret(&mut self, editor: mac_abi::textedit::EditorId,
                        before: mac_abi::textedit::EditorInfo, after: mac_abi::textedit::EditorInfo)
-                       -> Option<Region>
+                       -> Result<Option<Region>, Status>
     {
-        fn toggle(commands: &mut [RenderCommand], mask: Option<&Region>,
+        fn damage(commands: &[RenderCommand], mask: Option<&Region>,
                   editor: mac_abi::textedit::EditorId, before: mac_abi::textedit::EditorInfo,
-                  after: mac_abi::textedit::EditorInfo, damage: &mut Region, found: &mut bool)
+                  total: &mut Region, found: &mut bool)
+                  -> Result<(), Status>
         {
             for command in commands
             {
@@ -296,37 +313,55 @@ impl Content
                    && *id == editor
                    && *info == before
                 {
-                    *info = after;
-                    *found = true;
                     let mut region = Region::from_rect(*bounds);
                     if let Some(clip) = &port.state.clip
                     {
-                        region = region.combine(clip, BooleanOp::Intersection);
+                        region = region.combine(clip, BooleanOp::Intersection)
+                                       .map_err(super::regions_service::status)?;
                     }
-                    if let Ok(region) = region.offset(port.origin.h, port.origin.v)
+                    region = region.offset(port.origin.h, port.origin.v)
+                                   .map_err(super::regions_service::status)?;
+                    if let Some(mask) = mask
                     {
-                        let region =
-                            mask.map_or_else(|| region.clone(),
-                                             |mask| region.combine(mask, BooleanOp::Intersection));
-                        *damage = damage.combine(&region, BooleanOp::Union);
+                        region = region.combine(mask, BooleanOp::Intersection)
+                                       .map_err(super::regions_service::status)?;
                     }
+                    *total = total.combine(&region, BooleanOp::Union)
+                                  .map_err(super::regions_service::status)?;
+                    *found = true;
                 }
             }
+            Ok(())
         }
-        let mut damage = Region::from_rect(Rect::ZERO);
+        let mut total = Region::new();
         let mut found = false;
-        for fragment in &mut self.fragments
+        for fragment in &self.fragments
         {
-            toggle(&mut fragment.commands,
+            damage(&fragment.commands,
                    Some(&fragment.clip),
                    editor,
                    before,
-                   after,
-                   &mut damage,
-                   &mut found);
+                   &mut total,
+                   &mut found)?;
         }
-        toggle(&mut self.commands, None, editor, before, after, &mut damage, &mut found);
-        found.then_some(damage)
+        damage(&self.commands, None, editor, before, &mut total, &mut found)?;
+        if !found
+        {
+            return Ok(None);
+        }
+        // All geometry is admitted before publishing any caret snapshot change.
+        for command in self.iter_commands_mut()
+        {
+            if let RenderCommand::Caret { editor: id,
+                                          info,
+                                          .. } = command
+               && *id == editor
+               && *info == before
+            {
+                *info = after;
+            }
+        }
+        Ok(Some(total))
     }
 
     pub fn retain_commands(&mut self, mut keep: impl FnMut(&RenderCommand) -> bool)
@@ -357,12 +392,17 @@ impl Content
             }
             clips.try_reserve(1).map_err(|_| mac_abi::NO_MEMORY)?;
             before += region_bytes(&fragment.clip);
-            clips.push((index, fragment.clip.combine(&mask, BooleanOp::Difference)));
+            clips.push((index,
+                        fragment.clip
+                                .combine(&mask, BooleanOp::Difference)
+                                .map_err(super::regions_service::status)?));
         }
         let tail = (!self.commands.is_empty()).then(|| {
                                                   Region::from_rect(bounds).combine(&mask,
                                                                              BooleanOp::Difference)
-                                              });
+                                              })
+                                              .transpose()
+                                              .map_err(super::regions_service::status)?;
         let after = clips.iter().map(|(_, r)| region_bytes(r)).sum::<usize>()
                     + tail.as_ref().map_or(0, region_bytes)
                     + region_bytes(&mask);
@@ -400,20 +440,28 @@ impl Content
 
     pub fn paint(&self, canvas: &mut Canvas, fonts: Option<&FontManager>,
                  mut legacy: impl FnMut(&mut Canvas, &DrawCommand))
+                 -> Result<(), Status>
     {
         for fragment in &self.fragments
         {
+            let mut result = Ok(());
             service::with_region_clip(canvas, &fragment.clip, |canvas| {
                 for command in &fragment.commands
                 {
-                    command.paint(canvas, fonts, &mut legacy);
+                    if result.is_err()
+                    {
+                        break;
+                    }
+                    result = command.paint(canvas, fonts, &mut legacy);
                 }
             });
+            result?;
         }
         for command in &self.commands
         {
-            command.paint(canvas, fonts, &mut legacy);
+            command.paint(canvas, fonts, &mut legacy)?;
         }
+        Ok(())
     }
 }
 
@@ -520,7 +568,8 @@ impl DesktopLayer
         {
             return Err(BAD_ARGUMENT);
         }
-        let mask = mask.combine(&Region::from_rect(self.bounds), BooleanOp::Intersection);
+        let mask = mask.combine(&Region::from_rect(self.bounds), BooleanOp::Intersection)
+                       .map_err(super::regions_service::status)?;
         if mask.is_empty()
         {
             return Err(BAD_ARGUMENT);
@@ -585,6 +634,7 @@ impl DesktopLayer
 
     pub fn paint(&self, canvas: &mut Canvas, fonts: Option<&FontManager>,
                  legacy: impl FnMut(&mut Canvas, &DrawCommand))
+                 -> Result<(), Status>
     {
         let origin = canvas.origin();
         let clip = canvas.clip();
@@ -592,9 +642,10 @@ impl DesktopLayer
         super::geometry::sect_rect(clip, self.bounds, &mut visible);
         canvas.set_origin(0, 0);
         canvas.set_clip(visible);
-        self.committed.paint(canvas, fonts, legacy);
+        let result = self.committed.paint(canvas, fonts, legacy);
         canvas.set_clip(clip);
         canvas.set_origin(origin.h, origin.v);
+        result
     }
 }
 
@@ -626,7 +677,7 @@ mod tests
     fn pixel(layer: &DesktopLayer) -> u32
     {
         let mut pixels = vec![0x878787; 64 * 48];
-        layer.paint(&mut Canvas::new(&mut pixels, 64, 48), None, paint_legacy);
+        layer.paint(&mut Canvas::new(&mut pixels, 64, 48), None, paint_legacy).unwrap();
         pixels[30 * 64 + 20]
     }
     fn command(bounds: Rect, color: u32) -> RenderCommand
@@ -645,7 +696,8 @@ mod tests
                                                                                             4,
                                                                                             32,
                                                                                             12)),
-                                                               BooleanOp::Union);
+                                                               BooleanOp::Union)
+                                                      .unwrap();
         let mut maximum = 0;
         for iteration in 0..200
         {
@@ -656,7 +708,7 @@ mod tests
             scene.commit_patch(patch, bounds, used, 1024 * 1024).unwrap();
             assert_eq!(scene.fragments.len(), 2, "same mask must replace its earlier patch");
             let mut pixels = vec![0; 64 * 48];
-            scene.paint(&mut Canvas::new(&mut pixels, 64, 48), None, paint_legacy);
+            scene.paint(&mut Canvas::new(&mut pixels, 64, 48), None, paint_legacy).unwrap();
             for y in 0..48
             {
                 for x in 0..64
@@ -683,7 +735,8 @@ mod tests
         scene.paint(&mut canvas, None, |canvas, c| {
                  replays += 1;
                  paint_legacy(canvas, c);
-             });
+             })
+             .unwrap();
         assert_eq!(replays, 1, "a local patch must not replay the old background");
         let mut rejected = Content::pending_patch(scene.id, service::Port::default(), mask);
         rejected.commands.push(command(bounds, 0));
@@ -718,7 +771,7 @@ mod tests
         layer.commit_mask(layer.storage(), 1 << 20).unwrap();
         assert_eq!(pixel(&layer), 0x878787);
         let mut pixels = vec![0x878787; 64 * 48];
-        layer.paint(&mut Canvas::new(&mut pixels, 64, 48), None, paint_legacy);
+        layer.paint(&mut Canvas::new(&mut pixels, 64, 48), None, paint_legacy).unwrap();
         assert_eq!(pixels[30 * 64 + 40], 0xff0000);
         assert_eq!(pixels[4 * 64 + 40], 0x878787);
         layer.begin_update().unwrap();
@@ -772,7 +825,7 @@ mod tests
         canvas.set_clip(Rect::new(8, 7, 30, 35));
         let origin = canvas.origin();
         let clip = canvas.clip();
-        layer.paint(&mut canvas, None, paint_legacy);
+        layer.paint(&mut canvas, None, paint_legacy).unwrap();
         assert_eq!(canvas.origin(), origin);
         assert_eq!(canvas.clip(), clip);
         assert_eq!(pixels[20 * 64 + 20], 0xffffff);
@@ -801,7 +854,7 @@ mod tests
         let mut pixels = vec![0x878787; 640 * 480];
         {
             let mut canvas = Canvas::new(&mut pixels, 640, 480);
-            layer.paint(&mut canvas, None, paint_legacy);
+            layer.paint(&mut canvas, None, paint_legacy).unwrap();
             windows.draw(&mut canvas, |window, canvas| {
                        canvas.paint_rect(window.local_bounds(), 0xffffff)
                    });
@@ -815,7 +868,7 @@ mod tests
         pixels.fill(0x878787);
         {
             let mut canvas = Canvas::new(&mut pixels, 640, 480);
-            layer.paint(&mut canvas, None, paint_legacy);
+            layer.paint(&mut canvas, None, paint_legacy).unwrap();
             windows.draw(&mut canvas, |window, canvas| {
                        canvas.paint_rect(window.local_bounds(), 0xffffff)
                    });
@@ -823,7 +876,7 @@ mod tests
         assert_eq!(pixels[120 * 640 + 150], 0xffffff);
         assert!(windows.dispose_window(id, &mut events, 1).is_ok());
         pixels.fill(0x878787);
-        layer.paint(&mut Canvas::new(&mut pixels, 640, 480), None, paint_legacy);
+        layer.paint(&mut Canvas::new(&mut pixels, 640, 480), None, paint_legacy).unwrap();
         assert_eq!(pixels[120 * 640 + 150], 0xabcdef);
     }
 }

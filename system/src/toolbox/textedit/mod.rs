@@ -1,6 +1,8 @@
 //! Resident, per-application monochrome TextEdit state. Native UTF-8 byte offsets
 //! are distinct from an original 68k TEHandle's MacRoman offsets.
 #![deny(unsafe_code)]
+use alloc::vec::Vec;
+
 use mac_abi::{textedit::*, *};
 
 use crate::toolbox::{handles::{KindLease, OwnerRef, Store},
@@ -29,6 +31,27 @@ pub struct Manager
 {
     slots: Store<Slot>,
     owner: OwnerRef
+}
+/// The exclusive manager borrow pins every prepared binding through publication.
+/// Dropping a plan publishes nothing; scene admission may fail safely first.
+pub(crate) struct PartialCursorUpdate<'a>
+{
+    window: WindowId,
+    rows:   Vec<(&'a mut Slot, Option<CursorBinding>)>
+}
+impl PartialCursorUpdate<'_>
+{
+    pub(crate) fn commit(self)
+    {
+        for (slot, binding) in self.rows
+        {
+            slot.cursor = binding;
+            if slot.pending_cursor.as_ref().is_some_and(|p| p.window == self.window)
+            {
+                slot.pending_cursor = None;
+            }
+        }
+    }
 }
 pub struct PreparedEdit
 {
@@ -67,9 +90,11 @@ impl Manager
         let mut visible = Region::from_rect(view);
         if let Some(clip) = &port.state.clip
         {
-            visible = visible.combine(clip, BooleanOp::Intersection);
+            visible = visible.combine(clip, BooleanOp::Intersection)
+                             .map_err(crate::toolbox::quickdraw::regions_service::status)?;
         }
-        let visible = visible.offset(port.origin.h, port.origin.v).map_err(|_| BAD_ARGUMENT)?;
+        let visible = visible.offset(port.origin.h, port.origin.v)
+                             .map_err(crate::toolbox::quickdraw::regions_service::status)?;
         let slot = self.slots.get_mut(id.0).ok_or(NOT_FOUND)?;
         let binding = Some(CursorBinding { window,
                                            visible });
@@ -115,35 +140,43 @@ impl Manager
     /// A masked replacement changes hover policy only inside that same mask.
     /// In particular, repainting an icon cannot erase an unrelated editor's
     /// hover region. Geometry is prepared at commit, never during mouse motion.
-    pub fn commit_partial_cursor_update(&mut self, window: WindowId, mask: &Region)
+    pub(crate) fn prepare_partial_cursor_update(&mut self, window: WindowId, mask: &Region)
+                                                -> Result<PartialCursorUpdate<'_>, Status>
     {
+        let mut rows = Vec::new();
         for slot in self.slots.values_mut()
         {
-            if let Some(binding) = &mut slot.cursor
-               && binding.window == window
-               && binding.visible.overlaps(mask)
+            let current = slot.cursor.as_ref().filter(|b| b.window == window);
+            let pending = slot.pending_cursor.as_ref().filter(|b| b.window == window);
+            if pending.is_none() && current.is_none_or(|b| !b.visible.overlaps(mask))
             {
-                binding.visible = binding.visible.combine(mask, BooleanOp::Difference);
-                if binding.visible.is_empty()
-                {
-                    slot.cursor = None;
-                }
+                continue;
             }
-            if slot.pending_cursor.as_ref().is_some_and(|binding| binding.window == window)
+            let mut visible = match current
             {
-                let mut pending = slot.pending_cursor.take().unwrap();
-                pending.visible = pending.visible.combine(mask, BooleanOp::Intersection);
-                if let Some(binding) = &mut slot.cursor
-                   && binding.window == window
+                Some(binding) =>
                 {
-                    binding.visible = binding.visible.combine(&pending.visible, BooleanOp::Union);
+                    binding.visible
+                           .combine(mask, BooleanOp::Difference)
+                           .map_err(crate::toolbox::quickdraw::regions_service::status)?
                 }
-                else if !pending.visible.is_empty()
-                {
-                    slot.cursor = Some(pending);
-                }
+                None => Region::new()
+            };
+            if let Some(pending) = pending
+            {
+                let added = pending.visible
+                                   .combine(mask, BooleanOp::Intersection)
+                                   .map_err(crate::toolbox::quickdraw::regions_service::status)?;
+                visible = visible.combine(&added, BooleanOp::Union)
+                                 .map_err(crate::toolbox::quickdraw::regions_service::status)?;
             }
+            rows.try_reserve(1).map_err(|_| NO_MEMORY)?;
+            rows.push((slot,
+                       (!visible.is_empty()).then_some(CursorBinding { window,
+                                                                       visible })));
         }
+        Ok(PartialCursorUpdate { window,
+                                 rows })
     }
 
     /// Window disposal discards both visible registrations and abandoned draws.

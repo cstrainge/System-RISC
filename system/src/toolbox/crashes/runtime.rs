@@ -1,6 +1,7 @@
 //! The report window is serviced by System even while its application has
 //! stopped executing. Input outside its content still reaches the desktop.
-use alloc::{format, string::String};
+use alloc::string::String;
+use core::fmt;
 
 use mac_abi::{crashes::*, quickdraw::*, *};
 
@@ -35,7 +36,38 @@ fn checked(status: Status) -> Result<(), Status>
     if status == OK { Ok(()) } else { Err(status) }
 }
 
-fn label(index: u32) -> Result<String, Status>
+// STRING replies already pass the Resource Manager's canonical MacRoman/UTF-8
+// boundary. Keep that existing reply capacity on the stack instead of cloning it.
+struct Label
+{
+    bytes:  [u8; 256],
+    length: usize
+}
+impl Label
+{
+    fn text(&self) -> Result<&str, Status>
+    {
+        core::str::from_utf8(&self.bytes[..self.length]).map_err(|_| BAD_ARGUMENT)
+    }
+
+    fn as_bytes(&self) -> &[u8]
+    {
+        &self.bytes[..self.length]
+    }
+
+    fn len(&self) -> usize
+    {
+        self.length
+    }
+}
+impl fmt::Display for Label
+{
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        output.write_str(self.text().map_err(|_| fmt::Error)?)
+    }
+}
+fn label(index: u32) -> Result<Label, Status>
 {
     let mut bytes = [0; 256];
     let mut call = resources::ResourceCall { operation: resources::STRING,
@@ -45,11 +77,63 @@ fn label(index: u32) -> Result<String, Status>
                                              index,
                                              ..Default::default() };
     crate::kernel::with_resources(|resources| resources.request(&mut call, "", &mut bytes)).ok_or(NOT_SUPPORTED)??;
-    let mut text = String::new();
-    let value = core::str::from_utf8(&bytes[..call.transferred]).map_err(|_| BAD_ARGUMENT)?;
-    text.try_reserve(value.len()).map_err(|_| NO_MEMORY)?;
-    text.push_str(value);
-    Ok(text)
+    core::str::from_utf8(bytes.get(..call.transferred).ok_or(BAD_ARGUMENT)?).map_err(|_| {
+                                                                                BAD_ARGUMENT
+                                                                            })?;
+    Ok(Label { bytes,
+               length: call.transferred })
+}
+fn append(output: &mut String, text: &str) -> Result<(), Status>
+{
+    output.try_reserve(text.len()).map_err(|_| NO_MEMORY)?;
+    output.push_str(text);
+    Ok(())
+}
+fn write_text(output: &mut String, arguments: fmt::Arguments<'_>) -> Result<(), Status>
+{
+    struct Writer<'a>
+    {
+        output: &'a mut String,
+        error:  Option<Status>
+    }
+    impl fmt::Write for Writer<'_>
+    {
+        fn write_str(&mut self, value: &str) -> fmt::Result
+        {
+            if self.error.is_some()
+            {
+                return Err(fmt::Error);
+            }
+            if let Err(error) = append(self.output, value)
+            {
+                self.error = Some(error);
+                return Err(fmt::Error);
+            }
+            Ok(())
+        }
+    }
+    let mut writer = Writer { output,
+                              error: None };
+    fmt::write(&mut writer, arguments).map_err(|_| writer.error.unwrap_or(BAD_ARGUMENT))
+}
+fn formatted(arguments: fmt::Arguments<'_>) -> Result<String, Status>
+{
+    let mut output = String::new();
+    write_text(&mut output, arguments)?;
+    Ok(output)
+}
+/// Exact UTF-8 extent after the existing four-column tab expansion.
+fn expanded_line_length(line: &str) -> Result<usize, Status>
+{
+    let (mut length, mut column) = (0usize, 0usize);
+    for character in line.chars()
+    {
+        let columns = if character == '\t' { 4 - (column % 4) } else { 1 };
+        column = column.checked_add(columns).ok_or(BAD_ARGUMENT)?;
+        length = length.checked_add(if character == '\t' { columns } else { character.len_utf8() })
+                       .ok_or(BAD_ARGUMENT)?;
+    }
+    Ok(length)
 }
 
 fn window_request(id: WindowId) -> WindowRequest
@@ -302,16 +386,16 @@ impl super::Desktop
                         icons_service::Drawing::new(resources, &call, service::Port::default())
                     }).ok_or(NOT_SUPPORTED)??;
                 self.icon(&call, drawing)?;
-                self.crash_text(window, FontSelection::default(), 64, 29, &label(0)?)?;
+                self.crash_text(window, FontSelection::default(), 64, 29, label(0)?.text()?)?;
                 self.crash_text(window,
                                 MONACO,
                                 64,
                                 48,
-                                &format!("{} {}   {} {}",
-                                         label(12)?,
-                                         info.app,
-                                         label(13)?,
-                                         info.thread))?;
+                                &formatted(format_args!("{} {}   {} {}",
+                                                        label(12)?,
+                                                        info.app,
+                                                        label(13)?,
+                                                        info.thread))?)?;
                 let description = if self.owner == crate::context::finder_app().0
                 {
                     label(8)?
@@ -320,12 +404,11 @@ impl super::Desktop
                 {
                     label(11)?
                 };
-                self.crash_text(window, MONACO, 14, 72, &description)?;
+                self.crash_text(window, MONACO, 14, 72, description.text()?)?;
             }
             if matches!(mode, Paint::Full | Paint::Warnings)
             {
                 let mut warnings = String::new();
-                warnings.try_reserve(256).map_err(|_| NO_MEMORY)?;
                 for (enabled, index) in [(info.flags & TRUNCATED != 0, 9),
                                          (info.flags & FORMAT_FAILED != 0, 10),
                                          (self.crash.copy_failed, 17)]
@@ -334,17 +417,17 @@ impl super::Desktop
                     {
                         if !warnings.is_empty()
                         {
-                            warnings.push_str("   ");
+                            append(&mut warnings, "   ")?;
                         }
-                        warnings.push_str(&label(index)?);
+                        append(&mut warnings, label(index)?.text()?)?;
                     }
                 }
                 if let Some(status) = self.crash.restart_error
                 {
                     warnings.clear();
-                    warnings.push_str(&label(if status == NO_MEMORY { 19 } else { 18 })?);
-                    use core::fmt::Write;
-                    let _ = write!(warnings, " ({status})");
+                    append(&mut warnings,
+                           label(if status == NO_MEMORY { 19 } else { 18 })?.text()?)?;
+                    write_text(&mut warnings, format_args!(" ({status})"))?;
                 }
                 self.crash_text(window, MONACO, 14, 84, &warnings)?;
             }
@@ -373,6 +456,7 @@ impl super::Desktop
                                      .saturating_add(metrics.descent)
                                      .saturating_add(metrics.leading)
                                      .max(1);
+                let mut length = 0;
                 for visible in 0..info.page_lines
                 {
                     let Some(line) = self.crash.line((info.first_line + visible) as usize)
@@ -380,8 +464,18 @@ impl super::Desktop
                     {
                         break;
                     };
-                    let mut text = String::new();
-                    text.try_reserve(line.len().saturating_mul(4)).map_err(|_| NO_MEMORY)?;
+                    length = length.max(expanded_line_length(line)?);
+                }
+                let mut text = String::new();
+                text.try_reserve_exact(length).map_err(|_| NO_MEMORY)?;
+                for visible in 0..info.page_lines
+                {
+                    let Some(line) = self.crash.line((info.first_line + visible) as usize)
+                    else
+                    {
+                        break;
+                    };
+                    text.clear();
                     let mut column = 0;
                     for character in line.chars()
                     {
@@ -412,15 +506,23 @@ impl super::Desktop
                                               ..Default::default() },
                           &[],
                           &[])?;
-                let coverage =
-                    format!("{} {}-{} {} {}   {} {}",
-                            label(14)?,
-                            if info.line_count == 0 { 0 } else { info.first_line + 1 },
-                            info.first_line.saturating_add(info.page_lines).min(info.line_count),
-                            label(15)?,
-                            info.line_count,
-                            info.report_bytes,
-                            label(16)?);
+                let coverage = formatted(format_args!("{} {}-{} {} {}   {} {}",
+                                                      label(14)?,
+                                                      if info.line_count == 0
+                                                      {
+                                                          0
+                                                      }
+                                                      else
+                                                      {
+                                                          info.first_line + 1
+                                                      },
+                                                      info.first_line
+                                                          .saturating_add(info.page_lines)
+                                                          .min(info.line_count),
+                                                      label(15)?,
+                                                      info.line_count,
+                                                      info.report_bytes,
+                                                      label(16)?))?;
                 self.crash_text(window, MONACO, 14, 360, &coverage)?;
             }
             if mode == Paint::Full
@@ -431,7 +533,19 @@ impl super::Desktop
         })();
         if mode == Paint::Full
         {
-            let ended = checked(self.window(END_UPDATE, &mut request));
+            let ended = if result.is_ok()
+            {
+                checked(self.window(END_UPDATE, &mut request))
+            }
+            else
+            {
+                self.cancel_system_window_update(info.window)
+            };
+            if let (Err(original), Err(cleanup)) = (result, ended)
+            {
+                serial!("CRASH_PAINT_CANCEL_REFUSED window={} original={} cleanup={}", window,
+                        original, cleanup);
+            }
             result?;
             ended?;
         }
@@ -489,7 +603,7 @@ impl super::Desktop
                                           LABELS[index]
                                       })?;
                     let mut standard =
-                        mac_abi::definitions::ControlDefinitionState::new(*bounds, &title);
+                        mac_abi::definitions::ControlDefinitionState::new(*bounds, title.text()?);
                     standard.enabled = enabled;
                     if index == 5
                     {

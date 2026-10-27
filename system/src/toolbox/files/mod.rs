@@ -2,7 +2,7 @@
 //! No file contents or catalog listings are fabricated or cached in applications.
 #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
 mod resource;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 pub(crate) use resource::ModuleReadError;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod application;

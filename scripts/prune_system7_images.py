@@ -8,6 +8,13 @@ from system7_host import process_exists
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def is_abi_load_image(path, build):
+    # tools/xtask/src/smoke.rs emits these executable memory images for QEMU's
+    # raw-memory loader. Their .raw suffix does not make them filesystem disks.
+    return (path.is_relative_to(build) and path.parent.name == 'abi-smoke'
+            and path.name in ('System.raw', 'Finder.raw'))
+
+
 def prune():
     results = ROOT / 'results/system7'
     results.mkdir(parents=True, exist_ok=True)
@@ -41,6 +48,8 @@ def prune():
     for base in (results, build):
         for path in base.rglob('*'):
             if path.suffix not in ('.hfs', '.hfsb', '.hfs-b', '.qcow2', '.raw', '.img', '.hda', '.dsk') and path.name != 'bootrom.bin':
+                continue
+            if is_abi_load_image(path, build):
                 continue
             if path.parent in current and path.name in ('system7.hfsb', 'system7.qcow2', 'bootrom.bin'):
                 continue

@@ -239,7 +239,7 @@ fn actual_boot_theme_admission_preserves_each_allocation_refusal_as_a_typed_memo
     let mut admitted = false;
     for ordinal in 1..64
     {
-        let observed = Observe::fail_nth(ordinal);
+        let observed = Observe::fail_at(ordinal);
         let result = mac_system::testing::extension_startup::prepare_theme(&resources, 640, 480);
         let attempts = observed.finish();
         match result

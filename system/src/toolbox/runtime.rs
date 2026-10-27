@@ -212,6 +212,11 @@ impl Desktop
         else
         {
             region.combine(&Region::from_rect(local), BooleanOp::Intersection)
+                  .unwrap_or_else(|_| {
+                      let mut clipped = Rect::ZERO;
+                      super::quickdraw::geometry::sect_rect(bounds, local, &mut clipped);
+                      Region::from_rect(clipped)
+                  })
         };
         if region.is_empty()
         {
@@ -232,7 +237,7 @@ impl Desktop
                             region: super::quickdraw::region::Region)
     {
         let id = id.into();
-        use super::quickdraw::region::BooleanOp;
+        use super::quickdraw::region::{BooleanOp, Region};
         if region.is_empty()
         {
             return;
@@ -240,7 +245,9 @@ impl Desktop
         if let Some((_, previous)) =
             self.content_damage.iter_mut().find(|(window, _)| *window == id)
         {
-            *previous = previous.combine(&region, BooleanOp::Union);
+            *previous=previous.combine(&region,BooleanOp::Union).unwrap_or_else(|_| {
+                Region::from_rect(super::quickdraw::geometry::union_rect(previous.bounds(),region.bounds()))
+            });
         }
         else
         {
@@ -307,6 +314,8 @@ impl Desktop
         })?;
         serial!("UI_OBSERVER address={} bytes=128 version=1",
                 super::quickdraw::observer::address());
+        let mut content_damage = Vec::new();
+        content_damage.try_reserve_exact(1).map_err(|_| NO_MEMORY)?;
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
                   standard_file: super::standard_file::Manager::new(super::handles::file_dialog_kinds()?)?,
@@ -340,7 +349,7 @@ impl Desktop
                   last_key: 0,
                   last_action: "READY",
                   redraw: true,
-                  content_damage: Vec::new(),
+                  content_damage,
                   presentation_damage:Vec::new(),
                   feedback_dirty: false,
                   feedback: Default::default(),
@@ -462,6 +471,12 @@ impl Desktop
                     Err(error) => return crate::loader::status(error)
                 };
                 if self.content.try_reserve(1).is_err()
+                   || self.content_damage
+                          .try_reserve(self.content
+                                           .len()
+                                           .saturating_add(2)
+                                           .saturating_sub(self.content_damage.len()))
+                          .is_err()
                 {
                     return NO_MEMORY;
                 }
@@ -590,6 +605,7 @@ impl Desktop
                 self.scroll_boxes.remove_window(id.0);
                 self.controls.remove_window(id.0);
                 self.content.retain(|content| content.id != id);
+                self.content_damage.retain(|(target, _)| *target != id);
                 self.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);
                 self.last_action = "CLOSE";
@@ -763,9 +779,15 @@ impl Desktop
                 };
                 let mut pending = self.pending_content.swap_remove(index);
                 let outline = pending.outline.take();
-                if pending.is_patch()
+                if let Some(mask) = pending.patch_mask().cloned()
                 {
-                    match content.commit_patch(pending, bounds, used, MAX_RETAINED_BYTES)
+                    let prepared = (|| -> Result<super::quickdraw::region::Region, Status> {
+                        let cursors = self.textedit.prepare_partial_cursor_update(id, &mask)?;
+                        let mask = content.commit_patch(pending, bounds, used, MAX_RETAINED_BYTES)?;
+                        cursors.commit();
+                        Ok(mask)
+                    })();
+                    match prepared
                     {
                         Ok(mask) => patch_damage = Some(mask),
                         Err(status) =>
@@ -779,13 +801,6 @@ impl Desktop
                 else
                 {
                     *content = pending;
-                }
-                if let Some(mask) = &patch_damage
-                {
-                    self.textedit.commit_partial_cursor_update(id, mask);
-                }
-                else
-                {
                     self.textedit.commit_cursor_update(id);
                 }
                 self.windows.end_update(id);
@@ -1201,13 +1216,14 @@ impl Desktop
                 Region::from_rectangles(bytes.as_chunks::<8>().0.iter().map(|bytes| {
                     let at=|index| i16::from_le_bytes([bytes[index],bytes[index+1]]);
                     Rect::new(at(0),at(2),at(4),at(6))
-                }))
+                })).map_err(super::quickdraw::regions_service::status)?
             }
             else
             {
-                Region::from_be_bytes(bytes).map_err(|_| BAD_ARGUMENT)?
+                Region::from_be_bytes(bytes).map_err(super::quickdraw::regions_service::status)?
             };
-            let mask = mask.combine(&Region::from_rect(bounds), BooleanOp::Intersection);
+            let mask = mask.combine(&Region::from_rect(bounds), BooleanOp::Intersection)
+                           .map_err(super::quickdraw::regions_service::status)?;
             if desktop
             {
                 return self.desktop.begin_mask(mask, self.retained_bytes(), MAX_RETAINED_BYTES);
@@ -1666,6 +1682,7 @@ impl Desktop
                 self.scroll_boxes.remove_window(id.0);
                 self.controls.remove_window(id.0);
                 self.content.retain(|content| content.id != id);
+                self.content_damage.retain(|(target, _)| *target != id);
                 self.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);
                 self.events.post_system_for(closed_owner,
@@ -2169,8 +2186,8 @@ impl Desktop
                                                                     fonts,
                                                                     |canvas, command| {
                                                                         paint(canvas, command, cdef)
-                                                                    });
-                                             })
+                                                                    })
+                                             }).and_then(core::convert::identity)
                                          });
                 if result.is_err()
                 {
@@ -2198,9 +2215,10 @@ impl Desktop
                                         {
                                             content.paint(canvas, fonts, |canvas, command| {
                                                        paint(canvas, command, cdef)
-                                                   });
+                                                   })?;
                                         }
-                                    })
+                                        Ok(())
+                                    }).and_then(core::convert::identity)
                                 };
                                 // Managed scroll boxes already retain their viewport rasters.
                                 // A second whole-window raster wastes heap and copies every frame.
@@ -2277,7 +2295,7 @@ impl Desktop
                                 background(&mut canvas);
                                 if paint_failed { continue; }
                                 paint_failed = cache.try_paint(id, self.desktop.bounds(), &mut canvas, |canvas| {
-                                    crate::kernel::with_resource_owner(crate::context::finder_app().0, || self.desktop.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef)))
+                                    crate::kernel::with_resource_owner(crate::context::finder_app().0, || self.desktop.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef))).and_then(core::convert::identity)
                                 }).is_err();
                                 damaged.push(clip);
                             }}
@@ -2329,8 +2347,8 @@ impl Desktop
                                                 canvas.paint_rect(window.local_bounds(), WHITE);
                                                 content.paint(canvas, fonts, |canvas, command| {
                                                            paint(canvas, command, cdef)
-                                                       });
-                                            })
+                                                       })
+                                            }).and_then(core::convert::identity)
                                         };
                                         paint_failed = if has_viewports
                                                        {
@@ -2689,6 +2707,7 @@ impl super::windows::lifetime::WindowHost for Desktop
             self.scroll_boxes.remove_window(id.0);
             self.controls.remove_window(id.0);
             self.content.retain(|content| content.id != id);
+            self.content_damage.retain(|(target, _)| *target != id);
             self.pending_content.retain(|content| content.id != id);
             self.forget_cursor_window(id);
             self.redraw = true;

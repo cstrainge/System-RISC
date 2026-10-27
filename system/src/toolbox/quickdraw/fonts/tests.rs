@@ -1,5 +1,5 @@
 extern crate std;
-use alloc::{string::ToString, vec::Vec};
+use alloc::{string::ToString, vec, vec::Vec};
 
 use super::*;
 
@@ -34,7 +34,7 @@ fn bundle() -> FontManager
     }
     // Match packaged resource-map order, including FONT/NFNT ID collisions.
     resources.sort_by_key(|r| (r.kind, r.id));
-    let manager = FontManager::take_resources(&mut resources);
+    let manager = FontManager::take_resources(&mut resources).unwrap();
     assert!(resources.is_empty());
     manager
 }
@@ -181,7 +181,7 @@ fn malformed_resources_unknown_families_and_unbounded_sizes_fail_safely()
                                                name:       Some("Broken".to_string().into_bytes()),
                                                attributes: 0,
                                                data:       alloc::vec![0;55] }];
-    let manager = FontManager::take_resources(&mut resources);
+    let manager = FontManager::take_resources(&mut resources).unwrap();
     assert!(manager.catalog().is_empty());
 }
 
@@ -305,4 +305,75 @@ fn actual_fond_styled_faces_take_priority_over_synthesis()
     {
         assert!(matches!(manager.source(FontSelection{family:20,size:18,face},FontPreference::OutlinePreferred).unwrap(),FontSource::TrueType{face:actual,..} if actual==face));
     }
+}
+
+#[test]
+fn varc_precedence_is_refused_instead_of_drawing_its_glyf_base()
+{
+    use skrifa::{MetadataProvider, outline::OutlineGlyphFormat};
+    // Add an empty valid VARC coverage to an otherwise unchanged bundled glyf
+    // font. The preferred collection is VARC even when this glyph would use its
+    // base outline; that unaudited format must not escape through fallback.
+    let original = include_bytes!("../../../../assets/fonts/sfnt-9217.ttf");
+    let count = u16::from_be_bytes([original[4], original[5]]) as usize;
+    let directory_end = 12 + count * 16;
+    let mut records =
+        original[12..directory_end].chunks_exact(16)
+                                   .map(|record| {
+                                       let mut record: [u8; 16] = record.try_into().unwrap();
+                                       let offset =
+                                           u32::from_be_bytes(record[8..12].try_into().unwrap());
+                                       record[8..12].copy_from_slice(&(offset + 16).to_be_bytes());
+                                       record
+                                   })
+                                   .collect::<Vec<_>>();
+    let mut record = [0; 16];
+    record[..4].copy_from_slice(b"VARC");
+    record[8..12].copy_from_slice(&((original.len() + 16) as u32).to_be_bytes());
+    record[12..].copy_from_slice(&28u32.to_be_bytes());
+    records.push(record);
+    records.sort_unstable_by_key(|record| [record[0], record[1], record[2], record[3]]);
+    let mut data = original[..12].to_vec();
+    data[4..6].copy_from_slice(&((count + 1) as u16).to_be_bytes());
+    for record in records
+    {
+        data.extend_from_slice(&record);
+    }
+    data.extend_from_slice(&original[directory_end..]);
+    let mut varc = [0; 28];
+    varc[..4].copy_from_slice(&0x00010000u32.to_be_bytes());
+    varc[4..8].copy_from_slice(&24u32.to_be_bytes());
+    varc[20..24].copy_from_slice(&28u32.to_be_bytes());
+    varc[24..26].copy_from_slice(&1u16.to_be_bytes());
+    data.extend_from_slice(&varc);
+    let raw = skrifa::FontRef::new(&data).unwrap();
+    assert_eq!(raw.outline_glyphs().format(), Some(OutlineGlyphFormat::Varc));
+    let mut fond = vec![0; 60];
+    fond[58..60].copy_from_slice(&1i16.to_be_bytes());
+    let mut resources = vec![Resource { kind:       *b"FOND",
+                                        id:         0,
+                                        name:       None,
+                                        attributes: 0,
+                                        data:       fond },
+                             Resource { kind: *b"sfnt",
+                                        id: 1,
+                                        name: None,
+                                        attributes: 0,
+                                        data }];
+    let manager = FontManager::take_resources(&mut resources).unwrap();
+    let selection = FontSelection { family: 0,
+                                    size:   17,
+                                    face:   0 };
+    assert_eq!(manager.source(selection, FontPreference::OutlinePreferred), Err(NOT_SUPPORTED));
+    assert_eq!(manager.metrics(selection), Err(NOT_SUPPORTED));
+    assert_eq!(manager.text_width(selection, "A"), Err(NOT_SUPPORTED));
+    let mut pixels = vec![0xffffff; 64 * 48];
+    assert_eq!(manager.draw(selection,
+                            &mut Canvas::new(&mut pixels, 64, 48),
+                            Point { h: 4,
+                                    v: 28 },
+                            "A",
+                            0),
+               Err(NOT_SUPPORTED));
+    assert!(pixels.iter().all(|&pixel| pixel == 0xffffff));
 }

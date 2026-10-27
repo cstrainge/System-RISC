@@ -1,6 +1,12 @@
 //! Exact integer regions represented as normalized horizontal bands.
 #![forbid(unsafe_code)]
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
+mod storage;
+#[cfg(test)]
+use alloc::vec;
+
+pub use storage::SharedSlice;
+use storage::Values;
 
 use super::{Point, Rect};
 
@@ -15,12 +21,12 @@ pub struct Band
 {
     pub top:    i16,
     pub bottom: i16,
-    pub spans:  Vec<Span>
+    pub spans:  SharedSlice<Span>
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Region
 {
-    bands: Vec<Band>
+    bands: SharedSlice<Band>
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BooleanOp
@@ -38,7 +44,51 @@ pub enum RegionError
     InvalidBounds,
     InvalidData,
     CoordinateOverflow,
-    TooLarge
+    TooLarge,
+    Allocation
+}
+
+struct Builder
+{
+    bands: Values<Band>
+}
+impl Builder
+{
+    fn new() -> Self
+    {
+        Self { bands: Values::new() }
+    }
+
+    fn finish(self) -> Result<Region, RegionError>
+    {
+        Ok(Region { bands: self.bands.finish()? })
+    }
+
+    fn push_band(&mut self, top: i16, bottom: i16, spans: Values<Span>) -> Result<(), RegionError>
+    {
+        if top >= bottom || spans.is_empty()
+        {
+            return Ok(());
+        }
+        if let Some(last) = self.bands.last_mut()
+           && last.bottom == top
+           && last.spans[..] == spans[..]
+        {
+            last.bottom = bottom;
+            return Ok(());
+        }
+        self.bands.push(Band { top,
+                               bottom,
+                               spans: spans.finish()? })
+    }
+}
+fn reserve<T>(values: &mut Vec<T>, additional: usize) -> Result<(), RegionError>
+{
+    values.try_reserve(additional).map_err(|_| RegionError::Allocation)
+}
+fn copied<T: Copy>(values: &[T]) -> Result<Vec<T>, RegionError>
+{
+    super::storage::copy(values).map_err(|_| RegionError::Allocation)
 }
 
 impl Region
@@ -54,10 +104,10 @@ impl Region
         {
             return Self::new();
         }
-        Self { bands: vec![Band { top:    rect.top,
-                                  bottom: rect.bottom,
-                                  spans:  vec![Span { left:  rect.left,
-                                                      right: rect.right }] }] }
+        Self { bands: SharedSlice::one(Band { top:    rect.top,
+                                              bottom: rect.bottom,
+                                              spans:  SharedSlice::one(Span { left:  rect.left,
+                                                                              right: rect.right }) }) }
     }
 
     pub fn bands(&self) -> &[Band]
@@ -67,17 +117,29 @@ impl Region
 
     /// Sweep rectangle edges once. No per-pixel work and no repeated growing
     /// region unions when a selection changes many disjoint items together.
-    pub fn from_rectangles(rectangles: impl Iterator<Item = Rect>) -> Self
+    pub fn from_rectangles(rectangles: impl Iterator<Item = Rect>) -> Result<Self, RegionError>
     {
-        let mut edges = Vec::new();
-        for rect in rectangles.filter(|rect| !rect.is_empty())
+        let mut rectangles = rectangles.filter(|rect| !rect.is_empty());
+        let Some(first) = rectangles.next()
+        else
         {
+            return Ok(Self::new());
+        };
+        let Some(second) = rectangles.next()
+        else
+        {
+            return Ok(Self::from_rect(first));
+        };
+        let mut edges = Vec::new();
+        for rect in [first, second].into_iter().chain(rectangles)
+        {
+            reserve(&mut edges, 2)?;
             edges.push((rect.top, rect.left, rect.right, true));
             edges.push((rect.bottom, rect.left, rect.right, false));
         }
         edges.sort_unstable();
         let mut active: Vec<Span> = Vec::new();
-        let mut result = Self::new();
+        let mut result = Builder::new();
         let mut index = 0;
         while index < edges.len()
         {
@@ -87,6 +149,7 @@ impl Region
                 let (_, left, right, begin) = edges[index];
                 if begin
                 {
+                    reserve(&mut active, 1)?;
                     active.push(Span { left,
                                        right });
                 }
@@ -103,7 +166,7 @@ impl Region
                 break;
             };
             active.sort_unstable_by_key(|span| (span.left, span.right));
-            let mut spans: Vec<Span> = Vec::new();
+            let mut spans = Values::<Span>::new();
             for &span in &active
             {
                 if let Some(last) = spans.last_mut()
@@ -113,12 +176,12 @@ impl Region
                 }
                 else
                 {
-                    spans.push(span);
+                    spans.push(span)?;
                 }
             }
-            result.push_band(y, next.0, spans);
+            result.push_band(y, next.0, spans)?;
         }
-        result
+        result.finish()
     }
 
     pub fn is_empty(&self) -> bool
@@ -151,12 +214,13 @@ impl Region
                                                                   })
     }
 
-    pub fn from_predicate(bounds: Rect, mut predicate: impl FnMut(Point) -> bool) -> Self
+    pub fn from_predicate(bounds: Rect, mut predicate: impl FnMut(Point) -> bool)
+                          -> Result<Self, RegionError>
     {
-        let mut result = Self::new();
+        let mut result = Builder::new();
         for y in bounds.top..bounds.bottom
         {
-            let mut spans = Vec::new();
+            let mut spans = Values::new();
             let mut start = None;
             for x in bounds.left..bounds.right
             {
@@ -168,35 +232,17 @@ impl Region
                 else if let Some(left) = start.take()
                 {
                     spans.push(Span { left,
-                                      right: x });
+                                      right: x })?;
                 }
             }
             if let Some(left) = start
             {
                 spans.push(Span { left,
-                                  right: bounds.right });
+                                  right: bounds.right })?;
             }
-            result.push_band(y, y + 1, spans);
+            result.push_band(y, y + 1, spans)?;
         }
-        result
-    }
-
-    fn push_band(&mut self, top: i16, bottom: i16, spans: Vec<Span>)
-    {
-        if top >= bottom || spans.is_empty()
-        {
-            return;
-        }
-        if let Some(last) = self.bands.last_mut()
-           && last.bottom == top
-           && last.spans == spans
-        {
-            last.bottom = bottom;
-            return;
-        }
-        self.bands.push(Band { top,
-                               bottom,
-                               spans });
+        result.finish()
     }
 
     fn spans_at(&self, y: i16) -> &[Span]
@@ -204,21 +250,107 @@ impl Region
         self.bands.iter().find(|b| y >= b.top && y < b.bottom).map_or(&[], |b| &b.spans)
     }
 
-    pub fn combine(&self, other: &Self, operation: BooleanOp) -> Self
+    pub fn combine(&self, other: &Self, operation: BooleanOp) -> Result<Self, RegionError>
     {
-        let mut ys: Vec<i16> =
-            self.bands.iter().chain(&other.bands).flat_map(|b| [b.top, b.bottom]).collect();
+        if self == other
+        {
+            return Ok(match operation
+            {
+                BooleanOp::Union | BooleanOp::Intersection => self.clone(),
+                BooleanOp::Difference | BooleanOp::Xor => Self::new()
+            });
+        }
+        if self.is_empty() || other.is_empty()
+        {
+            return Ok(match operation
+            {
+                BooleanOp::Intersection => Self::new(),
+                BooleanOp::Difference => self.clone(),
+                BooleanOp::Union | BooleanOp::Xor =>
+                {
+                    if self.is_empty() { other.clone() } else { self.clone() }
+                }
+            });
+        }
+        let a = self.bounds();
+        let b = other.bounds();
+        let rectangular = |r: &Self| r.bands.len() == 1 && r.bands[0].spans.len() == 1;
+        let covers = |outer: Rect, inner: Rect| {
+            outer.left <= inner.left
+            && outer.top <= inner.top
+            && outer.right >= inner.right
+            && outer.bottom >= inner.bottom
+        };
+        match operation
+        {
+            BooleanOp::Intersection =>
+            {
+                if rectangular(self) && covers(a, b)
+                {
+                    return Ok(other.clone());
+                }
+                if rectangular(other) && covers(b, a)
+                {
+                    return Ok(self.clone());
+                }
+                if rectangular(self) && rectangular(other)
+                {
+                    return Ok(Self::from_rect(Rect::new(a.left.max(b.left),
+                                                        a.top.max(b.top),
+                                                        a.right.min(b.right),
+                                                        a.bottom.min(b.bottom))));
+                }
+            }
+            BooleanOp::Union =>
+            {
+                if rectangular(self) && covers(a, b)
+                {
+                    return Ok(self.clone());
+                }
+                if rectangular(other) && covers(b, a)
+                {
+                    return Ok(other.clone());
+                }
+            }
+            BooleanOp::Difference =>
+            {
+                if a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top
+                {
+                    return Ok(self.clone());
+                }
+                if rectangular(other) && covers(b, a)
+                {
+                    return Ok(Self::new());
+                }
+            }
+            BooleanOp::Xor =>
+            {}
+        }
+        let mut ys = Vec::new();
+        reserve(&mut ys,
+                self.bands
+                    .len()
+                    .checked_add(other.bands.len())
+                    .and_then(|n| n.checked_mul(2))
+                    .ok_or(RegionError::TooLarge)?)?;
+        ys.extend(self.bands.iter().chain(&other.bands).flat_map(|b| [b.top, b.bottom]));
         ys.sort_unstable();
         ys.dedup();
-        let mut result = Self::new();
+        let mut result = Builder::new();
         for pair in ys.windows(2)
         {
             let a = self.spans_at(pair[0]);
             let b = other.spans_at(pair[0]);
-            let mut xs: Vec<i16> = a.iter().chain(b).flat_map(|s| [s.left, s.right]).collect();
+            let mut xs = Vec::new();
+            reserve(&mut xs,
+                    a.len()
+                     .checked_add(b.len())
+                     .and_then(|n| n.checked_mul(2))
+                     .ok_or(RegionError::TooLarge)?)?;
+            xs.extend(a.iter().chain(b).flat_map(|s| [s.left, s.right]));
             xs.sort_unstable();
             xs.dedup();
-            let mut spans: Vec<Span> = Vec::new();
+            let mut spans = Values::<Span>::new();
             for x in xs.windows(2)
             {
                 let aa = a.iter().any(|s| x[0] >= s.left && x[0] < s.right);
@@ -240,13 +372,13 @@ impl Region
                     else
                     {
                         spans.push(Span { left:  x[0],
-                                          right: x[1] });
+                                          right: x[1] })?;
                     }
                 }
             }
-            result.push_band(pair[0], pair[1], spans);
+            result.push_band(pair[0], pair[1], spans)?;
         }
-        result
+        result.finish()
     }
 
     /// Allocation-free overlap test over normalized, ordered bands/spans.
@@ -295,22 +427,36 @@ impl Region
 
     pub fn offset(&self, dh: i16, dv: i16) -> Result<Self, RegionError>
     {
-        let mut result = self.clone();
-        for band in &mut result.bands
+        if dh == 0 && dv == 0
         {
-            band.top = band.top.checked_add(dv).ok_or(RegionError::CoordinateOverflow)?;
-            band.bottom = band.bottom.checked_add(dv).ok_or(RegionError::CoordinateOverflow)?;
-            for span in &mut band.spans
-            {
-                span.left = span.left.checked_add(dh).ok_or(RegionError::CoordinateOverflow)?;
-                span.right = span.right.checked_add(dh).ok_or(RegionError::CoordinateOverflow)?;
-            }
+            return Ok(self.clone());
         }
-        Ok(result)
+        let mut result = Builder::new();
+        for band in &self.bands
+        {
+            let top = band.top.checked_add(dv).ok_or(RegionError::CoordinateOverflow)?;
+            let bottom = band.bottom.checked_add(dv).ok_or(RegionError::CoordinateOverflow)?;
+            let mut spans = Values::new();
+            for span in &band.spans
+            {
+                spans.push(Span { left:  span.left
+                                             .checked_add(dh)
+                                             .ok_or(RegionError::CoordinateOverflow)?,
+                                  right: span.right
+                                             .checked_add(dh)
+                                             .ok_or(RegionError::CoordinateOverflow)? })?;
+            }
+            result.push_band(top, bottom, spans)?;
+        }
+        result.finish()
     }
 
     pub fn map(&self, source: Rect, destination: Rect) -> Result<Self, RegionError>
     {
+        if !source.is_empty() && source == destination
+        {
+            return Ok(self.clone());
+        }
         let mut result = Self::new();
         for band in &self.bands
         {
@@ -322,7 +468,7 @@ impl Region
                                                      destination).map_err(|_| {
                                                                      RegionError::CoordinateOverflow
                                                                  })?;
-                result = result.combine(&Self::from_rect(rect), BooleanOp::Union);
+                result = result.combine(&Self::from_rect(rect), BooleanOp::Union)?;
             }
         }
         Ok(result)
@@ -332,10 +478,14 @@ impl Region
     /// erode each axis; negative values expand it. Off-domain coordinates fail.
     pub fn inset(&self, dh: i16, dv: i16) -> Result<Self, RegionError>
     {
-        let mut horizontal = Self::new();
+        if dh == 0 && dv == 0
+        {
+            return Ok(self.clone());
+        }
+        let mut horizontal = Builder::new();
         for band in &self.bands
         {
-            let mut spans: Vec<Span> = Vec::new();
+            let mut spans = Values::<Span>::new();
             for span in &band.spans
             {
                 let left = i32::from(span.left) + i32::from(dh);
@@ -354,11 +504,12 @@ impl Region
                 else
                 {
                     spans.push(Span { left,
-                                      right });
+                                      right })?;
                 }
             }
-            horizontal.push_band(band.top, band.bottom, spans);
+            horizontal.push_band(band.top, band.bottom, spans)?;
         }
+        let horizontal = horizontal.finish()?;
         if dv == 0 || horizontal.is_empty()
         {
             return Ok(horizontal);
@@ -380,7 +531,7 @@ impl Region
                 {
                     result = result.combine(&Self::from_rect(Rect::new(span.left, top,
                                                                        span.right, bottom)),
-                                            BooleanOp::Union);
+                                            BooleanOp::Union)?;
                 }
             }
             return Ok(result);
@@ -392,20 +543,26 @@ impl Region
         {
             return Ok(Self::new());
         }
-        let mut events: Vec<i32> = horizontal.bands
-                                             .iter()
-                                             .flat_map(|b| {
-                                                 [i32::from(b.top) - v,
-                                                  i32::from(b.top) + v,
-                                                  i32::from(b.bottom) - v,
-                                                  i32::from(b.bottom) + v]
-                                             })
-                                             .filter(|y| *y >= top && *y <= bottom)
-                                             .collect();
+        let mut events = Vec::new();
+        reserve(&mut events,
+                horizontal.bands
+                          .len()
+                          .checked_mul(4)
+                          .and_then(|n| n.checked_add(2))
+                          .ok_or(RegionError::TooLarge)?)?;
+        events.extend(horizontal.bands
+                                .iter()
+                                .flat_map(|b| {
+                                    [i32::from(b.top) - v,
+                                     i32::from(b.top) + v,
+                                     i32::from(b.bottom) - v,
+                                     i32::from(b.bottom) + v]
+                                })
+                                .filter(|y| *y >= top && *y <= bottom));
         events.extend([top, bottom]);
         events.sort_unstable();
         events.dedup();
-        let mut result = Self::new();
+        let mut result = Builder::new();
         for pair in events.windows(2)
         {
             let lo = pair[0] - v;
@@ -424,26 +581,51 @@ impl Region
                     break;
                 }
                 cursor = cursor.max(i32::from(band.bottom));
-                let row = Self { bands: vec![Band { top:    0,
-                                                    bottom: 1,
-                                                    spans:  band.spans.clone() }] };
-                intersection = Some(intersection.map_or_else(|| row.clone(),
-                                                 |old| old.combine(&row, BooleanOp::Intersection)));
+                let row = Self { bands: SharedSlice::one(Band { top:    0,
+                                                                bottom: 1,
+                                                                spans:  band.spans.clone() }) };
+                intersection = Some(match intersection
+                                    {
+                                        None => row,
+                                        Some(old) => old.combine(&row, BooleanOp::Intersection)?
+                                    });
             }
             if cursor >= hi
                && let Some(row) = intersection
                && let Some(band) = row.bands.first()
             {
-                result.push_band(pair[0] as i16, pair[1] as i16, band.spans.clone());
+                let mut spans = Values::new();
+                for &span in &band.spans
+                {
+                    spans.push(span)?;
+                }
+                result.push_band(pair[0] as i16, pair[1] as i16, spans)?;
             }
         }
-        Ok(result)
+        result.finish()
+    }
+
+    /// The classic empty/rectangular encoding fits directly in a trap reply.
+    pub(crate) fn compact_bytes(&self) -> Option<[u8; 10]>
+    {
+        if !self.is_empty() && !(self.bands.len() == 1 && self.bands[0].spans.len() == 1)
+        {
+            return None;
+        }
+        let mut bytes = [0; 10];
+        bytes[..2].copy_from_slice(&10u16.to_be_bytes());
+        bytes[2..].copy_from_slice(&self.bounds().to_be_bytes());
+        Some(bytes)
     }
 
     pub fn to_be_bytes(&self) -> Result<Vec<u8>, RegionError>
     {
+        if let Some(bytes) = self.compact_bytes()
+        {
+            return copied(&bytes);
+        }
         let bounds = self.bounds();
-        let mut bytes = vec![0; 10];
+        let mut bytes = copied(&[0; 10])?;
         bytes[2..10].copy_from_slice(&bounds.to_be_bytes());
         if !self.is_empty() && !(self.bands.len() == 1 && self.bands[0].spans.len() == 1)
         {
@@ -451,48 +633,61 @@ impl Region
             {
                 return Err(RegionError::CoordinateOverflow);
             }
-            let mut ys: Vec<i16> = self.bands.iter().flat_map(|b| [b.top, b.bottom]).collect();
+            let mut ys = Vec::new();
+            reserve(&mut ys, self.bands.len().checked_mul(2).ok_or(RegionError::TooLarge)?)?;
+            ys.extend(self.bands.iter().flat_map(|b| [b.top, b.bottom]));
             ys.sort_unstable();
             ys.dedup();
-            let mut previous: Vec<i16> = Vec::new();
+            let mut previous = Vec::<i16>::new();
             for y in ys
             {
-                let current: Vec<i16> =
-                    self.spans_at(y).iter().flat_map(|s| [s.left, s.right]).collect();
+                let spans = self.spans_at(y);
+                let mut current = Vec::new();
+                reserve(&mut current, spans.len().checked_mul(2).ok_or(RegionError::TooLarge)?)?;
+                current.extend(spans.iter().flat_map(|s| [s.left, s.right]));
                 if current == previous
                 {
                     continue;
                 }
-                let mut delta: Vec<i16> = previous.iter().chain(&current).copied().collect();
+                let mut delta = Vec::new();
+                reserve(&mut delta,
+                        previous.len().checked_add(current.len()).ok_or(RegionError::TooLarge)?)?;
+                delta.extend(previous.iter().chain(&current).copied());
                 delta.sort_unstable();
-                let mut changes = Vec::new();
-                let mut i = 0;
-                while i < delta.len()
+                let (mut read, mut write) = (0, 0);
+                while read < delta.len()
                 {
-                    let value = delta[i];
-                    let mut n = 0;
-                    while i < delta.len() && delta[i] == value
+                    let value = delta[read];
+                    let start = read;
+                    while read < delta.len() && delta[read] == value
                     {
-                        n += 1;
-                        i += 1;
+                        read += 1;
                     }
-                    if n % 2 != 0
+                    if (read - start) % 2 != 0
                     {
-                        changes.push(value);
+                        delta[write] = value;
+                        write += 1;
                     }
                 }
+                delta.truncate(write);
+                let added = delta.len()
+                                 .checked_mul(2)
+                                 .and_then(|n| n.checked_add(4))
+                                 .ok_or(RegionError::TooLarge)?;
+                if bytes.len().checked_add(added).is_none_or(|n| n > 65532)
+                {
+                    return Err(RegionError::TooLarge);
+                }
+                reserve(&mut bytes, added)?;
                 bytes.extend_from_slice(&y.to_be_bytes());
-                for x in changes
+                for x in delta
                 {
                     bytes.extend_from_slice(&x.to_be_bytes());
                 }
                 bytes.extend_from_slice(&i16::MAX.to_be_bytes());
                 previous = current;
-                if bytes.len() > 65532
-                {
-                    return Err(RegionError::TooLarge);
-                }
             }
+            reserve(&mut bytes, 2)?;
             bytes.extend_from_slice(&i16::MAX.to_be_bytes());
         }
         let size = u16::try_from(bytes.len()).map_err(|_| RegionError::TooLarge)?;
@@ -527,7 +722,7 @@ impl Region
         let mut cursor = 10;
         let mut active: Vec<i16> = Vec::new();
         let mut previous = None;
-        let mut result = Self::new();
+        let mut result = Builder::new();
         let read = |cursor: &mut usize| -> Result<i16, RegionError> {
             if *cursor + 2 > bytes.len()
             {
@@ -554,16 +749,13 @@ impl Region
             }
             if let Some(top) = previous
             {
-                result.push_band(top,
-                                 y,
-                                 active.as_chunks::<2>()
-                                       .0
-                                       .iter()
-                                       .map(|s| {
-                                           Span { left:  s[0],
-                                                  right: s[1] }
-                                       })
-                                       .collect());
+                let mut spans = Values::new();
+                for pair in active.as_chunks::<2>().0
+                {
+                    spans.push(Span { left:  pair[0],
+                                      right: pair[1] })?;
+                }
+                result.push_band(top, y, spans)?;
             }
             let mut delta = Vec::new();
             loop
@@ -577,6 +769,7 @@ impl Region
                 {
                     return Err(RegionError::InvalidData);
                 }
+                reserve(&mut delta, 1)?;
                 delta.push(x);
             }
             if delta.is_empty() || !delta.len().is_multiple_of(2)
@@ -591,7 +784,11 @@ impl Region
                     {
                         active.remove(i);
                     }
-                    Err(i) => active.insert(i, x)
+                    Err(i) =>
+                    {
+                        reserve(&mut active, 1)?;
+                        active.insert(i, x);
+                    }
                 }
             }
             if !active.len().is_multiple_of(2)
@@ -600,6 +797,7 @@ impl Region
             }
             previous = Some(y);
         }
+        let result = result.finish()?;
         if result.bounds() != bounds
         {
             return Err(RegionError::InvalidBounds);
@@ -619,7 +817,7 @@ mod tests
         let b = Region::from_rect(Rect::new(1, 1, 9, 5));
         for op in [BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference, BooleanOp::Xor]
         {
-            let result = a.combine(&b, op);
+            let result = a.combine(&b, op).unwrap();
             assert_eq!(Region::from_be_bytes(&result.to_be_bytes().unwrap()).unwrap(), result);
             for y in -5..10
             {
@@ -645,7 +843,7 @@ mod tests
     {
         let a = Region::from_rect(Rect::new(0, 0, 10, 10));
         let hole = Region::from_rect(Rect::new(2, 2, 8, 8));
-        let ring = a.combine(&hole, BooleanOp::Difference);
+        let ring = a.combine(&hole, BooleanOp::Difference).unwrap();
         let bytes = ring.to_be_bytes().unwrap();
         assert_eq!(Region::from_be_bytes(&bytes).unwrap(), ring);
         for n in 0..bytes.len()
@@ -678,7 +876,7 @@ mod rectangle_sweep_tests
                             Rect::new(0, 0, 40, 40),
                             Rect::new(0, 40, 40, 60)])
                     .collect();
-        let actual = Region::from_rectangles(rectangles.iter().copied());
+        let actual = Region::from_rectangles(rectangles.iter().copied()).unwrap();
         for y in -25..100
         {
             for x in -25..120

@@ -50,17 +50,17 @@ pub fn scroll_rect_with_state(canvas: &mut Canvas, state: &PortState, rect: Rect
     let mut visible = Region::from_rect(intersection(rect, clip));
     if let Some(region) = &state.clip
     {
-        visible = visible.combine(region, BooleanOp::Intersection);
+        visible = visible.combine(region, BooleanOp::Intersection)?;
     }
     if i32::from(dh).abs() >= i32::from(rect.right) - i32::from(rect.left)
        || i32::from(dv).abs() >= i32::from(rect.bottom) - i32::from(rect.top)
     {
-        port::draw(canvas,state,Shape::Region(&visible),Verb::Erase).map_err(|_|RasterError::InvalidBounds)?;
+        port::draw(canvas, state, Shape::Region(&visible), Verb::Erase).map_err(RasterError::from)?;
         return Ok(visible);
     }
     let available = intersection(rect, local_surface(canvas)?);
     let shifted = translated(available, dh, dv)?;
-    let moved = Region::from_rect(shifted).combine(&visible, BooleanOp::Intersection);
+    let moved = Region::from_rect(shifted).combine(&visible, BooleanOp::Intersection)?;
     if !available.is_empty()
     {
         raster::copy_within(canvas,
@@ -71,10 +71,8 @@ pub fn scroll_rect_with_state(canvas: &mut Canvas, state: &PortState, rect: Rect
                             0,
                             0xffffff)?;
     }
-    let exposed = visible.combine(&moved, BooleanOp::Difference);
-    port::draw(canvas, state, Shape::Region(&exposed), Verb::Erase).map_err(|_| {
-                                                                       RasterError::InvalidBounds
-                                                                   })?;
+    let exposed = visible.combine(&moved, BooleanOp::Difference)?;
+    port::draw(canvas, state, Shape::Region(&exposed), Verb::Erase).map_err(RasterError::from)?;
     Ok(exposed)
 }
 

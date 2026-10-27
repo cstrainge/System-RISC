@@ -159,20 +159,20 @@ fn regions(canvas: &mut Canvas)
     let state = PortState::default();
     let a = Region::from_rect(Rect::new(20, 20, 160, 120));
     let b = Region::from_rect(Rect::new(70, 50, 210, 150));
-    let intersection = a.combine(&b, BooleanOp::Intersection);
+    let intersection = a.combine(&b, BooleanOp::Intersection).unwrap();
     draw(canvas, &state, Shape::Region(&intersection), Verb::Paint);
     draw(canvas, &state, Shape::Region(&intersection.offset(200, 0).unwrap()), Verb::Frame);
     draw(canvas,
          &state,
-         Shape::Region(&a.combine(&b, BooleanOp::Union).offset(0, 170).unwrap()),
+         Shape::Region(&a.combine(&b, BooleanOp::Union).unwrap().offset(0, 170).unwrap()),
          Verb::Paint);
     draw(canvas,
          &state,
-         Shape::Region(&a.combine(&b, BooleanOp::Difference).offset(230, 170).unwrap()),
+         Shape::Region(&a.combine(&b, BooleanOp::Difference).unwrap().offset(230, 170).unwrap()),
          Verb::Paint);
     draw(canvas,
          &state,
-         Shape::Region(&a.combine(&b, BooleanOp::Xor).offset(400, 0).unwrap()),
+         Shape::Region(&a.combine(&b, BooleanOp::Xor).unwrap().offset(400, 0).unwrap()),
          Verb::Paint);
     let oval = port::shape_region(Shape::Oval(Rect::new(20, 340, 100, 400))).unwrap();
     draw(canvas, &state, Shape::Region(&oval), Verb::Paint);

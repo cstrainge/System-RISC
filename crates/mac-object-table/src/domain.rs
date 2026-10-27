@@ -1129,6 +1129,14 @@ impl<T, G: InvocationGate> Directory<T, G>
         self.entries.iter_mut().map(DomainEntry::value_mut)
     }
 
+    /// Borrow the authentic ledger beside its mutable payload. The entry and
+    /// owner index remain immutable, so callers cannot replace identities or
+    /// break the directory's incarnation ordering while applying owner policy.
+    pub fn entries_mut(&mut self) -> impl Iterator<Item = (&OwnerRef<G>, &mut T)>
+    {
+        self.entries.iter_mut().map(|entry| (&entry.ledger, &mut entry.value))
+    }
+
     pub fn stop_admission(&mut self, incarnation: u64) -> Result<(), DirectoryError>
     {
         let at = self.index(incarnation).ok_or(DirectoryError::NotFound { incarnation })?;
@@ -1765,6 +1773,26 @@ mod tests
         assert_eq!(directory.remove(high).unwrap(), "high");
         assert!(directory.get(high).is_none());
         assert_eq!(directory.get(low).unwrap().value(), &"low");
+    }
+    #[test]
+    fn mutable_payload_iteration_retains_authentic_directory_identity()
+    {
+        let mut directory = Directory::<_, HostGate>::new();
+        let a = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), 0).unwrap();
+        let b = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), 0).unwrap();
+        for (ledger, payload) in directory.entries_mut()
+        {
+            *payload = ledger.owner().incarnation();
+            if ledger.owner() == a
+            {
+                ledger.stop_admission();
+            }
+        }
+        assert_eq!(*directory.get(a.incarnation()).unwrap().value(), a.incarnation());
+        assert!(!directory.get(a.incarnation()).unwrap().ledger().accepting());
+        assert_eq!(*directory.get(b.incarnation()).unwrap().value(), b.incarnation());
+        assert!(directory.get(b.incarnation()).unwrap().ledger().accepting());
+        assert_eq!(directory.iter().map(DomainEntry::owner).collect::<Vec<_>>(), [a, b]);
     }
     #[test]
     fn scoped_reuse_rotation_and_retirement()

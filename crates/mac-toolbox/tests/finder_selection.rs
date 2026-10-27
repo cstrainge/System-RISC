@@ -90,9 +90,9 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
     let coords: Vec<i16> = gap.split_whitespace().skip(1).map(|s| s.parse().unwrap()).collect();
     let before = frame("placement-auto-added");
     let after = frame("placement-source-gap");
-    for y in 0..480i16
+    for y in 0..display::height() as i16
     {
-        for x in 0..640i16
+        for x in 0..display::width() as i16
         {
             let departed = x >= coords[4] && x < coords[6] && y >= coords[5] && y < coords[7];
             let header = x >= coords[0] && x < coords[2] && y >= coords[1] && y < coords[1] + 20;
@@ -125,9 +125,9 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
         let before = frame(before);
         let after = frame(after);
         let mut changed = 0;
-        for y in 0..480i16
+        for y in 0..display::height() as i16
         {
-            for x in 0..640i16
+            for x in 0..display::width() as i16
             {
                 let offset = (usize::try_from(y).unwrap() * display::width()
                               + usize::try_from(x).unwrap())
@@ -158,9 +158,9 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
     let before = frame("wrapped");
     let after = frame("wrapped-selected");
     let mut changed = 0;
-    for y in 0..480i16
+    for y in 0..display::height() as i16
     {
-        for x in 0..640i16
+        for x in 0..display::width() as i16
         {
             let offset = (y as usize * display::width() + x as usize) * 3;
             if before[offset..offset + 3] != after[offset..offset + 3]
@@ -191,9 +191,9 @@ fn cached_selection_masks_and_marquee_stay_bounded_through_real_services()
                                 .collect();
     let before = frame("desktop-single");
     let after = frame("desktop-shift");
-    for y in 0..480i16
+    for y in 0..display::height() as i16
     {
-        for x in 0..640i16
+        for x in 0..display::width() as i16
         {
             let at = (y as usize * display::width() + x as usize) * 3;
             if before[at..at + 3] != after[at..at + 3]

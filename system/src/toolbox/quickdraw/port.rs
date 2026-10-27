@@ -1,6 +1,7 @@
 //! Stateful, safe QuickDraw primitives. Wire requests and pointers stay outside.
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
 use alloc::vec::Vec;
 
 use super::{Canvas, Point, Rect,
@@ -91,7 +92,22 @@ pub enum GraphicsError
 {
     InvalidSize,
     TooLarge,
-    CoordinateOverflow
+    CoordinateOverflow,
+    Allocation
+}
+impl From<super::region::RegionError> for GraphicsError
+{
+    fn from(error: super::region::RegionError) -> Self
+    {
+        use super::region::RegionError as R;
+        match error
+        {
+            R::Allocation => Self::Allocation,
+            R::TooLarge => Self::TooLarge,
+            R::CoordinateOverflow => Self::CoordinateOverflow,
+            R::Truncated | R::InvalidSize | R::InvalidBounds | R::InvalidData => Self::InvalidSize
+        }
+    }
 }
 const MAX_PIXELS: i64 = 16_777_216;
 
@@ -153,7 +169,7 @@ fn oval_region(r: Rect, clip: Rect, arc: Option<(i16, i16)>) -> Result<Region, G
     let mut delta = square;
     let mut left = (i128::from(r.left) << 16) + (width << 15);
     let mut right = (i128::from(r.right) << 16) - (width << 15) + 32768;
-    let mut spans = Vec::with_capacity(height as usize);
+    let mut spans = super::storage::vector(height as usize).map_err(|_| GraphicsError::Allocation)?;
     let mut min_left = i16::MAX;
     let mut max_right = i16::MIN;
     for row in 0..height
@@ -184,12 +200,12 @@ fn oval_region(r: Rect, clip: Rect, arc: Option<(i16, i16)>) -> Result<Region, G
     }
     let bounds = intersect(Rect::new(min_left, r.top, max_right, r.bottom), clip);
     check_area(bounds)?;
-    Ok(Region::from_predicate(bounds, |point| {
+    Region::from_predicate(bounds, |point| {
         let (left, right) = spans[(i32::from(point.v) - i32::from(r.top)) as usize];
         point.h >= left
         && point.h < right
         && arc.is_none_or(|(start, sweep)| wedge(r, start, sweep, point))
-    }))
+    }).map_err(GraphicsError::from)
 }
 fn rounded(r: Rect, ow: i16, oh: i16, p: Point) -> bool
 {
@@ -347,6 +363,12 @@ fn region_clipped(shape: Shape<'_>, clip: Rect) -> Result<Region, GraphicsError>
     validate(shape)?;
     match shape
     {
+        Shape::Rect(rect) => return Ok(Region::from_rect(intersect(rect, clip))),
+        Shape::Region(region) =>
+        {
+            return region.combine(&Region::from_rect(clip), BooleanOp::Intersection)
+                         .map_err(GraphicsError::from);
+        }
         Shape::Oval(rect) => return oval_region(rect, clip, None),
         Shape::Arc { bounds,
                      start,
@@ -356,7 +378,7 @@ fn region_clipped(shape: Shape<'_>, clip: Rect) -> Result<Region, GraphicsError>
     }
     let rect = intersect(bounds(shape), clip);
     check_area(rect)?;
-    Ok(Region::from_predicate(rect, |p| contains(shape, p)))
+    Region::from_predicate(rect, |p| contains(shape, p)).map_err(GraphicsError::from)
 }
 pub fn shape_region(shape: Shape<'_>) -> Result<Region, GraphicsError>
 {
@@ -378,7 +400,7 @@ pub fn shape_region(shape: Shape<'_>) -> Result<Region, GraphicsError>
         }
         Shape::Rect(r) => Region::from_rect(r),
         Shape::Region(r) => r.clone(),
-        _ => Region::from_predicate(bounds(shape), |p| contains(shape, p))
+        _ => Region::from_predicate(bounds(shape), |p| contains(shape, p))?
     })
 }
 fn local_clip(canvas: &Canvas) -> Rect
@@ -395,10 +417,11 @@ fn local_clip(canvas: &Canvas) -> Rect
               as i16)
 }
 fn paint(canvas: &mut Canvas, state: &PortState, region: Region, verb: Verb)
+         -> Result<(), GraphicsError>
 {
     let region = if let Some(clip) = &state.clip
     {
-        region.combine(clip, BooleanOp::Intersection)
+        region.combine(clip, BooleanOp::Intersection)?
     }
     else
     {
@@ -447,6 +470,7 @@ fn paint(canvas: &mut Canvas, state: &PortState, region: Region, verb: Verb)
             }
         }
     }
+    Ok(())
 }
 fn inset(r: Rect, h: i16, v: i16) -> Rect
 {
@@ -524,7 +548,7 @@ fn line_region(start: Point, end: Point, size: Point, clip: Rect) -> Result<Regi
                                                                        right as i16,
                                                                        bottom as i16),
                                                              clip)),
-                                BooleanOp::Union);
+                                BooleanOp::Union)?;
     }
     Ok(result)
 }
@@ -538,7 +562,7 @@ pub fn line_to(canvas: &mut Canvas, state: &mut PortState, end: Point)
         return Ok(());
     }
     let region = line_region(start, end, state.pen_size, local_clip(canvas))?;
-    paint(canvas, state, region, Verb::Paint);
+    paint(canvas, state, region, Verb::Paint)?;
     Ok(())
 }
 pub fn draw(canvas: &mut Canvas, state: &PortState, shape: Shape<'_>, verb: Verb)
@@ -567,7 +591,7 @@ pub fn draw(canvas: &mut Canvas, state: &PortState, shape: Shape<'_>, verb: Verb
             for (a, b) in points.iter().zip(points.iter().cycle().skip(1)).take(points.len())
             {
                 region =
-                    region.combine(&line_region(*a, *b, state.pen_size, clip)?, BooleanOp::Union);
+                    region.combine(&line_region(*a, *b, state.pen_size, clip)?, BooleanOp::Union)?;
             }
         }
         else
@@ -577,14 +601,14 @@ pub fn draw(canvas: &mut Canvas, state: &PortState, shape: Shape<'_>, verb: Verb
     Shape::Oval(r)|Shape::Arc{bounds:r,..}=>region_clipped(Shape::Oval(inset(r,state.pen_size.h,state.pen_size.v)),clip)?,
     Shape::RoundRect{bounds,oval_width,oval_height}=>region_clipped(Shape::RoundRect{bounds:inset(bounds,state.pen_size.h,state.pen_size.v),oval_width:oval_width.saturating_sub(state.pen_size.h.saturating_mul(2)).max(0),oval_height:oval_height.saturating_sub(state.pen_size.v.saturating_mul(2)).max(0)},clip)?,
     Shape::Region(r)=>r.inset(state.pen_size.h,state.pen_size.v)
-                    .map_err(|_|GraphicsError::CoordinateOverflow)?
-                    .combine(&Region::from_rect(clip),BooleanOp::Intersection),
+                    .map_err(GraphicsError::from)?
+                    .combine(&Region::from_rect(clip),BooleanOp::Intersection)?,
 Shape::Polygon(_)=>unreachable!(),
    };
-            region = region.combine(&inner, BooleanOp::Difference);
+            region = region.combine(&inner, BooleanOp::Difference)?;
         }
     }
-    paint(canvas, state, region, verb);
+    paint(canvas, state, region, verb)?;
     Ok(())
 }
 

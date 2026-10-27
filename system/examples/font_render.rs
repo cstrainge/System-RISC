@@ -13,7 +13,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>>
         return Err("usage: font_render System.rsrc output.ppm page[0,1,2] [--unhinted]".into());
     }
     let mut resources = mac_formats::resource::decode(&fs::read(&args[0])?)?;
-    let fonts = FontManager::take_resources(&mut resources);
+    let fonts = FontManager::take_resources(&mut resources).map_err(|status| {
+                    std::io::Error::other(format!("cannot initialize font catalog: status \
+                                                   {status}"))
+                })?;
     let page: u16 = args[2].parse()?;
     let preference = if args.iter().any(|a| a == "--unhinted")
     {

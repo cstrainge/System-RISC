@@ -1,5 +1,6 @@
 [workspace]
 resolver = "3"
+exclude = ["vendor/skrifa", "vendor/ab_glyph_rasterizer"]
 members = [
     "crates/mac-abi",
     "crates/mac-definition",
@@ -91,3 +92,7 @@ lto = true
 codegen-units = 1
 debug = 2
 strip = "none"
+
+[patch.crates-io]
+skrifa = { path = "vendor/skrifa" }
+ab_glyph_rasterizer = { path = "vendor/ab_glyph_rasterizer" }

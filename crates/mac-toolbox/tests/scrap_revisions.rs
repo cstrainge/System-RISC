@@ -170,7 +170,7 @@ fn every_replacement_admission_can_fail_without_losing_the_previous_clipboard()
         let info = system.scrap().info().unwrap();
         for ordinal in 1..=admissions
         {
-            let observed = Observe::fail_nth(ordinal);
+            let observed = Observe::fail_at(ordinal);
             let result = scrap::compare_replace(before.revision(), "another replacement");
             let attempted = observed.finish();
             assert_eq!(attempted, ordinal);

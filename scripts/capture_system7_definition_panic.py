@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import time
 from hfs_b_tool import Image
-from system7_platform import guest_env
+from system7_fixture_build import guest_env as fixture_guest_env, host_env as fixture_host_env
 import capture_system7_conformance as packaging
 from capture_system7_applications_ui import Driver
 import system7_vm as vm
@@ -24,11 +24,11 @@ def capture(output):
     manifest = fixture / 'Cargo.toml'
     subprocess.run(['cargo', 'build', '--manifest-path', str(manifest), '--locked', '--release',
                     '--features', 'guest', '--target', 'riscv64imac-unknown-none-elf',
-                    '--bin', 'CDEF_PANIC', '--target-dir', str(target)], env=guest_env(), check=True)
+                    '--bin', 'CDEF_PANIC', '--target-dir', str(target)], env=fixture_guest_env(target), check=True)
     elf = target / 'riscv64imac-unknown-none-elf/release/CDEF_PANIC'
     packaged = output / 'System.bin'
     subprocess.run(['cargo', 'run', '--manifest-path', str(manifest), '--locked', '--bin', 'package',
-                    '--target-dir', str(target), '--', str(elf), str(original / 'System.bin'), str(packaged)], check=True)
+                    '--target-dir', str(target), '--', str(elf), str(original / 'System.bin'), str(packaged)], env=fixture_host_env(target), check=True)
     private = output / 'dist'
     private.mkdir()
     raw = private / 'definition-panic.raw'

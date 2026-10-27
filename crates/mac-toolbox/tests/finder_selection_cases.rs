@@ -707,17 +707,22 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
                       &Event::MouseDown { window: None,
                                           input:  input(at, when, shift) })
     };
-    let root_point = Point { h: 600,
-                             v: 44 };
-    let trash_point = Point { h: 592,
-                              v: 436 };
-    let empty = Point { h: 540,
-                        v: 400 };
+    let desktop = crate::browser::desktop::bounds();
+    let root = crate::browser::desktop::item(0).ok_or(Error::NotFound)?;
+    let trash =
+        crate::browser::desktop::item(crate::browser::desktop::count() - 1).ok_or(Error::NotFound)?;
+    let center = |bounds: Rect| {
+        Point { h: bounds.left + (bounds.right - bounds.left) / 2,
+                v: bounds.top + (bounds.bottom - bounds.top) / 2 }
+    };
+    let root_point = center(root.icon_bounds);
+    let trash_point = center(trash.icon_bounds);
+    let empty = Point { h: trash.bounds.left - 40,
+                        v: trash.bounds.top - 20 };
     action(system, &mut browser, "desktop-single", 1, false, |browser| {
         desktop_click(browser, root_point, 6000, false)
     })?;
     checkpoint(system, "desktop-single")?;
-    let trash = crate::browser::desktop::item(crate::browser::desktop::count() - 1).unwrap();
     let mut geometry = Text::<160>::default();
     let _ = writeln!(&mut geometry,
                      "FINDER_DESKTOP_TRASH_BOUNDS {} {} {} {}",
@@ -731,8 +736,8 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
         desktop_click(browser, empty, 6200, false)
     })?;
     checkpoint(system, "desktop-clear")?;
-    let band_end = Point { h: 630,
-                           v: 474 };
+    let band_end = Point { h: desktop.right - 10,
+                           v: desktop.bottom - 6 };
     action(system, &mut browser, "desktop-band-trash", 1, false, |browser| {
         pointer_track(system,
                       browser,
@@ -771,8 +776,8 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     {
         pointer_track(system,
                       &mut browser,
-                      &Event::Idle { input: input(Point { h: 570 + (step % 60) as i16,
-                                                          v: 474 },
+                      &Event::Idle { input: input(Point { h: band_end.h - 60 + (step % 60) as i16,
+                                                          v: band_end.v },
                                                   6301 + step,
                                                   false),
                                      tag:   0 })?;

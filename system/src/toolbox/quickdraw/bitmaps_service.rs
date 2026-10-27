@@ -70,7 +70,7 @@ impl BitmapDrawing
                              }
                              else
                              {
-                                 Some(Region::from_be_bytes(mask).map_err(|_| BAD_ARGUMENT)?)
+                                 Some(Region::from_be_bytes(mask).map_err(super::regions_service::status)?)
                              },
                              foreground: call.foreground,
                              background: call.background,
@@ -126,17 +126,22 @@ impl BitmapDrawing
 
     pub fn paint(&self, canvas: &mut Canvas<'_>) -> Result<(), Status>
     {
-        let origin = canvas.origin();
-        canvas.set_origin(origin.h.wrapping_add(self.port.origin.h),
-                          origin.v.wrapping_add(self.port.origin.v));
         let combined = match (&self.mask, &self.port.state.clip)
         {
-            (Some(a), Some(b)) => Some(a.combine(b, BooleanOp::Intersection)),
+            (Some(a), Some(b)) =>
+            {
+                Some(a.combine(b, BooleanOp::Intersection)
+                      .map_err(super::regions_service::status)?)
+            }
             (a, None) => a.clone(),
             (None, b) => b.clone()
         };
+        let bitmap = self.bitmap()?;
+        let origin = canvas.origin();
+        canvas.set_origin(origin.h.wrapping_add(self.port.origin.h),
+                          origin.v.wrapping_add(self.port.origin.v));
         let result = raster::copy_bits(canvas,
-                                       &self.bitmap()?,
+                                       &bitmap,
                                        self.source,
                                        self.destination,
                                        self.mode,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Private file-source DRVR + public SDK app transport; Rust owns assertions."""
-from system7_platform import guest_env
+from system7_fixture_build import guest_env as fixture_guest_env, host_env as fixture_host_env
 import argparse
 import hashlib
 import json
@@ -19,16 +19,16 @@ def digest(path):
 
 def capture(output):
     output.mkdir(parents=True, exist_ok=False)
-    target = vm.build_dir() / 'fixtures/modules'
     for fixture, binary in [('file-source-provider', 'FileSourceProvider'), ('file-source-app', 'Finder')]:
-        manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
+        target = vm.build_dir() / 'fixtures' / fixture
+        manifest = vm.SOURCE / 'crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
         subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(manifest),
                         '--release', '--target', 'riscv64imac-unknown-none-elf', '--bin', binary,
-                        '--target-dir', str(target)], env=guest_env(), check=True)
+                        '--target-dir', str(target)], env=fixture_guest_env(target), check=True)
         subprocess.run(['cargo', 'run', '--locked', '--manifest-path', str(manifest),
-                        '--bin', 'package', '--target-dir', str(vm.build_dir() / 'host'), '--',
+                        '--bin', 'package', '--target-dir', str(target), '--',
                         str(target / 'riscv64imac-unknown-none-elf/release' / binary),
-                        str(output / 'packages')], check=True)
+                        str(output / 'packages')], env=fixture_host_env(target), check=True)
     base = vm.DIST
     before = {name: digest(base / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
     dist = output / 'dist'

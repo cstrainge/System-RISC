@@ -5,7 +5,7 @@ use ab_glyph_rasterizer::point;
 use mac_abi::{BAD_ARGUMENT, Status};
 use skrifa::{FontRef, MetadataProvider,
              instance::{LocationRef, Size},
-             outline::{DrawSettings, Engine, HintingInstance, HintingOptions, Target,
+             outline::{DrawSettings, Engine, Hinting, HintingInstance, HintingOptions, Target,
                        pen::{NullPen, PathElement}}};
 
 use super::{Canvas, Point, Resolved, advance, styled_pixel, underline};
@@ -17,7 +17,7 @@ fn hint(outlines: &skrifa::OutlineGlyphCollection<'_>, size: i16)
                          Size::new(f32::from(size)),
                          LocationRef::default(),
                          HintingOptions { engine: Engine::Interpreter,
-                                          target: Target::Mono }).map_err(|_| BAD_ARGUMENT)
+                                          target: Target::Mono }).map_err(super::scratch::draw_error)
 }
 
 pub(super) fn width(resolved: &Resolved<'_>, text: &str) -> Result<i16, Status>
@@ -27,12 +27,18 @@ pub(super) fn width(resolved: &Resolved<'_>, text: &str) -> Result<i16, Status>
     let outlines = raw.outline_glyphs();
     let hinter = hint(&outlines, resolved.selection.size)?;
     let mut width = 0i32;
+    let mut memory = Vec::new();
     for character in text.chars()
     {
         let id = super::outline::glyph(&face, character);
         let glyph = outlines.get(skrifa::GlyphId::new(u32::from(id.0))).ok_or(BAD_ARGUMENT)?;
-        let metrics = glyph.draw(DrawSettings::hinted(&hinter, false), &mut NullPen)
-                           .map_err(|_| BAD_ARGUMENT)?;
+        let length = glyph.draw_memory_size(Hinting::Embedded);
+        memory.try_reserve(length.saturating_sub(memory.len())).map_err(|_| mac_abi::NO_MEMORY)?;
+        memory.resize(length, 0);
+        let metrics =
+            glyph.draw(DrawSettings::hinted(&hinter, false).with_memory(Some(&mut memory)),
+                       &mut NullPen)
+                 .map_err(super::scratch::draw_error)?;
         let step = metrics.advance_width.unwrap_or_else(|| {
                                             f32::from(face.glyph_hor_advance(id).unwrap_or(0))
                                             * f32::from(resolved.selection.size)
@@ -54,17 +60,19 @@ pub(super) fn draw(resolved: &Resolved<'_>, canvas: &mut Canvas<'_>, baseline: P
     let shear = if resolved.synthetic & super::ITALIC != 0 { 0.2 } else { 0.0 };
     let mut pen = i32::from(baseline.h);
     let mut descenders = Vec::new();
+    let mut memory = Vec::new();
     for character in text.chars()
     {
         let id = super::outline::glyph(&face, character);
         let glyph = outlines.get(skrifa::GlyphId::new(u32::from(id.0))).ok_or(BAD_ARGUMENT)?;
-        let mut path = Vec::<PathElement>::new();
-        let metrics = glyph.draw(DrawSettings::hinted(&hinter, false), &mut path)
-                           .map_err(|_| BAD_ARGUMENT)?;
-        if path.len() > 131072
-        {
-            return Err(BAD_ARGUMENT);
-        }
+        let length = glyph.draw_memory_size(Hinting::Embedded);
+        memory.try_reserve(length.saturating_sub(memory.len())).map_err(|_| mac_abi::NO_MEMORY)?;
+        memory.resize(length, 0);
+        let mut path = super::scratch::Path::default();
+        let drawn = glyph.draw(DrawSettings::hinted(&hinter, false).with_memory(Some(&mut memory)),
+                               &mut path);
+        let path = path.finish()?;
+        let metrics = drawn.map_err(super::scratch::draw_error)?;
         let mut left = f32::INFINITY;
         let mut top = f32::INFINITY;
         let mut right = f32::NEG_INFINITY;
@@ -126,7 +134,7 @@ pub(super) fn draw(resolved: &Resolved<'_>, canvas: &mut Canvas<'_>, baseline: P
                 let p = transform(x, y);
                 point(p.x - left as f32, p.y - top as f32)
             };
-            let coverage = super::monochrome::rasterize(&path, width, height, &local);
+            let coverage = super::monochrome::rasterize(&path, width, height, &local)?;
             let gx = pen.saturating_add(left);
             let gy = i32::from(baseline.v).saturating_add(top);
             if resolved.synthetic & super::UNDERLINE != 0
@@ -139,7 +147,7 @@ pub(super) fn draw(resolved: &Resolved<'_>, canvas: &mut Canvas<'_>, baseline: P
                                                       (gx + (index % width) as i32,
                                                        gy + (index / width) as i32)
                                                   }),
-                                          i32::from(baseline.v));
+                                          i32::from(baseline.v))?;
             }
             let mask = |x: i32, y: i32| {
                 let x = x - gx;
