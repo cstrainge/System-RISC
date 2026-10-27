@@ -12,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
@@ -64,7 +65,8 @@ def build():
 def clipboard_backend(executable):
     """Inspect capabilities only; never read or change the host clipboard."""
     try:
-        result = subprocess.run([str(executable), '-display', 'none', '-chardev', 'help'],
+        result = subprocess.run([str(executable), '-machine', 'none', '-nodefaults',
+                                 '-display', 'none', '-chardev', 'help'],
                                 capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError(f'Cannot check QEMU clipboard backend: {error}') from error
@@ -74,6 +76,102 @@ def clipboard_backend(executable):
         raise RuntimeError('Selected QEMU does not advertise the qemu-vdagent clipboard backend; '
                            'install QEMU with qemu-vdagent and a clipboard-capable graphical display'
                            + (f':\n{cause}' if cause else ''))
+
+
+def qmp_schema(executable):
+    """Query a CPU-less QEMU over an owned loopback connection, then reap it.
+
+    Windows QEMU's console stdio transport cannot reliably consume piped QMP.
+    The listener retains its ephemeral port until QEMU connects as a client;
+    no existing monitor, display, disk or clipboard is opened.
+    """
+    process = None
+    with tempfile.TemporaryFile() as errors, socket.socket() as listener:
+        try:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen(1)
+            listener.settimeout(10)
+            port = listener.getsockname()[1]
+            process = subprocess.Popen([str(executable), '-machine', 'none', '-nodefaults',
+                                        '-display', 'none', '-S', '-qmp', f'tcp:127.0.0.1:{port}',
+                                        '-monitor', 'none', '-serial', 'none'],
+                                       stdin=subprocess.DEVNULL, stdout=errors, stderr=errors,
+                                       **process_options())
+            connection, _ = listener.accept()
+            with connection:
+                connection.settimeout(10)
+                with connection.makefile('rwb') as stream:
+                    def receive():
+                        line = stream.readline(16 * 1024 * 1024)
+                        if not line.endswith(b'\n'):
+                            raise ValueError('QMP response ended early or exceeded 16 MiB')
+                        value = json.loads(line)
+                        if not isinstance(value, dict):
+                            raise ValueError('QMP response must be an object')
+                        return value
+                    if 'QMP' not in receive():
+                        raise ValueError('selected QEMU did not send its QMP greeting')
+                    def execute(command, wait_result=True):
+                        stream.write((json.dumps({'execute': command, 'id': command}) + '\n').encode())
+                        stream.flush()
+                        if not wait_result:
+                            return
+                        while True:
+                            response = receive()
+                            if response.get('id') == command:
+                                if 'error' in response:
+                                    raise RuntimeError(str(response['error']))
+                                if 'return' not in response:
+                                    raise ValueError(f'QMP {command} omitted its result')
+                                return response['return']
+                    execute('qmp_capabilities')
+                    schema = execute('query-qmp-schema')
+                    # Some QEMU versions close the socket before delivering
+                    # quit's reply. Successful process exit acknowledges quit.
+                    execute('quit', wait_result=False)
+            process.wait(timeout=5)
+            if process.returncode != 0 or not isinstance(schema, list):
+                raise ValueError('selected QEMU did not return a valid GTK clipboard schema')
+            return schema
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            errors.seek(0)
+            detail = errors.read().decode('utf-8', errors='replace').strip()[-2000:]
+            raise RuntimeError(f'Cannot query the selected QEMU GTK clipboard schema: {error}'
+                               + (f': {detail}' if detail else '')) from error
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+
+
+def gtk_clipboard_schema(executable):
+    """GTK clipboard is an explicit runtime field beginning with QEMU 11.1."""
+    schema = qmp_schema(executable)
+    # Introspection deliberately masks non-ABI type names with opaque IDs.
+    # Follow query-display-options -> tagged DisplayOptions -> gtk variant.
+    records = {record['name']: record for record in schema
+               if isinstance(record, dict) and isinstance(record.get('name'), str)}
+    command = records.get('query-display-options', {})
+    display = records.get(command.get('ret-type'), {})
+    variants = display.get('variants', [])
+    if not isinstance(variants, list):
+        raise RuntimeError('Selected QEMU returned malformed GTK display variants')
+    gtk = next((variant for variant in variants
+                if isinstance(variant, dict) and variant.get('case') == 'gtk'), None)
+    if gtk is None:
+        return False
+    members = records.get(gtk.get('type'), {}).get('members', [])
+    if not isinstance(members, list):
+        raise RuntimeError('Selected QEMU returned malformed GTK clipboard members')
+    for member in members:
+        if isinstance(member, dict) and member.get('name') == 'clipboard':
+            value_type = records.get(member.get('type'), {})
+            return value_type.get('meta-type') == 'builtin' and value_type.get('json-type') == 'boolean'
+    return False
 
 
 def select_clipboard(frontend, preference):
@@ -88,6 +186,10 @@ def select_clipboard(frontend, preference):
         if executable is None:
             raise RuntimeError('Windows QEMU is missing; install it or set SYSTEM7_WINDOWS_QEMU')
         clipboard_backend(executable)
+        if frontend in ('gtk', 'native') and not gtk_clipboard_schema(executable):
+            raise RuntimeError('Selected QEMU GTK has no declared clipboard facility; use QEMU '
+                               'with the DisplayGTK.clipboard schema (11.1 or newer). '
+                               'Legacy GTK builds remain local-only until separately qualified')
     except RuntimeError as error:
         reason = str(error)
         print('Host clipboard unavailable; keeping the guest clipboard local: ' + reason,
@@ -164,6 +266,9 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
                'gtk': 'gtk,gl=on,zoom-to-fit=off,scale=2', 'headless': 'none',
                'cocoa': f'cocoa,zoom-to-fit=off,scale={cocoa_zoom}',
                'native-headless': 'none'}[frontend]
+    if clipboard and frontend in ('gtk', 'native'):
+        # Selection was qualified against this exact binary's QMP schema.
+        display += ',clipboard=on'
     serial = state / 'serial.log'
     serial.write_text('')
     identity = str(uuid.uuid4())

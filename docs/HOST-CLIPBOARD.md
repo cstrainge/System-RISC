@@ -89,6 +89,15 @@ peer. Missing host facilities leave local Scrap functional and report the reason
 launcher configuration alone never reports sharing as active. The System JSON
 enablement/direction preference remains the persistent guest policy.
 
+For GTK, inspect the selected executable's QMP display schema before supplying
+`clipboard=on` on both the GTK display and `qemu-vdagent` chardev. The GTK display
+must declare a boolean clipboard member; a chardev-help listing alone does not
+establish that GTK supplies a clipboard peer. The launcher performs this query
+using a temporary CPU-less, display-less QEMU with an owned loopback monitor and
+reaps it before launch. Probe failures retain their actual cause. Explicit opt-out
+and headless launches skip clipboard probes. Cocoa uses its separate native peer
+profile and still requires its own text qualification.
+
 Qualify the standard QEMU configuration separately on each claimed host profile.
 Detecting a VM, opening a port or passing mock-channel tests is not end-to-end
 sharing. No network stack or filesystem container participates in the clipboard
@@ -245,6 +254,15 @@ operation when preferences are read-only/unavailable, and extensions-disabled
 startup. The module stays pinned for the boot session initially; disabling bridge
 traffic must still cancel pending work and preserve the local clipboard.
 
+The typed policy codec accepts version 1 JSON with optional `enabled` (default
+`true`) and `direction` (`both`, `host-to-guest`, or `guest-to-host`; default
+`both`). It rejects unknown fields, unsupported versions and documents exceeding
+256 bytes. Policy is immutable for a transport epoch: changing it requires a new
+epoch after draining or resetting owned transfers. Disabled and denied directions
+avoid scanning or copying text, while protocol refusals retain bounded reply
+state through allocation refusal. The codec and engine policy are implemented;
+transactional System preference storage and live policy changes remain gates.
+
 ## Acceptance
 
 Canonical `crates/mac-toolbox/tests` assertions use public Scrap calls through
@@ -253,6 +271,15 @@ implemented, cross-app copying, clear/put batching, empty/large/unsupported offe
 conversion failures, no echo loops, concurrent changes and delayed replies.
 Fake endpoints cover deterministic failures; private VM checks must additionally
 copy real text between host editors and guest apps on each claimed host profile.
+
+The native transport fixture has passed capability exchange, wrong-port refusal,
+malformed-protocol rejection and absent-provider startup with a usable desktop.
+A fresh private Xvfb and GTK QEMU have also passed real bidirectional UTF-8,
+multiline and emoji text exchange through the guest policy engine. This fixture
+uses bounded bootstrap execution and fixed private text: it does not admit the
+production worker or connect application Scrap to that worker. Empty-text and
+native Windows/macOS text exchange remain unqualified. Launcher tests pass on
+Linux and native Windows; those tests do not qualify host clipboard text exchange.
 
 Verify actual startup displays the package-owned extension icon, and a package
 without artwork uses the standard extension icon. Compare the startup strip with
