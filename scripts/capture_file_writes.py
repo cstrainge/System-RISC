@@ -6,7 +6,7 @@ ROM/System graphically (headless display), and retain serial/outcome evidence.
 Rust owns every compatibility assertion and the acceptance marker.
 """
 from hfs_b_tool import Image as NativeImage
-from system7_platform import guest_env
+from system7_fixture_build import guest_env as fixture_guest_env, host_env as fixture_host_env
 import argparse
 import hashlib
 import json
@@ -28,12 +28,12 @@ def private_disk(output):
     manifest = fixture / 'Cargo.toml'
     subprocess.run(['cargo', 'build', '--manifest-path', str(manifest), '--locked',
                     '--release', '--target', 'riscv64imac-unknown-none-elf',
-                    '--bin', 'Finder', '--target-dir', str(target)], cwd=vm.ROOT, env=guest_env(), check=True)
+                    '--bin', 'Finder', '--target-dir', str(target)], cwd=vm.ROOT, env=fixture_guest_env(target), check=True)
     binary = target / 'riscv64imac-unknown-none-elf/release/Finder'
     packaged = output / 'package'
     subprocess.run(['cargo', 'run', '--manifest-path', str(manifest), '--locked',
                     '--bin', 'package', '--target-dir', str(target), '--', str(binary),
-                    str(packaged)], cwd=vm.ROOT, check=True)
+                    str(packaged)], cwd=vm.ROOT, env=fixture_host_env(target), check=True)
     private = output / 'dist'
     private.mkdir()
     raw = private / 'file-writes.raw'
