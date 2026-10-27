@@ -39,7 +39,6 @@ struct Thread
 #[derive(Clone, Copy)]
 struct RunState
 {
-    frame:    usize,
     live:     bool,
     retired:  bool,
     switches: u64,
@@ -58,7 +57,7 @@ impl Thread
 struct Idle
 {
     _stack: super::pages::Stack,
-    frame:  usize
+    cpu:    Mutex<super::traps::SavedState>
 }
 #[derive(Clone, Copy)]
 enum Wait
@@ -192,13 +191,13 @@ pub(crate) fn has_threads(app: u64) -> bool
 /// The plan can wait for a retiring slot without consuming its image use.
 struct ThreadCore
 {
-    // Actual stack disposal precedes releasing the image's execution/source pin.
+    // CPU state and stack disposal precede the image execution/source pin.
+    cpu:     Mutex<super::traps::SavedState>,
     _stack:  super::pages::Stack,
     _loaded: Option<crate::kernel::LoadedImage>,
     context: Arc<ThreadContext>,
     release: Mutex<Option<ReleasedResource>>,
     binding: crate::images::Binding,
-    frame:   usize,
     top:     usize
 }
 pub(crate) struct PreparedThread
@@ -219,40 +218,41 @@ pub(crate) struct SpawnFailure
 pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef, loaded: crate::kernel::LoadedImage)
                       -> Result<PreparedThread, PrepareFailure>
 {
-    let prepared = (|| {
-        if !owner.accepting() || loaded.binding().owner() != owner.owner().incarnation()
-        {
-            return Err(mac_abi::ACCESS_DENIED);
-        }
-        let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
-        let stack = super::pages::Stack::allocate(STACK_BYTES).map_err(|error| {
-                                                                  serial!("THREAD_STACK_REFUSED: \
-                                                                           {error}");
-                                                                  error.status()
-                                                              })?;
-        let top = stack.top();
-        let frame = (top - core::mem::size_of::<TrapFrame>()) as *mut TrapFrame;
-        let mut initial = TrapFrame::default();
-        initial.pc = app_start as *const () as usize;
-        initial.status = super::traps::INITIAL_STATUS;
-        initial.registers[8] = loaded.entry();
-        // gp is unused by the freestanding PC-relative executable contract.
-        unsafe {
-            frame.write(initial);
-        }
-        Ok((context, stack, frame as usize, top))
-    })();
+    let prepared =
+        (|| {
+            if !owner.accepting() || loaded.binding().owner() != owner.owner().incarnation()
+            {
+                return Err(mac_abi::ACCESS_DENIED);
+            }
+            let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
+            let stack = super::pages::Stack::allocate(STACK_BYTES).map_err(|error| {
+                            serial!("THREAD_STACK_REFUSED: {error}");
+                            error.status()
+                        })?;
+            let top = stack.top();
+            let mut initial = TrapFrame::default();
+            initial.pc = app_start as *const () as usize;
+            initial.status = super::traps::INITIAL_STATUS;
+            initial.registers[8] = loaded.entry();
+            initial.stack_pointer = top;
+            // gp is unused by the freestanding PC-relative executable contract.
+            let cpu = super::traps::SavedState::new(initial).map_err(|error| {
+                          serial!("THREAD_CPU_STATE_REFUSED: {error}");
+                          error.status()
+                      })?;
+            Ok((context, stack, cpu, top))
+        })();
     match prepared
     {
-        Ok((context, stack, frame, top)) =>
+        Ok((context, stack, cpu, top)) =>
         {
             let binding = loaded.binding();
-            let mut core = match Arc::try_new(ThreadCore { _stack: stack,
+            let mut core = match Arc::try_new(ThreadCore { cpu: Mutex::new(cpu),
+                                                           _stack: stack,
                                                            _loaded: None,
                                                            context,
                                                            release: Mutex::new(None),
                                                            binding,
-                                                           frame,
                                                            top })
             {
                 Ok(core) => core,
@@ -296,9 +296,7 @@ pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
                                    Thread { id,
                                             core: prepared.core.share(),
 
-                                            state: Cell::new(RunState { frame:    prepared.core
-                                                                                          .frame,
-                                                                        live:     false,
+                                            state: Cell::new(RunState { live:     false,
                                                                         retired:  false,
                                                                         switches: 0,
                                                                         waiting:  None,
@@ -344,13 +342,22 @@ pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
     {
         Ok(id) =>
         {
+            let (cpu_frame, cpu_bytes, cpu_base, cpu_backing) = {
+                let state = prepared.core.cpu.lock();
+                (state.frame() as usize, state.bytes(), state.base(), state.backing_bytes())
+            };
             serial!("PROCESS_THREAD app={} thread={} stack=0x{:x} stack_bytes={} \
-                     stack_backing_bytes={}",
+                     stack_backing_bytes={} cpu_state=0x{:x} cpu_state_bytes={} cpu_base=0x{:x} \
+                     cpu_backing_bytes={}",
                     prepared.owner.owner().incarnation(),
                     id,
                     prepared.core.top,
                     prepared.core._stack.bytes(),
-                    prepared.core._stack.backing_bytes());
+                    prepared.core._stack.backing_bytes(),
+                    cpu_frame,
+                    cpu_bytes,
+                    cpu_base,
+                    cpu_backing);
             Ok(id)
         }
         Err(status) =>
@@ -414,18 +421,20 @@ pub fn start() -> mac_formats::Result<()>
                                                           idle stack")
                 })?;
     let top = stack.top();
-    let idle_frame = (top - core::mem::size_of::<TrapFrame>()) as *mut TrapFrame;
     let mut initial = TrapFrame::default();
     initial.pc = idle as *const () as usize;
     initial.status = super::traps::INITIAL_STATUS;
-    unsafe {
-        idle_frame.write(initial);
-    }
+    initial.stack_pointer = top;
+    let cpu = super::traps::SavedState::new(initial).map_err(|error| {
+                  serial!("IDLE_CPU_STATE_REFUSED: {error}");
+                  mac_formats::Error::AllocationFailed("physical page allocation refused for idle \
+                                                        CPU state")
+              })?;
     scheduler.idle = Some(Idle { _stack: stack,
-                                 frame:  idle_frame as usize });
+                                 cpu:    Mutex::new(cpu) });
     let t = scheduler.thread(0)
                      .expect("scheduler bootstrap publishes Finder before starting CPU frames");
-    let frame = t.state.get().frame as *mut TrapFrame;
+    let frame = t.core.cpu.lock().frame();
     t.update(|state| state.switches += 1);
     activate_context(Some(&t.core.context));
     CURRENT.store(0, Ordering::Relaxed);
@@ -749,6 +758,39 @@ pub(crate) fn reclaim_retired()
     }
 }
 
+/// Persist only when the selected CPU changes. Ordinary same-thread returns
+/// reuse the incoming entry frame and do no extra context copy. Current and
+/// retained ThreadCore barriers pin both source and destination until switch.
+fn capture_current(scheduler: &Scheduler, current: usize, frame: *const TrapFrame)
+{
+    if let Some(thread) = scheduler.thread(current)
+    {
+        if thread.state.get().live
+        {
+            // SAFETY: native dispatch is interrupt-masked; the scheduler and
+            // state locks exclude other CPU access. Current stack cannot reap.
+            unsafe {
+                thread.core.cpu.lock().capture(frame);
+            }
+        }
+    }
+    else if current == IDLE
+    {
+        let idle = scheduler.idle
+                            .as_ref()
+                            .expect("scheduler bootstrap installs idle before switching CPU state");
+        // SAFETY: same native entry contract; idle backing is boot-owned.
+        unsafe {
+            idle.cpu.lock().capture(frame);
+        }
+    }
+    else
+    {
+        serial!("CPU_STATE_LOST: current scheduler slot has no retained execution backing");
+        super::power::fatal_shutdown();
+    }
+}
+
 pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
 {
     // Device input and cursor publication precede all ordinary maintenance.
@@ -766,17 +808,6 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
     let current = CURRENT.load(Ordering::Relaxed);
     let mut scheduler = SCHEDULER.lock();
     scheduler.ticks += 1;
-    if let Some(thread) = scheduler.thread(current)
-    {
-        thread.update(|state| state.frame = frame as usize);
-    }
-    else if current == IDLE
-    {
-        scheduler.idle
-                 .as_mut()
-                 .expect("scheduler bootstrap installs idle before scheduling")
-                 .frame = frame as usize;
-    }
     let now = crate::platform::ticks();
     for (_, thread) in scheduler.iter()
     {
@@ -814,7 +845,11 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
                           state.woken = 0;
                           state.switches += 1;
                       });
-                let next = state.frame as *mut TrapFrame;
+                let next = if index == current { frame } else { thread.core.cpu.lock().frame() };
+                if index != current
+                {
+                    capture_current(&scheduler, current, frame);
+                }
                 activate_context(Some(&thread.core.context));
                 CURRENT.store(index, Ordering::Relaxed);
                 arm();
@@ -822,9 +857,21 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
             }
         }
     }
-    let next =
-        scheduler.idle.as_ref().expect("scheduler bootstrap installs idle before scheduling").frame
-        as *mut TrapFrame;
+    let next = if current == IDLE
+    {
+        frame
+    }
+    else
+    {
+        let next = scheduler.idle
+                            .as_ref()
+                            .expect("scheduler bootstrap installs idle before scheduling")
+                            .cpu
+                            .lock()
+                            .frame();
+        capture_current(&scheduler, current, frame);
+        next
+    };
     activate_context(None);
     CURRENT.store(IDLE, Ordering::Relaxed);
     arm();

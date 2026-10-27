@@ -4,6 +4,9 @@ use core::arch::{asm, global_asm};
 use mac_abi::{traps::*, *};
 
 use crate::toolbox;
+mod state;
+pub(crate) use state::SavedState;
+static CPU_STATE_BYTES: spin::Once<usize> = spin::Once::new();
 global_asm!(include_str!("traps.S"),
     frame_bytes=const core::mem::size_of::<TrapFrame>(),
     fp=const core::mem::offset_of!(TrapFrame,floating),
@@ -11,7 +14,8 @@ global_asm!(include_str!("traps.S"),
     vl=const core::mem::offset_of!(TrapFrame,vl),
     vtype=const core::mem::offset_of!(TrapFrame,vtype),
     vstart=const core::mem::offset_of!(TrapFrame,vstart),
-    vcsr=const core::mem::offset_of!(TrapFrame,vcsr));
+    vcsr=const core::mem::offset_of!(TrapFrame,vcsr),
+    saved_sp=const core::mem::offset_of!(TrapFrame,stack_pointer));
 unsafe extern "C" {
     fn __system_trap_vector();
     pub(crate) fn __system_trap_gateway(number: u32, request: *mut (), size: usize) -> i64;
@@ -21,17 +25,18 @@ pub(crate) use __system_trap_gateway as gateway;
 #[derive(Default)]
 pub(crate) struct TrapFrame
 {
-    pub registers: [usize; 30],
-    pub pc:        usize,
-    pub status:    usize,
-    cause:         usize,
-    value:         usize,
-    floating:      [u64; 32],
-    fcsr:          usize,
-    vl:            usize,
-    vtype:         usize,
-    vstart:        usize,
-    vcsr:          usize
+    pub registers:     [usize; 30],
+    pub pc:            usize,
+    pub status:        usize,
+    cause:             usize,
+    value:             usize,
+    floating:          [u64; 32],
+    fcsr:              usize,
+    vl:                usize,
+    vtype:             usize,
+    vstart:            usize,
+    vcsr:              usize,
+    pub stack_pointer: usize
 }
 // Integer offsets remain the assembly gate contract. The extended offsets and
 // fixed frame size are generated above from this one Rust representation.
@@ -77,6 +82,7 @@ pub(crate) fn validate_stack_configuration(
                                                          })
                                                          .map_err(|error| (name, error))?;
     }
+    CPU_STATE_BYTES.call_once(|| cpu_bytes as usize);
     serial!("STACK_POLICY system={} application={} cpu_state={} vector_register_bytes={}",
             SYSTEM_STACK_BYTES, APPLICATION_STACK_BYTES, cpu_bytes, vector_bytes);
     Ok(())

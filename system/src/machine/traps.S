@@ -33,6 +33,8 @@ sd t3, 208(sp)
 sd t4, 216(sp)
 sd t5, 224(sp)
 sd t6, 232(sp)
+addi t0,sp,{frame_bytes}
+sd t0,{saved_sp}(sp)
 csrr t0, mepc
 sd t0, 240(sp)
 csrr t0, mstatus
@@ -194,7 +196,7 @@ ld t3, 208(sp)
 ld t4, 216(sp)
 ld t5, 224(sp)
 ld t6, 232(sp)
-addi sp, sp, {frame_bytes}
+ld sp,{saved_sp}(sp)
 mret
 .global __system_trap_gateway
 __system_trap_gateway:

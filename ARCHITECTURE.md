@@ -71,9 +71,13 @@ selected RVA23 profile, not a claim that misa enumerates every requirement.
 RISC-V trap entry preserves all 32 FP and 32 vector registers, fcsr, vl, vtype,
 vstart and vcsr. This is an **eager correctness bridge**: storage scales with
 hardware vlenb, including nested traps, and it never runs heap allocation while
-saving state. Per-thread domain storage and dirty/lazy policy migrate later.
-Trap frames still reside on the current thread stack until the separate System-
-stack/page/privilege stage; this is no isolation or lazy-save completion claim.
+saving state. Suspended thread/idle CPU state now has separate owned page
+backing, retained by the same execution/readers barrier as its stack and image.
+The frame records the interrupted SP explicitly; a real switch copies into that
+backing, while a same-thread return adds no copy. Entry still builds a temporary
+frame on the interrupted stack and resident work still uses it. Dedicated System-
+stack entry, domain charges and dirty/lazy policy remain separate gates; this is
+no isolation or lazy-save completion claim.
 The shared physical page pool supplies prepared thread/idle stack leases through
 an explicit architecture invocation gate, including lease Drop. Local masking
 precedes every metadata lock; native retirement retains actual reader/CPU

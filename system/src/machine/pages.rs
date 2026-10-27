@@ -174,32 +174,58 @@ fn allocate(order: u32) -> Result<Block, Error>
     Err(Error::Exhausted { order,
                            free_pages })
 }
-/// Actual stack storage is an exclusive page lease. Shared scheduler readers
-/// retain the enclosing ThreadCore, so Drop occurs only after CPU and reader
-/// quiescence. The backend returns pages through the same IRQ-safe pool gate.
-pub(crate) struct Stack
+/// Exclusive zeroed RAM backing. CPU pointers are created only at this native
+/// binding; flat execution is replaced with stable mapped views at MMU handoff.
+pub(crate) struct Backing
 {
-    pages: Block,
-    bytes: u64
+    pages: Block
 }
-impl Stack
+impl Backing
 {
     pub(crate) fn allocate(bytes: usize) -> Result<Self, Error>
     {
         let page = super::memory::PAGE_BYTES as usize;
         let count = bytes.checked_add(page - 1)
-                         .filter(|_| bytes != 0 && bytes.is_multiple_of(page))
+                         .filter(|_| bytes != 0)
                          .map(|n| n / page)
                          .and_then(usize::checked_next_power_of_two)
                          .ok_or(Error::Geometry)?;
         let pages = allocate(count.ilog2())?;
         // SAFETY: exclusive page lease, flat physical mapping, all bytes are
-        // ordinary discovered RAM. Clear prior data before any thread sees it.
+        // ordinary discovered RAM. Clear prior data before any owner sees it.
         unsafe {
             core::ptr::write_bytes(pages.address().0 as *mut u8, 0, pages.bytes() as usize);
         }
-        Ok(Self { pages,
-                  bytes: bytes as u64 })
+        Ok(Self { pages })
+    }
+
+    pub(crate) fn cpu_base(&self) -> usize
+    {
+        self.pages.address().0 as usize
+    }
+
+    pub(crate) fn bytes(&self) -> u64
+    {
+        self.pages.bytes()
+    }
+}
+/// Scheduler readers retain the enclosing ThreadCore. Stack and CPU backing
+/// are disposed only after CPU/reader quiescence, through the same pool gate.
+pub(crate) struct Stack
+{
+    backing: Backing,
+    bytes:   u64
+}
+impl Stack
+{
+    pub(crate) fn allocate(bytes: usize) -> Result<Self, Error>
+    {
+        if !bytes.is_multiple_of(super::memory::PAGE_BYTES as usize)
+        {
+            return Err(Error::Geometry);
+        }
+        Ok(Self { backing: Backing::allocate(bytes)?,
+                  bytes:   bytes as u64 })
     }
 
     pub(crate) fn bytes(&self) -> u64
@@ -209,11 +235,11 @@ impl Stack
 
     pub(crate) fn backing_bytes(&self) -> u64
     {
-        self.pages.bytes()
+        self.backing.bytes()
     }
 
     pub(crate) fn top(&self) -> usize
     {
-        (self.pages.address().0 + self.bytes) as usize
+        self.backing.cpu_base() + self.bytes as usize
     }
 }

@@ -2548,3 +2548,20 @@ ms. This does not close the earlier strict 1 ms failure or establish a cause
 for the reported intermittent mouse stutter. Existing fragmented-heap paint
 allocation failure remains a heap/reserve-stage gate; this milestone does not
 claim general OOM recovery or full original Macintosh compatibility.
+
+### Separate owned CPU snapshots (trap-stack preparation)
+
+Prepared threads and idle execution now own a separate fallible physical page
+lease for their saved integer/FP/vector state. The actual VLEN-selected size is
+recorded at boot; initial vector state is zeroed and the fixed header includes
+the real execution SP. The scheduler copies the incoming complete frame only
+when switching away from a runnable thread; same-thread returns add no copy.
+The existing ThreadCore/reader and noncurrent-CPU barrier retains CPU state,
+stack and image together, disposing CPU/stack storage before the execution pin.
+Preparation failures retain the original loaded image and unwind page leases.
+
+This is an intermediate ownership step. Entry still constructs temporary frames
+on the interrupted stack and resident service work still executes there. It
+does not qualify dedicated System-stack entry, mapped guards, domain charging,
+MMU activation or lazy extension-state saving. Those remain explicit migration
+gates; no supervisor/user isolation is claimed by a separate snapshot alone.

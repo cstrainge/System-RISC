@@ -84,9 +84,11 @@ fn more_than_eight_apps_receive_input_and_reuse_reclaimed_stacks()
     let threads: Vec<_> =
         serial.lines().filter(|line| line.starts_with("PROCESS_THREAD ")).collect();
     let mut cohorts = Vec::new();
+    let mut cpu_cohorts = Vec::new();
     for cohort in rows.chunks_exact(9)
     {
         let mut ranges = Vec::new();
+        let mut cpu_ranges = Vec::new();
         for row in cohort
         {
             let id = number(row, "thread=");
@@ -110,12 +112,44 @@ fn more_than_eight_apps_receive_input_and_reuse_reclaimed_stacks()
                 assert!(backing_end <= old_base || old_top <= base,
                         "concurrent stacks alias: {serial}");
             }
+            let cpu_base = number(stack, "cpu_base=");
+            let cpu_frame = number(stack, "cpu_state=");
+            let cpu_bytes = number(stack, "cpu_state_bytes=");
+            let cpu_backing = number(stack, "cpu_backing_bytes=");
+            let cpu_end = cpu_base.checked_add(cpu_backing).unwrap();
+            assert!(cpu_backing.is_power_of_two() && cpu_bytes > 0 && cpu_bytes <= cpu_backing,
+                    "invalid CPU state backing: {stack}");
+            assert!(cpu_base.is_multiple_of(cpu_backing));
+            assert!(cpu_base <= cpu_frame && cpu_frame < cpu_base + cpu_bytes);
+            assert!(banks.iter().any(|(start, end)| *start <= cpu_base && cpu_end <= *end),
+                    "CPU state is outside discovered RAM: {stack}");
+            assert!(cpu_end <= base || backing_end <= cpu_base,
+                    "CPU state aliases its app stack: {stack}");
+            for &(old_base, old_end) in &cpu_ranges
+            {
+                assert!(cpu_end <= old_base || old_end <= cpu_base,
+                        "concurrent CPU backing aliases: {serial}");
+            }
+            for &(old_base, old_end) in &ranges
+            {
+                assert!(cpu_end <= old_base || old_end <= cpu_base,
+                        "CPU state aliases another thread's stack: {serial}");
+            }
+            for &(old_base, old_end) in &cpu_ranges
+            {
+                assert!(backing_end <= old_base || old_end <= base,
+                        "stack aliases another thread's CPU state: {serial}");
+            }
+            cpu_ranges.push((cpu_base, cpu_end));
             ranges.push((base, backing_end));
         }
         cohorts.push(ranges);
+        cpu_cohorts.push(cpu_ranges);
     }
     assert!(cohorts[0].iter().any(|range| cohorts[1].contains(range)),
             "second cohort did not reuse any genuinely reclaimed page-backed stack: {serial}");
+    assert!(cpu_cohorts[0].iter().any(|range| cpu_cohorts[1].contains(range)),
+            "second cohort did not reuse reclaimed owned CPU-state pages: {serial}");
     assert_eq!(serial.lines().filter(|line| line.starts_with("THREAD_CAPACITY_ACK ")).count(),
                18,
                "{serial}");
