@@ -344,7 +344,7 @@ cumulative counters are part of the model, not a private inspection backdoor.
 Keep §13.2 stages explicit: ISA floor; facility/manager migration; owner walk and
 unified rollback; dynamic process records; live page layer; heaps/reserve/control
 zones; module domains/resource scopes/individual driver extraction/**Host Clipboard Extension**;
-TE2+Text Edit; P13 privilege campaign; **Multi Hart Extension scheduler takeover in its own isolated
+TE2+Text Edit; P13 privilege campaign; **Multi-Scheduler Extension scheduler takeover in its own isolated
 commit after the full model boots cleanly**. No capstone scheduler feature slips
 into a memory change.
 
@@ -359,8 +359,10 @@ System displays it in the classic startup strip, with the standard extension ico
 as fallback. The initial code-pinning policy remains as documented; safe hot code
 reclamation is not implied by disabling the bridge.
 
+The Multi-Scheduler Extension is the required scheduler/SMP proving customer,
+kept as its own isolated capstone after the other active model gates pass.
 The resident scheduler remains the dependable single-hart boot implementation.
-The loadable Multi Hart Extension supplies replacement scheduling policy and
+The loadable Multi-Scheduler Extension supplies replacement scheduling policy and
 decides when to activate additional harts; the fixed core exposes architecture
 mechanisms and enforces safe handover. Per-hart context, MMU and interrupt/lock
 proofs gate activation. Later async I/O APIs likewise belong to a loadable

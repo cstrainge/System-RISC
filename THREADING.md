@@ -426,7 +426,7 @@ provide safe owned requests, completions, cancellation and wakeups; extension
 policy and runtime adapters use ordinary versioned registrations. This does not
 move a Tokio dependency or a fixed async-provider list into the kernel.
 
-Scheduling policy is also replaceable. The loadable **Multi Hart Extension**
+Scheduling policy is also replaceable. The loadable **Multi-Scheduler Extension**
 takes over from the resident single-hart boot scheduler and decides when to
 activate additional harts. Core owns the architecture mechanisms for hart
 startup/parking, interrupts/IPIs, context switches and safe synchronization.

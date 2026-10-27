@@ -271,14 +271,15 @@ no serial logging on every physical input or registry rebuild on every event.
    hosts, no echo, empty/large/error/timeout/reconnect and extension-disabled cases.
    Mock endpoints alone cannot establish this milestone.
 
-## Worked example: scheduler policy seam
+## Worked example: Multi-Scheduler Extension
 
 Resident core owns CPU/hart bring-up, timer acknowledgement, context and lazy
 vector saves, System-stack switching, lifetime validation and a simple fair
 single-hart preemptive bootstrap scheduler. Runnable state belongs to the core;
 policy sees generation-tagged thread references and topology, not TCB pointers.
 
-A SCHD INIT depends only on irreducible services. Its bounded `decide` call
+The required Multi-Scheduler Extension is a SCHD INIT and depends only on
+irreducible services. Its bounded `decide` call
 receives scheduling events and a runnable view, writes a preallocated decision
 batch, and returns. Core validates generation, runnable status, target CPU and
 single-dispatch ownership, then performs switches. Multi-hart selection, affinity

@@ -167,10 +167,11 @@ ceilings as an early storage gate, independently of the chosen boot filesystem.
 
 ### P1 — Multi-hart execution (SMP)
 
-Status: backlog; additional harts currently park in the boot ROM. This is a
-separate platform workstream alongside the Toolbox delivery sequence.
+Status: required memory-model scheduler capstone; additional harts currently
+park in the boot ROM. Deliver this as its own isolated extension milestone after
+the model's memory/isolation gates.
 
-The **Multi Hart Extension** supplies replacement scheduling policy and chooses
+The **Multi-Scheduler Extension** supplies replacement scheduling policy and chooses
 when to activate secondary harts. Keep the resident single-hart boot scheduler
 and minimal architecture mechanisms below a checked takeover seam. A rejected
 activation must leave boot scheduling dependable. The extension is the memory
