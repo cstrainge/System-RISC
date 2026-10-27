@@ -227,7 +227,9 @@ fn run(malformed: bool)
         assert!(stopped < walked && walked < reclaimed && reclaimed < retired,
                 "{app} must retain saved state until another stack reclaims its thread, then \
                  pass the ledger barrier: {serial}");
-        for (kind, live) in [("IMAG", 1),
+        for (kind, live) in [("THRD", 1),
+                             ("THST", 1),
+                             ("IMAG", 1),
                              ("IMST", 1),
                              ("WIND", 3),
                              ("WNST", 1),
@@ -272,12 +274,13 @@ fn run(malformed: bool)
         }
         assert!(serial.lines().any(|line| {
                                   line
-                                  == format!("OWNER_WALK app={app} invalidated=31 released=30 \
-                                              quarantined=0 live=0 pending=1 deferred=1 \
-                                              completed=39")
+                                  == format!("OWNER_WALK app={app} invalidated=33 released=30 \
+                                              quarantined=0 live=0 pending=3 deferred=3 \
+                                              completed=41")
                               }),
                 "registered owner walk did not complete all ordinary worker resources while \
-                 retaining its image through stack reclamation for {app}:\n{serial}");
+                 retaining its thread, backing and image through stack reclamation for \
+                 {app}:\n{serial}");
     }
     assert!(!serial.contains("OWNER_CLEANUP_QUARANTINED"),
             "unexpected native cleanup refusal:\n{serial}");
@@ -293,10 +296,10 @@ fn run(malformed: bool)
         serial.lines()
               .position(|line| {
                   line.starts_with(&format!("OWNER_WALK app={document_app} "))
-                  && line.contains("quarantined=0 live=0 pending=5 ")
+                  && line.contains("quarantined=0 live=0 pending=7 ")
               })
-              .expect("document root, three pin aliases and execution image must retain their \
-                       real pending death barrier");
+              .expect("document root, three pin aliases, thread/backing and execution image must \
+                       retain their real pending death barrier");
     let reclaimed = serial.lines()
                           .position(|line| {
                               line.starts_with(&format!("PROCESS_THREAD_RECLAIMED \

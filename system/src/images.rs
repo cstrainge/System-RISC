@@ -121,9 +121,9 @@ pub(crate) struct Execution
 }
 pub(crate) struct Loaded
 {
-    binding:   Binding,
-    entry:     usize,
-    execution: Execution
+    binding:    Binding,
+    entry:      usize,
+    _execution: Execution
 }
 impl Loaded
 {
@@ -135,11 +135,6 @@ impl Loaded
     pub(crate) fn entry(&self) -> usize
     {
         self.entry
-    }
-
-    pub(crate) fn into_parts(self) -> (Binding, usize, Execution)
-    {
-        (self.binding, self.entry, self.execution)
     }
 }
 
@@ -219,8 +214,8 @@ impl Manager
             let entry = write(&read.source.resources, base)?;
             Ok(Loaded { binding,
                         entry,
-                        execution: Execution { _execution: loading.finish(),
-                                               _source:    read } })
+                        _execution: Execution { _execution: loading.finish(),
+                                                _source:    read } })
         })();
         // The process owns every published resource, including refused loads.
         // Its common walk retains the real alias/backing and completes cleanup.

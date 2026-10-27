@@ -73,6 +73,15 @@ impl DeferredIo
     }
 }
 
+/// A borrowed event readiness pass, filled in preallocated scheduler scratch.
+#[cfg(target_arch = "riscv64")]
+pub(crate) struct EventWaiter
+{
+    pub(crate) app:   u64,
+    pub(crate) mask:  u16,
+    pub(crate) ready: bool
+}
+
 /// Accounting belongs to an OS thread and survives hart migration with it.
 /// Independent app calls must never increment each other's nesting counters.
 #[cfg(any(target_arch = "riscv64", test))]
@@ -257,6 +266,47 @@ impl ThreadContext
         })
     }
 }
+/// An owned pin, never a static reference to reclaimable scheduler storage.
+/// The static variant is reserved for the actual boot/firmware context.
+#[cfg(target_arch = "riscv64")]
+pub enum ContextRef
+{
+    Bootstrap,
+    Thread(ThreadPin)
+}
+#[cfg(target_arch = "riscv64")]
+pub struct ThreadPin
+{
+    context: mac_object_table::retained::Read<ThreadContext>
+}
+#[cfg(target_arch = "riscv64")]
+impl ContextRef
+{
+    pub(crate) fn thread(context: alloc::sync::Arc<ThreadContext>) -> Self
+    {
+        Self::Thread(ThreadPin { context: mac_object_table::retained::Read::new(context, crate::machine::scheduler::context_released) })
+    }
+
+    pub(crate) fn is_bootstrap(&self) -> bool
+    {
+        matches!(self, Self::Bootstrap)
+    }
+}
+#[cfg(target_arch = "riscv64")]
+impl core::ops::Deref for ContextRef
+{
+    type Target = ThreadContext;
+
+    fn deref(&self) -> &Self::Target
+    {
+        match self
+        {
+            Self::Bootstrap => &BOOTSTRAP_CONTEXT,
+            Self::Thread(pin) => &pin.context
+        }
+    }
+}
+
 #[cfg(target_arch = "riscv64")]
 static BOOTSTRAP_CONTEXT: ThreadContext = ThreadContext::new();
 #[cfg(target_arch = "riscv64")]
@@ -274,14 +324,7 @@ static BOOT_IO_SUBJECT: selection::PermanentSelection<crate::drivers::jobs::subj
 pub(crate) fn io_subject() -> Option<crate::drivers::jobs::subjects::Subject>
 {
     let context = current_thread_context();
-    if core::ptr::eq(context, boot_context())
-    {
-        BOOT_IO_SUBJECT.current()
-    }
-    else
-    {
-        context.io_subject.current()
-    }
+    if context.is_bootstrap() { BOOT_IO_SUBJECT.current() } else { context.io_subject.current() }
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -290,7 +333,7 @@ pub(crate) fn with_io_subject<R>(subject: crate::drivers::jobs::subjects::Subjec
                                  -> Result<R, mac_abi::Status>
 {
     let context = current_thread_context();
-    if core::ptr::eq(context, boot_context())
+    if context.is_bootstrap()
     {
         Ok(BOOT_IO_SUBJECT.with(Some(subject), call))
     }
@@ -312,14 +355,7 @@ pub(crate) fn with_bootstrap_io_subject<R>(subject: Option<crate::drivers::jobs:
 pub(crate) fn selected_resources() -> Option<crate::kernel::ResourceSelection>
 {
     let context = current_thread_context();
-    if core::ptr::eq(context, boot_context())
-    {
-        BOOT_RESOURCES.current()
-    }
-    else
-    {
-        context.resources.current()
-    }
+    if context.is_bootstrap() { BOOT_RESOURCES.current() } else { context.resources.current() }
 }
 #[cfg(target_arch = "riscv64")]
 pub(crate) fn with_selected_resources<R>(selection: crate::kernel::ResourceSelection,
@@ -327,7 +363,7 @@ pub(crate) fn with_selected_resources<R>(selection: crate::kernel::ResourceSelec
                                          -> Result<R, selection::Reclaimed>
 {
     let context = current_thread_context();
-    if core::ptr::eq(context, boot_context())
+    if context.is_bootstrap()
     {
         Ok(BOOT_RESOURCES.with(Some(selection), call))
     }
@@ -347,14 +383,9 @@ pub(crate) fn with_bootstrap_resources<R>(selection: Option<crate::kernel::Resou
 }
 
 #[cfg(target_arch = "riscv64")]
-pub fn current_thread_context() -> &'static ThreadContext
+pub fn current_thread_context() -> ContextRef
 {
     crate::machine::scheduler::current_context()
-}
-#[cfg(target_arch = "riscv64")]
-pub fn boot_context() -> &'static ThreadContext
-{
-    &BOOTSTRAP_CONTEXT
 }
 #[cfg(target_arch = "riscv64")]
 pub fn current_thread() -> ThreadId
@@ -366,14 +397,7 @@ pub fn current_thread() -> ThreadId
 pub(crate) fn current_owner() -> Result<crate::toolbox::handles::OwnerRef, mac_abi::Status>
 {
     let context = current_thread_context();
-    if core::ptr::eq(context, boot_context())
-    {
-        crate::toolbox::handles::system_owner()
-    }
-    else
-    {
-        context.owner()
-    }
+    if context.is_bootstrap() { crate::toolbox::handles::system_owner() } else { context.owner() }
 }
 
 

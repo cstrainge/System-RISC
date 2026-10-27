@@ -8,6 +8,7 @@ extern crate alloc;
 pub mod projected;
 pub mod aliases;
 pub mod completion;
+pub mod retained;
 pub mod scope;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, Ordering};
@@ -25,7 +26,6 @@ static HOST_TRANSACTION_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0
 static HOST_SESSION_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) }; 16];
 
 static DEVICE_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
-static THREAD_GENERATIONS: [AtomicU16; 8] = [const { AtomicU16::new(0) }; 8];
 static JOB_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static DMA_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static FILE_SOURCE_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) }; 16];
@@ -60,7 +60,6 @@ pub enum Kind
     DriverDevices,
     DriverDma,
     DriverJobs,
-    Threads,
     FileSources,
     HostNodes,
     FileWatches,
@@ -78,7 +77,6 @@ impl Kind
             Self::FileWatches => 64,
             Self::HostNodes => 1024,
             Self::FileSources => 16,
-            Self::Threads => 8,
             Self::DriverJobs => 128,
             Self::DriverDevices => 64,
             Self::DriverDma => 128,
@@ -101,8 +99,7 @@ impl Kind
             Self::DragReceivers => Self::Drags.first_slot() + Self::Drags.capacity() as u32,
             Self::FileWatches => Self::HostNodes.first_slot() + Self::HostNodes.capacity() as u32,
             Self::HostNodes => Self::FileSources.first_slot() + Self::FileSources.capacity() as u32,
-            Self::FileSources => Self::Threads.first_slot() + Self::Threads.capacity() as u32,
-            Self::Threads => Self::DriverJobs.first_slot() + Self::DriverJobs.capacity() as u32,
+            Self::FileSources => Self::DriverJobs.first_slot() + Self::DriverJobs.capacity() as u32,
             Self::DriverJobs => Self::DriverDma.first_slot() + Self::DriverDma.capacity() as u32,
             Self::DriverDevices =>
             {
@@ -157,7 +154,6 @@ impl Kind
             Self::FileWatches => &FILE_WATCH_GENERATIONS[index],
             Self::HostNodes => &HOST_NODE_GENERATIONS[index],
             Self::FileSources => &FILE_SOURCE_GENERATIONS[index],
-            Self::Threads => &THREAD_GENERATIONS[index],
             Self::DriverJobs => &JOB_GENERATIONS[index],
             Self::DriverDevices => &DEVICE_GENERATIONS[index],
             Self::DriverDma => &DMA_GENERATIONS[index],

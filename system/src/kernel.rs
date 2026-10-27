@@ -210,23 +210,28 @@ pub(crate) fn with_desktop<R>(call: impl FnOnce(&mut crate::toolbox::runtime::De
 /// to this service, and no caller identity is borrowed across scheduling.
 pub(crate) fn poll_waiting_events() -> bool
 {
-    let waiting = crate::machine::scheduler::waiting();
-    let _scope = crate::context::current_thread_context().traps.enter();
-    let Ok((ready, foreground, fresh_input)) =
-        DESKTOP.with(|desktop| {
-                   if crate::toolbox::inspection::take_membership_change()
-                   {
-                       desktop.notify_inspectors();
-                   }
-                   desktop.wake_waiters(&waiting)
-               })
+    let Some(mut waiting) = crate::machine::scheduler::waiting()
     else
     {
         return false;
     };
-    for ((app, _), ready) in waiting.iter().zip(ready)
+    let context = crate::context::current_thread_context();
+    let _scope = context.traps.enter();
+    let Ok((foreground, fresh_input)) = DESKTOP.with(|desktop| {
+                                            if crate::toolbox::inspection::take_membership_change()
+                                            {
+                                                desktop.notify_inspectors();
+                                            }
+                                            desktop.wake_waiters(&mut waiting)
+                                        })
+    else
     {
-        if ready
+        return false;
+    };
+    for waiter in waiting.iter()
+    {
+        let app = &waiter.app;
+        if waiter.ready
         {
             crate::trace::record(crate::trace::WAKE, *app, foreground, 0, 0, 0);
             if *app == foreground

@@ -916,7 +916,9 @@ pub fn worker(system: &System<'_>) -> Result<()>
             let ledger = membership.ledger(0).map_err(|e| Failure::Service(e.cause.status()))?;
             require(ledger.completion_fault_count() == 0,
                     "normal worker census must have no retained cleanup completions")?;
-            let expected = [(*b"IMAG", 1),
+            let expected = [(*b"THRD", 1),
+                            (*b"THST", 1),
+                            (*b"IMAG", 1),
                             (*b"IMST", 1),
                             (*b"WIND", 3),
                             (*b"WNST", 1),

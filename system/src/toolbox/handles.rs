@@ -195,6 +195,10 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                    registry.register(&owner, kind.specification(), kind)
                                        .map_err(KindAccessError::Registry)?;
                                }
+                               for storage in [false,true] {
+                                   registry.register(&owner, crate::machine::scheduler::specification(storage),
+                                       crate::machine::scheduler::ReleaseThreads(storage)).map_err(KindAccessError::Registry)?;
+                               }
                                for kind in crate::images::Registration::ALL {
                                    registry.register(&owner, kind.specification(), cleanup::context::Desktop(kind))
                                        .map_err(KindAccessError::Registry)?;
@@ -209,6 +213,13 @@ pub(crate) fn controls_kinds() -> Result<(KindLease, KindLease), mac_abi::Status
 {
     registry(|registry| Ok((registry.get(KindCode(*b"CTRL"))?, registry.get(KindCode(*b"CSTA"))?))).map_err(|error| error.status())?
                                                          .map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn thread_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry| Ok((registry.get(KindCode(*b"THRD"))?, registry.get(KindCode(*b"THST"))?)))
+        .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
 #[cfg(target_arch = "riscv64")]

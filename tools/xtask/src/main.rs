@@ -253,10 +253,11 @@ impl Workspace
         for test in ["dates", "boot_ui", "boot_memory", "resedit", "menus", "finder_trash",
                      "file_writes_guest", "deferred_close", "get_info_ui", "events", "clipboard",
                      "textedit_graphical", "text_edit_documents", "textedit_display",
-                     "textedit_performance", "typing", "processes", "application_ui",
-                     "retained_update", "event_latency", "cursor_graphical", "busy_cursor",
-                     "panic_graphical", "finder_selection", "transfer_incident", "remote_get_info",
-                     "finder_drag", "finder_layout", "reactor_ui", "definition_binding"]
+                     "textedit_performance", "typing", "processes", "thread_capacity",
+                     "finder_recovery", "application_ui", "retained_update", "event_latency",
+                     "cursor_graphical", "busy_cursor", "panic_graphical", "finder_selection",
+                     "transfer_incident", "remote_get_info", "finder_drag", "finder_layout",
+                     "reactor_ui", "definition_binding"]
         {
             self.private_guest_test(test)?;
         }

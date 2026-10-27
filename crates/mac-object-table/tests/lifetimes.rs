@@ -30,7 +30,6 @@ fn service_namespaces_are_disjoint_including_host_wire_leases()
                  Kind::HostTransactions,
                  Kind::HostSessions,
                  Kind::DriverDevices,
-                 Kind::Threads,
                  Kind::DriverJobs,
                  Kind::DriverDma,
                  Kind::FileSources,
@@ -87,29 +86,6 @@ fn distinct_host_sessions_cannot_accept_each_others_file_ids()
 }
 
 #[test]
-fn retired_thread_slots_cannot_alias_recreated_tables()
-{
-    for kind in [Kind::Threads]
-    {
-        let mut threads = Table::new(kind);
-        let retired = threads.insert("retired stack").unwrap();
-        assert_eq!(threads.remove(retired), Some("retired stack"));
-        let replacement = threads.insert("new stack").unwrap();
-        assert_eq!(retired & 0xffff, replacement & 0xffff);
-        assert_ne!(retired, replacement);
-        assert!(threads.get(retired).is_none());
-        let mut other = Table::new(kind);
-        let foreign = other.insert("another scheduler").unwrap();
-        assert_ne!(foreign, replacement);
-        assert!(threads.get(foreign).is_none());
-        threads.clear();
-        let fresh = threads.insert("fresh stack").unwrap();
-        assert_ne!(fresh, replacement);
-        assert!(threads.get(replacement).is_none());
-    }
-}
-
-#[test]
 fn memory_projections_reject_foreign_owners_and_recreated_tables()
 {
     let mut first = Table::new(Kind::Memory);
@@ -158,4 +134,45 @@ fn file_manager_ids_reject_foreign_instances_and_reconstructed_storage()
         assert!(recreated.get(fresh).is_none());
         assert_eq!(recreated.get(next), Some(&"after reset"));
     }
+}
+
+/// Native scheduler identities have no classic wire projection. Validate reuse
+/// and foreign-owner refusal against the same Store used by the resident adapter.
+#[test]
+fn native_thread_ids_reject_reused_and_foreign_records_without_a_fixed_slot_limit()
+{
+    use mac_object_table::{domain::{CapacityPolicy, DomainKind, KindCode, OwnerIndex},
+                           shared::{InvocationGate, OwnerRef},
+                           store::Store};
+    struct Gate;
+    impl InvocationGate for Gate
+    {
+        fn run<R>(f: impl FnOnce() -> R) -> R
+        {
+            f()
+        }
+    }
+    let owner = OwnerRef::<Gate>::try_new(OwnerIndex::issue(DomainKind::Process).unwrap()).unwrap();
+    let other = OwnerRef::<Gate>::try_new(OwnerIndex::issue(DomainKind::Process).unwrap()).unwrap();
+    let mut threads = Store::new(KindCode(*b"THRD"), CapacityPolicy::GrowableUntilMemory);
+    let old = threads.insert(&owner, 0).unwrap();
+    let old_key = threads.key(old).unwrap();
+    drop(threads.remove(old).unwrap());
+    let replacement = threads.insert(&owner, 1).unwrap();
+    let new_key = threads.key(replacement).unwrap();
+    assert_eq!(old_key.slot(), new_key.slot());
+    assert_ne!(old, replacement);
+    assert_ne!(old_key, new_key);
+    assert!(threads.get(old).is_none());
+    let mut foreign = Store::new(KindCode(*b"THRD"), CapacityPolicy::GrowableUntilMemory);
+    let outsider = foreign.insert(&other, 2).unwrap();
+    assert!(threads.get(outsider).is_none());
+    assert!(foreign.get(replacement).is_none());
+    for value in 2..321
+    {
+        threads.insert(&owner, value).unwrap();
+    }
+    assert_eq!(threads.iter().count(), 320);
+    owner.stop_admission();
+    assert!(threads.insert(&owner, 322).unwrap_err().to_string().contains("stopping"));
 }

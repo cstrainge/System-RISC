@@ -300,7 +300,7 @@ impl Desktop
 
     /// Read waiting queues in place. A timer tick must not swap each app's UI
     /// state just to find out whether its thread can remain asleep.
-    pub fn wake_waiters(&mut self, waiting: &[(u64, u16); 8]) -> ([bool; 8], u64, bool)
+    pub fn wake_waiters(&mut self, waiting: &mut [crate::context::EventWaiter]) -> (u64, bool)
     {
         let previous_activity = self.activity;
         let pointer_activity = self.poll_inputs();
@@ -308,71 +308,75 @@ impl Desktop
         let cursor_activity = self.tick_cursor();
         let now = Self::when();
         self.cursor_dirty |=
-            self.responsiveness
-                .tick(self.foreground, now, waiting.iter().any(|(app, _)| *app == self.foreground));
+            self.responsiveness.tick(self.foreground,
+                                     now,
+                                     waiting.iter().any(|waiter| waiter.app == self.foreground));
         if self.responsiveness.active()
         {
             self.cursor_dirty |= self.busy_cursor.animation_tick(now);
         }
         self.present_cursor_overlay();
         self.route_events();
-        let pointer_consumer = if waiting.iter().any(|(app, _)| *app == self.foreground)
+        let pointer_consumer = if waiting.iter().any(|waiter| waiter.app == self.foreground)
         {
             self.foreground
         }
         else
         {
-            waiting.iter().find(|(app, _)| *app != 0).map_or(0, |(app, _)| *app)
+            waiting.iter().find(|waiter| waiter.app != 0).map_or(0, |waiter| waiter.app)
         };
         let when = Self::when();
-        let ready = core::array::from_fn(|index| {
-            let (app, mask) = waiting[index];
-            if app == 0
-            {
-                return false;
-            }
-            if (pointer_activity || cursor_activity) && app == pointer_consumer
-            {
-                return true;
-            }
-            let (events, dialogs, crash) = if app == self.owner
-            {
-                (&*self.events, &self.dialogs, &self.crash)
-            }
-            else if let Some(local) = self.locals.iter().find(|local| local.id == app)
-            {
-                (&*local.events, &local.dialogs, &local.crash)
-            }
-            else
-            {
-                return false;
-            };
-            // A dismissed System-owned report wakes the parked application
-            // even though its handler deliberately waits with an empty event mask.
-            if crash.info().dismissed != 0
-            {
-                return true;
-            }
-            if events.peek_matching(mask).is_some()
-            {
-                return true;
-            }
-            if mask & (1 << EventKind::Update as u16) == 0
-            {
-                return false;
-            }
-            if dialogs.active()
-            {
-                self.windows.next_update_for(WindowId(dialogs.window), events, when).is_some()
-            }
-            else
-            {
-                self.windows
-                    .next_update_matching(events, when, |id| self.window_owner(id) == Some(app))
-                    .is_some()
-            }
-        });
-        (ready, self.foreground, fresh_input)
+        for waiter in waiting
+        {
+            let (app, mask) = (waiter.app, waiter.mask);
+            waiter.ready = (|| {
+                if app == 0
+                {
+                    return false;
+                }
+                if (pointer_activity || cursor_activity) && app == pointer_consumer
+                {
+                    return true;
+                }
+                let (events, dialogs, crash) = if app == self.owner
+                {
+                    (&*self.events, &self.dialogs, &self.crash)
+                }
+                else if let Some(local) = self.locals.iter().find(|local| local.id == app)
+                {
+                    (&*local.events, &local.dialogs, &local.crash)
+                }
+                else
+                {
+                    return false;
+                };
+                // A dismissed System-owned report wakes the parked application
+                // even though its handler deliberately waits with an empty event mask.
+                if crash.info().dismissed != 0
+                {
+                    return true;
+                }
+                if events.peek_matching(mask).is_some()
+                {
+                    return true;
+                }
+                if mask & (1 << EventKind::Update as u16) == 0
+                {
+                    return false;
+                }
+                if dialogs.active()
+                {
+                    self.windows.next_update_for(WindowId(dialogs.window), events, when).is_some()
+                }
+                else
+                {
+                    self.windows
+                        .next_update_matching(events, when, |id| self.window_owner(id) == Some(app))
+                        .is_some()
+                }
+            })();
+        }
+        (self.foreground, fresh_input)
     }
 
     pub fn started(&mut self, id: u64, thread: u64)
@@ -733,10 +737,6 @@ impl Desktop
         if self.processes.file_stopping(call.volume, call.cnid)
         {
             return Err(SERVICE_BUSY);
-        }
-        if self.processes.len() >= 8
-        {
-            return Err(NO_MEMORY);
         }
         Ok(false)
     }

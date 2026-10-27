@@ -1,0 +1,11 @@
+{
+  "name": "CapacityWorker",
+  "file_type": "APPL",
+  "creator": "THRC",
+  "role": "application",
+  "abi_version": 1,
+  "load_base": "0x83000000",
+  "load_limit": "0x83040000",
+  "description": "Public SDK dynamic thread capacity acceptance",
+  "resources": []
+}

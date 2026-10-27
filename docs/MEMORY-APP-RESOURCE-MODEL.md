@@ -2,8 +2,9 @@
 
 Status: §13.1 accepted by Chloe, 2026-10-23; proceeding with §13.2. The complete
 RVA23 floor is live. Process identity/directory migration has begun; the live
-allocator, paging, complete owner-walk cleanup and scheduler-capacity migration
-remain pending. This document describes the implemented foundations,
+allocator and paging remain pending. Registered owner-walk cleanup and
+growable native scheduler records are resident; later accounting/module/privilege
+gates remain open. This document describes the implemented foundations,
 architectural decisions and remaining migration gates.
 
 ## What landed
@@ -81,12 +82,12 @@ Reactor Room explicitly reports process/module domains with partial-ledger cover
 
 The following sections record successive §13.2 migrations and their remaining
 gates; they do not claim the complete model. Registered image aliases replace
-the fixed source cache, while fixed concurrent scheduler capacity and static
-heap backing still remain. The real process fixture
+the fixed source cache. Scheduler metadata now grows until allocation refusal;
+static heap backing and the flat image arena still bound physical admission. The real process fixture
 checks native and Pascal stale IDs across relaunch, fresh incarnations, shared
-app-menu actions and full-width window resource ownership. The directory's
-greater-than-eight test is host metadata coverage, not a claim of greater-than-
-eight live applications or MMU isolation.
+app-menu actions and full-width window resource ownership. The original directory test was host metadata coverage. The later native
+capacity campaign now runs ten applications together, without claiming MMU
+isolation or memory-scale acceptance.
 
 `ReleasedResource` records invalidation-before-dispatch. Registered controls now
 use the live dispatcher described below; this is not a proof of quiescence for
@@ -221,10 +222,11 @@ Uniform layout proposal: one app interval/preferred image VA for all processes;
 private supervisor process-kernel interval; shared supervisor module interval;
 shared supervisor kernel interval containing the physmap. Store the chosen
 ranges once, validate through the architecture, generate both Rust input and
-linker symbols in xtask, then rebuild all producers. **Concrete VA values and
-healthy range selections remain [DECIDE]**; don't fossilize today's physical
-0x81… application addresses as future virtual addresses. The emitter exists;
-production linker scripts have not switched to it.
+linker symbols in xtask, then rebuild all producers. Concrete Sv39 VA reservations are approved below; additional healthy policy
+ranges still require explicit selection. Today's physical 0x81… application
+addresses do not become future virtual addresses. The emitter exists;
+production linker scripts have not switched to it. The concrete Sv39 selection
+was subsequently approved as recorded below; page activation remains staged.
 
 Image resource residency proposal: **resident-with-image** for v1.
 Last image release drops code/resource backing
@@ -2385,3 +2387,75 @@ aggregate public-SDK conformance and external power restart/shutdown/refusal.
 Optimized image/structural checks, compiled boundaries, formatting and52-library
 API documentation pass. These are the covered native lifecycles; they do not
 qualify every possible pending external effect or arbitrary privileged fault.
+
+
+### Owned thread contexts and native scheduler capacity
+
+The resident scheduler now stores native `THRD` records and `THST` owner backing
+through the same registered facility as the other resident managers. Full-width
+thread tokens have no classic wire projection or fixed eight-slot namespace.
+CPU backend positions retain authentic publication receipts; those receipts can
+read the real record after public invalidation but cannot acknowledge cleanup.
+Ordinary wake/start lookups still validate the current registered identity.
+
+An owned preparation holds the stack, loaded-image execution/source pins and a
+fallibly allocated context. Admission refusal returns that same plan. Actual
+stack destruction precedes dropping the image pin. Current-context access holds
+an owned read pin; no movable context is exposed through a static reference.
+An independent active-context lock prevents completion-before-park checks from
+recursively acquiring the scheduler lock. Same-context switches early-out.
+
+The generic walk stops execution and parks each original thread cleanup ticket.
+The reaper waits for a noncurrent stack and the last preparation/context reader,
+then moves the removal guard outside the scheduler lock. Destruction of the real
+stack, code pin and context precedes the facility's ACK. The last reader wakes
+reclamation after dropping its strong reference; idle timer ticks do not allocate
+or poll retained reader counts while no release has occurred.
+
+Event readiness uses a leased scratch vector reserved at thread admission. A
+nested birth can reserve a spare, and returning the RAII lease retains the larger
+buffer. No array of eight waiters, per-tick allocation or scheduler guard across
+Desktop input routing remains. Process Manager no longer refuses the ninth app.
+
+Qualification passes 858 scoped host cases (74 native-only/environment gates
+excluded), the complete focused facility suite, formatting, compiled boundaries,
+52-library Rust docs, optimized image/structural checks and 15 native test cases.
+Its public SDK campaign runs ten apps together in two successive cohorts, with physical key delivery, fresh native
+process/thread/image identities, separate writable globals and handles, then
+normal exits and stack-slot reuse. Preemption, cursor correctness, asynchronous
+provider cleanup, both endpoint disconnects, Finder recovery/refusal, panic reports and aggregate SDK gates pass.
+
+The optional strict physical-input budget does **not** pass: queued dispatch
+maxima were 0.404/0.718 ms (single app/spinner), while decoded physical-key
+batches reached 1.323–3.901 ms. A second functional campaign measured queued
+maxima 0.285/0.611 ms and physical batches 0.736–3.850 ms. There was no intervening
+recomposition in the sampled input-to-delivery trace. Cold emulator paths and
+host scheduling remain hypotheses; no baseline attribution or sub-millisecond
+physical-delivery guarantee is claimed. Keep that performance gate open.
+
+The current flat heap/image arena still bounds actual admission; this is M-D03's metadata stage,
+not page-backed allocation, multi-hart scheduling, MMU activation or isolation.
+
+
+### Approved configurable Sv39 layout
+
+Chloe approved this initial virtual layout on 2026-10-26. Ranges are exclusive
+at the end and describe address reservations, not physical allocations or quotas.
+The platform record must validate them once and generate both linker symbols and
+Rust constants. No independently maintained copy of these values belongs in
+kernel source. Per-process entries retain their own page-table ownership;
+M-D02's module and immutable-frame rules remain unchanged.
+
+| Region | Start | Exclusive end |
+|---|---|---|
+| Application, image preferred at 4 MiB | `0x0000000000400000` | `0x0000002000000000` |
+| Per-process supervisor state | `0xffffffc000000000` | `0xffffffc800000000` |
+| Module supervisor region | `0xffffffc800000000` | `0xffffffd000000000` |
+| System supervisor region | `0xffffffd000000000` | `0xfffffffffffff000` |
+| Physmap subrange within System | `0xffffffe000000000` | `0xfffffff000000000` |
+
+The null guard, unused low canonical interval and noncanonical hole remain
+unmapped. System's final page stays a guard. The physmap maps discovered RAM
+extents only, using large leaves where aligned, and refuses a layout/RAM span
+it cannot represent rather than truncating. These selections do not activate
+the MMU or the separately approved physical heap/reserve/account budgets.

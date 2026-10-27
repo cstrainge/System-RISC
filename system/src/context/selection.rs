@@ -132,12 +132,10 @@ mod tests
     extern crate std;
     use alloc::string::ToString;
 
-    use mac_object_table::{Kind, Table};
-
-    use super::*;
-    fn threads() -> (Table<()>, ThreadId)
+    use super::{test_threads::Threads, *};
+    fn threads() -> (Threads, ThreadId)
     {
-        let mut table = Table::new(Kind::Threads);
+        let mut table = Threads::new();
         let id = ThreadId(u64::from(table.insert(()).unwrap()));
         (table, id)
     }
@@ -173,9 +171,8 @@ mod tests
         let selections = ScopedSelection::new(old);
         selections.with((11, 3), || {
                       selections.with((11, 9), || {
-                                    table.remove(u32::try_from(old.0).unwrap()).unwrap();
+                                    table.remove(old.0).unwrap();
                                     let fresh = ThreadId(u64::from(table.insert(()).unwrap()));
-                                    assert_eq!(old.0 & 0xffff, fresh.0 & 0xffff);
                                     assert_ne!(old, fresh);
                                     selections.reset(ThreadId(0));
                                     let error = selections.with((11, 7), || {
@@ -224,7 +221,7 @@ mod tests
         use std::sync::{Arc, Barrier};
         let gate = Arc::new(Barrier::new(2));
         let mut workers = std::vec::Vec::new();
-        let mut identities = Table::new(Kind::Threads);
+        let mut identities = Threads::new();
         for owner in [11, 22]
         {
             let gate = gate.clone();
@@ -254,7 +251,7 @@ mod handoff_tests
     #[test]
     fn bootstrap_handoff_carries_the_callers_selection_and_restores_both_threads()
     {
-        let mut threads = mac_object_table::Table::new(mac_object_table::Kind::Threads);
+        let mut threads = super::test_threads::Threads::new();
         let thread = ThreadId(u64::from(threads.insert(()).unwrap()));
         let caller = ScopedSelection::new(thread);
         let bootstrap = PermanentSelection::new(ThreadId(1));
@@ -399,7 +396,7 @@ mod owned_subject_tests
         let root = first.scope().root().unwrap();
         let second = subject(&operations, &owner);
         let next = second.scope().clone();
-        let mut threads = mac_object_table::Table::new(mac_object_table::Kind::Threads);
+        let mut threads = super::test_threads::Threads::new();
         let old = threads.insert(()).unwrap();
         let selections = ScopedSelection::new(ThreadId(u64::from(old)));
         selections.with(first, || {
@@ -503,5 +500,39 @@ mod destruction_tests
             .unwrap();
         assert_eq!(seen.load(Ordering::Relaxed), 3);
         assert!(slot.current().is_none());
+    }
+}
+
+#[cfg(test)]
+mod test_threads
+{
+    use mac_object_table::domain::{CapacityPolicy, DomainKind, KindCode, OwnerIndex, PoolError};
+
+    use crate::toolbox::handles::{OwnerRef, Store};
+    pub(super) struct Threads
+    {
+        owner: OwnerRef,
+        store: Store<()>
+    }
+    impl Threads
+    {
+        pub(super) fn new() -> Self
+        {
+            Self { owner:
+                       OwnerRef::try_new(OwnerIndex::issue(DomainKind::Process).unwrap()).unwrap(),
+                   store: Store::new(KindCode(*b"THRD"), CapacityPolicy::GrowableUntilMemory) }
+        }
+
+        pub(super) fn insert(&mut self, value: ()) -> Result<u64, PoolError>
+        {
+            self.store.insert(&self.owner, value)
+        }
+
+        pub(super) fn remove(
+            &mut self, id: u64)
+            -> Option<mac_object_table::store::Removed<(), crate::toolbox::handles::InvocationGate>>
+        {
+            self.store.remove(id)
+        }
     }
 }

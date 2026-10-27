@@ -1,41 +1,63 @@
 //! RV64 one-hart timer scheduler. Only this adapter owns saved CPU frames.
 //! Timer interrupts preempt application code; synchronous kernel traps run with
 //! interrupts masked, so no allocator/manager guard can be preempted by an app.
-use alloc::{boxed::Box, vec};
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::{arch::asm,
+           cell::Cell,
+           ops::{Deref, DerefMut},
            sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 
+use mac_object_table::{domain::ReleasedResource, store::CompletionKey};
 use spinning_top::Spinlock as Mutex;
 
 use super::traps::TrapFrame;
-use crate::{context::ThreadContext,
-            toolbox::handles::{Kind, Table}};
-pub const MAX_THREADS: usize = Kind::Threads.capacity();
+use crate::{context::{EventWaiter, ThreadContext},
+            toolbox::handles::{OwnerRef, Store}};
+mod lifetime;
+pub(crate) use lifetime::{ReleaseThreads, specification};
+const IDLE: usize = usize::MAX;
 const STACK_WORDS: usize = 16384; // 256KiB, including nested service/definition frames.
 // The CLINT runs at 10 MHz. At 500 us, two runnable peers can consume the
 // entire 1 ms interaction budget before a queued caller resumes. Use 250 us
 // for this resident round-robin policy; a freshly woken input consumer still
 // takes priority. This is not a hard real-time or future scheduler contract.
 const TIMER_INTERVAL: u64 = 2_500;
-static CONTEXTS: [ThreadContext; MAX_THREADS] = [const { ThreadContext::new() }; MAX_THREADS];
-static CURRENT: AtomicUsize = AtomicUsize::new(MAX_THREADS);
+static ACTIVE: Mutex<Option<Arc<ThreadContext>>> = Mutex::new(None);
+static CURRENT: AtomicUsize = AtomicUsize::new(IDLE);
 static IO: AtomicBool = AtomicBool::new(false);
 static RECLAIM_PENDING: AtomicBool = AtomicBool::new(false);
+static RETIRED_COUNT: AtomicUsize = AtomicUsize::new(0);
 static INPUT_PRIORITY: crate::toolbox::events::priority::InputPriority =
     crate::toolbox::events::priority::InputPriority::new();
 struct Thread
 {
-    id:         u32,
-    // Rust drops fields in declaration order: reclaim the actual stack before
-    // releasing code-use exclusion, even when this record is dropped on error.
-    _stack:     Box<[u128]>,
-    _execution: Option<crate::images::Execution>,
-    frame:      usize,
-    live:       bool,
-    retired:    bool,
-    switches:   u64,
-    waiting:    Option<Wait>,
-    woken:      u8
+    id:    u64,
+    core:  Arc<ThreadCore>,
+    state: Cell<RunState>
+}
+#[derive(Clone, Copy)]
+struct RunState
+{
+    frame:    usize,
+    live:     bool,
+    retired:  bool,
+    switches: u64,
+    waiting:  Option<Wait>,
+    woken:    u8
+}
+impl Thread
+{
+    fn update(&self, change: impl FnOnce(&mut RunState))
+    {
+        let mut state = self.state.get();
+        change(&mut state);
+        self.state.set(state);
+    }
+}
+struct Idle
+{
+    _stack: Box<[u128]>,
+    frame:  usize
 }
 #[derive(Clone, Copy)]
 enum Wait
@@ -51,26 +73,93 @@ enum Wait
 }
 struct Scheduler
 {
-    threads:    [Option<Thread>; MAX_THREADS],
-    identities: Table<usize>,
-    idle:       Option<Thread>,
-    ticks:      u64
+    // Positions select CPU backing only; genuine facility receipts authorize
+    // access even after ordinary IDs have been invalidated by the owner walk.
+    threads:        Vec<Option<CompletionKey>>,
+    records:        Option<Store<Thread>>,
+    waiters:        Vec<EventWaiter>,
+    waiters_leased: bool,
+    idle:           Option<Idle>,
+    ticks:          u64
 }
-static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler { identities: Table::new(Kind::Threads),
-                                                            threads:    [const { None };
-                                                                         MAX_THREADS],
-                                                            idle:       None,
-                                                            ticks:      0 });
+impl Scheduler
+{
+    fn thread(&self, slot: usize) -> Option<&Thread>
+    {
+        self.records.as_ref()?.completing(self.threads.get(slot)?.as_ref()?)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (usize, &Thread)>
+    {
+        self.threads.iter().enumerate().filter_map(|(slot, _)| self.thread(slot).map(|t| (slot, t)))
+    }
+
+    fn prepare(&mut self) -> Result<usize, mac_abi::Status>
+    {
+        if self.records.is_none()
+        {
+            let (objects, backing) = crate::toolbox::handles::thread_kinds()?;
+            self.records = Some(Store::owned(objects, backing).map_err(lifetime::pool_status)?);
+        }
+        let slot = self.threads.iter().position(Option::is_none).unwrap_or(self.threads.len());
+        if slot == self.threads.len()
+        {
+            self.threads.try_reserve(1).map_err(|_| mac_abi::NO_MEMORY)?;
+        }
+        // Admission grows scratch, never the timer/event polling path. If input
+        // handling births a thread while a snapshot is leased, reserve a spare;
+        // returning the lease keeps the larger buffer.
+        self.waiters
+            .try_reserve(slot.saturating_add(1).saturating_sub(self.waiters.len()))
+            .map_err(|_| mac_abi::NO_MEMORY)?;
+        Ok(slot)
+    }
+}
+static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler { records:        None,
+                                                            threads:        Vec::new(),
+                                                            waiters:        Vec::new(),
+                                                            waiters_leased: false,
+                                                            idle:           None,
+                                                            ticks:          0 });
 unsafe extern "C" {
     fn __system_start_frame(frame: *mut TrapFrame) -> !;
 }
-pub fn current_context() -> &'static ThreadContext
+pub fn current_context() -> crate::context::ContextRef
 {
     if IO.load(Ordering::Relaxed)
     {
-        return crate::context::boot_context();
+        return crate::context::ContextRef::Bootstrap;
     }
-    CONTEXTS.get(CURRENT.load(Ordering::Relaxed)).unwrap_or(crate::context::boot_context())
+    super::interrupts::with_masked(|| {
+        ACTIVE.lock()
+              .as_ref()
+              .cloned()
+              .map(crate::context::ContextRef::thread)
+              .unwrap_or(crate::context::ContextRef::Bootstrap)
+    })
+}
+// Scheduler -> ACTIVE is the only held-lock ordering. Lookup releases ACTIVE
+// before any caller runs, including completion-before-park under scheduler lock.
+fn activate_context(context: Option<&Arc<ThreadContext>>)
+{
+    let mut active = ACTIVE.lock();
+    let unchanged = match (active.as_ref(), context)
+    {
+        (Some(current), Some(next)) => Arc::ptr_eq(current, next),
+        (None, None) => true,
+        _ => false
+    };
+    if !unchanged
+    {
+        *active = context.cloned();
+    }
+}
+pub(crate) fn context_released()
+{
+    if RETIRED_COUNT.load(Ordering::Acquire) != 0
+    {
+        RECLAIM_PENDING.store(true, Ordering::Release);
+    }
 }
 pub fn io_enter() -> bool
 {
@@ -82,35 +171,39 @@ pub fn io_leave(previous: bool)
 }
 pub fn switches(app: u64) -> u64
 {
-    let s = SCHEDULER.lock();
-    s.threads
-     .iter()
-     .enumerate()
-     .find_map(|(i, t)| {
-         t.as_ref().filter(|t| t.live && CONTEXTS[i].identity().app.0 == app).map(|t| t.switches)
-     })
-     .unwrap_or(0)
+    SCHEDULER.lock()
+             .iter()
+             .find_map(|(_, t)| {
+                 (t.state.get().live && t.core.context.identity().app.0 == app).then(|| {
+                                                                                   t.state
+                                                                                    .get()
+                                                                                    .switches
+                                                                               })
+             })
+             .unwrap_or(0)
 }
-
-/// Retired records count too: their stacks and invocation contexts have not
-/// yet been reclaimed by another thread. No scheduler guard escapes this read.
+/// Retained stacks and invocation readers remain part of the process barrier.
 pub(crate) fn has_threads(app: u64) -> bool
 {
-    SCHEDULER.lock()
-             .threads
-             .iter()
-             .enumerate()
-             .any(|(index, thread)| thread.is_some() && CONTEXTS[index].identity().app.0 == app)
+    SCHEDULER.lock().iter().any(|(_, t)| t.core.context.identity().app.0 == app)
 }
 /// Own every fallible stack/image preparation before publishing a thread.
 /// The plan can wait for a retiring slot without consuming its image use.
+struct ThreadCore
+{
+    // Actual stack disposal precedes releasing the image's execution/source pin.
+    _stack:  Box<[u128]>,
+    _loaded: Option<crate::kernel::LoadedImage>,
+    context: Arc<ThreadContext>,
+    release: Mutex<Option<ReleasedResource>>,
+    binding: crate::images::Binding,
+    frame:   usize,
+    top:     usize
+}
 pub(crate) struct PreparedThread
 {
-    owner:  crate::toolbox::handles::OwnerRef,
-    loaded: crate::kernel::LoadedImage,
-    stack:  Box<[u128]>,
-    frame:  usize,
-    top:    usize
+    owner: crate::toolbox::handles::OwnerRef,
+    core:  mac_object_table::retained::Read<ThreadCore>
 }
 pub(crate) struct PrepareFailure
 {
@@ -130,6 +223,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef, loaded: crate::k
         {
             return Err(mac_abi::ACCESS_DENIED);
         }
+        let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
         let context_bytes = super::traps::frame_reservation_bytes();
         if context_bytes >= STACK_WORDS * core::mem::size_of::<u128>()
         {
@@ -155,17 +249,39 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef, loaded: crate::k
         unsafe {
             frame.write(initial);
         }
-        Ok((stack, frame as usize, top))
+        Ok((context, stack, frame as usize, top))
     })();
     match prepared
     {
-        Ok((stack, frame, top)) =>
+        Ok((context, stack, frame, top)) =>
         {
+            let binding = loaded.binding();
+            let mut core = match Arc::try_new(ThreadCore { _stack: stack,
+                                                           _loaded: None,
+                                                           context,
+                                                           release: Mutex::new(None),
+                                                           binding,
+                                                           frame,
+                                                           top })
+            {
+                Ok(core) => core,
+                Err(_) =>
+                {
+                    return Err(PrepareFailure { status: mac_abi::NO_MEMORY,
+                                                loaded });
+                }
+            };
+            let Some(storage) = Arc::get_mut(&mut core)
+            else
+            {
+                serial!("THREAD_CORE_REFUSED: freshly allocated preparation is not exclusive");
+                return Err(PrepareFailure { status: mac_abi::BAD_ABI,
+                                            loaded });
+            };
+            storage._loaded = Some(loaded);
             Ok(PreparedThread { owner,
-                                loaded,
-                                stack,
-                                frame,
-                                top })
+                                core: mac_object_table::retained::Read::new(core,
+                                                                            context_released) })
         }
         Err(status) =>
         {
@@ -177,78 +293,97 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef, loaded: crate::k
 pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
                              -> Result<u64, SpawnFailure>
 {
-    let mut scheduler = SCHEDULER.lock();
-    let Some(slot) = scheduler.threads.iter().position(|thread| thread.is_none())
-    else
-    {
-        return Err(SpawnFailure { status: mac_abi::NO_MEMORY,
-                                  prepared });
-    };
-    if !prepared.owner.accepting()
-    {
-        return Err(SpawnFailure { status: mac_abi::ACCESS_DENIED,
-                                  prepared });
-    }
-    let id = match scheduler.identities.insert(slot)
-    {
-        Ok(id) => id,
-        Err(_) =>
+    let published = (|| {
+        let mut scheduler = SCHEDULER.lock();
+        let slot = scheduler.prepare()?;
+        if !prepared.owner.accepting()
         {
-            return Err(SpawnFailure { status: mac_abi::NO_MEMORY,
-                                      prepared });
+            return Err(mac_abi::ACCESS_DENIED);
         }
-    };
-    let thread = u64::from(id);
-    let app = prepared.owner.owner().incarnation();
-    if let Err(status) =
-        CONTEXTS[slot].assign(prepared.owner.clone(), thread, prepared.loaded.binding())
+        let store = scheduler.records.as_mut().ok_or(mac_abi::BAD_ABI)?;
+        let publication = store.insert_with_receipt(&prepared.owner, |id| {
+                                   Thread { id,
+                                            core: prepared.core.share(),
+
+                                            state: Cell::new(RunState { frame:    prepared.core
+                                                                                          .frame,
+                                                                        live:     false,
+                                                                        retired:  false,
+                                                                        switches: 0,
+                                                                        waiting:  None,
+                                                                        woken:    0 }) }
+                               })
+                               .map_err(lifetime::pool_status)?;
+        let (id, receipt) = publication.into_parts();
+        if slot == scheduler.threads.len()
+        {
+            scheduler.threads.push(Some(receipt));
+        }
+        else
+        {
+            scheduler.threads[slot] = Some(receipt);
+        }
+        // Publication's receipt remains valid if a stopping walk has already
+        // invalidated ordinary lookup. An unstarted refusal retains the same
+        // preparation; its stack/image pins are never dropped under this lock.
+        let assigned =
+            prepared.core.context.assign(prepared.owner.clone(), id, prepared.core.binding);
+        if let Err(status) = assigned
+        {
+            let removed = scheduler.records.as_mut().and_then(|store| store.remove(id));
+            if removed.is_some()
+            {
+                scheduler.threads[slot] = None;
+            }
+            else if let Some(thread) = scheduler.thread(slot)
+            {
+                retire(thread);
+            }
+            drop(scheduler);
+            drop(removed);
+            return Err(status);
+        }
+        if let Some(thread) = scheduler.thread(slot)
+        {
+            thread.update(|state| state.live = runnable);
+        }
+        Ok(id)
+    })();
+    match published
     {
-        scheduler.identities.remove(id);
-        return Err(SpawnFailure { status,
-                                  prepared });
+        Ok(id) =>
+        {
+            serial!("PROCESS_THREAD app={} thread={} stack=0x{:x}",
+                    prepared.owner.owner().incarnation(),
+                    id,
+                    prepared.core.top);
+            Ok(id)
+        }
+        Err(status) =>
+        {
+            Err(SpawnFailure { status,
+                               prepared })
+        }
     }
-    // No fallible operation remains after context publication. Only now move
-    // execution authority out of the retryable preparation plan.
-    let (_, _, execution) = prepared.loaded.into_parts();
-    scheduler.threads[slot] = Some(Thread { id,
-                                            _stack: prepared.stack,
-                                            _execution: Some(execution),
-                                            frame: prepared.frame,
-                                            live: runnable,
-                                            retired: false,
-                                            switches: 0,
-                                            waiting: None,
-                                            woken: 0 });
-    serial!("PROCESS_THREAD app={} thread={} stack=0x{:x}", app, thread, prepared.top);
-    Ok(thread)
 }
-/// Publish a prepared context only after its process metadata and saved services
-/// have been committed. A suspended recovery thread cannot execute early.
-pub(crate) fn start_prepared(thread: u64, owner: &crate::toolbox::handles::OwnerRef)
-                             -> Result<(), mac_abi::Status>
+pub(crate) fn start_prepared(thread: u64, owner: &OwnerRef) -> Result<(), mac_abi::Status>
 {
-    let id = u32::try_from(thread).map_err(|_| mac_abi::NOT_FOUND)?;
-    let mut scheduler = SCHEDULER.lock();
-    let slot = *scheduler.identities.get(id).ok_or(mac_abi::NOT_FOUND)?;
-    if !owner.accepting() || CONTEXTS[slot].identity().app.0 != owner.owner().incarnation()
+    let scheduler = SCHEDULER.lock();
+    let record =
+        scheduler.records.as_ref().and_then(|store| store.get(thread)).ok_or(mac_abi::NOT_FOUND)?;
+    if !owner.accepting() || record.core.context.identity().app.0 != owner.owner().incarnation()
     {
         return Err(mac_abi::ACCESS_DENIED);
     }
-    let record = scheduler.threads[slot].as_mut().ok_or(mac_abi::NOT_FOUND)?;
-    if record.retired
+    if record.state.get().retired
     {
         return Err(mac_abi::SERVICE_BUSY);
     }
-    record.live = true;
+    record.update(|state| state.live = true);
     Ok(())
 }
-pub fn spawn(owner: crate::toolbox::handles::OwnerRef, loaded: crate::kernel::LoadedImage)
-             -> Result<u64, mac_abi::Status>
+pub fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage) -> Result<u64, mac_abi::Status>
 {
-    if SCHEDULER.lock().threads.iter().all(Option::is_some)
-    {
-        return Err(mac_abi::NO_MEMORY);
-    }
     let prepared = prepare(owner, loaded).map_err(|failure| failure.status)?;
     spawn_prepared(prepared, true).map_err(|failure| failure.status)
 }
@@ -288,18 +423,13 @@ pub fn start() -> !
     unsafe {
         idle_frame.write(initial);
     }
-    scheduler.idle = Some(Thread { id:         0,
-                                   _stack:     stack,
-                                   _execution: None,
-                                   frame:      idle_frame as usize,
-                                   live:       true,
-                                   retired:    false,
-                                   switches:   0,
-                                   waiting:    None,
-                                   woken:      0 });
-    let t = scheduler.threads[0].as_mut().expect("Finder thread");
-    let frame = t.frame as *mut TrapFrame;
-    t.switches += 1;
+    scheduler.idle = Some(Idle { _stack: stack,
+                                 frame:  idle_frame as usize });
+    let t = scheduler.thread(0)
+                     .expect("scheduler bootstrap publishes Finder before starting CPU frames");
+    let frame = t.state.get().frame as *mut TrapFrame;
+    t.update(|state| state.switches += 1);
+    activate_context(Some(&t.core.context));
     CURRENT.store(0, Ordering::Relaxed);
     drop(scheduler);
     arm();
@@ -330,45 +460,79 @@ pub fn wait_current(mask: u16, timeout_ticks: u32)
     let deadline = crate::platform::ticks()
         .saturating_add((u64::from(timeout_ticks) * 10_000_000).div_ceil(60));
     let index = CURRENT.load(Ordering::Relaxed);
-    if let Some(thread) = SCHEDULER.lock().threads.get_mut(index).and_then(Option::as_mut)
+    if let Some(thread) = SCHEDULER.lock().thread(index)
     {
-        thread.waiting = Some(Wait::Events { mask,
-                                             deadline });
-        thread.woken = 0;
+        thread.update(|state| {
+                  state.waiting = Some(Wait::Events { mask,
+                                                      deadline });
+                  state.woken = 0;
+              });
     }
 }
-
 pub fn blocked() -> bool
 {
-    let index = CURRENT.load(Ordering::Relaxed);
     SCHEDULER.lock()
-             .threads
-             .get(index)
-             .and_then(Option::as_ref)
-             .is_some_and(|thread| thread.waiting.is_some())
+             .thread(CURRENT.load(Ordering::Relaxed))
+             .is_some_and(|thread| thread.state.get().waiting.is_some())
 }
-
-/// Copy identities and masks before inspecting the resident Event Manager. No
-/// scheduler lock may remain held while a service enters application resources.
-pub fn waiting() -> [(u64, u16); MAX_THREADS]
+/// Own a preallocated snapshot while Desktop routes input without the scheduler
+/// lock. Drop returns scratch even when the Desktop guard refuses this pass.
+pub(crate) struct Waiting
 {
-    let scheduler = SCHEDULER.lock();
-    core::array::from_fn(|index| {
-        scheduler.threads[index].as_ref()
-                                .filter(|thread| thread.live)
-                                .and_then(|thread| {
-                                    match thread.waiting
-                                    {
-                                        Some(Wait::Events { mask,
-                                                            .. }) =>
-                                        {
-                                            Some((CONTEXTS[index].identity().app.0, mask))
-                                        }
-                                        _ => None
-                                    }
-                                })
-                                .unwrap_or((0, 0))
-    })
+    rows: Vec<EventWaiter>
+}
+impl Deref for Waiting
+{
+    type Target = [EventWaiter];
+
+    fn deref(&self) -> &[EventWaiter]
+    {
+        &self.rows
+    }
+}
+impl DerefMut for Waiting
+{
+    fn deref_mut(&mut self) -> &mut [EventWaiter]
+    {
+        &mut self.rows
+    }
+}
+impl Drop for Waiting
+{
+    fn drop(&mut self)
+    {
+        self.rows.clear();
+        let mut scheduler = SCHEDULER.lock();
+        if self.rows.capacity() > scheduler.waiters.capacity()
+        {
+            core::mem::swap(&mut self.rows, &mut scheduler.waiters);
+        }
+        scheduler.waiters_leased = false;
+        // The unused smaller allocation drops after the scheduler guard.
+    }
+}
+pub fn waiting() -> Option<Waiting>
+{
+    let mut scheduler = SCHEDULER.lock();
+    if scheduler.waiters_leased
+    {
+        return None;
+    }
+    let mut rows = core::mem::take(&mut scheduler.waiters);
+    for (_, thread) in scheduler.iter()
+    {
+        let state = thread.state.get();
+        if state.live
+           && let Some(Wait::Events { mask,
+                                      .. }) = state.waiting
+        {
+            rows.push(EventWaiter { app: thread.core.context.identity().app.0,
+                                    mask,
+                                    ready: false });
+        }
+    }
+    scheduler.waiters_leased = true;
+    Some(Waiting { rows })
 }
 
 pub fn wake(app: u64)
@@ -384,15 +548,17 @@ pub fn wake_interactive(app: u64)
 
 fn wake_with_priority(app: u64, priority: u8)
 {
-    let mut scheduler = SCHEDULER.lock();
-    for (index, thread) in scheduler.threads.iter_mut().enumerate()
+    for (_, thread) in SCHEDULER.lock().iter()
     {
-        if CONTEXTS[index].identity().app.0 == app
-           && let Some(thread) = thread.as_mut().filter(|thread| thread.live)
-           && matches!(thread.waiting, Some(Wait::Events { .. }))
+        let state = thread.state.get();
+        if thread.core.binding.owner() == app
+           && state.live
+           && matches!(state.waiting, Some(Wait::Events { .. }))
         {
-            thread.waiting = None;
-            thread.woken = priority;
+            thread.update(|state| {
+                      state.waiting = None;
+                      state.woken = priority;
+                  });
             break;
         }
     }
@@ -404,134 +570,184 @@ fn wake_with_priority(app: u64, priority: u8)
 pub fn wait_io(job: crate::context::DeferredIo) -> Result<bool, mac_abi::Status>
 {
     let index = CURRENT.load(Ordering::Relaxed);
-    let mut scheduler = SCHEDULER.lock();
-    let thread = scheduler.threads
-                          .get_mut(index)
-                          .and_then(Option::as_mut)
-                          .filter(|thread| thread.live)
+    let scheduler = SCHEDULER.lock();
+    let thread = scheduler.thread(index)
+                          .filter(|thread| thread.state.get().live)
                           .ok_or(mac_abi::WRONG_THREAD)?;
     let pending = match job
     {
         crate::context::DeferredIo::FileTransfer(handle) =>
         {
-            crate::toolbox::files::transfer_io_pending(u64::from(thread.id), handle)?
+            crate::toolbox::files::transfer_io_pending(thread.id, handle)?
         }
         crate::context::DeferredIo::DriverJob(handle) =>
         {
-            crate::drivers::job_pending(u64::from(thread.id), handle)?
+            crate::drivers::job_pending(thread.id, handle)?
         }
     };
     if !pending
     {
         return Ok(false);
     }
-    thread.waiting = Some(Wait::Io { job });
-    thread.woken = 0;
+    thread.update(|state| {
+              state.waiting = Some(Wait::Io { job });
+              state.woken = 0;
+          });
     Ok(true)
 }
-
 pub fn wake_io(identity: u64, job: crate::context::DeferredIo)
 {
-    let Ok(id) = u32::try_from(identity)
-    else
+    let scheduler = SCHEDULER.lock();
+    if let Some(thread) = scheduler.records.as_ref().and_then(|store| store.get(identity))
+       && thread.state.get().live
+       && matches!(thread.state.get().waiting, Some(Wait::Io { job: expected }) if expected == job)
     {
-        return;
-    };
-    let mut scheduler = SCHEDULER.lock();
-    let Some(&index) = scheduler.identities.get(id)
-    else
-    {
-        return;
-    };
-    if let Some(thread) =
-        scheduler.threads[index].as_mut().filter(|thread| thread.id == id && thread.live)
-       && matches!(thread.waiting, Some(Wait::Io { job: expected }) if expected == job)
-    {
-        thread.waiting = None;
-        thread.woken = 1;
+        thread.update(|state| {
+                  state.waiting = None;
+                  state.woken = 1;
+              });
     }
 }
-
-/// System-authorized termination never depends on the dying thread issuing
-/// another trap. Each real thread keeps its own job cancellation owner.
+fn retire(thread: &Thread)
+{
+    if !thread.state.get().retired
+    {
+        thread.update(|state| {
+                  state.live = false;
+                  state.retired = true;
+              });
+        RETIRED_COUNT.fetch_add(1, Ordering::AcqRel);
+    }
+    RECLAIM_PENDING.store(true, Ordering::Release);
+}
+/// Stop execution before dispatching the common ledger walk. Each real thread
+/// retains its original job cancellation owner, including after invalidation.
 pub(crate) fn retire_owner(owner: u64)
 {
     let mut after = 0;
     loop
     {
         let retired = {
-            let mut scheduler = SCHEDULER.lock();
-            let next =
-                scheduler.threads.iter().enumerate().skip(after).find_map(|(slot, thread)| {
-                                                                    thread.as_ref()
-                    .filter(|thread| !thread.retired && CONTEXTS[slot].identity().app.0 == owner)
-                    .map(|thread| (slot, thread.id))
-                                                                });
-            if let Some((slot, id)) = next
-            {
-                if let Some(thread) = scheduler.threads[slot].as_mut()
-                {
-                    thread.live = false;
-                    thread.retired = true;
-                }
-                after = slot + 1;
-                Some(id)
-            }
-            else
-            {
-                None
-            }
+            let scheduler = SCHEDULER.lock();
+            scheduler.iter()
+                     .find(|(slot, t)| {
+                         *slot >= after
+                         && !t.state.get().retired
+                         && t.core.context.identity().app.0 == owner
+                     })
+                     .map(|(slot, t)| {
+                         retire(t);
+                         after = slot + 1;
+                         t.id
+                     })
         };
         let Some(id) = retired
         else
         {
             break;
         };
-        RECLAIM_PENDING.store(true, Ordering::Release);
-        crate::drivers::discard_thread_jobs(u64::from(id));
+        crate::drivers::discard_thread_jobs(id);
     }
 }
-
-/// Safe only at a resident, interrupt-masked boundary. The calling stack is
-/// identified by the actual scheduler context; it is never reclaimed here.
+/// Reuse requires the original walk ticket, a noncurrent stack and no context /
+/// preparation readers. Removed's destructor drops the stack and code pins
+/// outside the scheduler lock before acknowledging that unique ticket.
 pub(crate) fn reclaim_retired()
 {
-    if !RECLAIM_PENDING.load(Ordering::Acquire)
+    if !RECLAIM_PENDING.swap(false, Ordering::AcqRel)
     {
         return;
     }
     let current = CURRENT.load(Ordering::Relaxed);
-    let mut reclaimed = false;
-    if RECLAIM_PENDING.swap(false, Ordering::AcqRel)
+    let mut after = 0;
+    loop
     {
-        let mut scheduler = SCHEDULER.lock();
-        // The CPU is executing this trap on `current`'s stack. Only another
-        // stack's retired frame/context may be destroyed here.
-        for index in 0..MAX_THREADS
+        let removed = {
+            let mut scheduler = SCHEDULER.lock();
+            let found = scheduler.iter().find_map(|(slot, thread)| {
+                                            if slot < after || !thread.state.get().retired
+                                            {
+                                                return None;
+                                            }
+                                            after = slot + 1;
+                                            if slot == current
+                                            {
+                                                RECLAIM_PENDING.store(true, Ordering::Release);
+                                                return None;
+                                            }
+                                            if Arc::strong_count(&thread.core) != 1
+                                               || Arc::strong_count(&thread.core.context) != 1
+                                            {
+                                                return None;
+                                            }
+                                            thread.core.release.lock().take().map(|ticket| {
+                                                                                 (slot,
+                                                                                  ticket,
+                                                                                  thread.core
+                                                                                        .clone())
+                                                                             })
+                                        });
+            let Some((slot, ticket, core)) = found
+            else
+            {
+                break;
+            };
+            // This exact store/receipt was checked above under the same lock.
+            let result = match scheduler.records.as_mut()
+            {
+                Some(store) =>
+                {
+                    match store.release(ticket)
+                    {
+                        Ok(removed) => Ok(removed),
+                        Err(error) =>
+                        {
+                            serial!("THREAD_RECLAIM_REFUSED: {error}; retaining backing in the \
+                                     common owner quarantine");
+                            match store.quarantine(error.into_ticket())
+                            {
+                                Ok(()) => Err(None),
+                                Err(error) =>
+                                {
+                                    serial!("THREAD_QUARANTINE_REFUSED: {error}; original ticket \
+                                             remains with its actual thread backing");
+                                    Err(Some(error.into_ticket()))
+                                }
+                            }
+                        }
+                    }
+                }
+                None => Err(Some(ticket))
+            };
+            match result
+            {
+                Ok(removed) =>
+                {
+                    scheduler.threads[slot] = None;
+                    RETIRED_COUNT.fetch_sub(1, Ordering::AcqRel);
+                    // The temporary read must leave before Removed destroys
+                    // its payload and acknowledges stack/code quiescence.
+                    drop(core);
+                    Some(removed)
+                }
+                Err(ticket) =>
+                {
+                    // Restore through the retained real backing, never a
+                    // second lookup which could discard the cleanup ticket.
+                    *core.release.lock() = ticket;
+                    None
+                }
+            }
+        };
+        if let Some(thread) = removed
         {
-            if index == current
-               && scheduler.threads[index].as_ref().is_some_and(|thread| thread.retired)
-            {
-                RECLAIM_PENDING.store(true, Ordering::Release);
-                continue;
-            }
-            if index != current
-               && scheduler.threads[index].as_ref().is_some_and(|thread| thread.retired)
-               && let Some(thread) = scheduler.threads[index].take()
-            {
-                let app = CONTEXTS[index].identity().app.0;
-                scheduler.identities.remove(thread.id);
-                CONTEXTS[index].release();
-                let id = thread.id;
-                drop(thread);
-                reclaimed = true;
-                serial!("PROCESS_THREAD_RECLAIMED app={app} thread={id}");
-            }
+            let app = thread.core.context.identity().app.0;
+            let id = thread.id;
+            thread.core.context.release();
+            drop(thread);
+            serial!("PROCESS_THREAD_RECLAIMED app={app} thread={id}");
+            crate::toolbox::processes::retirement::thread_reclaimed();
         }
-    }
-    if reclaimed
-    {
-        crate::toolbox::processes::retirement::thread_reclaimed();
     }
 }
 
@@ -552,80 +768,81 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
     let current = CURRENT.load(Ordering::Relaxed);
     let mut scheduler = SCHEDULER.lock();
     scheduler.ticks += 1;
-    if let Some(thread) = scheduler.threads.get_mut(current).and_then(Option::as_mut)
+    if let Some(thread) = scheduler.thread(current)
     {
-        thread.frame = frame as usize;
+        thread.update(|state| state.frame = frame as usize);
     }
-    else if current == MAX_THREADS
+    else if current == IDLE
     {
-        scheduler.idle.as_mut().expect("idle thread").frame = frame as usize;
+        scheduler.idle
+                 .as_mut()
+                 .expect("scheduler bootstrap installs idle before scheduling")
+                 .frame = frame as usize;
     }
     let now = crate::platform::ticks();
-    for thread in scheduler.threads.iter_mut().flatten()
+    for (_, thread) in scheduler.iter()
     {
-        if matches!(thread.waiting, Some(Wait::Events { deadline, .. }) if now >= deadline)
+        if matches!(thread.state.get().waiting, Some(Wait::Events { deadline, .. }) if now >= deadline)
         {
-            thread.waiting = None;
+            thread.update(|state| state.waiting = None);
         }
     }
-    // An event consumer must not wait behind every CPU-bound application. Only
-    // real event readiness gets this boost; periodic idle timeouts use normal RR.
-    let priority = scheduler.threads
-                            .iter()
-                            .flatten()
-                            .filter(|thread| thread.live)
-                            .map(|thread| thread.woken)
+    let priority = scheduler.iter()
+                            .filter(|(_, t)| t.state.get().live)
+                            .map(|(_, t)| t.state.get().woken)
                             .max()
                             .unwrap_or(0);
-    if priority != 0
+    let count = scheduler.threads.len();
+    // IDLE is a sentinel, never an issued identity or a modulo arithmetic input.
+    let first = if current == IDLE { 0 } else { (current + 1) % count.max(1) };
+    for boosted in [true, false]
     {
-        for offset in 1..=MAX_THREADS
+        if boosted && priority == 0
         {
-            let index = (current + offset) % MAX_THREADS;
-            if let Some(thread) =
-                scheduler.threads[index].as_mut()
-                                        .filter(|thread| thread.live && thread.woken == priority)
+            continue;
+        }
+        for offset in 0..count
+        {
+            let index = (first + offset) % count;
+            let Some(thread) = scheduler.thread(index)
+            else
             {
-                thread.woken = 0;
-                thread.switches += 1;
-                let next = thread.frame as *mut TrapFrame;
+                continue;
+            };
+            let state = thread.state.get();
+            if state.live && if boosted { state.woken == priority } else { state.waiting.is_none() }
+            {
+                thread.update(|state| {
+                          state.woken = 0;
+                          state.switches += 1;
+                      });
+                let next = state.frame as *mut TrapFrame;
+                activate_context(Some(&thread.core.context));
                 CURRENT.store(index, Ordering::Relaxed);
                 arm();
                 return next;
             }
         }
     }
-    for offset in 1..=MAX_THREADS
-    {
-        let index = (current + offset) % MAX_THREADS;
-        if let Some(thread) =
-            scheduler.threads[index].as_mut().filter(|t| t.live && t.waiting.is_none())
-        {
-            thread.switches += 1;
-            let next = thread.frame as *mut TrapFrame;
-            CURRENT.store(index, Ordering::Relaxed);
-            arm();
-            return next;
-        }
-    }
-    let next = scheduler.idle.as_ref().expect("idle thread").frame as *mut TrapFrame;
-    CURRENT.store(MAX_THREADS, Ordering::Relaxed);
+    let next =
+        scheduler.idle.as_ref().expect("scheduler bootstrap installs idle before scheduling").frame
+        as *mut TrapFrame;
+    activate_context(None);
+    CURRENT.store(IDLE, Ordering::Relaxed);
     arm();
     next
 }
 
 pub fn retired() -> bool
 {
-    let index = CURRENT.load(Ordering::Relaxed);
-    SCHEDULER.lock().threads.get(index).and_then(Option::as_ref).is_some_and(|t| t.retired)
+    SCHEDULER.lock().thread(CURRENT.load(Ordering::Relaxed)).is_some_and(|t| t.state.get().retired)
 }
-
 pub fn image_for(app: u64) -> Option<crate::images::Binding>
 {
-    let s = SCHEDULER.lock();
-    s.threads.iter().enumerate().find_map(|(index, thread)| {
-                                    thread.as_ref()
-                                          .filter(|_| CONTEXTS[index].identity().app.0 == app)
-                                          .and_then(|_| CONTEXTS[index].image())
-                                })
+    SCHEDULER.lock().iter().find_map(|(_, thread)| {
+                               (thread.core.binding.owner() == app).then(|| {
+                                                                       thread.core.context.image()
+                                                                   })
+                                                                   .flatten()
+                           })
 }
