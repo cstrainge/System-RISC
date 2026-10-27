@@ -7,7 +7,6 @@ publish.workspace = true
 [dependencies]
 mac-riscv-pages.workspace = true
 mac-kernel-model.workspace = true
-mac-object-table.workspace = true
 mac-formats.workspace = true
 mac-module.workspace = true
 mac-device-interface.workspace = true

@@ -99,8 +99,19 @@ def capture(output):
             (output / 'registers.txt').write_text(registers)
             match = re.search(r'x2/sp\s+([0-9a-f]+)', registers)
             if match:
-                vm.qmp('pmemsave', {'val': int(match[1], 16), 'size': 32768,
-                                   'filename': str(output / 'stack.bin')}, endpoint)
+                address, length = int(match[1], 16), 32768
+                # A failure on the guarded System stack must not make evidence
+                # collection read through its upper guard and hide the cause.
+                stack = re.search(r'SYSTEM_STACK_READY base=(0x[0-9a-f]+) bytes=(\d+)', driver.log())
+                if stack:
+                    base, size = int(stack[1], 16), int(stack[2])
+                    if base <= address < base + size:
+                        length = min(length, base + size - address)
+                try:
+                    vm.qmp('memsave', {'cpu-index': 0, 'val': address, 'size': length,
+                                      'filename': str(output / 'stack.bin')}, endpoint)
+                except RuntimeError as evidence_error:
+                    (output / 'stack-capture-error.txt').write_text(str(evidence_error) + '\n')
             vm.qmp('screendump', {'filename': str(output / 'failure.ppm')}, endpoint)
         raise
     finally:

@@ -6,3 +6,6 @@ publish.workspace = true
 
 [dependencies]
 mac-kernel-model.workspace = true
+
+[dev-dependencies]
+mac-abi.workspace = true

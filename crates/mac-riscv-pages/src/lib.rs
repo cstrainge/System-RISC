@@ -10,6 +10,25 @@ use mac_kernel_model::{pages::{Access, PageOwnership, Permissions, PhysicalAddre
                        policy::AddressRange};
 
 pub struct Sv39;
+impl mac_kernel_model::pages::PageLayout for Sv39
+{
+    fn geometry() -> mac_kernel_model::pages::PageGeometry
+    {
+        mac_kernel_model::pages::PageGeometry::new(Self::PAGE_BYTES).expect("Sv39 base pages are \
+                                                                             a power-of-two 4096 \
+                                                                             bytes")
+    }
+
+    fn leaf_sizes() -> &'static [u64]
+    {
+        Self::LEAF_BYTES
+    }
+
+    fn valid_virtual_range(range: AddressRange) -> bool
+    {
+        Self::canonical_range(range)
+    }
+}
 impl Sv39
 {
     pub const ADDRESS_BITS: u32 = 39;
@@ -134,7 +153,7 @@ impl fmt::Display for Error
                              alignment } =>
             {
                 write!(f,
-                       "Sv39 physical address {address:#x} must fit56 bits and be aligned to \
+                       "Sv39 physical address {address:#x} must fit 56 bits and be aligned to \
                         {alignment} bytes")
             }
             Self::Permissions =>
@@ -154,7 +173,7 @@ impl fmt::Display for Error
             }
             Self::NonLeafAtBottom =>
             {
-                f.write_str("Sv39 level0 entry cannot refer to a lower page table")
+                f.write_str("Sv39 level 0 entry cannot refer to a lower page table")
             }
         }
     }

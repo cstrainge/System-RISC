@@ -14,7 +14,7 @@ class PlatformTests(unittest.TestCase):
         config = tomllib.loads((Path(__file__).resolve().parents[2] / '.cargo/config.toml').read_text())
         self.assertEqual(config['target'][platform.TARGET]['rustflags'],
                          ['-C', 'target-feature=+' + platform.PLATFORM['llvm_profile']])
-        self.assertEqual(platform.cpu_model(), 'rva23s64')
+        self.assertEqual(platform.cpu_model(), 'rva23s64,mmu=on,pmp=on,sv39=on')
 
     def test_fixtures_outside_cargo_config_receive_the_same_isa(self):
         with patch.dict(os.environ, {'CARGO_ENCODED_RUSTFLAGS':'-C\x1fdebuginfo=0'}, clear=True):
@@ -23,7 +23,7 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(os.environ['CARGO_ENCODED_RUSTFLAGS'], '-C\x1fdebuginfo=0')
 
     def test_vector_test_property_is_architecturally_checked(self):
-        self.assertEqual(platform.cpu_model(256), 'rva23s64,vlen=256')
+        self.assertEqual(platform.cpu_model(256), 'rva23s64,mmu=on,pmp=on,sv39=on,vlen=256')
         for value in [True, 0, 64, 129, 131072, '256']:
             with self.assertRaisesRegex(ValueError, 'power of two from 128 to 65536'):
                 platform.cpu_model(value)

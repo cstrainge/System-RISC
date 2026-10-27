@@ -113,7 +113,6 @@ dependencies = [
  "mac-formats",
  "mac-kernel-model",
  "mac-module",
- "mac-object-table",
  "mac-riscv-pages",
  "serde",
  "serde_json",

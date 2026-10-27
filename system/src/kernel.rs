@@ -186,12 +186,35 @@ pub(crate) unsafe extern "C" fn log(bytes: *const u8, length: usize) -> Status
     {
         return BAD_ARGUMENT;
     }
-    match BOOT_LOG.get().copied().flatten()
+    let Some(callback) = BOOT_LOG.get().copied().flatten()
+    else
     {
-        Some(callback) =>
-        unsafe { callback(bytes, length) },
-        None => OK
+        return OK;
+    };
+    // End application-byte borrows before switching roots. Only bounded
+    // resident scratch, mapped identically in both roots, crosses the callback.
+    let mut scratch = [0u8; 256];
+    let mut offset = 0;
+    while offset < length
+    {
+        let count = (length - offset).min(scratch.len());
+        {
+            let source = unsafe { core::slice::from_raw_parts(bytes.add(offset), count) };
+            scratch[..count].copy_from_slice(source);
+        }
+        match crate::machine::paging::with_firmware(|| unsafe { callback(scratch.as_ptr(), count) })
+        {
+            Ok(OK) => (),
+            Ok(status) => return status,
+            Err(error) =>
+            {
+                crate::machine::paging::report_refusal(&error);
+                return BAD_ABI;
+            }
+        }
+        offset += count;
     }
+    OK
 }
 // Mutable state never exposes unchecked static references. These guards do not
 // wait for a preempted holder. Stateful recursive calls return Busy; immutable
@@ -566,7 +589,7 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
     {
         return ptr::null();
     }
-    let info = unsafe { &*info };
+    let info: &'static BootInfo = unsafe { &*info };
     if info.flags & !mac_abi::BOOT_GRAPHICAL != 0
     {
         return ptr::null();
@@ -575,19 +598,27 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
     // Secondary harts and repeated entry cannot replace live manager state or
     // race allocator initialization. Failed initialization is not retried over
     // partially published state; reset is the only supported bootstrap retry.
+    if STARTED.load(Ordering::Acquire)
+    {
+        return ptr::null();
+    }
+    if let Err(error) = unsafe { crate::machine::paging::admit(info) }
+    {
+        crate::machine::paging::report_refusal(&error);
+        return ptr::null();
+    }
     if crate::context::bootstrap_thread() != crate::context::BOOT_THREAD
        || STARTED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err()
     {
         return ptr::null();
     }
     BOOT_LOG.call_once(|| info.log);
-    let memory = match unsafe { crate::machine::memory::validate_boot(info) }
+    let (memory, mapped) = match crate::machine::paging::memory()
     {
         Ok(memory) => memory,
         Err(error) =>
         {
-            serial!("BOOT_MEMORY_REJECTED: {error}; rebuild the whole system and recreate stale \
-                     boot media");
+            serial!("BOOT_MEMORY_REJECTED: {error}");
             return ptr::null();
         }
     };
@@ -599,21 +630,33 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
     // SAFETY: first single-hart entry owns validated physical RAM. Graphical
     // and headless boot both supply the same real reservation contract; all
     // native execution needs owned pages, not an implicit headless fallback.
-    if let Err(error) = unsafe { crate::machine::pages::initialize(memory) }
+    if let Err(error) = unsafe { crate::machine::pages::initialize(memory, mapped) }
     {
         serial!("BOOT_MEMORY_REJECTED: {error}");
         return ptr::null();
     }
-    let entry = match crate::machine::traps::prepare_entry()
+    match unsafe {
+              crate::machine::paging::initialize(|stack| {
+                  let entry = match crate::machine::traps::prepare_entry(stack)
+                  {
+                      Ok(entry) => entry,
+                      Err(error) =>
+                      {
+                          serial!("BOOT_SYSTEM_STACK_REJECTED: {error}");
+                          return ptr::null();
+                      }
+                  };
+                  entry.run(|| start_services(info))
+              })
+          }
     {
-        Ok(entry) => entry,
+        Ok(services) => services,
         Err(error) =>
         {
-            serial!("BOOT_SYSTEM_STACK_REJECTED: {error}");
-            return ptr::null();
+            serial!("BOOT_TRANSLATION_REJECTED: {error}");
+            ptr::null()
         }
-    };
-    entry.run(|| unsafe { start_services(info) })
+    }
 }
 /// # Safety
 /// Entry validated the pinned BootInfo and switched onto the owned System stack.

@@ -1,8 +1,9 @@
 //! Page geometry, ownership and mapping plans; no PTE bits or CPU instructions.
+pub mod physical;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
-use mac_object_table::shared::InvocationGate;
+pub use mac_object_table::shared::InvocationGate;
 use spinning_top::Spinlock;
 
 use crate::{DomainId,
@@ -61,16 +62,21 @@ pub struct Permissions
     pub access:  Access,
     pub global:  bool
 }
-/// Backend-specific encodings, CPU context and address checks stay outside the
-/// common model. Dispatch here is compile-time, not a dyn call per mapped page.
-pub trait Architecture
+/// Pure geometry/address checks shared by build tooling and firmware; no fake
+/// CPU frame or invocation gate is needed just to validate a layout.
+pub trait PageLayout
+{
+    fn geometry() -> PageGeometry;
+    fn leaf_sizes() -> &'static [u64];
+    fn valid_virtual_range(range: AddressRange) -> bool;
+}
+/// CPU context and its actual invocation gate belong to the resident binding.
+/// Dispatch remains compile-time, not a dyn call per mapped page.
+pub trait Architecture: PageLayout
 {
     type InvocationGate: InvocationGate;
     type PageTable;
     type TrapFrame;
-    fn geometry() -> PageGeometry;
-    fn leaf_sizes() -> &'static [u64];
-    fn valid_virtual_range(range: AddressRange) -> bool;
 }
 pub struct Mapping
 {
@@ -162,10 +168,18 @@ impl<'pool, 'storage, T, G: InvocationGate> PageBox<'pool, 'storage, T, G>
     }
 }
 #[derive(Clone, Copy, Debug)]
-pub struct AsidTag
+pub enum AsidTag
 {
-    pub hardware_value: u64,
-    pub generation:     core::num::NonZeroU64
+    /// Reset-lifetime System roots use permanently reserved hardware cache
+    /// tags, not fabricated object generations or application admission slots.
+    Permanent
+    {
+        hardware_value: u64
+    },
+    Leased
+    {
+        hardware_value: u64, generation: core::num::NonZeroU64
+    }
 }
 pub struct AddressSpace<'pool, 'storage, A: Architecture>
 {
@@ -190,6 +204,10 @@ impl<'pool, 'storage, A: Architecture> AddressSpace<'pool, 'storage, A>
         if root.page.bytes() != A::geometry().bytes()
         {
             return Err(ModelError::InvalidGeometry);
+        }
+        if matches!(asid, AsidTag::Permanent { .. }) && owner != DomainId::SYSTEM
+        {
+            return Err(ModelError::WrongDomain);
         }
         Ok(Self { owner,
                   root,

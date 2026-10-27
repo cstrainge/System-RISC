@@ -1,6 +1,6 @@
 """Read consistent UI acknowledgements without UART traffic or a debug trap.
 
-QMP's physical-memory inspector reads the System-owned atomic sequence snapshot.
+QMP's virtual-memory inspector on hart0 reads the System-owned atomic sequence snapshot.
 The guest keeps running; a second sequence read detects overlapping publication.
 This is capture transport only. Canonical Rust SDK tests decide acceptance.
 """
@@ -19,7 +19,7 @@ def read(endpoint, serial):
 
     def words(count):
         text = vm.qmp('human-monitor-command',
-                      {'command-line': f'xp /{count}gx {address:#x}'}, endpoint)
+                      {'cpu-index': 0, 'command-line': f'x /{count}gx {address:#x}'}, endpoint)
         values = [int(value, 16) for value in re.findall(r'0x([0-9a-fA-F]{16})', text)]
         if len(values) != count:
             raise RuntimeError('Cannot read System UI observer: ' + text)

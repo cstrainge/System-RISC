@@ -2,7 +2,7 @@
   "name": "QemuRISC-V",
   "rust_target": "riscv64imac-unknown-none-elf",
   "llvm_profile": "rva23u64",
-  "qemu_cpu": "rva23s64",
+  "qemu_cpu": "rva23s64,mmu=on,pmp=on,sv39=on",
   "qemu_ram": "8G",
   "fatal_shutdown": {
     "failure_value": 78643,
@@ -19,6 +19,16 @@
     "fw_cfg": {
       "base": "0x10100000",
       "bytes": "0x1000"
+    },
+    "bootstrap_io": {
+      "uart": { "base": "0x10000000", "bytes": "0x1000" },
+      "rtc": { "base": "0x101000", "bytes": "0x1000" },
+      "virtio_mmio": {
+        "base": "0x10001000",
+        "stride": "0x1000",
+        "slots": 8,
+        "interrupt_base": 1
+      }
     },
     "boot": {
       "base": "0x80130000",
@@ -100,6 +110,11 @@
       "end": "0xfffffff000000000"
     },
     "application_image_base": "0x0000000000400000",
-    "system_image_base": "0xffffffd000200000"
+    "system_image_base": "0xffffffd000200000",
+    "system_stacks": {
+      "start": "0xffffffd010000000",
+      "end": "0xffffffd020000000"
+    },
+    "physmap_physical_base": "0x0"
   }
 }

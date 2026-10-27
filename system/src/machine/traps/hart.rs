@@ -31,7 +31,7 @@ pub(super) struct Control
 pub(super) static HART: spin::Once<Hart> = spin::Once::new();
 pub(super) struct Hart
 {
-    _stack:     Stack,
+    _stack:     &'static Stack,
     _control:   Backing,
     _bootstrap: SavedState,
     control:    usize
@@ -64,7 +64,7 @@ impl fmt::Display for Error
             {
                 write!(f,
                        "System stack bootstrap requires local interrupts masked; \
-                        mstatus={status:#x}; fix firmware admission and rebuild")
+                        sstatus={status:#x}; fix firmware admission and rebuild")
             }
             Self::Pages { resource,
                           cause } => write!(f, "System {resource} reservation refused: {cause}")
@@ -79,13 +79,13 @@ pub(crate) struct PreparedEntry
     hart:   &'static Hart,
     _local: core::marker::PhantomData<*mut ()>
 }
-pub(crate) fn prepare() -> Result<PreparedEntry, Error>
+pub(crate) fn prepare(stack: &'static Stack) -> Result<PreparedEntry, Error>
 {
     let status: usize;
     unsafe {
-        asm!("csrr {value},mstatus",value=out(reg)status,options(nomem,nostack));
+        asm!("csrr {value},sstatus",value=out(reg)status,options(nomem,nostack));
     }
-    if status & 8 != 0
+    if status & 2 != 0
     {
         return Err(Error::InterruptsEnabled { status });
     }
@@ -93,10 +93,6 @@ pub(crate) fn prepare() -> Result<PreparedEntry, Error>
     {
         return Err(Error::AlreadyInitialized);
     }
-    let stack = Stack::allocate(memory::SYSTEM_STACK_BYTES as usize).map_err(|cause| {
-                    Error::Pages { resource: "per-hart stack",
-                                   cause }
-                })?;
     let control = Backing::allocate(size_of::<Control>()).map_err(|cause| {
                                                              Error::Pages { resource:
                                                                                 "entry control",
@@ -137,7 +133,7 @@ pub(crate) fn prepare() -> Result<PreparedEntry, Error>
     // SAFETY: bootstrap owns this hart with interrupts masked. All backing is
     // permanent before the control pointer can become an entry authority.
     unsafe {
-        asm!("csrw mscratch,{control}",control=in(reg)hart.control,options(nostack));
+        asm!("csrw sscratch,{control}",control=in(reg)hart.control,options(nostack));
     }
     serial!("SYSTEM_STACK_READY base={:#x} bytes={} control={:#x} cpu_slots={} cpu_stride={}",
             state.floor,
@@ -347,7 +343,8 @@ pub(crate) fn observe_entry(frame: usize)
         }
         flags.write_volatile(previous | bit);
         serial!("SYSTEM_ENTRY_STACK mode={} sp={sp:#x} frame={frame:#x} base={floor:#x} \
-                 top={top:#x}",
-                if bootstrap { "bootstrap" } else { "runtime" });
+                 top={top:#x} physical={:#x}",
+                if bootstrap { "bootstrap" } else { "runtime" },
+                hart._stack.physical().0);
     }
 }

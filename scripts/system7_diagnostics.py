@@ -20,7 +20,7 @@ def heap_address(dist):
 def heap_usage(endpoint, dist):
     try:
         address = heap_address(dist)
-        words = vm.qmp('human-monitor-command', {'command-line': f'xp /7gx 0x{address:x}'}, endpoint)
+        words = vm.qmp('human-monitor-command', {'cpu-index': 0, 'command-line': f'x /7gx 0x{address:x}'}, endpoint)
         values = [int(v, 16) for v in re.findall(r'0x([0-9a-fA-F]{16})', words)]
         if len(values) == 7:
             return {'used': values[1], 'capacity': values[5] - values[4]}
@@ -57,7 +57,7 @@ def capture_failure(output, driver, dist):
     marker = re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=2', driver.log())
     if marker:
         path = output / 'failure.trace.bin'
-        vm.qmp('pmemsave', {'val': int(marker[1]), 'size': int(marker[2]),
+        vm.qmp('memsave', {'cpu-index': 0, 'val': int(marker[1]), 'size': int(marker[2]),
                            'filename': str(path)}, driver.endpoint)
         (output / 'failure.trace.json').write_text(json.dumps(decode(path), indent=2) + '\n')
     # Optional host LLVM support enriches a failed capture; it is not required
@@ -67,7 +67,7 @@ def capture_failure(output, driver, dist):
                                  capture_output=True, text=True, check=True)
         heap = next(line.split()[0] for line in symbols.stdout.splitlines()
                     if line.endswith('mac_system::kernel::HEAP'))
-        words = vm.qmp('human-monitor-command', {'command-line': f'xp /7gx 0x{heap}'},
+        words = vm.qmp('human-monitor-command', {'cpu-index': 0, 'command-line': f'x /7gx 0x{heap}'},
                        driver.endpoint)
         (output / 'failure-heap.txt').write_text(words)
         values = [int(value, 16) for value in re.findall(r'0x([0-9a-fA-F]{16})', words)]
@@ -75,7 +75,7 @@ def capture_failure(output, driver, dist):
             return
         bottom, top = values[4:6]
         raw = output / 'failure-heap.bin'
-        vm.qmp('pmemsave', {'val': bottom, 'size': top - bottom, 'filename': str(raw)},
+        vm.qmp('memsave', {'cpu-index': 0, 'val': bottom, 'size': top - bottom, 'filename': str(raw)},
                driver.endpoint)
         memory = raw.read_bytes()
         holes, seen, address = [], set(), values[3]

@@ -60,6 +60,11 @@ impl Checked
         self.system.default_value()
     }
 
+    pub(super) fn system_maximum(&self) -> u64
+    {
+        self.system.maximum()
+    }
+
     pub(super) fn application_default(&self) -> u64
     {
         self.application.default_value()

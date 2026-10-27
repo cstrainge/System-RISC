@@ -58,14 +58,19 @@ pub fn build_guest() -> Result<()>
         fs::write(out.join("module_contract.bin"), module::declaration(&path, &manifest)?)?;
     }
     let descriptor = manifest.descriptor()?;
-    platform::current().memory()?.validate_image(descriptor.role, descriptor.load_base,
-                                                  descriptor.load_limit)?;
+    platform::current().validate_image(descriptor.role, descriptor.load_base,
+                                       descriptor.load_limit)?;
     let (constants, platform_symbols) = platform::guest_artifacts()?;
     fs::write(out.join("platform.rs"), constants)?;
     let (system_memory, _) = platform::memory_artifacts()?;
     fs::write(out.join("platform-memory.rs"), system_memory)?;
     fs::write(out.join("platform-virtual.rs"),
-              platform::current().virtual_memory()?.rust_constants())?;
+              platform::current().virtual_memory()?
+                                 .rust_constants_for(&["VM_SYSTEM_IMAGE_BASE",
+                                                       "VM_SYSTEM_IMAGE_LIMIT",
+                                                       "VM_PHYSMAP_START", "VM_PHYSMAP_END",
+                                                       "VM_PHYSMAP_PHYSICAL_BASE",
+                                                       "VM_SYSTEM_STACKS_START"])?)?;
     let mut script =
         include_str!("native.ld").replace("@BASE@", &format!("0x{:x}", descriptor.load_base))
                                  .replace("@LENGTH@",

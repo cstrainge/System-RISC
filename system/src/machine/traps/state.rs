@@ -45,6 +45,11 @@ impl SavedState
         self.backing.cpu_base()
     }
 
+    pub(crate) fn physical(&self) -> u64
+    {
+        self.backing.physical().0
+    }
+
     pub(crate) fn stride(&self) -> usize
     {
         self.stride

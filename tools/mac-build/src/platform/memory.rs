@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 use crate::{Result, error};
 mod stacks;
+mod io;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +36,7 @@ pub(super) struct Definition
     minimum_ram_bytes:           String,
     flash:                       Region,
     fw_cfg:                      Region,
+    bootstrap_io:                io::Definition,
     boot:                        Region,
     firmware_heap:               Region,
     images:                      Region,
@@ -57,6 +59,7 @@ pub struct Checked
     pub(super) ram:                         Range<u64>,
     pub(super) flash:                       Range<u64>,
     pub(super) fw_cfg:                      Range<u64>,
+    bootstrap_io:                           io::Checked,
     pub(super) boot:                        Range<u64>,
     pub(super) firmware_heap:               Range<u64>,
     pub(super) images:                      Range<u64>,
@@ -115,6 +118,7 @@ impl Definition
             return Err(error("platform memory fw_cfg must be a physical MMIO window outside \
                               RAM and flash"));
         }
+        let bootstrap_io = self.bootstrap_io.check(page, &ram, &flash, &fw_cfg)?;
         let boot = region("boot", &self.boot, page)?;
         let firmware_heap = region("firmware_heap", &self.firmware_heap, page)?;
         let images = region("images", &self.images, page)?;
@@ -225,6 +229,7 @@ impl Definition
                      ram,
                      flash,
                      fw_cfg,
+                     bootstrap_io,
                      boot,
                      firmware_heap,
                      images,
@@ -243,9 +248,19 @@ impl Definition
 }
 impl Checked
 {
+    pub fn system_image_storage(&self) -> Range<u64>
+    {
+        self.images.start..self.application_primary_base
+    }
+
     pub fn system_stack_default(&self) -> u64
     {
         self.stacks.system_default()
+    }
+
+    pub(super) fn system_stack_maximum(&self) -> u64
+    {
+        self.stacks.system_maximum()
     }
 
     pub fn application_stack_default(&self) -> u64
@@ -271,8 +286,9 @@ impl Checked
         !overlaps(&range, &self.ram) && !overlaps(&range, &self.flash)
     }
 
-    pub fn validate_image(&self, role: mac_formats::native::Role, base: u64, limit: u64)
-                          -> Result<()>
+    pub(super) fn validate_image_storage(&self, role: mac_formats::native::Role, base: u64,
+                                         limit: u64)
+                                         -> Result<()>
     {
         use mac_formats::native::Role;
         let valid =
@@ -337,6 +353,7 @@ impl Checked
              ("SYSTEM_HEAP_BYTES", self.system_heap_bytes)].into_iter()
                                                            .chain(self.display_buffers())
                                                            .chain(self.stacks.constants())
+                                                           .chain(self.bootstrap_io.constants())
         {
             writeln!(out, "__platform_{name} = {value:#x};").unwrap();
         }
@@ -347,6 +364,8 @@ impl Checked
     {
         let mut out = String::from("// Generated from the checked platform memory record.\n");
         for (name, value) in [("PAGE_BYTES", self.page_bytes),
+                              ("FLASH_BASE", self.flash.start),
+                              ("FLASH_BYTES", self.flash.end - self.flash.start),
                               ("FW_CFG_BASE", self.fw_cfg.start),
                               ("IMAGE_BASE", self.images.start),
                               ("MODULE_BASE", self.modules.start),
@@ -363,10 +382,12 @@ impl Checked
                               ("IMAGE_LIMIT", self.images.end)].into_iter()
                                                                .chain(self.display_buffers())
                                                                .chain(self.stacks.constants())
+                                                               .chain(self.bootstrap_io.constants())
         {
             writeln!(out, "pub const {name}: u64 = {value:#x};").unwrap();
         }
         out.push_str(&self.reservation_constant());
+        out.push_str(&self.bootstrap_io.ranges_source(&self.fw_cfg));
         out.push_str(application_region_source());
         writeln!(out, "pub const SYSTEM_HEAP_BYTES: usize = {:#x};",self.system_heap_bytes).unwrap();
         out
@@ -421,6 +442,8 @@ impl Checked
     {
         let mut out = self.boot_admission_constants();
         for (name, value) in [("MINIMUM_RAM_BYTES", self.ram.end - self.ram.start),
+                              ("FLASH_BASE", self.flash.start),
+                              ("FLASH_BYTES", self.flash.end - self.flash.start),
                               ("FW_CFG_BASE", self.fw_cfg.start),
                               ("DISPLAY_WIDTH", self.display_width),
                               ("DISPLAY_HEIGHT", self.display_height),
@@ -429,11 +452,12 @@ impl Checked
                                self.display_scratch.end - self.display_scratch.start),
                               ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
                               ("APPLICATION_PRIMARY_LIMIT", self.definitions.start),
-                              ("APPLICATION_RELOCATION_BASE", self.application_relocation_base)]
+                              ("APPLICATION_RELOCATION_BASE", self.application_relocation_base)].into_iter().chain(self.bootstrap_io.constants())
         {
             writeln!(out, "pub const {name}: u64 = {value:#x};").unwrap();
         }
         out.push_str(application_region_source());
+        out.push_str(&self.bootstrap_io.ranges_source(&self.fw_cfg));
         out
     }
 }
@@ -583,16 +607,17 @@ mod tests
     {
         use mac_formats::native::Role;
         let checked = definition().check().unwrap();
-        checked.validate_image(Role::System, 0x80200000, 0x81000000).unwrap();
-        checked.validate_image(Role::Application, 0x81000000, 0x81800000).unwrap();
-        checked.validate_image(Role::Application, 0x83000000, 0x83800000).unwrap();
-        checked.validate_image(Role::CodeResource, 0x82000000, 0x82100000).unwrap();
+        checked.validate_image_storage(Role::System, 0x80200000, 0x81000000).unwrap();
+        checked.validate_image_storage(Role::Application, 0x81000000, 0x81800000).unwrap();
+        checked.validate_image_storage(Role::Application, 0x83000000, 0x83800000).unwrap();
+        checked.validate_image_storage(Role::CodeResource, 0x82000000, 0x82100000).unwrap();
         for (role, base, limit) in [(Role::System, 0x80200000, 0x81800000),
                                     (Role::Application, 0x82000000, 0x82100000),
                                     (Role::Application, 0x86f00000, 0x87100000),
                                     (Role::CodeResource, 0x83000000, 0x83100000)]
         {
-            let message = checked.validate_image(role, base, limit).unwrap_err().to_string();
+            let message =
+                checked.validate_image_storage(role, base, limit).unwrap_err().to_string();
             assert!(message.contains("conflicts with the selected platform memory map")
                     && message.contains("update its manifest or platform definition and rebuild"),
                     "{message}");

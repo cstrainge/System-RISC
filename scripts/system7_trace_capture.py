@@ -56,7 +56,7 @@ def snapshot(endpoint, serial, output, name):
     filename = vm.windows_path(path) if endpoint.get('platform') == 'windows' else str(path)
     vm.qmp('stop', endpoint=endpoint)
     try:
-        vm.qmp('pmemsave', {'val': int(marker[1]), 'size': int(marker[2]), 'filename': filename}, endpoint)
+        vm.qmp('memsave', {'cpu-index': 0, 'val': int(marker[1]), 'size': int(marker[2]), 'filename': filename}, endpoint)
     finally:
         vm.qmp('cont', endpoint=endpoint)
     return decode(path)

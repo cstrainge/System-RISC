@@ -59,7 +59,7 @@ def capture(output):
         address,size=map(int,re.search(r'EVENT_TRACE address=(\d+) bytes=(\d+) version=2',driver.log()).groups())
         def trace(name):
             path=output/(name+'.bin');vm.qmp('stop',endpoint=endpoint)
-            try:vm.qmp('pmemsave',{'val':address,'size':size,'filename':str(path)},endpoint)
+            try:vm.qmp('memsave',{'cpu-index': 0, 'val':address,'size':size,'filename':str(path)},endpoint)
             finally:vm.qmp('cont',endpoint=endpoint)
             return decode(path)
         trace_before=trace('drag-before')

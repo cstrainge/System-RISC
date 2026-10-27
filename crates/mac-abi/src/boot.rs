@@ -1,5 +1,6 @@
 //! Safe validation of the bootstrap's one physical memory account.
 use crate::BootMemoryRange;
+pub mod execution;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryError
@@ -17,6 +18,11 @@ pub enum MemoryError
     {
         base:   u64,
         length: u64
+    },
+    RamMmioOverlap
+    {
+        ram:  BootMemoryRange,
+        mmio: BootMemoryRange
     }
 }
 impl core::fmt::Display for MemoryError
@@ -42,6 +48,15 @@ impl core::fmt::Display for MemoryError
                             return write!(f,
                                           "bootstrap does not reserve required platform RAM \
                                            {base:#x}+{length:#x}; rebuild ROM and disk together");
+                        }
+                        Self::RamMmioOverlap { ram,
+                                               mmio } =>
+                        {
+                            return write!(f,
+                                          "discovered RAM {:#x}+{:#x} overlaps platform MMIO \
+                                           {:#x}+{:#x}; fix the platform/firmware map before \
+                                           booting",
+                                          ram.base, ram.length, mmio.base, mmio.length);
                         }
                         Self::InvalidArray =>
                         {
@@ -169,6 +184,23 @@ impl<'a> CheckedMemory<'a>
         self.memory.ram
     }
 
+    /// Device register bytes must never be admitted as ordinary allocator RAM,
+    /// including additional discovered banks absent from the build's minimum.
+    /// This leaves the original account and every free span untouched.
+    pub fn exclude_mmio(self, mmio: BootMemoryRange) -> Result<Self, MemoryError>
+    {
+        let limit = end(mmio, self.page_bytes)?;
+        for &ram in self.memory.ram
+        {
+            if ram.base < limit && mmio.base < ram.base + ram.length
+            {
+                return Err(MemoryError::RamMmioOverlap { ram,
+                                                         mmio });
+            }
+        }
+        Ok(self)
+    }
+
     /// Whether one validated exclusion covers this whole platform reservation.
     pub fn reserved(self, range: BootMemoryRange) -> bool
     {
@@ -269,6 +301,41 @@ mod tests
     use super::*;
     const RAM: BootMemoryRange = BootMemoryRange { base:   0x80000000,
                                                    length: 0x200000000 };
+    #[test]
+    fn every_discovered_bank_excludes_device_bytes_without_trimming_ram()
+    {
+        let extra = BootMemoryRange { base:   0x10000000,
+                                      length: 8192 };
+        let banks = [RAM, extra];
+        let memory = Memory { ram:          &banks,
+                              reservations: &[] }.checked(4096, RAM)
+                                                 .unwrap();
+        let mmio = BootMemoryRange { base:   extra.base + 4096,
+                                     length: 4096 };
+        let error = memory.exclude_mmio(mmio).unwrap_err();
+        assert_eq!(error,
+                   MemoryError::RamMmioOverlap { ram: extra,
+                                                 mmio });
+        let text = error.to_string();
+        assert!(text.contains("0x10000000+0x2000")
+                && text.contains("0x10001000+0x1000")
+                && text.contains("fix the platform/firmware map"));
+        let before = BootMemoryRange { base:   extra.base - 4096,
+                                       length: 4096 };
+        let after = BootMemoryRange { base:   extra.base + extra.length,
+                                      length: 4096 };
+        let checked = memory.exclude_mmio(before).unwrap().exclude_mmio(after).unwrap();
+        assert_eq!(checked.banks(), &banks);
+        assert_eq!(checked.free_ranges(1).unwrap().next(), Some(extra));
+        assert_eq!(memory.exclude_mmio(BootMemoryRange { base:   1,
+                                                         length: 4096 })
+                         .unwrap_err(),
+                   MemoryError::Unaligned);
+        assert_eq!(memory.exclude_mmio(BootMemoryRange { base:   u64::MAX - 4095,
+                                                         length: 4096 })
+                         .unwrap_err(),
+                   MemoryError::InvalidRange);
+    }
     #[test]
     fn mandatory_platform_ranges_reject_missing_backing_without_projecting_the_account()
     {

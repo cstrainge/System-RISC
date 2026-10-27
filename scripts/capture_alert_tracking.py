@@ -46,7 +46,7 @@ def capture(output):
             vm.qmp('stop', endpoint=endpoint)
             try:
                 vm.qmp('screendump', {'filename': str(output / (name + '.ppm'))}, endpoint)
-                vm.qmp('pmemsave', {'val': address, 'size': size, 'filename': str(path)}, endpoint)
+                vm.qmp('memsave', {'cpu-index': 0, 'val': address, 'size': size, 'filename': str(path)}, endpoint)
             finally:
                 vm.qmp('cont', endpoint=endpoint)
             trace = decode(path)

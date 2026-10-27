@@ -88,7 +88,7 @@ def capture(output, windows=False):
             path = output / 'event-timing.bin'
             vm.qmp('stop', endpoint=endpoint)
             try:
-                vm.qmp('pmemsave', {'val': address, 'size': length, 'filename': str(path)}, endpoint)
+                vm.qmp('memsave', {'cpu-index': 0, 'val': address, 'size': length, 'filename': str(path)}, endpoint)
             finally:
                 vm.qmp('cont', endpoint=endpoint)
             snapshot = decode(path)

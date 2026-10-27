@@ -31,7 +31,7 @@ def trace_snapshot(output, endpoint, serial, prefix):
     path = output / (prefix + '-trace.bin')
     vm.qmp('stop', endpoint=endpoint)
     try:
-        vm.qmp('pmemsave', {'val': address, 'size': size, 'filename': str(path)}, endpoint)
+        vm.qmp('memsave', {'cpu-index': 0, 'val': address, 'size': size, 'filename': str(path)}, endpoint)
     finally:
         vm.qmp('cont', endpoint=endpoint)
     (output / (prefix + '-trace.json')).write_text(json.dumps(decode(path), indent=2))

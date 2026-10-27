@@ -3,6 +3,22 @@ use core::{arch::asm,
            ptr::{addr_of_mut, read_volatile, write_volatile}};
 
 const N: usize = 64;
+struct DmaError
+{
+    buffer: &'static str,
+    cpu:    usize,
+    bytes:  usize
+}
+impl core::fmt::Display for DmaError
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        write!(f,
+               "input {} CPU buffer {:#x}+{} bytes has no contiguous bus mapping; device was not \
+                published",
+               self.buffer, self.cpu, self.bytes)
+    }
+}
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct Descriptor
@@ -92,14 +108,28 @@ impl Queue
         }
     }
 
-    fn address(&self, offset: usize, address: usize)
+    fn address(&self, offset: usize, address: u64)
     {
         self.write(offset, address as u32);
-        self.write(offset + 4, (address as u64 >> 32) as u32);
+        self.write(offset + 4, (address >> 32) as u32);
     }
 
-    fn initialize(&mut self, base: usize)
+    fn initialize(&mut self, base: usize) -> Result<(), DmaError>
     {
+        let translate = |cpu: usize, bytes: usize, buffer| {
+            super::paging::bus_address(cpu as u64, bytes as u64).ok_or(DmaError { buffer,
+                                                                                  cpu,
+                                                                                  bytes })
+        };
+        let events =
+            translate(addr_of_mut!(self.events) as usize, size_of::<[InputEvent; N]>(), "events")?;
+        let descriptors = translate(addr_of_mut!(self.descriptors) as usize,
+                                    size_of::<[Descriptor; N]>(),
+                                    "descriptors")?;
+        let available = translate(addr_of_mut!(self.available) as usize,
+                                  size_of::<Available>(),
+                                  "available ring")?;
+        let used = translate(addr_of_mut!(self.used) as usize, size_of::<Used>(), "used ring")?;
         self.base = base;
         self.write(0x70, 0);
         assert_eq!(self.read(0x70), 0, "virtio reset");
@@ -118,16 +148,14 @@ impl Queue
         self.write(0x38, N as u32);
         for index in 0..N
         {
-            self.descriptors[index] = Descriptor { address: addr_of_mut!(self.events[index]) as u64,
-                                                   length:  8,
-                                                   flags:   2,
-                                                   next:    0 };
+            self.descriptors[index] =
+                Descriptor { address: events + (index * size_of::<InputEvent>()) as u64,
+                             length:  8,
+                             flags:   2,
+                             next:    0 };
             self.available.ring[index] = index as u16;
         }
         self.next_available = N as u16;
-        let descriptors = addr_of_mut!(self.descriptors) as usize;
-        let available = addr_of_mut!(self.available) as usize;
-        let used = addr_of_mut!(self.used) as usize;
         self.address(0x80, descriptors);
         self.address(0x90, available);
         self.address(0xa0, used);
@@ -153,6 +181,7 @@ impl Queue
                 assert_eq!(self.read(0x10c), 32767);
             }
         }
+        Ok(())
     }
 
     fn poll(&mut self, emit: &mut impl FnMut(u16, u16, u32))
@@ -210,16 +239,21 @@ pub fn initialize() -> usize
 {
     let queues = addr_of_mut!(QUEUES) as *mut Queue;
     let mut count = 0;
-    for slot in 1..=8
+    for slot in 0..super::memory::VIRTIO_MMIO_SLOTS
     {
-        let base = 0x1000_0000 + slot * 0x1000;
+        let base =
+            (super::memory::VIRTIO_MMIO_BASE + slot * super::memory::VIRTIO_MMIO_STRIDE) as usize;
         let read = |offset| unsafe { read_volatile((base + offset) as *const u32) };
         if read(0) == 0x74726976 && read(4) == 2 && read(8) == 18 && count < 2
         {
-            unsafe {
-                (*queues.add(count)).initialize(base);
+            match unsafe { (*queues.add(count)).initialize(base) }
+            {
+                Ok(()) => count += 1,
+                Err(error) =>
+                {
+                    serial!("VIRTIO_INPUT_DMA_REJECTED: {error}");
+                }
             }
-            count += 1;
         }
     }
     unsafe {

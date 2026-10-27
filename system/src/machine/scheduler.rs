@@ -18,7 +18,7 @@ pub(crate) use lifetime::{ReleaseThreads, specification};
 const IDLE: usize = usize::MAX;
 // Generated from the same checked platform policy as the linker artifacts.
 const STACK_BYTES: usize = super::memory::APPLICATION_STACK_BYTES as usize;
-// The CLINT runs at 10 MHz. At 500 us, two runnable peers can consume the
+// The current platform time counter runs at 10 MHz. At 500 us, two runnable peers can consume the
 // entire 1 ms interaction budget before a queued caller resumes. Use 250 us
 // for this resident round-robin policy; a freshly woken input consumer still
 // takes priority. This is not a hard real-time or future scheduler contract.
@@ -342,13 +342,17 @@ pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
     {
         Ok(id) =>
         {
-            let (cpu_frame, cpu_bytes, cpu_base, cpu_backing) = {
+            let (cpu_frame, cpu_bytes, cpu_base, cpu_backing, cpu_physical) = {
                 let state = prepared.core.cpu.lock();
-                (state.frame() as usize, state.bytes(), state.base(), state.backing_bytes())
+                (state.frame() as usize,
+                 state.bytes(),
+                 state.base(),
+                 state.backing_bytes(),
+                 state.physical())
             };
             serial!("PROCESS_THREAD app={} thread={} stack=0x{:x} stack_bytes={} \
                      stack_backing_bytes={} cpu_state=0x{:x} cpu_state_bytes={} cpu_base=0x{:x} \
-                     cpu_backing_bytes={}",
+                     cpu_backing_bytes={} stack_physical={:#x} cpu_physical={:#x}",
                     prepared.owner.owner().incarnation(),
                     id,
                     prepared.core.top,
@@ -357,7 +361,9 @@ pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
                     cpu_frame,
                     cpu_bytes,
                     cpu_base,
-                    cpu_backing);
+                    cpu_backing,
+                    prepared.core._stack.physical().0,
+                    cpu_physical);
             Ok(id)
         }
         Err(status) =>
@@ -407,11 +413,13 @@ extern "C" fn app_start(entry: usize) -> !
 }
 fn arm()
 {
+    let deadline = crate::platform::ticks().wrapping_add(TIMER_INTERVAL);
+    // Sstc was admitted by firmware before supervisor entry.
     unsafe {
-        core::ptr::write_volatile(0x02004000 as *mut u64,
-                                  crate::platform::ticks().wrapping_add(TIMER_INTERVAL));
+        asm!("csrw 0x14d,{}",in(reg)deadline,options(nostack));
     }
 }
+
 pub fn start() -> mac_formats::Result<()>
 {
     let mut scheduler = SCHEDULER.lock();
@@ -445,7 +453,7 @@ pub fn start() -> mac_formats::Result<()>
     drop(scheduler);
     arm();
     unsafe {
-        asm!("csrs mie, {}",in(reg)128usize,options(nomem,nostack));
+        asm!("csrs sie, {}",in(reg)32usize,options(nomem,nostack));
         __system_start_frame(frame)
     }
 }

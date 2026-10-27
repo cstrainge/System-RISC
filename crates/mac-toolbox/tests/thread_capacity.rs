@@ -88,6 +88,8 @@ fn more_than_eight_apps_receive_input_and_reuse_reclaimed_stacks()
                              .expect("no observed native runtime entry");
     let system_base = number(system_entry, "base=");
     let system_top = number(system_entry, "top=");
+    let system_physical = number(system_entry, "physical=");
+    let system_physical_end = system_physical + system_top - system_base;
     let resident_sp = number(system_entry, "sp=");
     let resident_frame = number(system_entry, "frame=");
     assert_eq!(system_top - system_base,
@@ -116,7 +118,10 @@ fn more_than_eight_apps_receive_input_and_reuse_reclaimed_stacks()
             assert_eq!(backing,
                        selected.next_power_of_two(),
                        "page backing was not accounted separately from usable stack size: {stack}");
-            let base = top.checked_sub(bytes).unwrap();
+            let cpu_stack_base = top.checked_sub(bytes).unwrap();
+            let base = number(stack, "stack_physical=");
+            assert_ne!(base, cpu_stack_base,
+                       "physical address leaked into CPU stack pointer: {stack}");
             let backing_end = base.checked_add(backing).unwrap();
             assert!(banks.iter().any(|(start, end)| *start <= base && backing_end <= *end),
                     "stack is outside the actual page pools: {stack}");
@@ -126,11 +131,16 @@ fn more_than_eight_apps_receive_input_and_reuse_reclaimed_stacks()
                 assert!(backing_end <= old_base || old_top <= base,
                         "concurrent stacks alias: {serial}");
             }
-            assert!(system_top <= base || backing_end <= system_base,
+            assert!(system_physical_end <= base || backing_end <= system_physical,
                     "app backing aliases the System stack: {stack}");
-            assert!(resident_sp < base || resident_sp >= backing_end,
+            assert!(resident_sp < cpu_stack_base || resident_sp >= top,
                     "resident Rust ran on an app's stack: {stack}");
-            let cpu_base = number(stack, "cpu_base=");
+            let cpu_alias = number(stack, "cpu_base=");
+            let cpu_base = number(stack, "cpu_physical=");
+            assert_ne!(cpu_alias, cpu_base, "CPU snapshot must have a mapped alias: {stack}");
+            assert_eq!(cpu_alias.checked_sub(cpu_base),
+                       cpu_stack_base.checked_sub(base),
+                       "CPU state and app stack do not use the same checked physmap: {stack}");
             let cpu_frame = number(stack, "cpu_state=");
             let cpu_bytes = number(stack, "cpu_state_bytes=");
             let cpu_backing = number(stack, "cpu_backing_bytes=");
@@ -138,7 +148,7 @@ fn more_than_eight_apps_receive_input_and_reuse_reclaimed_stacks()
             assert!(cpu_backing.is_power_of_two() && cpu_bytes > 0 && cpu_bytes <= cpu_backing,
                     "invalid CPU state backing: {stack}");
             assert!(cpu_base.is_multiple_of(cpu_backing));
-            assert!(cpu_base <= cpu_frame && cpu_frame < cpu_base + cpu_bytes);
+            assert!(cpu_alias <= cpu_frame && cpu_frame < cpu_alias + cpu_bytes);
             assert!(banks.iter().any(|(start, end)| *start <= cpu_base && cpu_end <= *end),
                     "CPU state is outside discovered RAM: {stack}");
             assert!(cpu_end <= base || backing_end <= cpu_base,

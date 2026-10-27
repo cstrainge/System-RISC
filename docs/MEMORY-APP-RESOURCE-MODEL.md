@@ -2,7 +2,8 @@
 
 Status: §13.1 accepted by Chloe, 2026-10-23; proceeding with §13.2. The complete
 RVA23 floor is live. Process identity/directory migration has begun; the live
-allocator and paging remain pending. Registered owner-walk cleanup and
+accounted allocator and private process mappings remain pending. Kernel
+self-virtualization now uses owned Sv39 roots and a guarded System stack. Registered owner-walk cleanup and
 growable native scheduler records are resident; later accounting/module/privilege
 gates remain open. This document describes the implemented foundations,
 architectural decisions and remaining migration gates.
@@ -13,8 +14,9 @@ The `no_std`, `forbid(unsafe_code)` **mac-kernel-model** crate is internal
 kernel infrastructure, not an application SDK. Keeping pure structures in a
 host-buildable crate permits checking arithmetic, ownership and allocation
 without emulating a CPU or adding test-only System traps. System now consumes
-its execution-use gate; other families remain staged until their resident
-consumers land. Linking the crate does not activate its page or allocator model.
+its execution-use gate, physical pool and page-owned kernel roots; other
+families remain staged until their resident consumers land. Linking the crate
+alone does not activate its page or allocator model.
 
 | §13.1 family | Code | Current scope |
 |---|---|---|
@@ -53,7 +55,7 @@ initial size or hidden growth quantum.
 The directory now retains a fallibly allocated, shared `OwnerRef` for each
 ledger. Managers clone that authority instead of creating another index. Its
 lock is private; every access runs inside the explicitly selected architecture
-`InvocationGate`. The native adapter masks/restores local MIE with compiler
+`InvocationGate`. The native adapter masks/restores local SIE with compiler
 memory barriers, also replacing the old I/O-local guard. No callback runs under
 the metadata lock. Empty-check plus admission closure is atomic at retirement;
 directory Drop also stops new issuance through orphan references, while leaving
@@ -66,7 +68,7 @@ a closed identity stub, not the dead pool's storage.
 The existing resident heap now has a private `ResidentHeap` wrapper using the
 same architecture gate for allocation, deallocation, initialization and free-
 space reads. This closes the preempted-heap-holder path without changing the
-current flat backend or claiming the later page-backed/accounted heap stage.
+current static backing or claiming the later page-backed/accounted heap stage.
 Trusted event routing also requeues directly into the fixed queue, avoiding a
 temporary heap allocation on every physical-input batch.
 
@@ -215,7 +217,7 @@ paging gate.
 | Process app committed heap budget | 4 MiB / 64 MiB / 2 GiB | Grow on demand; a 200 MB file uses file-backed views, not a forced whole-file copy |
 | Application heap growth minimum | 16 KiB / 64 KiB / 2 MiB | Rounded up to target geometry; bounded by selected process budget |
 | Per-thread fixed stack (approved 2026-10-26) | 64 KiB / **4 MiB** / 8 MiB | Static per thread, charged app account, freed after switch-away |
-| Per-hart System stack (approved 2026-10-26) | 256 KiB / **4 MiB** / 8 MiB | Resident stack is active; hardware guards remain a paging gate |
+| Per-hart System stack (approved 2026-10-26) | 256 KiB / **4 MiB** / 8 MiB | Guarded resident stack is active; per-domain charges remain a heap-stage gate |
 | Designated per-control space | 1 MiB / 16 MiB / 128 MiB | A sub-budget of process kernel account, never independently guaranteed physical memory |
 | TE2 owned threshold | Tunable 0–100%, default 40%, bounded by a tunable **~3.2 MiB default ceiling** | Ratified 2026-10-23 calibration: owns strictly below both limits; at either limit uses view. The ceiling is 3,355,443 bytes (3.2 MiB rounded down), even if control space grows |
 | Process/thread/handle counts | Grow until account or memory refusal | No fixed-eight or guessed high replacement constant |
@@ -231,9 +233,9 @@ shared supervisor kernel interval containing the physmap. Store the chosen
 ranges once, validate through the architecture, generate both Rust input and
 linker symbols in xtask, then rebuild all producers. Concrete Sv39 VA reservations are approved below; additional healthy policy
 ranges still require explicit selection. Today's physical 0x81… application
-addresses do not become future virtual addresses. The emitter exists;
-production linker scripts have not switched to it. The concrete Sv39 selection
-was subsequently approved as recorded below; page activation remains staged.
+addresses do not become future virtual addresses. The emitter now supplies the production System link address and its guarded
+stack window. Per-process private images and heaps remain migration work; the
+trusted flat application arenas are explicitly temporary.
 
 Image resource residency proposal: **resident-with-image** for v1.
 Last image release drops code/resource backing
@@ -2623,3 +2625,51 @@ smoke also passes with the same physical admission contract.
 Functional event capture measured queued maxima of 0.302/0.558 ms and decoded
 physical-key delivery of 0.720–1.980 ms. The strict 1 ms physical-input gate
 remains open; this does not establish the cause of intermittent mouse stutter.
+
+
+### Native supervisor self-virtualization
+
+The disk ROM and native ABI probe now prepare supervisor-only Sv39 mappings and
+admit the actual CPU translation, privilege/delegation, timer and PMP contract
+before MRET. The platform explicitly selects QEMU's MMU/PMP/Sv39 properties;
+the profile name alone inherits bare defaults. System code is linked at the
+checked high virtual address and initialized at its separate physical storage.
+The handoff carries physical wire arrays and checked mapping records; fresh
+mapped views precede pool, heap or thread owners. No reference is rebased.
+
+The resident builds separate kernel and opaque-firmware roots from real
+PageBox leases before heap startup. Intrusive owned table storage needs no
+pre-heap Vec, and partial preparation releases every lease. The physical pool's
+CPU views use the permanent RAM-only physmap, including discovered high banks;
+physical addresses remain allocation/DMA facts. Largest-leaf mapping avoids one
+construction operation per base RAM page. Every discovered bank is checked
+against the build-defined device windows before pool publication.
+
+The selected 4 MiB System stack has unmapped guard pages in both permanent
+roots. Actual entry uses S CSRs and Sstc timing, preserving complete FP/vector
+state in separate owned pages. Initial root activation arms hart-local RAII
+restoration across every subsequent preparation/refusal and headless return.
+The initial boot TLB is retired once; permanent distinct hardware tags avoid
+full flushes per sector when available. Tagless hardware requires local fences.
+Saved native trap entry already has SIE clear; its checked kernel-root path
+early-outs without a redundant interrupt-mask write or restoration object when
+the root has not changed. Firmware scopes retain their independent mask guard.
+Firmware callbacks execute under masked root scopes with unchanged resident
+aliases and bounded copies for application bytes. Opaque firmware code/state
+is absent from the kernel root. Trace/observer snapshots read CPU virtual
+addresses; framebuffer diagnostics still name physical bus addresses.
+
+The native hardware refusal campaign deliberately reads each System-stack
+guard and writes System code: all three fault through the saved-state handler
+and terminate loudly. These faults are not recovered. RAM admission verifies
+512 MiB/8 GiB boot and informative small-memory refusals; the ABI campaign
+executes native/classic public SDK calls through actual Sv39 entry. Capacity
+acceptance distinguishes CPU aliases from physical stack/CPU backing and proves
+nonoverlap and physical reuse across two cohorts.
+
+This is kernel self-virtualization, not user-process isolation. Application and
+module images still use explicit trusted supervisor flat arenas, and application
+stacks still use physmap aliases. Private process/image mappings, page-backed
+heaps, domain/control-zone charges, recovery kits, Reactor's native region view,
+S/U protection and multi-hart synchronization remain required staged work.
+TE2/Text Edit migration stays on hold for the replacement common-control plan.

@@ -15,7 +15,7 @@ cargo xtask boot-check
 ```
 
 `rom` produces `../build/system7/dist/bootrom.elf` and `bootrom.bin`. The
-executable payload is about 220 KiB; the raw image is padded to the **32 MiB**
+executable payload is about 260 KiB; the raw image is padded to the **32 MiB**
 bank size required by QEMU. Debug information stays in the host ELF artifact.
 
 `boot` without a disk path rebuilds System/Finder and the generated 500 MiB
@@ -41,9 +41,10 @@ currently visible QuickDraw or classic-Mac QEMU sessions.
    Read their resource maps and selected NABI/RV64/RLOC payloads through bounded
    fork ranges, never by copying an entire resource fork.
 6. Validate both executable descriptors, segment bounds, roles, ABI and relocation
-   plans. Display the original Happy Mac, copy/zero the System reservation,
-   execute `fence.i`, and enter System with firmware block callbacks and the
-   selected disk/partition identity.
+   plans. Copy/zero physical System storage for its high virtual link address.
+   Prepare supervisor-only Sv39 tables, admit actual CPU/PMP/timer capabilities,
+   display Happy Mac, and MRET with the pinned execution/reservation record.
+   Resident owners start only after permanent mapped views exist.
 7. System mounts the same volume using its resident File Manager, loads resources
    and Finder, and configures its framebuffer. Its resource-based welcome panel
    reuses the desktop background. Seven completed initialization stages fill a
@@ -60,20 +61,23 @@ An original 68k System file does not satisfy this native executable contract.
 
 ## Hardware and initial limits
 
-- QEMU `virt`, RV64, at least 128 MiB discovered RAM, one active hart, M-mode, identity addressing.
-- UART at `0x10000000`, virtio-MMIO at `0x10001000..0x10008000`, 10 MHz CLINT
-  timer, and flash at `0x20000000`.
-- The low 2 MiB of RAM is reserved for firmware state and its 256 KiB stack.
-  Firmware uses a separate 8 MiB scratch heap at `0x87000000..0x87800000`;
-  System loading excludes this entire high-memory region and the FDT.
-  System's own 8 MiB heap is within its executable reservation;
-  Platform sizes/addresses come from the checked `platforms/QemuRISC-V.json`
-  record, which generates the linker symbols and Rust constants together.
-  `BootInfo` lends all discovered RAM banks and a disjoint reservation list;
-  its primary-bank summary must agree with that list. The account includes the
-  loaded System image, firmware buffers/heap, modules and FDT tail.
-- The System reservation must fit `0x80200000..0x87000000`. ROM owns one pinned
-  640×480 RAM framebuffer inside its low2MiB reservation until System takes over.
+- QEMU `virt`, RVA23, at least 128 MiB discovered RAM, one active hart.
+  The platform CPU selection explicitly enables MMU, PMP and Sv39. Firmware
+  starts in M mode; resident code and trusted applications execute in S mode.
+- UART, virtio windows, flash, firmware state/stack and the separate firmware
+  heap come from checked `platforms/QemuRISC-V.json`, which generates linker
+  symbols and Rust constants together. Actual RAM comes from the reset DTB.
+- System storage, flat application/definition arenas, firmware buffers/heap,
+  module arena, display scratch and the FDT tail are disjoint reservations.
+  System currently retains its 10 MiB static heap inside the executable
+  reservation. Page-backed heap/account/reserve migration remains separate.
+- ROM owns an 800×600 RAM framebuffer in the checked display reservation until
+  System takes over. Both use explicit bus addresses for fw_cfg DMA.
+- System builds independent PageBox-owned kernel and firmware roots and a
+  guarded 4 MiB System stack. Firmware code is absent from the kernel root;
+  bounded synchronous callback scopes select the firmware root and restore it.
+  Temporary flat application/module arenas remain trusted supervisor mappings;
+  this is not user-process isolation.
 - Resource maps are limited to256KiB and selected payloads to4MiB per load. A
   resource fork may be larger: unselected bytes/padding are not read or allocated.
   Explicit metadata/resource budgets bound work rather than total fork length.
@@ -88,8 +92,9 @@ An original 68k System file does not satisfy this native executable contract.
 - The ROM has no HFS+, GPT/MBR, SCSI or legacy virtio support. DTB discovery handles
   root memory banks, the reservation block and static `/reserved-memory` entries;
   dynamic/translated reserved-memory requests fail with a specific diagnostic.
-- Segment permissions are validated; no MMU/PMP protection is installed
-  in this initial M-mode firmware.
+- System segment pages retain read/write/execute permissions, with zero-only
+  trailing pages writable and non-executable. Firmware and bootstrap owners stay
+  pinned; no native M-mode fallback is retained.
 
 The driver also exposes sector writes and explicit flushes to the resident File
 Manager when the device is writable and supports FLUSH. It resets a device before

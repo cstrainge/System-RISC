@@ -2,8 +2,9 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
+extern crate alloc;
 use core::{alloc::Layout,
-           arch::global_asm,
+           arch::{asm, global_asm},
            fmt::{self, Write},
            panic::PanicInfo,
            ptr::{read_volatile, write_volatile}};
@@ -42,10 +43,19 @@ fn allocation_failed(layout: Layout) -> !
     failed()
 }
 include!(concat!(env!("OUT_DIR"), "/entries.rs"));
-mod platform_memory
+use bootrom::memory as platform_memory;
+
+mod platform_virtual
 {
-    include!(concat!(env!("OUT_DIR"), "/platform-memory.rs"));
+    include!(concat!(env!("OUT_DIR"), "/platform-virtual.rs"));
 }
+mod platform
+{
+    include!(concat!(env!("OUT_DIR"), "/platform.rs"));
+}
+#[path = "../../../bootrom/src/supervisor.rs"]
+mod supervisor;
+include!(concat!(env!("OUT_DIR"), "/system-regions.rs"));
 
 // Canonical acceptance logic lives with the aggregate userspace Toolbox tests.
 #[allow(dead_code)]
@@ -55,6 +65,11 @@ mod conformance;
 global_asm!(concat!(
     include_str!("../../../platforms/riscv64-entry.S"),
     r#"
+    .section .text.probe_reset,"ax"
+    .global _reset
+_reset:
+    la t0,_start
+    jr t0
     .section .text.entry
     .option push
     .option norvc
@@ -79,7 +94,12 @@ _start:
     j 3b
     .balign 4
 trap:
-    j failed
+    csrw mie,zero
+    la sp,__stack_top
+    li t0,0x6600
+    csrs mstatus,t0
+    call machine_failed
+    j trap
 "#
 ));
 
@@ -88,11 +108,11 @@ unsafe extern "C" fn log(bytes: *const u8, length: usize) -> Status
     for &byte in unsafe { core::slice::from_raw_parts(bytes, length) }
     {
         unsafe {
-            while read_volatile(0x10000005 as *const u8) & 0x20 == 0
+            while read_volatile((platform_memory::UART_BASE + 5) as *const u8) & 0x20 == 0
             {
                 core::hint::spin_loop();
             }
-            write_volatile(0x10000000 as *mut u8, byte);
+            write_volatile(platform_memory::UART_BASE as *mut u8, byte);
         }
     }
     OK
@@ -136,22 +156,26 @@ extern "C" fn main(tree_address: usize) -> !
         mac_abi::BootMemoryRange { base,
                                    length: limit - base }
     };
-    // The entire 2MiB probe image+stack replaces the ROM's boot reservation;
-    // don't add that contained reservation again. Remaining platform owners
-    // and the discovered FDT tail are disjoint and pinned until probe exit.
-    let [_, firmware, modules, display] = platform_memory::BOOT_RESERVED;
+    // The probe's code, constants and caller payloads live in the ordinary
+    // trusted app arena. Firmware-only pages are not mapped by the System root.
+    // Its linker placement comes from the same checked platform symbols.
+    let [boot, firmware, modules, display] = platform_memory::BOOT_RESERVED;
     let reservations =
-        [extent(platform_memory::RAM_BASE, platform_memory::IMAGE_BASE),
+        [extent(platform_memory::RAM_BASE,
+                platform_memory::RAM_BASE + platform_memory::PAGE_BYTES),
+         extent(boot.0, boot.1),
          extent(platform_memory::IMAGE_BASE, platform_memory::IMAGE_LIMIT),
          extent(firmware.0, firmware.1),
          extent(modules.0, modules.1),
          extent(display.0, display.1),
          extent(end.checked_sub(platform_memory::FDT_TAIL_BYTES).unwrap_or_else(|| failed()), end)];
-    mac_abi::boot::Memory { ram:          core::slice::from_ref(&ram),
-                            reservations: &reservations }.checked(platform_memory::PAGE_BYTES, ram)
-                                                         .unwrap_or_else(|error| {
-                                                             boot_refused(error)
-                                                         });
+    let account =
+        mac_abi::boot::Memory { ram:          core::slice::from_ref(&ram),
+                                reservations: &reservations }.checked(platform_memory::PAGE_BYTES,
+                                                                      ram)
+                                                             .unwrap_or_else(|error| {
+                                                                 boot_refused(error)
+                                                             });
     let tree_end =
         (tree_address as u64).checked_add(tree.total_size() as u64)
                              .unwrap_or_else(|| boot_refused("device-tree range overflows"));
@@ -176,6 +200,77 @@ extern "C" fn main(tree_address: usize) -> !
     unsafe {
         BOOT_HEAP.lock().init(firmware.0 as *mut u8, (firmware.1 - firmware.0) as usize);
     }
+    use bootrom::translation;
+    use mac_abi::{BootMemoryRange,
+                  boot::execution::{EXECUTE, Execution, FIRMWARE_ONLY, READ, Region, WRITE}};
+    use mac_kernel_model::{pages::{Access, Permissions, PhysicalAddress, VirtualAddress},
+                           policy::AddressRange};
+    use platform_virtual::*;
+    let mut regions = alloc::vec::Vec::new();
+    regions.try_reserve_exact(SYSTEM_REGIONS.len() + 1).unwrap_or_else(|error| boot_refused(error));
+    regions.extend_from_slice(SYSTEM_REGIONS);
+    for (base, end, flags) in [(firmware.0, firmware.1, READ | WRITE)]
+    {
+        regions.push(Region { physical:     BootMemoryRange { base,
+                                                              length: end - base },
+                              virtual_base: base,
+                              flags:        flags | FIRMWARE_ONLY,
+                              reserved:     0 });
+    }
+    let identity = |base, end, execute| {
+        translation::Region { virtual_address: VirtualAddress(base),
+                              physical:        PhysicalAddress(base),
+                              bytes:           end - base,
+                              permissions:     Permissions { read: true,
+                                                             write: true,
+                                                             execute,
+                                                             access: Access::Supervisor,
+                                                             global: false } }
+    };
+    let fixed =
+        [identity(platform_memory::APPLICATION_PRIMARY_BASE, platform_memory::IMAGE_LIMIT, true),
+         identity(modules.0, modules.1, true)];
+    let io =
+        platform_memory::BOOT_MMIO_REGIONS.iter().map(|&(base, end)| identity(base, end, false));
+    let devices = platform::PLATFORM_MMIO_DEVICES.iter().map(|&(_, _, base, bytes, _, _)| {
+                                                            identity(base, base + bytes, false)
+                                                        });
+    let root = translation::Prepared::new(account,
+        AddressRange::new(VM_PHYSMAP_START,VM_PHYSMAP_END).unwrap_or_else(|error|boot_refused(error)),
+        PhysicalAddress(VM_PHYSMAP_PHYSICAL_BASE),
+        regions.iter().map(|r|translation::Region{
+            virtual_address:VirtualAddress(r.virtual_base),physical:PhysicalAddress(r.physical.base),bytes:r.physical.length,
+            permissions:Permissions{read:r.flags&READ!=0,write:r.flags&WRITE!=0,execute:r.flags&EXECUTE!=0,
+                                    access:Access::Supervisor,global:r.flags&FIRMWARE_ONLY==0}})
+            .chain(fixed).chain(io).chain(devices))
+        .unwrap_or_else(|error|boot_refused(error));
+    let admitted =
+        unsafe { supervisor::Admitted::prepare(root.root_physical()) }.unwrap_or_else(|error| {
+                                                                          boot_refused(error)
+                                                                      });
+    let hart: u64;
+    unsafe {
+        asm!("csrr {},mhartid",out(reg)hart,options(nomem,nostack));
+    }
+    let execution = Execution { hart,
+                                root_physical: root.root_physical().0,
+                                hardware_tag_mask: u64::from(admitted.asid_mask()),
+                                physical_image: BootMemoryRange { base:
+                                                                      platform_memory::IMAGE_BASE,
+                                                                  length: VM_SYSTEM_IMAGE_LIMIT
+                                                                          - VM_SYSTEM_IMAGE_BASE },
+                                virtual_image: BootMemoryRange { base:   VM_SYSTEM_IMAGE_BASE,
+                                                                 length: VM_SYSTEM_IMAGE_LIMIT
+                                                                         - VM_SYSTEM_IMAGE_BASE },
+                                regions: regions.as_ptr(),
+                                region_count: regions.len() };
+    execution.checked(account,
+                      &regions,
+                      execution.physical_image,
+                      execution.virtual_image,
+                      BootMemoryRange { base:   platform_memory::FLASH_BASE,
+                                        length: platform_memory::FLASH_BYTES })
+             .unwrap_or_else(|error| boot_refused(error));
     let boot = BootInfo { header:                  Header::for_type::<BootInfo>(),
                           ram_base:                ram.base,
                           ram_size:                ram.length,
@@ -192,10 +287,53 @@ extern "C" fn main(tree_address: usize) -> !
                           ram_region_count:        1,
                           reservations:            reservations.as_ptr(),
                           reservation_count:       reservations.len(),
-                          display_scratch:         Default::default() };
+                          display_scratch:         Default::default(),
+                          execution:               &execution };
+    let info_virtual = root.cpu_address(PhysicalAddress((&boot as *const BootInfo) as u64),
+                                        size_of::<BootInfo>() as u64)
+                           .unwrap_or_else(|error| boot_refused(error))
+                           .0;
+    let physical_sp: u64;
+    unsafe {
+        asm!("mv {},sp",out(reg)physical_sp,options(nomem,nostack));
+    }
+    let virtual_sp = root.cpu_address(PhysicalAddress(physical_sp), 1)
+                         .unwrap_or_else(|error| boot_refused(error))
+                         .0;
+    // The M frame retains every firmware owner. A new S continuation gets only
+    // scalar encodings; no Rust reference is rebased across the transition.
+    let _root = core::mem::ManuallyDrop::new(root);
+    unsafe { admitted.enter(supervisor_main as *const () as u64, info_virtual, virtual_sp) }
+}
+
+extern "C" fn supervisor_main(boot: *const BootInfo) -> !
+{
     let system_entry: SystemEntry = unsafe { core::mem::transmute(SYSTEM_ENTRY) };
     let finder_entry: ApplicationEntry = unsafe { core::mem::transmute(FINDER_ENTRY) };
-    let services = unsafe { system_entry(&boot) };
+    let services = unsafe { system_entry(boot) };
+    if let Some((name, address, write)) = PAGE_PROBE
+    {
+        if services.is_null()
+        {
+            failed();
+        }
+        let _ =
+            writeln!(BootLog, "NATIVE_PAGE_PROBE case={name} address={address:#x} write={write}");
+        // Deliberate architecture fault injection: no Rust reference is formed
+        // to inaccessible storage, and no recovery from this fault is claimed.
+        unsafe {
+            if write
+            {
+                asm!("sb zero,0({address})",address=in(reg)address,options(nostack));
+            }
+            else
+            {
+                asm!("lb zero,0({address})",address=in(reg)address,options(nostack));
+            }
+        }
+        let _ = writeln!(BootLog, "NATIVE_PAGE_PROBE_UNEXPECTED_SUCCESS case={name}");
+        failed();
+    }
     if services.is_null() || unsafe { finder_entry(services) } != OK
     {
         failed();
@@ -307,7 +445,7 @@ extern "C" fn main(tree_address: usize) -> !
     let message = b"ABI_SMOKE_PASS\n";
     unsafe {
         log(message.as_ptr(), message.len());
-        write_volatile(0x100000 as *mut u32, 0x5555);
+        write_volatile(platform::FATAL_FINISHER_ADDRESS as *mut u32, 0x5555);
     }
     loop
     {
@@ -406,12 +544,35 @@ extern "C" fn failed() -> !
     let message = b"ABI_SMOKE_FAIL\n";
     unsafe {
         log(message.as_ptr(), message.len());
-        write_volatile(0x100000 as *mut u32, 0x3333);
+        write_volatile(platform::FATAL_FINISHER_ADDRESS as *mut u32,
+                       platform::FATAL_FINISHER_FAILURE);
     }
     loop
     {
         core::hint::spin_loop();
     }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn machine_failed() -> !
+{
+    let (machine_cause, machine_pc, machine_value): (u64, u64, u64);
+    unsafe {
+        asm!("csrr {},mcause",out(reg)machine_cause,options(nomem,nostack));
+        asm!("csrr {},mepc",out(reg)machine_pc,options(nomem,nostack));
+        asm!("csrr {},mtval",out(reg)machine_value,options(nomem,nostack));
+    }
+    let _ = writeln!(BootLog,
+                     "ABI_MACHINE_FAULT mcause={machine_cause:#x} mepc={machine_pc:#x} \
+                      mtval={machine_value:#x}");
+    let (cause, pc, value): (u64, u64, u64);
+    unsafe {
+        asm!("csrr {},scause",out(reg)cause,options(nomem,nostack));
+        asm!("csrr {},sepc",out(reg)pc,options(nomem,nostack));
+        asm!("csrr {},stval",out(reg)value,options(nomem,nostack));
+    }
+    let _ = writeln!(BootLog, "ABI_MACHINE_ESCAPE scause={cause:#x} sepc={pc:#x} stval={value:#x}");
+    failed()
 }
 
 #[panic_handler]

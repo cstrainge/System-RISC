@@ -1,13 +1,14 @@
 //! The one audited raw-RAM binding for the shared safe physical pool.
-//! Current execution is flat M mode. When the architecture handoff lands, this
-//! initialization must run after permanent mapped views exist; references are
-//! never rebased or transported through a physical/virtual mode flag.
+//! Firmware supplies permanent mapped views before pool owners exist. CPU and
+//! physical addresses remain separate; references are never rebased or
+//! transported through a physical/virtual mode flag.
 use core::{alloc::Layout, fmt, mem::MaybeUninit};
 
 use mac_abi::boot::CheckedMemory;
 use mac_kernel_model::{bootstrap::{BankPlan, Error as PlanError},
                        buddy::{BuddyError, BuddyPool, PageBlock, PageMetadata},
-                       pages::{PageGeometry, PhysicalAddress},
+                       pages::{PageBox, PageGeometry, PhysicalAddress,
+                               physical::{DirectMap, Error as MapError}},
                        policy::AddressRange};
 
 use super::interrupts::NativeInvocationGate;
@@ -20,7 +21,8 @@ struct Bank
 }
 struct Pools
 {
-    first: Option<&'static Bank>
+    first: Option<&'static Bank>,
+    ram:   DirectMap<'static>
 }
 static POOLS: spin::Once<Pools> = spin::Once::new();
 #[derive(Debug)]
@@ -35,7 +37,9 @@ pub(crate) enum Error
         order:      u32,
         free_pages: usize
     },
-    Geometry
+    Geometry,
+    Mapping(MapError),
+    Model(mac_kernel_model::policy::ModelError)
 }
 impl Error
 {
@@ -53,7 +57,9 @@ impl Error
                        | BuddyError::Metadata { .. }
                        | BuddyError::InvalidFreeRange
                        | BuddyError::AlreadyManaged)
-            | Self::Geometry => mac_abi::BAD_ARGUMENT
+            | Self::Geometry
+            | Self::Mapping(_)
+            | Self::Model(_) => mac_abi::BAD_ARGUMENT
         }
     }
 }
@@ -81,6 +87,8 @@ impl fmt::Display for Error
             {
                 f.write_str("physical pool range or stack size exceeds the selected page geometry")
             }
+            Self::Mapping(error) => error.fmt(f),
+            Self::Model(error) => error.fmt(f)
         }
     }
 }
@@ -89,7 +97,8 @@ impl fmt::Display for Error
 /// ROM exclusions include every flat image/definition arena, not just System.
 /// Discovered RAM and metadata storage remain pinned with the same CPU mapping
 /// until reset. This is called once before heap initialization or interrupts.
-pub(crate) unsafe fn initialize(memory: CheckedMemory<'_>) -> Result<(), Error>
+pub(crate) unsafe fn initialize(memory: CheckedMemory<'static>, ram: DirectMap<'static>)
+                                -> Result<(), Error>
 {
     if POOLS.get().is_some()
     {
@@ -111,7 +120,9 @@ pub(crate) unsafe fn initialize(memory: CheckedMemory<'_>) -> Result<(), Error>
             continue;
         };
         let layout = plan.layout();
-        let base = plan.storage().base as usize;
+        let base = ram.virtual_address(PhysicalAddress(plan.storage().base), plan.storage().length)
+                      .map_err(Error::Mapping)?
+                      .0 as usize;
         // SAFETY: the checked layout reserves these disjoint aligned slices in
         // exclusively owned RAM. MaybeUninit permits the bytes' initial state;
         // the safe pool constructor writes valid values exactly once before
@@ -146,7 +157,8 @@ pub(crate) unsafe fn initialize(memory: CheckedMemory<'_>) -> Result<(), Error>
                 plan.storage().length,
                 unsafe { &*node }.pool.free_pages());
     }
-    let pools = Pools { first };
+    let pools = Pools { first,
+                        ram };
     if pools.first.is_none()
     {
         return Err(Error::Exhausted { order:      0,
@@ -178,7 +190,8 @@ fn allocate(order: u32) -> Result<Block, Error>
 /// binding; flat execution is replaced with stable mapped views at MMU handoff.
 pub(crate) struct Backing
 {
-    pages: Block
+    pages:    Block,
+    cpu_base: usize
 }
 impl Backing
 {
@@ -191,17 +204,36 @@ impl Backing
                          .and_then(usize::checked_next_power_of_two)
                          .ok_or(Error::Geometry)?;
         let pages = allocate(count.ilog2())?;
+        let cpu_base = POOLS.get()
+                            .ok_or(Error::Unavailable)?
+                            .ram
+                            .virtual_address(pages.address(), pages.bytes())
+                            .map_err(Error::Mapping)?
+                            .0 as usize;
         // SAFETY: exclusive page lease, flat physical mapping, all bytes are
         // ordinary discovered RAM. Clear prior data before any owner sees it.
         unsafe {
-            core::ptr::write_bytes(pages.address().0 as *mut u8, 0, pages.bytes() as usize);
+            core::ptr::write_bytes(cpu_base as *mut u8, 0, pages.bytes() as usize);
         }
-        Ok(Self { pages })
+        Ok(Self { pages,
+                  cpu_base })
     }
 
     pub(crate) fn cpu_base(&self) -> usize
     {
-        self.pages.address().0 as usize
+        self.cpu_base
+    }
+
+    pub(crate) fn physical(&self) -> PhysicalAddress
+    {
+        self.pages.address()
+    }
+
+    pub(crate) fn into_table(
+        self)
+        -> Result<PageBox<'static, 'static, [u64; 512], NativeInvocationGate>, Error>
+    {
+        PageBox::reserve(self.pages).map_err(Error::Model)
     }
 
     pub(crate) fn bytes(&self) -> u64
@@ -213,8 +245,9 @@ impl Backing
 /// are disposed only after CPU/reader quiescence, through the same pool gate.
 pub(crate) struct Stack
 {
-    backing: Backing,
-    bytes:   u64
+    backing:  Backing,
+    bytes:    u64,
+    cpu_base: usize
 }
 impl Stack
 {
@@ -224,8 +257,36 @@ impl Stack
         {
             return Err(Error::Geometry);
         }
-        Ok(Self { backing: Backing::allocate(bytes)?,
-                  bytes:   bytes as u64 })
+        let backing = Backing::allocate(bytes)?;
+        let cpu_base = backing.cpu_base();
+        Ok(Self { backing,
+                  cpu_base,
+                  bytes: bytes as u64 })
+    }
+
+    /// # Safety
+    /// Both permanent roots already map this fresh owned backing at cpu_base;
+    /// the guards remain unmapped and the caller retains the roots until reset.
+    /// This creates the first stack view, never rebases an existing reference.
+    pub(crate) unsafe fn from_mapping(backing: Backing, cpu_base: usize, bytes: u64)
+                                      -> Result<Self, Error>
+    {
+        if bytes == 0
+           || bytes > backing.bytes()
+           || !bytes.is_multiple_of(super::memory::PAGE_BYTES)
+           || !cpu_base.is_multiple_of(super::memory::PAGE_BYTES as usize)
+           || cpu_base.checked_add(bytes as usize).is_none()
+        {
+            return Err(Error::Geometry);
+        }
+        Ok(Self { backing,
+                  bytes,
+                  cpu_base })
+    }
+
+    pub(crate) fn physical(&self) -> PhysicalAddress
+    {
+        self.backing.physical()
     }
 
     pub(crate) fn bytes(&self) -> u64
@@ -240,6 +301,6 @@ impl Stack
 
     pub(crate) fn top(&self) -> usize
     {
-        self.backing.cpu_base() + self.bytes as usize
+        self.cpu_base + self.bytes as usize
     }
 }

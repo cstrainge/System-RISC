@@ -9,11 +9,7 @@ pub(crate) mod traps;
 /// Bootstrap hardware identity only; never an application or OS-thread identity.
 pub(crate) fn hart_id() -> usize
 {
-    let hart: usize;
-    unsafe {
-        core::arch::asm!("csrr {}, mhartid", out(reg) hart, options(nomem, nostack));
-    }
-    hart
+    paging::hart_id()
 }
 
 pub(crate) mod clock;
@@ -26,3 +22,5 @@ pub(crate) mod interrupts;
 pub(crate) const MODULE_TARGET: mac_module::Target = mac_module::Target::RVA23U64;
 
 pub(crate) mod power;
+
+pub(crate) mod paging;

@@ -230,7 +230,7 @@ impl UniformLayout
         self.image_base
     }
 
-    pub fn validate_architecture<A: crate::pages::Architecture>(&self) -> Result<(), ModelError>
+    pub fn validate_architecture<A: crate::pages::PageLayout>(&self) -> Result<(), ModelError>
     {
         let geometry = A::geometry();
         if [self.application,self.process_kernel,self.modules,self.kernel,self.physmap].iter()

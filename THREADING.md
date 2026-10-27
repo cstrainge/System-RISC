@@ -13,14 +13,15 @@ state attached to the application/context, not global scheduler state. A later
 native worker-thread API can expose additional OS threads explicitly.
 
 The first native implementation now schedules Finder and separately loaded APPLs
-on one RV64 hart. CLINT timer interrupts preempt application code independently
+on one RV64 hart. Supervisor timer interrupts preempt application code independently
 of Toolbox calls. Registered, fallibly grown application thread records own independent page-backed stacks (4 MiB by default, selected by the checked
 platform policy within 64 KiB–8 MiB),
 separately page-backed saved integer/FP/vector state (storage scales with hardware
 VLEN) and
 trusted AppId/ThreadId contexts. Native entry uses a separate4MiB System stack
 before saving CPU state; the same stack serves bootstrap and synchronous I/O
-under scoped executor/subject identity. Mapped guards remain a paging gate.
+under scoped executor/subject identity. Sv39 maps that System stack between
+unmapped guard pages; application stacks still use trusted physmap aliases.
 Kernel traps mask
 interrupts, including nested definition calls, so allocator and manager guards
 cannot be preempted by another application on this hart. Native event waits now
@@ -76,8 +77,8 @@ outside resource payloads and the application stack. Selection uses one set/diff
 path, cached text dimensions and a row index. Marquee outlines share the cursor's
 temporary presentation path and never accumulate retained paint history.
 
-This is a trusted shared M-mode address space without an MMU or protection
-boundary. Owner checks prevent accidental cross-application object access through
+Sv39 is active in S mode, but applications still share trusted flat code
+arenas and resident mappings. There is no U-mode process protection boundary. Owner checks prevent accidental cross-application object access through
 services; they cannot constrain arbitrary application pointers or machine code.
 
 [P13](docs/PROCESS-ISOLATION.md) tracks the replacement with protected app address
@@ -192,7 +193,7 @@ address-space/object translation rather than access to resident Rust addresses.
 | Gate | Current implementation and required evidence |
 | --- | --- |
 | Boundary hardening | One-shot publication, bounded guards, owner-tagged file marks and trusted context routing exist. Shared real-service host tests establish the captured exclusion/cleanup contracts, not hardware scheduling. |
-| Scheduler foundation | One-hart CLINT preemption, growable registered thread records, independently owned stacks/register frames, trusted identities and deferred retired-stack reclamation exist. A private RV64 observer progresses during a child's no-trap/no-yield loop on one hart; the canonical process acceptance passes. Native event wait deadlines, readiness wakes and a separate idle stack now exist; the SDK latency fixture verifies physical input during contention and that blocked apps leave the runnable rotation. General blocking primitives, worker APIs and cancellation remain open. |
+| Scheduler foundation | One-hart supervisor timer preemption, growable registered thread records, independently owned stacks/register frames, trusted identities and deferred retired-stack reclamation exist. A private RV64 observer progresses during a child's no-trap/no-yield loop on one hart; the canonical process acceptance passes. Native event wait deadlines, readiness wakes and a separate idle stack now exist; the SDK latency fixture verifies physical input during contention and that blocked apps leave the runnable rotation. General blocking primitives, worker APIs and cancellation remain open. |
 | Application launch | Finder and disk-loaded native APPLs have independent application threads, app-local UI/resource/memory state and exit cleanup. Host SDK ownership tests cover file denial/cleanup and memory generation retention; the real RV64 launch/quit/relaunch, partition/ownership, Pascal and private synthetic-event gates pass. |
 | Application switching | Resident right-hand menu and Process Manager activation/hide/restore paths exist. Private SDK and actual Finder/two-app activation/hide/input/exit tests pass, including first-click activation and background dragging. The original popup comparison passes with explicit icon/cursor masks; this establishes the captured profile, not all application behavior. |
 | Interactive latency | Window/file drag and selection feedback use bounded frontbuffer-only XOR without scene replays or a tracking-mask scan. Canonical captures retain every decoded move, including the first; strict all-samples sub-millisecond qualification remains open on fresh Windows and Linux guests. Shared instruction paths and perimeter-intersection early-outs reduce work but do not establish a hard latency guarantee. Interrupt-masked resident calls and cold execution still need their own bounds. |

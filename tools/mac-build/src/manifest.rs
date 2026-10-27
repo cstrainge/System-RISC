@@ -112,8 +112,24 @@ pub fn fourcc(text: &str) -> Result<[u8; 4]>
 
 fn address(value: &str) -> Result<u64>
 {
-    Ok(u64::from_str_radix(value.strip_prefix("0x")
-                                .ok_or_else(|| error("addresses must start with 0x"))?,
+    match value
+    {
+        "@system_image_base" =>
+        {
+            return Ok(crate::platform::current().virtual_memory()?.system_image_range().start);
+        }
+        "@system_image_limit" =>
+        {
+            return Ok(crate::platform::current().virtual_memory()?.system_image_range().end);
+        }
+        _ => ()
+    }
+    Ok(u64::from_str_radix(value.strip_prefix("0x").ok_or_else(|| {
+                                                        error("addresses must start with 0x or \
+                                                               name a known \
+                                                               @system_image_base/@\
+                                                               system_image_limit platform symbol")
+                                                    })?,
                            16)?)
 }
 

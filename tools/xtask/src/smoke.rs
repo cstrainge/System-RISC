@@ -28,6 +28,27 @@ pub fn check(workspace: &Workspace, reports: &[Value]) -> Result<Value>
                                                       .find(|r| r.kind == *b"NABI" && r.id == 0)
                                                       .ok_or_else(|| error("native ABI missing"))?
                                                       .data)?;
+        if name == "System"
+        {
+            let image = mac_formats::native::image::decode(&code.data, &descriptor)?;
+            let storage = workspace.platform.memory()?.system_image_storage();
+            let regions =
+                bootrom::translation::system_regions(&image, &descriptor, storage.start, 4096)?;
+            let mut rust =
+                String::from("const SYSTEM_REGIONS: &[mac_abi::boot::execution::Region] = &[\n");
+            for region in regions
+            {
+                rust.push_str(&format!("mac_abi::boot::execution::Region{{physical:\
+                                        mac_abi::BootMemoryRange{{base:{},length:{}}},\
+                                        virtual_base:{},flags:{},reserved:0}},\n",
+                                       region.physical.base,
+                                       region.physical.length,
+                                       region.virtual_base,
+                                       region.flags));
+            }
+            rust.push_str("];\n");
+            fs::write(out.join("system-regions.rs"), rust)?;
+        }
         let relocations =
             resources.iter().find(|r| r.kind == *b"RLOC" && r.id == 0).map(|r| r.data.as_slice());
         let plan = LoadPlan::new(&code.data, &descriptor, relocations, descriptor.load_base)?;
@@ -40,6 +61,7 @@ pub fn check(workspace: &Workspace, reports: &[Value]) -> Result<Value>
                         &workspace.platform.rust_target, "--target-dir"])
                  .arg(workspace.build.join("target"))
                  .args(["--package", "abi-smoke"])
+                 .env("SYSTEM7_SYSTEM_REGIONS", out.join("system-regions.rs"))
                  .env("SYSTEM7_SYSTEM_ENTRY", reports[0]["entry"].as_u64().unwrap().to_string())
                  .env("SYSTEM7_FINDER_ENTRY", reports[1]["entry"].as_u64().unwrap().to_string()))?;
     let kernel = workspace.build
@@ -67,7 +89,7 @@ pub fn check(workspace: &Workspace, reports: &[Value]) -> Result<Value>
            .arg("-device")
            .arg(format!("loader,file={},addr={},force-raw=on",
                         out.join("System.raw").display(),
-                        reports[0]["load_base"].as_u64().unwrap()))
+                        workspace.platform.memory()?.system_image_storage().start))
            .arg("-device")
            .arg(format!("loader,file={},addr={},force-raw=on",
                         out.join("Finder.raw").display(),

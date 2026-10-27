@@ -50,14 +50,15 @@ Common code owns policy, accounting and lifetimes; architecture adapters own
 page geometry/encodings, CPU contexts, TLB/ASID operations and trap/System-stack
 entry. Board adapters own discovery and devices. Neither common records nor
 resource-service contracts may assume RV64 registers or a universal 4 KiB page.
-Use one validated layout input for Rust and linker output when paging becomes
-live; keep pointer access and CPU instructions behind narrow audited boundaries.
+Use one validated layout input for Rust and linker output; keep pointer access and CPU instructions behind narrow audited boundaries.
 
 ## Native ISA floor
 
 The current platform is **RVA23S64 hardware**, compiling the complete RVA23U64
-instruction profile. `platforms/riscv64.json` selects that profile and the QEMU
-CPU; both Linux and native Windows launchers use it. The installed Rust target
+instruction profile. `platforms/QemuRISC-V.json` selects that profile and the QEMU
+CPU; both Linux and native Windows launchers consume its explicit MMU, PMP
+and Sv39 properties. QEMU profile CPUs inherit [bare-CPU defaults](https://github.com/qemu/qemu/blob/v10.1.0/target/riscv/cpu.c),
+so the ISA profile name alone does not enable those machine facilities. The installed Rust target
 name `riscv64imac-unknown-none-elf` selects the **LP64 calling convention**, not
 the generated ISA: `+rva23u64` enables the whole mandatory profile. Build-time
 validation compares the compiler's complete profile expansion against actual
@@ -77,13 +78,15 @@ The frame records the interrupted SP explicitly. Native entry switches to the
 per-hart System stack before constructing the frame directly in that owned CPU
 backing; context switches need no snapshot copy. Bootstrap resident work shares
 that stack, and I/O carries scoped executor/subject/resource identity without a
-second stack switch. Domain charges, mapped guards and dirty/lazy policy remain
+second stack switch. Domain charges and dirty/lazy policy remain
 separate gates; this is no isolation or lazy-save completion claim.
 The shared physical page pool supplies prepared thread/idle stack leases through
 an explicit architecture invocation gate, including lease Drop. Local masking
 precedes every metadata lock; native retirement retains actual reader/CPU
-barriers. Kernel self-virtualization, guarded stack mappings and multi-hart
-synchronization remain separate gates; the current CPU still runs flat M mode.
+barriers. The ROM admits Sv39 and enters S mode with mapped RAM before resident owners
+exist. The System builds separate page-lease-owned kernel and firmware roots,
+and maps its 4 MiB System stack between unmapped guard pages. Per-process roots,
+U-mode isolation and multi-hart synchronization remain separate gates.
 
 See [LLVM RISC-V profiles](https://llvm.org/docs/RISCVUsage.html) and the
 [ratified RVA23 source](https://github.com/riscv/riscv-profiles/blob/main/src/rva23-profile.adoc)
@@ -93,10 +96,10 @@ required in addition to compiler support.
 ## Native application execution
 
 Finder and disk-loaded native applications run on separate OS-scheduled threads.
-The one-hart RV64 scheduler uses CLINT timer preemption, independent 256 KiB
-stacks and complete integer/FP/vector trap state (VLEN-scaled vector storage),
-with a maximum of eight concurrent
-application threads including Finder. Application progress does not depend on
+The one-hart RV64 scheduler uses supervisor timer preemption, independent
+page-backed stacks (configurable 4 MiB default) and complete integer/FP/vector
+trap state (VLEN-scaled vector storage). Registered thread storage grows fallibly
+with memory; no fixed application-count limit is imposed. Application progress does not depend on
 `WaitNextEvent` or cooperative yield calls. Kernel traps execute with interrupts
 masked; blocking queues, native worker-thread APIs and multi-hart execution are
 separate future gates. See [THREADING.md](THREADING.md) for ownership and limits.
@@ -144,9 +147,9 @@ durability barriers and the remaining coordinated application-quit gate.
 CPU addresses and DMA bus addresses are separate contracts. The native bus
 binding proves contiguous device-visible storage before the Device Manager
 publishes a mapping; a translation refusal leaves the claim available for retry.
-The current flat architecture supplies identity translation explicitly. Paging
-must replace that binding, rather than letting manager policy reinterpret a
-pointer as a physical address. This does not yet qualify page pinning or an IOMMU.
+The architecture converts checked System-image and physmap aliases to bus
+addresses; temporary trusted flat application/module arenas are explicit.
+Manager policy never reinterprets an arbitrary pointer as a physical address. This does not yet qualify page pinning or an IOMMU.
 
 ROM and System share one RAMFB binding with an explicit register window from
 the checked platform record and explicit DMA translation. Configuration and
@@ -170,7 +173,7 @@ files get separate code/data/BSS, including copies of the same executable.
 An eight-slot immutable image cache includes Finder; relaunch of a stopped file
 zeros its reservation and restores its segments. Launch of a running volume/CNID activates its existing
 process. This does not provide MMU isolation, hot replacement, general dynamic
-linking or original68k translation. Native code remains trusted shared M-mode.
+linking or original68k translation. Native code remains trusted shared S-mode.
 
 ## Resident implementation
 
@@ -217,7 +220,7 @@ call without reborrowing the runtime. System/font storage is published once, and
 each cached application resource image is immutable. Resource queries select the
 trusted caller or retained-window owner. Readonly resource queries also bypass the mutable desktop borrow, including
 queries nested inside a definition. Resource data moved into the font manager
-remains visible through the System resource scope. The current trusted M-mode
+remains visible through the System resource scope. The current trusted S-mode
 environment has shared memory; these checks are ABI validation, not process isolation.
 
 ## Planned control panels and kernel extensions
@@ -259,7 +262,7 @@ with checked session ownership and JSON preference-defined base environments.
 [P12](docs/HOSTED-TOOLCHAIN.md) stages hosted Rust tools after the actual std,
 storage, child-process and linker prerequisites.
 
-[P13](docs/PROCESS-ISOLATION.md) replaces the current shared M-mode app execution
+[P13](docs/PROCESS-ISOLATION.md) replaces the current trusted shared S-mode app execution
 with protected user processes and checked syscall/callback boundaries. This is
 planned hardware protection, separate from today's owner/generation checks.
 [P14](docs/DRIVERS.md) keeps block storage built in and moves other drivers into
@@ -366,10 +369,13 @@ and embedded font strikes. Its result is included in `toolchain-checks.json`.
 
 ## Filesystem and Finder ownership
 
-BootInfo is88bytes with firmware disk-info/read/write/flush callbacks
+BootInfo is 144 bytes with firmware disk-info/read/write/flush callbacks
 and startup volume identity. DiskInfo carries capacity, read-only state and the
 driver icon resource identity. System serializes firmware access through its I/O
-owner guard and dedicated synchronous execution stack. The I/O service context
+owner guard on the resident System stack. A hart-local RAII root scope
+selects the firmware mappings while invoking an opaque callback; every borrowed
+resident address keeps the same mapping, and application buffers use bounded
+resident copies when necessary. The I/O service context
 is not independently runnable; its interrupt guard serializes current one-hart
 access without declaring opaque firmware state Send. The File Manager owns
 mounted-volume IDs, catalog traversal, application-owned independent fork marks

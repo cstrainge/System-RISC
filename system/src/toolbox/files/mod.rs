@@ -97,6 +97,35 @@ pub(crate) mod write;
 mod moves;
 const MAX_PATH: usize = 4096;
 
+// Host conformance callbacks have no hardware root. Native callbacks always
+// use the admitted root and the masked restoration guard; no native old mode.
+fn firmware_call<R>(call: impl FnOnce() -> R) -> Result<R, Status>
+{
+    #[cfg(target_arch = "riscv64")]
+    {
+        crate::machine::paging::with_firmware(call).map_err(|error| {
+            crate::machine::paging::report_refusal(&error);
+            mac_abi::BAD_ABI
+        })
+    }
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        Ok(call())
+    }
+}
+fn firmware_buffer(pointer: *const u8, bytes: usize) -> bool
+{
+    #[cfg(target_arch = "riscv64")]
+    {
+        crate::machine::paging::firmware_visible(pointer as u64, bytes as u64)
+    }
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        let _ = (pointer, bytes);
+        true
+    }
+}
+
 /// Capabilities borrowed from firmware. Only construction crosses the unsafe ABI.
 #[derive(Clone, Copy)]
 pub struct BootStorage
@@ -128,8 +157,49 @@ impl BootStorage
     fn info(&self, index: u32) -> Result<DiskInfo, Status>
     {
         let mut result = DiskInfo::default();
-        let status = unsafe { (self.disk_info)(self.context, index, &mut result) };
+        let status =
+            firmware_call(|| unsafe { (self.disk_info)(self.context, index, &mut result) })?;
         if status == OK { Ok(result) } else { Err(status) }
+    }
+
+    fn read(&self, index: u32, sector: u64, output: &mut [u8; 512]) -> Status
+    {
+        if firmware_buffer(output.as_ptr(), output.len())
+        {
+            firmware_call(|| unsafe {
+                (self.read_sector)(self.context, index, sector, output.as_mut_ptr())
+            }).unwrap_or_else(|status| status)
+        }
+        else
+        {
+            let mut resident = [0u8; 512];
+            let status = firmware_call(|| unsafe {
+                             (self.read_sector)(self.context, index, sector, resident.as_mut_ptr())
+                         }).unwrap_or_else(|status| status);
+            if status == OK
+            {
+                output.copy_from_slice(&resident);
+            }
+            status
+        }
+    }
+
+    fn write(&self, index: u32, sector: u64, input: &[u8; 512]) -> Status
+    {
+        let Some(callback) = self.write_sector
+        else
+        {
+            return mac_abi::READ_ONLY;
+        };
+        if firmware_buffer(input.as_ptr(), input.len())
+        {
+            firmware_call(||unsafe{callback(self.context,index,sector,input.as_ptr())}).unwrap_or_else(|status|status)
+        }
+        else
+        {
+            let resident = *input;
+            firmware_call(||unsafe{callback(self.context,index,sector,resident.as_ptr())}).unwrap_or_else(|status|status)
+        }
     }
 }
 struct Device
@@ -156,12 +226,7 @@ impl BlockDevice for Device
         {
             return Ok(());
         }
-        let status = unsafe {
-            (self.storage.read_sector)(self.storage.context,
-                                       self.index,
-                                       sector,
-                                       output.as_mut_ptr())
-        };
+        let status = self.storage.read(self.index, sector, output);
         if status == OK
         {
             self.cache.put(sector, output);
@@ -193,12 +258,7 @@ impl WritableBlockDevice for Device
         {
             return Err(mac_hfs::Error::Malformed("sector outside device"));
         }
-        let status = unsafe {
-            (self.storage.write_sector.unwrap())(self.storage.context,
-                                                 self.index,
-                                                 sector,
-                                                 input.as_ptr())
-        };
+        let status = self.storage.write(self.index, sector, input);
         if status == OK
         {
             self.cache.put(sector, input);
@@ -218,7 +278,8 @@ impl WritableBlockDevice for Device
         let callback = self.storage
                            .flush_disk
                            .ok_or(mac_hfs::Error::Malformed("device has no flush callback"))?;
-        let status = unsafe { callback(self.storage.context, self.index) };
+        let status = firmware_call(||unsafe{callback(self.storage.context,self.index)})
+            .map_err(|_|mac_hfs::Error::Malformed("firmware flush root is unavailable"))?;
         if status == OK
         {
             Ok(())

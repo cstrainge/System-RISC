@@ -1,7 +1,9 @@
 //! Compact RV64 segments. Runtime metadata contains no ELF structures.
 #![forbid(unsafe_code)]
+mod destination;
 use alloc::vec::Vec;
 
+pub use destination::{Destination, WriteError};
 pub use mac_code_resource::image::{EXECUTE, HEADER_SIZE, MAX_SEGMENTS, READ, RECORD_SIZE, Segment,
                                    WRITE};
 
@@ -166,25 +168,44 @@ impl<'a> LoadPlan<'a>
 
     pub fn write(&self, output: &mut [u8]) -> Result<()>
     {
-        if output.len() != self.length
+        self.write_to(&mut destination::Slice(output)).map_err(|error| {
+                                                          match error
+                                                          {
+                                                              WriteError::Format(error)
+                                                              | WriteError::Destination(error) =>
+                                                              {
+                                                                  error
+                                                              }
+                                                          }
+                                                      })
+    }
+
+    /// Initialize owned storage independently of its CPU alias or physical
+    /// contiguity. Relocation values use the plan's execution destination;
+    /// output offsets never reinterpret an execution VA as a host pointer.
+    pub fn write_to<T: Destination>(&self, output: &mut T)
+                                    -> core::result::Result<(), WriteError<T::Error>>
+    {
+        if output.length() != self.length
         {
-            return Err(Error::Malformed("native destination has wrong length"));
+            return Err(WriteError::Format(Error::Malformed("native destination has wrong \
+                                                            length")));
         }
-        // Zero the reservation first: BSS, inter-segment holes and trailing bytes
-        // stay zero without erasing initialized segments or relocated pointers.
-        output.fill(0);
+        // Clear BSS, inter-segment holes and trailing reservation bytes before
+        // copying initialized payload. Unpublished owner survives any refusal.
+        output.clear().map_err(WriteError::Destination)?;
         for segment in &self.image.segments
         {
-            let start = segment.offset as usize;
-            output[start..start + segment.length].copy_from_slice(&self.bytes[segment.data_offset
-                                                                              ..segment.data_offset
-                                                                                + segment.length]);
+            output.write(segment.offset as usize,
+                         &self.bytes[segment.data_offset..segment.data_offset + segment.length])
+                  .map_err(WriteError::Destination)?;
         }
         for patch in &self.patches
         {
             let at = (patch.address - self.destination) as usize;
             let value = patch.value.to_le_bytes();
-            output[at..at + usize::from(patch.width)].copy_from_slice(&value[..usize::from(patch.width)]);
+            output.write(at, &value[..usize::from(patch.width)])
+                  .map_err(WriteError::Destination)?;
         }
         Ok(())
     }
@@ -232,6 +253,152 @@ mod tests
             assert!(plan.write(&mut wrong).is_err());
             assert!(wrong.iter().all(|b| *b == 0xa5));
         }
+    }
+    #[derive(Debug, PartialEq, Eq)]
+    enum StorageRefusal
+    {
+        MissingPage(usize),
+        Write(usize),
+        Range
+    }
+    impl core::fmt::Display for StorageRefusal
+    {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+        {
+            match self
+            {
+                Self::MissingPage(page) => write!(f, "image storage page {page} is unavailable"),
+                Self::Write(call) => write!(f, "image storage refused write operation {call}"),
+                Self::Range => f.write_str("image storage write is outside its reservation")
+            }
+        }
+    }
+    impl core::error::Error for StorageRefusal
+    {
+    }
+    struct Pages
+    {
+        pages:         Vec<Option<alloc::boxed::Box<[u8; 4096]>>>,
+        length:        usize,
+        clears:        usize,
+        writes:        usize,
+        fail_on_write: Option<usize>
+    }
+    impl Pages
+    {
+        fn new(length: usize) -> Self
+        {
+            Self { pages: (0..length.div_ceil(4096)).map(|_| {
+                                                        Some(alloc::boxed::Box::new([0xa5; 4096]))
+                                                    })
+                                                    .collect(),
+                   length,
+                   clears: 0,
+                   writes: 0,
+                   fail_on_write: None }
+        }
+
+        fn bytes(&self) -> Vec<u8>
+        {
+            self.pages
+                .iter()
+                .flat_map(|page| page.as_ref().unwrap().iter().copied())
+                .take(self.length)
+                .collect()
+        }
+    }
+    impl Destination for Pages
+    {
+        type Error = StorageRefusal;
+
+        fn length(&self) -> usize
+        {
+            self.length
+        }
+
+        fn clear(&mut self) -> core::result::Result<(), StorageRefusal>
+        {
+            self.clears += 1;
+            for (index, page) in self.pages.iter_mut().enumerate()
+            {
+                page.as_mut().ok_or(StorageRefusal::MissingPage(index))?.fill(0);
+            }
+            Ok(())
+        }
+
+        fn write(&mut self, offset: usize, bytes: &[u8])
+                 -> core::result::Result<(), StorageRefusal>
+        {
+            if offset.checked_add(bytes.len()).is_none_or(|end| end > self.length)
+            {
+                return Err(StorageRefusal::Range);
+            }
+            self.writes += 1;
+            if self.fail_on_write == Some(self.writes)
+            {
+                return Err(StorageRefusal::Write(self.writes));
+            }
+            let mut done = 0;
+            while done < bytes.len()
+            {
+                let index = (offset + done) / 4096;
+                let within = (offset + done) % 4096;
+                let count = (4096 - within).min(bytes.len() - done);
+                let page = self.pages
+                               .get_mut(index)
+                               .and_then(Option::as_mut)
+                               .ok_or(StorageRefusal::MissingPage(index))?;
+                page[within..within + count].copy_from_slice(&bytes[done..done + count]);
+                done += count;
+            }
+            Ok(())
+        }
+    }
+    #[test]
+    fn page_backing_preserves_execution_relocations_zeros_and_typed_write_refusals()
+    {
+        use alloc::string::ToString;
+        let mut descriptor = descriptor();
+        descriptor.load_limit = descriptor.load_base + 16384;
+        let code = vec![0x82; 6000];
+        let pointer = (descriptor.load_base + 0x800).to_le_bytes();
+        let image =
+            encode(&descriptor, [(0, 5, code.as_slice()), (8192, 6, pointer.as_slice())]).unwrap();
+        let mut relocations = b"RLC1".to_vec();
+        relocations.extend_from_slice(&1u32.to_le_bytes());
+        relocations.extend_from_slice(&8192u32.to_le_bytes());
+        relocations.extend_from_slice(&[8, 0, 0, 0]);
+        let plan = LoadPlan::new(&image, &descriptor, Some(&relocations), 0x400000).unwrap();
+        let mut expected = vec![0xa5; 16384];
+        plan.write(&mut expected).unwrap();
+        assert_eq!(&expected[..6000], code.as_slice());
+        assert_eq!(&expected[8192..8200], &(0x400800u64).to_le_bytes());
+        assert!(expected[6000..8192].iter().chain(&expected[8200..]).all(|b| *b == 0));
+        let mut output = Pages::new(16384);
+        plan.write_to(&mut output).unwrap();
+        assert_eq!(output.bytes(), expected);
+        assert_eq!(plan.entry(), 0x400000);
+        let mut short = Pages::new(16383);
+        assert!(matches!(plan.write_to(&mut short), Err(WriteError::Format(Error::Malformed(_)))));
+        assert_eq!((short.clears, short.writes), (0, 0));
+        assert!(short.bytes().iter().all(|b| *b == 0xa5));
+        let mut missing = Pages::new(16384);
+        missing.pages[2] = None;
+        let error = plan.write_to(&mut missing).unwrap_err();
+        assert!(matches!(error, WriteError::Destination(StorageRefusal::MissingPage(2))));
+        assert!(error.to_string().contains("page 2 is unavailable"));
+        assert_eq!(missing.writes, 0, "payload copied after a failed clear");
+        let mut retry = Pages::new(16384);
+        retry.fail_on_write = Some(3); // fail specifically on relocation publication
+        let error = plan.write_to(&mut retry).unwrap_err();
+        assert!(matches!(error, WriteError::Destination(StorageRefusal::Write(3))));
+        assert!(error.to_string().contains("write operation 3"));
+        assert_eq!(core::error::Error::source(&error).unwrap().to_string(),
+                   "image storage refused write operation 3");
+        retry.fail_on_write = None;
+        retry.writes = 0;
+        plan.write_to(&mut retry).unwrap();
+        assert_eq!(retry.bytes(), expected, "retained page preparation could not retry");
     }
     #[test]
     fn malformed_streams_and_relocations_never_produce_a_load_plan()

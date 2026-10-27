@@ -3,7 +3,9 @@
 //! never dereferences an address, activates a root or acknowledges reclamation.
 use core::fmt;
 
-use mac_kernel_model::pages::{PageOwnership, Permissions, PhysicalAddress};
+use mac_kernel_model::{pages::{MappingPlan, PageLayout, PageOwnership, Permissions,
+                               PhysicalAddress, VirtualAddress},
+                       policy::{AddressRange, ModelError}};
 
 use crate::{Decoded, Entry, Error, LeafSize, Sv39};
 
@@ -26,6 +28,18 @@ pub enum MapError<E>
 {
     Encoding(Error),
     Storage(E),
+    Span
+    {
+        virtual_address: u64,
+        physical:        u64,
+        bytes:           u64,
+        cause:           ModelError
+    },
+    NonCanonicalSpan
+    {
+        virtual_address: u64,
+        bytes:           u64
+    },
     GlobalAncestor
     {
         virtual_address: u64,
@@ -51,7 +65,23 @@ impl<E: fmt::Display> fmt::Display for MapError<E>
         match self
         {
             Self::Encoding(error) => error.fmt(f),
+            Self::Span { virtual_address,
+                         physical,
+                         bytes,
+                         cause } =>
+            {
+                write!(f,
+                       "mapping VA {virtual_address:#x} to PA {physical:#x} for {bytes:#x} bytes \
+                        refused: {cause}")
+            }
             Self::Storage(error) => write!(f, "page-table storage refused mapping: {error}"),
+            Self::NonCanonicalSpan { virtual_address,
+                                     bytes } =>
+            {
+                write!(f,
+                       "mapping VA {virtual_address:#x}+{bytes:#x} crosses the Sv39 canonical \
+                        hole or lies outside a canonical half")
+            }
             Self::GlobalAncestor { virtual_address,
                                    level } =>
             {
@@ -98,6 +128,61 @@ impl<T: Tables> Mapper<T>
     pub fn root(&self) -> PhysicalAddress
     {
         self.root
+    }
+
+    /// Transfer the actual retained root and storage into the architecture's
+    /// owned address space. This neither activates nor duplicates ownership.
+    pub fn into_tables(self) -> (PhysicalAddress, T)
+    {
+        (self.root, self.tables)
+    }
+
+    /// Populate an extent using the largest aligned leaves. Invalid extents
+    /// refuse before the first table access; later storage/collision refusal
+    /// keeps the same owned partial preparation, never discarding its frames.
+    /// Return (leaves visited, entries changed); a repeated range writes none.
+    pub fn map_range(&mut self, virtual_address: u64, physical: PhysicalAddress, bytes: u64,
+                     permissions: Permissions, ownership: PageOwnership)
+                     -> Result<(u64, u64), MapError<T::Error>>
+    {
+        if bytes == 0
+        {
+            return Ok((0, 0));
+        }
+        let span = |cause| {
+            MapError::Span { virtual_address,
+                             physical: physical.0,
+                             bytes,
+                             cause }
+        };
+        let end = virtual_address.checked_add(bytes).ok_or_else(|| span(ModelError::Overflow))?;
+        let range = AddressRange::new(virtual_address, end).map_err(span)?;
+        if !Sv39::canonical_range(range)
+        {
+            return Err(MapError::NonCanonicalSpan { virtual_address,
+                                                    bytes });
+        }
+        let plan = MappingPlan::new(physical,
+                                    VirtualAddress(virtual_address),
+                                    bytes,
+                                    Sv39::geometry(),
+                                    Sv39::LEAF_BYTES).map_err(span)?;
+        let mut leaves = 0;
+        let mut changed = 0;
+        for mapping in plan
+        {
+            let size = match mapping.bytes
+            {
+                0x40000000 => LeafSize::Huge,
+                0x200000 => LeafSize::Large,
+                0x1000 => LeafSize::Page,
+                _ => return Err(span(ModelError::InvalidGeometry))
+            };
+            changed += u64::from(self.map(mapping.virtual_address.0, mapping.physical, size,
+                                          permissions, ownership)?);
+            leaves += 1;
+        }
+        Ok((leaves, changed))
     }
 
     /// Return whether a leaf changed. Identical mappings write nothing; a
@@ -285,6 +370,51 @@ mod tests
                       execute: false,
                       access:  Access::Supervisor,
                       global:  true }
+    }
+    #[test]
+    fn extent_mapping_uses_large_leaves_and_preflights_invalid_spans()
+    {
+        let mut mapper = Mapper::new(Memory::new(5)).unwrap();
+        let base = 0xffffffe000000000;
+        assert_eq!(mapper.map_range(base + 0x3ffff000,
+                                    PhysicalAddress(0x3ffff000),
+                                    (1 << 30) + 8192,
+                                    permissions(),
+                                    PageOwnership::Manual)
+                         .unwrap(),
+                   (3, 3),
+                   "boundary pages should surround one huge leaf");
+        assert_eq!(mapper.tables.frames.len(), 5);
+        let writes = mapper.tables.writes;
+        assert_eq!(mapper.map_range(base + 0x3ffff000,
+                                    PhysicalAddress(0x3ffff000),
+                                    (1 << 30) + 8192,
+                                    permissions(),
+                                    PageOwnership::Manual)
+                         .unwrap(),
+                   (3, 0));
+        assert_eq!(mapper.tables.writes, writes);
+        let loads = mapper.tables.loads.get();
+        assert!(matches!(mapper.map_range(0x400000,
+                                          PhysicalAddress(0),
+                                          0xffffffc000001000 - 0x400000,
+                                          permissions(),
+                                          PageOwnership::Manual),
+                         Err(MapError::NonCanonicalSpan { .. })));
+        let error =
+            mapper.map_range(base, PhysicalAddress(0), 4097, permissions(), PageOwnership::Manual)
+                  .unwrap_err();
+        assert!(error.to_string().contains("VA 0xffffffe000000000 to PA 0x0 for 0x1001 bytes"));
+        assert_eq!(mapper.tables.loads.get(), loads, "invalid range touched a table");
+        assert_eq!(mapper.tables.writes, writes);
+        assert_eq!(mapper.map_range(base,
+                                    PhysicalAddress(0),
+                                    0,
+                                    permissions(),
+                                    PageOwnership::Manual)
+                         .unwrap(),
+                   (0, 0));
+        assert_eq!(mapper.tables.loads.get(), loads, "empty range did unnecessary work");
     }
     #[test]
     fn eight_gib_physmap_uses_eight_leaves_and_no_per_base_page_construction()

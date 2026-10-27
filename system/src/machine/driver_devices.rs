@@ -10,10 +10,12 @@ use crate::{drivers::{self, ResidentCall, ResidentCompletion,
                       devices::{Bus, Devices}},
             state::TryState};
 struct PlatformBus;
-pub(crate) const DEVICE_SLOTS: usize = 8 + super::power::platform::PLATFORM_MMIO_DEVICES.len();
+const VIRTIO_SLOTS: u32 = super::memory::VIRTIO_MMIO_SLOTS as u32;
+pub(crate) const DEVICE_SLOTS: usize =
+    VIRTIO_SLOTS as usize + super::power::platform::PLATFORM_MMIO_DEVICES.len();
 fn board_device(ordinal: u32) -> Result<Description, Status>
 {
-    let index = ordinal.checked_sub(8).ok_or(NOT_FOUND)? as usize;
+    let index = ordinal.checked_sub(VIRTIO_SLOTS).ok_or(NOT_FOUND)? as usize;
     let &(bus, key, registers, register_bytes, interrupt, flags) =
         super::power::platform::PLATFORM_MMIO_DEVICES.get(index).ok_or(NOT_FOUND)?;
     Ok(Description { handle: 0,
@@ -26,11 +28,12 @@ fn board_device(ordinal: u32) -> Result<Description, Status>
 }
 fn base(ordinal: u32) -> Result<usize, Status>
 {
-    if ordinal >= 8
+    if ordinal >= VIRTIO_SLOTS
     {
         return Err(NOT_FOUND);
     }
-    Ok(0x1000_1000 + ordinal as usize * 4096)
+    Ok((super::memory::VIRTIO_MMIO_BASE + u64::from(ordinal) * super::memory::VIRTIO_MMIO_STRIDE)
+       as usize)
 }
 fn read(base: usize, offset: usize) -> u32
 {
@@ -41,16 +44,12 @@ impl Bus for PlatformBus
 {
     fn dma_address(&self, cpu_address: u64, bytes: u64) -> Result<u64, Status>
     {
-        // Current flat M-mode module reservations are pinned physical RAM.
-        // The supervisor handoff replaces this explicit architecture binding;
-        // common claim/map policy never assumes CPU and bus addresses coincide.
-        cpu_address.checked_add(bytes).ok_or(BAD_ARGUMENT)?;
-        Ok(cpu_address)
+        super::paging::bus_address(cpu_address, bytes).ok_or(mac_abi::ACCESS_DENIED)
     }
 
     fn probe(&mut self, ordinal: u32) -> Result<Description, Status>
     {
-        if ordinal >= 8
+        if ordinal >= VIRTIO_SLOTS
         {
             return board_device(ordinal);
         }
@@ -75,13 +74,13 @@ impl Bus for PlatformBus
                          key,
                          registers: address as u64,
                          register_bytes: 4096,
-                         interrupt: ordinal + 1,
+                         interrupt: ordinal + super::memory::VIRTIO_INTERRUPT_BASE as u32,
                          flags: wire::COHERENT_DMA | wire::MMIO | reserved })
     }
 
     fn request_reset(&mut self, ordinal: u32) -> Result<(), Status>
     {
-        if ordinal >= 8
+        if ordinal >= VIRTIO_SLOTS
         {
             return if board_device(ordinal)?.flags & wire::COHERENT_DMA == 0
             {
@@ -102,7 +101,7 @@ impl Bus for PlatformBus
 
     fn stopped(&mut self, ordinal: u32) -> Result<bool, Status>
     {
-        if ordinal >= 8
+        if ordinal >= VIRTIO_SLOTS
         {
             return if board_device(ordinal)?.flags & wire::COHERENT_DMA == 0
             {

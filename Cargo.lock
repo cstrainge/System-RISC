@@ -20,6 +20,7 @@ dependencies = [
  "mac-abi",
  "mac-build",
  "mac-formats",
+ "mac-kernel-model",
  "mac-toolbox",
  "mac-traps",
  "toolbox-quickdraw",
@@ -63,6 +64,8 @@ dependencies = [
  "mac-filesystem",
  "mac-formats",
  "mac-hfs",
+ "mac-kernel-model",
+ "mac-riscv-pages",
 ]
 
 [[package]]
@@ -367,7 +370,6 @@ dependencies = [
  "mac-formats",
  "mac-kernel-model",
  "mac-module",
- "mac-object-table",
  "mac-riscv-pages",
  "serde",
  "serde_json",
@@ -526,6 +528,7 @@ dependencies = [
 name = "mac-riscv-pages"
 version = "0.1.0"
 dependencies = [
+ "mac-abi",
  "mac-kernel-model",
 ]
 
@@ -559,6 +562,7 @@ dependencies = [
  "mac-module",
  "mac-object-table",
  "mac-power-interface",
+ "mac-riscv-pages",
  "mac-toolbox",
  "mac-traps",
  "minipng",
@@ -1341,6 +1345,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "bootrom",
  "getrandom",
  "hfs-b",
  "mac-abi",

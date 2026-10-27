@@ -8,11 +8,11 @@ pub(super) mod platform
 pub(crate) fn fatal_shutdown() -> !
 {
     serial!("SYSTEM_SHUTDOWN: fatal privileged fault; recovery is not proven");
-    // SAFETY: the current platform is QEMU virt in M mode. Mask local
+    // SAFETY: the current platform is QEMU virt in S mode. Mask local
     // interrupts and request its mapped finisher's guest-panic shutdown/code 1.
     // No heap, driver registry or borrowed desktop service is involved.
     unsafe {
-        core::arch::asm!("csrci mstatus, 8", options(nostack));
+        core::arch::asm!("csrci sstatus, 2", options(nostack));
         core::ptr::write_volatile(platform::FATAL_FINISHER_ADDRESS as *mut u32,
                                   platform::FATAL_FINISHER_FAILURE);
         core::arch::asm!("fence iorw, iorw", options(nostack));

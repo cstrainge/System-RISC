@@ -1,7 +1,9 @@
 OUTPUT_ARCH(riscv)
-ENTRY(_start)
-MEMORY { ram (rwx) : ORIGIN = 0x80000000, LENGTH = 2M }
+ENTRY(_reset)
+MEMORY { reset (rx) : ORIGIN = __platform_RAM_BASE, LENGTH = __platform_PAGE_BYTES
+         ram (rwx) : ORIGIN = __platform_APPLICATION_RELOCATION_BASE, LENGTH = 2M }
 SECTIONS {
+    .reset : { KEEP(*(.text.probe_reset)) } > reset
     . = ORIGIN(ram);
     .text : { KEEP(*(.text.entry)) *(.text .text.*) } > ram
     .rodata : ALIGN(16) { *(.rodata .rodata.*) } > ram

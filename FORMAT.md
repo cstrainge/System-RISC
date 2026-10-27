@@ -270,7 +270,8 @@ Finder opens its startup-volume catalog window and runs its event loop when grap
 it logs and returns zero for the headless ABI harness. There is one foreground
 application; independently scheduled application OS threads enter services with
 trusted app/thread identities and virtualized legacy globals. All code currently
-runs in M-mode with shared memory and without memory isolation. Payload pointers must obey their
+runs in S-mode with Sv39 active but trusted shared mappings and without
+user-process isolation. Payload pointers must obey their
 trusted native ABI contracts; size/alignment checks do not establish memory
 protection. Public request/event structures use their declared `repr(C)` layout,
 without an implicit header.
@@ -320,7 +321,7 @@ definition resources through its resident filesystem service. Normal disk-boot c
 for `DESKTOP_READY`. Rebuild the complete unreleased system on format changes.
 See [CODE-RESOURCES.md](CODE-RESOURCES.md) for executable resource families.
 
-The current BootInfo is120bytes on RV64; SystemServices remains24bytes. BootInfo
+The current BootInfo is 144 bytes on RV64; SystemServices remains24bytes. BootInfo
 contains RAM/log information, firmware disk-info/read/write/flush callbacks,
 startup disk/partition identity and flags. Device ordinals remain stable while
 System runs; NOT_FOUND ends enumeration. Each read/write transfers exactly512
@@ -347,12 +348,37 @@ resident constants and boot reservation. They are initialized before use and do
 not consume the System image's BSS. Later loader
 allocations must join the same account when the page layer becomes live.
 
+At byte120 is the 16-byte display-scratch extent. Byte136 holds a physical
+pointer to a 72-byte execution record: hart, root physical address and hardware
+ASID mask (three u64s), physical and virtual System extents (two16-byte ranges),
+then a physical pointer/count pair for mapping records. Each 32-byte mapping
+record is `{ physical: range, virtual_base: u64, flags: u32, reserved: u32 }`.
+Flags are READ=1, WRITE=2, EXECUTE=4, FIRMWARE_ONLY=8; reserved is zero. These are
+bootstrap permissions, distinct from the native segment's ELF-style flag bits.
+System records preserve physical/virtual offsets, reject writable executable
+pages and overlap, and include writable non-executable zero-only tail pages.
+Initialized segments and BSS start on separate pages. Opaque firmware extents
+are supervisor-only identity mappings in the firmware root, absent from the
+resident root. Their backing and every handoff array stay reserved until reset.
+
+Firmware initializes System's reservation at its physical storage address while
+the code is linked to the checked high virtual range. It prepares an owned
+supervisor-only root and checks actual CPU privilege, delegation, timer and
+translation capabilities before MRET. Only scalar address encodings cross that
+boundary; the resident creates fresh checked mapped views before pool, heap or
+thread owners exist. System subsequently installs real PageBox-owned roots,
+not model-only mapping plans. Firmware callbacks run under a masked, hart-local
+RAII root scope; all resident addresses retain their mappings. The ABI probe
+uses the same handoff, page-record builder and architecture admission source.
+No native M-mode fallback or earlier execution-record decoder exists.
+
 `platforms/<name>.json` defines physical placement policy. mac-build rejects
 overlap, misalignment, arithmetic overflow and ranges outside minimum RAM before
 emitting linker symbols or Rust constants. The ROM link script, flash packager,
 module allocator, relocation arena and current System heap consume that checked
-record. Actual RAM size remains a boot discovery. Paging, virtual placement and
-page-backed heaps are separate staged work; these records do not enable an MMU.
+record. Actual RAM size remains a boot discovery. The same checked record supplies the System virtual execution range, physmap
+window and guarded System-stack window. Page-backed heaps and per-process
+protection remain staged work.
 
 Native catalog and volume names have256-byte UTF8 buffers, enough for255-byte
 NFC names plus a spare byte. Catalog dates are unsigned64-bit microseconds since

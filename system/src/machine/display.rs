@@ -1,6 +1,5 @@
 //! QEMU virt display and clock; System owns the framebuffers.
 use core::{arch::asm,
-           ptr::read_volatile,
            sync::atomic::{AtomicBool, Ordering}};
 
 /// Display size in pixels, from the build-time platform record
@@ -11,7 +10,7 @@ use core::{arch::asm,
 /// runtime switching also requires dynamic framebuffers, caches and scratch,
 /// not just this value.
 pub(crate) use crate::display::{HEIGHT, PIXELS, WIDTH};
-const MTIME: usize = 0x0200bff8;
+
 static BACKBUFFER_INITIALIZED: AtomicBool = AtomicBool::new(false);
 // Window tracking never paints the menu bar's first 21 rows.
 const TRACKING_PIXELS: usize = WIDTH * (HEIGHT - 21);
@@ -24,6 +23,23 @@ const _: () =
 const _: () = assert!(super::memory::DISPLAY_BACKBUFFER_BASE + (PIXELS * size_of::<u32>()) as u64
                       <= super::memory::DISPLAY_SCRATCH_BASE
                          + super::memory::DISPLAY_SCRATCH_BYTES);
+
+// The checked platform window covers minimum RAM; native admission proves all
+// discovered RAM is mapped before any framebuffer view is created. These are
+// first mapped views, not rebased physical references or fallible paint lookups.
+const FRONT_CPU: usize = (super::memory::VM_PHYSMAP_START
+                          + (super::memory::DISPLAY_FRONTBUFFER_BASE
+                             - super::memory::VM_PHYSMAP_PHYSICAL_BASE))
+                         as usize;
+const BACK_CPU: usize = (super::memory::VM_PHYSMAP_START
+                         + (super::memory::DISPLAY_BACKBUFFER_BASE
+                            - super::memory::VM_PHYSMAP_PHYSICAL_BASE))
+                        as usize;
+const TRACKING_CPU: usize = (super::memory::VM_PHYSMAP_START
+                             + (super::memory::DISPLAY_TRACKING_BASE
+                                - super::memory::VM_PHYSMAP_PHYSICAL_BASE))
+                            as usize;
+
 static TRACKING_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static TRACKING_AVAILABLE: AtomicBool = AtomicBool::new(false);
 static TRACKING_BORROWED: AtomicBool = AtomicBool::new(false);
@@ -51,7 +67,7 @@ pub fn with_tracking_mask<R>(call: impl FnOnce(Option<&mut [u32]>) -> R) -> R
         }
     }
     let _borrow = Borrow;
-    let pointer = super::memory::DISPLAY_TRACKING_BASE as *mut u32;
+    let pointer = TRACKING_CPU as *mut u32;
     // Only this serialized device boundary accesses the dedicated RAM range.
     // Initialize bytes before publishing a reference, once per boot; subsequent
     // frames reuse the same pinned storage without allocation or clearing here.
@@ -69,7 +85,7 @@ pub fn with_tracking_mask<R>(call: impl FnOnce(Option<&mut [u32]>) -> R) -> R
 
 pub fn back_buffer() -> &'static mut [u32]
 {
-    let pointer = super::memory::DISPLAY_BACKBUFFER_BASE as *mut u32;
+    let pointer = BACK_CPU as *mut u32;
     // Bootstrap initializes this before applications start. Afterwards only the
     // interrupt-masked, serialized compositor borrows the dedicated reservation.
     // It is disjoint from the frontbuffer and guarded tracking scratch.
@@ -87,15 +103,17 @@ pub fn setup_framebuffer() -> bool
     let address = super::memory::DISPLAY_FRONTBUFFER_BASE;
     // The checked platform frontbuffer reservation is pinned for System's lifetime; bootstrap owns
     // exclusive fw_cfg access, before any application or secondary hart starts.
-    // Flat M-mode bootstrap currently maps System's permanent DMA scratch at
-    // its physical address. This explicit binding changes with the supervisor
-    // handoff; the shared device code never converts a CPU pointer to a bus PA.
+    // The binding translates the permanent high-linked System scratch to bus
+    // PA; shared device code never treats a CPU pointer as a physical address.
     let result = unsafe {
         mac_boot_screen::ramfb::configure(super::memory::FW_CFG_BASE as usize,
                                           address,
                                           WIDTH,
                                           HEIGHT,
-                                          |pointer, _| Some(pointer as u64))
+                                          |pointer, bytes| {
+                                              super::paging::bus_address(pointer as u64,
+                                                                         bytes as u64)
+                                          })
     };
     if let Err(error) = &result
     {
@@ -116,7 +134,13 @@ pub fn setup_framebuffer() -> bool
 
 pub fn ticks() -> u64
 {
-    unsafe { read_volatile(MTIME as *const u64) }
+    {
+        let value;
+        unsafe {
+            asm!("rdtime {}",out(reg)value,options(nomem,nostack));
+        }
+        value
+    }
 }
 pub fn present(back: &[u32])
 {
@@ -132,9 +156,7 @@ pub(crate) fn present_rects(back: &[u32], rects: impl IntoIterator<Item = mac_ab
     use crate::toolbox::quickdraw::presentation::{PresentEvent, present_frame};
     // The serialized compositor owns both buffers. This exclusive frontbuffer
     // slice cannot escape; the scene stays read-only for the entire transition.
-    let front = unsafe {
-        core::slice::from_raw_parts_mut(super::memory::DISPLAY_FRONTBUFFER_BASE as *mut u32, PIXELS)
-    };
+    let front = unsafe { core::slice::from_raw_parts_mut(FRONT_CPU as *mut u32, PIXELS) };
     let mut started = 0;
     let owner = crate::context::current_thread_context().identity().app.0;
     present_frame(back, front, WIDTH, HEIGHT, rects, overlays, |event| {

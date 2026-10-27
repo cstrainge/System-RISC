@@ -185,12 +185,36 @@ impl Platform
 
     pub fn virtual_memory(&self) -> Result<virtual_memory::Checked>
     {
-        self.virtual_memory.check(&self.rust_target, self.memory()?.page_bytes)
+        self.virtual_memory.check(&self.rust_target, &self.memory()?)
     }
 
     pub fn memory(&self) -> Result<memory::Checked>
     {
         self.memory.check()
+    }
+
+    /// Link/execute policy differs from physical System storage. The checked
+    /// virtual record derives the System extent from its physical reservation.
+    pub fn validate_image(&self, role: mac_formats::native::Role, base: u64, limit: u64)
+                          -> Result<()>
+    {
+        if role == mac_formats::native::Role::System
+        {
+            let expected = self.virtual_memory()?.system_image_range();
+            if base != expected.start || limit != expected.end
+            {
+                return Err(error(format!("native System execution range {base:#x}..{limit:#x} \
+                                          must match selected platform {:#x}..{:#x}; use the \
+                                          platform image symbols and rebuild ROM/System \
+                                          together",
+                                         expected.start, expected.end)));
+            }
+            Ok(())
+        }
+        else
+        {
+            self.memory()?.validate_image_storage(role, base, limit)
+        }
     }
 }
 pub fn memory_artifacts() -> Result<(String, String)>

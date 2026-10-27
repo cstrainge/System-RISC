@@ -61,7 +61,7 @@ pub(crate) struct TrapFrame
 // fixed frame size are generated above from this one Rust representation.
 const _: () = assert!(core::mem::offset_of!(TrapFrame, pc) == 240
                       && core::mem::offset_of!(TrapFrame, status) == 248);
-pub(crate) const INITIAL_STATUS: usize = 0x1880 | 0x6600;
+pub(crate) const INITIAL_STATUS: usize = 0x120 | 0x6600;
 /// Validate the selected sizes against this CPU before allocating pools or
 /// starting services. This is policy admission, not System-stack activation.
 pub(crate) fn validate_stack_configuration(
@@ -110,7 +110,7 @@ pub(crate) fn validate_stack_configuration(
 pub(crate) fn install()
 {
     unsafe {
-        asm!("csrw mtvec, {}",in(reg)__system_trap_vector as *const() as usize);
+        asm!("csrw stvec, {}",in(reg)__system_trap_vector as *const() as usize);
     }
     serial!("TRAPS_READY: resident ecall dispatcher ABI={}", ABI_VERSION);
     crate::trace::initialize();
@@ -119,14 +119,30 @@ pub(crate) fn install()
 #[unsafe(no_mangle)]
 extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
 {
+    // SAFETY: traps.S saved the complete frame on owned storage and hardware
+    // cleared SIE before entering this sole native trap boundary.
+    match unsafe { super::paging::with_kernel(|| dispatch_frame(frame)) }
+    {
+        Ok(frame) => frame,
+        Err(error) =>
+        {
+            super::paging::report_refusal(&error);
+            unsafe {
+                asm!("ebreak", options(noreturn));
+            }
+        }
+    }
+}
+fn dispatch_frame(frame: &mut TrapFrame) -> *mut TrapFrame
+{
     #[cfg(feature = "event-trace")]
     hart::observe_entry(frame as *mut TrapFrame as usize);
-    if frame.cause == (1usize << 63) | 7
+    if frame.cause == (1usize << 63) | 5
     {
         return super::scheduler::schedule(frame);
     }
 
-    if frame.cause != 11
+    if frame.cause != 9
     {
         serial!("SYSTEM_TRAP: cause={} pc=0x{:x} value=0x{:x}", frame.cause, frame.pc, frame.value);
         if let Some((kind, id)) = crate::context::current_thread_context().definitions.current()
@@ -257,7 +273,7 @@ unsafe fn request<'a, T>(pointer: *mut (), size: usize) -> Option<&'a mut T>
     }
 }
 
-/// Native modules share one M-mode address space. Size/alignment are checked here;
+/// Native modules still share trusted supervisor mappings. Size/alignment are checked here;
 /// valid live pointees remain the calling module's ABI contract, not an MMU guarantee.
 unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
 {
@@ -676,9 +692,10 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
     }
 }
 
-pub(crate) fn prepare_entry() -> Result<PreparedEntry, EntryError>
+pub(crate) fn prepare_entry(stack: &'static super::pages::Stack)
+                            -> Result<PreparedEntry, EntryError>
 {
-    hart::prepare()
+    hart::prepare(stack)
 }
 pub(crate) fn publish_cpu(state: &SavedState)
 {
@@ -687,14 +704,6 @@ pub(crate) fn publish_cpu(state: &SavedState)
 pub(super) fn entry_lost(reason: &str) -> !
 {
     serial!("SYSTEM_ENTRY_LOST: {reason}");
-    crate::machine::power::fatal_shutdown()
-}
-#[unsafe(no_mangle)]
-extern "C" fn __system_entry_failed(cause: usize, pc: usize, value: usize, interrupted_sp: usize)
-                                    -> !
-{
-    serial!("SYSTEM_ENTRY_FAULT: cause={cause} pc={pc:#x} value={value:#x} \
-             interrupted_sp={interrupted_sp:#x}; privileged recovery is not proven");
     crate::machine::power::fatal_shutdown()
 }
 

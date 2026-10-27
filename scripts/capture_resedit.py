@@ -29,7 +29,7 @@ def capture(output):
         if not trace:return None
         address,size=map(int,trace.groups());path=output/(label+'.bin')
         vm.qmp('stop',endpoint=endpoint)
-        try:vm.qmp('pmemsave',{'val':address,'size':size,'filename':str(path)},endpoint)
+        try:vm.qmp('memsave',{'cpu-index': 0, 'val':address,'size':size,'filename':str(path)},endpoint)
         finally:vm.qmp('cont',endpoint=endpoint)
         return decode(path)
     def click(x,y):

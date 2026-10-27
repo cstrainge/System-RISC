@@ -188,7 +188,10 @@ pub struct BootInfo
     pub reservation_count:       usize,
     /// Graphical bootstrap lends this reserved RAM only after System has
     /// successfully installed its own framebuffer. Non-graphical boots use zero.
-    pub display_scratch:         BootMemoryRange
+    pub display_scratch:         BootMemoryRange,
+    /// Physical encoding of a data-only native supervisor handoff record.
+    /// Native entry requires this record; it is never an optional old-mode path.
+    pub execution:               *const boot::execution::Execution
 }
 
 /// Resident in System memory for the entire application lifetime.
@@ -310,7 +313,8 @@ mod tests
         assert_eq!(core::mem::size_of::<Header>(), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, ram_base), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, log), 24);
-        assert_eq!(core::mem::size_of::<BootInfo>(), 136);
+        assert_eq!(core::mem::size_of::<BootInfo>(), 144);
+        assert_eq!(core::mem::offset_of!(BootInfo, execution), 136);
         assert_eq!(core::mem::offset_of!(BootInfo, display_scratch), 120);
         assert_eq!(core::mem::offset_of!(BootInfo, storage_context), 32);
         assert_eq!(core::mem::offset_of!(BootInfo, startup_partition_start), 80);

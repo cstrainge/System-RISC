@@ -3,10 +3,10 @@
 .global __system_trap_vector
 __system_trap_vector:
 # Fixed header: {frame_bytes} bytes. No interrupted-stack access occurs.
-csrrw t0,mscratch,t0
+csrrw t0,sscratch,t0
 sd t1,{ctl_tmp1}(t0)
-csrr t1,mscratch
-csrw mscratch,t0
+csrr t1,sscratch
+csrw sscratch,t0
 sd t1,{ctl_tmp0}(t0)
 sd t2,{ctl_tmp2}(t0)
 sd sp,{ctl_sp}(t0)
@@ -74,14 +74,14 @@ sd t3, 208(t2)
 sd t4, 216(t2)
 sd t5, 224(t2)
 sd t6, 232(t2)
-csrr t0, mepc
+csrr t0, sepc
 sd t0, 240(t2)
-csrr t0, mstatus
+csrr t0, sstatus
 sd t0, 248(t2)
-csrr t0, mcause
+csrr t0, scause
 sd t0, 256(t2)
 
-csrr t0, mtval
+csrr t0, stval
 sd t0, 264(t2)
 # Preserve complete extension state before Rust can use it. Whole-register
 # stores ignore vl/vtype, but vstart must first be saved and reset.
@@ -142,13 +142,13 @@ vs8r.v v16,(t1)
 add t1,t1,t0
 vs8r.v v24,(t1)
 mv a0,t2
-csrr t0,mscratch
+csrr t0,sscratch
 sd zero,{ctl_entering}(t0)
 call __system_trap_dispatch
 mv sp, a0
 .global __system_restore_frame
 __system_restore_frame:
-csrr t0,mscratch
+csrr t0,sscratch
 li t1,1
 sd t1,{ctl_entering}(t0)
 # sp points at the selected fixed header, whose vector backing is below it.
@@ -205,10 +205,10 @@ fld f31,{fp}+248(sp)
 ld t0,{fcsr}(sp)
 fscsr t0
 ld t0, 240(sp)
-csrw mepc, t0
+csrw sepc, t0
 ld t0, 248(sp)
-csrw mstatus, t0
-csrr t0,mscratch
+csrw sstatus, t0
+csrr t0,sscratch
 ld t1,{prior_depth}(sp)
 sd t1,{ctl_depth}(t0)
 ld ra, 0(sp)
@@ -239,12 +239,12 @@ ld t3, 208(sp)
 ld t4, 216(sp)
 ld t5, 224(sp)
 ld t6, 232(sp)
-csrr t0,mscratch
+csrr t0,sscratch
 sd zero,{ctl_entering}(t0)
 ld t0,24(sp)
 ld t1,32(sp)
 ld sp,{saved_sp}(sp)
-mret
+sret
 .global __system_trap_gateway
 __system_trap_gateway:
 mv a7, a0
@@ -260,18 +260,11 @@ j __system_restore_frame
 
 .balign 4
 __system_entry_fault:
-# Partial entry/restore and invalid resident SP are terminal, never an attempt
-# to resume an arbitrary privileged fault. Control storage remains mapped.
-csrr t0,mscratch
-ld sp,{ctl_top}(t0)
-ld a3,{ctl_sp}(t0)
-csrr a0,mcause
-csrr a1,mepc
-csrr a2,mtval
-li t1,0x6600
-csrs mstatus,t1
-csrw vstart,zero
-csrw vcsr,zero
-fscsr zero
-call __system_entry_failed
+# Partial privileged entry is unproven recovery. Preserve the interrupted SP
+# as a scalar and escape to the machine-owned terminal diagnostic, never Rust
+# on possibly broken supervisor stack/page state.
+csrr t0,sscratch
+ld t1,{ctl_sp}(t0)
+csrw sscratch,t1
+ebreak
 j __system_entry_fault

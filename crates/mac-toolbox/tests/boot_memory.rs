@@ -101,6 +101,42 @@ fn discovered_ram_drives_boot_info_and_small_machines_are_refused_before_heap_us
                 "{text}");
         assert!(text.contains(&format!("primary_bytes={}", mib * 1024 * 1024)),
                 "BootInfo lost discovered RAM: {text}");
+        let field = |line: &str, name: &str| -> u64 {
+            let value = line.split_whitespace().find_map(|part| part.strip_prefix(name)).unwrap();
+            if let Some(hex) = value.strip_prefix("0x")
+            {
+                u64::from_str_radix(hex, 16).unwrap()
+            }
+            else
+            {
+                value.parse().unwrap()
+            }
+        };
+        let admission = text.lines()
+                            .find(|line| line.starts_with("BOOT_TRANSLATION "))
+                            .expect("no actual ROM translation admission");
+        let activated = text.lines()
+                            .find(|line| line.starts_with("MMU_READY "))
+                            .expect("no actual resident root activation");
+        assert!(activated.contains("mode=sv39") && activated.contains("guards=2"), "{activated}");
+        let actual = field(activated, "actual=");
+        let kernel = field(activated, "kernel_root=");
+        let firmware = field(activated, "firmware_root=");
+        assert_eq!(actual >> 60, 8, "actual hardware translation mode: {activated}");
+        assert_eq!((actual & ((1u64 << 44) - 1)) << 12,
+                   kernel,
+                   "active PPN differs from owned root: {activated}");
+        for physical in [kernel, firmware]
+        {
+            assert!(physical.is_multiple_of(4096)
+                    && (0x80000000..0x80000000 + mib * 1024 * 1024).contains(&physical),
+                    "root lacks discovered physical backing: {activated}");
+            assert_ne!(physical,
+                       field(admission, "root="),
+                       "resident retained a firmware-owned boot root: {activated}");
+        }
+        assert_ne!(kernel, firmware,
+                   "firmware and System need separately owned trees: {activated}");
         for failure in ["BOOT_MEMORY_REJECTED:", "SYSTEM_PANIC:", "SYSTEM_TRAP:",
                         "SYSTEM_ALLOCATION_FAILED:", "BOOT_TRAP:"]
         {

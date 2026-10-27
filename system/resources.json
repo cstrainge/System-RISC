@@ -4,8 +4,8 @@
   "creator": "MACS",
   "role": "system",
   "abi_version": 1,
-  "load_base": "0x80200000",
-  "load_limit": "0x81000000",
+  "load_base": "@system_image_base",
+  "load_limit": "@system_image_limit",
   "description": "System RISC native operating system",
   "resources": [
     {

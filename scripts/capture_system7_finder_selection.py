@@ -54,7 +54,7 @@ def capture(output, scroll_only=False):
             if trace_match:
                 trace=output/(stage+'.trace.bin')
                 vm.qmp('stop',endpoint=endpoint)
-                try:vm.qmp('pmemsave',{'val':int(trace_match[1]),'size':int(trace_match[2]),'filename':str(trace)},endpoint)
+                try:vm.qmp('memsave',{'cpu-index': 0, 'val':int(trace_match[1]),'size':int(trace_match[2]),'filename':str(trace)},endpoint)
                 finally:vm.qmp('cont',endpoint=endpoint)
                 row['trace']=tracing.decode(trace)
             stages.append(row)
