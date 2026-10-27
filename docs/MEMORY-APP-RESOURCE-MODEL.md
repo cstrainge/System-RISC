@@ -222,6 +222,14 @@ paging gate.
 | TE2 owned threshold | Tunable 0–100%, default 40%, bounded by a tunable **~3.2 MiB default ceiling** | Ratified 2026-10-23 calibration: owns strictly below both limits; at either limit uses view. The ceiling is 3,355,443 bytes (3.2 MiB rounded down), even if control space grows |
 | Process/thread/handle counts | Grow until account or memory refusal | No fixed-eight or guessed high replacement constant |
 
+Separate module-worker defaults were selected on **2026-10-27**: a configurable
+**4 MiB worker stack** and **16 MiB kernel budget per module**. They are distinct
+module policy values, independent of process budgets and the module metadata's
+existing callback-stack declaration (at most 64 KiB). This selects defaults, not
+new minimum/maximum ranges. Worker activation still requires actual rounded
+stack/CPU/metadata backing charges, original-account receipts, native context
+admission and recovery support; policy selection alone supplies none of those.
+
 Selected values must satisfy cross-profile constraints: reserve <= fixed heap,
 Finder portion <= reserve, control space <= kernel budget, growth <= app budget,
 stack budget available before spawn. The current constructors do not select a
