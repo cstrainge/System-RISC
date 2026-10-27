@@ -12,7 +12,8 @@ pub enum MemoryError
     OutsideRam,
     InconsistentSummary,
     PlatformMismatch,
-    MissingReservation
+    MissingReservation,
+    MissingImageArena
 }
 impl core::fmt::Display for MemoryError
 {
@@ -31,6 +32,11 @@ impl core::fmt::Display for MemoryError
                             "bootstrap display-scratch handoff is not reserved; rebuild ROM and \
                              disk together"
                         }
+                        Self::MissingImageArena =>
+                        {
+                            "bootstrap flat image arena is not fully reserved; rebuild ROM and \
+                             disk together"
+                        }
                         Self::InvalidArray =>
                         {
                             "bootstrap memory array address, alignment or count is invalid"
@@ -46,6 +52,7 @@ impl core::fmt::Display for MemoryError
                     })
     }
 }
+#[derive(Clone, Copy, Debug)]
 pub struct Memory<'a>
 {
     pub ram:          &'a [BootMemoryRange],
@@ -65,16 +72,16 @@ fn end(range: BootMemoryRange, page_bytes: u64) -> Result<u64, MemoryError>
     }
     Ok(limit)
 }
-impl Memory<'_>
+impl<'a> Memory<'a>
 {
     /// Validate the graphical scratch loan against the build-selected range.
     /// This validates the whole RAM/reservation account before the loan;
     /// callers do not have a separate validation step to remember.
     pub fn display_handoff(&self, page_bytes: u64, primary: BootMemoryRange,
                            declared: BootMemoryRange, expected: BootMemoryRange)
-                           -> Result<(), MemoryError>
+                           -> Result<CheckedMemory<'a>, MemoryError>
     {
-        self.validate(page_bytes, primary)?;
+        let memory = self.checked(page_bytes, primary)?;
         if declared != expected
         {
             return Err(MemoryError::PlatformMismatch);
@@ -84,13 +91,21 @@ impl Memory<'_>
         {
             if reservation.base <= expected.base && end(*reservation, page_bytes)? >= limit
             {
-                return Ok(());
+                return Ok(memory);
             }
         }
         Err(MemoryError::MissingReservation)
     }
 
     pub fn validate(&self, page_bytes: u64, primary: BootMemoryRange) -> Result<(), MemoryError>
+    {
+        self.checked(page_bytes, primary).map(|_| ())
+    }
+
+    /// Immutable proof over the original borrowed account; no second list of
+    /// available pages is allocated or maintained by a consumer.
+    pub fn checked(&self, page_bytes: u64, primary: BootMemoryRange)
+                   -> Result<CheckedMemory<'a>, MemoryError>
     {
         let first = self.ram.first().ok_or(MemoryError::MissingRam)?;
         if *first != primary
@@ -128,9 +143,101 @@ impl Memory<'_>
                 }
             }
         }
-        Ok(())
+        Ok(CheckedMemory { memory: *self,
+                           page_bytes })
     }
 }
+
+/// Only validation constructs this view. Bank and reservation bytes stay
+/// borrowed, so the proof cannot outlive them or coexist with their mutation.
+#[derive(Clone, Copy, Debug)]
+pub struct CheckedMemory<'a>
+{
+    memory:     Memory<'a>,
+    page_bytes: u64
+}
+impl<'a> CheckedMemory<'a>
+{
+    pub fn banks(self) -> &'a [BootMemoryRange]
+    {
+        self.memory.ram
+    }
+
+    /// Whether one validated exclusion covers this whole platform reservation.
+    pub fn reserved(self, range: BootMemoryRange) -> bool
+    {
+        let Some(end) = range.base.checked_add(range.length).filter(|_| range.length != 0)
+        else
+        {
+            return false;
+        };
+        self.memory
+            .reservations
+            .iter()
+            .any(|reserved| reserved.base <= range.base && end <= reserved.base + reserved.length)
+    }
+
+    pub const fn page_bytes(self) -> u64
+    {
+        self.page_bytes
+    }
+
+    /// Enumerates free spans, never individual pages. Unsorted reservations
+    /// are accepted; each yielded extent is bounded by the next reservation.
+    pub fn free_ranges(self, bank: usize) -> Option<FreeRanges<'a>>
+    {
+        let bank = *self.memory.ram.get(bank)?;
+        Some(FreeRanges { reservations: self.memory.reservations,
+                          cursor:       bank.base,
+                          end:          bank.base + bank.length })
+    }
+}
+#[derive(Clone)]
+pub struct FreeRanges<'a>
+{
+    reservations: &'a [BootMemoryRange],
+    cursor:       u64,
+    end:          u64
+}
+impl Iterator for FreeRanges<'_>
+{
+    type Item = BootMemoryRange;
+
+    fn next(&mut self) -> Option<Self::Item>
+    {
+        while self.cursor < self.end
+        {
+            let next =
+                self.reservations
+                    .iter()
+                    .filter(|range| {
+                        range.base < self.end && range.base + range.length > self.cursor
+                    })
+                    .min_by_key(|range| range.base);
+            let start = self.cursor;
+            if let Some(reserved) = next
+            {
+                self.cursor = reserved.base + reserved.length;
+                if start < reserved.base
+                {
+                    return Some(BootMemoryRange { base:   start,
+                                                  length: reserved.base - start });
+                }
+            }
+            else
+            {
+                self.cursor = self.end;
+                return Some(BootMemoryRange { base:   start,
+                                              length: self.end - start });
+            }
+        }
+        None
+    }
+}
+impl core::iter::FusedIterator for FreeRanges<'_>
+{
+}
+
 #[cfg(test)]
 mod tests
 {

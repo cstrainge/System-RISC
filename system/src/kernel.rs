@@ -581,11 +581,25 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
         return ptr::null();
     }
     BOOT_LOG.call_once(|| info.log);
-    if let Err(error) = unsafe { crate::machine::memory::validate_boot(info) }
+    let memory = match unsafe { crate::machine::memory::validate_boot(info) }
     {
-        serial!("BOOT_MEMORY_REJECTED: {error}; rebuild the whole system and recreate stale boot \
-                 media");
-        return ptr::null();
+        Ok(memory) => memory,
+        Err(error) =>
+        {
+            serial!("BOOT_MEMORY_REJECTED: {error}; rebuild the whole system and recreate stale \
+                     boot media");
+            return ptr::null();
+        }
+    };
+    if info.flags & mac_abi::BOOT_GRAPHICAL != 0
+    {
+        // SAFETY: first single-hart entry owns validated physical RAM. The ROM
+        // account and all image arenas stay pinned for the System lifetime.
+        if let Err(error) = unsafe { crate::machine::pages::initialize(memory) }
+        {
+            serial!("BOOT_MEMORY_REJECTED: {error}");
+            return ptr::null();
+        }
     }
     unsafe {
         HEAP.initialize(addr_of_mut!(HEAP_MEMORY).cast::<u8>(),

@@ -362,7 +362,10 @@ version = "0.1.0"
 dependencies = [
  "mac-device-interface",
  "mac-formats",
+ "mac-kernel-model",
  "mac-module",
+ "mac-object-table",
+ "mac-riscv-pages",
  "serde",
  "serde_json",
  "sha2",
@@ -491,6 +494,7 @@ version = "0.1.0"
 name = "mac-kernel-model"
 version = "0.1.0"
 dependencies = [
+ "mac-abi",
  "mac-object-table",
  "spinning_top",
 ]
@@ -513,6 +517,13 @@ name = "mac-power-interface"
 version = "0.1.0"
 dependencies = [
  "mac-module",
+]
+
+[[package]]
+name = "mac-riscv-pages"
+version = "0.1.0"
+dependencies = [
+ "mac-kernel-model",
 ]
 
 [[package]]

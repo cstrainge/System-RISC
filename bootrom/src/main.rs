@@ -334,7 +334,10 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
                 segment.length,
                 segment.flags);
     }
-    memory.reserve(startup.descriptor.load_base..startup.descriptor.load_limit)?;
+    // The current flat image/definition allocators own this complete arena.
+    // Exclude their future placements before the physical pool is published;
+    // reserving only System would let a stack overwrite the next loaded app.
+    memory.reserve(memory::IMAGE_BASE..memory::IMAGE_LIMIT)?;
     let output = unsafe {
         core::slice::from_raw_parts_mut(startup.descriptor.load_base as *mut u8, plan.length())
     };

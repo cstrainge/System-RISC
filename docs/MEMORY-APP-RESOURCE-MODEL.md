@@ -282,9 +282,11 @@ Chloe accepted M-D01, M-D03, M-D06, M-D07 and M-D08 as migration work as
 classified above and authorized §13.2 staging on 2026-10-23. The remaining
 profile/layout proposals are not blanket-ratified by accepting the structures.
 Handle-ledger locking now uses the architecture invocation gate described above.
-The physical buddy pool remains disconnected and its IRQ/preemption discipline
-is still carried debt: close it **before it serves traps or interrupts**.
-Host-thread stress alone cannot close that gate.
+The physical buddy pool now selects NativeInvocationGate explicitly on every
+metadata access and allocation-lease disposal. Its first resident allocations
+are prepared app/idle stacks; single-hart interrupt/preemption masking precedes
+every pool lock. This does not establish multi-hart discipline or activate paging.
+Host-thread stress alone cannot establish the native interrupt contract.
 
 Execution identity has **four independent parts**: executor/fault domain,
 subject process, allocation/zone account and stacked resource scope. A module
@@ -450,7 +452,7 @@ and the loaded System reservation; System validates the same account at entry.
 The summary RAM fields are derived from the primary bank and checked against it.
 
 This is physical placement/boot transport groundwork, not live paging. The uniform
-virtual layout, physmap mappings, buddy activation, later image allocations and
+virtual layout activation, physmap mappings, later image allocations and
 page-backed heaps remain their staged work. The ROM and System still execute in
 M-mode with identity addressing; kernel self-virtualization needs the architecture
 privilege transition in addition to SATP/table setup. No user-isolation claim
@@ -2459,3 +2461,79 @@ unmapped. System's final page stays a guard. The physmap maps discovered RAM
 extents only, using large leaves where aligned, and refuses a layout/RAM span
 it cannot represent rather than truncating. These selections do not activate
 the MMU or the separately approved physical heap/reserve/account budgets.
+
+
+### Physical pools, stack leases and checked virtual artifacts
+
+`mac-abi::boot::Memory::checked` validates the original borrowed ROM account and
+returns an immutable proof. Its free-span iterator subtracts reservations without
+copying a second list, sorting RAM pages, or allocating. The redundant model-side
+boot representation is removed. The display handoff returns the same proof;
+graphical startup also requires the entire current flat image arena to be
+reserved. Reserving only System would let a page allocation overwrite a later
+app or independently loaded definition.
+
+`mac-kernel-model::bootstrap::BankPlan` places one out-of-line metadata/header/
+order-head reservation per usable RAM bank. Layout uses the actual Rust types,
+checked size/alignment arithmetic and first-fit contiguous storage. Separate
+banks have separate metadata: holes between them consume none. Wholly reserved
+banks need no pool. Fragmented storage refuses before native publication and
+reports required contiguous bytes and the largest available span. The resulting
+free-span iterator subtracts that metadata reservation from the same ROM account.
+
+The native raw-RAM binding is confined to `machine/pages.rs`. It creates exclusive
+MaybeUninit views of the reserved bytes; the safe pool constructor initializes
+valid enum/Option values exactly once before forming initialized references.
+Banks form a permanent reserved linked account without a temporary heap Vec.
+Every buddy access, including PageBlock Drop, uses the explicitly selected native
+architecture gate before taking its lock. No implicit ungated resident default
+exists. The gate masks local interrupts/preemption and restores the prior state,
+including nested calls. This remains a one-hart contract.
+
+Prepared app stacks and the idle stack now hold actual page leases, rather than
+256 KiB System-heap boxes. Failure preserves the loaded-image preparation and its
+typed cause. Existing ThreadCore reader pins and noncurrent-stack retirement
+conditions remain the barriers: pages return before the original cleanup ticket
+acknowledges physical disposal. No timer-driven allocation or free-page scan is
+introduced. The configured QEMU default adopts 8 GiB. The static 10 MiB System
+heap, domain charges/budgets, reserve and kernel trap-stack migration remain
+later work; page-backed stacks alone do not qualify those gates. At 128 MiB the
+current pinned flat arenas leave no contiguous metadata space, so boot reports
+that real storage refusal before heap/services rather than clobbering live RAM.
+
+The platform JSON now also owns the approved Sv39 reservations. One checked
+record validates canonical halves, page alignment, overlap, preferred image
+placement and physmap containment, and emits matching Rust constants/linker
+symbols. `mac-riscv-pages` contains the safe Sv39 encoder/decoder and owned-table
+hierarchy preparation. Its mappings preserve ownership/permissions, use large
+leaves for aligned RAM, early-out without writes on identical leaves, refuse
+conflicting/global/shared subtrees and retain partial owned preparation on typed
+refusal. Unknown nonzero invalid-entry payloads are preserved. Eight GiB can be
+represented by eight 1 GiB leaves without a per-base-page mapping loop.
+
+**Activation remains a separate required gate.** ROM/System still execute in M
+mode with identity addressing; SATP is not enabled. These physical Rust references
+must never be rebased in place. Permanent mapped views must precede pool/heap
+initialization in the supervisor handoff; opaque firmware callbacks, MMIO/DMA
+physical addresses, System-stack trap entry, per-process roots/ASIDs and the image
+loader must move together. No isolation, privileged-fault recovery, fully charged
+allocation or sub-millisecond physical-input claim follows from this slice.
+
+Qualification for this pool/stack milestone: 873 scoped workspace host tests
+pass, with 74 native/environment gates excluded; 39 launcher/host/pruning/
+user-state Python tests pass, with two platform-specific cases skipped. Sixteen native test functions pass: RAM admission,
+ten-app/two-cohort actual stack reuse, cursor, backing sources, Finder restart/
+refusal, six host-volume workflows, app panic recovery, two process campaigns,
+functional event latency and aggregate public SDK conformance. Native/classic
+ECALL smoke, optimized image/structural checks, compiled boundaries, formatting
+and 53-library API docs also pass. A serial transport defect that stopped on a
+partial refusal prefix is corrected to wait for the complete line; the RAM
+campaign was rerun. An extra ABI invocation selected a nested output cache and
+hit host ENOSPC; the explicit existing private profile rerun passes.
+
+Physical-input timing remains unqualified: the functional capture records
+1.38–2.32 ms decoded-key delivery despite queued-dispatch maxima of 0.280/0.593
+ms. This does not close the earlier strict 1 ms failure or establish a cause
+for the reported intermittent mouse stutter. Existing fragmented-heap paint
+allocation failure remains a heap/reserve-stage gate; this milestone does not
+claim general OOM recovery or full original Macintosh compatibility.

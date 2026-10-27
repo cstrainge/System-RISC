@@ -58,6 +58,56 @@ fn more_than_eight_apps_receive_input_and_reuse_reclaimed_stacks()
                   .collect();
         assert_eq!(addresses.len(), 9, "writable app images alias: {serial}");
     }
+    // Observe real native storage, not just growable thread bookkeeping.
+    // Each worker's stack must be in discovered RAM, outside metadata, with
+    // disjoint storage while concurrent. A retired cohort returns reusable
+    // physical backing even though all object identities stay fresh.
+    let number = |line: &str, name: &str| -> u64 {
+        let text = line.split_whitespace().find_map(|part| part.strip_prefix(name)).unwrap();
+        if let Some(hex) = text.strip_prefix("0x")
+        {
+            u64::from_str_radix(hex, 16).unwrap()
+        }
+        else
+        {
+            text.parse().unwrap()
+        }
+    };
+    let banks: Vec<_> = serial.lines()
+                              .filter(|line| line.starts_with("PAGE_BANK "))
+                              .map(|line| {
+                                  let start = number(line, "base=");
+                                  (start, start + number(line, "bytes="))
+                              })
+                              .collect();
+    assert!(!banks.is_empty(), "resident physical pool was not initialized: {serial}");
+    let threads: Vec<_> =
+        serial.lines().filter(|line| line.starts_with("PROCESS_THREAD ")).collect();
+    let mut cohorts = Vec::new();
+    for cohort in rows.chunks_exact(9)
+    {
+        let mut ranges = Vec::new();
+        for row in cohort
+        {
+            let id = number(row, "thread=");
+            let stack = threads.iter().find(|line| number(line, "thread=") == id).unwrap();
+            let top = number(stack, "stack=");
+            let bytes = number(stack, "stack_bytes=");
+            assert!(bytes > 0 && bytes.is_power_of_two());
+            let base = top.checked_sub(bytes).unwrap();
+            assert!(banks.iter().any(|(start, end)| *start <= base && top <= *end),
+                    "stack is outside the actual page pools: {stack}");
+            assert!(base.is_multiple_of(bytes), "stack has no buddy block alignment: {stack}");
+            for &(old_base, old_top) in &ranges
+            {
+                assert!(top <= old_base || old_top <= base, "concurrent stacks alias: {serial}");
+            }
+            ranges.push((base, top));
+        }
+        cohorts.push(ranges);
+    }
+    assert!(cohorts[0].iter().any(|range| cohorts[1].contains(range)),
+            "second cohort did not reuse any genuinely reclaimed page-backed stack: {serial}");
     assert_eq!(serial.lines().filter(|line| line.starts_with("THREAD_CAPACITY_ACK ")).count(),
                18,
                "{serial}");

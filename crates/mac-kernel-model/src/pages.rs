@@ -2,6 +2,7 @@
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
+use mac_object_table::shared::InvocationGate;
 use spinning_top::Spinlock;
 
 use crate::{DomainId,
@@ -39,57 +40,6 @@ pub struct PhysicalAddress(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VirtualAddress(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReservationKind
-{
-    Firmware,
-    Framebuffer,
-    LoaderImage,
-    ModuleArena,
-    Platform
-}
-#[derive(Clone, Copy, Debug)]
-pub struct Reservation
-{
-    pub range: AddressRange,
-    pub kind:  ReservationKind
-}
-/// Borrowed boot description: bootstrap metadata cannot depend on a live heap.
-pub struct BootMemory<'a>
-{
-    pub ram:          &'a [AddressRange],
-    pub reservations: &'a [Reservation]
-}
-impl BootMemory<'_>
-{
-    pub fn validate(&self, geometry: PageGeometry) -> Result<(), ModelError>
-    {
-        if self.ram.is_empty()
-        {
-            return Err(ModelError::InvalidReservation);
-        }
-        for (i, ram) in self.ram.iter().enumerate()
-        {
-            if !geometry.aligned(ram.start())
-               || !geometry.aligned(ram.end())
-               || self.ram[..i].iter().any(|r| r.overlaps(*ram))
-            {
-                return Err(ModelError::InvalidReservation);
-            }
-        }
-        for (i, reservation) in self.reservations.iter().enumerate()
-        {
-            if !self.ram.iter().any(|ram| ram.contains(reservation.range))
-               || !geometry.aligned(reservation.range.start())
-               || !geometry.aligned(reservation.range.end())
-               || self.reservations[..i].iter().any(|r| r.range.overlaps(reservation.range))
-            {
-                return Err(ModelError::InvalidReservation);
-            }
-        }
-        Ok(())
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access
 {
     Supervisor,
@@ -115,6 +65,7 @@ pub struct Permissions
 /// common model. Dispatch here is compile-time, not a dyn call per mapped page.
 pub trait Architecture
 {
+    type InvocationGate: InvocationGate;
     type PageTable;
     type TrapFrame;
     fn geometry() -> PageGeometry;
@@ -186,14 +137,14 @@ impl Iterator for MappingPlan<'_>
 /// A typed physical-page reservation, not an initialized Rust T. There is no
 /// Deref and no global virtual/physical-mode flag. A future audited mapper
 /// supplies initialized mapped access before a root can be activated.
-pub struct PageBox<'pool, 'storage, T>
+pub struct PageBox<'pool, 'storage, T, G: InvocationGate>
 {
-    pub(crate) page: PageBlock<'pool, 'storage>,
+    pub(crate) page: PageBlock<'pool, 'storage, G>,
     marker:          PhantomData<T>
 }
-impl<'pool, 'storage, T> PageBox<'pool, 'storage, T>
+impl<'pool, 'storage, T, G: InvocationGate> PageBox<'pool, 'storage, T, G>
 {
-    pub fn reserve(page: PageBlock<'pool, 'storage>) -> Result<Self, ModelError>
+    pub fn reserve(page: PageBlock<'pool, 'storage, G>) -> Result<Self, ModelError>
     {
         if page.order() != 0
            || size_of::<T>() as u64 > page.bytes()
@@ -219,7 +170,7 @@ pub struct AsidTag
 pub struct AddressSpace<'pool, 'storage, A: Architecture>
 {
     owner: DomainId,
-    root:  PageBox<'pool, 'storage, A::PageTable>,
+    root:  PageBox<'pool, 'storage, A::PageTable, A::InvocationGate>,
     asid:  AsidTag,
     state: Spinlock<AddressSpaceState>
 }
@@ -232,7 +183,8 @@ impl<'pool, 'storage, A: Architecture> AddressSpace<'pool, 'storage, A>
 {
     /// A reserved, uninitialized root. This shape cannot activate a CPU page
     /// table; initialized mapper/activation proof is a later platform boundary.
-    pub fn reserve(owner: DomainId, root: PageBox<'pool, 'storage, A::PageTable>, asid: AsidTag)
+    pub fn reserve(owner: DomainId,
+                   root: PageBox<'pool, 'storage, A::PageTable, A::InvocationGate>, asid: AsidTag)
                    -> Result<Self, ModelError>
     {
         if root.page.bytes() != A::geometry().bytes()
@@ -263,11 +215,11 @@ impl<'pool, 'storage, A: Architecture> AddressSpace<'pool, 'storage, A>
 
     pub fn pending_shootdowns(&self) -> usize
     {
-        self.state.lock().outstanding_shootdowns
+        A::InvocationGate::run(|| self.state.lock().outstanding_shootdowns)
     }
 
     pub fn planned_mappings(&self) -> usize
     {
-        self.state.lock().mappings.len()
+        A::InvocationGate::run(|| self.state.lock().mappings.len())
     }
 }

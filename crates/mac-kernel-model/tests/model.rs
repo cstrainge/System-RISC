@@ -1,15 +1,21 @@
 //! Pure model tests, not Toolbox conformance claims. No synthetic resident
 //! services or test-only traps are introduced for these dormant structures.
-use mac_kernel_model::{buddy::{BuddyPool, PageMetadata},
-                       pages::*,
-                       policy::*,
-                       process::*,
-                       zone::*};
+use mac_kernel_model::{buddy::PageMetadata, pages::*, policy::*, process::*, zone::*};
 use mac_object_table::domain::{CapacityPolicy, DomainKind, KindCode, OwnerIndex, ResourceKey};
 
+struct Gate;
+impl mac_object_table::shared::InvocationGate for Gate
+{
+    fn run<R>(f: impl FnOnce() -> R) -> R
+    {
+        f()
+    }
+}
+type BuddyPool<'a> = mac_kernel_model::buddy::BuddyPool<'a, Gate>;
 struct WidePages;
 impl Architecture for WidePages
 {
+    type InvocationGate = Gate;
     type PageTable = [u8; 65536];
     type TrapFrame = (u64, u64);
 
@@ -88,23 +94,6 @@ fn layout_and_large_maps_do_not_assume_a_cpu_or_base_page_size()
                      Err(ModelError::InvalidLayout)));
 }
 #[test]
-fn boot_reservations_are_one_checked_borrowed_account()
-{
-    let geometry = PageGeometry::new(4096).unwrap();
-    let ram = [AddressRange::new(0, 65536).unwrap()];
-    let reservations = [Reservation { range: AddressRange::new(0, 4096).unwrap(),
-                                      kind:  ReservationKind::Firmware }];
-    BootMemory { ram:          &ram,
-                 reservations: &reservations }.validate(geometry)
-                                              .unwrap();
-    assert_eq!(BootMemory { ram:          &ram,
-                            reservations: &[reservations[0], reservations[0]] }.validate(geometry),
-               Err(ModelError::InvalidReservation));
-    assert_eq!(BootMemory { ram:          &[],
-                            reservations: &[] }.validate(geometry),
-               Err(ModelError::InvalidReservation));
-}
-#[test]
 fn process_zone_and_saved_state_cannot_mix_domain_incarnations()
 {
     let mut owner = OwnerIndex::issue(DomainKind::Process).unwrap();
@@ -126,7 +115,7 @@ fn process_zone_and_saved_state_cannot_mix_domain_incarnations()
     let mut heads = [None; 1];
     let pool=BuddyPool::new(PhysicalAddress(65536),WidePages::geometry(),&mut meta,&mut heads).unwrap();
     pool.add_free_range(AddressRange::new(65536, 131072).unwrap()).unwrap();
-    let root = PageBox::<[u8; 65536]>::reserve(pool.allocate(0).unwrap()).unwrap();
+    let root = PageBox::<[u8; 65536], Gate>::reserve(pool.allocate(0).unwrap()).unwrap();
     let space=AddressSpace::<WidePages>::reserve(owner.owner(),root,AsidTag{hardware_value:1,generation:core::num::NonZeroU64::new(1).unwrap()}).unwrap();
     assert_eq!(space.root_physical(), PhysicalAddress(65536));
     assert_eq!(space.planned_mappings(), 0);

@@ -8,6 +8,7 @@ use crate::{Result, error};
 
 pub mod memory;
 mod devices;
+pub mod virtual_memory;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,7 +21,8 @@ pub struct Platform
     pub qemu_ram:       String,
     pub fatal_shutdown: FatalShutdown,
     pub mmio_devices:   Vec<devices::Definition>,
-    memory:             memory::Definition
+    memory:             memory::Definition,
+    virtual_memory:     virtual_memory::Definition
 }
 pub const DEFAULT_PLATFORM: &str = "QemuRISC-V";
 pub const PLATFORM_ENV: &str = "SYSTEM7_PLATFORM";
@@ -47,6 +49,7 @@ pub fn load(name: &str) -> Result<Platform>
                                  platform.name)));
     }
     platform.device_artifacts()?;
+    platform.virtual_memory()?;
     Ok(platform)
 }
 static PLATFORM: LazyLock<Platform> = LazyLock::new(|| {
@@ -167,6 +170,7 @@ pub fn guest_artifacts() -> Result<(String, String)>
 {
     let (rust, mut linker) = current().device_artifacts()?;
     linker.push_str(&current().memory()?.linker_symbols());
+    linker.push_str(&current().virtual_memory()?.linker_symbols());
     Ok((rust, linker))
 }
 impl Platform
@@ -177,6 +181,11 @@ impl Platform
         let (mut rust, linker) = artifacts_for(&self.fatal_shutdown, &devices)?;
         rust.push_str(&devices::constants(&devices));
         Ok((rust, linker))
+    }
+
+    pub fn virtual_memory(&self) -> Result<virtual_memory::Checked>
+    {
+        self.virtual_memory.check(&self.rust_target, self.memory()?.page_bytes)
     }
 
     pub fn memory(&self) -> Result<memory::Checked>

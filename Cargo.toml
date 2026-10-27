@@ -6,6 +6,7 @@ members = [
     "crates/mac-module",
     "crates/mac-object-table",
     "crates/mac-kernel-model",
+    "crates/mac-riscv-pages",
     "crates/mac-fork-file",
     "crates/mac-host-protocol",
     "crates/mac-file-types",
@@ -48,6 +49,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+mac-riscv-pages = { path = "crates/mac-riscv-pages" }
 mac-kernel-model = { path = "crates/mac-kernel-model" }
 mac-definition = { path = "crates/mac-definition" }
 mac-file-types = { path = "crates/mac-file-types" }

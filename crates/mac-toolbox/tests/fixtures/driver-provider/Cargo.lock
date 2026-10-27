@@ -47,6 +47,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "foldhash"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -54,6 +60,15 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
+]
+
+[[package]]
+name = "hashbrown"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash",
 ]
 
 [[package]]
@@ -69,6 +84,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
+name = "lock_api"
+version = "0.4.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
+dependencies = [
+ "scopeguard",
+]
+
+[[package]]
 name = "mac-abi"
 version = "0.1.0"
 
@@ -78,7 +102,10 @@ version = "0.1.0"
 dependencies = [
  "mac-device-interface",
  "mac-formats",
+ "mac-kernel-model",
  "mac-module",
+ "mac-object-table",
+ "mac-riscv-pages",
  "serde",
  "serde_json",
  "sha2",
@@ -126,8 +153,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-kernel-model"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-object-table",
+ "spinning_top",
+]
+
+[[package]]
 name = "mac-module"
 version = "0.1.0"
+
+[[package]]
+name = "mac-object-table"
+version = "0.1.0"
+dependencies = [
+ "hashbrown",
+ "mac-abi",
+ "spinning_top",
+]
+
+[[package]]
+name = "mac-riscv-pages"
+version = "0.1.0"
+dependencies = [
+ "mac-kernel-model",
+]
 
 [[package]]
 name = "mac-text"
@@ -156,6 +208,12 @@ checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "scopeguard"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "serde"
@@ -209,6 +267,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "spinning_top"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b9eb1a2f4c41445a3a0ff9abc5221c5fcd28e1f13cd7c0397706f9ac938ddb0"
+dependencies = [
+ "lock_api",
 ]
 
 [[package]]

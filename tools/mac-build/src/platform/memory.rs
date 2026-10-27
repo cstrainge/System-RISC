@@ -321,6 +321,7 @@ impl Checked
     {
         let mut out = String::from("// Generated from the checked platform memory record.\n");
         for (name, value) in [("PAGE_BYTES", self.page_bytes),
+                              ("IMAGE_BASE", self.images.start),
                               ("MODULE_BASE", self.modules.start),
                               ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
                               ("DISPLAY_SCRATCH_BYTES",

@@ -74,8 +74,11 @@ hardware vlenb, including nested traps, and it never runs heap allocation while
 saving state. Per-thread domain storage and dirty/lazy policy migrate later.
 Trap frames still reside on the current thread stack until the separate System-
 stack/page/privilege stage; this is no isolation or lazy-save completion claim.
-The new shared page pool is still disconnected from traps/interrupts until its
-architecture invocation wrapper closes the carried IRQ/preemption-lock gate.
+The shared physical page pool supplies prepared thread/idle stack leases through
+an explicit architecture invocation gate, including lease Drop. Local masking
+precedes every metadata lock; native retirement retains actual reader/CPU
+barriers. Kernel self-virtualization, System trap-stack entry and multi-hart
+synchronization remain separate gates; the current CPU still runs flat M mode.
 
 See [LLVM RISC-V profiles](https://llvm.org/docs/RISCVUsage.html) and the
 [ratified RVA23 source](https://github.com/riscv/riscv-profiles/blob/main/src/rva23-profile.adoc)

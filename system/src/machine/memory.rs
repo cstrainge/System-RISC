@@ -15,8 +15,9 @@ pub(crate) fn module_arena(ram_end: u64) -> Result<core::ops::Range<u64>, mac_ab
 /// The trusted bootstrap lends valid arrays for the whole System lifetime.
 /// This boundary checks lengths before creating slices; all extent validation
 /// then runs in shared safe code, before any reservation is used.
-pub(crate) unsafe fn validate_boot(info: &mac_abi::BootInfo)
-                                   -> Result<(), mac_abi::boot::MemoryError>
+pub(crate) unsafe fn validate_boot(
+    info: &mac_abi::BootInfo)
+    -> Result<mac_abi::boot::CheckedMemory<'_>, mac_abi::boot::MemoryError>
 {
     let valid = |pointer: *const mac_abi::BootMemoryRange, count: usize| {
         count <= isize::MAX as usize / core::mem::size_of::<mac_abi::BootMemoryRange>()
@@ -49,14 +50,20 @@ pub(crate) unsafe fn validate_boot(info: &mac_abi::BootInfo)
                                              length: info.ram_size };
     if info.flags & mac_abi::BOOT_GRAPHICAL != 0
     {
-        memory.display_handoff(PAGE_BYTES,
-                               primary,
-                               info.display_scratch,
-                               mac_abi::BootMemoryRange { base:   DISPLAY_SCRATCH_BASE,
-                                                          length: DISPLAY_SCRATCH_BYTES })
+        let memory = memory.display_handoff(PAGE_BYTES,
+                                      primary,
+                                      info.display_scratch,
+                                      mac_abi::BootMemoryRange { base:   DISPLAY_SCRATCH_BASE,
+                                                                 length: DISPLAY_SCRATCH_BYTES })?;
+        if !memory.reserved(mac_abi::BootMemoryRange { base:   IMAGE_BASE,
+                                                       length: IMAGE_LIMIT - IMAGE_BASE })
+        {
+            return Err(mac_abi::boot::MemoryError::MissingImageArena);
+        }
+        Ok(memory)
     }
     else
     {
-        memory.validate(PAGE_BYTES, primary)
+        memory.checked(PAGE_BYTES, primary)
     }
 }

@@ -6,12 +6,13 @@
 //! platform adapter. Policy numbers require reviewed configuration, not defaults.
 #![no_std]
 #![forbid(unsafe_code)]
-#![feature(allocator_ext)]
+#![feature(allocator_ext, maybe_uninit_fill)]
 extern crate alloc;
 pub use mac_object_table::domain::{DomainId, DomainKind, ResourceKey};
 pub mod policy;
 pub mod pages;
 pub mod buddy;
+pub mod bootstrap;
 pub mod process;
 pub mod image;
 pub mod text;

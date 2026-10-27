@@ -1,7 +1,7 @@
 //! RV64 one-hart timer scheduler. Only this adapter owns saved CPU frames.
 //! Timer interrupts preempt application code; synchronous kernel traps run with
 //! interrupts masked, so no allocator/manager guard can be preempted by an app.
-use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use core::{arch::asm,
            cell::Cell,
            ops::{Deref, DerefMut},
@@ -56,7 +56,7 @@ impl Thread
 }
 struct Idle
 {
-    _stack: Box<[u128]>,
+    _stack: super::pages::Stack,
     frame:  usize
 }
 #[derive(Clone, Copy)]
@@ -192,7 +192,7 @@ pub(crate) fn has_threads(app: u64) -> bool
 struct ThreadCore
 {
     // Actual stack disposal precedes releasing the image's execution/source pin.
-    _stack:  Box<[u128]>,
+    _stack:  super::pages::Stack,
     _loaded: Option<crate::kernel::LoadedImage>,
     context: Arc<ThreadContext>,
     release: Mutex<Option<ReleasedResource>>,
@@ -233,13 +233,12 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef, loaded: crate::k
                     STACK_WORDS * core::mem::size_of::<u128>());
             return Err(mac_abi::NO_MEMORY);
         }
-        let mut storage = alloc::vec::Vec::<u128>::new();
-        storage.try_reserve_exact(STACK_WORDS).map_err(|_| mac_abi::NO_MEMORY)?;
-        storage.resize(STACK_WORDS, 0);
-        let mut stack = storage.into_boxed_slice();
-        // SAFETY: the exclusive owned allocation includes the validated frame
-        // reservation and remains pinned at this address until thread reaping.
-        let top = unsafe { stack.as_mut_ptr().add(stack.len()) } as usize;
+        let stack =
+            super::pages::Stack::allocate(STACK_WORDS * size_of::<u128>()).map_err(|error| {
+                serial!("THREAD_STACK_REFUSED: {error}");
+                error.status()
+            })?;
+        let top = stack.top();
         let frame = (top - core::mem::size_of::<TrapFrame>()) as *mut TrapFrame;
         let mut initial = TrapFrame::default();
         initial.pc = app_start as *const () as usize;
@@ -353,10 +352,11 @@ pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
     {
         Ok(id) =>
         {
-            serial!("PROCESS_THREAD app={} thread={} stack=0x{:x}",
+            serial!("PROCESS_THREAD app={} thread={} stack=0x{:x} stack_bytes={}",
                     prepared.owner.owner().incarnation(),
                     id,
-                    prepared.core.top);
+                    prepared.core.top,
+                    prepared.core._stack.bytes());
             Ok(id)
         }
         Err(status) =>
@@ -411,11 +411,15 @@ fn arm()
                                   crate::platform::ticks().wrapping_add(TIMER_INTERVAL));
     }
 }
-pub fn start() -> !
+pub fn start() -> mac_formats::Result<()>
 {
     let mut scheduler = SCHEDULER.lock();
-    let mut stack = vec![0u128; STACK_WORDS].into_boxed_slice();
-    let top = unsafe { stack.as_mut_ptr().add(stack.len()) } as usize;
+    let stack = super::pages::Stack::allocate(STACK_WORDS * size_of::<u128>()).map_err(|error| {
+                    serial!("IDLE_STACK_REFUSED: {error}");
+                    mac_formats::Error::AllocationFailed("physical page allocation refused for \
+                                                          idle stack")
+                })?;
+    let top = stack.top();
     let idle_frame = (top - core::mem::size_of::<TrapFrame>()) as *mut TrapFrame;
     let mut initial = TrapFrame::default();
     initial.pc = idle as *const () as usize;

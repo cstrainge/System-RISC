@@ -1,7 +1,8 @@
 //! Physical page bookkeeping. All metadata is supplied by the boot owner and
 //! remains outside the pages it describes; allocation/free never allocate.
-use core::fmt;
+use core::{fmt, marker::PhantomData, mem::MaybeUninit};
 
+use mac_object_table::shared::InvocationGate;
 use spinning_top::Spinlock;
 
 use crate::{pages::{PageGeometry, PhysicalAddress},
@@ -84,11 +85,22 @@ impl fmt::Display for BuddyError
         }
     }
 }
-pub struct BuddyPool<'storage>
+/// The caller must choose its architecture's IRQ/preemption gate explicitly.
+/// Pool metadata access and lease disposal use that same gate; no implicit
+/// unguarded default is available for a resident consumer.
+/// ```compile_fail
+/// use mac_kernel_model::{buddy::{BuddyPool,PageMetadata},pages::{PageGeometry,PhysicalAddress}};
+/// let mut metadata = [PageMetadata::unavailable();16];
+/// let mut heads = [None;5];
+/// let pool = BuddyPool::new(PhysicalAddress(0),PageGeometry::new(4096).unwrap(),
+///     &mut metadata,&mut heads).unwrap(); // missing explicit architecture gate
+/// ```
+pub struct BuddyPool<'storage, G: InvocationGate>
 {
     base:     PhysicalAddress,
     geometry: PageGeometry,
-    state:    Spinlock<PoolState<'storage>>
+    state:    Spinlock<PoolState<'storage>>,
+    _gate:    PhantomData<fn() -> G>
 }
 struct PoolState<'a>
 {
@@ -96,7 +108,7 @@ struct PoolState<'a>
     heads:      &'a mut [Option<usize>],
     free_pages: usize
 }
-impl<'storage> BuddyPool<'storage>
+impl<'storage, G: InvocationGate> BuddyPool<'storage, G>
 {
     pub fn required_orders(pages: usize) -> usize
     {
@@ -107,96 +119,134 @@ impl<'storage> BuddyPool<'storage>
                metadata: &'storage mut [PageMetadata], heads: &'storage mut [Option<usize>])
                -> Result<Self, BuddyError>
     {
-        let required = Self::required_orders(metadata.len());
-        if heads.len() != required || metadata.is_empty()
+        Self::validate_storage(base, geometry, metadata.len(), heads.len())?;
+        metadata.fill(PageMetadata::unavailable());
+        heads.fill(None);
+        Ok(Self::from_initialized(base, geometry, metadata, heads))
+    }
+
+    /// Initializes genuinely uninitialized reserved RAM exactly once. The
+    /// safe slice operation creates valid enum/Option values before references
+    /// to PageMetadata exist; no native cast may skip this initialization.
+    pub fn initialize(base: PhysicalAddress, geometry: PageGeometry,
+                      metadata: &'storage mut [MaybeUninit<PageMetadata>],
+                      heads: &'storage mut [MaybeUninit<Option<usize>>])
+                      -> Result<Self, BuddyError>
+    {
+        Self::validate_storage(base, geometry, metadata.len(), heads.len())?;
+        Ok(Self::from_initialized(base,
+                                  geometry,
+                                  metadata.write_filled(PageMetadata::unavailable()),
+                                  heads.write_filled(None)))
+    }
+
+    fn validate_storage(base: PhysicalAddress, geometry: PageGeometry, pages: usize, orders: usize)
+                        -> Result<(), BuddyError>
+    {
+        let required = Self::required_orders(pages);
+        if orders != required || pages == 0
         {
-            return Err(BuddyError::Metadata { pages:           metadata.len(),
+            return Err(BuddyError::Metadata { pages,
                                               required_orders: required,
-                                              supplied_orders: heads.len() });
+                                              supplied_orders: orders });
         }
-        let bytes = (metadata.len() as u64).checked_mul(geometry.bytes())
-                                           .ok_or(BuddyError::Geometry(ModelError::Overflow))?;
+        let bytes = (pages as u64).checked_mul(geometry.bytes())
+                                  .ok_or(BuddyError::Geometry(ModelError::Overflow))?;
         if !geometry.aligned(base.0) || base.0.checked_add(bytes).is_none()
         {
             return Err(BuddyError::Geometry(ModelError::InvalidGeometry));
         }
-        metadata.fill(PageMetadata::unavailable());
-        heads.fill(None);
-        Ok(Self { base,
-                  geometry,
-                  state: Spinlock::new(PoolState { metadata,
-                                                   heads,
-                                                   free_pages: 0 }) })
+        Ok(())
+    }
+
+    fn from_initialized(base: PhysicalAddress, geometry: PageGeometry,
+                        metadata: &'storage mut [PageMetadata],
+                        heads: &'storage mut [Option<usize>])
+                        -> Self
+    {
+        Self { _gate: PhantomData,
+               base,
+               geometry,
+               state: Spinlock::new(PoolState { metadata,
+                                                heads,
+                                                free_pages: 0 }) }
     }
 
     /// Bootstrap only: declare disjoint, previously unavailable RAM free. The
     /// caller subtracts the shared BootInfo reservation account first.
     pub fn add_free_range(&self, range: AddressRange) -> Result<(), BuddyError>
     {
-        let mut state = self.state.lock();
-        let start = range.start().checked_sub(self.base.0).ok_or(BuddyError::InvalidFreeRange)?;
-        let end = range.end().checked_sub(self.base.0).ok_or(BuddyError::InvalidFreeRange)?;
-        if !self.geometry.aligned(start)
-           || !self.geometry.aligned(end)
-           || end / self.geometry.bytes() > state.metadata.len() as u64
-        {
-            return Err(BuddyError::InvalidFreeRange);
-        }
-        let start = (start / self.geometry.bytes()) as usize;
-        let end = (end / self.geometry.bytes()) as usize;
-        if state.metadata[start..end].iter().any(|m| m.state != State::Unavailable)
-        {
-            return Err(BuddyError::AlreadyManaged);
-        }
-        // One metadata initialization per newly admitted page; no mapping loop.
-        for m in &mut state.metadata[start..end]
-        {
-            m.state = State::Interior;
-        }
-        state.free_pages += end - start;
-        let base_page = self.base.0 / self.geometry.bytes();
-        let mut index = start;
-        while index < end
-        {
-            let physical_page = base_page + index as u64;
-            let order = (end - index).ilog2()
-                                     .min(physical_page.trailing_zeros())
-                                     .min((state.heads.len() - 1) as u32);
-            state.coalesce(base_page, index, order);
-            index += 1usize << order;
-        }
-        Ok(())
+        G::run(|| {
+            let mut state = self.state.lock();
+            let start =
+                range.start().checked_sub(self.base.0).ok_or(BuddyError::InvalidFreeRange)?;
+            let end = range.end().checked_sub(self.base.0).ok_or(BuddyError::InvalidFreeRange)?;
+            if !self.geometry.aligned(start)
+               || !self.geometry.aligned(end)
+               || end / self.geometry.bytes() > state.metadata.len() as u64
+            {
+                return Err(BuddyError::InvalidFreeRange);
+            }
+            let start = (start / self.geometry.bytes()) as usize;
+            let end = (end / self.geometry.bytes()) as usize;
+            if state.metadata[start..end].iter().any(|m| m.state != State::Unavailable)
+            {
+                return Err(BuddyError::AlreadyManaged);
+            }
+            // One metadata initialization per newly admitted page; no mapping loop.
+            for m in &mut state.metadata[start..end]
+            {
+                m.state = State::Interior;
+            }
+            state.free_pages += end - start;
+            let base_page = self.base.0 / self.geometry.bytes();
+            let mut index = start;
+            while index < end
+            {
+                let physical_page = base_page + index as u64;
+                let order = (end - index).ilog2()
+                                         .min(physical_page.trailing_zeros())
+                                         .min((state.heads.len() - 1) as u32);
+                state.coalesce(base_page, index, order);
+                index += 1usize << order;
+            }
+            Ok(())
+        })
     }
 
-    pub fn allocate(&self, order: u32) -> Result<PageBlock<'_, 'storage>, BuddyError>
+    pub fn allocate(&self, order: u32) -> Result<PageBlock<'_, 'storage, G>, BuddyError>
     {
-        let mut state = self.state.lock();
-        let found = (order as usize..state.heads.len()).find(|&n| state.heads[n].is_some())
+        G::run(|| {
+            let mut state = self.state.lock();
+            let found = (order as usize..state.heads.len()).find(|&n| state.heads[n].is_some())
             .ok_or(BuddyError::Exhausted { requested_order: order, free_pages: state.free_pages })?;
-        let index = state.heads[found].unwrap();
-        state.unlink(index, found as u32);
-        for split in (order as usize..found).rev()
-        {
-            state.push(index + (1usize << split), split as u32);
-        }
-        state.metadata[index].state = State::Allocated(order);
-        state.free_pages -= 1usize << order;
-        Ok(PageBlock { pool: self,
-                       index,
-                       order })
+            let index = state.heads[found].unwrap();
+            state.unlink(index, found as u32);
+            for split in (order as usize..found).rev()
+            {
+                state.push(index + (1usize << split), split as u32);
+            }
+            state.metadata[index].state = State::Allocated(order);
+            state.free_pages -= 1usize << order;
+            Ok(PageBlock { pool: self,
+                           index,
+                           order })
+        })
     }
 
     pub fn free_pages(&self) -> usize
     {
-        self.state.lock().free_pages
+        G::run(|| self.state.lock().free_pages)
     }
 
     fn release(&self, index: usize, order: u32)
     {
-        let mut state = self.state.lock();
-        debug_assert_eq!(state.metadata[index].state, State::Allocated(order));
-        state.free_pages += 1usize << order;
-        state.coalesce(self.base.0 / self.geometry.bytes(), index, order);
+        G::run(|| {
+            let mut state = self.state.lock();
+            debug_assert_eq!(state.metadata[index].state, State::Allocated(order));
+            state.free_pages += 1usize << order;
+            state.coalesce(self.base.0 / self.geometry.bytes(), index, order);
+        })
     }
 }
 impl PoolState<'_>
@@ -259,13 +309,13 @@ impl PoolState<'_>
 }
 /// A unique allocation lease. Safe code cannot forge a block, free it twice,
 /// give it to another pool, or outlive its metadata. Drop coalesces in O(orders).
-pub struct PageBlock<'pool, 'storage>
+pub struct PageBlock<'pool, 'storage, G: InvocationGate>
 {
-    pool:  &'pool BuddyPool<'storage>,
+    pool:  &'pool BuddyPool<'storage, G>,
     index: usize,
     order: u32
 }
-impl PageBlock<'_, '_>
+impl<G: InvocationGate> PageBlock<'_, '_, G>
 {
     pub const fn order(&self) -> u32
     {
@@ -282,7 +332,7 @@ impl PageBlock<'_, '_>
         PhysicalAddress(self.pool.base.0 + self.index as u64 * self.pool.geometry.bytes())
     }
 }
-impl Drop for PageBlock<'_, '_>
+impl<G: InvocationGate> Drop for PageBlock<'_, '_, G>
 {
     fn drop(&mut self)
     {
@@ -294,15 +344,24 @@ impl Drop for PageBlock<'_, '_>
 mod tests
 {
     use super::*;
+    struct Gate;
+    impl InvocationGate for Gate
+    {
+        fn run<R>(f: impl FnOnce() -> R) -> R
+        {
+            f()
+        }
+    }
+    type TestPool<'a> = BuddyPool<'a, Gate>;
     #[test]
     fn split_free_coalesce_and_failure_recovery()
     {
         let mut meta = [PageMetadata::unavailable(); 16];
         let mut heads = [None; 5];
-        let pool = BuddyPool::new(PhysicalAddress(0),
-                                  PageGeometry::new(4096).unwrap(),
-                                  &mut meta,
-                                  &mut heads).unwrap();
+        let pool = TestPool::new(PhysicalAddress(0),
+                                 PageGeometry::new(4096).unwrap(),
+                                 &mut meta,
+                                 &mut heads).unwrap();
         pool.add_free_range(AddressRange::new(0, 16 * 4096).unwrap()).unwrap();
         let a = pool.allocate(0).unwrap();
         let b = pool.allocate(0).unwrap();
@@ -330,10 +389,10 @@ mod tests
         let base = 3 * page;
         let mut meta = [PageMetadata::unavailable(); 13];
         let mut heads = [None; 4];
-        let pool = BuddyPool::new(PhysicalAddress(base),
-                                  PageGeometry::new(page).unwrap(),
-                                  &mut meta,
-                                  &mut heads).unwrap();
+        let pool = TestPool::new(PhysicalAddress(base),
+                                 PageGeometry::new(page).unwrap(),
+                                 &mut meta,
+                                 &mut heads).unwrap();
         pool.add_free_range(AddressRange::new(base, base + 3 * page).unwrap()).unwrap();
         // One reserved page remains unavailable between the admitted spans.
         pool.add_free_range(AddressRange::new(base + 4 * page, base + 13 * page).unwrap()).unwrap();
@@ -357,17 +416,17 @@ mod tests
     {
         let mut meta = [PageMetadata::unavailable(); 3];
         let mut short = [None; 1];
-        assert!(matches!(BuddyPool::new(PhysicalAddress(0),
-                                        PageGeometry::new(4096).unwrap(),
-                                        &mut meta,
-                                        &mut short),
+        assert!(matches!(TestPool::new(PhysicalAddress(0),
+                                       PageGeometry::new(4096).unwrap(),
+                                       &mut meta,
+                                       &mut short),
                          Err(BuddyError::Metadata { required_orders: 2,
                                                     .. })));
         let mut heads = [None; 2];
-        let pool = BuddyPool::new(PhysicalAddress(0),
-                                  PageGeometry::new(4096).unwrap(),
-                                  &mut meta,
-                                  &mut heads).unwrap();
+        let pool = TestPool::new(PhysicalAddress(0),
+                                 PageGeometry::new(4096).unwrap(),
+                                 &mut meta,
+                                 &mut heads).unwrap();
         assert_eq!(pool.add_free_range(AddressRange::new(1, 4096).unwrap()),
                    Err(BuddyError::InvalidFreeRange));
         assert_eq!(pool.free_pages(), 0);
@@ -377,5 +436,51 @@ mod tests
         assert_eq!(pool.free_pages(), 2);
         pool.add_free_range(AddressRange::new(8192, 12288).unwrap()).unwrap();
         assert_eq!(pool.free_pages(), 3);
+    }
+    #[test]
+    fn allocation_failure_inspection_and_lease_drop_share_the_explicit_gate()
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        static ENTERED: AtomicUsize = AtomicUsize::new(0);
+        struct CountedGate;
+        impl InvocationGate for CountedGate
+        {
+            fn run<R>(operation: impl FnOnce() -> R) -> R
+            {
+                ENTERED.fetch_add(1, Ordering::SeqCst);
+                operation()
+            }
+        }
+        let mut meta = [PageMetadata::unavailable(); 8];
+        let mut heads = [None; 4];
+        let pool = BuddyPool::<CountedGate>::new(PhysicalAddress(0),
+                                                 PageGeometry::new(4096).unwrap(),
+                                                 &mut meta,
+                                                 &mut heads).unwrap();
+        assert_eq!(ENTERED.load(Ordering::SeqCst),
+                   0,
+                   "exclusive unpublished initialization does not take a live metadata lock");
+        pool.add_free_range(AddressRange::new(0, 8 * 4096).unwrap()).unwrap();
+        assert_eq!(ENTERED.load(Ordering::SeqCst), 1);
+        let block = pool.allocate(3).unwrap();
+        assert_eq!(ENTERED.load(Ordering::SeqCst), 2);
+        assert!(matches!(pool.allocate(0),
+                         Err(BuddyError::Exhausted { free_pages: 0,
+                                                     .. })));
+        assert_eq!(ENTERED.load(Ordering::SeqCst), 3);
+        assert_eq!(block.bytes(), 8 * 4096);
+        assert_eq!(block.address(), PhysicalAddress(0));
+        assert_eq!(ENTERED.load(Ordering::SeqCst),
+                   3,
+                   "immutable lease facts need no metadata gate");
+        drop(block);
+        assert_eq!(ENTERED.load(Ordering::SeqCst), 4, "Drop bypassed the selected gate");
+        assert_eq!(pool.free_pages(), 8);
+        assert_eq!(ENTERED.load(Ordering::SeqCst), 5);
+        assert_eq!(pool.add_free_range(AddressRange::new(0, 4096).unwrap()),
+                   Err(BuddyError::AlreadyManaged));
+        assert_eq!(ENTERED.load(Ordering::SeqCst),
+                   6,
+                   "failed admission bypassed the selected gate");
     }
 }

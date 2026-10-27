@@ -64,6 +64,8 @@ pub fn build_guest() -> Result<()>
     fs::write(out.join("platform.rs"), constants)?;
     let (system_memory, _) = platform::memory_artifacts()?;
     fs::write(out.join("platform-memory.rs"), system_memory)?;
+    fs::write(out.join("platform-virtual.rs"),
+              platform::current().virtual_memory()?.rust_constants())?;
     let mut script =
         include_str!("native.ld").replace("@BASE@", &format!("0x{:x}", descriptor.load_base))
                                  .replace("@LENGTH@",

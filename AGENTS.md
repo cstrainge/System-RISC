@@ -120,9 +120,11 @@ Performance bar: the code must not do unnecessary work. Full recomputation is th
 - The memory/app/resource first cut was accepted on 2026-10-23. Follow
   docs/MEMORY-APP-RESOURCE-MODEL.md and its staged migration. Shared handle
   ledgers use OwnerRef with the explicit native architecture invocation gate;
-  never bypass its private lock boundary. The physical buddy pool remains
-  disconnected: establish its IRQ/preemption discipline before it serves traps
-  or interrupts. Host-thread concurrency tests alone are not that proof.
+  never bypass its private lock boundary. The physical buddy pool selects the native invocation gate on metadata access
+  and lease disposal; keep its single-hart IRQ/preemption discipline intact.
+  Paging does not permit rebasing existing Rust references: initialize stable
+  mapped storage before pool/heap owners. Host-thread concurrency tests alone
+  do not qualify the native interrupt contract or multi-hart support.
 - Use the supplied rustfmt.toml. Run checks appropriate to the change and report
   actual coverage and remaining gaps. A passing subset is not full Toolbox or
   original 68k application compatibility.

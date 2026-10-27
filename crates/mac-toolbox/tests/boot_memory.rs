@@ -55,7 +55,13 @@ fn boot(output: &Path, mib: u64) -> String
     loop
     {
         let text = fs::read_to_string(&serial).unwrap_or_default();
-        if text.contains("DESKTOP_READY") || text.contains("BOOT_MEMORY_REJECTED:")
+        // Serial is streamed; preserve the entire refusal before the owned
+        // guest is stopped. A prefix alone can truncate the useful cause.
+        if text.split_inclusive('\n').any(|line| {
+                                         line.ends_with('\n')
+                                         && (line.contains("DESKTOP_READY")
+                                             || line.contains("BOOT_MEMORY_REJECTED:"))
+                                     })
         {
             return text;
         }
@@ -80,7 +86,13 @@ fn discovered_ram_drives_boot_info_and_small_machines_are_refused_before_heap_us
                             RAM or select another platform"),
             "{small}");
     assert!(!small.contains("TRAPS_READY"), "rejected machine entered System: {small}");
-    for mib in [128u64, 512, 8192]
+    let insufficient_metadata = boot(&output, 128);
+    assert!(insufficient_metadata.contains("needs")
+            && insufficient_metadata.contains("contiguous bytes of reserved buddy metadata"),
+            "{insufficient_metadata}");
+    assert!(!insufficient_metadata.contains("TRAPS_READY"),
+            "pool refusal entered normal services: {insufficient_metadata}");
+    for mib in [512u64, 8192]
     {
         let text = boot(&output, mib);
         assert!(text.contains("DESKTOP_READY"), "{mib} MiB failed:\n{text}");
@@ -114,7 +126,7 @@ fn scratch_handoff_requires_the_selected_reserved_range_and_explains_stale_boots
                                 length: 128 * 1024 * 1024 };
     let memory = Memory { ram:          &[ram],
                           reservations: &[scratch] };
-    assert_eq!(memory.display_handoff(4096, ram, scratch, scratch), Ok(()));
+    assert!(memory.display_handoff(4096, ram, scratch, scratch).is_ok());
     let stale = BootMemoryRange { base: 0x87800000,
                                   ..scratch };
     let error = memory.display_handoff(4096, ram, stale, scratch).unwrap_err();

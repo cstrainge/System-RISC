@@ -3,7 +3,7 @@
   "rust_target": "riscv64imac-unknown-none-elf",
   "llvm_profile": "rva23u64",
   "qemu_cpu": "rva23s64",
-  "qemu_ram": "128M",
+  "qemu_ram": "8G",
   "fatal_shutdown": {
     "failure_value": 78643,
     "device": "sifive-test"
@@ -60,5 +60,30 @@
       "interrupt": 0,
       "flags": 2
     }
-  ]
+  ],
+  "virtual_memory": {
+    "mode": "sv39",
+    "application": {
+      "start": "0x0000000000400000",
+      "end": "0x0000002000000000"
+    },
+    "process_kernel": {
+      "start": "0xffffffc000000000",
+      "end": "0xffffffc800000000"
+    },
+    "modules": {
+      "start": "0xffffffc800000000",
+      "end": "0xffffffd000000000"
+    },
+    "system": {
+      "start": "0xffffffd000000000",
+      "end": "0xfffffffffffff000"
+    },
+    "physmap": {
+      "start": "0xffffffe000000000",
+      "end": "0xfffffff000000000"
+    },
+    "application_image_base": "0x0000000000400000",
+    "system_image_base": "0xffffffd000200000"
+  }
 }
