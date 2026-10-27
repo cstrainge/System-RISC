@@ -19,6 +19,7 @@ pub use dispatch::surface_gate;
 
 pub mod region;
 pub mod raster;
+mod storage;
 pub mod port;
 
 pub mod service;

@@ -545,7 +545,8 @@ write/flush guarantees. See [the vhost plan](HOST-FOLDERS.md).
 
 ### P18 — Virtual host clipboard extension
 
-Status: backlog, following the working P16/P17 driver-interface gates. Add a
+Status: required System-extension proving milestone in the memory/model module
+integration stage, following the working P16/P17 driver-interface gates. Add a
 P6 kernel extension that negotiates a compatible host clipboard bridge and
 shares clipboard changes in both directions through the resident Scrap service.
 Absent/unsupported bridges leave the local clipboard working. Start with Unicode

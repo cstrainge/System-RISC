@@ -8,7 +8,6 @@ use super::{Canvas,
             raster::{self, Bitmap, TransferMode},
             region::{BooleanOp, Region},
             service::Port};
-#[derive(Clone)]
 pub struct BitmapDrawing
 {
     data:        Vec<u8>,
@@ -30,27 +29,41 @@ impl BitmapDrawing
     pub fn new(call: &BitmapCall, data: &[u8], palette: &[u32], mask: &[u8], port: Port)
                -> Result<Self, Status>
     {
+        if !matches!(call.format, 1 | 2 | 4 | 8 | 16 | 24 | 32)
+        {
+            return Err(NOT_SUPPORTED);
+        }
+        let mode = TransferMode::new(call.mode).ok_or(NOT_SUPPORTED)?;
         let pixels = if call.format == 32
         {
             if !data.len().is_multiple_of(4) || !call.row_bytes.is_multiple_of(4)
             {
                 return Err(BAD_ARGUMENT);
             }
-            data.as_chunks::<4>().0.iter().map(|b| u32::from_ne_bytes(*b)).collect()
+            let mut pixels = super::storage::vector(data.len() / 4).map_err(|_| NO_MEMORY)?;
+            pixels.extend(data.as_chunks::<4>().0.iter().map(|b| u32::from_ne_bytes(*b)));
+            pixels
         }
         else
         {
             Vec::new()
         };
-        let drawing = Self { data: if call.format == 32 { Vec::new() } else { data.to_vec() },
+        let drawing = Self { data: if call.format == 32
+                             {
+                                 Vec::new()
+                             }
+                             else
+                             {
+                                 super::storage::copy(data).map_err(|_| NO_MEMORY)?
+                             },
                              pixels,
-                             palette: palette.to_vec(),
+                             palette: super::storage::copy(palette).map_err(|_| NO_MEMORY)?,
                              format: call.format,
                              row_bytes: call.row_bytes,
                              bounds: call.bounds,
                              source: call.source_rect,
                              destination: call.destination_rect,
-                             mode: TransferMode::new(call.mode).ok_or(NOT_SUPPORTED)?,
+                             mode,
                              mask: if mask.is_empty()
                              {
                                  None

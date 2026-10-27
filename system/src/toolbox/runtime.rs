@@ -934,8 +934,7 @@ impl Desktop
                 {
                     return Err(NO_MEMORY);
                 }
-                content.commands.try_reserve(1).map_err(|_| NO_MEMORY)?;
-                content.commands.push(RenderCommand::ScrollBox(drawing));
+                content.record(RenderCommand::ScrollBox(drawing))?;
             }
             for rect in old_bounds.into_iter().flatten().chain(bounds)
             {
@@ -1044,8 +1043,7 @@ impl Desktop
                 {
                     return Err(NO_MEMORY);
                 }
-                content.commands.try_reserve(1).map_err(|_| NO_MEMORY)?;
-                content.commands.push(RenderCommand::Control(drawing));
+                content.record(RenderCommand::Control(drawing))?;
                 None
             };
             if let Some(old) = old_bounds
@@ -1112,7 +1110,10 @@ impl Desktop
             Err(e) => return e
         };
         let bounds = drawing.bounds();
-        content.commands.push(RenderCommand::Control(drawing));
+        if let Err(status) = content.record(RenderCommand::Control(drawing))
+        {
+            return status;
+        }
         self.content_changed_rect(call.window, bounds);
         OK
     }
@@ -1137,7 +1138,15 @@ impl Desktop
         {
             return NO_MEMORY;
         }
-        content.commands.push(RenderCommand::Legacy(alloc::boxed::Box::new(command)));
+        let command = match alloc::boxed::Box::try_new(command)
+        {
+            Ok(command) => command,
+            Err(_) => return NO_MEMORY
+        };
+        if let Err(status) = content.record(RenderCommand::Legacy(command))
+        {
+            return status;
+        }
         self.content_changed(id);
         OK
     }
@@ -1381,7 +1390,11 @@ impl Desktop
                 content.port = saved;
                 return Err(NO_MEMORY);
             }
-            content.commands.push(RenderCommand::Graphics(drawing));
+            if let Err(status) = content.record(RenderCommand::Graphics(drawing))
+            {
+                content.port = saved;
+                return Err(status);
+            }
             self.content_changed(SceneTarget::decode(call.target)?);
         }
         Ok(())
@@ -1411,7 +1424,7 @@ impl Desktop
         {
             return Err(NO_MEMORY);
         }
-        content.commands.push(RenderCommand::Bitmap(drawing));
+        content.record(RenderCommand::Bitmap(drawing))?;
         self.content_changed(SceneTarget::decode(call.target)?);
         Ok(())
     }
@@ -1512,12 +1525,13 @@ impl Desktop
             return Err(NO_MEMORY);
         }
         call.width = fonts.text_width(fonts_service::selection(call.selection), text)?;
-        content.commands.push(RenderCommand::Text { font:     call.selection,
-                                                    baseline: call.baseline,
-                                                    text:     super::quickdraw::retained::TextData::Owned(String::from(text)),
-                                                    color:    call.color,
-                                                    port:     alloc::sync::Arc::new(content.port.clone()),
-                                                    vertical_ink: fonts.vertical_ink_bounds(fonts_service::selection(call.selection)).ok().flatten() });
+        let mut retained_text = String::new();
+        retained_text.try_reserve_exact(text.len()).map_err(|_| NO_MEMORY)?;
+        retained_text.push_str(text);
+        let port = alloc::sync::Arc::try_new(content.port.clone()).map_err(|_| NO_MEMORY)?;
+        content.record(RenderCommand::Text { font: call.selection, baseline: call.baseline,
+            text: super::quickdraw::retained::TextData::Owned(retained_text), color: call.color, port,
+            vertical_ink: fonts.vertical_ink_bounds(fonts_service::selection(call.selection)).ok().flatten() })?;
         self.content_changed(SceneTarget::decode(call.target)?);
         Ok(())
     }
@@ -1541,7 +1555,7 @@ impl Desktop
         {
             return Err(NO_MEMORY);
         }
-        content.commands.push(RenderCommand::Picture(drawing));
+        content.record(RenderCommand::Picture(drawing))?;
         self.content_changed(SceneTarget::decode(call.target)?);
         Ok(())
     }
@@ -1565,8 +1579,7 @@ impl Desktop
         {
             return Err(NO_MEMORY);
         }
-        content.commands.try_reserve(1).map_err(|_| NO_MEMORY)?;
-        content.commands.push(RenderCommand::Image(drawing));
+        content.record(RenderCommand::Image(drawing))?;
         self.content_changed(SceneTarget::decode(call.target)?);
         Ok(())
     }
@@ -1589,7 +1602,7 @@ impl Desktop
         {
             return Err(NO_MEMORY);
         }
-        content.commands.push(RenderCommand::Icon(drawing));
+        content.record(RenderCommand::Icon(drawing))?;
         self.content_changed(SceneTarget::decode(call.target)?);
         Ok(())
     }

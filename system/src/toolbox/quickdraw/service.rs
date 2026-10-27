@@ -216,7 +216,10 @@ pub fn graphics(port: &mut Port, call: &mut abi::GraphicsCall, points: &[Point],
                 SHAPE_OVAL => Geometry::Oval(call.bounds),
                 SHAPE_ROUND_RECT => Geometry::RoundRect(call.bounds, call.corner),
                 SHAPE_ARC => Geometry::Arc(call.bounds, call.start_angle, call.arc_angle),
-                SHAPE_POLYGON => Geometry::Polygon(points.to_vec()),
+                SHAPE_POLYGON =>
+                {
+                    Geometry::Polygon(super::storage::copy(points).map_err(|_| NO_MEMORY)?)
+                }
                 SHAPE_REGION =>
                 {
                     Geometry::Region(Region::from_be_bytes(bytes).map_err(|_| BAD_ARGUMENT)?)

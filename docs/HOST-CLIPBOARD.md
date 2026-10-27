@@ -1,10 +1,11 @@
 # Virtual host clipboard extension
 
-Status: design/backlog, tracked as
+Status: required System-extension proving milestone, tracked as
 [P18](CORE-TOOLBOX-ROADMAP.md#p18--virtual-host-clipboard-extension). Implement
 after P15 built-in HFS-B/tooling and the P14 interface exercised by P16 StuffIt
 and P17 external mounts. This is the next real consumer of the
-[P6 extension SDK](SYSTEM-EXTENSIONS.md), proving typed hooks beyond storage.
+[P6 extension SDK](SYSTEM-EXTENSIONS.md), proving typed hooks beyond storage. It remains part of the memory/model module-domain
+integration stage; that stage is not complete with driver-only evidence.
 
 ## Host detection and packaging
 
@@ -17,6 +18,11 @@ separately packaged host-channel driver in `System Folder/Drivers`, both under
 the selected blessed installation. Avoid compiling host clipboard policy into
 each app or into the Scrap Manager. Keep the local Scrap implementation available
 without the extension.
+
+Supply the extension's own resource-based icon family and display it in the
+System-owned classic startup icon strip. This is part of the extension proving
+milestone, including the standard extension-icon fallback when artwork is absent;
+see [extension icon presentation](SYSTEM-EXTENSIONS.md#extension-icons-and-startup-presentation).
 
 Probe for an advertised virtual-host integration endpoint and negotiate its
 clipboard protocol/version and supported formats. A virtualization indicator
@@ -81,6 +87,10 @@ implemented, cross-app copying, clear/put batching, empty/large/unsupported offe
 conversion failures, no echo loops, concurrent changes and delayed replies.
 Fake endpoints cover deterministic failures; private VM checks must additionally
 copy real text between host editors and guest apps on each claimed host profile.
+
+Verify actual startup displays the package-owned extension icon, and a package
+without artwork uses the standard extension icon. Compare the startup strip with
+retained original Macintosh evidence.
 
 Cover absent/disabled/unsupported bridges, disconnect/reconnect, timeout, malformed
 messages, allocation limits, boot without host integration and stale/foreign

@@ -343,10 +343,21 @@ cumulative counters are part of the model, not a private inspection backdoor.
 
 Keep §13.2 stages explicit: ISA floor; facility/manager migration; owner walk and
 unified rollback; dynamic process records; live page layer; heaps/reserve/control
-zones; module domains/resource scopes/individual driver extraction/Host Clipboard;
+zones; module domains/resource scopes/individual driver extraction/**Host Clipboard Extension**;
 TE2+Text Edit; P13 privilege campaign; **Multi Hart Extension scheduler takeover in its own isolated
 commit after the full model boots cleanly**. No capstone scheduler feature slips
 into a memory change.
+
+The [Host Clipboard Extension](HOST-CLIPBOARD.md) is a required proving customer
+for System extensions, not optional follow-up work. It must be independently
+packaged in `System Folder/Extensions`, register through the generic domain/ledger
+and service machinery, preserve local Scrap when unavailable/disabled, and qualify
+real bidirectional Unicode sharing on Linux and native Windows. Registration
+retirement, pending-I/O cancellation and stale-generation rejection are part of
+that acceptance. The extension supplies its icon family through bundle resources;
+System displays it in the classic startup strip, with the standard extension icon
+as fallback. The initial code-pinning policy remains as documented; safe hot code
+reclamation is not implied by disabling the bridge.
 
 The resident scheduler remains the dependable single-hart boot implementation.
 The loadable Multi Hart Extension supplies replacement scheduling policy and
@@ -2745,3 +2756,27 @@ Public SDK refusal checks exercise these paths through resident services, includ
 unchanged pixels/output buffers and retry. This closes these specific admission
 paths, not the remaining Picture/Region raster allocations or the complete
 recovery graph. The page-backed heap/account/reserve activation gate remains open.
+
+
+### Picture and bitmap payload admission
+
+PICT command tables, text/comment/polygon operands, color tables, decoded rows
+and mapped polygon points reserve fallibly. The extended-v2 recorder admits each
+append within its existing byte limit and propagates allocation refusal; it never
+publishes a partial recording. Region operands borrow the checked original byte
+extent instead of allocating a second serialized copy.
+
+Retained Picture and bitmap drawings keep their single owned payload; unused
+deep Clone implementations are removed instead of adding a shared-owner
+allocation. Empty pictures require no payload allocation. Public SDK checks
+refuse command, operand, pixel and palette admission, preserve destination pixels,
+and then retry successfully; malformed input keeps its argument error.
+
+Retained command queues also reserve fallibly before publishing a drawing.
+Graphics restores its saved port when queue admission refuses. Legacy command
+boxing and retained text/port copies return NoMemory on refused backing. These
+entry paths do not silently discard the failed command or replace its cause.
+
+This is payload/queue admission, not a claim that complete replay is
+allocation-free. Region clips and algebra, retained port geometry and the full
+recovery-service graph remain in the pre-heap fallibility audit.

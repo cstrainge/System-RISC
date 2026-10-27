@@ -72,6 +72,27 @@ they do not require migration code. Report the reset or required recreation.
   steps. Installing or rebuilding a module must not require editing System's
   source or statically linking its implementation into every application.
 
+## Extension icons and startup presentation
+
+Each extension may provide its own icon family through the same `resources.json`
+and PNG-backed bundle-resource rules used by applications. The manifest identifies
+the family; System owns its lookup and presentation. Missing artwork uses the
+standard theme extension icon. Ship legible color/monochrome sizes; System-built
+extensions may initially use replaceable placeholder artwork.
+
+During startup, System displays the classic extension-icon strip over the boot
+screen. Add icons as extensions start in the dependency-resolved activation
+order, never filename order. Draw only newly changed icon bounds, retain admitted
+artwork during the strip's lifetime, and avoid resource decoding or extension
+callbacks in the paint path. The boot UI owns this presentation; extension
+authors supply resources and do not implement a drawing/tracking loop.
+
+Qualify strip placement, icon sizing and appearance against original Macintosh
+startup evidence when implementing the resources/presentation phase. The Host
+Clipboard Extension is the first end-to-end customer: its package-owned icon must
+appear during actual startup, with a separate missing-artwork fallback case.
+The extension's own icon is distinct from icons it registers for file kinds.
+
 ## Rust extension services
 
 Plan a small `no_std` extension SDK, distinct from the application Toolbox

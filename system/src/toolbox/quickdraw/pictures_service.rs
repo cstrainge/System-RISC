@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+
 use mac_abi::*;
 
 use super::{Canvas,
@@ -13,11 +14,13 @@ pub fn status(error: picture::Error) -> Status
         | picture::Error::UnsupportedMode(_)
         | picture::Error::UnsupportedState => NOT_SUPPORTED,
         picture::Error::FontUnavailable => NOT_FOUND,
-        picture::Error::TooLarge => NO_MEMORY,
-        _ => BAD_ARGUMENT
+        picture::Error::TooLarge | picture::Error::Allocation => NO_MEMORY,
+        picture::Error::Truncated
+        | picture::Error::InvalidHeader
+        | picture::Error::InvalidData
+        | picture::Error::CoordinateOverflow => BAD_ARGUMENT
     }
 }
-#[derive(Clone)]
 pub struct Drawing
 {
     pub picture:     Picture,

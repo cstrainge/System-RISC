@@ -1134,7 +1134,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
         }
         SURFACE =>
         unsafe { crate::toolbox::quickdraw::surface_gate(number, pointer, size) },
-        QUICKDRAW | FONT | REGION | COPY_BITS | MAPPING | IMAGE =>
+        QUICKDRAW | FONT | REGION | COPY_BITS | MAPPING | IMAGE | PICTURE =>
         unsafe {
             SESSION.with(|slot| {
                        let session = slot.borrow();

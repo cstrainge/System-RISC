@@ -249,6 +249,14 @@ impl Content
                outline:   None }
     }
 
+    /// Admit command storage before publishing an additional retained drawing.
+    pub fn record(&mut self, command: RenderCommand) -> Result<(), Status>
+    {
+        self.commands.try_reserve(1).map_err(|_| mac_abi::NO_MEMORY)?;
+        self.commands.push(command);
+        Ok(())
+    }
+
     pub fn pending_patch(id: impl Into<SceneTarget>, port: service::Port, patch: Region) -> Self
     {
         Self { port,

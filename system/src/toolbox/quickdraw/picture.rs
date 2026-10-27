@@ -25,6 +25,7 @@ pub enum Error
     InvalidHeader,
     InvalidData,
     TooLarge,
+    Allocation,
     CoordinateOverflow,
     UnsupportedOpcode(u16),
     UnsupportedMode(i16),
@@ -39,7 +40,7 @@ pub enum Version
     Two
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PictureShape
 {
     Rect(Rect),
@@ -76,7 +77,7 @@ pub enum TextPosition
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct PictureBitmap
 {
     pub bounds:      Rect,
@@ -142,7 +143,7 @@ impl PictureBitmap
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Command
 {
     Clip(Region),
@@ -204,7 +205,7 @@ pub enum Command
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Picture
 {
     pub bounds:   Rect,
@@ -278,22 +279,20 @@ impl<'a> Reader<'a>
 
     fn region(&mut self) -> Result<Region, Error>
     {
+        let start = self.position;
         let size = self.word()? as usize;
         if size < 10 || size & 1 != 0
         {
             return Err(Error::InvalidData);
         }
-        let rest = self.take(size - 2)?;
-        let mut bytes = Vec::with_capacity(size);
-        bytes.extend_from_slice(&(size as u16).to_be_bytes());
-        bytes.extend_from_slice(rest);
-        Region::from_be_bytes(&bytes).map_err(|_| Error::InvalidData)
+        self.take(size - 2)?;
+        Region::from_be_bytes(&self.bytes[start..self.position]).map_err(|_| Error::InvalidData)
     }
 
     fn pstring(&mut self) -> Result<Vec<u8>, Error>
     {
         let size = self.byte()? as usize;
-        Ok(self.take(size)?.to_vec())
+        super::storage::copy(self.take(size)?).map_err(|_| Error::Allocation)
     }
 }
 
@@ -333,7 +332,7 @@ fn unpack_bits(bytes: &[u8], expected: usize, unit: usize) -> Result<Vec<u8>, Er
 {
     let mut r = Reader { bytes,
                          position: 0 };
-    let mut output = Vec::with_capacity(expected);
+    let mut output = super::storage::vector(expected).map_err(|_| Error::Allocation)?;
     while r.position < bytes.len()
     {
         let control = r.byte()? as i8;
@@ -434,6 +433,7 @@ fn read_bitmap(r: &mut Reader<'_>, opcode: u16) -> Result<PictureBitmap, Error>
             {
                 return Err(Error::TooLarge);
             }
+            palette.try_reserve_exact(1usize << depth).map_err(|_| Error::Allocation)?;
             palette.resize(1usize << depth, 0);
             for index in 0..count
             {
@@ -457,7 +457,7 @@ fn read_bitmap(r: &mut Reader<'_>, opcode: u16) -> Result<PictureBitmap, Error>
     let mode = r.short()?;
     transfer(mode)?;
     let mask = if matches!(opcode, 0x91 | 0x99 | 0x9b) { Some(r.region()?) } else { None };
-    let mut data = Vec::new();
+    let mut data = super::storage::vector(row_bytes * height).map_err(|_| Error::Allocation)?;
     let mut final_row = row_bytes;
     if direct && pack_type == 2
     {
@@ -466,7 +466,6 @@ fn read_bitmap(r: &mut Reader<'_>, opcode: u16) -> Result<PictureBitmap, Error>
             return Err(Error::InvalidData);
         }
         final_row = row_bytes / 4 * 4;
-        data.reserve(final_row * height);
         for _ in 0..height
         {
             for rgb in r.take(row_bytes / 4 * 3)?.as_chunks::<3>().0
@@ -586,178 +585,181 @@ impl Picture
                 r.byte()?;
             }
             let opcode = if version == Version::Two { r.word()? } else { u16::from(r.byte()?) };
-            let command = match opcode
-            {
-                0 => continue,
-                0xff => break,
-                0x01 => Command::Clip(r.region()?),
-                0x02 => Command::BackgroundPattern(r.pattern()?),
-                0x03 => Command::TextFont(r.short()?),
-                0x04 => Command::TextFace(r.byte()?),
-                0x05 => Command::TextMode(r.short()?),
-                0x06 => Command::SpaceExtra(r.long()? as i32),
-                0x07 => Command::PenSize(r.point()?),
-                0x08 => Command::PenMode(r.short()?),
-                0x09 => Command::PenPattern(r.pattern()?),
-                0x0a => Command::FillPattern(r.pattern()?),
-                0x0b => Command::OvalSize(r.point()?),
-                0x0c =>
+            let command =
+                match opcode
                 {
-                    let h = r.short()?;
-                    Command::Origin(Point { h,
-                                            v: r.short()? })
-                }
-                0x0d => Command::TextSize(r.short()?),
-                0x0e => Command::Foreground(classic_color(r.long()?)?),
-                0x0f => Command::Background(classic_color(r.long()?)?),
-                0x10 =>
-                {
-                    Command::TextRatio { numerator:   r.point()?,
-                                         denominator: r.point()? }
-                }
-                0x15 => Command::PenFraction(r.word()?),
-                0x16 => Command::CharExtra(r.short()?),
-                0x1a => Command::RgbForeground([r.word()?, r.word()?, r.word()?]),
-                0x1b => Command::RgbBackground([r.word()?, r.word()?, r.word()?]),
-                0x20 =>
-                {
-                    let from = r.point()?;
-                    let to = r.point()?;
-                    line = to;
-                    Command::Line { from,
-                                    to }
-                }
-                0x21 =>
-                {
-                    let from = line;
-                    let to = r.point()?;
-                    line = to;
-                    Command::Line { from,
-                                    to }
-                }
-                0x22 | 0x23 =>
-                {
-                    let from = if opcode == 0x22 { r.point()? } else { line };
-                    let dh = r.byte()? as i8;
-                    let dv = r.byte()? as i8;
-                    let to = Point { h: from.h.wrapping_add(i16::from(dh)),
-                                     v: from.v.wrapping_add(i16::from(dv)) };
-                    line = to;
-                    Command::Line { from,
-                                    to }
-                }
-                0x28 =>
-                {
-                    Command::Text { position: TextPosition::Absolute(r.point()?),
-                                    bytes:    r.pstring()? }
-                }
-                0x29..=0x2b =>
-                {
-                    let dh = if opcode != 0x2a { r.byte()? } else { 0 };
-                    let dv = if opcode != 0x29 { r.byte()? } else { 0 };
-                    Command::Text { position: TextPosition::Delta { dh,
-                                                                    dv },
-                                    bytes:    r.pstring()? }
-                }
-                0x2c =>
-                {
-                    let size = usize::from(r.word()?);
-                    let payload = r.take(size)?;
-                    let mut body = Reader { bytes:    payload,
-                                            position: 0 };
-                    let id = body.short()?;
-                    let name = body.pstring()?;
-                    if body.position != size
+                    0 => continue,
+                    0xff => break,
+                    0x01 => Command::Clip(r.region()?),
+                    0x02 => Command::BackgroundPattern(r.pattern()?),
+                    0x03 => Command::TextFont(r.short()?),
+                    0x04 => Command::TextFace(r.byte()?),
+                    0x05 => Command::TextMode(r.short()?),
+                    0x06 => Command::SpaceExtra(r.long()? as i32),
+                    0x07 => Command::PenSize(r.point()?),
+                    0x08 => Command::PenMode(r.short()?),
+                    0x09 => Command::PenPattern(r.pattern()?),
+                    0x0a => Command::FillPattern(r.pattern()?),
+                    0x0b => Command::OvalSize(r.point()?),
+                    0x0c =>
                     {
-                        return Err(Error::InvalidData);
+                        let h = r.short()?;
+                        Command::Origin(Point { h,
+                                                v: r.short()? })
                     }
-                    Command::FontName { id,
-                                        name }
-                }
-                0x2e =>
-                {
-                    if r.word()? != 4
+                    0x0d => Command::TextSize(r.short()?),
+                    0x0e => Command::Foreground(classic_color(r.long()?)?),
+                    0x0f => Command::Background(classic_color(r.long()?)?),
+                    0x10 =>
                     {
-                        return Err(Error::UnsupportedState);
+                        Command::TextRatio { numerator:   r.point()?,
+                                             denominator: r.point()? }
                     }
-                    Command::GlyphState { outline_preferred: r.byte()? != 0,
-                                          preserve_glyph:    r.byte()? != 0,
-                                          fractional_widths: r.byte()? != 0,
-                                          scaling_disabled:  r.byte()? != 0 }
-                }
-                0x30..=0x6c if opcode & 7 <= 4 =>
-                {
-                    let family = ((opcode - 0x30) / 16) as usize;
-                    let same = opcode & 8 != 0;
-                    let bounds = if same
+                    0x15 => Command::PenFraction(r.word()?),
+                    0x16 => Command::CharExtra(r.short()?),
+                    0x1a => Command::RgbForeground([r.word()?, r.word()?, r.word()?]),
+                    0x1b => Command::RgbBackground([r.word()?, r.word()?, r.word()?]),
+                    0x20 =>
                     {
-                        last[family].ok_or(Error::InvalidData)?
+                        let from = r.point()?;
+                        let to = r.point()?;
+                        line = to;
+                        Command::Line { from,
+                                        to }
                     }
-                    else
+                    0x21 =>
                     {
-                        let rect = r.rect()?;
-                        last[family] = Some(rect);
-                        rect
-                    };
-                    let shape = match family
+                        let from = line;
+                        let to = r.point()?;
+                        line = to;
+                        Command::Line { from,
+                                        to }
+                    }
+                    0x22 | 0x23 =>
                     {
-                        0 => PictureShape::Rect(bounds),
-                        1 => PictureShape::RoundRect(bounds),
-                        2 => PictureShape::Oval(bounds),
-                        3 =>
+                        let from = if opcode == 0x22 { r.point()? } else { line };
+                        let dh = r.byte()? as i8;
+                        let dv = r.byte()? as i8;
+                        let to = Point { h: from.h.wrapping_add(i16::from(dh)),
+                                         v: from.v.wrapping_add(i16::from(dv)) };
+                        line = to;
+                        Command::Line { from,
+                                        to }
+                    }
+                    0x28 =>
+                    {
+                        Command::Text { position: TextPosition::Absolute(r.point()?),
+                                        bytes:    r.pstring()? }
+                    }
+                    0x29..=0x2b =>
+                    {
+                        let dh = if opcode != 0x2a { r.byte()? } else { 0 };
+                        let dv = if opcode != 0x29 { r.byte()? } else { 0 };
+                        Command::Text { position: TextPosition::Delta { dh,
+                                                                        dv },
+                                        bytes:    r.pstring()? }
+                    }
+                    0x2c =>
+                    {
+                        let size = usize::from(r.word()?);
+                        let payload = r.take(size)?;
+                        let mut body = Reader { bytes:    payload,
+                                                position: 0 };
+                        let id = body.short()?;
+                        let name = body.pstring()?;
+                        if body.position != size
                         {
-                            PictureShape::Arc { bounds,
-                                                start: r.short()?,
-                                                sweep: r.short()? }
+                            return Err(Error::InvalidData);
                         }
-                        _ => return Err(Error::InvalidData)
-                    };
-                    Command::Draw { shape,
-                                    verb: verb(opcode & 7)? }
-                }
-                0x70..=0x74 =>
-                {
-                    let size = usize::from(r.word()?);
-                    if size < 10 || (size - 10) % 4 != 0
-                    {
-                        return Err(Error::InvalidData);
+                        Command::FontName { id,
+                                            name }
                     }
-                    let mut body = Reader { bytes:    r.take(size - 2)?,
-                                            position: 0 };
-                    body.rect()?;
-                    let mut points = Vec::new();
-                    while body.position < body.bytes.len()
+                    0x2e =>
                     {
-                        points.push(body.point()?);
+                        if r.word()? != 4
+                        {
+                            return Err(Error::UnsupportedState);
+                        }
+                        Command::GlyphState { outline_preferred: r.byte()? != 0,
+                                              preserve_glyph:    r.byte()? != 0,
+                                              fractional_widths: r.byte()? != 0,
+                                              scaling_disabled:  r.byte()? != 0 }
                     }
-                    Command::Draw { shape: PictureShape::Polygon(points),
-                                    verb:  verb(opcode & 7)? }
-                }
-                0x80..=0x84 =>
-                {
-                    Command::Draw { shape: PictureShape::Region(r.region()?),
-                                    verb:  verb(opcode & 7)? }
-                }
-                0x90 | 0x91 | 0x98..=0x9b => Command::Bitmap(read_bitmap(&mut r, opcode)?),
-                0xa0 =>
-                {
-                    Command::Comment { kind: r.word()?,
-                                       data: Vec::new() }
-                }
-                0xa1 =>
-                {
-                    let kind = r.word()?;
-                    let size = usize::from(r.word()?);
-                    Command::Comment { kind,
-                                       data: r.take(size)?.to_vec() }
-                }
-                0x0c00 if version == Version::Two =>
-                {
-                    r.take(24)?;
-                    continue;
-                }
-                _ => return Err(Error::UnsupportedOpcode(opcode))
-            };
+                    0x30..=0x6c if opcode & 7 <= 4 =>
+                    {
+                        let family = ((opcode - 0x30) / 16) as usize;
+                        let same = opcode & 8 != 0;
+                        let bounds = if same
+                        {
+                            last[family].ok_or(Error::InvalidData)?
+                        }
+                        else
+                        {
+                            let rect = r.rect()?;
+                            last[family] = Some(rect);
+                            rect
+                        };
+                        let shape = match family
+                        {
+                            0 => PictureShape::Rect(bounds),
+                            1 => PictureShape::RoundRect(bounds),
+                            2 => PictureShape::Oval(bounds),
+                            3 =>
+                            {
+                                PictureShape::Arc { bounds,
+                                                    start: r.short()?,
+                                                    sweep: r.short()? }
+                            }
+                            _ => return Err(Error::InvalidData)
+                        };
+                        Command::Draw { shape,
+                                        verb: verb(opcode & 7)? }
+                    }
+                    0x70..=0x74 =>
+                    {
+                        let size = usize::from(r.word()?);
+                        if size < 10 || (size - 10) % 4 != 0
+                        {
+                            return Err(Error::InvalidData);
+                        }
+                        let mut body = Reader { bytes:    r.take(size - 2)?,
+                                                position: 0 };
+                        body.rect()?;
+                        let mut points =
+                            super::storage::vector((size - 10) / 4).map_err(|_| Error::Allocation)?;
+                        while body.position < body.bytes.len()
+                        {
+                            points.push(body.point()?);
+                        }
+                        Command::Draw { shape: PictureShape::Polygon(points),
+                                        verb:  verb(opcode & 7)? }
+                    }
+                    0x80..=0x84 =>
+                    {
+                        Command::Draw { shape: PictureShape::Region(r.region()?),
+                                        verb:  verb(opcode & 7)? }
+                    }
+                    0x90 | 0x91 | 0x98..=0x9b => Command::Bitmap(read_bitmap(&mut r, opcode)?),
+                    0xa0 =>
+                    {
+                        Command::Comment { kind: r.word()?,
+                                           data: Vec::new() }
+                    }
+                    0xa1 =>
+                    {
+                        let kind = r.word()?;
+                        let size = usize::from(r.word()?);
+                        Command::Comment { kind,
+                                       data: super::storage::copy(r.take(size)?)
+                                           .map_err(|_| Error::Allocation)? }
+                    }
+                    0x0c00 if version == Version::Two =>
+                    {
+                        r.take(24)?;
+                        continue;
+                    }
+                    _ => return Err(Error::UnsupportedOpcode(opcode))
+                };
             if let Command::Bitmap(bitmap) = &command
             {
                 decoded_bytes =
@@ -767,6 +769,7 @@ impl Picture
                     return Err(Error::TooLarge);
                 }
             }
+            result.commands.try_reserve(1).map_err(|_| Error::Allocation)?;
             result.commands.push(command);
         }
         // PicSize is only a 16-bit legacy hint; real large v2 handles can exceed it.
@@ -796,6 +799,7 @@ impl Picture
         {
             return Err(Error::TooLarge);
         }
+        self.commands.try_reserve(1).map_err(|_| Error::Allocation)?;
         self.commands.push(command);
         Ok(())
     }
@@ -1148,7 +1152,7 @@ impl Picture
                         PictureVerb::Invert => Verb::Invert,
                         PictureVerb::Fill => Verb::Fill(fill)
                     };
-                    let points;
+                    let mut points;
                     let region;
                     let mapped = match shape
                     {
@@ -1170,8 +1174,13 @@ impl Picture
                         }
                         PictureShape::Polygon(values) =>
                         {
-                            points =
-                                values.iter().map(|p| map(*p)).collect::<Result<Vec<_>, _>>()?;
+                            points = super::storage::vector(values.len()).map_err(|_| {
+                                                                             Error::Allocation
+                                                                         })?;
+                            for point in values
+                            {
+                                points.push(map(*point)?);
+                            }
                             Shape::Polygon(&points)
                         }
                         PictureShape::Region(value) =>
@@ -1238,72 +1247,88 @@ struct Writer
 }
 impl Writer
 {
-    fn word(&mut self, v: u16)
+    fn append(&mut self, bytes: &[u8]) -> Result<(), Error>
     {
-        self.bytes.extend_from_slice(&v.to_be_bytes());
-    }
-
-    fn short(&mut self, v: i16)
-    {
-        self.word(v as u16);
-    }
-
-    fn long(&mut self, v: u32)
-    {
-        self.bytes.extend_from_slice(&v.to_be_bytes());
-    }
-
-    fn point(&mut self, p: Point)
-    {
-        self.short(p.v);
-        self.short(p.h);
-    }
-
-    fn rect(&mut self, r: Rect)
-    {
-        self.short(r.top);
-        self.short(r.left);
-        self.short(r.bottom);
-        self.short(r.right);
-    }
-
-    fn opcode(&mut self, opcode: u16)
-    {
-        if self.bytes.len() & 1 != 0
+        if self.bytes.len().checked_add(bytes.len()).is_none_or(|n| n > MAX_BYTES)
         {
-            self.bytes.push(0);
+            return Err(Error::TooLarge);
         }
-        self.word(opcode);
-    }
-
-    fn rgb(&mut self, rgb: [u16; 3])
-    {
-        for value in rgb
-        {
-            self.word(value);
-        }
-    }
-
-    fn color(&mut self, color: u32)
-    {
-        self.rgb([((color >> 16) as u16 & 255) * 257,
-                  ((color >> 8) as u16 & 255) * 257,
-                  (color as u16 & 255) * 257]);
-    }
-
-    fn string(&mut self, bytes: &[u8]) -> Result<(), Error>
-    {
-        self.bytes.push(bytes.len().try_into().map_err(|_| Error::TooLarge)?);
+        self.bytes.try_reserve(bytes.len()).map_err(|_| Error::Allocation)?;
         self.bytes.extend_from_slice(bytes);
         Ok(())
     }
 
-    fn region(&mut self, region: &Region) -> Result<(), Error>
+    fn byte(&mut self, v: u8) -> Result<(), Error>
     {
-        self.bytes.extend_from_slice(&region.to_be_bytes().map_err(|_| Error::TooLarge)?);
+        self.append(&[v])
+    }
+
+    fn word(&mut self, v: u16) -> Result<(), Error>
+    {
+        self.append(&v.to_be_bytes())
+    }
+
+    fn short(&mut self, v: i16) -> Result<(), Error>
+    {
+        self.word(v as u16)
+    }
+
+    fn long(&mut self, v: u32) -> Result<(), Error>
+    {
+        self.append(&v.to_be_bytes())
+    }
+
+    fn point(&mut self, p: Point) -> Result<(), Error>
+    {
+        self.short(p.v)?;
+        self.short(p.h)
+    }
+
+    fn rect(&mut self, r: Rect) -> Result<(), Error>
+    {
+        self.short(r.top)?;
+        self.short(r.left)?;
+        self.short(r.bottom)?;
+        self.short(r.right)
+    }
+
+    fn opcode(&mut self, opcode: u16) -> Result<(), Error>
+    {
+        if self.bytes.len() & 1 != 0
+        {
+            self.byte(0)?;
+        }
+        self.word(opcode)
+    }
+
+    fn rgb(&mut self, rgb: [u16; 3]) -> Result<(), Error>
+    {
+        for value in rgb
+        {
+            self.word(value)?;
+        }
         Ok(())
     }
+
+    fn color(&mut self, color: u32) -> Result<(), Error>
+    {
+        self.rgb([((color >> 16) as u16 & 255) * 257,
+                  ((color >> 8) as u16 & 255) * 257,
+                  (color as u16 & 255) * 257])
+    }
+
+    fn string(&mut self, bytes: &[u8]) -> Result<(), Error>
+    {
+        self.byte(bytes.len().try_into().map_err(|_| Error::TooLarge)?)?;
+        self.append(bytes)
+    }
+
+    fn region(&mut self, region: &Region) -> Result<(), Error>
+    {
+        self.append(&region.to_be_bytes().map_err(|_| Error::TooLarge)?)
+    }
 }
+
 impl Picture
 {
     /// Emit standard extended-v2 PICT bytes suitable for a PICT resource or handle.
@@ -1315,24 +1340,24 @@ impl Picture
             return Err(Error::InvalidHeader);
         }
         let mut w = Writer { bytes: Vec::new() };
-        w.word(0);
-        w.rect(self.bounds);
-        w.opcode(0x11);
-        w.word(0x02ff);
-        w.opcode(0x0c00);
-        w.word(0xfffe);
-        w.word(0);
-        w.long(72 << 16);
-        w.long(72 << 16);
-        w.rect(self.bounds);
-        w.long(0);
+        w.word(0)?;
+        w.rect(self.bounds)?;
+        w.opcode(0x11)?;
+        w.word(0x02ff)?;
+        w.opcode(0x0c00)?;
+        w.word(0xfffe)?;
+        w.word(0)?;
+        w.long(72 << 16)?;
+        w.long(72 << 16)?;
+        w.rect(self.bounds)?;
+        w.long(0)?;
         for command in &self.commands
         {
             match command
             {
                 Command::Clip(r) =>
                 {
-                    w.opcode(1);
+                    w.opcode(1)?;
                     w.region(r)?;
                 }
                 Command::BackgroundPattern(p)
@@ -1344,8 +1369,8 @@ impl Picture
                                  Command::BackgroundPattern(_) => 2,
                                  Command::PenPattern(_) => 9,
                                  _ => 10
-                             });
-                    w.bytes.extend_from_slice(p);
+                             })?;
+                    w.append(p)?;
                 }
                 Command::TextFont(v)
                 | Command::TextMode(v)
@@ -1360,34 +1385,34 @@ impl Picture
                                  Command::PenMode(_) => 8,
                                  Command::TextSize(_) => 13,
                                  _ => 22
-                             });
-                    w.short(*v);
+                             })?;
+                    w.short(*v)?;
                 }
                 Command::TextFace(v) =>
                 {
-                    w.opcode(4);
-                    w.bytes.push(*v);
+                    w.opcode(4)?;
+                    w.byte(*v)?;
                 }
                 Command::SpaceExtra(v) =>
                 {
-                    w.opcode(6);
-                    w.long(*v as u32);
+                    w.opcode(6)?;
+                    w.long(*v as u32)?;
                 }
                 Command::PenSize(v) | Command::OvalSize(v) =>
                 {
-                    w.opcode(if matches!(command, Command::PenSize(_)) { 7 } else { 11 });
-                    w.point(*v);
+                    w.opcode(if matches!(command, Command::PenSize(_)) { 7 } else { 11 })?;
+                    w.point(*v)?;
                 }
                 Command::Origin(v) =>
                 {
-                    w.opcode(12);
-                    w.short(v.h);
-                    w.short(v.v);
+                    w.opcode(12)?;
+                    w.short(v.h)?;
+                    w.short(v.v)?;
                 }
                 Command::Foreground(v) | Command::Background(v) =>
                 {
-                    w.opcode(if matches!(command, Command::Foreground(_)) { 0x1a } else { 0x1b });
-                    w.color(*v);
+                    w.opcode(if matches!(command, Command::Foreground(_)) { 0x1a } else { 0x1b })?;
+                    w.color(*v)?;
                 }
                 Command::RgbForeground(v) | Command::RgbBackground(v) =>
                 {
@@ -1398,27 +1423,27 @@ impl Picture
                              else
                              {
                                  0x1b
-                             });
-                    w.rgb(*v);
+                             })?;
+                    w.rgb(*v)?;
                 }
                 Command::TextRatio { numerator,
                                      denominator } =>
                 {
-                    w.opcode(16);
-                    w.point(*numerator);
-                    w.point(*denominator);
+                    w.opcode(16)?;
+                    w.point(*numerator)?;
+                    w.point(*denominator)?;
                 }
                 Command::PenFraction(v) =>
                 {
-                    w.opcode(21);
-                    w.word(*v);
+                    w.opcode(21)?;
+                    w.word(*v)?;
                 }
                 Command::FontName { id,
                                     name } =>
                 {
-                    w.opcode(0x2c);
-                    w.word((name.len() + 3).try_into().map_err(|_| Error::TooLarge)?);
-                    w.short(*id);
+                    w.opcode(0x2c)?;
+                    w.word((name.len() + 3).try_into().map_err(|_| Error::TooLarge)?)?;
+                    w.short(*id)?;
                     w.string(name)?;
                 }
                 Command::GlyphState { outline_preferred,
@@ -1426,19 +1451,19 @@ impl Picture
                                       fractional_widths,
                                       scaling_disabled } =>
                 {
-                    w.opcode(0x2e);
-                    w.word(4);
-                    w.bytes.extend_from_slice(&[u8::from(*outline_preferred),
-                                                u8::from(*preserve_glyph),
-                                                u8::from(*fractional_widths),
-                                                u8::from(*scaling_disabled)]);
+                    w.opcode(0x2e)?;
+                    w.word(4)?;
+                    w.append(&[u8::from(*outline_preferred),
+                               u8::from(*preserve_glyph),
+                               u8::from(*fractional_widths),
+                               u8::from(*scaling_disabled)])?;
                 }
                 Command::Line { from,
                                 to } =>
                 {
-                    w.opcode(0x20);
-                    w.point(*from);
-                    w.point(*to);
+                    w.opcode(0x20)?;
+                    w.point(*from)?;
+                    w.point(*to)?;
                 }
                 Command::Text { position,
                                 bytes } =>
@@ -1447,14 +1472,14 @@ impl Picture
                     {
                         TextPosition::Absolute(p) =>
                         {
-                            w.opcode(0x28);
-                            w.point(*p);
+                            w.opcode(0x28)?;
+                            w.point(*p)?;
                         }
                         TextPosition::Delta { dh,
                                               dv } =>
                         {
-                            w.opcode(0x2b);
-                            w.bytes.extend_from_slice(&[*dh, *dv]);
+                            w.opcode(0x2b)?;
+                            w.append(&[*dh, *dv])?;
                         }
                     }
                     w.string(bytes)?;
@@ -1482,28 +1507,28 @@ impl Picture
                                          PictureShape::RoundRect(_) => 0x40,
                                          _ => 0x50
                                      }
-                                     + offset);
-                            w.rect(*r);
+                                     + offset)?;
+                            w.rect(*r)?;
                         }
                         PictureShape::Arc { bounds,
                                             start,
                                             sweep } =>
                         {
-                            w.opcode(0x60 + offset);
-                            w.rect(*bounds);
-                            w.short(*start);
-                            w.short(*sweep);
+                            w.opcode(0x60 + offset)?;
+                            w.rect(*bounds)?;
+                            w.short(*start)?;
+                            w.short(*sweep)?;
                         }
                         PictureShape::Polygon(points) =>
                         {
-                            w.opcode(0x70 + offset);
+                            w.opcode(0x70 + offset)?;
                             w.word((10usize.checked_add(points.len()
                                                               .checked_mul(4)
                                                               .ok_or(Error::TooLarge)?)
                                            .ok_or(Error::TooLarge)?).try_into()
                                                                     .map_err(|_| {
                                                                         Error::TooLarge
-                                                                    })?);
+                                                                    })?)?;
                             let bounds = if let Some(first) = points.first()
                             {
                                 let mut r = Rect::new(first.h, first.v, first.h, first.v);
@@ -1520,15 +1545,15 @@ impl Picture
                             {
                                 Rect::ZERO
                             };
-                            w.rect(bounds);
+                            w.rect(bounds)?;
                             for p in points
                             {
-                                w.point(*p);
+                                w.point(*p)?;
                             }
                         }
                         PictureShape::Region(r) =>
                         {
-                            w.opcode(0x80 + offset);
+                            w.opcode(0x80 + offset)?;
                             w.region(r)?;
                         }
                     }
@@ -1558,23 +1583,23 @@ impl Picture
                              else
                              {
                                  0x90
-                             });
+                             })?;
                     if direct
                     {
-                        w.long(0xff);
+                        w.long(0xff)?;
                     }
-                    w.word(bitmap.row_bytes as u16 | if direct || indexed { 0x8000 } else { 0 });
-                    w.rect(bitmap.bounds);
+                    w.word(bitmap.row_bytes as u16 | if direct || indexed { 0x8000 } else { 0 })?;
+                    w.rect(bitmap.bounds)?;
                     if direct || indexed
                     {
-                        w.word(0);
-                        w.word(1);
-                        w.long(0);
-                        w.long(72 << 16);
-                        w.long(72 << 16);
-                        w.word(if direct { 16 } else { 0 });
-                        w.word(u16::from(bitmap.depth));
-                        w.word(if direct { 3 } else { 1 });
+                        w.word(0)?;
+                        w.word(1)?;
+                        w.long(0)?;
+                        w.long(72 << 16)?;
+                        w.long(72 << 16)?;
+                        w.word(if direct { 16 } else { 0 })?;
+                        w.word(u16::from(bitmap.depth))?;
+                        w.word(if direct { 3 } else { 1 })?;
                         w.word(if bitmap.depth == 16
                                {
                                    5
@@ -1586,49 +1611,49 @@ impl Picture
                                else
                                {
                                    u16::from(bitmap.depth)
-                               });
-                        w.long(0);
-                        w.long(0);
-                        w.long(0);
+                               })?;
+                        w.long(0)?;
+                        w.long(0)?;
+                        w.long(0)?;
                         if indexed && !direct
                         {
                             if bitmap.palette.is_empty() || bitmap.palette.len() > 256
                             {
                                 return Err(Error::InvalidData);
                             }
-                            w.long(0);
-                            w.word(0);
-                            w.word((bitmap.palette.len() - 1) as u16);
+                            w.long(0)?;
+                            w.word(0)?;
+                            w.word((bitmap.palette.len() - 1) as u16)?;
                             for (index, color) in bitmap.palette.iter().enumerate()
                             {
-                                w.word(index as u16);
-                                w.color(*color);
+                                w.word(index as u16)?;
+                                w.color(*color)?;
                             }
                         }
                     }
-                    w.rect(bitmap.source);
-                    w.rect(bitmap.destination);
-                    w.short(bitmap.mode);
+                    w.rect(bitmap.source)?;
+                    w.rect(bitmap.destination)?;
+                    w.short(bitmap.mode)?;
                     if let Some(mask) = &bitmap.mask
                     {
                         w.region(mask)?;
                     }
-                    w.bytes.extend_from_slice(&bitmap.data);
+                    w.append(&bitmap.data)?;
                 }
                 Command::Comment { kind,
                                    data } =>
                 {
                     if data.is_empty()
                     {
-                        w.opcode(0xa0);
-                        w.word(*kind);
+                        w.opcode(0xa0)?;
+                        w.word(*kind)?;
                     }
                     else
                     {
-                        w.opcode(0xa1);
-                        w.word(*kind);
-                        w.word(data.len().try_into().map_err(|_| Error::TooLarge)?);
-                        w.bytes.extend_from_slice(data);
+                        w.opcode(0xa1)?;
+                        w.word(*kind)?;
+                        w.word(data.len().try_into().map_err(|_| Error::TooLarge)?)?;
+                        w.append(data)?;
                     }
                 }
             }
@@ -1637,7 +1662,7 @@ impl Picture
                 return Err(Error::TooLarge);
             }
         }
-        w.opcode(0xff);
+        w.opcode(0xff)?;
         let size = w.bytes.len() as u16;
         w.bytes[..2].copy_from_slice(&size.to_be_bytes());
         // The decoder is also the recorder's structural validation boundary.
