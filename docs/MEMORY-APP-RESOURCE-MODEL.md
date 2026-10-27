@@ -2693,3 +2693,22 @@ page tables. Refresh updates changed statistics without rebuilding immutable
 rows. Per-process gauges await actual private roots; protected reserve/budget
 metrics await the page-backed allocator. There is no synthetic accounting or
 periodic ledger sampling on this view.
+
+### Control-paint heap preflight
+
+Managed controls admit immutable title backing fallibly before creation or
+configuration is published. Drawing snapshots share those bytes and retain
+small appearance values; highlight/value changes and cancellation do not create
+another title allocation. Retained older drawings keep their own appearance and
+title lifetime. The full native CDEF state is expanded at the existing invocation
+binding, keeping the 768-byte wire title out of each retained command's inline
+layout. Stateless drawing remains fallible before publication. Paint also handles
+an absent snapshot without a resident unwrap/panic.
+
+The public SDK allocation-refusal campaign verifies that a failed title change
+preserves both control state and active tracking, that cancellation and existing
+title draw preparation work while new allocations are refused, and that retry
+succeeds. These checks cover Control Manager admission/snapshot preparation;
+they do not claim that font rendering, composition or the complete emergency
+service graph is allocation-free. Page-backed/accounted heap activation and its
+transitive recovery-kit audit remain separate gates.

@@ -1,5 +1,6 @@
 //! Resident Control Manager. Each CDEF owns drawing, hit geometry and tracking math.
-use alloc::boxed::Box;
+mod snapshot;
+use alloc::sync::Arc;
 
 pub use mac_abi::definitions::{CDEF, ControlDefinitionState};
 use mac_abi::{controls::*, *};
@@ -13,7 +14,7 @@ enum State
         bounds:   Rect,
         progress: ProgressRange
     },
-    Standard(Box<ControlDefinitionState>)
+    Standard(snapshot::Standard)
 }
 impl State
 {
@@ -21,7 +22,7 @@ impl State
     {
         match self
         {
-            Self::Standard(s) => Some(**s),
+            Self::Standard(s) => Some(s.wire()),
             Self::Progress { bounds,
                              progress } =>
             {
@@ -106,13 +107,10 @@ impl Drawing
     pub fn storage(&self) -> usize
     {
         core::mem::size_of::<Self>()
-        + if matches!(self.state, State::Standard(_))
+        + match &self.state
         {
-            core::mem::size_of::<ControlDefinitionState>()
-        }
-        else
-        {
-            0
+            State::Standard(state) => state.storage(),
+            _ => 0
         }
     }
 
@@ -155,7 +153,12 @@ impl Drawing
         }
         else
         {
-            (1, (scrollbar.as_mut().unwrap() as *mut ScrollbarState).cast())
+            let Some(scrollbar) = scrollbar.as_mut()
+            else
+            {
+                return Err(BAD_ABI);
+            };
+            (1, (scrollbar as *mut ScrollbarState).cast())
         };
         let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
                                         kind: CDEF,
@@ -252,6 +255,12 @@ pub fn validate(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
 pub fn prepare(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
                -> Result<Option<Drawing>, Status>
 {
+    prepare_with_title(call, entry, gate, None)
+}
+fn prepare_with_title(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate,
+                      title: Option<&Arc<snapshot::Title>>)
+                      -> Result<Option<Drawing>, Status>
+{
     let id = definition_id(call)?;
     if id == 1
     {
@@ -289,7 +298,8 @@ pub fn prepare(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
                                  }
                                  else
                                  {
-                                     State::Standard(Box::new(call.standard))
+                                     State::Standard(snapshot::Standard::new(&call.standard,
+                                                                             title)?)
                                  },
                                  entry,
                                  gate,

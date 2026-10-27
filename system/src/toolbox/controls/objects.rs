@@ -2,6 +2,8 @@
 //! tracking policy. No caller memory or callback survives a request.
 #![forbid(unsafe_code)]
 
+use alloc::sync::Arc;
+
 use mac_abi::{controls::*, *};
 
 use crate::toolbox::handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store};
@@ -52,6 +54,7 @@ struct Object
     window:    u64,
     spec:      Spec,
     scrollbar: bool,
+    title:     Option<Arc<super::snapshot::Title>>,
     tracking:  Option<Tracking>
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -167,6 +170,7 @@ impl Manager
         {
             return Err(BAD_ARGUMENT);
         }
+        let mut admitted_title = None;
         if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR | CONFIGURE_OBJECT)
         {
             let scrollbar = if operation == CONFIGURE_OBJECT
@@ -195,6 +199,20 @@ impl Manager
                 // Validate through the real resource before publishing or mutating.
                 super::validate(&mut spec, entry, gate)?;
             }
+            if !scrollbar
+               && !matches!(spec.procedure,
+                            PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE)
+            {
+                let previous = if operation == CONFIGURE_OBJECT
+                {
+                    self.get(call.id, owner)?.title.as_ref()
+                }
+                else
+                {
+                    None
+                };
+                admitted_title = Some(super::snapshot::Title::admit(&spec.standard, previous)?);
+            }
             if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
             {
                 call.id = self.objects
@@ -202,6 +220,7 @@ impl Manager
                                       Object { window: call.window,
                                                spec: Spec::from_call(&spec),
                                                scrollbar,
+                                               title:admitted_title.clone(),
                                                tracking: None })
                               .map_err(|error| {
                                   #[cfg(target_arch = "riscv64")]
@@ -245,6 +264,8 @@ impl Manager
             CREATE_STANDARD | CREATE_SCROLLBAR | INFO_OBJECT | DRAW_OBJECT => (),
             CONFIGURE_OBJECT =>
             {
+                // New title backing was admitted before any state/capture mutation.
+                o.title = admitted_title;
                 let cancel = o.spec.standard.bounds != call.standard.bounds
                              || o.spec.standard.enabled != call.standard.enabled
                              || o.spec.scrollbar.bounds != call.scrollbar.bounds
@@ -379,7 +400,7 @@ impl Manager
         if changed || operation == DRAW_OBJECT
         {
             let mut state = o.spec.call(if o.scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD });
-            let mut drawing = super::prepare(&mut state, entry, gate)?.ok_or(BAD_ARGUMENT)?;
+            let mut drawing = super::prepare_with_title(&mut state, entry, gate, o.title.as_ref())?.ok_or(BAD_ARGUMENT)?;
             drawing.id = call.id;
             if changed
                && operation == CONFIGURE_OBJECT
