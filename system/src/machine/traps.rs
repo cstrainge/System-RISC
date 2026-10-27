@@ -5,6 +5,12 @@ use mac_abi::{traps::*, *};
 
 use crate::toolbox;
 mod state;
+mod hart;
+pub(crate) use hart::{Error as EntryError, PreparedEntry};
+pub(crate) const MAX_TRAP_DEPTH: usize = 8;
+// One bootstrap baseline, eight admitted service levels, and one typed-refusal
+// frame. The bound follows the existing native service recursion contract.
+pub(crate) const CPU_SLOTS: usize = MAX_TRAP_DEPTH + 2;
 pub(crate) use state::SavedState;
 static CPU_STATE_BYTES: spin::Once<usize> = spin::Once::new();
 global_asm!(include_str!("traps.S"),
@@ -15,7 +21,19 @@ global_asm!(include_str!("traps.S"),
     vtype=const core::mem::offset_of!(TrapFrame,vtype),
     vstart=const core::mem::offset_of!(TrapFrame,vstart),
     vcsr=const core::mem::offset_of!(TrapFrame,vcsr),
-    saved_sp=const core::mem::offset_of!(TrapFrame,stack_pointer));
+    saved_sp=const core::mem::offset_of!(TrapFrame,stack_pointer),
+    prior_depth=const core::mem::offset_of!(TrapFrame,prior_depth),
+    ctl_entering=const core::mem::offset_of!(hart::Control,entering),
+    ctl_depth=const core::mem::offset_of!(hart::Control,depth),
+    ctl_frames=const core::mem::offset_of!(hart::Control,frames),
+    ctl_stride=const core::mem::offset_of!(hart::Control,stride),
+    ctl_floor=const core::mem::offset_of!(hart::Control,floor),
+    ctl_top=const core::mem::offset_of!(hart::Control,top),
+    ctl_tmp0=const core::mem::offset_of!(hart::Control,temporary0),
+    ctl_tmp1=const core::mem::offset_of!(hart::Control,temporary1),
+    ctl_tmp2=const core::mem::offset_of!(hart::Control,temporary2),
+    ctl_sp=const core::mem::offset_of!(hart::Control,interrupted_sp),
+    cpu_slots=const CPU_SLOTS);
 unsafe extern "C" {
     fn __system_trap_vector();
     pub(crate) fn __system_trap_gateway(number: u32, request: *mut (), size: usize) -> i64;
@@ -36,7 +54,8 @@ pub(crate) struct TrapFrame
     vtype:             usize,
     vstart:            usize,
     vcsr:              usize,
-    pub stack_pointer: usize
+    pub stack_pointer: usize,
+    pub prior_depth:   usize
 }
 // Integer offsets remain the assembly gate contract. The extended offsets and
 // fixed frame size are generated above from this one Rust representation.
@@ -100,6 +119,8 @@ pub(crate) fn install()
 #[unsafe(no_mangle)]
 extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
 {
+    #[cfg(feature = "event-trace")]
+    hart::observe_entry(frame as *mut TrapFrame as usize);
     if frame.cause == (1usize << 63) | 7
     {
         return super::scheduler::schedule(frame);
@@ -116,27 +137,42 @@ extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
     }
     let thread = crate::context::current_thread_context();
     let scope = thread.traps.enter();
-    let depth = scope.depth;
+    let physical_depth = frame.prior_depth + 1;
+    let depth = hart::service_depth(physical_depth);
+    if scope.depth > physical_depth
+    {
+        serial!("SYSTEM_TRAP_ACCOUNTING_LOST: logical={} physical={physical_depth}", scope.depth);
+        super::power::fatal_shutdown();
+    }
     if depth == 2 && !thread.traps.nesting_reported()
     {
         serial!("TRAP_NESTED: definition -> OS service");
     }
-    if depth > 8
+    if depth > MAX_TRAP_DEPTH
     {
-        panic!("excessive native trap nesting");
+        if !thread.traps.nesting_refusal_reported()
+        {
+            serial!("TRAP_NESTING_REFUSED: executor_app={} executor_thread={} depth={depth} \
+                     limit={MAX_TRAP_DEPTH}; service not invoked",
+                    thread.identity().app.0,
+                    thread.identity().thread.0);
+        }
+        frame.registers[8] = SERVICE_BUSY as usize;
+        frame.pc = frame.pc.wrapping_add(4);
+        return frame;
     }
     let number = frame.registers[15] as u32;
     let request = frame.registers[8] as *mut ();
     let size = frame.registers[9];
     #[cfg(feature = "event-trace")]
     let started = crate::platform::ticks();
-    let result = if matches!(number, WAIT_EVENT | POSITIONED_EVENT) && depth != 1
+    let result = if matches!(number, WAIT_EVENT | POSITIONED_EVENT) && physical_depth != 1
     {
         WRONG_THREAD as i64
     }
     else
     {
-        unsafe { dispatch(number, request, size) }
+        hart::service_scope(physical_depth == 1, || unsafe { dispatch(number, request, size) })
     };
     #[cfg(feature = "event-trace")]
     {
@@ -152,7 +188,7 @@ extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
                                  0);
         }
     }
-    let deferred = if depth == 1 { thread.traps.take_deferred() } else { None };
+    let deferred = if physical_depth == 1 { thread.traps.take_deferred() } else { None };
     drop(scope);
     if let Some(job) = deferred
     {
@@ -194,7 +230,7 @@ extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
     }
     frame.registers[8] = result as usize;
     frame.pc = frame.pc.wrapping_add(4);
-    if matches!(number, PROCESS | PSTRING_PROCESS) && super::scheduler::retired()
+    if physical_depth == 1 && super::scheduler::retired()
     {
         return super::scheduler::schedule(frame);
     }
@@ -638,4 +674,31 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         }
         _ => NOT_SUPPORTED as i64
     }
+}
+
+pub(crate) fn prepare_entry() -> Result<PreparedEntry, EntryError>
+{
+    hart::prepare()
+}
+pub(crate) fn publish_cpu(state: &SavedState)
+{
+    hart::publish(state)
+}
+pub(super) fn entry_lost(reason: &str) -> !
+{
+    serial!("SYSTEM_ENTRY_LOST: {reason}");
+    crate::machine::power::fatal_shutdown()
+}
+#[unsafe(no_mangle)]
+extern "C" fn __system_entry_failed(cause: usize, pc: usize, value: usize, interrupted_sp: usize)
+                                    -> !
+{
+    serial!("SYSTEM_ENTRY_FAULT: cause={cause} pc={pc:#x} value={value:#x} \
+             interrupted_sp={interrupted_sp:#x}; privileged recovery is not proven");
+    crate::machine::power::fatal_shutdown()
+}
+
+pub(crate) fn can_defer_io() -> bool
+{
+    hart::can_defer_io()
 }

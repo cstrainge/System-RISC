@@ -87,20 +87,27 @@ pub(crate) struct EventWaiter
 #[cfg(any(target_arch = "riscv64", test))]
 pub struct ThreadTrapState
 {
-    depth:    core::sync::atomic::AtomicUsize,
+    depth:            core::sync::atomic::AtomicUsize,
     #[cfg(target_arch = "riscv64")]
-    reported: core::sync::atomic::AtomicBool,
-    deferred: spinning_top::Spinlock<Option<DeferredIo>>
+    reported:         core::sync::atomic::AtomicBool,
+    #[cfg(target_arch = "riscv64")]
+    refusal_reported: core::sync::atomic::AtomicBool,
+    deferred:         spinning_top::Spinlock<Option<DeferredIo>>
 }
 #[cfg(any(target_arch = "riscv64", test))]
 impl ThreadTrapState
 {
     pub const fn new() -> Self
     {
-        Self { depth:                                    core::sync::atomic::AtomicUsize::new(0),
+        Self { depth:
+                   core::sync::atomic::AtomicUsize::new(0),
                #[cfg(target_arch = "riscv64")]
-               reported:                                 core::sync::atomic::AtomicBool::new(false),
-               deferred:                                 spinning_top::Spinlock::new(None) }
+               reported:
+                   core::sync::atomic::AtomicBool::new(false),
+               #[cfg(target_arch = "riscv64")]
+               refusal_reported:
+                   core::sync::atomic::AtomicBool::new(false),
+               deferred:                                         spinning_top::Spinlock::new(None) }
     }
 
     pub fn enter(&self) -> TrapScope<'_>
@@ -116,6 +123,11 @@ impl ThreadTrapState
         if !job.valid()
         {
             return Err(mac_abi::BAD_ARGUMENT);
+        }
+        #[cfg(target_arch = "riscv64")]
+        if !crate::machine::traps::can_defer_io()
+        {
+            return Err(mac_abi::WRONG_THREAD);
         }
         if self.depth.load(Relaxed) != 1
         {
@@ -137,6 +149,12 @@ impl ThreadTrapState
     {
         use mac_object_table::shared::InvocationGate as _;
         crate::toolbox::handles::InvocationGate::run(|| self.deferred.lock().take())
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub fn nesting_refusal_reported(&self) -> bool
+    {
+        self.refusal_reported.swap(true, core::sync::atomic::Ordering::Relaxed)
     }
 
     #[cfg(target_arch = "riscv64")]

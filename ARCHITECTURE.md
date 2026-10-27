@@ -73,15 +73,16 @@ vstart and vcsr. This is an **eager correctness bridge**: storage scales with
 hardware vlenb, including nested traps, and it never runs heap allocation while
 saving state. Suspended thread/idle CPU state now has separate owned page
 backing, retained by the same execution/readers barrier as its stack and image.
-The frame records the interrupted SP explicitly; a real switch copies into that
-backing, while a same-thread return adds no copy. Entry still builds a temporary
-frame on the interrupted stack and resident work still uses it. Dedicated System-
-stack entry, domain charges and dirty/lazy policy remain separate gates; this is
-no isolation or lazy-save completion claim.
+The frame records the interrupted SP explicitly. Native entry switches to the
+per-hart System stack before constructing the frame directly in that owned CPU
+backing; context switches need no snapshot copy. Bootstrap resident work shares
+that stack, and I/O carries scoped executor/subject/resource identity without a
+second stack switch. Domain charges, mapped guards and dirty/lazy policy remain
+separate gates; this is no isolation or lazy-save completion claim.
 The shared physical page pool supplies prepared thread/idle stack leases through
 an explicit architecture invocation gate, including lease Drop. Local masking
 precedes every metadata lock; native retirement retains actual reader/CPU
-barriers. Kernel self-virtualization, System trap-stack entry and multi-hart
+barriers. Kernel self-virtualization, guarded stack mappings and multi-hart
 synchronization remain separate gates; the current CPU still runs flat M mode.
 
 See [LLVM RISC-V profiles](https://llvm.org/docs/RISCVUsage.html) and the

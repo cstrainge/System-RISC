@@ -387,3 +387,23 @@ ld s6,56(sp)
 ld s7,64(sp)
 addi sp,sp,80
 ret
+
+.balign 4
+.global __toolbox_zero_stack_probe
+__toolbox_zero_stack_probe:
+addi sp,sp,-16
+sd ra,0(sp)
+sd s0,8(sp)
+mv s0,sp
+# No Rust/call prologue while SP is invalid. The ordinary public unknown-trap
+# refusal must return safely, proving entry never writes the interrupted stack.
+li sp,0
+li a7,0xffffffff
+li a0,0
+li a1,0
+ecall
+mv sp,s0
+ld ra,0(sp)
+ld s0,8(sp)
+addi sp,sp,16
+ret

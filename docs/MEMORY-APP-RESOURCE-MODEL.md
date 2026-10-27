@@ -202,7 +202,8 @@ subsequently selected on 2026-10-26: both System-per-hart and application-per-th
 defaults are 4 MiB; System bounds are 256 KiB–8 MiB and application bounds are
 64 KiB–8 MiB. The checked platform record emits both linker symbols and Rust
 constants. Application/idle stack allocation consumes that default; the System
-stack is activated with the dedicated trap-stack stage, not by emitting a constant.
+stack is active in native bootstrap and service entry; mapped guards remain a
+paging gate.
 
 | Configured policy | Minimum / initial default / maximum proposal | Reason |
 |---|---|---|
@@ -214,7 +215,7 @@ stack is activated with the dedicated trap-stack stage, not by emitting a consta
 | Process app committed heap budget | 4 MiB / 64 MiB / 2 GiB | Grow on demand; a 200 MB file uses file-backed views, not a forced whole-file copy |
 | Application heap growth minimum | 16 KiB / 64 KiB / 2 MiB | Rounded up to target geometry; bounded by selected process budget |
 | Per-thread fixed stack (approved 2026-10-26) | 64 KiB / **4 MiB** / 8 MiB | Static per thread, charged app account, freed after switch-away |
-| Per-hart System stack (approved 2026-10-26) | 256 KiB / **4 MiB** / 8 MiB | Trap entry and resident work; guards and safe entry remain paging gates |
+| Per-hart System stack (approved 2026-10-26) | 256 KiB / **4 MiB** / 8 MiB | Resident stack is active; hardware guards remain a paging gate |
 | Designated per-control space | 1 MiB / 16 MiB / 128 MiB | A sub-budget of process kernel account, never independently guaranteed physical memory |
 | TE2 owned threshold | Tunable 0–100%, default 40%, bounded by a tunable **~3.2 MiB default ceiling** | Ratified 2026-10-23 calibration: owns strictly below both limits; at either limit uses view. The ceiling is 3,355,443 bytes (3.2 MiB rounded down), even if control space grows |
 | Process/thread/handle counts | Grow until account or memory refusal | No fixed-eight or guessed high replacement constant |
@@ -2560,11 +2561,11 @@ The existing ThreadCore/reader and noncurrent-CPU barrier retains CPU state,
 stack and image together, disposing CPU/stack storage before the execution pin.
 Preparation failures retain the original loaded image and unwind page leases.
 
-This is an intermediate ownership step. Entry still constructs temporary frames
-on the interrupted stack and resident service work still executes there. It
-does not qualify dedicated System-stack entry, mapped guards, domain charging,
-MMU activation or lazy extension-state saving. Those remain explicit migration
-gates; no supervisor/user isolation is claimed by a separate snapshot alone.
+That intermediate ownership landing still built temporary frames on the
+interrupted stack and did not qualify System-stack entry. The dedicated entry
+step below supersedes that bridge and removes its snapshot copy. Domain charging,
+mapped guards, MMU activation, S/U enforcement and lazy extension-state saving
+remain separate gates.
 
 ### One physical admission contract for every entry mode
 
@@ -2579,3 +2580,46 @@ the same checked platform record. The probe discovers actual RAM from the reset
 DTB and owns its real reserved firmware heap instead of reporting guessed RAM
 and an empty reservation list. Its single-bank restriction belongs to that
 QEMU-virt probe, not the resident or firmware memory model.
+
+### Dedicated System-stack entry
+
+Native entry now switches to the per-hart System stack before constructing CPU
+state directly in the executing thread's owned backing. The intermediate
+switch-away copy described above is removed. A permanent scalar control page
+keeps partial save/restore detection independent of the interrupted SP. Nested
+resident entry validates the System SP before running Rust. Unproven privileged
+entry faults report and shut down loudly; they do not attempt arbitrary recovery.
+
+The existing eight-level native service recursion bound has one bootstrap
+baseline slot and one refusal slot. Exceeding the service bound refuses before
+invocation, restores the caller and reports once per executor. Bootstrap resident
+initialization uses a single-use, hart-local stack-entry authority; its baseline
+protects live Rust frames across definition calls. Headless startup returns to
+its original caller stack; graphical startup starts scheduled execution.
+
+Synchronous I/O now transports executor/subject/resource scope on the same System
+stack. Its former fixed256KiB secondary stack is removed. A scoped outer-service
+permission admits deferral only while an actual outer ECALL is dispatched; nested
+services and timer/cleanup maintenance cannot accidentally park a caller. Retired
+callers switch away only at an outer boundary after all resident guards unwind.
+
+The traced private boot emits bounded bootstrap/runtime entry observations; the
+canonical capacity gate checks real Rust SP, owned frame and separate app/System
+backing. The architecture process gate also submits an ordinary refused ECALL
+with SP zero, restoring the app stack before Rust resumes. This checks that entry
+does not write an interrupted app stack. Hardware guards, supervisor mapping,
+S/U enforcement, domain charges, SMP and lazy vector saving remain later gates.
+
+Native qualification covers sixteen test functions: RAM admission, both process
+campaigns, ten simultaneous apps with physical stack/CPU reuse, original cursor
+sprites, event delivery under contention, backing-file mounts, both Finder
+recovery boots, six host-filesystem workflows, application panic reporting and
+aggregate public-SDK conformance. The zero-SP refusal and full FP/vector
+preemption cases pass on the real RV64 entry path. The actual runtime Rust SP
+is inside the selected 4 MiB System span; its saved frame belongs to an issued
+thread and is disjoint from application stacks. Headless native/classic ABI
+smoke also passes with the same physical admission contract.
+
+Functional event capture measured queued maxima of 0.302/0.558 ms and decoded
+physical-key delivery of 0.720–1.980 ms. The strict 1 ms physical-input gate
+remains open; this does not establish the cause of intermittent mouse stutter.

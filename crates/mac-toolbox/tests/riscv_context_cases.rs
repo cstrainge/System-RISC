@@ -13,6 +13,7 @@ struct Capture
     vlenb:    u64
 }
 unsafe extern "C" {
+    fn __toolbox_zero_stack_probe() -> i64;
     fn __toolbox_cpu_context_probe(ticks: u64, seed: u64, ecalls: usize, output: *mut Capture);
 }
 #[derive(Debug)]
@@ -90,5 +91,24 @@ pub fn probe(ticks: u64, seed: u64, ecalls: bool) -> Result<u64, Failure>
             Err(Failure::Unknown { code,
                                    observed })
         }
+    }
+}
+
+/// An invalid execution SP must not become resident register/stack storage.
+/// Exercise an existing ordinary refusal, not a special testing trap.
+pub fn zero_stack_probe() -> Result<(), Failure>
+{
+    // SAFETY: assembly restores the original stack before returning to Rust,
+    // preserves callee registers and submits no pointers or mutable requests.
+    let observed = unsafe { __toolbox_zero_stack_probe() };
+    let expected = mac_toolbox::abi::NOT_SUPPORTED as i64;
+    if observed == expected
+    {
+        Ok(())
+    }
+    else
+    {
+        Err(Failure::ServiceRefusal { expected,
+                                      observed })
     }
 }

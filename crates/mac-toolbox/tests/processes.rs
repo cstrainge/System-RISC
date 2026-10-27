@@ -91,6 +91,7 @@ fn run(malformed: bool)
           translation=translation-required retry=passed",
          "PROCESS_PASCAL_PASS cases=5",
          "PROCESS_PREEMPTION_PASS",
+         "SYSTEM_STACK_ZERO_SP_PASS refusal=not-supported original-stack=restored",
          "RVA23_CONTEXT_PASS actor=observer fp=32 vector=32 csr=5 bitmanip=3 ecalls=passed",
          "RVA23_CONTEXT_PASS actor=spinner fp=32 vector=32 csr=5 bitmanip=3 preemption=passed",
          "PROCESS_INCARNATIONS_PASS native=passed legacy=passed foreign=passed relaunch=passed",

@@ -7,14 +7,16 @@ pub(crate) struct SavedState
 {
     backing: Backing,
     frame:   usize,
-    bytes:   usize
+    bytes:   usize,
+    stride:  usize
 }
 impl SavedState
 {
     pub(crate) fn new(initial: TrapFrame) -> Result<Self, Error>
     {
-        let bytes = *super::CPU_STATE_BYTES.get().ok_or(Error::Unavailable)?;
-        let vector_bytes = bytes.checked_sub(size_of::<TrapFrame>()).ok_or(Error::Geometry)?;
+        let stride = *super::CPU_STATE_BYTES.get().ok_or(Error::Unavailable)?;
+        let bytes = stride.checked_mul(super::CPU_SLOTS).ok_or(Error::Geometry)?;
+        let vector_bytes = stride.checked_sub(size_of::<TrapFrame>()).ok_or(Error::Geometry)?;
         let backing = Backing::allocate(bytes)?;
         let frame = backing.cpu_base().checked_add(vector_bytes).ok_or(Error::Geometry)?;
         if !frame.is_multiple_of(align_of::<TrapFrame>())
@@ -29,7 +31,8 @@ impl SavedState
         }
         Ok(Self { backing,
                   frame,
-                  bytes })
+                  bytes,
+                  stride })
     }
 
     pub(crate) fn frame(&self) -> *mut TrapFrame
@@ -42,6 +45,11 @@ impl SavedState
         self.backing.cpu_base()
     }
 
+    pub(crate) fn stride(&self) -> usize
+    {
+        self.stride
+    }
+
     pub(crate) fn bytes(&self) -> usize
     {
         self.bytes
@@ -50,27 +58,5 @@ impl SavedState
     pub(crate) fn backing_bytes(&self) -> u64
     {
         self.backing.bytes()
-    }
-
-    /// # Safety
-    /// Source is the complete current-hart entry frame, with its vector bytes
-    /// immediately below it. Its interrupted stack stays pinned and interrupts
-    /// stay masked through the copy. The caller owns the selected thread's
-    /// state lock; no CPU may restore this destination concurrently.
-    pub(crate) unsafe fn capture(&mut self, source: *const TrapFrame)
-    {
-        if source as usize == self.frame
-        {
-            return;
-        }
-        let vector_bytes = self.bytes - size_of::<TrapFrame>();
-        // SAFETY: the entry saves exactly this checked CPU layout; source and
-        // destination have separate owned leases. Raw copying preserves the
-        // complete register state without creating typed vector references.
-        unsafe {
-            core::ptr::copy_nonoverlapping(source.cast::<u8>().sub(vector_bytes),
-                                           self.backing.cpu_base() as *mut u8,
-                                           self.bytes);
-        }
     }
 }

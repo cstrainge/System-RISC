@@ -234,6 +234,11 @@ impl Definition
 }
 impl Checked
 {
+    pub fn system_stack_default(&self) -> u64
+    {
+        self.stacks.system_default()
+    }
+
     pub fn application_stack_default(&self) -> u64
     {
         self.stacks.application_default()

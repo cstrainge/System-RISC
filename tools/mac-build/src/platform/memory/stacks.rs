@@ -55,6 +55,11 @@ impl Definition
 }
 impl Checked
 {
+    pub(super) fn system_default(&self) -> u64
+    {
+        self.system.default_value()
+    }
+
     pub(super) fn application_default(&self) -> u64
     {
         self.application.default_value()

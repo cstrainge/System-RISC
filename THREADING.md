@@ -18,7 +18,10 @@ of Toolbox calls. Registered, fallibly grown application thread records own inde
 platform policy within 64 KiB–8 MiB),
 separately page-backed saved integer/FP/vector state (storage scales with hardware
 VLEN) and
-trusted AppId/ThreadId contexts. Kernel traps mask
+trusted AppId/ThreadId contexts. Native entry uses a separate4MiB System stack
+before saving CPU state; the same stack serves bootstrap and synchronous I/O
+under scoped executor/subject identity. Mapped guards remain a paging gate.
+Kernel traps mask
 interrupts, including nested definition calls, so allocator and manager guards
 cannot be preempted by another application on this hart. Native event waits now
 block the actual application thread, with a separate idle WFI context and 250 us

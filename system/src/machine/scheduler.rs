@@ -434,7 +434,11 @@ pub fn start() -> mac_formats::Result<()>
                                  cpu:    Mutex::new(cpu) });
     let t = scheduler.thread(0)
                      .expect("scheduler bootstrap publishes Finder before starting CPU frames");
-    let frame = t.core.cpu.lock().frame();
+    let frame = {
+        let cpu = t.core.cpu.lock();
+        super::traps::publish_cpu(&cpu);
+        cpu.frame()
+    };
     t.update(|state| state.switches += 1);
     activate_context(Some(&t.core.context));
     CURRENT.store(0, Ordering::Relaxed);
@@ -758,39 +762,6 @@ pub(crate) fn reclaim_retired()
     }
 }
 
-/// Persist only when the selected CPU changes. Ordinary same-thread returns
-/// reuse the incoming entry frame and do no extra context copy. Current and
-/// retained ThreadCore barriers pin both source and destination until switch.
-fn capture_current(scheduler: &Scheduler, current: usize, frame: *const TrapFrame)
-{
-    if let Some(thread) = scheduler.thread(current)
-    {
-        if thread.state.get().live
-        {
-            // SAFETY: native dispatch is interrupt-masked; the scheduler and
-            // state locks exclude other CPU access. Current stack cannot reap.
-            unsafe {
-                thread.core.cpu.lock().capture(frame);
-            }
-        }
-    }
-    else if current == IDLE
-    {
-        let idle = scheduler.idle
-                            .as_ref()
-                            .expect("scheduler bootstrap installs idle before switching CPU state");
-        // SAFETY: same native entry contract; idle backing is boot-owned.
-        unsafe {
-            idle.cpu.lock().capture(frame);
-        }
-    }
-    else
-    {
-        serial!("CPU_STATE_LOST: current scheduler slot has no retained execution backing");
-        super::power::fatal_shutdown();
-    }
-}
-
 pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
 {
     // Device input and cursor publication precede all ordinary maintenance.
@@ -848,7 +819,7 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
                 let next = if index == current { frame } else { thread.core.cpu.lock().frame() };
                 if index != current
                 {
-                    capture_current(&scheduler, current, frame);
+                    super::traps::publish_cpu(&thread.core.cpu.lock());
                 }
                 activate_context(Some(&thread.core.context));
                 CURRENT.store(index, Ordering::Relaxed);
@@ -869,7 +840,11 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
                             .cpu
                             .lock()
                             .frame();
-        capture_current(&scheduler, current, frame);
+        super::traps::publish_cpu(&scheduler.idle
+                                            .as_ref()
+                                            .expect("scheduler bootstrap owns idle CPU backing")
+                                            .cpu
+                                            .lock());
         next
     };
     activate_context(None);

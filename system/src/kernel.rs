@@ -604,6 +604,21 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
         serial!("BOOT_MEMORY_REJECTED: {error}");
         return ptr::null();
     }
+    let entry = match crate::machine::traps::prepare_entry()
+    {
+        Ok(entry) => entry,
+        Err(error) =>
+        {
+            serial!("BOOT_SYSTEM_STACK_REJECTED: {error}");
+            return ptr::null();
+        }
+    };
+    entry.run(|| unsafe { start_services(info) })
+}
+/// # Safety
+/// Entry validated the pinned BootInfo and switched onto the owned System stack.
+unsafe fn start_services(info: &BootInfo) -> *const SystemServices
+{
     unsafe {
         HEAP.initialize(addr_of_mut!(HEAP_MEMORY).cast::<u8>(),
                         crate::machine::memory::SYSTEM_HEAP_BYTES);

@@ -83,6 +83,20 @@ fn more_than_eight_apps_receive_input_and_reuse_reclaimed_stacks()
     assert!(!banks.is_empty(), "resident physical pool was not initialized: {serial}");
     let threads: Vec<_> =
         serial.lines().filter(|line| line.starts_with("PROCESS_THREAD ")).collect();
+    let system_entry = serial.lines()
+                             .find(|line| line.starts_with("SYSTEM_ENTRY_STACK mode=runtime "))
+                             .expect("no observed native runtime entry");
+    let system_base = number(system_entry, "base=");
+    let system_top = number(system_entry, "top=");
+    let resident_sp = number(system_entry, "sp=");
+    let resident_frame = number(system_entry, "frame=");
+    assert_eq!(system_top - system_base,
+               mac_build::platform::current().memory().unwrap().system_stack_default());
+    assert!(system_base < resident_sp && resident_sp <= system_top);
+    assert!(threads.iter().any(|line| number(line, "cpu_state=") == resident_frame),
+            "native entry did not save into an actual owned thread frame: {system_entry}");
+    assert!(serial.contains("SYSTEM_ENTRY_STACK mode=bootstrap "),
+            "resident bootstrap did not use the System stack: {serial}");
     let mut cohorts = Vec::new();
     let mut cpu_cohorts = Vec::new();
     for cohort in rows.chunks_exact(9)
@@ -112,6 +126,10 @@ fn more_than_eight_apps_receive_input_and_reuse_reclaimed_stacks()
                 assert!(backing_end <= old_base || old_top <= base,
                         "concurrent stacks alias: {serial}");
             }
+            assert!(system_top <= base || backing_end <= system_base,
+                    "app backing aliases the System stack: {stack}");
+            assert!(resident_sp < base || resident_sp >= backing_end,
+                    "resident Rust ran on an app's stack: {stack}");
             let cpu_base = number(stack, "cpu_base=");
             let cpu_frame = number(stack, "cpu_state=");
             let cpu_bytes = number(stack, "cpu_state_bytes=");

@@ -385,6 +385,8 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
     system.log("PROCESS_IMAGE_LIFETIMES_PASS distinct-files=16 full-width=passed foreign=passed \
                 stale=passed\n")?;
     system.log("PROCESS_INVALID_LAUNCH_PASS\n")?;
+    architecture_context::zero_stack_probe().map_err(Failure::Architecture)?;
+    system.log("SYSTEM_STACK_ZERO_SP_PASS refusal=not-supported original-stack=restored\n")?;
     architecture_context::probe(0, 0x1111_1111_1111_1111, false).map_err(Failure::Architecture)?;
     system.log("RVA23_PROBE_BASELINE_PASS\n")?;
     let spinner =
