@@ -175,7 +175,10 @@ latency and Cursor Test responsiveness in the acceptance report.
 `mac-module` owns the allocation-free contract codec, open class identifiers and
 admission rules. `mac-driver` supplies the borrowed-buffer C boundary and safe
 Rust driver body/dependency client. `mac-build` generates and verifies linked
-contracts and emits native DRVR/DABI (or INIT/EABI) resources. The resident
+contracts and emits native DRVR/DABI driver resources or target-selected
+RV64/EABI extension resources. INIT is the extension file type; System code is
+RV64/0 and Finder code is RV64/1, conventionally named System/Finder with optional
+names. The resident
 `system/src/drivers` registry owns staged registration, generations, dependency
 resolution and request state; callbacks execute outside registry/File Manager
 guards. The current machine adapter reserves a module arena disjoint from the

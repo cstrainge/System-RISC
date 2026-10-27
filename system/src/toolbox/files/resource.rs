@@ -327,7 +327,8 @@ pub(crate) struct ModuleCandidate
 impl Manager
 {
     /// Discover metadata only in the selected blessed installation. This never
-    /// enters DRVR/INIT code, including packages placed in the wrong directory.
+    /// enters DRVR or System RV64/0 code, including misplaced packages. Finder
+    /// RV64/1 is never selected by this resident discovery path.
     pub(crate) fn module_candidates(&mut self) -> Result<Vec<ModuleCandidate>, Status>
     {
         let id = self.volumes
@@ -396,8 +397,8 @@ impl Manager
                 let mut metadata =
                     crate::toolbox::resources::file::read_selected(fork.length,
                                                                    |key| {
-                                                                       key.kind == *b"DABI"
-                                                                       || key.kind == *b"EABI"
+                                                                       key.id == mac_module::ExtensionTarget::System.resource_id()
+                                                                       && (key.kind == *b"DABI" || key.kind == *b"EABI")
                                                                    },
                                                                    mac_module::MAX_BYTES,
                                                                    |offset, output| {
@@ -415,6 +416,9 @@ impl Manager
                                                                    })?;
                 if metadata.len() != 1 || metadata[0].id != 0 || metadata[0].attributes & 1 != 0
                 {
+                    serial!("SYSTEM_MODULE_METADATA_REFUSED: System loading requires one DABI 0 \
+                             driver contract or EABI 0 System contract; Finder-only EABI 1 is not \
+                             a kernel initializer; rebuild the correct target part");
                     return Err(BAD_ABI);
                 }
                 Ok(metadata.remove(0).data)
@@ -437,9 +441,14 @@ impl Manager
                 let mut fork = entry.resources.ok_or(NOT_FOUND)?;
                 crate::toolbox::resources::file::read_selected(fork.length,
                                                                |key| {
-                                                                   [*b"DRVR", *b"INIT", *b"DABI",
-                                                                    *b"EABI", *b"NABI", *b"RV64",
-                                                                    *b"RLOC", *b"FASS", *b"ICN#", *b"icl4", *b"icl8",
+                                                                   // Only System's target enters resident
+                                                                   // admission; Finder has its own loader,
+                                                                   // lifetime and budget gate. Never borrow
+                                                                   // Finder code as an INIT fallback.
+                                                                   ((key.kind == mac_module::ExtensionTarget::RESOURCE_TYPE || key.kind == *b"EABI")
+                                                                    && key.id == mac_module::ExtensionTarget::System.resource_id())
+                                                                   || [*b"DRVR", *b"INIT", *b"DABI",
+                                                                    *b"NABI", *b"RLOC", *b"FASS", *b"ICN#", *b"icl4", *b"icl8",
                                                                     *b"ics#", *b"ics4", *b"ics8", *b"ICON", *b"SICN", *b"cicn"].contains(&key.kind)
                                                                },
                                                                2 * 1024 * 1024

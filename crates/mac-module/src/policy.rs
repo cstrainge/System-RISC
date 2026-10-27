@@ -1,5 +1,6 @@
-//! Admission checks are independent of any particular device class. They run
-//! before module entry; dependency order never follows directory order.
+//! Resident admission checks are independent of any particular device class.
+//! They run before module entry; Finder parts require their separate execution
+//! consumer and can never enter this kernel policy through decoded metadata.
 use crate::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Available
@@ -26,7 +27,10 @@ impl Policy<'_>
 {
     pub fn validate(&self, contract: Contract<'_>) -> Result<()>
     {
-        if self.directory != contract.kind || self.file_type != contract.kind.file_type()
+        if self.directory != contract.kind
+           || self.file_type != contract.kind.file_type()
+           || contract.kind == PackageKind::Extension
+              && contract.code_id != ExtensionTarget::System.resource_id()
         {
             return Err(Error::WrongLocation);
         }

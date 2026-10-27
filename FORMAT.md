@@ -52,7 +52,7 @@ requires that field and uses its corresponding encoder. Res Edit exports the
 actual format along with raw resource payloads, names and attributes. Normal
 build manifests use native RRF1 regardless of architecture.
 
-Native executables use an `'RV64'` resource ID 0 and a companion `'NABI'`
+Native System/application executables use an `'RV64'` resource ID 0 and a companion `'NABI'`
 resource ID 0. The unreleased format is **version 1**. ELF is a build-time input,
 never a runtime resource container. The old unreleased ELF-backed layout is
 replaced, not supported by a second decoder. Rebuild ROM, System, Finder,
@@ -815,15 +815,24 @@ requests retain their ordinary refusals.
 ## Native kernel module contracts (DABI/EABI, schema 1)
 
 A driver has Finder type `DRVR`, exactly one native `DRVR` entry resource and one
-`DABI` 0 resource. A System extension has Finder type `INIT`, exactly one native
-`INIT` entry and one `EABI` 0 resource. Discovery is restricted to the selected
+`DABI` 0 resource. An extension has Finder **file type** `INIT`. Its System code
+is the native envelope in **`RV64` resource 0** with **`EABI` 0**; its Finder code
+is the native envelope in **`RV64` resource 1** with **`EABI` 1**. Builders name the
+code resources **System** and **Finder** by convention, but names are optional
+and have no role in loader selection. A bundle may contain either target or
+both; each present target has exactly one code/contract pair. System admission
+requires target 0 and never substitutes target 1. Finder execution and its SDK
+remain staged; package inspection alone is not execution authority.
+Discovery is restricted to the selected
 blessed System Folder's Drivers and Extensions directories respectively; placement
 in the other directory is rejected before entry. The common module registry and
 its class identifiers are independent of these discovery paths.
 
 The entry resource uses the existing version-1 definition envelope: 40-byte NABI
 with role CodeResource, minimal RV64 segment stream, then RLOC. There are no
-separate NABI/RV64/RLOC resources and no ELF in a module fork. Its reservation is
+separate NABI or RLOC resources and no ELF in a module fork. In an extension,
+`RV64` names this complete **RVN1 code-resource envelope**, not the raw RV64
+segment stream used by an application executable. Its reservation is
 compacted to the page-rounded linked memory extent, including BSS. All module
 code is relocatable. The code digest below covers the complete envelope, including
 NABI, initialized segments and relocations. This detects mismatched code/contract
@@ -848,8 +857,8 @@ resource fork remains big-endian):
 | 28 | 4 | calling convention, 1 C ABI |
 | 32 | 8 | required ISA features; RV64 bits 0..3 are I/M/A/C; bit 4 requires the complete RVA23U64 profile (including V/F/D/B and mandatory Z extensions). Current module mask is 31 |
 | 40 | 16 | nonzero module identity |
-| 56 | 4 | native entry resource type, matching package kind |
-| 60 | 2 | signed entry resource ID |
+| 56 | 4 | native entry resource type: `DRVR` for a driver, `RV64` for an extension |
+| 60 | 2 | signed entry resource ID; extension 0 selects System, 1 selects Finder; must match its EABI resource ID |
 | 62 | 2 | provided interface count |
 | 64 | 2 | required provider/dependency count |
 | 66 | 2 | required resident service count |
@@ -865,8 +874,10 @@ resource fork remains big-endian):
 | 120 | 8 | exact C boundary layout fingerprint |
 
 The fingerprint encodes pointer width (bits 0..7), Host size (bits 8..23), Instance
-size (bits 24..39), and Call size (bits 40..55); bits 56..63 are zero. Current RV64
-sizes are 64,48,24,56 respectively. Compile-time SDK assertions and the resident
+size (bits 24..39), and Call size (bits 40..55). Bits 56, 57, 58 and 59 identify
+full-width provider references, request tickets, device/DMA references and
+backing-source references, respectively; the remaining high bits are zero. Current RV64
+sizes are 64,48,24,64 respectively. Compile-time SDK assertions and the resident
 reject a mismatch. Changing these layouts requires rebuilding all modules; there
 is no alternate old layout decoder.
 
@@ -911,13 +922,24 @@ The common matcher does not assume PCI, virtio or sector-addressable storage.
 
 mac-build generates contracts from module.json declarations, the resolved Cargo
 version, current native service and broker SDK constants, target and compiler
-provenance. `mac-driver::export_driver!` retains that generated declaration in a
+provenance. INIT manifests select `extension_target: "system"` (default) or
+`"finder"` in resources.json. This single selector determines the code/EABI IDs,
+generated `NATIVE_CODE`/`NATIVE_ABI` keys and the conventional code-resource name;
+package loading does not validate that name. `mac-driver::export_driver!` retains that generated declaration in a
 build-time ELF section. Packaging requires an exact match to the linked declaration,
 then fills the actual code-envelope digest and emits DABI/EABI. The ELF section
 is build evidence; ELF section tables/headers never enter a native resource fork.
 LLVM's GNU retained-section OSABI marker is accepted by the build-time extractor.
 
-The generic C entry receives a borrowed Host descriptor and initializes Instance.
+Extension startup presentation belongs to System, not executable-resource names
+or author drawing callbacks. A required facility refusal leaves registrations
+unpublished and records the extension's name, cause and a useful next action;
+the startup strip displays an X over its package icon. In particular, Host
+Clipboard requires compatible QEMU channel/protocol facilities before activation.
+The EABI/code pair remains inspectable as a package after refusal; its presence
+alone is not evidence of an active hook or service.
+
+The generic resident C entry receives a borrowed Host descriptor and initializes Instance.
 Host exposes the full u64 boot-unique module incarnation, dependency resolution
 and broker invocation; it and the code stay pinned until reboot. Resolve writes a
 u64 provider identity and Broker accepts that complete u64 value. The contract

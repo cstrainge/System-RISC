@@ -91,7 +91,10 @@ impl<'a> Contract<'a>
         }
         let identity = bytes(data, 40)?;
         let code_type = bytes(data, 56)?;
-        if identity == [0; 16] || code_type != kind.file_type()
+        let code_id = i16::from_le_bytes(bytes(data, 60)?);
+        if identity == [0; 16]
+           || code_type != kind.code_type()
+           || kind == PackageKind::Extension && ExtensionTarget::from_resource_id(code_id).is_none()
         {
             return Err(Error::Contract);
         }
@@ -130,7 +133,7 @@ impl<'a> Contract<'a>
                    target,
                    identity,
                    code_type,
-                   code_id: i16::from_le_bytes(bytes(data, 60)?),
+                   code_id,
                    code_digest: bytes(data, 88)?,
                    heap_bytes: u32_at(data, 72)?,
                    stack_bytes: u32_at(data, 76)?,

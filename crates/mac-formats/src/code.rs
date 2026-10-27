@@ -72,6 +72,16 @@ impl CodeRegistry
 
     pub fn convention(&self, kind: [u8; 4], id: i16) -> Option<CallingConvention>
     {
+        if kind == mac_module::ExtensionTarget::RESOURCE_TYPE
+        {
+            return mac_module::ExtensionTarget::from_resource_id(id).map(|target| {
+                                                                        match target
+                {
+                    mac_module::ExtensionTarget::System => CallingConvention::SystemExtension,
+                    mac_module::ExtensionTarget::Finder => CallingConvention::FinderExtension
+                }
+                                                                    });
+        }
         let convention = self.profiles.iter().find(|p| p.0 == kind)?.1;
         Some(if kind == *b"CODE" && id == 0
              {
@@ -95,6 +105,11 @@ impl CodeRegistry
         }
         else
         {
+            if resource.kind == mac_module::ExtensionTarget::RESOURCE_TYPE
+            {
+                return Err(Error::Malformed("extension RV64 resource must contain a native \
+                                             code-resource envelope; rebuild the extension"));
+            }
             translated = translator.translate(TranslationRequest { resource,
                                                                    origin,
                                                                    convention })?;
