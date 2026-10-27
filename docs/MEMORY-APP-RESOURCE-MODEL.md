@@ -2920,6 +2920,13 @@ This retained authority is a prerequisite for later allocation forwarding. It
 does not yet select a global allocator, charge scheduler metadata or heaps,
 create module workers, or qualify protected recovery backing.
 
+The combined resident build passes native RAM admission, Finder restart/recovery,
+independent application preemption and repeated malformed-open teardown/relaunch
+with this additional pin present. Model tests cover concurrent admission/closure,
+original-account refunds and allocation-free acquisition/cloning/release; compile
+failure tests reject fabricated or account-closing uses. These checks qualify the
+retained authority and its retirement order, not general heap accounting.
+
 The native backing wrapper keeps physical storage and its receipt inseparable.
 Physical destruction precedes the corresponding refund; stack/CPU destruction
 also precedes releasing the image execution pin. Stopped process retirement
