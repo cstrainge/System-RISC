@@ -56,34 +56,47 @@ pub(super) fn draw(face: &Resolved<'_>, canvas: &mut Canvas<'_>, baseline: Point
             pen = pen.saturating_add(i32::from(font.width(text)));
             continue;
         }
-        let mut ink = Vec::new();
-        let step = font.glyph_ink(c, |x, y| ink.push((x, y)));
         let mut pixels = Vec::new();
-        for (x, y) in ink
+        let mut error = None;
+        let step = font.glyph_ink(c, |x, y| {
+                           if error.is_some()
+                           {
+                               return;
+                           }
+                           let result = (|| -> Result<(), Status> {
+                               let left = libm::floorf(x as f32 * scale_x) as i32;
+                               let right = libm::ceilf((x + 1) as f32 * scale_x) as i32;
+                               let top = libm::floorf(y as f32 * scale_y) as i32;
+                               let bottom = libm::ceilf((y + 1) as f32 * scale_y) as i32;
+                               for row in top..bottom
+                               {
+                                   let shift = if face.synthetic & super::ITALIC != 0
+                                   {
+                                       libm::roundf(-(row as f32) * 0.2) as i32
+                                   }
+                                   else
+                                   {
+                                       0
+                                   };
+                                   for column in left..right
+                                   {
+                                       if pixels.len() >= 65536
+                                       {
+                                           return Err(BAD_ARGUMENT);
+                                       }
+                                       super::scratch::push(&mut pixels, (column + shift, row))?;
+                                   }
+                               }
+                               Ok(())
+                           })();
+                           if let Err(cause) = result
+                           {
+                               error = Some(cause);
+                           }
+                       });
+        if let Some(error) = error
         {
-            let left = libm::floorf(x as f32 * scale_x) as i32;
-            let right = libm::ceilf((x + 1) as f32 * scale_x) as i32;
-            let top = libm::floorf(y as f32 * scale_y) as i32;
-            let bottom = libm::ceilf((y + 1) as f32 * scale_y) as i32;
-            for row in top..bottom
-            {
-                let shift = if face.synthetic & super::ITALIC != 0
-                {
-                    libm::roundf(-(row as f32) * 0.2) as i32
-                }
-                else
-                {
-                    0
-                };
-                for column in left..right
-                {
-                    if pixels.len() >= 65536
-                    {
-                        return Err(BAD_ARGUMENT);
-                    }
-                    pixels.push((column + shift, row));
-                }
-            }
+            return Err(error);
         }
         pixels.sort_unstable();
         pixels.dedup();
@@ -92,7 +105,7 @@ pub(super) fn draw(face: &Resolved<'_>, canvas: &mut Canvas<'_>, baseline: Point
             super::remember_descender(&mut descenders,
                                       pixels.iter()
                                             .map(|&(x, y)| (pen + x, i32::from(baseline.v) + y)),
-                                      i32::from(baseline.v));
+                                      i32::from(baseline.v))?;
         }
         // Style effects are geometric first-cut synthesis. Exact matching styled
         // NFNT or sfnt resources are selected before this fallback is reached.

@@ -77,7 +77,7 @@ fn main()
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap();
     let dist = mac_build::paths::dist_dir(root);
     let mut resources = resource::decode(&fs::read(dist.join("System.rsrc")).unwrap()).unwrap();
-    let fonts = FontManager::take_resources(&mut resources);
+    let fonts = FontManager::take_resources(&mut resources).unwrap();
     let desktop = args[1].starts_with("desktop");
     let (width, height) = if desktop { (640, 480) } else { (404, 188) };
     let mut pixels = vec![0xffffff; width * height];

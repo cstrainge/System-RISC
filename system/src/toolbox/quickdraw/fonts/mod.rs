@@ -8,7 +8,7 @@
 
 use alloc::{string::String, vec::Vec};
 
-use mac_abi::{BAD_ARGUMENT, NOT_FOUND, Status};
+use mac_abi::{BAD_ARGUMENT, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED, Status};
 use mac_formats::resource::Resource;
 
 use super::{Canvas, Point, font::BitmapFont};
@@ -17,6 +17,7 @@ mod bitmap;
 mod outline;
 mod hinted;
 mod monochrome;
+mod scratch;
 #[cfg(test)]
 mod tests;
 
@@ -92,7 +93,60 @@ struct Association
 {
     size:     i16,
     face:     u16,
-    resource: usize
+    resource: usize,
+    validity: FaceValidity
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FaceValidity
+{
+    Valid,
+    Unsupported,
+    Malformed
+}
+impl FaceValidity
+{
+    fn inspect(resource: &Resource, size: i16) -> Self
+    {
+        if size != 0
+        {
+            return if BitmapFont::parse(&resource.data).is_some()
+            {
+                Self::Valid
+            }
+            else
+            {
+                Self::Malformed
+            };
+        }
+        // Respect preferred outline precedence, including VARC. Only the audited
+        // embedded-glyf path is currently admitted; never substitute its base.
+        use skrifa::{MetadataProvider, outline::OutlineGlyphFormat};
+        let Ok(raw) = skrifa::FontRef::new(&resource.data)
+        else
+        {
+            return Self::Malformed;
+        };
+        match raw.outline_glyphs().format()
+        {
+            Some(OutlineGlyphFormat::Glyf) =>
+            {
+                if ttf_parser::Face::parse(&resource.data, 0).is_ok()
+                {
+                    Self::Valid
+                }
+                else
+                {
+                    Self::Malformed
+                }
+            }
+            Some(OutlineGlyphFormat::Varc | OutlineGlyphFormat::Cff | OutlineGlyphFormat::Cff2) =>
+            {
+                Self::Unsupported
+            }
+            None => Self::Malformed
+        }
+    }
 }
 
 #[derive(Default)]
@@ -117,26 +171,38 @@ fn word(data: &[u8], offset: usize) -> Option<u16>
     Some(u16::from_be_bytes(data.get(offset..offset.checked_add(2)?)?.try_into().ok()?))
 }
 
+/// Use the shared scalar table with exact, fallibly admitted owned UTF-8 backing.
+fn catalog_name(bytes: &[u8]) -> Result<String, Status>
+{
+    let length = bytes.iter()
+                      .try_fold(0usize, |length, &byte| {
+                          length.checked_add(mac_formats::text::character(byte).len_utf8())
+                      })
+                      .ok_or(NO_MEMORY)?;
+    let mut name = String::new();
+    name.try_reserve_exact(length).map_err(|_| NO_MEMORY)?;
+    for &byte in bytes
+    {
+        name.push(mac_formats::text::character(byte));
+    }
+    Ok(name)
+}
+
 impl FontManager
 {
-    /// Move font resources out of System's decoded fork, retaining one owned
-    /// copy of every payload. Applications keep only family/size/style values.
+    /// Admit the complete catalog before moving font payloads out of System's
+    /// decoded fork. Refusal leaves the caller's resources and ordering intact.
     /// Malformed FOND records are omitted; invalid faces fail selection safely.
-    pub fn take_resources(resources: &mut Vec<Resource>) -> Self
+    pub fn take_resources(resources: &mut Vec<Resource>) -> Result<Self, Status>
     {
+        let is_font =
+            |resource: &Resource| matches!(&resource.kind, b"FOND" | b"FONT" | b"NFNT" | b"sfnt");
+        let font_count = resources.iter().filter(|resource| is_font(resource)).count();
         let mut manager = Self::default();
-        for resource in core::mem::take(resources)
-        {
-            if matches!(&resource.kind, b"FOND" | b"FONT" | b"NFNT" | b"sfnt")
-            {
-                manager.resources.push(resource);
-            }
-            else
-            {
-                resources.push(resource);
-            }
-        }
-        for resource in &manager.resources
+        manager.resources.try_reserve_exact(font_count).map_err(|_| NO_MEMORY)?;
+        // Catalog indexes refer to the same stable filtered order that the
+        // final extraction uses, without cloning or moving any payload early.
+        for resource in resources.iter().filter(|resource| is_font(resource))
         {
             if resource.kind != *b"FOND"
             {
@@ -148,6 +214,10 @@ impl FontManager
             {
                 continue;
             };
+            if manager.families.iter().any(|family| family.id == id)
+            {
+                continue;
+            }
             let Some(count) = word(data, 52).map(|n| usize::from(n) + 1)
             else
             {
@@ -158,16 +228,23 @@ impl FontManager
                 continue;
             }
             let mut faces = Vec::new();
-            for index in 0..count
+            for record in data[54..54 + count * 6].chunks_exact(6)
             {
-                let offset = 54 + index * 6;
-                let size = word(data, offset).unwrap() as i16;
-                let face = word(data, offset + 2).unwrap();
-                let id = word(data, offset + 4).unwrap() as i16;
+                let size = i16::from_be_bytes([record[0], record[1]]);
+                let face = u16::from_be_bytes([record[2], record[3]]);
+                let id = i16::from_be_bytes([record[4], record[5]]);
+                if size < 0 || face & !0x7f != 0
+                {
+                    continue;
+                }
                 // A suitcase's NFNT overrides a legacy ROM FONT at the same ID.
                 // Resource map ordering must not choose a different strike.
-                let find =
-                    |kind| manager.resources.iter().position(|r| r.id == id && r.kind == kind);
+                let find = |kind| {
+                    resources.iter()
+                             .filter(|resource| is_font(resource))
+                             .enumerate()
+                             .find(|(_, resource)| resource.id == id && resource.kind == kind)
+                };
                 let target = if size == 0
                 {
                     find(*b"sfnt")
@@ -176,28 +253,47 @@ impl FontManager
                 {
                     find(*b"NFNT").or_else(|| find(*b"FONT"))
                 };
-                if size >= 0
-                   && face & !0x7f == 0
-                   && let Some(resource) = target
+                if let Some((index, resource)) = target
                 {
+                    let validity = FaceValidity::inspect(resource, size);
+                    faces.try_reserve(1).map_err(|_| NO_MEMORY)?;
                     faces.push(Association { size,
                                              face,
-                                             resource });
+                                             resource: index,
+                                             validity });
                 }
             }
-            let name = resource.name
-                               .as_deref()
-                               .map(mac_formats::text::decode)
-                               .unwrap_or_else(|| alloc::format!("Font {id}"));
-            if !faces.is_empty() && !manager.families.iter().any(|family| family.id == id)
+            if faces.is_empty()
             {
-                manager.families.push(FontFamily { id,
-                                                   name,
-                                                   faces });
+                continue;
             }
+            let name = match resource.name.as_deref()
+            {
+                Some(bytes) => catalog_name(bytes)?,
+                None =>
+                {
+                    use core::fmt::Write;
+                    let mut name = String::new();
+                    // "Font -32768" is the longest possible i16 fallback.
+                    name.try_reserve_exact(11).map_err(|_| NO_MEMORY)?;
+                    write!(&mut name, "Font {id}").map_err(|_| BAD_ARGUMENT)?;
+                    name
+                }
+            };
+            manager.families.try_reserve(1).map_err(|_| NO_MEMORY)?;
+            manager.families.push(FontFamily { id,
+                                               name,
+                                               faces });
         }
-        manager.families.sort_by_key(|family| family.id);
-        manager
+        // Family IDs are unique, so the in-place unstable order is identical.
+        manager.families.sort_unstable_by_key(|family| family.id);
+        // All fallible work is complete. Extraction moves fonts exactly once,
+        // preserving the ordinary resources' order and their original capacity.
+        for resource in resources.extract_if(.., |resource| is_font(resource))
+        {
+            manager.resources.push(resource);
+        }
+        Ok(manager)
     }
 
     pub fn resources(&self) -> &[Resource]
@@ -259,13 +355,14 @@ impl FontManager
         };
         let association = family.faces.iter().min_by_key(|face| score(face)).ok_or(NOT_FOUND)?;
         let resource = &self.resources[association.resource];
-        if association.size == 0
+        // Immutable source validation is cached at catalog admission, not
+        // repeated for every text-width request or drawing snapshot.
+        match association.validity
         {
-            ttf_parser::Face::parse(&resource.data, 0).map_err(|_| BAD_ARGUMENT)?;
-        }
-        else if BitmapFont::parse(&resource.data).is_none()
-        {
-            return Err(BAD_ARGUMENT);
+            FaceValidity::Valid =>
+            {}
+            FaceValidity::Unsupported => return Err(NOT_SUPPORTED),
+            FaceValidity::Malformed => return Err(BAD_ARGUMENT)
         }
         Ok(Resolved { resource,
                       size: association.size,
@@ -350,6 +447,10 @@ impl FontManager
                                       -> Result<i16, Status>
     {
         let face = self.resolve(selection, preference)?;
+        if text.is_empty()
+        {
+            return Ok(0);
+        }
         if face.size == 0 { outline::width(&face, text) } else { bitmap::width(&face, text) }
     }
 
@@ -371,6 +472,10 @@ impl FontManager
                                 -> Result<i16, Status>
     {
         let face = self.resolve(selection, preference)?;
+        if text.is_empty()
+        {
+            return Ok(0);
+        }
         if face.size == 0
         {
             outline::draw(&face, canvas, baseline, text, color)
@@ -450,6 +555,7 @@ fn underline(canvas: &mut Canvas<'_>, start: Point, width: i16, face: u16, color
 
 fn remember_descender(spans: &mut Vec<(i32, i32)>, pixels: impl Iterator<Item = (i32, i32)>,
                       baseline: i32)
+                      -> Result<(), Status>
 {
     let mut bounds: Option<(i32, i32)> = None;
     for (x, _) in pixels.filter(|&(_, y)| y >= baseline)
@@ -460,6 +566,7 @@ fn remember_descender(spans: &mut Vec<(i32, i32)>, pixels: impl Iterator<Item = 
     {
         // Original underline skips the descender's horizontal ink extent,
         // expanded by one pixel on each side, while retaining glyph ink.
-        spans.push((left.saturating_sub(1), right.saturating_add(2)));
+        scratch::push(spans, (left.saturating_sub(1), right.saturating_add(2)))?;
     }
+    Ok(())
 }

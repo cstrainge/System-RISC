@@ -5,8 +5,6 @@ version = 4
 [[package]]
 name = "ab_glyph_rasterizer"
 version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 dependencies = [
  "libm",
 ]
@@ -943,8 +941,6 @@ dependencies = [
 [[package]]
 name = "skrifa"
 version = "0.48.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5213b4825bac3587046330052d61bfac7bd3bd0d203c758d7c2ef726fcea034"
 dependencies = [
  "bytemuck",
  "core_maths",

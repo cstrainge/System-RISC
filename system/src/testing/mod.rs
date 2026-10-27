@@ -64,7 +64,8 @@ impl Default for Session
                                                              attributes: 0,
                                                              data: data.to_vec() });
         }
-        let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut resources);
+        let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut resources)
+            .expect("bundled fixture font catalog backing is admitted");
         let registrar = crate::toolbox::handles::OwnerRef::try_new(
             mac_object_table::domain::OwnerIndex::issue(mac_object_table::domain::DomainKind::Module).unwrap()).unwrap();
         let mut registry = crate::toolbox::handles::Registry::<Session>::new();
@@ -1235,7 +1236,11 @@ pub fn with_resource_forks<R>(system: &[u8], application: &[u8],
 {
     let mut resources = mac_formats::resource::decode(system)?;
     let application = mac_formats::resource::decode(application)?;
-    let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut resources);
+    let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut resources)
+        .map_err(|status| match status {
+            NO_MEMORY => mac_formats::Error::AllocationFailed("cannot allocate the fixture font catalog"),
+            _ => mac_formats::Error::Malformed("cannot initialize the fixture font catalog")
+        })?;
     Ok(with_services(|services| {
         SESSION.with(|slot| {
                    let mut session = slot.borrow_mut();

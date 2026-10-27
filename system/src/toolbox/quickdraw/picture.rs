@@ -1749,7 +1749,7 @@ mod tests
                                             attributes: 0,
                                             data:
                                                 include_bytes!("assets/chicago-12.font").to_vec() }];
-        FontManager::take_resources(&mut resources)
+        FontManager::take_resources(&mut resources).unwrap()
     }
     fn render(picture: &Picture) -> Vec<u32>
     {

@@ -2807,3 +2807,32 @@ cache entries or presented; pending damage remains available for retry. PICT tex
 and font-name conversion use bounded stack output. This does not establish a
 complete recovery policy for every permanent rendering refusal or the full
 transitive font/emergency graph; those remain pre-heap qualification work.
+
+
+### Font scratch and catalog admission
+
+The Font Manager admits its complete family/name/association catalog before moving
+font resources from the System fork. Refusal leaves the original resource vector,
+order and payload ownership intact. Successful extraction moves payloads without
+copying them. Immutable source validity is cached at admission, so width/drawing
+requests do not repeat source-format validation. Existing bitmap strikes and the
+bundled glyf TrueType faces retain their previous selection and pixels. Unaudited
+preferred VARC/CFF/CFF2 sources return NotSupported rather than entering hidden
+allocation paths or silently selecting a different outline source.
+
+Synthetic/scaled bitmap pixels, embedded hinting state, supplied glyph scratch,
+outline commands, coverage, scan edges/crossings and underline exclusions admit
+backing fallibly. Exact unstyled bitmap strikes and validated empty text need no
+raster/hinter allocation. Glyph scratch is reused across a string. Small pinned
+upstream source patches expose admitted raster storage and fallible embedded
+interpreter construction; hint instructions and raster arithmetic are unchanged.
+The dependency licenses, original archive checksums and local patch boundaries
+are retained with those sources.
+
+Canonical SDK refusal-prefix tests preserve typed NoMemory, single-glyph destination
+pixels and retry behavior for real simple and compound TrueType glyphs. Measurement
+checks include different glyph scratch sizes. This is not transactional painting
+of an arbitrary multi-glyph string, native CFF/VARC/OpenType qualification, installed
+emergency-service backing, or recovery from arbitrary privileged faults. Protected
+account/reserve enforcement and the complete failure-service kit remain heap-stage
+gates.

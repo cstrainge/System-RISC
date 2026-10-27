@@ -190,7 +190,11 @@ pub(super) fn draw(resolved: &Resolved<'_>, canvas: &mut Canvas<'_>, baseline: P
             }
             if width > 0 && height > 0
             {
-                let mut raster = Rasterizer::new(width, height);
+                let length =
+                    width.checked_mul(height).and_then(|n| n.checked_add(4)).ok_or(BAD_ARGUMENT)?;
+                let buffer = super::super::storage::vector(length).map_err(|_| mac_abi::NO_MEMORY)?;
+                let mut raster =
+                    Rasterizer::with_buffer(width, height, buffer).map_err(|_| BAD_ARGUMENT)?;
                 let mut builder = Builder { raster: &mut raster,
                                             scale_x,
                                             scale_y,
@@ -203,7 +207,7 @@ pub(super) fn draw(resolved: &Resolved<'_>, canvas: &mut Canvas<'_>, baseline: P
                 // complete raster unless ttf-parser validates the whole glyph.
                 if face.outline_glyph(id, &mut builder).is_some()
                 {
-                    let mut coverage = alloc::vec![false;width*height];
+                    let mut coverage = super::scratch::filled(width * height, false)?;
                     raster.for_each_pixel(|index, alpha| coverage[index] = alpha >= 0.5);
                     let gx = pen.saturating_add(left);
                     let gy = i32::from(baseline.v).saturating_add(top);
@@ -217,7 +221,7 @@ pub(super) fn draw(resolved: &Resolved<'_>, canvas: &mut Canvas<'_>, baseline: P
                                                               (gx + (index % width) as i32,
                                                                gy + (index / width) as i32)
                                                           }),
-                                                  i32::from(baseline.v));
+                                                  i32::from(baseline.v))?;
                     }
                     let mask = |x: i32, y: i32| {
                         let x = x - gx;

@@ -1,6 +1,7 @@
 //! Thread-local observation/refusal around real public SDK service calls.
 use std::{alloc::{GlobalAlloc, Layout, System as HostAllocator},
-          cell::Cell};
+          cell::Cell,
+          thread_local};
 thread_local! {
     static MODE:Cell<u8> = const { Cell::new(0) };
     static ALLOCATIONS:Cell<usize> = const { Cell::new(0) };
@@ -13,12 +14,24 @@ fn allocation(size: usize) -> bool
             let value = mode.get();
             let selected = value != 0
                            && (value <= 2
+                               || value == 5
                                || SIZE.try_with(|target| target.get() == size).unwrap_or(false));
-            if selected
+            let ordinal = if selected
             {
-                let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
+                ALLOCATIONS.try_with(|n| {
+                               let next = n.get() + 1;
+                               n.set(next);
+                               next
+                           })
+                           .unwrap_or(0)
             }
-            value == 2 || value == 3 && selected
+            else
+            {
+                0
+            };
+            value == 2
+            || value == 3 && selected
+            || value == 5 && SIZE.try_with(|target| target.get() == ordinal).unwrap_or(false)
         })
         .unwrap_or(false)
 }
@@ -73,6 +86,21 @@ impl Observe
                           (true, true) => 3,
                           (false, true) => 4
                       });
+            });
+        Self
+    }
+
+    /// Refuse exactly one allocation in an otherwise ordinary service call.
+    /// Iterating its observed allocation ordinals exercises failures after every
+    /// successfully admitted prefix, including backing hidden in dependencies.
+    pub fn fail_at(ordinal: usize) -> Self
+    {
+        assert!(ordinal > 0);
+        ALLOCATIONS.with(|n| n.set(0));
+        SIZE.with(|target| target.set(ordinal));
+        MODE.with(|m| {
+                assert_eq!(m.get(), 0);
+                m.set(5);
             });
         Self
     }

@@ -518,7 +518,11 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     let finder_owner = processes.ledger(crate::context::finder_app().0).map_err(|_| {
         mac_formats::Error::Malformed("Finder bootstrap owner is unavailable")
     })?;
-    let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut system);
+    let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut system)
+        .map_err(|status| match status {
+            mac_abi::NO_MEMORY => mac_formats::Error::AllocationFailed("cannot allocate the System font catalog"),
+            _ => mac_formats::Error::Malformed("cannot initialize the System font catalog")
+        })?;
     serial!("FONTS_READY: families={} resources loaded from System", fonts.catalog().len());
     // Progress uses the real loaded CDEF before any application loop exists.
     let fonts = FONTS.call_once(|| fonts);
