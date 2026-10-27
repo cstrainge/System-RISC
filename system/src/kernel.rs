@@ -297,6 +297,12 @@ pub(crate) fn with_scrap<R>(call: impl FnOnce(&mut crate::toolbox::scrap::Manage
 {
     SCRAP.with(call)
 }
+pub(crate) fn with_scrap_owned<A, R>(argument: A,
+                                     call: impl FnOnce(A, &mut crate::toolbox::scrap::Manager) -> R)
+                                     -> Result<R, (AccessError, A)>
+{
+    SCRAP.with_owned(argument, call)
+}
 pub(crate) fn fonts() -> Option<&'static crate::toolbox::quickdraw::fonts::FontManager>
 {
     FONTS.get()
@@ -446,6 +452,7 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                            mac_formats::Error::Malformed("module RAM reservation unavailable")
                        })?;
     crate::drivers::initialize(module_arena,crate::machine::MODULE_TARGET).map_err(|_|mac_formats::Error::Malformed("module runtime initialization failed"))?;
+    crate::toolbox::scrap::extension_runtime::initialize().map_err(|_| mac_formats::Error::Malformed("Scrap extension service initialization failed"))?;
     crate::machine::driver_devices::initialize().map_err(|_| {
                                                     mac_formats::Error::Malformed("device service \
                                                                                    initialization \

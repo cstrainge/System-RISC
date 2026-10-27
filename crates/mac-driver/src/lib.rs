@@ -103,8 +103,7 @@ impl Provider
     /// no broker ticket on this path; a busy result is safe to retry unchanged.
     /// Modules and operations without this explicit contract are refused before
     /// dispatch. Device reset must use the ticket-owning asynchronous method.
-    pub(crate) fn synchronous(self, operation: u32, input: &[u8], output: &mut [u8])
-                              -> Result<usize>
+    pub fn synchronous(self, operation: u32, input: &[u8], output: &mut [u8]) -> Result<usize>
     {
         let mut call =
             abi::Call { header: abi::Header::of::<abi::Call>(),
@@ -503,5 +502,59 @@ mod synchronous_tests
         assert_eq!(u32::from_le_bytes(output), 32);
         assert_eq!(CALLS.load(Ordering::SeqCst), 2);
         assert!(!wire::synchronous(wire::RESET));
+    }
+}
+
+#[cfg(test)]
+mod source_information_tests
+{
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use mac_file_source_interface::{self as wire, Arguments, Info, Operation};
+
+    use super::*;
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    const SOURCE: u64 = 1 << 43;
+    unsafe extern "C" fn resolve(_: u64, class: u32, _: u32, output: *mut u64) -> Status
+    {
+        assert_eq!(class.to_le_bytes(), wire::CLASS.0);
+        unsafe {
+            output.write(1 << 41);
+        }
+        OK
+    }
+    unsafe extern "C" fn broker(_: u64, _: u64, pointer: *mut abi::Call) -> Status
+    {
+        let call = unsafe { &mut *pointer };
+        assert_eq!(call.phase, abi::SYNCHRONOUS);
+        assert_eq!(call.ticket, 0);
+        assert_eq!(call.class, wire::CLASS.0);
+        let input = unsafe { core::slice::from_raw_parts(call.input, call.input_len as usize) };
+        assert_eq!(Arguments::decode(Operation::Info, input).unwrap().source, SOURCE);
+        if CALLS.fetch_add(1, Ordering::SeqCst) == 0
+        {
+            return mac_abi::SERVICE_BUSY;
+        }
+        let data = Info { length: 1 << 40 }.encode();
+        unsafe {
+            core::ptr::copy_nonoverlapping(data.as_ptr(), call.output, data.len());
+        }
+        call.output_len = data.len() as u32;
+        OK
+    }
+    #[test]
+    fn backing_info_contention_never_creates_a_hidden_request_or_cancellation()
+    {
+        CALLS.store(0, Ordering::SeqCst);
+        let client = Client { host: abi::Host { header:   abi::Header::of::<abi::Host>(),
+                                                module:   1 << 40,
+                                                reserved: 0,
+                                                context:  1 << 40,
+                                                call:     Some(broker),
+                                                resolve:  Some(resolve) } };
+        let service = file_sources::FileSources::new(client).unwrap();
+        assert_eq!(service.info(SOURCE), Err(Error(mac_abi::SERVICE_BUSY)));
+        assert_eq!(service.info(SOURCE), Ok(Info { length: 1 << 40 }));
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
     }
 }

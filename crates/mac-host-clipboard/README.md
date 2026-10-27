@@ -5,6 +5,7 @@ standard QEMU SPICE vdagent clipboard channel. It consumes borrowed frames from
 `mac-vdagent-protocol` and produces owned messages using that codec. It has no
 Scrap implementation, resident registration authority, worker, driver, host
 clipboard implementation or preferences store. These remain integration gates.
+It does provide validated immutable preference policy consumed by the engine.
 
 The caller provides an immutable `Snapshot` pin with a monotonically increasing
 Scrap content revision. The engine retains that exact owner rather than copying
@@ -107,12 +108,54 @@ terminator or substitute invalid Unicode. Actual host-native UTF-16 conversion
 and QEMU's zero-byte clipboard behavior still need qualification on each claimed
 host profile; these tests do not establish that interoperability.
 
+## Preference policy
+
+`Settings` accepts one bounded version 1 JSON document, for example:
+
+```json
+{"version":1,"enabled":true,"direction":"both"}
+```
+
+`version` is required and must be integer 1. `enabled` defaults to true and
+`direction` defaults to `both`; other directions are `host-to-guest` and
+`guest-to-host`. Unknown or duplicate fields, unsupported versions, malformed
+types, trailing values and documents above `MAX_SETTINGS_BYTES` (256 bytes) are
+refused with an actionable cause. A private serde wire type prevents bypassing
+validation through a public `Deserialize` implementation. Decode and encode do
+not allocate; a short encode buffer is left untouched for a real retry.
+
+Select settings with `Config::with_settings` before creating an engine. There
+is no live engine policy setter. Replacing settings requires closing the old
+engine, revoking/disconnecting its real resident session and callbacks, resetting
+the actual transport and opening a fresh authenticated session/engine. Creating
+a new Settings value confers no resident permission and changes no existing
+session. Numeric engine labels cannot substitute for that revocation.
+
+| Policy | Host-to-guest behavior | Guest-to-host behavior |
+| --- | --- | --- |
+| Disabled | Open is refused before any allocation or traffic. | Local revisions are observed without inspecting text. |
+| Both | Atomic import effects use the existing ordering and CAS rules. | Local text is offered and transferred on demand. |
+| Host-to-guest | Imports remain enabled; local changes still invalidate stale imports. | No local text inspection or export; peer requests receive bounded NONE responses. |
+| Guest-to-host | Offers update serial/ownership metadata but start no fetch; DATA is refused before text scanning. | Local text export remains enabled and uses the current host serial order. |
+
+Direction refusal and unchanged idle work allocate nothing. A NONE response may
+need a small bounded wire allocation; refusal preserves the receive frame for
+retry and never falls through to reading private local text. Policy controls
+bridge traffic, while the resident service separately authenticates every real
+call and its session's read/write permission.
+
+These methods encode policy data only. They do not load/save a Preferences file,
+commit a transaction, claim writable storage, fabricate an application identity
+or report persistence success. Native preference service/storage integration
+must separately use the real authenticated writable transaction boundary.
+
 ## Checks
 
 `cargo test --locked -p mac-host-clipboard` exercises the real codec with fragmented
 input, crossed/coalesced capability announcements and partial write completion,
 demand exchange, empty/NONE distinctions, limits, malformed Unicode,
 stale offers/data/completions, serial ordering, queue bounds, partial writes,
-timeouts, reconnect, generic CAS causes and real allocation refusal/retry.
+timeouts, reconnect, generic CAS causes, strict preference JSON and applied
+direction/enablement policy, and real allocation refusal/retry.
 No test claims authenticated resident integration, scheduling, or a real host
 clipboard round trip.

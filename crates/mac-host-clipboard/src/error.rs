@@ -4,6 +4,12 @@ use core::fmt;
 pub enum Error
 {
     Configuration,
+    Disabled,
+    DirectionDenied
+    {
+        direction: crate::Direction,
+        operation: &'static str
+    },
     Closed,
     ResetRequired,
     StaleEpoch,
@@ -58,6 +64,19 @@ impl fmt::Display for Error
         match self
         {
             Self::Configuration => f.write_str("has invalid local framing or text limits")?,
+            Self::Disabled =>
+            {
+                f.write_str("sharing is disabled; keep using local Scrap and enable a new \
+                             authenticated session only after closing/revoking and resetting the \
+                             old connection")?
+            }
+            Self::DirectionDenied { direction,
+                                    operation } =>
+            {
+                write!(f,
+                       "{operation} is refused by the {direction} policy; retain local Scrap and \
+                        close/revoke/reset the connection before changing direction")?
+            }
             Self::Closed => f.write_str("channel is closed; retain local Scrap and reconnect")?,
             Self::ResetRequired => f.write_str("requires a channel reset before another transfer")?,
             Self::StaleEpoch => f.write_str("refused work from a previous channel session")?,

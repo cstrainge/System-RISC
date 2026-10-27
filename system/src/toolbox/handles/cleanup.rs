@@ -8,6 +8,8 @@ pub(crate) enum Cause
 {
     #[cfg(target_arch = "riscv64")]
     RequestRegistryUnavailable(crate::state::AccessError),
+    #[cfg(target_arch = "riscv64")]
+    ScrapManagerUnavailable(crate::state::AccessError),
     ContextUnavailable
     {
         required: &'static str
@@ -92,6 +94,13 @@ impl core::fmt::Display for Cause
                 write!(f,
                        "driver request cleanup could not enter its registry ({cause:?}); exact \
                         ticket and pending request remain retained for retry")
+            }
+            #[cfg(target_arch = "riscv64")]
+            Self::ScrapManagerUnavailable(cause) =>
+            {
+                write!(f,
+                       "Scrap extension cleanup could not enter its resident manager ({cause:?}); \
+                        exact ticket, session and snapshot backing remain retained for retry")
             }
             Self::ContextUnavailable { required } =>
             {
@@ -260,6 +269,14 @@ impl Failure
     {
         Self { ticket,
                cause: Cause::DeviceManagerUnavailable(cause) }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn scrap_unavailable(ticket: ReleasedResource, cause: crate::state::AccessError)
+                                    -> Self
+    {
+        Self { ticket,
+               cause: Cause::ScrapManagerUnavailable(cause) }
     }
 
     pub(crate) fn context_unavailable(ticket: ReleasedResource, required: &'static str) -> Self

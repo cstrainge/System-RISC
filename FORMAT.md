@@ -1123,7 +1123,7 @@ payload (not a host path). This supplies its actual UTF-8 name and timestamps
 for the mounted root. Host-export Mount continues to have no payload.
 
 The driver declares the kernel-only `FORK` service, version 1. All fields are
-little endian. Both operations have an exact 24-byte START argument:
+little endian. Both operations use an exact 24-byte initial argument:
 
 | Offset | Size | Field |
 | --- | --- | --- |
@@ -1133,10 +1133,12 @@ little endian. Both operations have an exact 24-byte START argument:
 | 20 | 4 | reserved zero |
 
 Info (operation 1) requires zero offset/length and returns an eight-byte u64 fork
-length. It is resident metadata only. Read (2) returns positional fork bytes,
-short at EOF, without changing any public file mark. Overflowing ranges and
-offsets beyond EOF fail. POLL/CANCEL carry empty input and retain the same broker
-ticket and source lease; borrowed input/output storage never survives a call.
+length through the ticket-free synchronous resident phase. It performs no
+backing I/O and cannot defer; contention is safe to retry without a hidden
+request. Read (2) uses START and returns positional fork bytes, short at EOF,
+without changing any public file mark. Overflowing ranges and offsets beyond
+EOF fail. READ POLL/CANCEL carry empty input and retain the same broker ticket
+and source lease; borrowed input/output storage never survives a call.
 
 Sources (`FSRC`) and their backing (`FSSB`) are registered native module-owned
 leased-fork capabilities; the global file/catalog remains System-owned. Ordinary
@@ -1922,3 +1924,47 @@ immutable root, caches contiguous matching spans once on explicit request and
 validates unmapped guards before publication. It does not report planned
 mappings as installed mappings. Failed allocation leaves initialization
 retryable. Private process maps and per-domain budget gauges remain later gates.
+
+
+## Resident Scrap extension service (SCEX, version 1)
+
+SCEX is a kernel-only synchronous resident service for declared INIT modules.
+The broker authenticates the actual module; the service requires a committed
+extension and a live module ledger, then validates every generation-tagged
+session and snapshot against that owner. Labels and expected content revisions
+confer no authority. Applications use the ordinary Toolbox Scrap calls.
+
+Every operation uses the ticket-free synchronous broker phase and borrows fresh
+buffers. The caller supplies 512..4096 reply bytes. Before any effect, System
+validates the declared input and reply bounds. A terminal reply has an eight-byte
+little-endian header: status i32 and payload length u32. Status zero carries the
+operation result. A negative status carries a nonempty UTF-8 diagnostic from the
+original typed cause. Broker contention before dispatch has no effect or hidden
+ticket and is safe to retry. No independently linked callback runs under Scrap.
+
+| Operation | Input | Success payload |
+| --- | --- | --- |
+| OPEN (1) | writable u32, exactly 0 or 1 | session u64 |
+| NOTICE (2) | session u64 | latest pending content revision u64; 0 means unchanged |
+| SNAPSHOT (3) | session u64 | immutable snapshot pin u64 |
+| READ (4) | session u64, pin u64, byte offset u64 | up to 4088 text bytes |
+| IMPORT (5) | session u64, pin u64, UTF-8 text | committed content revision u64 |
+| CLOSE_PIN (6) | session u64, pin u64 | empty |
+| DISCONNECT (7) | session u64 | empty |
+| INFO (8) | session u64, pin u64 | revision u64, content kind u32, text length u32 |
+
+INFO kind 0 is absent/empty Scrap, 1 is UTF-8 text including an empty string, and 2 is
+unsupported content. Non-text kinds have length zero. READ pins one immutable
+revision across chunks. Successful commits replace one pending revision per
+session without allocating notification queues. Snapshot allocation failure
+preserves both its pending notice and the previous pins. The scheduled observer
+chooses the final batching boundary; no clear/put end marker is invented.
+
+IMPORT accepts at most 1 MiB minus 32 text bytes and also applies the resident
+Scrap bound. It checks the exact live writable session, its snapshot pin and the
+current content revision before replacement. A conflict, storage failure or bad
+input preserves the previous Scrap. The origin session acknowledges only its
+committed import; other observers retain the notice. DISCONNECT revokes its pins.
+Owner cleanup retains original quarantine tickets through acknowledged release.
+The contract does not itself admit a worker, schedule observer callbacks or
+qualify host clipboard interoperability.

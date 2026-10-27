@@ -48,12 +48,14 @@ pub(crate) enum ResidentCompletion
     Complete(usize),
     Pending
 }
+pub(crate) type SynchronousCallback = fn(u64, u32, &[u8], &mut [u8]) -> Result<usize, Status>;
 pub(crate) type ResidentCallback =
     fn(ResidentCall<'_>, &mut [u8]) -> Result<ResidentCompletion, Status>;
 struct ResidentBinding
 {
-    interface: u64,
-    callback:  ResidentCallback
+    interface:   u64,
+    callback:    Option<ResidentCallback>,
+    synchronous: SynchronousCallback
 }
 #[derive(Clone, Copy)]
 enum DispatchTarget
@@ -95,17 +97,36 @@ pub(crate) fn inspect<T: crate::toolbox::inspection::Subject>(processes:&mac_obj
     }
 }
 
-pub(crate) fn register_service(offer: mac_module::Offer, callback: ResidentCallback)
-                               -> Result<u64, Status>
+/// Install an explicitly non-deferred resident entry. An optional ticket-owning
+/// entry is separate: VDEV uses it only for RESET, while SCEX is sync-only.
+/// This callback must not yield, park, wait for I/O or enter foreign module
+/// code. Its bounded admission/effect span uses the native invocation gate;
+/// runtime/owner locks are released before callback entry. This is not SMP.
+pub(crate) fn register_synchronous_service(offer: mac_module::Offer,
+                                           callback: SynchronousCallback,
+                                           asynchronous: Option<ResidentCallback>)
+                                           -> Result<u64, Status>
 {
     RUNTIME.with(|runtime| {
                runtime.residents.try_reserve(1).map_err(|_| NO_MEMORY)?;
                let interface = runtime.registry.register_service(offer).map_err(status)?;
                runtime.residents.push(ResidentBinding { interface,
-                                                        callback });
+                                                        callback: asynchronous,
+                                                        synchronous: callback });
                Ok(interface)
            })
            .map_err(crate::state::AccessError::status)?
+}
+
+pub(crate) fn scrap_authority(
+    caller: u64)
+    -> Result<Result<crate::toolbox::scrap::extension::Authority,
+                     crate::toolbox::scrap::extension::Error>,
+              crate::state::AccessError>
+{
+    RUNTIME.with(|runtime| {
+               crate::toolbox::scrap::extension::Authority::authenticate(&runtime.registry, caller)
+           })
 }
 
 pub(crate) fn device_allowed(module: u64, bus: ClassId, key: [u8; 16]) -> Result<(), Status>
@@ -450,26 +471,27 @@ unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
             {
                 return Err(BAD_ARGUMENT);
             }
-            // Only explicitly implemented, non-deferred resident operations can
+            // Only explicitly registered, non-deferred resident operations can
             // reach this path. No request is published and no foreign code runs.
-            if call.class != mac_device_interface::CLASS.0
-               || !mac_device_interface::synchronous(call.operation)
-            {
-                return Err(NOT_SUPPORTED);
-            }
-            RUNTIME.with(|runtime| {
-                       let interface = runtime.registry
-                                              .authorize_synchronous(subject, caller, provider,
-                                                                     call.input_len as usize,
-                                                                     call.output_capacity as usize)
-                                              .map_err(status)?;
-                       if interface.offer.class.0 != call.class
-                       {
-                           return Err(BAD_ARGUMENT);
-                       }
-                       Ok(())
-                   })
-                   .map_err(crate::state::AccessError::status)??;
+            let callback =
+                RUNTIME.with(|runtime| {
+                           let interface =
+                               runtime.registry
+                                      .authorize_synchronous(subject, caller, provider,
+                                                             call.input_len as usize,
+                                                             call.output_capacity as usize)
+                                      .map_err(status)?;
+                           if interface.offer.class.0 != call.class
+                           {
+                               return Err(BAD_ARGUMENT);
+                           }
+                           runtime.residents
+                                  .iter()
+                                  .find(|binding| binding.interface == provider)
+                                  .map(|binding| binding.synchronous)
+                                  .ok_or(NOT_SUPPORTED)
+                       })
+                       .map_err(crate::state::AccessError::status)??;
             let input = if call.input_len == 0
             {
                 &[]
@@ -488,8 +510,11 @@ unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
                     core::slice::from_raw_parts_mut(call.output, call.output_capacity as usize)
                 }
             };
-            let length =
-                crate::machine::driver_devices::synchronous(caller, call.operation, input, output)?;
+            let length = callback(caller, call.operation, input, output)?;
+            if length > output.len()
+            {
+                return Err(BAD_ABI);
+            }
             call.output_len = length.try_into().map_err(|_| BAD_ABI)?;
             return Ok(OK);
         });
@@ -512,6 +537,23 @@ unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
                    {
                        return Err(BAD_ARGUMENT);
                    }
+                   let target = if interface.module == 0
+                   {
+                       DispatchTarget::Resident(runtime.residents
+                                                       .iter()
+                                                       .find(|r| r.interface == provider)
+                                                       .ok_or(NOT_FOUND)?
+                                                       .callback
+                                                       .ok_or(NOT_SUPPORTED)?)
+                   }
+                   else
+                   {
+                       DispatchTarget::Module(runtime.bindings
+                                                     .iter()
+                                                     .find(|b| b.module == interface.module)
+                                                     .and_then(|b| b.instance)
+                                                     .ok_or(NOT_FOUND)?)
+                   };
                    let ticket = match call.phase
                    {
                        abi::START if call.ticket == 0 =>
@@ -541,22 +583,6 @@ unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
                            call.ticket
                        }
                        _ => return Err(BAD_ARGUMENT)
-                   };
-                   let target = if interface.module == 0
-                   {
-                       DispatchTarget::Resident(runtime.residents
-                                                       .iter()
-                                                       .find(|r| r.interface == provider)
-                                                       .ok_or(NOT_FOUND)?
-                                                       .callback)
-                   }
-                   else
-                   {
-                       DispatchTarget::Module(runtime.bindings
-                                                     .iter()
-                                                     .find(|b| b.module == interface.module)
-                                                     .and_then(|b| b.instance)
-                                                     .ok_or(NOT_FOUND)?)
                    };
                    runtime.registry
                           .enter_request(caller,

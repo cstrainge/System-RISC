@@ -8,6 +8,10 @@ use mac_abi::{scrap::*, *};
 // The sole pointer boundary is isolated in this module.
 #[allow(unsafe_code)]
 pub mod native;
+pub(crate) mod extension;
+pub(crate) mod extension_wire;
+#[cfg(target_arch = "riscv64")]
+pub(crate) mod extension_runtime;
 struct Record
 {
     kind:   [u8; 4],
@@ -140,19 +144,21 @@ impl ChangeError
 }
 pub struct Manager
 {
-    records:  Vec<Record>,
-    size:     u32,
-    count:    u16,
-    revision: Revision
+    records:    Vec<Record>,
+    size:       u32,
+    count:      u16,
+    revision:   Revision,
+    extensions: Option<extension::Service>
 }
 impl Default for Manager
 {
     fn default() -> Self
     {
-        Self { records:  Vec::new(),
-               size:     0,
-               count:    0,
-               revision: Revision(1) }
+        Self { records:    Vec::new(),
+               size:       0,
+               count:      0,
+               revision:   Revision(1),
+               extensions: None }
     }
 }
 impl Manager
@@ -225,6 +231,7 @@ impl Manager
         self.size = size as u32;
         self.count = self.count.wrapping_add(1);
         self.revision = revision;
+        self.extension_changed();
         Ok(revision)
     }
 
@@ -273,6 +280,7 @@ impl Manager
                             self.size = 0;
                             self.count = self.count.wrapping_add(1);
                             self.revision = revision;
+                            self.extension_changed();
                             Ok(())
                         }
                         Err(error) => Err(error.status())
@@ -338,6 +346,7 @@ impl Manager
                                    offset: self.size + 8 });
         self.size = size as u32;
         self.revision = revision;
+        self.extension_changed();
         Ok(())
     }
 
@@ -357,6 +366,7 @@ impl Manager
         self.records.push(record);
         self.size = size as u32;
         self.revision = revision;
+        self.extension_changed();
         Ok(())
     }
 

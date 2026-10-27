@@ -457,15 +457,17 @@ pub(crate) fn initialize() -> Result<(), Status>
                 }).map_err(|error| error.status())?
                   .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
     SOURCES.try_call_once(|| Sources::new(kinds).map(Spinlock::new))?;
-    crate::drivers::register_service(Offer { class:          wire::CLASS,
-                                             version:        wire::VERSION,
-                                             request_schema: 1,
-                                             reply_schema:   1,
-                                             max_request:    wire::ARGUMENT_BYTES as u32,
-                                             max_reply:      wire::MAX_TRANSFER as u32,
-                                             flags:          Offer::KERNEL_ONLY,
-                                             capabilities:   0 },
-                                     request)?;
+    crate::drivers::register_synchronous_service(Offer { class:          wire::CLASS,
+                                                         version:        wire::VERSION,
+                                                         request_schema: 1,
+                                                         reply_schema:   1,
+                                                         max_request:    wire::ARGUMENT_BYTES
+                                                                         as u32,
+                                                         max_reply:      wire::MAX_TRANSFER as u32,
+                                                         flags:          Offer::KERNEL_ONLY,
+                                                         capabilities:   0 },
+                                                 information,
+                                                 Some(request))?;
     Ok(())
 }
 fn request(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompletion, Status>
@@ -475,13 +477,25 @@ fn request(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompleti
     {
         return reads::request(call, output);
     }
-    if call.phase != abi::START
+    Err(mac_abi::NOT_SUPPORTED)
+}
+/// Only immutable source metadata can use the bounded resident leaf. A read
+/// retains its real broker ticket and never enters the synchronous route.
+fn information(caller: u64, operation: u32, input: &[u8], output: &mut [u8])
+               -> Result<usize, Status>
+{
+    let operation = Operation::try_from(operation).map_err(|_| BAD_ARGUMENT)?;
+    if operation != Operation::Info
+    {
+        return Err(mac_abi::NOT_SUPPORTED);
+    }
+    let args = Arguments::decode(operation, input).map_err(|_| BAD_ARGUMENT)?;
+    if output.len() < wire::INFO_BYTES
     {
         return Err(BAD_ARGUMENT);
     }
-    let args = Arguments::decode(operation, call.input).map_err(|_| BAD_ARGUMENT)?;
-    let owner = crate::drivers::module_authority(call.caller)?;
+    let owner = crate::drivers::module_authority(caller)?;
     let info = with(|sources| sources.info(&owner, args.source))??;
-    output.get_mut(..wire::INFO_BYTES).ok_or(BAD_ARGUMENT)?.copy_from_slice(&info.encode());
-    Ok(ResidentCompletion::Complete(wire::INFO_BYTES))
+    output[..wire::INFO_BYTES].copy_from_slice(&info.encode());
+    Ok(wire::INFO_BYTES)
 }

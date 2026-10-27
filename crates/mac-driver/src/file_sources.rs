@@ -26,28 +26,9 @@ impl FileSources
                                 length: 0 }.encode(Operation::Info)
                                            .map_err(|_| Error(mac_abi::BAD_ARGUMENT))?;
         let mut output = [0; interface::INFO_BYTES];
-        let mut ticket = 0;
-        match self.provider.invoke(&mut ticket,
-                                    Phase::Start,
-                                    Operation::Info as u32,
-                                    &input,
-                                    &mut output)?
-        {
-            Completion::Complete(length) =>
-            {
-                Info::decode(output.get(..length).ok_or(Error(mac_abi::BAD_ABI))?)
-                    .map_err(|_| Error(mac_abi::BAD_ABI))
-            }
-            Completion::Pending =>
-            {
-                let _ = self.provider.invoke(&mut ticket,
-                                             Phase::Cancel,
-                                             Operation::Info as u32,
-                                             &[],
-                                             &mut []);
-                Err(Error(mac_abi::BAD_ABI))
-            }
-        }
+        let length = self.provider.synchronous(Operation::Info as u32, &input, &mut output)?;
+        Info::decode(output.get(..length).ok_or(Error(mac_abi::BAD_ABI))?)
+            .map_err(|_| Error(mac_abi::BAD_ABI))
     }
 
     /// Retain the ticket through Pending, including cancellation. Only START

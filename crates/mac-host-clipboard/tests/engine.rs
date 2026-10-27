@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use mac_host_clipboard::{CompletionError, Config, Content, Effect, Engine, Epoch, Error, Phase,
-                         Sent, Snapshot};
+use mac_host_clipboard::{CompletionError, Config, Content, Direction, Effect, Engine, Epoch,
+                         Error, Phase, Sent, Settings, Snapshot};
 use mac_vdagent_protocol::{Capabilities, Capability, Decoder, Format, Frame, Header, Limits,
                            Message, MessageType, OwnedMessage, Selection};
 
@@ -114,12 +114,114 @@ fn drain(engine: &mut Engine<Pin>) -> (Vec<u8>, Vec<Sent>)
 }
 fn ready() -> (Engine<Pin>, Epoch)
 {
-    let mut engine = Engine::new(config());
+    ready_with_settings(Settings::default())
+}
+fn ready_with_settings(settings: Settings) -> (Engine<Pin>, Epoch)
+{
+    let mut engine = Engine::new(config().with_settings(settings));
     let epoch = engine.open_after_transport_reset(Pin::text(1, "local")).unwrap();
     drain(&mut engine);
     deliver(&mut engine, epoch, OwnedMessage::announce(caps(), false, limits()).unwrap()).unwrap();
     assert_eq!(engine.phase(), Phase::Ready);
     (engine, epoch)
+}
+
+#[test]
+fn disabled_policy_records_local_versions_but_never_opens_or_emits_traffic()
+{
+    let settings = Settings::decode(br#"{"version":1,"enabled":false}"#).unwrap();
+    let mut engine = Engine::new(config().with_settings(settings));
+    let error = engine.open_after_transport_reset(Pin::text(1, "local\0text")).unwrap_err();
+    assert_eq!(error, Error::Disabled);
+    assert!(error.to_string().contains("keep using local Scrap"));
+    assert_eq!(engine.phase(), Phase::Closed);
+    assert!(engine.output().is_none());
+    assert_eq!(engine.local_revision(), Some(1));
+    engine.observe(Pin::text(2, &"unshared\0".repeat(256))).unwrap();
+    assert_eq!(engine.local_revision(), Some(2));
+    assert!(engine.output().is_none());
+    let epoch = engine.epoch();
+    assert_eq!(deliver(&mut engine,
+                       epoch,
+                       OwnedMessage::announce(caps(), true, limits()).unwrap()),
+               Err(Error::Closed));
+}
+
+#[test]
+fn host_to_guest_policy_tracks_local_changes_for_cas_but_never_exports_their_payload()
+{
+    let settings = Settings::decode(br#"{"version":1,"direction":"host-to-guest"}"#).unwrap();
+    let (mut engine, epoch) = ready_with_settings(settings);
+    offer(&mut engine, epoch, 1);
+    engine.observe(Pin::text(2, &"local\0private".repeat(100))).unwrap();
+    assert!(engine.fetch_is_quarantined());
+    assert_eq!(engine.queued_messages(), 0);
+    frame(data("predates local copy"), |frame| {
+        assert!(matches!(engine.receive(epoch, frame), Ok(Effect::Discarded)))
+    });
+    let request = || {
+        OwnedMessage::request(Selection::Clipboard, Format::UTF8_TEXT, caps(), limits()).unwrap()
+    };
+    deliver(&mut engine, epoch, request()).unwrap();
+    assert_eq!(drain(&mut engine).0,
+               encode(OwnedMessage::unavailable(Selection::Clipboard, caps(), limits()).unwrap()));
+    offer(&mut engine, epoch, 2);
+    frame(data("allowed host text"), |frame| {
+        let Effect::Import(import) = engine.receive(epoch, frame).unwrap()
+        else
+        {
+            panic!()
+        };
+        assert_eq!(import.token().expected_revision(), 2);
+        engine.complete_import(import, Ok::<_, &str>(Pin::text(3, "allowed host text"))).unwrap();
+    });
+    engine.observe(Pin::text(4, "another local copy")).unwrap();
+    assert_eq!(engine.local_revision(), Some(4));
+    assert_eq!(engine.queued_messages(), 0);
+    deliver(&mut engine, epoch, request()).unwrap();
+    assert_eq!(drain(&mut engine).0,
+               encode(OwnedMessage::unavailable(Selection::Clipboard, caps(), limits()).unwrap()));
+}
+
+#[test]
+fn guest_to_host_policy_refuses_imports_but_tracks_host_serials_before_a_later_guest_copy()
+{
+    let settings = Settings::decode(br#"{"version":1,"direction":"guest-to-host"}"#).unwrap();
+    let (mut engine, epoch) = ready_with_settings(settings);
+    let error = deliver(&mut engine, epoch, grab(100, &[Format::UTF8_TEXT])).unwrap_err();
+    assert_eq!(error,
+               Error::DirectionDenied { direction: Direction::GuestToHost,
+                                        operation: "host import" });
+    for expected in ["guest-to-host", "retain local Scrap", "changing direction"]
+    {
+        assert!(error.to_string().contains(expected));
+    }
+    assert_eq!(engine.queued_messages(), 0);
+    assert!(engine.pending_fetch().is_none());
+    assert!(matches!(deliver(&mut engine, epoch, data("host\0private")),
+                     Err(Error::DirectionDenied { .. })));
+    assert_eq!(engine.local_revision(), Some(1));
+    engine.observe(Pin::text(2, "allowed guest Ω")).unwrap();
+    assert_eq!(drain(&mut engine).0,
+               encode(grab(101, &[Format::UTF8_TEXT])),
+               "ignored imports must still order later guest serials correctly");
+    deliver(&mut engine,epoch,OwnedMessage::request(Selection::Clipboard,Format::UTF8_TEXT,caps(),limits()).unwrap()).unwrap();
+    assert_eq!(drain(&mut engine).0, encode(data("allowed guest Ω")));
+}
+
+#[test]
+fn changing_a_config_copy_never_changes_the_live_engine_policy()
+{
+    let original = config().with_settings(Settings::new(true, Direction::GuestToHost));
+    let changed = original.with_settings(Settings::new(true, Direction::HostToGuest));
+    let (mut engine, epoch) = ready_with_settings(original.settings());
+    assert_eq!(changed.settings().direction(), Direction::HostToGuest);
+    assert_eq!(engine.settings().direction(), Direction::GuestToHost);
+    assert!(matches!(deliver(&mut engine, epoch, grab(1, &[Format::UTF8_TEXT])),
+                     Err(Error::DirectionDenied { .. })));
+    engine.close(epoch).unwrap();
+    let (replacement, _) = ready_with_settings(changed.settings());
+    assert_eq!(replacement.settings().direction(), Direction::HostToGuest);
 }
 fn grab(serial: u32, formats: &[Format]) -> OwnedMessage
 {

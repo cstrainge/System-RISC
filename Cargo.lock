@@ -504,6 +504,8 @@ name = "mac-host-clipboard"
 version = "0.1.0"
 dependencies = [
  "mac-vdagent-protocol",
+ "serde",
+ "serde-json-core",
 ]
 
 [[package]]
@@ -548,6 +550,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-scrap-extension-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
+]
+
+[[package]]
 name = "mac-sit"
 version = "0.1.0"
 dependencies = [
@@ -578,6 +587,7 @@ dependencies = [
  "mac-object-table",
  "mac-power-interface",
  "mac-riscv-pages",
+ "mac-scrap-extension-interface",
  "mac-toolbox",
  "mac-traps",
  "minipng",

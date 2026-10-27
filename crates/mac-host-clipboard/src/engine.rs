@@ -1,7 +1,7 @@
 use mac_vdagent_protocol::{Capabilities, Capability, ClipboardData, Format, Frame, Limits,
                            Message, MessageType, OwnedMessage, Selection};
 
-use crate::{CompletionError, Error, Output, OutputToken, Sent,
+use crate::{CompletionError, Error, Output, OutputToken, Sent, Settings,
             output::{Purpose, Queue, SLOTS, Transmission}};
 
 /// An immutable resident pin supplied by the integration layer. `revision`
@@ -104,7 +104,8 @@ pub enum Phase
 pub struct Config
 {
     limits:       Limits,
-    maximum_text: usize
+    maximum_text: usize,
+    settings:     Settings
 }
 impl Config
 {
@@ -117,14 +118,16 @@ impl Config
             return Err(Error::Configuration);
         }
         Ok(Self { limits,
-                  maximum_text })
+                  maximum_text,
+                  settings: Settings::default() })
     }
 
     pub fn qemu() -> Self
     {
         let limits = Limits::qemu();
         Self { limits,
-               maximum_text: limits.maximum_text_bytes(local_capabilities()) }
+               maximum_text: limits.maximum_text_bytes(local_capabilities()),
+               settings: Settings::default() }
     }
 
     pub fn maximum_text_bytes(self) -> usize
@@ -135,6 +138,20 @@ impl Config
     pub fn limits(self) -> Limits
     {
         self.limits
+    }
+
+    /// Select policy before constructing an engine. Replacing policy on a live
+    /// connection requires close, real grant revocation, transport reset and a
+    /// new engine/session; there is no in-place policy/authority mutation.
+    pub fn with_settings(mut self, settings: Settings) -> Self
+    {
+        self.settings = settings;
+        self
+    }
+
+    pub fn settings(self) -> Settings
+    {
+        self.settings
     }
 }
 const fn local_capabilities() -> Capabilities
@@ -242,6 +259,11 @@ impl<S: Snapshot> Engine<S>
         self.capabilities
     }
 
+    pub fn settings(&self) -> Settings
+    {
+        self.config.settings
+    }
+
     pub fn queued_messages(&self) -> usize
     {
         self.output.len()
@@ -273,12 +295,23 @@ impl<S: Snapshot> Engine<S>
     {
         self.reset();
         self.phase = Phase::Closed;
-        self.local_error = match snapshot.content()
+        self.local_error = if self.config.settings.permits_export()
         {
-            Content::Text(text) => self.validate(text).err(),
-            _ => None
+            match snapshot.content()
+            {
+                Content::Text(text) => self.validate(text).err(),
+                _ => None
+            }
+        }
+        else
+        {
+            None
         };
         self.local = Some(snapshot);
+        if !self.config.settings.enabled()
+        {
+            return Err(Error::Disabled);
+        }
         self.epoch = Epoch(self.epoch.0.checked_add(1).ok_or(Error::Exhausted)?);
         self.serial = 0;
         self.offer = 0;
@@ -408,10 +441,17 @@ impl<S: Snapshot> Engine<S>
                 return Ok(());
             }
         }
-        self.local_error = match snapshot.content()
+        self.local_error = if self.config.settings.permits_export()
         {
-            Content::Text(text) => self.validate(text).err(),
-            _ => None
+            match snapshot.content()
+            {
+                Content::Text(text) => self.validate(text).err(),
+                _ => None
+            }
+        }
+        else
+        {
+            None
         };
         self.local = Some(snapshot);
         if let Some(fetch) = &mut self.fetch
@@ -419,7 +459,11 @@ impl<S: Snapshot> Engine<S>
             fetch.stale = true;
         }
         self.desired = None;
-        self.dirty = true;
+        self.dirty = self.config.settings.permits_export();
+        if !self.dirty
+        {
+            return Ok(());
+        }
         self.cancel_guest()?;
         if self.phase == Phase::Ready
         {
@@ -551,6 +595,13 @@ impl<S: Snapshot> Engine<S>
         {
             return Err(Error::HandshakeRequired);
         }
+        if frame.header().kind() == MessageType::CLIPBOARD && !self.config.settings.permits_import()
+        {
+            // This immutable direction can never have admitted a host fetch.
+            // Refuse before decoding/scanning text that cannot be imported.
+            return Err(Error::DirectionDenied { direction: self.config.settings.direction(),
+                                                operation: "host import" });
+        }
         let message = match frame.message(self.capabilities)
         {
             Ok(message) => message,
@@ -614,7 +665,9 @@ impl<S: Snapshot> Engine<S>
                 {
                     return Ok(Effect::Discarded);
                 }
-                let supported = grab.formats().contains(Format::UTF8_TEXT);
+                let text_offered = grab.formats().contains(Format::UTF8_TEXT);
+                let import_allowed = self.config.settings.permits_import();
+                let supported = text_offered && import_allowed;
                 let offer_id = match self.offer.checked_add(1)
                 {
                     Some(id) => id,
@@ -677,7 +730,15 @@ impl<S: Snapshot> Engine<S>
                                               state: FetchState::Queued });
                     self.desired = None;
                 }
-                Ok(if supported { Effect::Idle } else { Effect::Ignored })
+                if text_offered && !import_allowed
+                {
+                    Err(Error::DirectionDenied { direction: self.config.settings.direction(),
+                                                 operation: "host import" })
+                }
+                else
+                {
+                    Ok(if supported { Effect::Idle } else { Effect::Ignored })
+                }
             }
             Message::Release { selection } =>
             {
@@ -704,6 +765,7 @@ impl<S: Snapshot> Engine<S>
                               && format == Format::UTF8_TEXT
                               && self.owner == Owner::Local
                               && self.local_error.is_none()
+                              && self.config.settings.permits_export()
                 {
                     match self.local.as_ref().map(Snapshot::content)
                     {

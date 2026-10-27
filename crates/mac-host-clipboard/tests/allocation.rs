@@ -1,11 +1,13 @@
 use std::{alloc::{GlobalAlloc, Layout, System},
           cell::Cell};
 
-use mac_host_clipboard::{Config, Content, Effect, Engine, Error, Phase, Snapshot};
+use mac_host_clipboard::{Config, Content, Direction, Effect, Engine, Error, MAX_SETTINGS_BYTES,
+                         Phase, Settings, Snapshot};
 use mac_vdagent_protocol::{Capabilities, Capability, Decoder, Format, Frame, Limits, OwnedMessage,
                            Selection};
 
 thread_local! { static REFUSE:Cell<bool>=const { Cell::new(false) };static ATTEMPTS:Cell<usize>=const { Cell::new(0) }; }
+thread_local! { static CONTENT_READS:Cell<usize>=const { Cell::new(0) }; }
 struct Allocator;
 fn refused() -> bool
 {
@@ -81,6 +83,7 @@ impl Snapshot for Pin
 
     fn content(&self) -> Content<'_>
     {
+        CONTENT_READS.with(|count| count.set(count.get() + 1));
         Content::Text(&self.text)
     }
 }
@@ -120,13 +123,101 @@ fn drain(engine: &mut Engine<Pin>)
 }
 fn ready() -> Engine<Pin>
 {
-    let mut engine = Engine::new(Config::qemu());
+    ready_with_settings(Settings::default())
+}
+fn ready_with_settings(settings: Settings) -> Engine<Pin>
+{
+    let mut engine = Engine::new(Config::qemu().with_settings(settings));
     engine.open_after_transport_reset(pin(1, "original")).unwrap();
     drain(&mut engine);
     frame(OwnedMessage::announce(caps(), false, Limits::qemu()).unwrap(), |frame| {
         engine.receive(engine.epoch(), frame).unwrap();
     });
     engine
+}
+
+#[test]
+fn disabled_open_direction_refusal_and_settings_codec_need_no_allocation()
+{
+    let disabled = Settings::new(false, Direction::Both);
+    let mut engine = Engine::new(Config::qemu().with_settings(disabled));
+    let initial = pin(1, &"denied\0".repeat(1000));
+    let next = pin(2, "another\0value");
+    let before = CONTENT_READS.with(Cell::get);
+    let ((opened, observed), allocations) =
+        refuse(|| (engine.open_after_transport_reset(initial), engine.observe(next)));
+    assert_eq!(opened, Err(Error::Disabled));
+    assert!(observed.is_ok());
+    assert_eq!(allocations, 0);
+    assert_eq!(CONTENT_READS.with(Cell::get), before, "disabled policy inspected unshared text");
+    assert_eq!(engine.local_revision(), Some(2));
+    assert!(engine.output().is_none());
+    let mut engine = ready_with_settings(Settings::new(true, Direction::GuestToHost));
+    let epoch = engine.epoch();
+    frame(OwnedMessage::grab(Selection::Clipboard,
+                             Some(99),
+                             &[Format::UTF8_TEXT],
+                             caps(),
+                             Limits::qemu()).unwrap(),
+          |frame| {
+              let (result, count) = refuse(|| engine.receive(epoch, frame));
+              assert!(matches!(result, Err(Error::DirectionDenied { .. })));
+              assert_eq!(count, 0);
+          });
+    frame(OwnedMessage::text(Selection::Clipboard,"not imported\0",caps(),Limits::qemu()).unwrap(),|frame| {
+        let (result,count)=refuse(||engine.receive(epoch,frame));
+        assert!(matches!(result,Err(Error::DirectionDenied { .. })));assert_eq!(count,0);
+    });
+    let mut bytes = [0; MAX_SETTINGS_BYTES];
+    let (result, count) = refuse(|| {
+        let settings = Settings::decode(br#"{"version":1,"direction":"host-to-guest"}"#)?;
+        let used = settings.encode(&mut bytes)?;
+        Settings::decode(&bytes[..used])
+    });
+    assert_eq!(result.unwrap().direction(), Direction::HostToGuest);
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn denied_export_skips_local_payload_and_none_allocation_refusal_retries_the_same_frame()
+{
+    let mut engine = ready_with_settings(Settings::new(true, Direction::HostToGuest));
+    let epoch = engine.epoch();
+    let snapshot = pin(2, &"private\0".repeat(1000));
+    let before = CONTENT_READS.with(Cell::get);
+    let (result, count) = refuse(|| engine.observe(snapshot));
+    assert!(result.is_ok());
+    assert_eq!(count, 0);
+    assert_eq!(CONTENT_READS.with(Cell::get), before);
+    assert_eq!(engine.queued_messages(), 0);
+    let (result, count) = refuse(|| engine.poll(epoch));
+    assert!(result.is_ok());
+    assert_eq!(count, 0);
+    frame(OwnedMessage::request(Selection::Clipboard,Format::UTF8_TEXT,caps(),Limits::qemu()).unwrap(),|frame| {
+        let (result,count)=refuse(||engine.receive(epoch,frame));
+        let error=result.unwrap_err();assert!(error.retry_frame());
+        assert!(matches!(error,Error::Output(mac_vdagent_protocol::Error::NoMemory { .. })));
+        assert_eq!(count,1);assert_eq!(engine.local_revision(),Some(2));assert_eq!(engine.queued_messages(),0);
+        for expected in ["queued output bytes","retain","retry"] { assert!(error.to_string().contains(expected)); }
+        engine.receive(epoch,frame).unwrap();
+    });
+    assert_eq!(CONTENT_READS.with(Cell::get),
+               before,
+               "denied Request read the private local snapshot");
+    let mut bytes = Vec::new();
+    while let Some(output) = engine.output()
+    {
+        let token = output.token;
+        let count = output.remaining_bytes();
+        for part in output.segments
+        {
+            bytes.extend_from_slice(part);
+        }
+        engine.accepted(token, count).unwrap();
+    }
+    let mut decoder = Decoder::new(Limits::qemu());
+    let feed = decoder.feed(&bytes).unwrap();
+    assert!(matches!(feed.frame.unwrap().message(caps()).unwrap(),mac_vdagent_protocol::Message::Data(mac_vdagent_protocol::ClipboardData::Unavailable { .. })));
 }
 #[test]
 fn failed_offer_and_response_admission_retry_without_losing_snapshot_or_wire_position()

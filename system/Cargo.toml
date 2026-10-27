@@ -19,6 +19,7 @@ bench = false
 [dependencies]
 mac-file-types.workspace = true
 mac-module.workspace = true
+mac-scrap-extension-interface.workspace = true
 mac-device-interface.workspace = true
 mac-power-interface.workspace = true
 mac-object-table.workspace = true

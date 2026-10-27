@@ -4,6 +4,7 @@
 pub mod shared;
 pub mod menus;
 pub mod scrap;
+pub mod scrap_extension;
 pub mod drag;
 pub mod inspection;
 pub mod presentation;

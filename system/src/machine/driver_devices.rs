@@ -153,15 +153,17 @@ pub(crate) fn initialize() -> Result<(), Status>
                   .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
     let devices = Devices::new(PlatformBus, crate::toolbox::handles::system_owner()?, kinds)?;
     DEVICES.publish(devices).map_err(crate::state::AccessError::status)?;
-    drivers::register_service(Offer { class:          wire::CLASS,
-                                      version:        wire::VERSION,
-                                      request_schema: 1,
-                                      reply_schema:   1,
-                                      max_request:    24,
-                                      max_reply:      wire::DESCRIPTION_BYTES as u32,
-                                      flags:          Offer::KERNEL_ONLY | Offer::EXCLUSIVE,
-                                      capabilities:   0 },
-                              request)?;
+    drivers::register_synchronous_service(Offer { class:          wire::CLASS,
+                                                  version:        wire::VERSION,
+                                                  request_schema: 1,
+                                                  reply_schema:   1,
+                                                  max_request:    24,
+                                                  max_reply:      wire::DESCRIPTION_BYTES as u32,
+                                                  flags:          Offer::KERNEL_ONLY
+                                                                  | Offer::EXCLUSIVE,
+                                                  capabilities:   0 },
+                                          synchronous,
+                                          Some(request))?;
     Ok(())
 }
 fn request(call: ResidentCall<'_>, _: &mut [u8]) -> Result<ResidentCompletion, Status>
@@ -207,6 +209,10 @@ fn request(call: ResidentCall<'_>, _: &mut [u8]) -> Result<ResidentCompletion, S
 pub(crate) fn synchronous(caller: u64, operation: u32, input: &[u8], output: &mut [u8])
                           -> Result<usize, Status>
 {
+    if !wire::synchronous(operation)
+    {
+        return Err(NOT_SUPPORTED);
+    }
     let owner = drivers::module_authority(caller)?;
     match operation
     {
