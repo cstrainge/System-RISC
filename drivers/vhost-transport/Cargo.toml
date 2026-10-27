@@ -15,6 +15,7 @@ bench = false
 mac-driver = { path = "../../crates/mac-driver" }
 mac-abi.workspace = true
 mac-host-protocol = { path = "../../crates/mac-host-protocol" }
+mac-virtio-console.workspace = true
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 spinning_top = "=0.2.5"
 [build-dependencies]

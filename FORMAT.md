@@ -1054,10 +1054,18 @@ Alignment and each exhausted budget have distinct diagnostic errors. The machine
 adapter still admits modules only while their complete reservations fit its
 actual remaining arena. These checks are admission limits, not an MMU or quota.
 
-On the current 128 MiB QEMU virt board, the machine adapter reserves
-`0x87800000..0x87e00000` for modules. This leaves the ROM's live storage scratch
-heap at `0x87000000..0x87800000` and the high2 MiB device-tree reservation untouched.
-These addresses belong to the machine adapter, not the class-neutral registry.
+The checked QEMU virt platform reserves `0x87800000..0x88000000` (8 MiB) for
+modules, separately from the ROM's live storage scratch heap at
+`0x87000000..0x87800000`. Its default RAM remains 8 GiB; the checked physical map
+requires at least 256 MiB so this reservation and the high 2 MiB device-tree tail
+are disjoint. Generated boot reservations, pager constants and linker symbols
+use this same record. Page metadata starts after the module reservation.
+The image builder sums complete installed System-module descriptor spans,
+including BSS/private heaps, and refuses an over-capacity installation with its
+package name and required bytes. Runtime admission independently reports the
+remaining reservation and requested extent. Code capacity does not grant a
+module worker, heap account or stack budget. These addresses belong to the
+machine adapter, not the class-neutral registry.
 
 ## Driver-owned file associations (FASS 0, version 1)
 

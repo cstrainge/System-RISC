@@ -77,7 +77,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Value>
         ,"extension_parts": if file.file_type == *b"INIT" { modules.iter().map(|module| json!({
             "target": mac_module::ExtensionTarget::from_resource_id(module.contract.code_id).map(mac_module::ExtensionTarget::conventional_name),
             "resource_type": text::decode(&module.contract.code_type), "resource_id": module.contract.code_id,
-            "entry": module.code.descriptor.entry
+            "entry": module.code.descriptor.entry, "load_base": module.code.descriptor.load_base, "load_limit": module.code.descriptor.load_limit
         })).collect::<Vec<_>>() } else { Vec::new() }
     }))
 }

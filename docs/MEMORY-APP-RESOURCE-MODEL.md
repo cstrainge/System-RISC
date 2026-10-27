@@ -2524,9 +2524,11 @@ conditions remain the barriers: pages return before the original cleanup ticket
 acknowledges physical disposal. No timer-driven allocation or free-page scan is
 introduced. The configured QEMU default adopts 8 GiB. The static 10 MiB System
 heap, domain charges/budgets, reserve and kernel trap-stack migration remain
-later work; page-backed stacks alone do not qualify those gates. At 128 MiB the
-current pinned flat arenas leave no contiguous metadata space, so boot reports
-that real storage refusal before heap/services rather than clobbering live RAM.
+later work; page-backed stacks alone do not qualify those gates. The checked
+platform minimum is now 256 MiB, with an 8 MiB pinned module-code reservation.
+128 MiB is rejected before heap/services because that enlarged reservation and
+the required device-tree tail cannot coexist. Page metadata follows the generated
+module limit; code capacity does not grant live account or worker admission.
 
 The platform JSON now also owns the approved Sv39 reservations. One checked
 record validates canonical halves, page alignment, overlap, preferred image

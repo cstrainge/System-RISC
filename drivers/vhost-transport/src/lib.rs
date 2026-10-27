@@ -6,16 +6,15 @@
 pub mod engine;
 
 #[cfg(target_arch = "riscv64")]
-mod machine;
-#[cfg(target_arch = "riscv64")]
 mod driver
 {
     use mac_abi::{NOT_SUPPORTED, SERVICE_BUSY};
     use mac_driver::{Client, Completion, Driver, Error, Request, Result};
+    use mac_virtio_console::{Arena, Device, FILESYSTEM_PORT};
     use spinning_top::Spinlock;
 
-    use crate::{engine::{Buffers, Engine},
-                machine::Device};
+    use crate::engine::{Buffers, Engine};
+    static ARENA: Arena = Arena::new();
     struct State
     {
         engine: Engine,
@@ -37,7 +36,7 @@ mod driver
             {
                 return Err(Error(SERVICE_BUSY));
             }
-            state.device = Some(Device::initialize(host)?);
+            state.device = Some(Device::initialize(host, &ARENA, FILESYSTEM_PORT)?);
             Ok(())
         }
 

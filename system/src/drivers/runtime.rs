@@ -211,6 +211,14 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
                    let limit = base.checked_add(extent).ok_or(NO_MEMORY)?;
                    if limit > runtime.limit
                    {
+                       serial!("MODULE_CAPACITY_REFUSED name={} requested={} available={} \
+                                next=0x{:x} limit=0x{:x} \
+                                action=rebuild_with_a_larger_checked_module_reservation",
+                               package.contract.name,
+                               extent,
+                               runtime.limit.saturating_sub(base),
+                               base,
+                               runtime.limit);
                        return Err(NO_MEMORY);
                    }
                    let plan = image::LoadPlan::new(&package.code.code,

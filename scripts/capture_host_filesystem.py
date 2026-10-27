@@ -12,10 +12,41 @@ from pathlib import Path
 import select
 import shutil
 import subprocess
+import sys
 import time
 
 from hfs_b_tool import Image
 import system7_vm as vm
+
+
+def capture_env():
+    env = dict(os.environ)
+    env[vm.BUILD_DIR_ENV] = str(vm.build_dir())
+    return env
+
+
+def run(arguments, **options):
+    # Builders and readers share this absolute private media/cache selection.
+    env = options.pop('env', capture_env())
+    env[vm.BUILD_DIR_ENV] = str(vm.build_dir())
+    options.setdefault('cwd', vm.SOURCE)
+    return subprocess.run(arguments, env=env, **options)
+
+
+def stop_owned(process, endpoint=None):
+    if process.poll() is None and endpoint is not None:
+        try:
+            vm.qmp('quit', endpoint=endpoint)
+        except (OSError, ValueError, RuntimeError):
+            # The PID belongs to this capture, never to a discovered desktop.
+            pass
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
 
 
 def digest(path):
@@ -45,16 +76,16 @@ def _prepare(output, sdk=False, restore=False, disconnect=None):
     for fixture, binary in fixtures:
         selected_features = features if fixture == 'host-filesystem-app' else []
         target = vm.build_dir() / 'fixtures' / fixture
-        manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
-        subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(manifest),
+        manifest = vm.SOURCE / 'crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
+        run(['cargo', 'build', '--locked', '--manifest-path', str(manifest),
                         '--release', '--target', 'riscv64imac-unknown-none-elf', '--bin',
-                        binary, '--target-dir', str(target), *selected_features], cwd=vm.ROOT, env=guest_env(), check=True)
-        subprocess.run(['cargo', 'run', '--locked', '--manifest-path', str(manifest),
+                        binary, '--target-dir', str(target), *selected_features], cwd=vm.SOURCE, env=guest_env(), check=True)
+        run(['cargo', 'run', '--locked', '--manifest-path', str(manifest),
                         '--bin', 'package', '--target-dir', str(target), *selected_features, '--',
                         str(target / 'riscv64imac-unknown-none-elf/release' / binary),
-                        str(output / 'packages')], cwd=vm.ROOT, check=True)
-    subprocess.run(['cargo', 'build', '--locked', '-p', 'risc-host', '-p', 'risc-forks',
-                    '--target-dir', str(vm.build_dir() / 'host')], cwd=vm.ROOT / 'System7', check=True)
+                        str(output / 'packages')], cwd=vm.SOURCE, check=True)
+    run(['cargo', 'build', '--locked', '-p', 'risc-host', '-p', 'risc-forks',
+                    '--target-dir', str(vm.build_dir() / 'host')], cwd=vm.SOURCE, check=True)
 
 
 def capture(output, sdk=False, disconnect=None, *, timeout=120):
@@ -62,16 +93,19 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
         raise ValueError("SDK timeout must be greater than zero and at most 600 seconds")
     output.mkdir(parents=True, exist_ok=False)
     (output / 'pid').write_text(str(os.getpid()))
-    prepare(output, sdk, disconnect=disconnect)
-    base = vm.DIST
-    before = {name: digest(base / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+    # Image's shared reader also inherits this same normalized selection.
+    os.environ[vm.BUILD_DIR_ENV] = str(vm.build_dir())
+    original_dist = vm.DIST
+    base = vm.build_dir() / 'dist'
     dist = output / 'dist'
     dist.mkdir()
     raw = dist / 'native-host.raw'
     companion = process = None
     endpoint = None
     try:
-        subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
+        prepare(output, sdk, disconnect=disconnect)
+        before = {name: digest(base / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
+        run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
                         str(base / 'system7.qcow2'), str(raw)], check=True)
         image = Image(raw)
         if sdk:
@@ -79,12 +113,12 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
             image.import_macbinary(output / 'packages/Finder.bin', '/System Folder')
         else:
             image.import_macbinary(output / 'packages/Host Filesystem Probe.bin', '/System Folder/Extensions')
-        subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
+        run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                         str(dist / 'system7.qcow2')], check=True)
         shutil.copyfile(base / 'bootrom.bin', dist / 'bootrom.bin')
         export = output / 'export'
         host = vm.build_dir() / 'host/debug'
-        subprocess.run([str(host / 'risc-forks'), 'init', str(export), 'Native Host'], check=True)
+        run([str(host / 'risc-forks'), 'init', str(export), 'Native Host'], check=True)
         if sdk:
             source = output / 'Café'
             source.mkdir()
@@ -99,11 +133,11 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
                 'comment': 'Native comment: café 🦀',
                 'data_length': len(data), 'resource_length': 0,
             }))
-            subprocess.run([str(host / 'risc-forks'), 'import', str(export), str(source)], check=True)
-            subprocess.run([str(host / 'risc-forks'), 'mkdir', str(export), '/', 'Tools'], check=True)
+            run([str(host / 'risc-forks'), 'import', str(export), str(source)], check=True)
+            run([str(host / 'risc-forks'), 'mkdir', str(export), '/', 'Tools'], check=True)
             child = output / 'Child'
             child.write_bytes(b'Nested fixture\n')
-            subprocess.run([str(host / 'risc-forks'), 'import', str(export), str(child), '/Tools'], check=True)
+            run([str(host / 'risc-forks'), 'import', str(export), str(child), '/Tools'], check=True)
             # Original MacBinary envelope is fixture transport, not an export
             # acceptance oracle. Rust verifies both payloads through File APIs.
             header = bytearray(128)
@@ -117,8 +151,8 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
             forks = output / 'Forks.bin'
             forks.write_bytes(header + data + bytes(-len(data) % 128)
                               + resources + bytes(-len(resources) % 128))
-            subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(export), str(forks), '/Tools'], check=True)
-            subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(export),
+            run([str(host / 'risc-forks'), 'import-macbinary', str(export), str(forks), '/Tools'], check=True)
+            run([str(host / 'risc-forks'), 'import-macbinary', str(export),
                             str(output / 'packages/Host Exit Worker.bin'), '/Tools'], check=True)
             header = bytearray(128)
             header[1] = 6
@@ -128,20 +162,20 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
             header[87:91] = len(malformed).to_bytes(4, 'big')
             broken = output / 'Broken.bin'
             broken.write_bytes(header + malformed + bytes(-len(malformed) % 128))
-            subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(export), str(broken), '/Tools'], check=True)
+            run([str(host / 'risc-forks'), 'import-macbinary', str(export), str(broken), '/Tools'], check=True)
             # Reproduce host provenance, without the guest/offline importer.
             (export / 'Host Folder').mkdir()
             (export / 'Host Folder/Child.txt').write_bytes(b'host child\n')
             (export / 'Host File.txt').write_bytes(b'host data\n')
             (export / 'Snapshot.txt').write_bytes(b'before')
-            shutil.copyfile(vm.ROOT / 'System7/crates/mac-sit/tests/fixtures/nested-v1.sit', export / 'Raw.sit')
+            shutil.copyfile(vm.SOURCE / 'crates/mac-sit/tests/fixtures/nested-v1.sit', export / 'Raw.sit')
         companion_args = [str(host / 'risc-host'), '--export', f'Test={export}']
         if sdk:
             readonly = output / 'readonly-export'
-            subprocess.run([str(host / 'risc-forks'), 'init', str(readonly), 'Read Only Host'], check=True)
-            subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(readonly),
+            run([str(host / 'risc-forks'), 'init', str(readonly), 'Read Only Host'], check=True)
+            run([str(host / 'risc-forks'), 'import-macbinary', str(readonly),
                             str(base / 'Res Edit.bin')], check=True)
-            subprocess.run([str(host / 'risc-forks'), 'import-macbinary', str(readonly),
+            run([str(host / 'risc-forks'), 'import-macbinary', str(readonly),
                             str(output / 'packages/Host Exit Worker.bin')], check=True)
             (readonly / 'Host Folder').mkdir()
             (readonly / 'Host File.txt').write_bytes(b'host data\n')
@@ -149,7 +183,8 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
             companion_args.extend(['--read-only-export', f'ReadOnly={readonly}'])
         with (output / 'companion.log').open('wb') as log:
             companion = subprocess.Popen(companion_args,
-                                         stdout=subprocess.PIPE, stderr=log)
+                                         stdout=subprocess.PIPE, stderr=log,
+                                         cwd=vm.SOURCE, env=capture_env())
             if not select.select([companion.stdout], [], [], 10)[0]:
                 raise TimeoutError('private host companion did not start')
             ready = companion.stdout.readline().decode()
@@ -229,7 +264,7 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
                 prepare(output, sdk=True, restore=True)
                 image.remove('/System Folder/Finder')
                 image.import_macbinary(output / 'packages/Finder.bin', '/System Folder')
-                subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2',
+                run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2',
                                 str(raw), str(dist / 'system7.qcow2')], check=True)
                 process, endpoint = vm.launch(output / 'restore-vm', host_bridge=port)
                 deadline = time.monotonic() + timeout
@@ -257,21 +292,32 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
                 'original_after': {name: digest(base / name) for name in before}
             }, indent=2) + '\n')
     finally:
-        if process is not None:
-            if process.poll() is None:
-                vm.qmp('quit', endpoint=endpoint)
-            process.wait(timeout=10)
-        if companion is not None:
-            companion.terminate()
-            companion.wait(timeout=10)
-            companion.stdout.close()
-        vm.DIST = base
-        # Keep evidence, current images and original media. Delete private disks
-        # even when admission/boot/protocol assertions fail.
+        primary_error = sys.exc_info()[1]
+        cleanup_errors = []
+        for owned, control in [(process, endpoint), (companion, None)]:
+            if owned is not None:
+                try:
+                    stop_owned(owned, control)
+                except Exception as error:
+                    cleanup_errors.append(error)
+        if companion is not None and companion.stdout is not None:
+            try:
+                companion.stdout.close()
+            except OSError as error:
+                cleanup_errors.append(error)
+        vm.DIST = original_dist
+        # Retain reports/packages, not generated disks. Attempt every removal
+        # even if QMP, process teardown or an earlier unlink has failed.
         for folder in [dist, output / 'vm', output / 'restore-vm']:
-            for pattern in ['*.raw', '*.qcow2', '*.bin']:
-                for path in folder.glob(pattern):
-                    path.unlink()
+            for pattern in ['*.raw', '*.qcow2', '*.qcow', '*.hfs', '*.hfsb', '*.img', '*.bin']:
+                for path in folder.rglob(pattern):
+                    try:
+                        path.unlink()
+                    except OSError as error:
+                        cleanup_errors.append(error)
+        if cleanup_errors:
+            causes = ([primary_error] if primary_error is not None else []) + cleanup_errors
+            raise BaseExceptionGroup('Private host-filesystem capture cleanup failed; inspect retained evidence', causes)
 
 
 if __name__ == '__main__':

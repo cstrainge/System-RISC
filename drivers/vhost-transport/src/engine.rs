@@ -4,19 +4,9 @@
 use mac_abi::{BAD_ABI, BAD_ARGUMENT, IO_ERROR, NOT_FOUND, SERVICE_BUSY};
 use mac_driver::{Completion, Error, Phase, Request, Result};
 use mac_host_protocol::{self as wire, Arguments, Operation, Receiver};
-pub const FRAGMENT: usize = 4096;
+pub use mac_virtio_console::{Channel, FRAGMENT};
 pub const MAX_PACKET: usize = wire::HEADER_BYTES + wire::MAX_PAYLOAD;
 pub const STALL_MICROSECONDS: u64 = 5_000_000;
-pub trait Channel
-{
-    fn monotonic_microseconds(&self) -> u64;
-    /// Progress control notifications and reclaim bounded TX completions.
-    /// False means initial connection is not ready; a lost established
-    /// connection is an error and poisons this incarnation.
-    fn poll(&mut self) -> Result<bool>;
-    fn send(&mut self, bytes: &[u8]) -> Result<usize>;
-    fn receive(&mut self, bytes: &mut [u8]) -> Result<usize>;
-}
 pub struct Buffers
 {
     tx:      [u8; MAX_PACKET],

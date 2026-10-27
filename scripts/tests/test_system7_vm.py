@@ -15,6 +15,145 @@ import system7_exports
 
 
 class LauncherTests(unittest.TestCase):
+    def test_headless_and_explicit_optout_never_query_a_clipboard_backend(self):
+        with patch.object(vm, 'clipboard_backend') as backend:
+            for frontend, preference in [('headless', None), ('native-headless', None),
+                                         ('native', False), ('gtk', False), ('cocoa', False)]:
+                enabled, reason = vm.select_clipboard(frontend, preference)
+                self.assertFalse(enabled)
+                self.assertTrue('local' in reason or '--no-clipboard' in reason)
+            backend.assert_not_called()
+
+    def test_unsupported_automatic_backend_keeps_a_functional_local_desktop(self):
+        from unittest.mock import Mock
+        import io
+        import json
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            state = root / 'vm'
+            dist = root / 'dist'
+            dist.mkdir()
+            for name in ['system7.qcow2', 'bootrom.bin']:
+                (dist / name).write_bytes(b'launcher fixture')
+            def spawn(*args, **kwargs):
+                (state / 'serial.log').write_text('DESKTOP_READY\n')
+                return Mock(pid=999999999, poll=lambda: None)
+            with patch.object(vm, 'DIST', dist), \
+                 patch.object(vm.subprocess, 'run', return_value=Mock(returncode=1, stdout='', stderr='selected QEMU build lacks agent support')) as query, \
+                 patch.object(vm.subprocess, 'Popen', side_effect=spawn), \
+                 patch.object(vm, 'qmp', return_value={'status': 'running'}), \
+                 patch.object(vm.sys, 'stderr', new_callable=io.StringIO) as diagnostic:
+                vm.launch(state, 'gtk')
+            self.assertIn('keeping the guest clipboard local', diagnostic.getvalue())
+            self.assertIn('lacks agent support', diagnostic.getvalue())
+            self.assertEqual(query.call_args.args[0], ['qemu-system-riscv64', '-display', 'none', '-chardev', 'help'])
+            args=json.loads((state/'command.json').read_text())
+            self.assertFalse(any('qemu-vdagent' in value for value in args))
+            self.assertFalse(json.loads((state/'clipboard.json').read_text())['configured'])
+
+    def test_clipboard_backend_query_failure_reports_its_cause(self):
+        with patch.object(vm.subprocess, 'run', side_effect=OSError('selected executable missing')):
+            with self.assertRaisesRegex(RuntimeError, 'Cannot check QEMU clipboard backend.*selected executable missing'):
+                vm.clipboard_backend('selected-qemu')
+
+    def test_named_controllers_and_extra_disks_have_distinct_explicit_buses(self):
+        from unittest.mock import Mock
+        import json
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            state = root / 'vm'
+            dist = root / 'dist'
+            dist.mkdir()
+            for name in ['system7.qcow2', 'bootrom.bin']:
+                (dist / name).write_bytes(b'launcher fixture')
+            sources = []
+            for index in range(3):
+                source = root / f'source-{index}.raw'
+                source.write_bytes(b'private fixture')
+                sources.append(source)
+            def spawn(*args, **kwargs):
+                (state / 'serial.log').write_text('DESKTOP_READY\n')
+                return Mock(pid=999999999, poll=lambda: None)
+            with patch.object(vm, 'DIST', dist), \
+                 patch.object(vm, 'clipboard_backend') as backend, \
+                 patch.object(vm.subprocess, 'Popen', side_effect=spawn), \
+                 patch.object(vm, 'qmp', return_value={'status': 'running'}):
+                vm.launch(state, 'gtk', sources, host_bridge=4321)
+            backend.assert_called_once_with('qemu-system-riscv64')
+            args = json.loads((state / 'command.json').read_text())
+            self.assertIn('qemu-vdagent,id=clipboard,clipboard=on,mouse=off', args)
+            self.assertIn('virtio-serial-device,id=hostserial,bus=virtio-mmio-bus.3,max_ports=2', args)
+            self.assertIn('virtserialport,bus=hostserial.0,nr=1,chardev=hostbridge,name=org.system-risc.host-filesystem', args)
+            self.assertIn('virtio-serial-device,id=clipboardserial,bus=virtio-mmio-bus.4,max_ports=2', args)
+            self.assertIn('virtserialport,bus=clipboardserial.0,nr=1,chardev=clipboard,name=com.redhat.spice.0', args)
+            self.assertFalse(any(value.startswith('virtconsole') for value in args))
+            display = args[args.index('-display') + 1]
+            self.assertNotIn('clipboard=', display)
+            buses = []
+            for value in args:
+                match = vm.re.search(r'bus=virtio-mmio-bus\.(\d+)', value)
+                if match:
+                    buses.append(int(match[1]))
+            self.assertEqual(sorted(buses), list(range(8)))
+
+    def test_clipboard_extra_disk_budget_is_rejected_before_creating_state(self):
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(vm, 'clipboard_backend') as backend, \
+             patch.object(vm.subprocess, 'Popen') as process:
+            state = Path(folder) / 'untouched'
+            with self.assertRaisesRegex(ValueError, 'At most 3 additional disks.*clipboard'):
+                vm.launch(state, 'gtk', ['unused'] * 4, clipboard=True)
+            self.assertFalse(state.exists())
+            backend.assert_called_once_with('qemu-system-riscv64')
+            process.assert_not_called()
+
+    def test_native_windows_clipboard_uses_selected_binary_and_keeps_display_options_valid(self):
+        from unittest.mock import Mock
+        import json
+        for clipboard in (False, None):
+            with self.subTest(clipboard=clipboard), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                state = root / 'vm'
+                dist = root / 'dist'
+                dist.mkdir()
+                for name in ['system7.qcow2', 'bootrom.bin']:
+                    (dist / name).write_bytes(b'launcher fixture')
+                executable = root / 'selected-qemu-system-riscv64.exe'
+                def spawn(*args, **kwargs):
+                    (state / 'serial.log').write_text('DESKTOP_READY\n')
+                    return Mock(pid=999999999, poll=lambda: None)
+                with patch.object(vm, 'DIST', dist), \
+                     patch.object(vm, 'native_executable', return_value=executable), \
+                     patch.object(vm, 'windows_path', side_effect=str), \
+                     patch.object(vm.socket, 'create_connection', side_effect=ConnectionRefusedError), \
+                     patch.object(vm, 'clipboard_backend') as backend, \
+                     patch.object(vm.subprocess, 'Popen', side_effect=spawn), \
+                     patch.object(vm, 'qmp', return_value={'status': 'running'}):
+                    vm.launch(state, 'native', clipboard=clipboard)
+                args = json.loads((state / 'command.json').read_text())
+                self.assertEqual(args[0], str(executable))
+                self.assertNotIn('clipboard=', args[args.index('-display') + 1])
+                if clipboard is None:
+                    backend.assert_called_once_with(executable)
+                    self.assertIn('qemu-vdagent,id=clipboard,clipboard=on,mouse=off', args)
+                else:
+                    backend.assert_not_called()
+                    self.assertFalse(any('qemu-vdagent' in value for value in args))
+
+    def test_running_vm_clipboard_configuration_cannot_silently_change(self):
+        with patch.object(vm, 'qmp', return_value={}), patch.object(vm, 'build') as build:
+            with self.assertRaisesRegex(RuntimeError, 'already running.*clipboard'):
+                vm.start(clipboard=False)
+            build.assert_not_called()
+
+    def test_clipboard_flag_reaches_start_explicitly(self):
+        with patch.dict(os.environ), patch.object(vm, 'DIST'), patch.object(vm, 'STATE'), \
+             patch.object(sys, 'argv', ['system7_vm.py', 'start', '--no-build', '--no-transfer', '--no-clipboard']), \
+             patch.object(vm, 'start') as start:
+            vm.main()
+            self.assertFalse(start.call_args.kwargs['clipboard'])
+            self.assertFalse(start.call_args.kwargs['transfer'])
+
     def test_cocoa_zoom_requires_both_dimensions_to_fit_including_the_boundary(self):
         import json
         width, height = vm.display_size()
@@ -84,7 +223,7 @@ class LauncherTests(unittest.TestCase):
                  patch.object(vm, 'cocoa_scale', return_value=2), \
                  patch.object(vm.subprocess, 'Popen', side_effect=spawn) as process, \
                  patch.object(vm, 'qmp', return_value={'status': 'running'}):
-                vm.launch(state, 'cocoa')
+                vm.launch(state, 'cocoa', clipboard=False)
             args = json.loads((state / 'command.json').read_text())
             self.assertEqual(args[0], 'qemu-system-riscv64')
             self.assertEqual(args[args.index('-display') + 1], 'cocoa,zoom-to-fit=off,scale=2')
@@ -110,7 +249,7 @@ class LauncherTests(unittest.TestCase):
                  patch.object(vm.subprocess, 'Popen', side_effect=spawn), \
                  patch.object(vm, 'qmp') as qmp:
                 with self.assertRaisesRegex(RuntimeError, 'startup resource unavailable'):
-                    vm.launch(state, 'cocoa')
+                    vm.launch(state, 'cocoa', clipboard=False)
             self.assertEqual([call.args[0] for call in qmp.call_args_list], ['query-uuid', 'quit'])
             process.wait.assert_called_once_with(timeout=10)
 
@@ -251,7 +390,7 @@ class LauncherTests(unittest.TestCase):
             listener.bind(('127.0.0.1', 0))
             listener.listen()
             with self.assertRaisesRegex(RuntimeError, 'already in use'):
-                vm.launch(Path(folder) / 'new-vm', 'native',
+                vm.launch(Path(folder) / 'new-vm', 'native', clipboard=False,
                           qmp_port=listener.getsockname()[1])
             qmp.assert_not_called()
             self.assertFalse((Path(folder) / 'new-vm/qmp-endpoint.json').exists())
