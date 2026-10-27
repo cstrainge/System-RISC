@@ -1,6 +1,7 @@
 //! RV64 supervisor bootstrap and permanently owned translation roots. No
 //! existing reference changes its address; every RAM view starts in physmap.
 pub(crate) mod inspection;
+mod alias;
 
 use core::{arch::asm, fmt, marker::PhantomData, ptr};
 
@@ -56,6 +57,11 @@ pub(crate) enum Error
     ForeignRoot
     {
         physical: u64
+    },
+    HeapAdmission
+    {
+        requested: usize,
+        cause:     super::pages::Error
     }
 }
 impl fmt::Display for Error
@@ -93,6 +99,14 @@ impl fmt::Display for Error
             Self::ForeignRoot { physical } =>
             {
                 write!(f, "prepared translation root {physical:#x} has no owned PageBox")
+            }
+            Self::HeapAdmission { requested,
+                                  cause } =>
+            {
+                write!(f,
+                       "fixed System heap admission refused: {requested} requested bytes: \
+                        {cause}; increase RAM or select a smaller platform system_heap_bytes and \
+                        rebuild ROM/System together; no reduced heap was installed")
             }
         }
     }
@@ -368,6 +382,7 @@ struct Spaces
     kernel:        Space,
     firmware:      Space,
     stack:         Stack,
+    heap:          Backing,
     distinct_tags: bool
 }
 fn permissions(flags: u32, global: bool) -> Permissions
@@ -391,7 +406,7 @@ fn map(mapper: &mut Mapper<Frames>, virtual_base: u64, physical: u64, bytes: u64
           .map_err(Error::Tables)
 }
 fn prepare_space(boot: &Bootstrap, firmware: bool, stack: PhysicalAddress, stack_bytes: u64,
-                 tag: usize)
+                 heap: PhysicalAddress, tag: usize)
                  -> Result<Space, Error>
 {
     let mut mapper = Mapper::new(Frames { head:  0,
@@ -422,6 +437,12 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stack: PhysicalAddress, stack
                   VM_SYSTEM_STACKS_START + PAGE_BYTES,
                   stack.0,
                   stack_bytes,
+                  READ | WRITE,
+                  true)?;
+    leaves += map(&mut mapper,
+                  VM_SYSTEM_HEAP_BASE,
+                  heap.0,
+                  VM_SYSTEM_HEAP_LIMIT - VM_SYSTEM_HEAP_BASE,
                   READ | WRITE,
                   true)?;
     // Trusted flat application/module arenas remain an explicit temporary gate.
@@ -464,14 +485,24 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
         return Err(Error::AlreadyActive);
     }
     let boot = BOOT.get().ok_or(Error::Missing)?;
+    // The fixed heap is admitted as one unique buddy extent before any heap
+    // references or permanent roots exist. Its physmap alias remains stable;
+    // only the configured usable bytes become allocator storage. A rounded
+    // tail stays owned by Spaces and is never offered as extra heap capacity.
+    let heap = Backing::reserve_uninitialized(SYSTEM_HEAP_BYTES).map_err(|cause| {
+                   Error::HeapAdmission { requested: SYSTEM_HEAP_BYTES,
+                                          cause }
+               })?;
     let backing = Backing::allocate(SYSTEM_STACK_BYTES as usize).map_err(Error::Pages)?;
     let distinct_tags = boot.tag_mask & 1 != 0;
     let kernel = prepare_space(boot,
                                false,
                                backing.physical(),
                                SYSTEM_STACK_BYTES,
+                               heap.physical(),
                                usize::from(distinct_tags))?;
-    let firmware = prepare_space(boot, true, backing.physical(), SYSTEM_STACK_BYTES, 0)?;
+    let firmware =
+        prepare_space(boot, true, backing.physical(), SYSTEM_STACK_BYTES, heap.physical(), 0)?;
     let stack = unsafe {
                     Stack::from_mapping(backing,
                                         (VM_SYSTEM_STACKS_START + PAGE_BYTES) as usize,
@@ -481,6 +512,7 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
                            Spaces { kernel,
                                     firmware,
                                     stack,
+                                    heap,
                                     distinct_tags }
                        });
     // Every post-activation refusal must return under the permanently owned
@@ -504,7 +536,20 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
             spaces.kernel.leaves,
             VM_SYSTEM_STACKS_START + PAGE_BYTES,
             SYSTEM_STACK_BYTES);
+    serial!("SYSTEM_HEAP_READY base={:#x} bytes={} physical={:#x} backing_bytes={} \
+             permissions=supervisor-rw-nx roots=2 protected_reserve=false",
+            VM_SYSTEM_HEAP_BASE,
+            SYSTEM_HEAP_BYTES,
+            spaces.heap.physical().0,
+            spaces.heap.bytes());
     Ok(call(&spaces.stack))
+}
+/// The allocation range is valid only once both permanent roots own the exact
+/// mapping and its physical lease. Numeric facts confer no independent owner.
+pub(crate) fn heap_range() -> Option<(usize, usize)>
+{
+    SPACES.get()?;
+    Some((VM_SYSTEM_HEAP_BASE as usize, SYSTEM_HEAP_BYTES))
 }
 struct RootScope
 {
@@ -592,9 +637,18 @@ pub(crate) fn bus_address(cpu: u64, bytes: u64) -> Option<u64>
     {
         return None;
     }
-    if cpu >= boot.image_virtual.base && end <= boot.image_virtual.base + boot.image_virtual.length
+    if let Some(address) = alias::physical(cpu, bytes, boot.image_virtual.base,
+                                           boot.image_physical.base, boot.image_virtual.length)
     {
-        return Some(boot.image_physical.base + cpu - boot.image_virtual.base);
+        return Some(address);
+    }
+    if cpu >= VM_SYSTEM_HEAP_BASE && end <= VM_SYSTEM_HEAP_LIMIT
+    {
+        return alias::physical(cpu,
+                               bytes,
+                               VM_SYSTEM_HEAP_BASE,
+                               SPACES.get()?.heap.physical().0,
+                               VM_SYSTEM_HEAP_LIMIT - VM_SYSTEM_HEAP_BASE);
     }
     if let Ok(physical) = boot.ram.physical_address(VirtualAddress(cpu), bytes)
     {
@@ -626,7 +680,8 @@ pub(crate) fn firmware_visible(cpu: u64, bytes: u64) -> bool
     (cpu >= boot.image_virtual.base && end <= boot.image_virtual.base + boot.image_virtual.length)
     || boot.ram.physical_address(VirtualAddress(cpu), bytes).is_ok()
     || SPACES.get().is_some_and(|spaces| {
-                       cpu >= spaces.stack.top() as u64 - spaces.stack.bytes()
-                       && end <= spaces.stack.top() as u64
+                       (cpu >= spaces.stack.top() as u64 - spaces.stack.bytes()
+                        && end <= spaces.stack.top() as u64)
+                       || (bytes != 0 && cpu >= VM_SYSTEM_HEAP_BASE && end <= VM_SYSTEM_HEAP_LIMIT)
                    })
 }

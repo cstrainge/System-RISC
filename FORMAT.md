@@ -376,8 +376,21 @@ No native M-mode fallback or earlier execution-record decoder exists.
 overlap, misalignment, arithmetic overflow and ranges outside minimum RAM before
 emitting linker symbols or Rust constants. The ROM link script, flash packager,
 module allocator, relocation arena and current System heap consume that checked
-record. Actual RAM size remains a boot discovery. The same checked record supplies the System virtual execution range, physmap
-window and guarded System-stack window. Page-backed heaps and per-process
+record. Actual RAM size remains a boot discovery. The same checked record supplies
+the System virtual execution range, physmap window, guarded System-stack window
+and `virtual_memory.system_heap_base`. The heap limit is derived from that base
+plus `memory.system_heap_bytes`; it must be canonical, page aligned and disjoint
+from the complete image, stack window and physmap, inside the System range.
+
+Before preparing its permanent roots, System admits one physical buddy lease for
+the fixed heap. Both roots map its configured usable capacity supervisor RW/NX;
+the owner remains pinned beside those roots until reset. A buddy-rounded tail is
+retained physical backing, not extra usable heap. The ordinary allocator starts
+only after the root is installed. The selected QemuRISC-V capacity is 512 MiB;
+smaller machines may refuse that admission despite satisfying static placement
+checks. They report the requested capacity and remedy, never silently shrink it.
+The separate boot-pinned terminal kit is not the protected 32 MiB recovery floor.
+Domain heap/metadata charges, the complete recovery floor and per-process
 protection remain staged work.
 
 Native catalog and volume names have256-byte UTF8 buffers, enough for255-byte

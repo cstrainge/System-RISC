@@ -33,6 +33,7 @@ pub(super) struct Definition
     physmap:                Region,
     application_image_base: String,
     system_image_base:      String,
+    system_heap_base:       String,
     system_stacks:          Region,
     physmap_physical_base:  String
 }
@@ -65,6 +66,7 @@ pub struct Checked
     system_image_limit:    u64,
     system_stacks:         AddressRange,
     system_stack_stride:   u64,
+    system_heap:           AddressRange,
     physmap_physical_base: u64
 }
 impl Definition
@@ -92,6 +94,17 @@ impl Definition
         let image = address("application_image_base", &self.application_image_base)?;
         let system_image = address("system_image_base", &self.system_image_base)?;
         let system_stacks = region("system_stacks", &self.system_stacks, page)?;
+        let system_heap_base = address("system_heap_base", &self.system_heap_base)?;
+        let system_heap_limit = system_heap_base.checked_add(memory.system_heap_bytes)
+                                                .ok_or_else(|| {
+                                                    error("platform virtual_memory.\
+                                                           system_heap_base + system_heap_bytes \
+                                                           overflows")
+                                                })?;
+        let system_heap = region("system_heap",
+                                 &Region { start: format!("{system_heap_base:#x}"),
+                                           end:   format!("{system_heap_limit:#x}") },
+                                 page)?;
         let layout=UniformLayout::new(app,process,modules,system,physmap,image)
             .map_err(|cause|error(format!("platform virtual_memory: {cause}")))?;
         layout.validate_architecture::<Sv39>()
@@ -135,6 +148,16 @@ impl Definition
                               disjoint inside System, outside physmap; stack window must fit \
                               the maximum stack and two guards"));
         }
+        if system_heap.start() < system.start()
+           || system_heap.end() > system.end()
+           || overlaps(system_heap, physmap)
+           || overlaps(system_heap, image_range)
+           || overlaps(system_heap, system_stacks)
+        {
+            return Err(error("platform virtual System heap must be disjoint from the complete \
+                              image, guarded stack window and physmap, and contained inside \
+                              System"));
+        }
         let physmap_physical_base = address("physmap_physical_base", &self.physmap_physical_base)?;
         let physical_end = physmap_physical_base.checked_add(physmap.end() - physmap.start())
                                                 .ok_or_else(|| {
@@ -155,6 +178,7 @@ impl Definition
                      system_image_limit,
                      system_stacks,
                      system_stack_stride,
+                     system_heap,
                      physmap_physical_base })
     }
 }
@@ -185,7 +209,9 @@ impl Checked
          ("VM_SYSTEM_IMAGE_LIMIT", self.system_image_limit),
          ("VM_SYSTEM_STACKS_START", self.system_stacks.start()),
          ("VM_SYSTEM_STACKS_END", self.system_stacks.end()),
-         ("VM_SYSTEM_STACK_STRIDE", self.system_stack_stride)].into_iter()
+         ("VM_SYSTEM_STACK_STRIDE", self.system_stack_stride),
+         ("VM_SYSTEM_HEAP_BASE", self.system_heap.start()),
+         ("VM_SYSTEM_HEAP_LIMIT", self.system_heap.end())].into_iter()
     }
 
     pub fn linker_symbols(&self) -> String
@@ -255,6 +281,39 @@ mod tests
         assert_eq!(checked.layout.physmap().end() - checked.layout.physmap().start(), 64 << 30);
         assert_eq!(checked.system_image_limit - checked.system_image, 14 << 20);
         assert_eq!(checked.system_stack_stride, (8 << 20) + 8192);
+        assert_eq!(checked.system_heap.end() - checked.system_heap.start(), 512 << 20);
+        assert_eq!(checked.system_heap.start(), 0xffffffd040000000);
+    }
+    #[test]
+    fn heap_window_checks_full_reservations_canonicality_alignment_and_overflow()
+    {
+        let memory = super::super::current().memory().unwrap();
+        let check_error = |base: &str, word: &str| {
+            let mut d = definition();
+            d.system_heap_base = base.into();
+            let cause = d.check("riscv64imac-unknown-none-elf", &memory).err().unwrap().to_string();
+            assert!(cause.contains(word), "{base}: {cause}");
+        };
+        check_error("0xffffffd040000001", "page aligned");
+        check_error("0x0000004000000000", "canonical Sv39");
+        check_error("0xfffffffffff00000", "overflows");
+        for base in ["0xffffffc800000000", "0xffffffd000200000", "0xffffffd010000000",
+                     "0xffffffd018000000", "0xffffffe000000000"]
+        {
+            check_error(base, "disjoint");
+        }
+        // The System region is larger than this configured window. Capacity
+        // changes update the same checked range and both generated artifacts.
+        let mut resized = memory;
+        resized.system_heap_bytes = (512 << 20) + 4096;
+        let checked = definition().check("riscv64imac-unknown-none-elf", &resized).unwrap();
+        assert_eq!(checked.system_heap.end() - checked.system_heap.start(), (512 << 20) + 4096);
+        for (name, value) in checked.symbols().filter(|(name, _)| name.contains("SYSTEM_HEAP"))
+        {
+            assert!(checked.linker_symbols().contains(&format!("__platform_{name} = {value:#x};")));
+            assert!(checked.rust_constants()
+                           .contains(&format!("pub const {name}: u64 = {value:#x};")));
+        }
     }
     #[test]
     fn malformed_noncanonical_overlapping_and_foreign_arch_layouts_fail_informatively()

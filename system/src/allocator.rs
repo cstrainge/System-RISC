@@ -1,6 +1,7 @@
 //! Current resident heap backend. All lock access goes through the architecture
 //! invocation gate, including accounting reads and bootstrap initialization.
-//! Page-backed budgets replace the backing later; this is the live heap's gate.
+//! Permanent roots own this backend's fixed page-backed extent; domain charges
+//! and the protected recovery floor remain separate admission gates.
 use core::alloc::{GlobalAlloc, Layout};
 
 use linked_list_allocator::LockedHeap;

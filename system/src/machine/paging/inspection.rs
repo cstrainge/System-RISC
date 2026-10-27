@@ -115,11 +115,16 @@ fn inventory() -> Result<&'static [wire::Region], Error>
     // only. Failure leaves Once empty, so exhaustion is retryable.
     super::interrupts::with_masked(|| {
         REGIONS.try_call_once(|| {
-                   let space = &SPACES.get().ok_or(Error::NotReady)?.kernel;
-                   let (heap_base, _, _) = crate::kernel::heap_statistics();
-                   let heap = (heap_base,
-                               heap_base.checked_add(SYSTEM_HEAP_BYTES as u64)
-                                        .ok_or(Error::Layout)?);
+                   let spaces = SPACES.get().ok_or(Error::NotReady)?;
+                   let space = &spaces.kernel;
+                   // Mapping identity comes from the owned root/backing, not
+                   // the allocator's mutable counters or a former BSS symbol.
+                   let heap = (VM_SYSTEM_HEAP_BASE, VM_SYSTEM_HEAP_LIMIT);
+                   let heap_bytes = heap.1.checked_sub(heap.0).ok_or(Error::Layout)?;
+                   if spaces.heap.bytes() < heap_bytes
+                   {
+                       return Err(Error::Layout);
+                   }
                    let reader = Reader(space);
                    let mut walker =
                        Walker::new(&reader, space.owner.root_physical(), 0).map_err(Error::Tables)?;
@@ -135,6 +140,18 @@ fn inventory() -> Result<&'static [wire::Region], Error>
                                                       .min()
                                                       .unwrap_or(end);
                            let p = span.permissions;
+                           if base >= heap.0
+                              && base < heap.1
+                              && (span.physical_base.0 + base - span.virtual_base
+                                  != spaces.heap.physical().0 + base - heap.0
+                                  || !p.read
+                                  || !p.write
+                                  || p.execute
+                                  || !p.global
+                                  || p.access != Access::Supervisor)
+                           {
+                               return Err(Error::Layout);
+                           }
                            let protection = u32::from(p.read) * wire::READABLE
                                             | u32::from(p.write) * wire::WRITABLE
                                             | u32::from(p.execute) * wire::EXECUTABLE
