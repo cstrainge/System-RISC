@@ -21,6 +21,25 @@ pub struct Editor
     widest_count:  usize,
     snapshot:      Option<(u64, core::ops::Range<usize>, Arc<String>)>
 }
+pub(crate) struct IdlePlan<'a>
+{
+    editor: &'a mut Editor,
+    info:   EditorInfo,
+    blink:  Option<u32>
+}
+impl IdlePlan<'_>
+{
+    pub(crate) fn info(&self) -> EditorInfo
+    {
+        self.info
+    }
+
+    pub(crate) fn commit(self)
+    {
+        self.editor.info = self.info;
+        self.editor.blink = self.blink;
+    }
+}
 impl Editor
 {
     pub fn new(dest: Rect, view: Rect) -> Result<Self, Status>
@@ -586,27 +605,39 @@ impl Editor
 
     pub fn idle(&mut self, ticks: u32)
     {
-        if self.info.active == 0 || self.info.selection_start != self.info.selection_end
+        self.prepare_idle(ticks).commit();
+    }
+
+    pub(crate) fn prepare_idle(&mut self, ticks: u32) -> IdlePlan<'_>
+    {
+        let mut info = self.info;
+        let mut blink = self.blink;
+        if info.active == 0 || info.selection_start != info.selection_end
         {
-            self.info.caret_visible = 0;
-            return;
+            info.caret_visible = 0;
+            return IdlePlan { editor: self,
+                              info,
+                              blink };
         }
-        match self.blink
+        match blink
         {
             None =>
             {
-                self.blink = Some(ticks);
-                self.info.caret_visible = 1;
-                self.info.revision = self.info.revision.wrapping_add(1);
+                blink = Some(ticks);
+                info.caret_visible = 1;
+                info.revision = info.revision.wrapping_add(1);
             }
             Some(previous) if ticks.wrapping_sub(previous) >= 30 =>
             {
-                self.info.caret_visible ^= 1;
-                self.blink = Some(ticks);
-                self.info.revision = self.info.revision.wrapping_add(1);
+                info.caret_visible ^= 1;
+                blink = Some(ticks);
+                info.revision = info.revision.wrapping_add(1);
             }
             _ => ()
         }
+        IdlePlan { editor: self,
+                   info,
+                   blink }
     }
 
     pub fn click(&mut self, p: Point, extend: bool) -> Result<(), Status>

@@ -2782,3 +2782,28 @@ entry paths do not silently discard the failed command or replace its cause.
 This is payload/queue admission, not a claim that complete replay is
 allocation-free. Region clips and algebra, retained port geometry and the full
 recovery-service graph remain in the pre-heap fallibility audit.
+
+
+### Region and replay heap preflight
+
+Empty and rectangular Regions keep their bands/spans inline. Complex immutable
+clips share admitted backing, so retained port snapshots do not deep-copy their
+geometry. Rectangle clipping uses rectangle arithmetic; complex construction,
+Boolean algebra, offset/inset/map and classic serialization report allocation
+refusal. Compact classic trap replies write their ten-byte record without a
+resident heap buffer. Normalization and original big-endian bytes stay unchanged.
+
+Caret geometry and partial hover bindings are prepared before publication. Owned
+plans retain exclusive access through commit; refused scene/geometry admission
+leaves the previous visible state. Window exposure scratch refusal retains an
+update bounded to the affected object's content. Scene damage capacity is admitted
+with its window lifetime, and exhaustion during exact damage coalescing uses the
+bounded union for that same object. Healthy updates retain their exact masks and
+ordinary occlusion; this is not a full-scene repaint policy.
+
+Retained graphics/control/bitmap/icon/Picture/font replay errors propagate through
+the cache admission barrier. Partial back-buffer pixels are not published as valid
+cache entries or presented; pending damage remains available for retry. PICT text
+and font-name conversion use bounded stack output. This does not establish a
+complete recovery policy for every permanent rendering refusal or the full
+transitive font/emergency graph; those remain pre-heap qualification work.

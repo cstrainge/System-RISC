@@ -31,8 +31,7 @@ pub unsafe fn dispatch(pointer: *mut (), size: usize,
             {
                 return BAD_ARGUMENT as i64;
             };
-            drawing.paint(&mut canvas);
-            OK as i64
+            drawing.paint(&mut canvas).map_or_else(i64::from, |()| OK as i64)
         }
         Ok(_) => OK as i64
     }

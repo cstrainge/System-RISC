@@ -255,10 +255,12 @@ impl World
     pub fn graphics(&mut self, call: &mut quickdraw::GraphicsCall, points: &[Point], region: &[u8])
                     -> Result<(), Status>
     {
-        if let Some(drawing) = service::graphics(&mut self.port, call, points, region)?
+        let mut port = self.port.clone();
+        if let Some(drawing) = service::graphics(&mut port, call, points, region)?
         {
             drawing.paint(&mut Canvas::new(&mut self.pixels, self.width, self.height))?;
         }
+        self.port = port;
         Ok(())
     }
 

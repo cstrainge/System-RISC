@@ -70,20 +70,24 @@ impl super::Desktop
         }
         let editor = self.textedit.inspect_mut(call.id).ok_or(NOT_FOUND)?;
         let before = editor.info();
-        editor.idle(call.ticks);
-        call.info = editor.info();
+        let idle = editor.prepare_idle(call.ticks);
+        call.info = idle.info();
         call.index = 0;
         if call.info == before
         {
+            idle.commit();
             return Ok(());
         }
         let Some(content) = self.content.iter_mut().find(|c| c.id == call.window)
         else
         {
+            idle.commit();
             call.index = 1;
             return Ok(());
         };
-        let Some(region) = content.blink_caret(call.id, before, call.info)
+        let region = content.blink_caret(call.id, before, call.info)?;
+        idle.commit();
+        let Some(region) = region
         else
         {
             call.index = 1;
@@ -145,11 +149,16 @@ impl super::Desktop
         let vertical_ink = fonts.vertical_ink_bounds(crate::toolbox::quickdraw::fonts_service::selection(editor.font())).ok().flatten();
         let outer_port = port.clone();
         let view = Region::from_rect(editor.text_view());
-        port.state.clip = Some(port.state.clip.as_ref().map_or_else(|| view.clone(),
-                                                                    |clip| {
-                                                                        clip.combine(&view,
-                                                                       BooleanOp::Intersection)
-                                                                    }));
+        port.state.clip =
+            Some(match &port.state.clip
+                 {
+                     None => view.clone(),
+                     Some(clip) =>
+                     {
+                         clip.combine(&view, BooleanOp::Intersection)
+                             .map_err(crate::toolbox::quickdraw::regions_service::status)?
+                     }
+                 });
         let mut commands = Vec::new();
         let visible = editor.visible_lines();
         commands.try_reserve(visible.len().saturating_mul(2).saturating_add(6).min(512))
@@ -158,11 +167,15 @@ impl super::Desktop
         let mut outer_port = outer_port;
         let view_clip = Region::from_rect(info.view);
         outer_port.state.clip =
-            Some(outer_port.state
-                           .clip
-                           .as_ref()
-                           .map_or_else(|| view_clip.clone(),
-                                        |clip| clip.combine(&view_clip, BooleanOp::Intersection)));
+            Some(match &outer_port.state.clip
+                 {
+                     None => view_clip.clone(),
+                     Some(clip) =>
+                     {
+                         clip.combine(&view_clip, BooleanOp::Intersection)
+                             .map_err(crate::toolbox::quickdraw::regions_service::status)?
+                     }
+                 });
         let mut fill = |bounds: Rect, color: u32| -> Result<(), Status> {
             if bounds.is_empty()
             {

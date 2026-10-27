@@ -33,6 +33,50 @@ pub enum Error
     FontUnavailable
 }
 
+impl From<super::region::RegionError> for Error
+{
+    fn from(error: super::region::RegionError) -> Self
+    {
+        use super::region::RegionError as R;
+        match error
+        {
+            R::Allocation => Self::Allocation,
+            R::TooLarge => Self::TooLarge,
+            R::CoordinateOverflow => Self::CoordinateOverflow,
+            R::Truncated | R::InvalidSize | R::InvalidBounds | R::InvalidData => Self::InvalidData
+        }
+    }
+}
+impl From<port::GraphicsError> for Error
+{
+    fn from(error: port::GraphicsError) -> Self
+    {
+        match error
+        {
+            port::GraphicsError::Allocation => Self::Allocation,
+            port::GraphicsError::TooLarge => Self::TooLarge,
+            port::GraphicsError::CoordinateOverflow => Self::CoordinateOverflow,
+            port::GraphicsError::InvalidSize => Self::InvalidData
+        }
+    }
+}
+fn font_error(status: mac_abi::Status) -> Error
+{
+    if status == mac_abi::NO_MEMORY { Error::Allocation } else { Error::FontUnavailable }
+}
+fn decoded_text<'a>(bytes: &[u8], buffer: &'a mut [u8; 255 * 4]) -> Result<&'a str, Error>
+{
+    let mut length = 0;
+    for &byte in bytes
+    {
+        let mut encoded = [0; 4];
+        let value = mac_formats::text::character(byte).encode_utf8(&mut encoded);
+        let end = length + value.len();
+        buffer.get_mut(length..end).ok_or(Error::TooLarge)?.copy_from_slice(value.as_bytes());
+        length = end;
+    }
+    core::str::from_utf8(&buffer[..length]).map_err(|_| Error::InvalidData)
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Version
 {
@@ -286,7 +330,7 @@ impl<'a> Reader<'a>
             return Err(Error::InvalidData);
         }
         self.take(size - 2)?;
-        Region::from_be_bytes(&self.bytes[start..self.position]).map_err(|_| Error::InvalidData)
+        Region::from_be_bytes(&self.bytes[start..self.position]).map_err(Error::from)
     }
 
     fn pstring(&mut self) -> Result<Vec<u8>, Error>
@@ -889,7 +933,7 @@ impl Picture
                                     name }
                     if selection.family == *id =>
                 {
-                    selection.family = fonts.family_id(&mac_formats::text::decode(name))
+                    selection.family = fonts.family_id(decoded_text(name, &mut [0; 255 * 4])?)
                                             .ok_or(Error::FontUnavailable)?
                 }
                 Command::GlyphState { outline_preferred,
@@ -908,9 +952,9 @@ impl Picture
                                 .. } =>
                 {
                     fonts.text_width_with_preference(selection,
-                                                     &mac_formats::text::decode(bytes),
+                                                     decoded_text(bytes, &mut [0; 255 * 4])?,
                                                      preference)
-                         .map_err(|_| Error::FontUnavailable)?;
+                         .map_err(font_error)?;
                 }
                 _ =>
                 {}
@@ -994,9 +1038,9 @@ impl Picture
                 Command::Clip(region) =>
                 {
                     let bounded =
-                        region.combine(&Region::from_rect(self.bounds), BooleanOp::Intersection);
-                    current.state.clip = Some(bounded.map(self.bounds, destination)
-                                                     .map_err(|_| Error::CoordinateOverflow)?);
+                        region.combine(&Region::from_rect(self.bounds), BooleanOp::Intersection)?;
+                    current.state.clip =
+                        Some(bounded.map(self.bounds, destination).map_err(Error::from)?);
                 }
                 Command::BackgroundPattern(value) => current.state.background_pattern = *value,
                 Command::PenPattern(value) => current.state.pen_pattern = *value,
@@ -1050,7 +1094,8 @@ impl Picture
                 {
                     if font.family == *id
                     {
-                        let name = mac_formats::text::decode(name);
+                        let mut decoded = [0; 255 * 4];
+                        let name = decoded_text(name, &mut decoded)?;
                         font.family = fonts.family_id(&name).ok_or(Error::FontUnavailable)?;
                     }
                 }
@@ -1112,17 +1157,22 @@ impl Picture
                     {
                         return Err(Error::UnsupportedState);
                     }
-                    let text = mac_formats::text::decode(bytes);
+                    let mut decoded = [0; 255 * 4];
+                    let text = decoded_text(bytes, &mut decoded)?;
                     let baseline = map(text_location)?;
                     let measured = fonts.text_width_with_preference(font, &text, font_preference)
-                                        .map_err(|_| Error::FontUnavailable)?;
+                                        .map_err(font_error)?;
                     let mut failure = None;
                     service::with_clip(canvas, &current, |canvas| {
-                        if fonts.draw_with_preference(font, canvas, baseline, &text,
-                                                      current.state.foreground, font_preference)
-                                .is_err()
+                        if failure.is_none()
                         {
-                            failure = Some(Error::FontUnavailable)
+                            if let Err(status) =
+                                fonts.draw_with_preference(font, canvas, baseline, text,
+                                                           current.state.foreground,
+                                                           font_preference)
+                            {
+                                failure = Some(font_error(status));
+                            }
                         }
                     });
                     if let Some(error) = failure
@@ -1185,16 +1235,18 @@ impl Picture
                         }
                         PictureShape::Region(value) =>
                         {
-                            region = value.map(self.bounds, destination)
-                                          .map_err(|_| Error::CoordinateOverflow)?;
+                            region = value.map(self.bounds, destination).map_err(Error::from)?;
                             Shape::Region(&region)
                         }
                     };
                     let mut failure = None;
                     service::with_clip(canvas, &current, |canvas| {
-                        if port::draw(canvas, &current.state, mapped, verb).is_err()
+                        if failure.is_none()
                         {
-                            failure = Some(Error::InvalidData)
+                            if let Err(error) = port::draw(canvas, &current.state, mapped, verb)
+                            {
+                                failure = Some(error.into());
+                            }
                         }
                     });
                     if let Some(error) = failure
@@ -1209,10 +1261,7 @@ impl Picture
                     let mode = transfer(value.mode)?;
                     let mask = value.mask
                                     .as_ref()
-                                    .map(|r| {
-                                        r.map(self.bounds, destination)
-                                         .map_err(|_| Error::CoordinateOverflow)
-                                    })
+                                    .map(|r| r.map(self.bounds, destination).map_err(Error::from))
                                     .transpose()?;
                     let mut failure = None;
                     service::with_clip(canvas, &current, |canvas| {
@@ -1325,7 +1374,7 @@ impl Writer
 
     fn region(&mut self, region: &Region) -> Result<(), Error>
     {
-        self.append(&region.to_be_bytes().map_err(|_| Error::TooLarge)?)
+        self.append(&region.to_be_bytes().map_err(Error::from)?)
     }
 }
 

@@ -15,7 +15,7 @@ use crate::toolbox::{events::*,
                      quickdraw::{Canvas, Point, Rect, SurfaceExt,
                                  geometry::{sect_rect, union_rect},
                                  presentation::{Outline, indexed_tracking_xor},
-                                 region::{BooleanOp, Region}}};
+                                 region::{BooleanOp, Region, RegionError}}};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i16)]
 pub enum WindowPart
@@ -961,7 +961,8 @@ impl WindowManager
             // A previously hidden window has no visible pixels. Damage only
             // its own newly visible content, never the windows it now covers.
             let visible = self.local_visibility(id, &self.order, None);
-            self.invalidate_region(id, &visible);
+            let bounds = self.window(id).map_or(Rect::ZERO, |window| window.local_bounds());
+            self.invalidate_exposure(id, visible, bounds);
         }
     }
 
@@ -1385,40 +1386,41 @@ impl WindowManager
     }
 
     fn local_visibility(&self, id: WindowId, order: &[WindowId], previous: Option<&Window>)
-                        -> Region
+                        -> Result<Region, RegionError>
     {
         let window_at = |id| previous.filter(|w| w.id == id).or_else(|| self.window(id));
         let Some(window) = window_at(id).filter(|w| !w.hidden)
         else
         {
-            return Region::new();
+            return Ok(Region::new());
         };
         let Some(index) = order.iter().position(|other| *other == id)
         else
         {
-            return Region::new();
+            return Ok(Region::new());
         };
         let mut visible =
             Region::from_rect(window.bounds).combine(&Region::from_rect(Rect::new(0, 20, crate::display::WIDTH as i16,
                                                                                   crate::display::HEIGHT as i16)),
-                                                     BooleanOp::Intersection);
+                                                     BooleanOp::Intersection)?;
         for front in &order[index + 1..]
         {
             if let Some(front) = window_at(*front).filter(|w| !w.hidden)
             {
                 for piece in front.structure_pieces()
                 {
-                    visible = visible.combine(&Region::from_rect(*piece), BooleanOp::Difference);
+                    visible = visible.combine(&Region::from_rect(*piece), BooleanOp::Difference)?;
                     if visible.is_empty()
                     {
-                        return visible;
+                        return Ok(visible);
                     }
                 }
             }
         }
         // Visible screen coordinates and bounded window positions guarantee
         // these local coordinates fit the existing i16 QuickDraw contract.
-        visible.offset(-window.bounds.left, -window.bounds.top).unwrap_or_default()
+        visible.offset(window.bounds.left.checked_neg().ok_or(RegionError::CoordinateOverflow)?,
+                       window.bounds.top.checked_neg().ok_or(RegionError::CoordinateOverflow)?)
     }
 
     fn invalidate_region(&mut self, id: WindowId, region: &Region)
@@ -1429,6 +1431,19 @@ impl WindowManager
             {
                 self.invalidate(id, Rect::new(span.left, band.top, span.right, band.bottom));
             }
+        }
+    }
+
+    /// Geometry scratch refusal must retain damage after a committed plane/close
+    /// change. Bound the recovery update to this affected object's content; the
+    /// compositor still applies ordinary occlusion. Healthy paths remain exact.
+    fn invalidate_exposure(&mut self, id: WindowId, region: Result<Region, RegionError>,
+                           fallback: Rect)
+    {
+        match region
+        {
+            Ok(region) => self.invalidate_region(id, &region),
+            Err(_) => self.invalidate(id, fallback)
         }
     }
 
@@ -1446,7 +1461,12 @@ impl WindowManager
             }
             let before = self.local_visibility(id, previous, None);
             let after = self.local_visibility(id, &self.order, None);
-            self.invalidate_region(id, &after.combine(&before, BooleanOp::Difference));
+            let exposed =
+                after.and_then(|after| {
+                         before.and_then(|before| after.combine(&before, BooleanOp::Difference))
+                     });
+            let bounds = self.window(id).map_or(Rect::ZERO, |window| window.local_bounds());
+            self.invalidate_exposure(id, exposed, bounds);
         }
     }
 
@@ -1455,15 +1475,10 @@ impl WindowManager
     /// resolves but whose unique cleanup ticket still retains the geometry.
     fn invalidate_uncovered(&mut self, previous: &Window, behind: usize)
     {
-        let mut covered = Region::new();
-        for piece in previous.structure_pieces()
-        {
-            covered = covered.combine(&Region::from_rect(*piece), BooleanOp::Union);
-        }
         for index in 0..behind
         {
             let id = self.order[index];
-            let Some(window) = self.window(id).filter(|window| !window.hidden)
+            let Some(window) = self.window(id).filter(|w| !w.hidden).copied()
             else
             {
                 continue;
@@ -1474,9 +1489,29 @@ impl WindowManager
                 continue;
             }
             let (left, top) = (window.bounds.left, window.bounds.top);
-            let covered = covered.offset(-left, -top).unwrap_or_default();
+            let fallback = Rect::new(overlap.left - left,
+                                     overlap.top - top,
+                                     overlap.right - left,
+                                     overlap.bottom - top);
             let visible = self.local_visibility(id, &self.order, None);
-            self.invalidate_region(id, &visible.combine(&covered, BooleanOp::Intersection));
+            match visible
+            {
+                Err(_) => self.invalidate(id, fallback),
+                Ok(visible) =>
+                {
+                    for piece in previous.structure_pieces()
+                    {
+                        let mut overlap = Rect::ZERO;
+                        if !sect_rect(window.bounds, *piece, &mut overlap)
+                        {
+                            continue;
+                        }
+                        let region=Region::from_rect(overlap).offset(-left,-top)
+                        .and_then(|piece|visible.combine(&piece,BooleanOp::Intersection));
+                        self.invalidate_exposure(id, region, fallback);
+                    }
+                }
+            }
         }
     }
 
@@ -1509,14 +1544,26 @@ impl WindowManager
             }
             let before = self.local_visibility(id, &old_order[..self.len], Some(previous));
             let after = self.local_visibility(id, &self.order[..self.len], None);
-            let exposed = after.combine(&before, BooleanOp::Difference);
-            for band in exposed.bands()
-            {
-                for span in &band.spans
-                {
-                    self.invalidate(id, Rect::new(span.left, band.top, span.right, band.bottom));
-                }
-            }
+            let exposed =
+                after.and_then(|after| {
+                         before.and_then(|before| after.combine(&before, BooleanOp::Difference))
+                     });
+            let fallback = self.window(id).map_or(Rect::ZERO, |window| {
+                                              if id == previous.id
+                                              {
+                                                  return window.local_bounds();
+                                              }
+                                              let mut clipped = Rect::ZERO;
+                                              if !sect_rect(window.bounds, affected, &mut clipped)
+                                              {
+                                                  return Rect::ZERO;
+                                              }
+                                              Rect::new(clipped.left - window.bounds.left,
+                                                        clipped.top - window.bounds.top,
+                                                        clipped.right - window.bounds.left,
+                                                        clipped.bottom - window.bounds.top)
+                                          });
+            self.invalidate_exposure(id, exposed, fallback);
         }
     }
 

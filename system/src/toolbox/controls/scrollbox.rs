@@ -139,7 +139,7 @@ impl Drawing
         self.raster.pixels() * 4 + self.raster.valid.capacity() + self.bar.storage()
     }
 
-    pub fn paint(&self, canvas: &mut Canvas<'_>)
+    pub fn paint(&self, canvas: &mut Canvas<'_>) -> Result<(), Status>
     {
         let o = canvas.origin();
         let c = canvas.clip();
@@ -171,7 +171,7 @@ impl Drawing
                 }
             }
         }
-        self.bar.paint(canvas);
+        self.bar.paint_clipped(canvas)
     }
 }
 fn dimensions(spec: Spec) -> Result<(usize, usize, usize), Status>

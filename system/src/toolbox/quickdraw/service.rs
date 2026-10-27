@@ -113,7 +113,7 @@ impl Drawing
             port::line_to(canvas, &mut state, self.line_end)
         };
         canvas.set_origin(old.h, old.v);
-        result.map_err(|_| BAD_ARGUMENT)
+        result.map_err(super::regions_service::graphics_status)
     }
 }
 pub fn graphics(port: &mut Port, call: &mut abi::GraphicsCall, points: &[Point], bytes: &[u8])
@@ -205,7 +205,8 @@ pub fn graphics(port: &mut Port, call: &mut abi::GraphicsCall, points: &[Point],
         }
         QD_CLIP_REGION =>
         {
-            port.state.clip = Some(Region::from_be_bytes(bytes).map_err(|_| BAD_ARGUMENT)?);
+            port.state.clip =
+                Some(Region::from_be_bytes(bytes).map_err(super::regions_service::status)?);
             None
         }
         QD_SHAPE =>
@@ -222,7 +223,7 @@ pub fn graphics(port: &mut Port, call: &mut abi::GraphicsCall, points: &[Point],
                 }
                 SHAPE_REGION =>
                 {
-                    Geometry::Region(Region::from_be_bytes(bytes).map_err(|_| BAD_ARGUMENT)?)
+                    Geometry::Region(Region::from_be_bytes(bytes).map_err(super::regions_service::status)?)
                 }
                 _ => return Err(NOT_SUPPORTED)
             };
@@ -238,7 +239,7 @@ pub fn graphics(port: &mut Port, call: &mut abi::GraphicsCall, points: &[Point],
             // Reject invalid/oversized shape data before retaining a command.
             if !matches!(geometry, Geometry::Rect(_))
             {
-                port::shape_region(geometry.shape()).map_err(|_| BAD_ARGUMENT)?;
+                port::shape_region(geometry.shape()).map_err(super::regions_service::graphics_status)?;
             }
             Some(Drawing { port: port.clone(),
                            geometry: Some(geometry),

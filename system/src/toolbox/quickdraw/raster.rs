@@ -2,7 +2,6 @@
 #![forbid(unsafe_code)]
 #[cfg(test)]
 use alloc::vec;
-use alloc::vec::Vec;
 
 use super::{Canvas, Point, Rect, region::Region};
 
@@ -124,7 +123,38 @@ pub enum RasterError
     InvalidPalette,
     InvalidDepth,
     Truncated,
-    TooLarge
+    TooLarge,
+    Allocation
+}
+impl From<super::region::RegionError> for RasterError
+{
+    fn from(error: super::region::RegionError) -> Self
+    {
+        use super::region::RegionError as R;
+        match error
+        {
+            R::Allocation => Self::Allocation,
+            R::TooLarge => Self::TooLarge,
+            R::Truncated
+            | R::InvalidSize
+            | R::InvalidBounds
+            | R::InvalidData
+            | R::CoordinateOverflow => Self::InvalidBounds
+        }
+    }
+}
+impl From<super::port::GraphicsError> for RasterError
+{
+    fn from(error: super::port::GraphicsError) -> Self
+    {
+        use super::port::GraphicsError as G;
+        match error
+        {
+            G::Allocation => Self::Allocation,
+            G::TooLarge => Self::TooLarge,
+            G::InvalidSize | G::CoordinateOverflow => Self::InvalidBounds
+        }
+    }
 }
 #[derive(Clone, Copy)]
 pub enum Bitmap<'a>
@@ -356,13 +386,16 @@ pub fn copy_within(canvas: &mut Canvas, source_rect: Rect, destination_rect: Rec
         return Ok(());
     }
     let o = canvas.origin();
-    let mut pixels = Vec::new();
     let width = i32::from(source_rect.right) - i32::from(source_rect.left);
     let height = i32::from(source_rect.bottom) - i32::from(source_rect.top);
     if i64::from(width) * i64::from(height) > 16_777_216
     {
         return Err(RasterError::TooLarge);
     }
+    let mut pixels =
+        super::storage::vector(width as usize * height as usize).map_err(|_| {
+                                                                    RasterError::Allocation
+                                                                })?;
     for y in source_rect.top..source_rect.bottom
     {
         for x in source_rect.left..source_rect.right
