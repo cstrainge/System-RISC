@@ -2,7 +2,7 @@
 """Private native FSYS -> HDIR -> virtio -> Linux companion evidence transport.
 Rust owns the acceptance assertions; no live user VM or export is used here.
 """
-from system7_platform import guest_env
+from system7_fixture_build import guest_env as fixture_guest_env, host_env as fixture_host_env
 import argparse
 import fcntl
 import hashlib
@@ -48,11 +48,11 @@ def _prepare(output, sdk=False, restore=False, disconnect=None):
         manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
         subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(manifest),
                         '--release', '--target', 'riscv64imac-unknown-none-elf', '--bin',
-                        binary, '--target-dir', str(target), *selected_features], cwd=vm.ROOT, env=guest_env(), check=True)
+                        binary, '--target-dir', str(target), *selected_features], cwd=vm.ROOT, env=fixture_guest_env(target), check=True)
         subprocess.run(['cargo', 'run', '--locked', '--manifest-path', str(manifest),
                         '--bin', 'package', '--target-dir', str(target), *selected_features, '--',
                         str(target / 'riscv64imac-unknown-none-elf/release' / binary),
-                        str(output / 'packages')], cwd=vm.ROOT, check=True)
+                        str(output / 'packages')], cwd=vm.ROOT, env=fixture_host_env(target), check=True)
     subprocess.run(['cargo', 'build', '--locked', '-p', 'risc-host', '-p', 'risc-forks',
                     '--target-dir', str(vm.build_dir() / 'host')], cwd=vm.ROOT / 'System7', check=True)
 
