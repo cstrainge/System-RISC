@@ -345,6 +345,31 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                        let session = session.as_ref().unwrap();
                        let caller =
                            inspection::caller_identity(&session.inspection, files::current_owner());
+                       if size < core::mem::size_of::<u32>()
+                       {
+                           return BAD_ARGUMENT as i64;
+                       }
+                       let operation =
+                           match unsafe { request::<u32>(pointer, core::mem::size_of::<u32>()) }
+                           {
+                               Ok(operation) => *operation,
+                               Err(error) => return error as i64
+                           };
+                       if matches!(operation,
+                                   mac_abi::inspection::memory::BEGIN
+                                   | mac_abi::inspection::memory::READ)
+                       {
+                           return match unsafe {
+                                     request::<mac_abi::inspection::memory::Call>(pointer, size)
+                                 }
+                           {
+                               Ok(call) =>
+                               {
+                                   inspection::memory(&session.inspection, caller, call) as i64
+                               }
+                               Err(error) => error as i64
+                           };
+                       }
                        match unsafe { request::<mac_abi::inspection::Call>(pointer, size) }
                        {
                            Ok(call) =>

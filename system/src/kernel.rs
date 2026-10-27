@@ -22,7 +22,7 @@ impl Write for Serial
 }
 #[global_allocator]
 static HEAP: crate::allocator::ResidentHeap = crate::allocator::ResidentHeap::empty();
-#[repr(C, align(16))]
+#[repr(C, align(4096))]
 struct HeapMemory([u8; crate::machine::memory::SYSTEM_HEAP_BYTES]);
 static mut HEAP_MEMORY: HeapMemory = HeapMemory([0; crate::machine::memory::SYSTEM_HEAP_BYTES]);
 static BOOT_LOG: Once<Option<LogFn>> = Once::new();
@@ -303,6 +303,12 @@ pub(crate) fn fonts() -> Option<&'static crate::toolbox::quickdraw::fonts::FontM
 }
 /// Reclaimable rendering caches must leave room for application loading and
 /// thread stacks. Read under the allocator's own synchronization boundary.
+pub(crate) fn heap_statistics() -> (u64, u64, u64)
+{
+    let (used, capacity) = HEAP.statistics();
+    (core::ptr::addr_of!(HEAP_MEMORY) as u64, used as u64, capacity as u64)
+}
+
 pub(crate) fn heap_available() -> usize
 {
     HEAP.available()

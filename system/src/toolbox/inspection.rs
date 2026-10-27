@@ -1,6 +1,7 @@
 //! Read-only inspection of authoritative ledgers. No resident snapshot objects,
 //! object-value scans, formatting allocations, or caller-selected identity.
 #![forbid(unsafe_code)]
+pub(crate) mod memory;
 use mac_abi::{inspection::*, *};
 use mac_object_table::{domain::{CapacityPolicy, Directory, DomainKind, LedgerReadError},
                        shared::InvocationGate};

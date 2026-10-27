@@ -10,7 +10,10 @@ use mac_toolbox::{controls::{ScrollBox, ScrollBoxSpec, StaticText, TextAlignment
                                Pool, Scope, Snapshot},
                   quickdraw::{fonts::FontSelection, theme},
                   *};
+mod memory;
 mac_toolbox::panic_handler!();
+const DOMAINS: u32 = u32::from_be_bytes(*b"domr");
+const MEMORY: u32 = u32::from_be_bytes(*b"memr");
 const QUIT: u32 = u32::from_be_bytes(*b"quit");
 const REFRESH: u32 = u32::from_be_bytes(*b"rfrs");
 const POOL_DETAIL_ROWS: u32 = 6;
@@ -114,7 +117,11 @@ fn pool_name(line: &mut Line, kind: [u8; 4]) -> fmt::Result
 
 fn window_layout(system: &System<'_>) -> ToolboxResult<(Rect, i16)>
 {
-    let resource = system.resources().application().get(ResourceKey::from_bytes(*b"WIND", 2003))?;
+    window_layout_resource(system, 2003)
+}
+fn window_layout_resource(system: &System<'_>, id: i16) -> ToolboxResult<(Rect, i16)>
+{
+    let resource = system.resources().application().get(ResourceKey::from_bytes(*b"WIND", id))?;
     let mut bytes = [0; 20];
     if resource.size() != bytes.len()
     {
@@ -661,26 +668,30 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
                                                         bounds.bottom - bounds.top)))?;
     let palette = theme::current(system.client())?;
     let mut current = snapshot(system)?;
-    let mut panes = Panes::new(system,
-                               window,
-                               bounds.right - bounds.left,
-                               bounds.bottom - bounds.top,
-                               current,
-                               palette)?;
-    panes.draw(system, window, palette)?;
+    let mut panes = Some(Panes::new(system,
+                                    window,
+                                    bounds.right - bounds.left,
+                                    bounds.bottom - bounds.top,
+                                    current,
+                                    palette)?);
+    if let Some(panes) = panes.as_ref()
+    {
+        panes.draw(system, window, palette)?;
+    }
     if !current.includes_module_domains()
     {
         return Err(Error::NotSupported);
     }
     system.log("REACTOR_READY coverage=process-and-module-domains,partial-ledgers \
                 authority=system-policy\n")?;
+    let mut memory = None::<memory::Memory<'_>>;
     let mut front = true;
     let mut dirty = false;
     let mut stale = false;
     loop
     {
-        // Background waits exclude advisory OsEvents. Membership bursts coalesce
-        // in System, and activation refreshes once; there is no sampling timer.
+        // No background sampling; membership notifications coalesce. Memory's
+        // immutable rows and explicit refresh need no timer or ledger rescan.
         let mask = if front
         {
             events::EventMask::ALL
@@ -697,40 +708,98 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
             {
                 QUIT =>
                 {
+                    drop(memory);
+                    drop(panes);
                     owner.close()?;
                     return Ok(());
                 }
-                REFRESH => dirty = true,
+                REFRESH =>
+                {
+                    if let Some(memory) = memory.as_mut()
+                    {
+                        memory.refresh(system, palette)?;
+                    }
+                    else
+                    {
+                        dirty = true;
+                    }
+                }
+                MEMORY if memory.is_none() =>
+                {
+                    // Reuse the document's raster. Old managed controls release
+                    // before the new view admits backing; no hidden second view.
+                    panes = None;
+                    let b = owner.info()?.bounds;
+                    memory = Some(memory::Memory::open(system,
+                                                       window,
+                                                       b.right - b.left,
+                                                       b.bottom - b.top,
+                                                       palette)?);
+                    let mut title = [0; 128];
+                    owner.set_title(system.resources().application().string(2004, &mut title)?)?;
+                    owner.invalidate(Rect::new(0, 0, b.right - b.left, b.bottom - b.top))?;
+                }
+                DOMAINS if panes.is_none() =>
+                {
+                    memory = None;
+                    current = snapshot(system)?;
+                    let b = owner.info()?.bounds;
+                    panes = Some(Panes::new(system,
+                                            window,
+                                            b.right - b.left,
+                                            b.bottom - b.top,
+                                            current,
+                                            palette)?);
+                    let mut title = [0; 128];
+                    owner.set_title(system.resources().application().string(128, &mut title)?)?;
+                    owner.invalidate(Rect::new(0, 0, b.right - b.left, b.bottom - b.top))?;
+                    dirty = false;
+                    stale = false;
+                }
                 _ =>
                 {}
             }
         }
-        match event
+        match &event
         {
             Event::Activate { window: target,
                               active,
-                              .. } if target == window =>
+                              .. } if *target == window =>
             {
-                front = active;
-                dirty |= active;
+                front = *active;
+                dirty |= *active;
             }
             Event::CloseRequested { window: target,
-                                    .. } if target == window =>
+                                    .. } if *target == window =>
             {
+                drop(memory);
+                drop(panes);
                 owner.close()?;
                 return Ok(());
             }
             Event::Other { message: inspection::CHANGED_EVENT,
                            .. } => dirty = true,
-            Event::WindowGeometryChanged { window: target,
-                                           .. } if target == window =>
+            _ =>
+            {}
+        }
+        if let Some(memory) = memory.as_mut()
+        {
+            memory.event(system, &event, position, palette)?;
+        }
+        if let Some(panes) = panes.as_mut()
+        {
+            match event
             {
-                let bounds = system.windows().info(window)?.bounds;
-                let (width, height) = (bounds.right - bounds.left, bounds.bottom - bounds.top);
-                if (width, height) != (panes.width, panes.height)
+                Event::WindowGeometryChanged { window: target,
+                                               .. } if target == window =>
                 {
-                    if let Err(error) =
-                        panes.resize(system, window, width, height, current, palette)
+                    let b = owner.info()?.bounds;
+                    if let Err(error) = panes.resize(system,
+                                                     window,
+                                                     b.right - b.left,
+                                                     b.bottom - b.top,
+                                                     current,
+                                                     palette)
                     {
                         if error == Error::ScanStale
                         {
@@ -742,57 +811,55 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
                         }
                     }
                 }
+                Event::Update { window: target,
+                                .. } if target == window => panes.draw(system, window, palette)?,
+                Event::MouseDown { window: Some(target),
+                                   .. } if target == window =>
+                {
+                    if let Err(error) =
+                        panes.click(system, current, position.in_window(window)?.point()?)
+                    {
+                        if error == Error::ScanStale
+                        {
+                            dirty = true;
+                        }
+                        else
+                        {
+                            return Err(error);
+                        }
+                    }
+                }
+                _ =>
+                {}
             }
-            Event::Update { window: target,
-                            .. } if target == window => panes.draw(system, window, palette)?,
-            Event::MouseDown { window: Some(target),
-                               .. } if target == window =>
+            if front && dirty
             {
-                if let Err(error) =
-                    panes.click(system, current, position.in_window(window)?.point()?)
+                current = snapshot(system)?;
+                match panes.refresh(system, current, true)
                 {
-                    if error == Error::ScanStale
+                    Ok(()) =>
                     {
-                        dirty = true;
+                        dirty = false;
+                        if stale
+                        {
+                            let mut text = [0; 128];
+                            panes.status.set(label(system, 0, &mut text)?)?;
+                            panes.status.draw()?;
+                            stale = false;
+                        }
                     }
-                    else
+                    Err(Error::ScanStale) =>
                     {
-                        return Err(error);
+                        if !stale
+                        {
+                            let mut text = [0; 128];
+                            panes.status.set(label(system, 6, &mut text)?)?;
+                            panes.status.draw()?;
+                            stale = true;
+                        }
                     }
+                    Err(error) => return Err(error)
                 }
-            }
-            _ =>
-            {}
-        }
-        if front && dirty
-        {
-            current = snapshot(system)?;
-            match panes.refresh(system, current, true)
-            {
-                Ok(()) =>
-                {
-                    dirty = false;
-                    if stale
-                    {
-                        let mut text = [0; 128];
-                        panes.status.set(label(system, 0, &mut text)?)?;
-                        panes.status.draw()?;
-                        stale = false;
-                    }
-                }
-                Err(Error::ScanStale) =>
-                {
-                    // Subject churn invalidates snapshots, not the inspector.
-                    // Retry on the next event instead of a busy loop.
-                    if !stale
-                    {
-                        let mut text = [0; 128];
-                        panes.status.set(label(system, 6, &mut text)?)?;
-                        panes.status.draw()?;
-                        stale = true;
-                    }
-                }
-                Err(error) => return Err(error)
             }
         }
     }

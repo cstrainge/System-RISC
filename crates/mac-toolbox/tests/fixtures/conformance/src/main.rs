@@ -43,7 +43,7 @@ impl Write for LogBuffer
         if n != text.len() { Err(fmt::Error) } else { Ok(()) }
     }
 }
-#[cfg(not(feature = "alert-tracking"))]
+#[cfg(not(any(feature = "alert-tracking", feature = "memory-inspection")))]
 fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
 {
     conformance::run_all(system)?;
@@ -54,6 +54,14 @@ fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::
     conformance::strings::graphical(system, gate)?;
     conformance::ownership::graphical(system, gate)?;
     Ok(())
+}
+#[cfg(feature = "memory-inspection")]
+#[path = "../../../conformance/memory_inspection.rs"]
+mod memory_inspection;
+#[cfg(feature = "memory-inspection")]
+fn run(system: &System<'_>, _gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
+{
+    memory_inspection::run(system)
 }
 #[cfg(feature = "alert-tracking")]
 fn run(system: &System<'_>, _gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
@@ -93,7 +101,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
     {
         Ok(()) =>
         {
-            #[cfg(not(feature = "alert-tracking"))]
+            #[cfg(not(any(feature = "alert-tracking", feature = "memory-inspection")))]
             {
                 let _ = system.log("TEXTEDIT_USERSPACE_PASS original=356 native=20 legacy=6 \
                                     navigation=49\n");
@@ -102,6 +110,8 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
                                     controls=86 controlpixels=269600 controlhits=8424 \
                                     strings=passed dates=passed\n");
             }
+            #[cfg(feature = "memory-inspection")]
+            let _ = system.log("TOOLBOX_USERSPACE_PASS memory-mappings=passed\n");
             #[cfg(feature = "alert-tracking")]
             let _ = system.log("ALERT_TRACKING_USERSPACE_PASS cancel=passed release=passed \
                                 cleanup=passed\n");

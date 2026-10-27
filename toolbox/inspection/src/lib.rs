@@ -3,8 +3,10 @@
 //! revision. Rows do not claim a simultaneous snapshot of unrelated domains.
 #![no_std]
 #![forbid(unsafe_code)]
+pub mod memory;
 use mac_abi::inspection as wire;
 use mac_traps::{Client, Error, types::InlineText};
+pub use memory::{MemorySummary, Protection, Region, RegionBatch, RegionKind, Regions, SystemMemory};
 pub use wire::CHANGED_EVENT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

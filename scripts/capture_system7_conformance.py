@@ -22,7 +22,7 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def private_disk(output, fixture_name='conformance', *, features=(), package_arguments=()):
+def private_disk(output, fixture_name='conformance', *, features=(), package_arguments=(), replace_system=False):
     # Own the whole capture before its disk exists. The VM's pid is too late:
     # other fixtures may still be compiling while this prepared disk is live.
     (output / 'pid').write_text(str(os.getpid()))
@@ -49,6 +49,9 @@ def private_disk(output, fixture_name='conformance', *, features=(), package_arg
     fs = NativeImage(raw)
     fs.remove('/System Folder/Finder')
     fs.import_macbinary(packaged / 'Finder.bin', '/System Folder')
+    if replace_system:
+        fs.remove('/System Folder/System')
+        fs.import_macbinary(packaged / 'System.bin', '/System Folder')
     shutil.copyfile(vm.DIST / 'bootrom.bin', private / 'bootrom.bin')
     subprocess.run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', str(raw),
                     str(private / 'system7.qcow2')], check=True)

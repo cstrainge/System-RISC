@@ -652,3 +652,34 @@ fn dependency_claims_are_enumerable_and_pin_exact_providers_until_the_owner_walk
         });
     });
 }
+
+#[test]
+fn memory_addresses_require_policy_and_host_fixture_refuses_invented_native_mappings()
+{
+    with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let reader = fixture::add("Ordinary reader", 0);
+        let inspector = fixture::add("Memory inspector", mac_abi::inspection::INSPECT_DOMAINS);
+        with_owner(reader, || {
+            let error = system.inspection().system_memory().err().unwrap();
+            assert_eq!(error.cause, Error::AccessDenied);
+            assert!(error.to_string().contains("System mapping details require a System \
+                                                inspection policy grant"));
+            assert!(system.inspection().object_kinds().is_ok(),
+                    "public registration existence is not an inspector privilege");
+        });
+        with_owner(inspector, || {
+            let error = system.inspection().system_memory().err().unwrap();
+            assert_eq!(error.cause, Error::NotSupported);
+            assert!(error.to_string().contains("native supervisor mappings are unavailable in \
+                                                the host service fixture"));
+            assert!(system.inspection().snapshot(Scope::All).is_ok(),
+                    "refusal must leave other inspection services usable");
+        });
+        with_owner(u64::MAX, || {
+            let error = system.inspection().system_memory().err().unwrap();
+            assert_eq!(error.cause, Error::AccessDenied);
+            assert!(error.to_string().contains("no live process domain"));
+        });
+    });
+}

@@ -29,6 +29,14 @@ impl ResidentHeap
         });
     }
 
+    pub(crate) fn statistics(&self) -> (usize, usize)
+    {
+        crate::machine::interrupts::with_masked(|| {
+            let heap = self.heap.lock();
+            (heap.used(), heap.size())
+        })
+    }
+
     pub(crate) fn available(&self) -> usize
     {
         crate::machine::interrupts::with_masked(|| self.heap.lock().free())

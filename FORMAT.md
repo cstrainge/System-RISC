@@ -1861,3 +1861,34 @@ prepared registered backing and commits them only after every measurement
 succeeds. A measurement that changes input is rejected as BAD_ABI without
 invalidating the menu or publishing a partial reflow. Disposal allocates no new
 measurement workspaces or geometry vectors.
+
+## Native System mapping inspection (development ABI 1)
+
+INSPECTION operations 7 (BEGIN) and 8 (READ) use the separate
+`mac_abi::inspection::memory::Call` payload; all other operations retain their
+lifetime-inspection payload. The binding first checks the operation header,
+then validates the complete selected payload size/alignment. Reserved fields
+must be zero. System addresses are cross-domain detail and require the live
+caller's `INSPECT_DOMAINS` policy grant on every request. Public registry
+existence/enumeration remains unprivileged.
+
+BEGIN returns a root revision, page size, discovered RAM bytes, current free
+pool pages, live heap used/capacity, actual root physical address and region
+count. Current coverage explicitly says shared supervisor mappings and
+unavailable per-domain accounting/reserve budgets. Heap and page counters are
+backend samples, not a simultaneous machine-wide snapshot. READ accepts that
+revision and a row index and returns at most 16 rows plus the next index and
+HAS_NEXT flag. Sixteen is a transport batch, not an inventory/capacity limit.
+Changed revisions fail SCAN_STALE with a restart explanation; invalid indices
+fail NOT_FOUND. Snapshot values are data, never object IDs or authority.
+
+Each row carries virtual base, physical base, byte length, R/W/X/user/global
+protection and semantic kind. Unmapped stack-guard rows carry no protection and
+physical zero; a mapped physical address of zero remains valid. Direct-map rows
+are aliases, not additional physical charges. Code, read-only data, writable
+data, actual heap backing, System stack, temporary trusted application/module
+arenas and devices are distinguished. The native source walks the actual owned
+immutable root, caches contiguous matching spans once on explicit request and
+validates unmapped guards before publication. It does not report planned
+mappings as installed mappings. Failed allocation leaves initialization
+retryable. Private process maps and per-domain budget gauges remain later gates.

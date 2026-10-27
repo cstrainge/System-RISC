@@ -4,6 +4,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 pub mod mapping;
+pub mod walk;
 use core::fmt;
 
 use mac_kernel_model::{pages::{Access, PageOwnership, Permissions, PhysicalAddress},

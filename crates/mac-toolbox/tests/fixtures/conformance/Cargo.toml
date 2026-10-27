@@ -9,6 +9,7 @@ build = "build.rs"
 
 [features]
 alert-tracking = []
+memory-inspection = []
 
 [[bin]]
 name = "Finder"
@@ -28,6 +29,7 @@ mac-abi = {path="../../../../mac-abi"}
 mac-traps = {path="../../../../mac-traps"}
 
 [target.'cfg(not(target_arch = "riscv64"))'.dependencies]
+mac-formats = { path = "../../../../mac-formats" }
 mac-build = { path = "../../../../../tools/mac-build" }
 
 [build-dependencies]

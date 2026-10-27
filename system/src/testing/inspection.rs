@@ -483,3 +483,38 @@ pub fn walk_module(module: u64, retry: bool) -> WalkOutcome
         WalkOutcome { report, failures }
     })
 }
+
+pub(super) fn memory(directory: &Domains, caller: Option<u64>,
+                     call: &mut mac_abi::inspection::memory::Call)
+                     -> mac_abi::Status
+{
+    use crate::toolbox::inspection::{Subject,
+                                     memory::{Source, request}};
+    struct Unavailable;
+    impl Source for Unavailable
+    {
+        type Error = &'static str;
+
+        fn status(_: &Self::Error) -> mac_abi::Status
+        {
+            mac_abi::NOT_SUPPORTED
+        }
+
+        fn revision(&self) -> Result<u64, Self::Error>
+        {
+            Err("native supervisor mappings are unavailable in the host service fixture")
+        }
+
+        fn summary(&self) -> Result<mac_abi::inspection::memory::Summary, Self::Error>
+        {
+            Err("native supervisor mappings are unavailable in the host service fixture")
+        }
+
+        fn regions(&self) -> Result<&[mac_abi::inspection::memory::Region], Self::Error>
+        {
+            Err("native supervisor mappings are unavailable in the host service fixture")
+        }
+    }
+    let authority = caller.and_then(|id| directory.get(id)).map(|e| e.value().authority());
+    request(authority, &Unavailable, call)
+}

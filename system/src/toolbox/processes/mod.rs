@@ -29,6 +29,18 @@ pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
         }
     }).unwrap_or_else(|error| error.status())
 }
+pub(crate) fn memory_inspection_request(call: &mut mac_abi::inspection::memory::Call) -> Status
+{
+    use crate::toolbox::inspection::Subject;
+    let caller = crate::context::current_thread_context().identity().app.0;
+    crate::kernel::with_desktop(|desktop| {
+        let authority = desktop.processes.entries.get(caller).map(|e| e.value().authority());
+        crate::toolbox::inspection::memory::request(authority,
+                                                    &crate::machine::paging::inspection::Native,
+                                                    call)
+    }).unwrap_or_else(|error| error.status())
+}
+
 pub struct Process
 {
     pub info:         ProcessInfo,

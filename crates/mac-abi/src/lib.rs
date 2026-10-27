@@ -21,6 +21,15 @@ pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
                  core::mem::size_of::<quickdraw::CursorResourceCall>(),
                  core::mem::size_of::<menus::MenuCall>(),
                  core::mem::size_of::<menus::MenuDefinitionState>(),
+                 core::mem::size_of::<inspection::Call>(),
+                 core::mem::size_of::<inspection::memory::Call>(),
+                 core::mem::offset_of!(inspection::memory::Call, summary),
+                 core::mem::offset_of!(inspection::memory::Call, regions),
+                 core::mem::offset_of!(inspection::memory::Call, detail),
+                 core::mem::size_of::<inspection::memory::Summary>(),
+                 core::mem::size_of::<inspection::memory::Region>(),
+                 inspection::memory::BEGIN as usize,
+                 inspection::memory::READ as usize,
                  resources::SYSTEM.kind as usize,
                  resources::CHAIN.kind as usize,
                  resources::APPLICATION.kind as usize,
@@ -311,6 +320,11 @@ mod tests
     fn rv64_layout_and_version_contract()
     {
         assert_eq!(core::mem::size_of::<Header>(), 8);
+        assert_eq!(core::mem::size_of::<inspection::memory::Call>(), 824);
+        assert_eq!(core::mem::offset_of!(inspection::memory::Call, operation), 0);
+        assert_eq!(core::mem::offset_of!(inspection::memory::Call, summary), 40);
+        assert_eq!(core::mem::offset_of!(inspection::memory::Call, regions), 112);
+        assert_eq!(core::mem::offset_of!(inspection::memory::Call, detail), 624);
         assert_eq!(core::mem::offset_of!(BootInfo, ram_base), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, log), 24);
         assert_eq!(core::mem::size_of::<BootInfo>(), 144);

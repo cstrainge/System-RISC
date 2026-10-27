@@ -39,6 +39,18 @@
             "command": "rfrs",
             "key": "R",
             "enabled": true
+          },
+          {
+            "text": "System Memory",
+            "command": "memr",
+            "key": "M",
+            "enabled": true
+          },
+          {
+            "text": "Domains",
+            "command": "domr",
+            "key": "D",
+            "enabled": true
           }
         ]
       }
@@ -128,7 +140,8 @@
           "Module domains are not live.",
           "Domains",
           "Ledger snapshot",
-          "Ledger changed; refresh pending"
+          "Ledger changed; refresh pending",
+          "Shared supervisor mappings. Direct map is an alias.\nPer-domain charges and recovery reserve are not installed."
         ]
       }
     },
@@ -139,6 +152,15 @@
       "payload": {
         "format": "hex",
         "hex": "003e001801a00268000000010100000000000000"
+      }
+    },
+    {
+      "type": "STR ",
+      "id": 2004,
+      "symbol": "MEMORY_TITLE",
+      "payload": {
+        "format": "pstring",
+        "text": "System Memory"
       }
     }
   ]

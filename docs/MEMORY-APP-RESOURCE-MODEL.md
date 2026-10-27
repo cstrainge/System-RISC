@@ -2670,6 +2670,26 @@ nonoverlap and physical reuse across two cohorts.
 This is kernel self-virtualization, not user-process isolation. Application and
 module images still use explicit trusted supervisor flat arenas, and application
 stacks still use physmap aliases. Private process/image mappings, page-backed
-heaps, domain/control-zone charges, recovery kits, Reactor's native region view,
+heaps, domain/control-zone charges, recovery kits,
 S/U protection and multi-hart synchronization remain required staged work.
 TE2/Text Edit migration stays on hold for the replacement common-control plan.
+
+### Native mapping inspection and Reactor Room Memory view
+
+The installed System root is now an inspection source through the public
+Toolbox facade. The source reads owned PTE backing, coalesces equivalent
+contiguous leaves, and lazily retains immutable mapping metadata. Read-only
+batches allocate no caller-owned resident session and repeat capability checks.
+Actual stack guards, the heap backing and RAM direct-map aliases are explicit;
+shared supervisor arenas and unavailable per-domain accounting are labelled.
+The RAM alias is never charged a second time. Heap/page-pool statistics come
+from their live backends and do not claim simultaneous global sampling.
+
+Reactor Room switches its single owned window between Domains and System
+Memory using resource menus. Each view owns managed controls, released before
+admitting the other view, avoiding a second window raster on the current small
+heap. Mapping rows are cached by batch; repainting and scrolling do not walk
+page tables. Refresh updates changed statistics without rebuilding immutable
+rows. Per-process gauges await actual private roots; protected reserve/budget
+metrics await the page-backed allocator. There is no synthetic accounting or
+periodic ledger sampling on this view.

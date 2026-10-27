@@ -53,7 +53,7 @@ pub enum PageOwnership
     Automatic,
     CopyOnWrite
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Permissions
 {
     pub read:    bool,

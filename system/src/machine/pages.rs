@@ -304,3 +304,17 @@ impl Stack
         self.cpu_base + self.bytes as usize
     }
 }
+
+/// Backend counts only; physmap aliases do not add physical ownership.
+pub(crate) fn free_pages() -> Result<u64, Error>
+{
+    let pools = POOLS.get().ok_or(Error::Unavailable)?;
+    let mut bank = pools.first;
+    let mut total = 0u64;
+    while let Some(current) = bank
+    {
+        total = total.checked_add(current.pool.free_pages() as u64).ok_or(Error::Geometry)?;
+        bank = current.next;
+    }
+    Ok(total)
+}

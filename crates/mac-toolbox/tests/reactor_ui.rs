@@ -48,6 +48,15 @@ fn reactor_uses_public_policy_grants_and_managed_views_without_selection_repaint
     {
         assert!(!serial.contains(failure), "unexpected {failure}:\n{serial}");
     }
+    assert!(serial.contains("REACTOR_MEMORY_READY scope=shared-supervisor \
+                             source=owned-page-tables accounting=unavailable"));
+    let memory = frame(&output.join("memory-open.ppm"));
+    let memory_resized = frame(&output.join("memory-resized.ppm"));
+    assert_ne!(memory, memory_resized, "managed mapping view did not resize");
+    assert_ne!(memory_resized,
+               frame(&output.join("memory-scrolled.ppm")),
+               "mapping scrollbar did not expose another row");
+    assert_ne!(memory, frame(&output.join("memory-closed.ppm")), "mapping window did not close");
     let first = frame(&output.join("selected-first.ppm"));
     let again = frame(&output.join("selected-again.ppm"));
     assert_eq!(first, again, "reselecting the same domain changed pixels");

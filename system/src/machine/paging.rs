@@ -1,5 +1,7 @@
 //! RV64 supervisor bootstrap and permanently owned translation roots. No
 //! existing reference changes its address; every RAM view starts in physmap.
+pub(crate) mod inspection;
+
 use core::{arch::asm, fmt, marker::PhantomData, ptr};
 
 use mac_abi::{BootInfo, BootMemoryRange,

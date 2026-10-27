@@ -418,8 +418,26 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         }
         INSPECTION =>
         {
-            let call = read_request!(mac_abi::inspection::Call);
-            toolbox::processes::inspection_request(call) as i64
+            if size < size_of::<u32>()
+            {
+                return BAD_ARGUMENT as i64;
+            }
+            let operation = match unsafe { request::<u32>(pointer, size_of::<u32>()) }
+            {
+                Some(operation) => *operation,
+                None => return BAD_ARGUMENT as i64
+            };
+            if matches!(operation,
+                        mac_abi::inspection::memory::BEGIN | mac_abi::inspection::memory::READ)
+            {
+                let call = read_request!(mac_abi::inspection::memory::Call);
+                toolbox::processes::memory_inspection_request(call) as i64
+            }
+            else
+            {
+                let call = read_request!(mac_abi::inspection::Call);
+                toolbox::processes::inspection_request(call) as i64
+            }
         }
         DEFINITION_PANIC =>
         {
