@@ -6,3 +6,4 @@ publish.workspace = true
 [dependencies]
 mac-driver = { path = "../mac-driver" }
 mac-abi.workspace = true
+mac-scrap-extension-interface.workspace = true

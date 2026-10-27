@@ -5,7 +5,9 @@
 //! This is a separate crate so Cargo feature unification never imposes a heap
 //! on allocation-free modules that share the core mac-driver dependency.
 #![no_std]
+#![feature(allocator_ext)]
 extern crate alloc;
+pub mod scrap;
 use alloc::{alloc::{alloc, dealloc},
             boxed::Box};
 use core::{alloc::Layout, ptr::NonNull};

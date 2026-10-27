@@ -5,7 +5,8 @@
 use alloc::{string::{String, ToString},
             vec,
             vec::Vec};
-use std::sync::{Arc, Mutex};
+use core::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use mac_abi::{Status, SystemServices};
 use mac_module::{Contract, PackageKind, Service as Requirement, Spec, Target};
@@ -17,6 +18,7 @@ pub use mac_scrap_extension_interface as wire;
 pub use crate::toolbox::scrap::{Revision,
                                 extension::{Content, Error, Pin, Read, Session}};
 use crate::{drivers::{Registry, State,
+                      jobs::subjects::{self, Operations, Subject},
                       registry::{dependencies, interfaces, requests}},
             state::TryState,
             toolbox::{handles::{self, OwnerRef,
@@ -26,6 +28,7 @@ use crate::{drivers::{Registry, State,
 
 static SESSION: Mutex<Option<Arc<TryState<World>>>> = Mutex::new(None);
 static SCOPE: Mutex<()> = Mutex::new(());
+static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
 struct Cleanup;
 impl Drop for Cleanup
 {
@@ -72,9 +75,41 @@ impl ProbeError
     }
 }
 
+/// Corrupt only a reply from a real successful broker dispatch. This fixture
+/// fault never fabricates a creation or a successful service invocation.
+#[derive(Clone, Copy)]
+pub enum ReplyFault
+{
+    Oversize,
+    InvalidEnvelope
+}
+
+struct ClientBinding
+{
+    key:     u64,
+    caller:  u64,
+    subject: Subject
+}
+struct OperationRelease(bool, Arc<OnceLock<alloc::sync::Weak<Operations>>>);
+impl mac_object_table::registry::Release<dyn Context, Failure> for OperationRelease
+{
+    fn release(&self, _: &mut (dyn Context + 'static), ticket: ReleasedResource)
+               -> Result<(), Failure>
+    {
+        match self.1.get().and_then(alloc::sync::Weak::upgrade)
+        {
+            Some(operations) => operations.release(ticket, self.0),
+            None => Err(Failure::context_unavailable(ticket, "acceptance I/O operation store"))
+        }
+    }
+}
 struct World
 {
     registry:       Registry,
+    operations:     Arc<Operations>,
+    clients:        Vec<ClientBinding>,
+    interface:      u64,
+    reply_fault:    Option<ReplyFault>,
     catalog:        Arc<handles::Registry<dyn Context>>,
     scrap:          Manager,
     next_package:   u64,
@@ -129,6 +164,17 @@ impl World
                                                requests::specification(true),
                                                requests::ReleaseRequests(true))
                                      .unwrap();
+        let operation_store = Arc::new(OnceLock::new());
+        let operation = catalog.register(&registrar,
+                                         subjects::specification(false),
+                                         OperationRelease(false, operation_store.clone()))
+                               .unwrap();
+        let operation_backing = catalog.register(&registrar,
+                                                 subjects::specification(true),
+                                                 OperationRelease(true, operation_store.clone()))
+                                       .unwrap();
+        let operations = Operations::new((operation, operation_backing)).unwrap();
+        operation_store.set(Arc::downgrade(&operations)).unwrap();
         let kinds = Registration::ALL.map(|registration| {
                                          catalog.register(&registrar,
                                                           registration.specification(),
@@ -139,10 +185,14 @@ impl World
                                          registrar,
                                          [interface, interface_storage, dependency,
                                           dependency_storage, request, request_storage]).unwrap();
-        registry.register_service(extension::OFFER).unwrap();
+        let interface = registry.register_service(extension::OFFER).unwrap();
         let mut scrap = Manager::default();
         scrap.prepare_extensions(kinds).unwrap();
         Self { registry,
+               operations,
+               clients: Vec::new(),
+               interface,
+               reply_fault: None,
                catalog: Arc::new(catalog),
                scrap,
                next_package: 1,
@@ -236,6 +286,63 @@ impl Fixture
 }
 impl Module
 {
+    /// Run the public module SDK with a Client created by its genuine entry
+    /// boundary. A Registry-issued Ready INIT owner and its admitted external
+    /// I/O root are retained through this scope. Copies fail closed afterwards.
+    pub fn with_client<R>(&self, run: impl FnOnce(mac_driver::Client) -> R) -> R
+    {
+        let key = NEXT_CLIENT.try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                                 next.checked_add(1)
+                             })
+                             .expect("acceptance Client contexts are not exhausted");
+        self.fixture
+            .with(|world| {
+                let owner = world.registry.module_ledger(self.caller).unwrap();
+                let subject =
+                    world.operations.admit(&handles::subject::Authority::Client(owner)).unwrap();
+                world.clients.push(ClientBinding { key,
+                                                   caller: self.caller,
+                                                   subject });
+            })
+            .unwrap();
+        let _scope = native::ClientScope { state: self.fixture.state.clone(),
+                                           key };
+        run(native::client(self.caller, key))
+    }
+
+    /// Hold the real resident TryState guard while the supplied SDK invocation
+    /// attempts reentry. Busy is a pre-dispatch refusal with no service effect.
+    pub fn with_busy<R>(&self, run: impl FnOnce() -> R) -> R
+    {
+        self.fixture.with(|_| run()).unwrap()
+    }
+
+    /// Leave the borrowed invocation frame in place but close its actual
+    /// externally owned I/O root. Subsequent phase-5 admission must reject it.
+    pub fn close_client_root(&self)
+    {
+        self.fixture
+            .with(|world| {
+                for binding in
+                    world.clients.iter_mut().filter(|binding| binding.caller == self.caller)
+                {
+                    let inherited =
+                        world.operations
+                             .admit(&handles::subject::Authority::Operation(binding.subject
+                                                                                   .scope()
+                                                                                   .clone()))
+                             .unwrap();
+                    binding.subject = inherited;
+                }
+            })
+            .unwrap();
+    }
+
+    pub fn corrupt_next_reply(&self, fault: ReplyFault)
+    {
+        self.fixture.with(|world| world.reply_fault = Some(fault)).unwrap();
+    }
+
     pub fn wire_call(&self, operation: u32, input: &[u8], output: &mut [u8])
                      -> Result<usize, ProbeError>
     {
@@ -381,11 +488,192 @@ pub fn with_services<R>(run: impl FnOnce(&SystemServices, &Fixture) -> R) -> R
     run(&services, &Fixture { state })
 }
 
-// The normal native Scrap dispatch remains the only borrowed-pointer boundary.
+// Narrow Scrap and module ABI pointer boundaries reuse production validators.
 #[allow(unsafe_code)]
 mod native
 {
+    use mac_module::abi;
+
     use super::*;
+    std::thread_local! {
+        // Pin the exact world admitted by this broker invocation. An escaped
+        // Client racing teardown cannot dispatch into a replacement fixture.
+        static ACTIVE: std::cell::RefCell<Option<Arc<TryState<World>>>> = const { std::cell::RefCell::new(None) };
+    }
+    struct CallbackScope(Option<Arc<TryState<World>>>);
+    impl CallbackScope
+    {
+        fn enter(state: Arc<TryState<World>>) -> Self
+        {
+            Self(ACTIVE.with(|active| active.replace(Some(state))))
+        }
+    }
+    impl Drop for CallbackScope
+    {
+        fn drop(&mut self)
+        {
+            ACTIVE.with(|active| active.replace(self.0.take()));
+        }
+    }
+
+    pub(super) struct ClientScope
+    {
+        pub state: Arc<TryState<World>>,
+        pub key:   u64
+    }
+    impl Drop for ClientScope
+    {
+        fn drop(&mut self)
+        {
+            // Test callbacks are synchronous; no active borrow survives run().
+            self.state
+                .with(|world| world.clients.retain(|binding| binding.key != self.key))
+                .unwrap();
+        }
+    }
+    struct Entry(Mutex<Option<mac_driver::Client>>);
+    impl mac_driver::Driver for Entry
+    {
+        fn initialize(&self, client: mac_driver::Client) -> mac_driver::Result<()>
+        {
+            *self.0.lock().unwrap() = Some(client);
+            Ok(())
+        }
+
+        fn request(&self, _: mac_driver::Request<'_>, _: &mut [u8])
+                   -> mac_driver::Result<mac_driver::Completion>
+        {
+            Err(mac_driver::Error(mac_abi::NOT_SUPPORTED))
+        }
+    }
+    unsafe extern "C" fn dispatch(_: u64, _: *mut abi::Call) -> Status
+    {
+        mac_abi::NOT_SUPPORTED
+    }
+
+    pub(super) fn client(caller: u64, key: u64) -> mac_driver::Client
+    {
+        let entry = Entry(Mutex::new(None));
+        let host = abi::Host { header:   abi::Header::of::<abi::Host>(),
+                               module:   caller,
+                               reserved: 0,
+                               context:  key,
+                               call:     Some(broker),
+                               resolve:  Some(resolve) };
+        let mut instance = abi::Instance::default();
+        // SAFETY: exact resident buffers and process-long static callbacks.
+        // Context is a nonce, never a dereferenced fixture pointer; expired
+        // scopes and fixtures are rejected by the live binding lookup.
+        assert_eq!(unsafe { mac_driver::entry(&entry, &host, &mut instance, dispatch) },
+                   mac_abi::OK);
+        entry.0.into_inner().unwrap().unwrap()
+    }
+    fn state() -> Result<Arc<TryState<World>>, Status>
+    {
+        SESSION.lock()
+               .unwrap_or_else(|error| error.into_inner())
+               .clone()
+               .ok_or(mac_abi::NOT_SUPPORTED)
+    }
+    unsafe extern "C" fn resolve(key: u64, class: u32, version: u32, output: *mut u64) -> Status
+    {
+        if output.is_null() || !output.addr().is_multiple_of(core::mem::align_of::<u64>())
+        {
+            return mac_abi::BAD_ARGUMENT;
+        }
+        let result = state().and_then(|state| {
+                                state.with(|world| {
+                                         let caller = world.clients
+                                                           .iter()
+                                                           .find(|binding| binding.key == key)
+                                                           .ok_or(mac_abi::ACCESS_DENIED)?
+                                                           .caller;
+                                         world.registry
+                                              .resolve(caller,
+                                                       mac_module::ClassId(class.to_le_bytes()),
+                                                       version)
+                                              .map_err(crate::drivers::status)
+                                     })
+                                     .map_err(crate::state::AccessError::status)?
+                            });
+        match result
+        {
+            Ok(provider) =>
+            {
+                unsafe { output.write(provider) };
+                mac_abi::OK
+            }
+            Err(status) => status
+        }
+    }
+    fn scrap(caller: u64, operation: u32, input: &[u8], output: &mut [u8])
+             -> Result<usize, Status>
+    {
+        let state = ACTIVE.with(|active| active.borrow().clone()).ok_or(mac_abi::WRONG_THREAD)?;
+        state.with(|world| world.wire_call(caller, operation, input, output))
+             .map_err(crate::state::AccessError::status)?
+    }
+    unsafe extern "C" fn broker(key: u64, provider: u64, pointer: *mut abi::Call) -> Status
+    {
+        let result = (|| {
+            let state = state()?;
+            // SAFETY: mac-driver's real SDK boundary lends live disjoint buffers.
+            let call = unsafe { crate::drivers::synchronous::checked_call(pointer) }?;
+            call.output_len = 0;
+            // A borrowed frame must never become a new root use. Retain the
+            // actual registered Subject for the bounded shared broker call.
+            let (caller, subject) = state.with(|world| {
+                                             let binding = world.clients
+                                                                .iter()
+                                                                .find(|binding| binding.key == key)
+                                                                .ok_or(mac_abi::ACCESS_DENIED)?;
+                                             Ok::<_, Status>((binding.caller,
+                                                              binding.subject.clone()))
+                                         })
+                                         .map_err(crate::state::AccessError::status)??;
+            // SAFETY: this host scope owns the frame; the production native
+            // caller additionally masks IRQ/preemption through this exact core.
+            let _callback_scope = CallbackScope::enter(state.clone());
+            let mut fault = None;
+            let status = unsafe {
+                crate::drivers::synchronous::invoke(
+                                                    call,
+                                                    requests::Origin::Direct,
+                                                    caller,
+                                                    |call| {
+                                                        state.with(|world| {
+                        let callback = crate::drivers::synchronous::authorize(
+                            &world.registry, &subject, caller, provider, call,
+                            |id| (id == world.interface).then_some(scrap as crate::drivers::synchronous::Callback))?;
+                        fault = world.reply_fault.take();
+                        Ok(callback)
+                    }).map_err(crate::state::AccessError::status)?
+                                                    }
+                )
+            }?;
+            if status == mac_abi::OK
+            {
+                match fault
+                {
+                    Some(ReplyFault::Oversize) =>
+                    {
+                        call.output_len = call.output_capacity.saturating_add(1)
+                    }
+                    Some(ReplyFault::InvalidEnvelope) if call.output_len != 0 =>
+                    {
+                        // A real service effect already happened; corrupt its
+                        // encoded envelope solely for SDK cleanup acceptance.
+                        unsafe { call.output.write(0xff) };
+                    }
+                    _ =>
+                    {}
+                }
+            }
+            Ok::<_, Status>(status)
+        })();
+        result.unwrap_or_else(|status| status)
+    }
+
     pub(super) unsafe extern "C" fn gate(number: u32, pointer: *mut (), size: usize) -> i64
     {
         let state = SESSION.lock().unwrap_or_else(|error| error.into_inner()).clone();

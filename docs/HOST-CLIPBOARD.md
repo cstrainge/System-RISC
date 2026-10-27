@@ -249,6 +249,31 @@ disconnect/reopen and exact-ticket cleanup retry. It does not execute a guest
 worker or establish native interrupt, account or arbitrary privileged-fault
 containment.
 
+`mac-driver-alloc::scrap` supplies non-copyable session and snapshot guards over
+the original resolved SCEX provider. It reserves each retirement record before
+OPEN or SNAPSHOT can have an effect. Guard destruction only marks that admitted
+record; a module-lifetime controller performs bounded cleanup later. Child pins
+keep their session connected until their releases are acknowledged. Each drain
+visits at most its supplied record budget, with constant-time record removal;
+Busy preserves the same provider and grant for retry. A malformed post-effect
+creation reply retains its uncertain record rather than repeating creation.
+
+Explicit shutdown returns the retained client when cleanup cannot complete.
+Dropping the entire controller with outstanding records is last-resort quarantine,
+not a release acknowledgement: neither resident owner cleanup nor dropping the
+module frees that forgotten SDK allocation. A production worker must own and drain
+the controller through its real lifecycle. This SDK stage covers guard ownership,
+notification and snapshot metadata; immutable text capture, READ/IMPORT adapters
+and automatic production lifecycle remain unimplemented.
+
+Canonical host SDK tests obtain a Client through the real module entry binding
+and route genuine Registry-issued providers and open operation scopes through the
+same synchronous broker core as native System. They cover real contention,
+closed roots, stale/foreign guards, preflight allocation refusal, corrupted replies
+after actual creation, bounded cleanup and authoritative owner cleanup. Native
+System keeps its interrupt/preemption gate across admission and the bounded
+resident effect; the host adapter does not qualify that gate, SMP or a worker.
+
 Store enablement/direction preferences in versioned System JSON. Support local
 operation when preferences are read-only/unavailable, and extensions-disabled
 startup. The module stays pinned for the boot session initially; disabling bridge

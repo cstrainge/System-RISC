@@ -48,7 +48,7 @@ pub(crate) enum ResidentCompletion
     Complete(usize),
     Pending
 }
-pub(crate) type SynchronousCallback = fn(u64, u32, &[u8], &mut [u8]) -> Result<usize, Status>;
+pub(crate) use super::synchronous::Callback as SynchronousCallback;
 pub(crate) type ResidentCallback =
     fn(ResidentCall<'_>, &mut [u8]) -> Result<ResidentCompletion, Status>;
 struct ResidentBinding
@@ -362,42 +362,6 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
            })
            .map_err(crate::state::AccessError::status)?
 }
-unsafe fn checked_call<'a>(pointer: *mut abi::Call) -> Result<&'a mut abi::Call, Status>
-{
-    if pointer.is_null() || !pointer.addr().is_multiple_of(core::mem::align_of::<abi::Call>())
-    {
-        return Err(BAD_ARGUMENT);
-    }
-    // Only resident System or already-admitted kernel modules may call broker.
-    // Their ABI contract establishes live/exclusive request and buffer borrows.
-    let call = unsafe { &mut *pointer };
-    if !call.header.valid::<abi::Call>() || call.reserved != 0
-    {
-        return Err(BAD_ABI);
-    }
-    if call.input_len > 1024 * 1024
-       || call.output_capacity > 1024 * 1024
-       || call.input_len != 0 && call.input.is_null()
-       || call.output_capacity != 0 && call.output.is_null()
-    {
-        return Err(BAD_ARGUMENT);
-    }
-    let input_end = call.input.addr().checked_add(call.input_len as usize).ok_or(BAD_ARGUMENT)?;
-    let output_end =
-        call.output.addr().checked_add(call.output_capacity as usize).ok_or(BAD_ARGUMENT)?;
-    let call_start = pointer.addr();
-    let call_end = call_start.checked_add(core::mem::size_of::<abi::Call>()).ok_or(BAD_ARGUMENT)?;
-    let overlap = |start: usize, end: usize, other_start: usize, other_end: usize| {
-        start < end && other_start < other_end && start < other_end && other_start < end
-    };
-    if overlap(call.input.addr(), input_end, call.output.addr(), output_end)
-       || overlap(call_start, call_end, call.input.addr(), input_end)
-       || overlap(call_start, call_end, call.output.addr(), output_end)
-    {
-        return Err(BAD_ARGUMENT);
-    }
-    Ok(call)
-}
 unsafe extern "C" fn broker(caller: u64, provider: u64, pointer: *mut abi::Call) -> Status
 {
     // The C callback never owns or retains the caller's buffers.
@@ -457,68 +421,37 @@ unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
                         -> Result<Status, Status>
 {
     use super::registry::requests::Access;
-    let call = unsafe { checked_call(pointer) }?;
+    let call = unsafe { super::synchronous::checked_call(pointer) }?;
     call.output_len = 0;
     if call.phase == abi::SYNCHRONOUS
     {
-        // This bounded resident leaf has no foreign callbacks or I/O wait.
-        // Keep root validation and its effect in the same native invocation:
-        // an inherited lease cannot retain the external root across preemption.
-        // Registry/owner locks are released before the resident callback. This
-        // is the existing single-hart gate, not an SMP authorization claim.
-        return crate::machine::interrupts::with_masked(|| {
-            if call.ticket != 0 || origin != super::registry::requests::Origin::Direct
-            {
-                return Err(BAD_ARGUMENT);
-            }
-            // Only explicitly registered, non-deferred resident operations can
-            // reach this path. No request is published and no foreign code runs.
-            let callback =
+        // Keep root validation and this bounded leaf in one native invocation.
+        // The shared core releases the registry lock before the callback.
+        return crate::machine::interrupts::with_masked(|| unsafe {
+            super::synchronous::invoke(call, origin, caller, |call| {
                 RUNTIME.with(|runtime| {
-                           let interface =
-                               runtime.registry
-                                      .authorize_synchronous(subject, caller, provider,
-                                                             call.input_len as usize,
-                                                             call.output_capacity as usize)
-                                      .map_err(status)?;
-                           if interface.offer.class.0 != call.class
-                           {
-                               return Err(BAD_ARGUMENT);
-                           }
-                           runtime.residents
-                                  .iter()
-                                  .find(|binding| binding.interface == provider)
-                                  .map(|binding| binding.synchronous)
-                                  .ok_or(NOT_SUPPORTED)
+                           super::synchronous::authorize(&runtime.registry,
+                                                         subject,
+                                                         caller,
+                                                         provider,
+                                                         call,
+                                                         |interface| {
+                                                             runtime.residents
+                                                                    .iter()
+                                                                    .find(|binding| {
+                                                                        binding.interface
+                                                                        == interface
+                                                                    })
+                                                                    .map(|binding| {
+                                                                        binding.synchronous
+                                                                    })
+                                                         })
                        })
-                       .map_err(crate::state::AccessError::status)??;
-            let input = if call.input_len == 0
-            {
-                &[]
-            }
-            else
-            {
-                unsafe { core::slice::from_raw_parts(call.input, call.input_len as usize) }
-            };
-            let output = if call.output_capacity == 0
-            {
-                &mut []
-            }
-            else
-            {
-                unsafe {
-                    core::slice::from_raw_parts_mut(call.output, call.output_capacity as usize)
-                }
-            };
-            let length = callback(caller, call.operation, input, output)?;
-            if length > output.len()
-            {
-                return Err(BAD_ABI);
-            }
-            call.output_len = length.try_into().map_err(|_| BAD_ABI)?;
-            return Ok(OK);
+                       .map_err(crate::state::AccessError::status)?
+            })
         });
     }
+
     let (module, ticket, target, invocation) =
         RUNTIME.with(|runtime| {
                    let interface = if call.phase == abi::START
