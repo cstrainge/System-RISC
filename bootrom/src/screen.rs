@@ -1,5 +1,7 @@
 //! ROM owns one pinned framebuffer until System reconfigures RAMFB. Only the
 //! boot hart enters here; callbacks retained by System never touch this storage.
+use core::fmt::Write;
+
 use mac_boot_screen::Raster;
 
 use crate::memory::{DISPLAY_HEIGHT, DISPLAY_SCRATCH_BASE, DISPLAY_SCRATCH_BYTES, DISPLAY_WIDTH};
@@ -31,7 +33,20 @@ pub fn init() -> bool
     };
     canvas.background();
     // Static pinned RAM remains valid after the ROM hands off to System.
-    unsafe { mac_boot_screen::ramfb::configure(DISPLAY_SCRATCH_BASE, WIDTH, HEIGHT) }
+    // Firmware CPU addressing is physical here; only this platform binding
+    // supplies that identity translation. Shared DMA code receives bus PAs.
+    let result = unsafe {
+        mac_boot_screen::ramfb::configure(crate::memory::FW_CFG_BASE as usize,
+                                          DISPLAY_SCRATCH_BASE,
+                                          WIDTH,
+                                          HEIGHT,
+                                          |pointer, _| Some(pointer as u64))
+    };
+    if let Err(error) = &result
+    {
+        let _ = writeln!(crate::Serial, "BOOT_RAMFB_REJECTED: {error}");
+    }
+    result.is_ok()
 }
 pub fn happy()
 {

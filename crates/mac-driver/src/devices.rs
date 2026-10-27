@@ -71,6 +71,8 @@ impl DeviceService
         Ok(description)
     }
 
+    /// Translate pinned module CPU storage for the claimed device. The returned
+    /// Mapping.address is a bus address and must never be dereferenced by Rust.
     pub fn map(self, device: u64, address: u64, length: u64) -> Result<Mapping>
     {
         if length == 0 || address.checked_add(length).is_none()

@@ -87,7 +87,21 @@ pub fn setup_framebuffer() -> bool
     let address = super::memory::DISPLAY_FRONTBUFFER_BASE;
     // The checked platform frontbuffer reservation is pinned for System's lifetime; bootstrap owns
     // exclusive fw_cfg access, before any application or secondary hart starts.
-    let ready = unsafe { mac_boot_screen::ramfb::configure(address, WIDTH, HEIGHT) };
+    // Flat M-mode bootstrap currently maps System's permanent DMA scratch at
+    // its physical address. This explicit binding changes with the supervisor
+    // handoff; the shared device code never converts a CPU pointer to a bus PA.
+    let result = unsafe {
+        mac_boot_screen::ramfb::configure(super::memory::FW_CFG_BASE as usize,
+                                          address,
+                                          WIDTH,
+                                          HEIGHT,
+                                          |pointer, _| Some(pointer as u64))
+    };
+    if let Err(error) = &result
+    {
+        serial!("RAMFB_REJECTED: {error}");
+    }
+    let ready = result.is_ok();
     if ready
     {
         TRACKING_AVAILABLE.store(true, Ordering::Release);

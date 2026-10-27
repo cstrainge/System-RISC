@@ -24,7 +24,9 @@ struct TestBus
     stopped:     bool,
     resets:      usize,
     reset_error: Option<Status>,
-    probe_error: Option<Status>
+    probe_error: Option<Status>,
+    dma_error:   Option<Status>,
+    dma_offset:  u64
 }
 const DEVICE: Description = Description { handle:         0,
                                           bus:            mac_module::ClassId(*b"TEST"),
@@ -36,6 +38,15 @@ const DEVICE: Description = Description { handle:         0,
                                                           | mac_device_interface::MMIO };
 impl Bus for TestBus
 {
+    fn dma_address(&self, address: u64, _: u64) -> Result<u64, Status>
+    {
+        if let Some(error) = self.dma_error
+        {
+            return Err(error);
+        }
+        address.checked_add(self.dma_offset).ok_or(BAD_ARGUMENT)
+    }
+
     fn probe(&mut self, ordinal: u32) -> Result<Description, Status>
     {
         if ordinal < 400 { Ok(DEVICE) } else { Err(NOT_FOUND) }
@@ -85,7 +96,9 @@ fn fixture(case: [u8; 2]) -> (Devices<TestBus>, Registry<Devices<TestBus>>)
     (Devices::new(TestBus { stopped:     true,
                             resets:      0,
                             reset_error: None,
-                            probe_error: None },
+                            probe_error: None,
+                            dma_error:   None,
+                            dma_offset:  0x1_0000_0000 },
                   system,
                   kinds).unwrap(),
      catalog)
@@ -133,6 +146,8 @@ fn native_claims_and_maps_reject_stale_foreign_and_reused_ids()
     assert_eq!(manager.claim(&b, 0, DEVICE), Err(SERVICE_BUSY));
     assert_eq!(manager.release(&b, first.handle), Err(ACCESS_DENIED));
     let mapping = manager.map(&a, first.handle, 0x8000_0000, 4096).unwrap();
+    assert_eq!(mapping.address, 0x1_8000_0000,
+               "device address comes from the architecture binding, not the CPU request");
     assert!(mapping.handle > u32::MAX as u64);
     assert_eq!(manager.release(&a, first.handle), Err(SERVICE_BUSY));
     assert_eq!(manager.unmap(&b, mapping.handle), Err(ACCESS_DENIED));
@@ -154,6 +169,28 @@ fn native_claims_and_maps_reject_stale_foreign_and_reused_ids()
     assert_eq!(foreign.release(&a, second.handle), Err(NOT_FOUND));
     foreign.release(&a, foreign_claim.handle).unwrap();
     manager.release(&a, second.handle).unwrap();
+}
+#[test]
+fn dma_translation_refusal_preserves_claim_and_publication_counts_for_retry()
+{
+    let _serial = SERIAL.lock().unwrap();
+    let (mut manager, _catalog) = fixture(*b"DT");
+    let owner = owner(DomainKind::Module);
+    let device = manager.claim(&owner, 0, DEVICE).unwrap();
+    let before = owner.summary().live;
+    manager.bus.dma_error = Some(mac_abi::ACCESS_DENIED);
+    assert_eq!(manager.map(&owner, device.handle, 0x8000, 128), Err(mac_abi::ACCESS_DENIED));
+    assert_eq!(owner.summary().live, before);
+    assert_eq!(manager.maps.retained_values().count(), 0);
+    manager.bus.dma_error = None;
+    manager.bus.dma_offset = u64::MAX - 0x8000 - 63;
+    assert_eq!(manager.map(&owner, device.handle, 0x8000, 128), Err(BAD_ARGUMENT));
+    assert_eq!(owner.summary().live, before);
+    manager.bus.dma_offset = 0;
+    let mapping = manager.map(&owner, device.handle, 0, 128).unwrap();
+    assert_eq!(mapping.address, 0, "zero is a valid physical address when the binding admits it");
+    manager.unmap(&owner, mapping.handle).unwrap();
+    manager.release(&owner, device.handle).unwrap();
 }
 #[test]
 fn reset_is_bounded_and_never_releases_live_dma()

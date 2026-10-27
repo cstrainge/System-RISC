@@ -15,6 +15,10 @@ pub(crate) mod lifetime;
 pub trait Bus
 {
     fn probe(&mut self, ordinal: u32) -> Result<Description, Status>;
+    /// Prove a contiguous coherent bus span for pinned CPU storage. This is a
+    /// pure address translation, not an allocation or hardware publication.
+    /// CPU addresses must never be returned implicitly by manager policy.
+    fn dma_address(&self, cpu_address: u64, bytes: u64) -> Result<u64, Status>;
     fn request_reset(&mut self, ordinal: u32) -> Result<(), Status>;
     fn stopped(&mut self, ordinal: u32) -> Result<bool, Status>;
 }
@@ -115,6 +119,11 @@ impl<B: Bus> Devices<B>
         {
             return Err(mac_abi::NOT_SUPPORTED);
         }
+        let bus_address = self.bus.dma_address(address, length)?;
+        if bus_address.checked_add(length).is_none()
+        {
+            return Err(BAD_ARGUMENT);
+        }
         let count = claim.maps.get().checked_add(1).ok_or(NO_MEMORY)?;
         let receipt = claim.receipt.get().ok_or(BAD_ABI)?;
         let publication = self.maps
@@ -122,7 +131,7 @@ impl<B: Bus> Devices<B>
                               .map_err(pool_status)?;
         claim.maps.set(count);
         Ok(Mapping { handle: publication.id(),
-                     address,
+                     address: bus_address,
                      length })
     }
 

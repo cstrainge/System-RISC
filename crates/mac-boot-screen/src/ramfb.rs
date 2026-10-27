@@ -1,108 +1,212 @@
-//! Audited QEMU virt fw_cfg DMA boundary, shared by ROM and System bootstrap.
-use core::{arch::asm,
-           ptr::{addr_of_mut, read_volatile, write_volatile}};
-const FW_CFG: usize = 0x10100000;
-unsafe fn select(selector: u16)
-{
-    unsafe {
-        write_volatile((FW_CFG + 8) as *mut u16, selector.to_be());
-    }
-}
-fn cfg_byte() -> u8
-{
-    unsafe { read_volatile(FW_CFG as *const u8) }
-}
-fn cfg_u16() -> u16
-{
-    u16::from_be_bytes([cfg_byte(), cfg_byte()])
-}
-fn cfg_u32() -> u32
-{
-    u32::from_be_bytes([cfg_byte(), cfg_byte(), cfg_byte(), cfg_byte()])
-}
+//! RAMFB wire preparation. CPU addresses and device-visible bus addresses are
+//! distinct even when a particular bootstrap happens to use identity mapping.
+use core::fmt;
 
-fn find_file(name: &[u8]) -> Option<(u16, u32)>
-{
-    unsafe {
-        select(0x19);
-    }
-    let count = cfg_u32();
-    if count > 4096
-    {
-        return None;
-    }
-    for _ in 0..count
-    {
-        let length = cfg_u32();
-        let selector = cfg_u16();
-        let _reserved = cfg_u16();
-        let mut filename = [0u8; 56];
-        for byte in &mut filename
-        {
-            *byte = cfg_byte();
-        }
-        if filename.split(|b| *b == 0).next() == Some(name)
-        {
-            return Some((selector, length));
-        }
-    }
-    None
-}
+#[cfg(target_arch = "riscv64")]
+#[allow(unsafe_code)]
+mod native;
+#[cfg(target_arch = "riscv64")]
+pub use native::configure;
 
-#[repr(C, align(8))]
-struct Dma
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error
 {
-    control: u32,
-    length:  u32,
-    address: u64
-}
-
-/// # Safety
-/// The address names pinned guest RAM, writable for width*height*4 bytes for the
-/// display lifetime. Caller serializes fw_cfg access during single-hart boot.
-pub unsafe fn configure(address: u64, width: usize, height: usize) -> bool
-{
-    unsafe {
-        select(0);
-    }
-    assert_eq!([cfg_byte(), cfg_byte(), cfg_byte(), cfg_byte()], *b"QEMU");
-    assert_eq!(u64::from_be(unsafe { read_volatile((FW_CFG + 16) as *const u64) }),
-               0x5145_4d55_2043_4647);
-    let Some((selector, length)) = find_file(b"etc/ramfb")
-    else
+    Geometry
     {
-        return false;
-    };
-    assert_eq!(length, 28);
-    // RAMFBCfg is packed, big endian. XR24 = XRGB8888, pixels in little-endian RAM.
-    let mut config = [0u8; 28];
-    config[0..8].copy_from_slice(&address.to_be_bytes());
-    config[8..12].copy_from_slice(&u32::from_le_bytes(*b"XR24").to_be_bytes());
-    config[16..20].copy_from_slice(&(width as u32).to_be_bytes());
-    config[20..24].copy_from_slice(&(height as u32).to_be_bytes());
-    config[24..28].copy_from_slice(&((width * 4) as u32).to_be_bytes());
-    let mut dma = Dma { control: ((u32::from(selector) << 16) | 8 | 16).to_be(),
-                        length:  28u32.to_be(),
-                        address: (config.as_ptr() as u64).to_be() };
-    unsafe {
-        asm!("fence iorw, iorw", options(nostack));
-        write_volatile((FW_CFG + 16) as *mut u64, (addr_of_mut!(dma) as u64).to_be());
-        let mut pending = 100_000;
-        loop
+        width:  usize,
+        height: usize
+    },
+    FramebufferAddress
+    {
+        physical: u64,
+        bytes:    u64
+    },
+    DmaAddress
+    {
+        cpu_address: usize,
+        bytes:       usize
+    },
+    Signature,
+    DmaSignature,
+    MissingFile,
+    DirectoryCount
+    {
+        observed: u32
+    },
+    ConfigurationSize
+    {
+        observed: u32
+    },
+    TransferFailed
+    {
+        control: u32
+    },
+    InFlight,
+    Timeout
+}
+impl fmt::Display for Error
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        match self
         {
-            let control = u32::from_be(read_volatile(addr_of_mut!(dma.control)));
-            assert_eq!(control & 1, 0, "framebuffer DMA failed");
-            if pending == 0
+            Self::Geometry { width,
+                             height } =>
             {
-                return false;
+                write!(f,
+                       "RAMFB dimensions {width}x{height} are empty or exceed the 32-bit width, \
+                        height or byte-stride fields")
             }
-            pending -= 1;
-            if control == 0
+            Self::FramebufferAddress { physical,
+                                       bytes } =>
             {
-                break;
+                write!(f, "RAMFB physical framebuffer {physical:#x}+{bytes:#x} overflows")
+            }
+            Self::DmaAddress { cpu_address,
+                               bytes } =>
+            {
+                write!(f,
+                       "RAMFB CPU buffer {cpu_address:#x}+{bytes:#x} has no contiguous \
+                        device-visible RAM mapping")
+            }
+            Self::Signature =>
+            {
+                f.write_str("RAMFB fw_cfg signature is not QEMU; select the correct platform \
+                             register window")
+            }
+            Self::DmaSignature =>
+            {
+                f.write_str("RAMFB fw_cfg does not expose the required DMA interface")
+            }
+            Self::MissingFile =>
+            {
+                f.write_str("RAMFB configuration file is unavailable; attach a ramfb device")
+            }
+            Self::DirectoryCount { observed } =>
+            {
+                write!(f,
+                       "RAMFB fw_cfg directory has {observed} entries, exceeding the 4096-entry \
+                        bootstrap bound")
+            }
+            Self::ConfigurationSize { observed } =>
+            {
+                write!(f, "RAMFB configuration is {observed} bytes; this platform requires 28")
+            }
+            Self::TransferFailed { control } =>
+            {
+                write!(f, "RAMFB configuration DMA failed with control bits {control:#x}")
+            }
+            Self::InFlight =>
+            {
+                f.write_str("RAMFB configuration is still owned by an earlier timed-out DMA \
+                             transfer; reset before retrying")
+            }
+            Self::Timeout =>
+            {
+                f.write_str("RAMFB configuration DMA did not complete within the bounded \
+                             bootstrap poll")
             }
         }
-        asm!("fence iorw, iorw", options(nostack));
     }
-    true
+}
+impl core::error::Error for Error
+{
+}
+
+#[cfg(any(target_arch = "riscv64", test))]
+struct Configuration([u8; 28]);
+#[cfg(any(target_arch = "riscv64", test))]
+impl Configuration
+{
+    fn new(physical: u64, width: usize, height: usize) -> Result<Self, Error>
+    {
+        let invalid = || {
+            Error::Geometry { width,
+                              height }
+        };
+        let w = u32::try_from(width).ok().filter(|&n| n != 0).ok_or_else(invalid)?;
+        let h = u32::try_from(height).ok().filter(|&n| n != 0).ok_or_else(invalid)?;
+        let stride = w.checked_mul(4).ok_or_else(invalid)?;
+        let bytes = u64::from(stride) * u64::from(h);
+        if physical.checked_add(bytes).is_none()
+        {
+            return Err(Error::FramebufferAddress { physical,
+                                                   bytes });
+        }
+        let mut output = [0; 28];
+        output[0..8].copy_from_slice(&physical.to_be_bytes());
+        output[8..12].copy_from_slice(&u32::from_le_bytes(*b"XR24").to_be_bytes());
+        output[16..20].copy_from_slice(&w.to_be_bytes());
+        output[20..24].copy_from_slice(&h.to_be_bytes());
+        output[24..28].copy_from_slice(&stride.to_be_bytes());
+        Ok(Self(output))
+    }
+}
+#[cfg(any(target_arch = "riscv64", test))]
+fn bus_address(pointer: *const u8, bytes: usize, alignment: u64,
+               translate: &mut impl FnMut(*const u8, usize) -> Option<u64>)
+               -> Result<u64, Error>
+{
+    translate(pointer, bytes).filter(|bus| {
+                                 bus.is_multiple_of(alignment)
+                                 && bus.checked_add(bytes as u64).is_some()
+                             })
+                             .ok_or(Error::DmaAddress { cpu_address: pointer as usize,
+                                                        bytes })
+}
+#[cfg(test)]
+mod tests
+{
+    extern crate std;
+    use std::string::ToString;
+
+    use super::*;
+
+    #[test]
+    fn configuration_uses_physical_framebuffer_and_checked_wire_geometry()
+    {
+        let config = Configuration::new(0x12345000, 800, 600).unwrap();
+        assert_eq!(&config.0[0..8], &0x12345000u64.to_be_bytes());
+        assert_eq!(&config.0[8..12], &u32::from_le_bytes(*b"XR24").to_be_bytes());
+        assert_eq!(&config.0[12..16], &[0; 4]);
+        assert_eq!(&config.0[16..20], &800u32.to_be_bytes());
+        assert_eq!(&config.0[20..24], &600u32.to_be_bytes());
+        assert_eq!(&config.0[24..28], &3200u32.to_be_bytes());
+        for (width, height) in [(0, 600), (800, 0), (usize::MAX, 600), (u32::MAX as usize, 1)]
+        {
+            let error = Configuration::new(0x12345000, width, height).err().unwrap();
+            assert_eq!(error,
+                       Error::Geometry { width,
+                                         height });
+            assert!(error.to_string().contains("dimensions"));
+        }
+        assert!(matches!(Configuration::new(u64::MAX - 1, 800, 600),
+                         Err(Error::FramebufferAddress { .. })));
+        assert_eq!(&Configuration::new(0, 800, 600).unwrap().0[..8], &[0; 8]);
+    }
+
+    #[test]
+    fn dma_uses_the_binding_translation_and_retains_typed_refusal_details()
+    {
+        let data = [0u8; 28];
+        let mut calls = 0;
+        let translated = bus_address(data.as_ptr(), data.len(), 1, &mut |pointer, bytes| {
+                             assert_eq!(pointer, data.as_ptr());
+                             assert_eq!(bytes, data.len());
+                             calls += 1;
+                             Some(0x24680000)
+                         }).unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(translated, 0x24680000);
+        assert_ne!(translated, data.as_ptr() as u64);
+        assert_eq!(bus_address(data.as_ptr(), data.len(), 8, &mut |_, _| Some(0)).unwrap(), 0);
+        for bus in [None, Some(0x24680001), Some(u64::MAX - 7)]
+        {
+            let error = bus_address(data.as_ptr(), data.len(), 8, &mut |_, _| bus).unwrap_err();
+            assert_eq!(error,
+                       Error::DmaAddress { cpu_address: data.as_ptr() as usize,
+                                           bytes:       data.len() });
+            assert!(error.to_string().contains("contiguous device-visible RAM mapping"));
+        }
+    }
 }

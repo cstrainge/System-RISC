@@ -34,6 +34,7 @@ pub(super) struct Definition
     ram_base:                    String,
     minimum_ram_bytes:           String,
     flash:                       Region,
+    fw_cfg:                      Region,
     boot:                        Region,
     firmware_heap:               Region,
     images:                      Region,
@@ -55,6 +56,7 @@ pub struct Checked
     pub(super) page_bytes:                  u64,
     pub(super) ram:                         Range<u64>,
     pub(super) flash:                       Range<u64>,
+    pub(super) fw_cfg:                      Range<u64>,
     pub(super) boot:                        Range<u64>,
     pub(super) firmware_heap:               Range<u64>,
     pub(super) images:                      Range<u64>,
@@ -107,6 +109,12 @@ impl Definition
                                    bytes: self.minimum_ram_bytes.clone() },
                          page)?;
         let flash = region("flash", &self.flash, page)?;
+        let fw_cfg = region("fw_cfg", &self.fw_cfg, page)?;
+        if overlaps(&fw_cfg, &ram) || overlaps(&fw_cfg, &flash) || fw_cfg.end > 1 << 56
+        {
+            return Err(error("platform memory fw_cfg must be a physical MMIO window outside \
+                              RAM and flash"));
+        }
         let boot = region("boot", &self.boot, page)?;
         let firmware_heap = region("firmware_heap", &self.firmware_heap, page)?;
         let images = region("images", &self.images, page)?;
@@ -216,6 +224,7 @@ impl Definition
         Ok(Checked { page_bytes: page,
                      ram,
                      flash,
+                     fw_cfg,
                      boot,
                      firmware_heap,
                      images,
@@ -306,6 +315,7 @@ impl Checked
     {
         let mut out = String::from("\n/* Generated from the checked platform memory record. */\n");
         for (name, region) in [("FLASH", &self.flash),
+                               ("FW_CFG", &self.fw_cfg),
                                ("BOOT", &self.boot),
                                ("FIRMWARE_HEAP", &self.firmware_heap),
                                ("IMAGES", &self.images),
@@ -337,6 +347,7 @@ impl Checked
     {
         let mut out = String::from("// Generated from the checked platform memory record.\n");
         for (name, value) in [("PAGE_BYTES", self.page_bytes),
+                              ("FW_CFG_BASE", self.fw_cfg.start),
                               ("IMAGE_BASE", self.images.start),
                               ("MODULE_BASE", self.modules.start),
                               ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
@@ -410,6 +421,7 @@ impl Checked
     {
         let mut out = self.boot_admission_constants();
         for (name, value) in [("MINIMUM_RAM_BYTES", self.ram.end - self.ram.start),
+                              ("FW_CFG_BASE", self.fw_cfg.start),
                               ("DISPLAY_WIDTH", self.display_width),
                               ("DISPLAY_HEIGHT", self.display_height),
                               ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
@@ -448,6 +460,24 @@ mod tests
     {
         let original = definition();
         original.check().unwrap();
+        let mut bad = original.clone();
+        bad.fw_cfg.base = original.ram_base.clone();
+        assert!(bad.check()
+                   .unwrap_err()
+                   .to_string()
+                   .contains("fw_cfg must be a physical MMIO window outside RAM and flash"));
+        let mut bad = original.clone();
+        bad.fw_cfg.base = original.flash.base.clone();
+        assert!(bad.check().unwrap_err().to_string().contains("outside RAM and flash"));
+        let mut bad = original.clone();
+        bad.fw_cfg.base = "0x10100001".into();
+        assert!(bad.check()
+                   .unwrap_err()
+                   .to_string()
+                   .contains("fw_cfg must be nonempty and page aligned"));
+        let mut bad = original.clone();
+        bad.fw_cfg.base = "0x100000000000000".into();
+        assert!(bad.check().unwrap_err().to_string().contains("physical MMIO window"));
         let mut bad = original.clone();
         bad.modules.base = original.firmware_heap.base.clone();
         assert!(bad.check().unwrap_err().to_string().contains("modules overlaps firmware_heap"));
@@ -521,6 +551,10 @@ mod tests
         let checked = definition.check().unwrap();
         let linker = checked.linker_symbols();
         let rust = checked.system_constants();
+        assert!(linker.contains("__platform_FW_CFG_START = 0x10100000;"));
+        assert!(linker.contains("__platform_FW_CFG_END = 0x10101000;"));
+        assert!(rust.contains("FW_CFG_BASE: u64 = 0x10100000;"));
+        assert!(checked.boot_constants().contains("FW_CFG_BASE: u64 = 0x10100000;"));
         assert!(linker.contains("__platform_MODULES_END = 0x87c00000;"));
         for (name, value) in checked.stacks.constants()
         {

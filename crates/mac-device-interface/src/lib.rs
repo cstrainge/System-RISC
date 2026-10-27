@@ -73,6 +73,7 @@ impl Description
 pub struct Mapping
 {
     pub handle:  u64,
+    /// Device-visible bus address; never a CPU pointer, even for coherent DMA.
     pub address: u64,
     pub length:  u64
 }

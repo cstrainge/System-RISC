@@ -39,6 +39,15 @@ fn read(base: usize, offset: usize) -> u32
 }
 impl Bus for PlatformBus
 {
+    fn dma_address(&self, cpu_address: u64, bytes: u64) -> Result<u64, Status>
+    {
+        // Current flat M-mode module reservations are pinned physical RAM.
+        // The supervisor handoff replaces this explicit architecture binding;
+        // common claim/map policy never assumes CPU and bus addresses coincide.
+        cpu_address.checked_add(bytes).ok_or(BAD_ARGUMENT)?;
+        Ok(cpu_address)
+    }
+
     fn probe(&mut self, ordinal: u32) -> Result<Description, Status>
     {
         if ordinal >= 8

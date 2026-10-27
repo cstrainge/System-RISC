@@ -140,6 +140,21 @@ Applications request System services; resident policy selects driver interfaces
 by capability and contract rather than package names. The power service and
 external Qemu Power Device are described in [POWER.md](docs/POWER.md), including
 durability barriers and the remaining coordinated application-quit gate.
+
+CPU addresses and DMA bus addresses are separate contracts. The native bus
+binding proves contiguous device-visible storage before the Device Manager
+publishes a mapping; a translation refusal leaves the claim available for retry.
+The current flat architecture supplies identity translation explicitly. Paging
+must replace that binding, rather than letting manager policy reinterpret a
+pointer as a physical address. This does not yet qualify page pinning or an IOMMU.
+
+ROM and System share one RAMFB binding with an explicit register window from
+the checked platform record and explicit DMA translation. Configuration and
+command bytes remain in permanent scratch, including after a timeout; an
+unacknowledged operation cannot reuse them. Geometry, malformed device data,
+mapping refusal and transfer errors retain typed diagnostics. The wire contract
+follows [QEMU's fw_cfg DMA specification](https://www.qemu.org/docs/master/specs/fw_cfg.html).
+
 Original presentation and actual multi-app input behavior have their own
 [launch-slice acceptance gate](TOOLBOX-PLAN.md#first-native-application-launch-slice).
 

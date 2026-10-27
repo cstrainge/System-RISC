@@ -2,8 +2,6 @@
 #![no_std]
 #![deny(unsafe_code)]
 use mac_abi::Rect;
-#[cfg(target_arch = "riscv64")]
-#[allow(unsafe_code)]
 pub mod ramfb;
 pub const HAPPY: &[u8; 256] = include_bytes!("../assets/happy-mac.icn");
 pub const MISSING: &[u8; 256] = include_bytes!("../assets/missing-disk.icn");
