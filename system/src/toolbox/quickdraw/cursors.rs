@@ -75,6 +75,15 @@ impl Cursors
         changed
     }
 
+    /// Animation frames own their palettes. Present/tick borrow the selected
+    /// immutable frame instead of allocating a second palette on each advance.
+    fn palette(&self) -> &[u32]
+    {
+        self.animation.as_ref().map_or(self.colors.as_slice(), |animation| {
+                                   animation.frames[animation.index].1.as_slice()
+                               })
+    }
+
     pub fn snapshot(&self, mouse: Point) -> CursorSnapshot
     {
         let obscured = self.obscured == Some(mouse);
@@ -93,7 +102,7 @@ impl Cursors
                                       }
                                       | if self.animation.is_some() { CURSOR_ANIMATED } else { 0 }
                                       | if deferred { CURSOR_DEFERRED_HIDE } else { 0 }
-                                      | if self.colors.is_empty() { 0 } else { CURSOR_COLOR },
+                                      | if self.palette().is_empty() { 0 } else { CURSOR_COLOR },
                          frame_index: self.animation.as_ref().map_or(0, |a| a.index as u32),
                          frame_count: self.animation.as_ref().map_or(1, |a| a.frames.len() as u32),
                          interval:    self.animation.as_ref().map_or(0, |a| a.interval),
@@ -127,8 +136,28 @@ impl Cursors
                     return Err(BAD_ARGUMENT);
                 }
                 // Include palette equality: a new palette can change an identical bitmap.
-                let palette_changed = self.colors != colors;
-                self.select(call.cursor, colors.to_vec(), false, 0, resources::CHAIN);
+                let palette_changed = self.palette() != colors;
+                let owned = if !palette_changed
+                {
+                    // Transfer the already admitted palette, including when an
+                    // explicit SetCursor ends an animation on its current frame.
+                    if let Some(animation) = self.animation.as_mut()
+                    {
+                        core::mem::take(&mut animation.frames[animation.index].1)
+                    }
+                    else
+                    {
+                        core::mem::take(&mut self.colors)
+                    }
+                }
+                else
+                {
+                    let mut owned = Vec::new();
+                    owned.try_reserve_exact(colors.len()).map_err(|_| NO_MEMORY)?;
+                    owned.extend_from_slice(colors);
+                    owned
+                };
+                self.select(call.cursor, owned, false, 0, resources::CHAIN);
                 call.visibility = self.visibility;
                 return Ok(palette_changed || before != self.snapshot(mouse));
             }
@@ -178,7 +207,7 @@ impl Cursors
                             mut lookup: impl FnMut([u8; 4],
                                   i16,
                                   mac_abi::resources::Scope)
-                                  -> Option<Vec<u8>>)
+                                  -> Result<Vec<u8>, Status>)
                             -> Result<bool, Status>
     {
         let before = self.snapshot(mouse);
@@ -188,7 +217,7 @@ impl Cursors
             CURSOR_RESOURCE_SET | CURSOR_RESOURCE_COLOR =>
             {
                 let kind = if call.operation == CURSOR_RESOURCE_SET { *b"CURS" } else { *b"crsr" };
-                let bytes = lookup(kind, call.id, call.scope).ok_or(NOT_FOUND)?;
+                let bytes = lookup(kind, call.id, call.scope)?;
                 let (image, colors) = if call.operation == CURSOR_RESOURCE_SET
                 {
                     (decode_mono(&bytes)?, Vec::new())
@@ -197,7 +226,7 @@ impl Cursors
                 {
                     decode_color(&bytes)?
                 };
-                palette_changed = self.colors != colors;
+                palette_changed = self.palette() != colors.as_slice();
                 self.select(image, colors, false, call.id, call.scope);
             }
             CURSOR_RESOURCE_BUILTIN =>
@@ -212,11 +241,10 @@ impl Cursors
                 }
                 else
                 {
-                    let bytes =
-                        lookup(*b"CURS", call.builtin as i16, resources::SYSTEM).ok_or(NOT_FOUND)?;
+                    let bytes = lookup(*b"CURS", call.builtin as i16, resources::SYSTEM)?;
                     decode_mono(&bytes)?
                 };
-                palette_changed = !self.colors.is_empty();
+                palette_changed = !self.palette().is_empty();
                 self.select(image,
                             Vec::new(),
                             call.builtin == 0,
@@ -229,40 +257,38 @@ impl Cursors
                 {
                     return Err(BAD_ARGUMENT);
                 }
-                let bytes = lookup(*b"acur", call.id, call.scope).ok_or(NOT_FOUND)?;
+                let bytes = lookup(*b"acur", call.id, call.scope)?;
                 let count = usize::from(word(&bytes, 0)?);
                 if count == 0 || count > 256 || bytes.len() != 4 + count * 4
                 {
                     return Err(BAD_ARGUMENT);
                 }
-                let mut frames = Vec::with_capacity(count);
+                let mut frames = Vec::new();
+                frames.try_reserve_exact(count).map_err(|_| NO_MEMORY)?;
                 for index in 0..count
                 {
                     let id = word(&bytes, 4 + index * 4)? as i16;
                     let mut frame = |kind| {
-                        lookup(kind, id, call.scope).or_else(|| {
-                                                        if call.scope == resources::SYSTEM
-                                                           || call.scope == resources::CHAIN
-                                                        {
-                                                            None
-                                                        }
-                                                        else
-                                                        {
-                                                            lookup(kind, id, resources::SYSTEM)
-                                                        }
-                                                    })
+                        match lookup(kind, id, call.scope)
+                        {
+                            Err(NOT_FOUND)
+                                if call.scope != resources::SYSTEM
+                                   && call.scope != resources::CHAIN =>
+                            {
+                                lookup(kind, id, resources::SYSTEM)
+                            }
+                            result => result
+                        }
                     };
-                    frames.push(if let Some(bytes) = frame(*b"crsr")
+                    frames.push(match frame(*b"crsr")
                                 {
-                                    decode_color(&bytes)?
-                                }
-                                else
-                                {
-                                    (decode_mono(&frame(*b"CURS").ok_or(NOT_FOUND)?)?, Vec::new())
+                                    Ok(bytes) => decode_color(&bytes)?,
+                                    Err(NOT_FOUND) => (decode_mono(&frame(*b"CURS")?)?, Vec::new()),
+                                    Err(error) => return Err(error)
                                 });
                 }
-                palette_changed = !self.colors.is_empty();
-                self.select(frames[0].0, frames[0].1.clone(), false, call.id, call.scope);
+                palette_changed = self.palette() != frames[0].1.as_slice();
+                self.select(frames[0].0, Vec::new(), false, call.id, call.scope);
                 self.animation = Some(Animation { frames,
                                                   index: 0,
                                                   interval: call.interval,
@@ -274,7 +300,6 @@ impl Cursors
                 animation.index = (animation.index + 1) % animation.frames.len();
                 animation.last_tick = now;
                 self.image = animation.frames[animation.index].0;
-                self.colors = animation.frames[animation.index].1.clone();
                 self.effective_hotspot = self.image.hotspot;
             }
             CURSOR_RESOURCE_STATE =>
@@ -310,7 +335,6 @@ impl Cursors
         }
         animation.index = index;
         self.image = animation.frames[index].0;
-        self.colors = animation.frames[index].1.clone();
         self.effective_hotspot = self.image.hotspot;
         // Time continues while hidden, but invisible frames must not wake a
         // sleeping app or force the compositor to repaint the whole desktop.
@@ -328,8 +352,18 @@ impl Cursors
         }
         let cursor = if self.automatic { ibeam.unwrap_or(self.image) } else { self.image };
         self.effective_hotspot = cursor.hotspot;
-        Some(CursorSprite::new(cursor, &self.colors, mouse))
+        Some(CursorSprite::new(cursor, self.palette(), mouse))
     }
+}
+
+/// The invocation's resource pin stays held while its bounded value copy is
+/// admitted. Lookup errors keep their identity instead of becoming NotFound.
+pub(crate) fn copy_resource(bytes: &[u8]) -> Result<Vec<u8>, Status>
+{
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(bytes.len()).map_err(|_| NO_MEMORY)?;
+    copy.extend_from_slice(bytes);
+    Ok(copy)
 }
 
 fn validate_hotspot(point: Point) -> Result<(), Status>
@@ -451,7 +485,8 @@ pub fn decode_color(bytes: &[u8]) -> Result<(MonoCursor, Vec<u32>), Status>
                   | u32::from(word(table, offset + 6)? >> 8);
         palette[index] = Some(rgb);
     }
-    let mut colors = Vec::with_capacity(256);
+    let mut colors = Vec::new();
+    colors.try_reserve_exact(256).map_err(|_| NO_MEMORY)?;
     for row in 0..16
     {
         for column in 0..16

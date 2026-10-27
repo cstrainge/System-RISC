@@ -1,5 +1,8 @@
 //! Public cursor services against the pinned original resource corpus.
 #![cfg(not(target_arch = "riscv64"))]
+#[path = "support/allocations.rs"]
+mod allocations;
+use allocations::Observe;
 use mac_abi::quickdraw::*;
 use mac_formats::resource::{Resource, encode};
 use mac_toolbox::{Point, Rect, System,
@@ -885,5 +888,90 @@ fn paint_under_file_drag_feedback_is_bounded_and_invalid_clips_do_not_publish()
         assert!(copies.is_empty());
         frame.present_feedback(&scene, &mut front, width, height, [], None, None, false).unwrap();
         assert_eq!(front, scene, "erasing feedback used stale pixels after a paint");
+    });
+}
+
+
+#[test]
+fn colored_animation_advance_and_timer_borrow_admitted_palettes_without_allocating()
+{
+    let frames = Resource { kind:       *b"acur",
+                            id:         29,
+                            name:       None,
+                            attributes: 0,
+                            data:       vec![0, 2, 0, 0, 0, 1, 0, 0, 0, 4, 0, 0] };
+    corpus([color_resource(1, 1), color_resource(4, 4), frames], |system| {
+        let cursor = system.quickdraw().cursors();
+        cursor.animate_resource(29, 1).unwrap();
+        mac_system::testing::presentation::pointer(Point { h: 20,
+                                                           v: 20 });
+        let scene = vec![0xffffff; 32 * 32];
+        let mut first = scene.clone();
+        mac_system::testing::presentation::present(&scene,
+                                                   &mut first,
+                                                   32,
+                                                   32,
+                                                   [Rect::new(0, 0, 32, 32)]);
+        cursor.advance_animation().unwrap();
+        let mut second = scene.clone();
+        mac_system::testing::presentation::present(&scene,
+                                                   &mut second,
+                                                   32,
+                                                   32,
+                                                   [Rect::new(0, 0, 32, 32)]);
+        assert_ne!(first, second,
+                   "present must borrow the selected frame's palette, not a stale copied palette");
+        let before = cursor.info().unwrap();
+        let observed = Observe::begin(true);
+        let mut result = Ok(());
+        for _ in 0..31
+        {
+            result = result.and_then(|()| cursor.advance_animation());
+        }
+        let _ = mac_system::testing::presentation::cursor_tick(100);
+        let _ = mac_system::testing::presentation::cursor_tick(101);
+        let allocations = observed.finish();
+        assert!(result.is_ok());
+        assert_eq!(allocations, 0, "frame selection must borrow the preloaded palette");
+        let after = cursor.info().unwrap();
+        assert_eq!(after.frame_count, before.frame_count);
+        assert_ne!(after.flags & CURSOR_COLOR, 0);
+        assert!(after.frame_index < after.frame_count);
+        let old = after;
+        let observed = Observe::begin(true);
+        let resource_refused = cursor.animate_resource(29, 1);
+        let allocations = observed.finish();
+        assert_eq!(resource_refused.err(),
+                   Some(mac_toolbox::Error::NoMemory),
+                   "resource allocation refusal must not become NotFound");
+        assert!(resource_refused.err().unwrap().to_string().contains("memory"));
+        assert!(allocations > 0);
+        assert_eq!(cursor.info().unwrap(),
+                   old,
+                   "resource loading failure changed the running cursor");
+        let mut different = after.cursor;
+        different.image[0] ^= 0xffff;
+        let colors = [0x123456; 256];
+        let observed = Observe::begin(true);
+        let refused = cursor.set_color(different, &colors);
+        let allocations = observed.finish();
+        assert_eq!(refused.err(), Some(mac_toolbox::Error::NoMemory));
+        assert!(refused.err().unwrap().to_string().contains("memory"));
+        assert!(allocations > 0);
+        assert_eq!(cursor.info().unwrap(),
+                   old,
+                   "a refused new palette changed the running animation");
+        assert!(cursor.advance_animation().is_ok(), "palette refusal must leave animation usable");
+        assert!(cursor.set_color(different, &colors).is_ok(),
+                "new palette selection remains retryable");
+        let observed = Observe::begin(true);
+        let same = cursor.set_color(different, &colors);
+        let mut changed_image = different;
+        changed_image.image[0] ^= 0xff;
+        let reused = cursor.set_color(changed_image, &colors);
+        let allocations = observed.finish();
+        assert!(same.is_ok() && reused.is_ok(),
+                "an admitted palette is reusable without allocation");
+        assert_eq!(allocations, 0);
     });
 }

@@ -300,8 +300,10 @@ impl Desktop
             interval: 6,
             ..Default::default()
         }, Point::default(), Self::when(), |kind, id, scope| {
-            crate::kernel::with_resources(|resources| resources.get(scope, ResourceKey { kind, id }).ok()
-                .map(|(_, resource)| resource.data.to_vec())).flatten()
+            crate::kernel::with_resources(|resources| {
+                let (_,resource)=resources.get(scope,ResourceKey { kind,id })?;
+                super::quickdraw::cursors::copy_resource(&resource.data)
+            }).ok_or(NOT_SUPPORTED)?
         })?;
         serial!("UI_OBSERVER address={} bytes=128 version=1",
                 super::quickdraw::observer::address());
@@ -1430,11 +1432,8 @@ impl Desktop
                                           self.events.mouse,
                                           Self::when(),
                                           |kind, id, scope| {
-                                              resources.get(scope,
-                                                            ResourceKey { kind,
-                                                                          id })
-                                                       .ok()
-                                                       .map(|(_, resource)| resource.data.clone())
+                                              let (_,resource)=resources.get(scope,ResourceKey { kind,id })?;
+                                              super::quickdraw::cursors::copy_resource(&resource.data)
                                           })
         })??;
         self.cursor_dirty |= changed && self.owner == self.foreground;

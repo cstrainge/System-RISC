@@ -155,3 +155,10 @@ impl DragFrame
                       })
     }
 }
+
+/// Trusted clock transport, invoking the actual resident animation step. Setup,
+/// palette admission and explicit advances still use the public cursor SDK.
+pub fn cursor_tick(ticks: u32) -> bool
+{
+    super::SESSION.with(|slot| slot.borrow_mut().as_mut().unwrap().cursors.animation_tick(ticks))
+}

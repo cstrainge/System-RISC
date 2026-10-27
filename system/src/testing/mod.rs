@@ -901,54 +901,52 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
 
         CURSOR =>
         {
-            let result = SESSION.with(|slot| {
-                             let mut session = slot.borrow_mut();
-                             let session = session.as_mut().unwrap();
-                             let mouse = session.events.mouse;
-                             if size == size_of::<quickdraw::CursorResourceCall>()
-                             {
-                                 let call = unsafe {
-                                     request::<quickdraw::CursorResourceCall>(pointer, size)
-                                 }?;
-                                 let resources = crate::toolbox::resources::manager::Manager::new(
-                        &session.resources, &session.application, session.fonts.resources());
-                                 let now = (session.started.elapsed().as_nanos() * 60
-                                            / 1_000_000_000)
-                                           as u32;
-                                 session.cursors
-                                        .resource_request(call, mouse, now, |kind, id, scope| {
-                                            resources.get(scope,
-                                                          ResourceKey { kind,
-                                                                        id })
-                                                     .ok()
-                                                     .map(|(_, resource)| resource.data.clone())
-                                        })
-                                        .map(|_| ())
-                             }
-                             else
-                             {
-                                 let call =
-                                     unsafe { request::<quickdraw::CursorCall>(pointer, size) }?;
-                                 if call.color_count != 0
-                                  && (call.colors.is_null()
-                                      || call.color_count != 256
-                                      || !(call.colors as usize).is_multiple_of(align_of::<u32>()))
-                               {
-                                   return Err(BAD_ARGUMENT);
-                               }
-                                 let colors = if call.color_count == 0
-                                 {
-                                     &[][..]
-                                 }
-                                 else
-                                 {
-                                     unsafe {
-                                         core::slice::from_raw_parts(call.colors, call.color_count)
-                                     }
-                                 };
-                                 session.cursors.request(call, colors, mouse).map(|_| ())
-                             }
-                         });
+            let result =
+                SESSION.with(|slot| {
+                    let mut session = slot.borrow_mut();
+                    let session = session.as_mut().unwrap();
+                    let mouse = session.events.mouse;
+                    if size == size_of::<quickdraw::CursorResourceCall>()
+                    {
+                        let call =
+                            unsafe { request::<quickdraw::CursorResourceCall>(pointer, size) }?;
+                        let resources =
+                            crate::toolbox::resources::manager::Manager::new(&session.resources,
+                                                                             &session.application,
+                                                                             session.fonts
+                                                                                    .resources());
+                        let now =
+                            (session.started.elapsed().as_nanos() * 60 / 1_000_000_000) as u32;
+                        session.cursors
+                               .resource_request(call, mouse, now, |kind, id, scope| {
+                                   let (_, resource) = resources.get(scope,
+                                                                     ResourceKey { kind,
+                                                                                   id })?;
+                                   crate::toolbox::quickdraw::cursors::copy_resource(&resource.data)
+                               })
+                               .map(|_| ())
+                    }
+                    else
+                    {
+                        let call = unsafe { request::<quickdraw::CursorCall>(pointer, size) }?;
+                        if call.color_count != 0
+                           && (call.colors.is_null()
+                               || call.color_count != 256
+                               || !(call.colors as usize).is_multiple_of(align_of::<u32>()))
+                        {
+                            return Err(BAD_ARGUMENT);
+                        }
+                        let colors = if call.color_count == 0
+                        {
+                            &[][..]
+                        }
+                        else
+                        {
+                            unsafe { core::slice::from_raw_parts(call.colors, call.color_count) }
+                        };
+                        session.cursors.request(call, colors, mouse).map(|_| ())
+                    }
+                });
             result.err().unwrap_or(OK) as i64
         }
         ICON =>

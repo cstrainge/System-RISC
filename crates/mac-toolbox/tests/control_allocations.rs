@@ -1,83 +1,12 @@
 //! Public managed-control calls under a thread-local allocation observer/refuser.
 //! The System allocator is unchanged; unrelated test threads are never affected.
 #![cfg(not(target_arch = "riscv64"))]
-use std::{alloc::{GlobalAlloc, Layout, System as HostAllocator},
-          cell::Cell};
-
 use mac_system::testing::with_services;
 use mac_toolbox::{Error, Point, Rect, System, WindowId,
                   controls::{StandardKind, StandardState}};
-thread_local! {
-    static MODE:Cell<u8> = const { Cell::new(0) };
-    static ALLOCATIONS:Cell<usize> = const { Cell::new(0) };
-}
-struct Allocator;
-fn allocation() -> bool
-{
-    MODE.try_with(|mode| {
-            let value = mode.get();
-            if value != 0
-            {
-                let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
-            }
-            value == 2
-        })
-        .unwrap_or(false)
-}
-// SAFETY: delegates layouts/pointers unchanged to the host allocator. Only the
-// current test thread can select typed allocation refusal, before its API call.
-unsafe impl GlobalAlloc for Allocator
-{
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8
-    {
-        if allocation() { core::ptr::null_mut() } else { unsafe { HostAllocator.alloc(layout) } }
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout)
-    {
-        unsafe { HostAllocator.dealloc(pointer, layout) }
-    }
-
-    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8
-    {
-        if allocation()
-        {
-            core::ptr::null_mut()
-        }
-        else
-        {
-            unsafe { HostAllocator.realloc(pointer, layout, size) }
-        }
-    }
-}
-#[global_allocator]
-static ALLOCATOR: Allocator = Allocator;
-struct Observe;
-impl Observe
-{
-    fn begin(refuse: bool) -> Self
-    {
-        ALLOCATIONS.with(|n| n.set(0));
-        MODE.with(|m| {
-                assert_eq!(m.get(), 0);
-                m.set(if refuse { 2 } else { 1 });
-            });
-        Self
-    }
-
-    fn finish(self) -> usize
-    {
-        drop(self);
-        ALLOCATIONS.with(Cell::get)
-    }
-}
-impl Drop for Observe
-{
-    fn drop(&mut self)
-    {
-        MODE.with(|m| m.set(0));
-    }
-}
+#[path = "support/allocations.rs"]
+mod allocations;
+use allocations::Observe;
 #[test]
 fn managed_draw_highlight_value_and_cancel_do_not_allocate()
 {

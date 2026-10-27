@@ -4,6 +4,7 @@ from pathlib import Path
 import capture_system7_conformance as packaging
 from capture_system7_applications_ui import Driver
 import system7_vm as vm
+from system7_platform import display_size
 
 def capture(output):
     output=Path(output).resolve();output.mkdir(parents=True,exist_ok=False)
@@ -52,7 +53,7 @@ def capture(output):
         begin('switch-ready');driver.wait('QD_DEMO_READY page=1 shapes\n');time.sleep(.2);frame('switch-base')
         begin('switch-spin');time.sleep(.7);frame('switch-busy')
         previous=driver.log().count(f"PROCESS_ACTIVE app={driver.app_id('QuickDraw Test')}\n")
-        driver.menu(618,111,popup_x=580);driver.wait(f"PROCESS_ACTIVE app={driver.app_id('QuickDraw Test')}\n",previous)
+        width,_=display_size();driver.menu(width-22,111,popup_x=width-60);driver.wait(f"PROCESS_ACTIVE app={driver.app_id('QuickDraw Test')}\n",previous)
         driver.move(16,444);time.sleep(.8);frame('other-app',(16,444))
         driver.wait('BUSY_CURSOR_USERSPACE_PASS\n');frame('background-recovered',(16,444))
         report={'frames':frames,'original_before':before,'original_after':{name:packaging.sha(original/name) for name in before},'fixture_sha256':packaging.sha(binary)}

@@ -2712,3 +2712,14 @@ succeeds. These checks cover Control Manager admission/snapshot preparation;
 they do not claim that font rendering, composition or the complete emergency
 service graph is allocation-free. Page-backed/accounted heap activation and its
 transitive recovery-kit audit remain separate gates.
+
+### Cursor heap preflight
+
+Animation frames retain their admitted palettes; manual and timer advances select
+and borrow the active frame instead of cloning its color vector. Selecting an
+already admitted palette reuses its backing. New palette and resource copies are
+fallible before cursor-state publication; lookup failures preserve their cause
+rather than becoming a missing-resource report. Public SDK refusal tests verify
+that animation remains usable after failed replacement and that existing-frame
+advances require no allocation. This is an allocator/presentation lifetime check,
+not closure of the separately open physical-input latency gate.
