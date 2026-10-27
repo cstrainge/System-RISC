@@ -2,6 +2,8 @@
 //! No file contents or catalog listings are fabricated or cached in applications.
 #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
 mod resource;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use resource::ModuleReadError;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod application;
 use alloc::{string::String, vec::Vec};
@@ -479,15 +481,14 @@ impl Manager
 fn io<T>(result: mac_hfs::Result<T>) -> Result<T, Status>
 {
     result.map_err(|e| {
-                       if e == mac_filesystem::INVALID_REQUEST
-                       {
-                           BAD_ARGUMENT
-                       }
-                       else
-                       {
-                           NOT_SUPPORTED
-                       }
-                   })
+              match e
+              {
+                  mac_formats::Error::AllocationFailed(_)
+                  | mac_formats::Error::BudgetExceeded(_) => NO_MEMORY,
+                  value if value == mac_filesystem::INVALID_REQUEST => BAD_ARGUMENT,
+                  _ => NOT_SUPPORTED
+              }
+          })
 }
 fn utf8_name(bytes: &[u8], output: &mut [u8]) -> u32
 {

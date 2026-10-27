@@ -188,10 +188,13 @@ across both package sets in the shared registry. Define named service-ready phas
 and allowed calls per phase; initialize shared registries once before concurrent
 extension execution or secondary-hart startup.
 
-Resident discovery reads only the System target's metadata/code. A Finder-only
-package is not a resident initializer and receives an actionable missing-System
-diagnostic. Finder's future discovery/activation owns its part's separate lifetime
-and accounting; System never runs part 1 during boot.
+Resident discovery validates the complete resource map, every indexed payload
+range/length and all present EABI contracts, then allocates and loads only the
+System RV64 code. It does not load or validate the Finder code body, digest or
+relocations. A Finder-only package is not a resident initializer and receives an
+actionable missing-System diagnostic. Finder's future loader owns that code
+validation, activation, lifetime and accounting; System never runs part 1 during
+boot.
 
 Resolve a deterministic dependency graph: reject duplicate identities, cycles,
 missing prerequisites and incompatible versions before entry. Do not use file

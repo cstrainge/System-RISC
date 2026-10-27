@@ -73,6 +73,16 @@ fn native_error(e: mac_hfs_b::Error) -> Error
     match e
     {
         mac_hfs_b::Error::Invalid => INVALID_REQUEST,
+        mac_hfs_b::Error::NoMemory =>
+        {
+            Error::AllocationFailed("HFS-B operation could not reserve memory; free System memory \
+                                     and retry")
+        }
+        mac_hfs_b::Error::Budget =>
+        {
+            Error::BudgetExceeded("HFS-B operation exceeds its admission budget; reduce the \
+                                   operation or select a larger checked budget")
+        }
         mac_hfs_b::Error::Incompatible =>
         {
             Error::Malformed("incompatible HFS-B format; recreate volume")

@@ -5,6 +5,55 @@ use std::cell::Cell;
 
 pub use scopes::{Operation, with_operation};
 
+#[derive(Debug)]
+pub struct ModuleReadError(crate::toolbox::files::ModuleReadError);
+impl ModuleReadError
+{
+    pub fn status(&self) -> mac_abi::Status
+    {
+        self.0.status()
+    }
+
+    pub fn format(&self) -> Option<mac_formats::Error>
+    {
+        match self.0
+        {
+            crate::toolbox::files::ModuleReadError::Format(cause) => Some(cause),
+            _ => None
+        }
+    }
+
+    pub fn storage(&self) -> Option<mac_abi::Status>
+    {
+        match self.0
+        {
+            crate::toolbox::files::ModuleReadError::Storage(status) => Some(status),
+            _ => None
+        }
+    }
+}
+impl core::fmt::Display for ModuleReadError
+{
+    fn fmt(&self, output: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        self.0.fmt(output)
+    }
+}
+
+/// Call native startup's production projected package reader through the real
+/// mounted File Manager. Public SDK lookup supplies the file's actual identity;
+/// this fixture grants no native module entry or alternate package validator.
+pub fn module_resources(
+    volume: u32, file: u32)
+    -> Result<std::vec::Vec<mac_formats::resource::Resource>, ModuleReadError>
+{
+    super::SESSION.with(|slot| {
+                      let mut slot = slot.borrow_mut();
+        let session = slot.as_mut().ok_or(ModuleReadError(crate::toolbox::files::ModuleReadError::Storage(mac_abi::NOT_SUPPORTED)))?;
+        session.files.module_resources_checked(volume, file).map_err(ModuleReadError)
+                  })
+}
+
 std::thread_local! { static OWNER: Cell<u64> = const { Cell::new(1) }; }
 
 pub fn current_owner() -> u64

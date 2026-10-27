@@ -134,3 +134,44 @@ fn rv64_extension_envelopes_are_native_only_and_application_segment_streams_are_
     assert!(cause.contains("native code-resource envelope") && cause.contains("rebuild"),
             "{cause}");
 }
+
+#[test]
+fn every_full_package_consumer_checks_unselected_target_contracts_with_the_shared_index_rules()
+{
+    for bad_target in ExtensionTarget::ALL
+    {
+        let mut good = part(ExtensionTarget::System, None);
+        good.extend(part(ExtensionTarget::Finder, None));
+        for failure in ["truncated", "wrong-target", "wrong-kernel", "heap", "stack"]
+        {
+            let mut resources = good.clone();
+            let metadata =
+                resources.iter_mut()
+                         .find(|row| row.kind == *b"EABI" && row.id == bad_target.resource_id())
+                         .unwrap();
+            match failure
+            {
+                "truncated" => metadata.data = vec![0],
+                "wrong-target" => metadata.data[60..62].copy_from_slice(&(1-bad_target.resource_id()).to_le_bytes()),
+                "wrong-kernel" => metadata.data[16..20].copy_from_slice(&(native::ABI_VERSION+1).to_le_bytes()),
+                "heap" => metadata.data[72..76].copy_from_slice(&(mac_module::MAX_HEAP_BYTES+1).to_le_bytes()),
+                "stack" => metadata.data[76..80].copy_from_slice(&(mac_module::MAX_STACK_BYTES+1).to_le_bytes()),
+                _ => unreachable!()
+            }
+            for selected in ExtensionTarget::ALL
+            {
+                let cause = Package::inspect_extension(&resources, selected).err().unwrap();
+                assert!(cause.message().contains("rebuild"),
+                        "{failure}/{bad_target:?}/{selected:?}: {cause}");
+                if ["heap", "stack"].contains(&failure)
+                {
+                    assert!(matches!(cause, mac_formats::Error::BudgetExceeded(_)));
+                }
+                else
+                {
+                    assert!(matches!(cause, mac_formats::Error::Malformed(_)));
+                }
+            }
+        }
+    }
+}

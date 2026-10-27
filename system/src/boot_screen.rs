@@ -47,29 +47,8 @@ impl BootScreen
         let entry = definitions.resolve(*b"CDEF", CDEF_PROGRESS_BAR)?;
         // Package admission and theme resolution happen before any paint or
         // module callback. Every outcome then owns ready-to-copy pixels.
-        let fallback_id = crate::toolbox::quickdraw::icons_service::file_id(resources, *b"MACS", *b"INIT")
-            .map_err(|_| Error::Missing("System standard extension icon is unavailable; rebuild the System theme bundle"))?;
-        let fallback =
-            crate::toolbox::quickdraw::icons::IconFamily::from_lookup(fallback_id, |kind, id| {
-                resources.iter()
-                         .find(|resource| resource.kind == kind && resource.id == id)
-                         .map(|resource| resource.data.as_slice())
-            }).map_err(|_| {
-                  Error::Malformed("System standard extension icon is invalid; rebuild its theme \
-                                    icon family")
-              })?;
         let extensions =
-            strip::Strip::new(crate::display::WIDTH,
-                              crate::display::HEIGHT,
-                              strip::Bitmap::prepare(&fallback).map_err(|_| {
-                                  Error::AllocationFailed("System extension theme artwork \
-                                                           admission failed; rebuild its icon \
-                                                           family or free System memory")
-                              })?).map_err(|_| {
-                                      Error::AllocationFailed("System extension startup strip \
-                                                               admission failed; free System \
-                                                               memory and restart")
-                                  })?;
+            strip::prepare_theme(resources, crate::display::WIDTH, crate::display::HEIGHT)?;
         let pixels = crate::platform::back_buffer();
         mac_boot_screen::draw_panel(&mut mac_boot_screen::Raster::new(pixels, crate::display::WIDTH, crate::display::HEIGHT)
             .ok_or(Error::Malformed("invalid boot framebuffer"))?, icon);

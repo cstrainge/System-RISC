@@ -12,12 +12,119 @@ use core::fmt;
 use mac_abi::{Status, *};
 
 use crate::toolbox::quickdraw::{Canvas,
-                                icons::{IconFamily, IconFlags}};
+                                icons::{IconError, IconFamily, IconFlags}};
 
 const ICON: usize = 32;
 const PITCH: usize = 40;
 const MARGIN: usize = 8;
 const TRANSPARENT: u32 = 0xff000000;
+
+fn theme_status(cause: Status) -> mac_formats::Error
+{
+    match cause
+    {
+        NO_MEMORY =>
+        {
+            mac_formats::Error::AllocationFailed("System standard extension icon bundle lookup \
+                                                  could not reserve memory; free System memory \
+                                                  and restart")
+        }
+        NOT_FOUND =>
+        {
+            mac_formats::Error::Missing("System standard extension icon is unavailable; rebuild \
+                                         the System theme bundle")
+        }
+        NOT_SUPPORTED | TRANSLATION_REQUIRED =>
+        {
+            mac_formats::Error::TranslationRequired("System standard extension icon uses an \
+                                                     unsupported format; rebuild the System theme \
+                                                     bundle")
+        }
+        _ =>
+        {
+            mac_formats::Error::Malformed("System standard extension icon bundle is invalid; \
+                                           rebuild the System theme bundle")
+        }
+    }
+}
+fn theme_icon(cause: IconError) -> mac_formats::Error
+{
+    match cause
+    {
+        IconError::Allocation =>
+        {
+            mac_formats::Error::AllocationFailed("System standard extension icon family could not \
+                                                  reserve memory; free System memory and restart")
+        }
+        IconError::TooLarge =>
+        {
+            mac_formats::Error::BudgetExceeded("System standard extension icon family exceeds its \
+                                                supported size; rebuild the System theme bundle")
+        }
+        IconError::NotFound =>
+        {
+            mac_formats::Error::Missing("System standard extension icon family is missing; \
+                                         rebuild the System theme bundle")
+        }
+        IconError::Unsupported =>
+        {
+            mac_formats::Error::TranslationRequired("System standard extension icon family uses \
+                                                     an unsupported format; rebuild the System \
+                                                     theme bundle")
+        }
+        IconError::Truncated | IconError::InvalidData | IconError::MissingMask =>
+        {
+            mac_formats::Error::Malformed("System standard extension icon family is invalid or \
+                                           incomplete; rebuild the System theme bundle")
+        }
+    }
+}
+fn theme_strip(cause: Error) -> mac_formats::Error
+{
+    match cause
+    {
+        Error::Memory =>
+        {
+            mac_formats::Error::AllocationFailed("System extension startup strip could not \
+                                                  reserve retained artwork storage; free System \
+                                                  memory and restart")
+        }
+        Error::Artwork(status) => theme_status(status),
+        Error::Frame =>
+        {
+            mac_formats::Error::Malformed("System extension startup strip has invalid display \
+                                           dimensions; rebuild System with valid display \
+                                           dimensions")
+        }
+        Error::Space =>
+        {
+            mac_formats::Error::BudgetExceeded("System extension startup strip has no visible \
+                                                cell below the welcome panel; use a larger \
+                                                display or disable unneeded extensions")
+        }
+        Error::PaintPending =>
+        {
+            mac_formats::Error::Malformed("System extension startup strip already has an \
+                                           unpainted outcome during admission; rebuild System")
+        }
+    }
+}
+
+/// The native BootScreen begin path and canonical host allocation probes use
+/// this same admission. Preserve allocation, missing, malformed, unsupported and
+/// budget causes before any framebuffer or module callback can be borrowed.
+pub fn prepare_theme(resources: &[mac_formats::resource::Resource], width: usize, height: usize)
+                     -> mac_formats::Result<Strip>
+{
+    let id = crate::toolbox::quickdraw::icons_service::file_id(resources, *b"MACS", *b"INIT")
+        .map_err(theme_status)?;
+    let family = IconFamily::from_lookup(id, |kind, id| {
+                     resources.iter()
+                              .find(|resource| resource.kind == kind && resource.id == id)
+                              .map(|resource| resource.data.as_slice())
+                 }).map_err(theme_icon)?;
+    Strip::new(width, height, Bitmap::prepare(&family).map_err(theme_strip)?).map_err(theme_strip)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error

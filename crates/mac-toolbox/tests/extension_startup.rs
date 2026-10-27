@@ -217,3 +217,76 @@ fn admission_failure_and_interrupted_callback_never_publish_a_loaded_outcome()
     // This verifies the helper's owned outcome on a host unwind. It does not
     // claim recovery from arbitrary privileged module faults (M-D04).
 }
+
+fn theme() -> Vec<Resource>
+{
+    let mut resources = family(128, true);
+    resources.push(Resource { kind: *b"BNDL", id: 128, name: None, attributes: 0,
+        data: b"MACS\0\0\0\x01ICN#\0\0\0\x07\0\x80FREF\0\0\0\x02\0\x63".to_vec() });
+    resources.push(Resource { kind:       *b"FREF",
+                              id:         99,
+                              name:       None,
+                              attributes: 0,
+                              data:       b"INIT\0\x07\0".to_vec() });
+    resources
+}
+
+#[test]
+fn actual_boot_theme_admission_preserves_each_allocation_refusal_as_a_typed_memory_cause()
+{
+    let resources = theme();
+    let mut refused = 0;
+    let mut admitted = false;
+    for ordinal in 1..64
+    {
+        let observed = Observe::fail_nth(ordinal);
+        let result = mac_system::testing::extension_startup::prepare_theme(&resources, 640, 480);
+        let attempts = observed.finish();
+        match result
+        {
+            Err(cause) =>
+            {
+                assert!(matches!(cause, mac_formats::Error::AllocationFailed(_)),
+                        "allocation {ordinal}/{attempts} became {cause:?}");
+                assert!(cause.message().contains("memory"));
+                refused += 1;
+            }
+            Ok(strip) =>
+            {
+                assert!(attempts < ordinal);
+                assert_eq!(strip.len(), 0);
+                admitted = true;
+                break;
+            }
+        }
+    }
+    assert!(admitted, "the ordinal campaign did not reach successful boot theme admission");
+    assert!(refused >= 3,
+            "bundle lookup, icon decoding and retained strip admission were not all exercised");
+    assert!(mac_system::testing::extension_startup::prepare_theme(&resources, 640, 480).is_ok());
+}
+
+#[test]
+fn actual_boot_theme_admission_distinguishes_missing_malformed_and_invalid_display_causes()
+{
+    use mac_system::testing::extension_startup::prepare_theme;
+    let missing = prepare_theme(&[], 640, 480).err().unwrap();
+    assert!(matches!(missing, mac_formats::Error::Missing(_)));
+    assert!(missing.message().contains("rebuild"));
+    let mut invalid_bundle = theme();
+    invalid_bundle.iter_mut().find(|row| row.kind == *b"BNDL").unwrap().data = vec![0];
+    let malformed = prepare_theme(&invalid_bundle, 640, 480).err().unwrap();
+    assert!(matches!(malformed, mac_formats::Error::Malformed(_)));
+    assert!(malformed.message().contains("bundle") && malformed.message().contains("rebuild"));
+    let mut invalid_icon = theme();
+    invalid_icon.iter_mut().find(|row| row.kind == *b"ICN#").unwrap().data = vec![0];
+    let malformed = prepare_theme(&invalid_icon, 640, 480).err().unwrap();
+    assert!(matches!(malformed, mac_formats::Error::Malformed(_)));
+    assert!(malformed.message().contains("family") && malformed.message().contains("rebuild"));
+    let mut missing_icon = theme();
+    missing_icon.retain(|row| ![*b"ICN#", *b"icl8"].contains(&row.kind));
+    assert!(matches!(prepare_theme(&missing_icon, 640, 480), Err(mac_formats::Error::Missing(_))));
+    let invalid_display = prepare_theme(&theme(), 0, 480).err().unwrap();
+    assert!(matches!(invalid_display, mac_formats::Error::Malformed(_)));
+    assert!(invalid_display.message().contains("display dimensions"));
+}
