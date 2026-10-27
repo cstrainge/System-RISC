@@ -2,7 +2,7 @@
 use core::{alloc::Layout,
            fmt::{self, Write},
            panic::PanicInfo,
-           ptr::{self, addr_of_mut}};
+           ptr};
 
 use mac_abi::*;
 use spin::Once;
@@ -22,9 +22,6 @@ impl Write for Serial
 }
 #[global_allocator]
 static HEAP: crate::allocator::ResidentHeap = crate::allocator::ResidentHeap::empty();
-#[repr(C, align(4096))]
-struct HeapMemory([u8; crate::machine::memory::SYSTEM_HEAP_BYTES]);
-static mut HEAP_MEMORY: HeapMemory = HeapMemory([0; crate::machine::memory::SYSTEM_HEAP_BYTES]);
 static BOOT_LOG: Once<Option<LogFn>> = Once::new();
 static RESOURCE_FILES: Once<crate::toolbox::resources::manager::Files> = Once::new();
 static FONTS: Once<crate::toolbox::quickdraw::fonts::FontManager> = Once::new();
@@ -312,7 +309,7 @@ pub(crate) fn fonts() -> Option<&'static crate::toolbox::quickdraw::fonts::FontM
 pub(crate) fn heap_statistics() -> (u64, u64, u64)
 {
     let (used, capacity) = HEAP.statistics();
-    (core::ptr::addr_of!(HEAP_MEMORY) as u64, used as u64, capacity as u64)
+    (crate::machine::memory::VM_SYSTEM_HEAP_BASE, used as u64, capacity as u64)
 }
 
 pub(crate) fn heap_available() -> usize
@@ -686,9 +683,17 @@ unsafe fn start_services(info: &BootInfo) -> *const SystemServices
         crate::machine::emergency::serial(format_args!("BOOT_EMERGENCY_KIT_REJECTED: {error}"));
         return ptr::null();
     }
+    let Some((heap_base, heap_bytes)) = crate::machine::paging::heap_range()
+    else
+    {
+        crate::machine::emergency::serial(format_args!("BOOT_HEAP_REJECTED: permanent heap \
+                                                        mapping/backing was not installed"));
+        return ptr::null();
+    };
+    // SAFETY: permanent roots retain unique physical backing for this range.
+    // This is the first heap initialization and no ordinary allocation has run.
     unsafe {
-        HEAP.initialize(addr_of_mut!(HEAP_MEMORY).cast::<u8>(),
-                        crate::machine::memory::SYSTEM_HEAP_BYTES);
+        HEAP.initialize(heap_base as *mut u8, heap_bytes);
     }
     crate::machine::traps::install();
     let files = match unsafe { crate::toolbox::files::BootStorage::from_boot_info(info) }

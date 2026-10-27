@@ -3,8 +3,9 @@
 Status: §13.1 accepted by Chloe, 2026-10-23; proceeding with §13.2. The complete
 RVA23 floor is live. Process identity/directory, owner-walk cleanup and growable
 native scheduler records are resident. Process stacks and saved CPU backing carry
-live account charges; the general accounted allocator and private process mappings
-remain pending. Kernel self-virtualization uses owned Sv39 roots and a guarded
+live account charges. A fixed 512 MiB page-backed System heap replaces the static
+heap; general heap/metadata accounting and private process mappings remain pending.
+Kernel self-virtualization uses owned Sv39 roots and a guarded
 System stack. Graphical boot now pins an independent terminal panic/OOM kit;
 the complete protected recovery reserve and module/privilege gates remain open.
 This document describes the implemented foundations,
@@ -70,7 +71,8 @@ a closed identity stub, not the dead pool's storage.
 The existing resident heap now has a private `ResidentHeap` wrapper using the
 same architecture gate for allocation, deallocation, initialization and free-
 space reads. This closes the preempted-heap-holder path without changing the
-current static backing or claiming the later page-backed/accounted heap stage.
+then-static backing. The fixed page-backed heap described at the end now uses
+the same wrapper; its domain-accounted allocation stage remains pending.
 Trusted event routing also requeues directly into the fixed queue, avoiding a
 temporary heap allocation on every physical-input batch.
 
@@ -87,7 +89,7 @@ Reactor Room explicitly reports process/module domains with partial-ledger cover
 The following sections record successive §13.2 migrations and their remaining
 gates; they do not claim the complete model. Registered image aliases replace
 the fixed source cache. Scheduler metadata now grows until allocation refusal;
-static heap backing and the flat image arena still bound physical admission. The real process fixture
+the fixed heap budget and flat image arena still bound physical admission. The real process fixture
 checks native and Pascal stale IDs across relaunch, fresh incarnations, shared
 app-menu actions and full-width window resource ownership. The original directory test was host metadata coverage. The later native
 capacity campaign now runs ten applications together, without claiming MMU
@@ -149,7 +151,7 @@ These test geometries are not platform policy defaults.
 Start with a coalescing free-list heap **per page-backed extent**, using the
 existing audited allocator's strategy rather than a new TLSF or custom slab
 framework. The current resident `linked_list_allocator` already reuses and
-coalesces; its *static backing and uncharged ownership* are the problem. Xtra's
+coalesces; its former static backing and still-uncharged ownership are the problem. Xtra's
 bump heap is a separate implementation and is unsuitable.
 
 The fixed System heap reserves its entire physical budget during bring-up.
@@ -194,9 +196,11 @@ adapter; accounting/free-list policy stays safe.
 The initial configurable defaults approved on 2026-10-24 are **8 GiB native
 release VM RAM, 512 MiB fixed System heap, 32 MiB protected recovery reserve,
 16 MiB per-process kernel budget and 64 MiB app committed-heap budget**. These
-are selections for the later page/heap stage, not claims that those budgets are
-active on the current flat allocator. They remain tunable and must pass the
-cross-profile validator and live accounting/recovery gates before activation.
+remain tunable. The release RAM and fixed page-backed System heap are active;
+the process limits currently cover stack and saved CPU charges only. The
+protected recovery reserve and complete process heap/metadata enforcement remain
+behind their live accounting/recovery gates. Physical admission can refuse a
+chosen heap capacity on a smaller RAM profile without silently changing policy.
 
 Other values, including the proposed minimum/maximum ranges below, remain
 **review proposals**. Evaluate them with real image/control/account usage,
@@ -207,8 +211,8 @@ subsequently selected on 2026-10-26: both System-per-hart and application-per-th
 defaults are 4 MiB; System bounds are 256 KiB–8 MiB and application bounds are
 64 KiB–8 MiB. The checked platform record emits both linker symbols and Rust
 constants. Application/idle stack allocation consumes that default; the System
-stack is active in native bootstrap and service entry; mapped guards remain a
-paging gate.
+stack and mapped guards are active in native bootstrap and service entry;
+private process mappings remain a separate paging gate.
 
 | Configured policy | Minimum / initial default / maximum proposal | Reason |
 |---|---|---|
@@ -3008,11 +3012,71 @@ an abandoned press have allocation-refusal host coverage through the same safe
 logic used by the native driver; physical device-failure injection is not claimed.
 
 This installs one terminal service, not the approved 32 MiB protected floor or
-the complete emergency-service kit. The live global heap remains the platform's
-static 10 MiB backing; the approved 512 MiB page-backed heap has not been enabled.
+the complete emergency-service kit. The fixed page-backed heap described below
+replaces the earlier static 10 MiB backing; it does not turn this kit into a
+general protected recovery allowance.
 Save/Save As, core alerts, ledger teardown and Finder restart still require their
 own measured protected backing and refusal/concurrency qualification. Module
 workers still require original-account allocation authority and real stack, CPU
 and metadata charges before activation. Arbitrary privileged-fault containment is
 **unproven** and is a **required future gate** (M-D04); displaying a terminal
 diagnostic and restarting does not satisfy that gate.
+
+### Fixed page-backed System heap
+
+The checked platform record now selects the fixed System heap capacity
+(`memory.system_heap_bytes`, initially 512 MiB) and its usable virtual base
+(`virtual_memory.system_heap_base`). The limit is derived, not independently
+configured. Build validation rejects arithmetic overflow, misalignment,
+noncanonical addresses, placement outside System, and collisions with the entire
+image reservation, entire guarded System-stack window or physmap. One checked
+record emits both linker symbols and resident Rust constants.
+
+After physical pools exist but before permanent roots or ordinary allocation,
+bootstrap requests one real buddy lease for that complete capacity. Root
+preparation maps the configured usable bytes supervisor read/write, nonexecutable
+and global in both the resident and firmware trees. The same owning `Spaces`
+record retains the physical lease until reset. No static heap array remains in
+the System image. GlobalAlloc is initialized only after the new root is active;
+no live allocator reference is moved or rebased.
+Heap admission reserves raw storage without clearing the entire 512 MiB: the
+free-list allocator initializes its own metadata, and GlobalAlloc's normal
+uninitialized-allocation contract applies. Existing stack, CPU and table callers
+retain their zeroed-backing path.
+
+For a non-power-of-two capacity, the unique physical lease includes the exact
+buddy rounding. That tail is retained until reset, excluded from physical-pool
+free counts and never added to allocator capacity. `SYSTEM_HEAP_READY` reports
+usable bytes and actual physical backing bytes separately. Inspection classifies
+only the actual usable heap PTEs as System heap and validates their physical
+offsets and supervisor RW/NX permissions. The direct map remains an alias of RAM,
+never an additional charge or evidence that retained padding is available.
+Heap buffers have checked CPU-to-bus translation and remain valid across the
+resident/firmware root switch, so resident device and firmware I/O need no stale
+image-address assumption.
+
+The platform's static minimum RAM is not a heap-capacity guarantee. A 256 MiB or
+512 MiB machine can satisfy the fixed ROM/image/module reservation checks and
+still fail this 512 MiB contiguous allocation. Refusal preserves the typed page
+cause, names the requested capacity, asks for more RAM or a smaller configured
+capacity and stops before service/allocator startup. No fallback heap is installed.
+Even sufficient total free bytes do not promise a contiguous buddy extent.
+
+This changes physical backing only. It does not install original-account global
+heap charges, metadata attribution, module workers, private application roots or
+the approved 32 MiB protected floor. The terminal kit remains its separately
+pinned first consumer. Full recovery-service census, Finder allowances and
+protected admission require their own qualification before those gates can close.
+
+Qualification covers checked map collisions, full stack-window exclusion,
+canonicality, alignment, overflow and capacity-dependent artifact generation.
+Native disk boots refuse 64/128 MiB below the placement minimum and 256/512 MiB
+at fixed-heap admission, then reach the desktop at 2 GiB and 8 GiB. Public SDK
+inspection verifies actual heap PTE permissions, physical offsets, capacity,
+guarded stack and unchanged partial process-account coverage. The full native
+host-filesystem workflow exercises real device DMA and firmware I/O with the new
+resident heap: both forks, writes, recursive transfers, readonly refusals,
+cancellation, owner cleanup and an actual cold metadata restart. These checks do
+not qualify complete heap accounting, protected recovery admission or SMP. The
+headless native/classic trap ABI and public Toolbox conformance probe also boots
+through the same page-backed heap and owned-root admission path.

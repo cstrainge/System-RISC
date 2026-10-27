@@ -60,7 +60,9 @@ fn boot(output: &Path, mib: u64) -> String
         if text.split_inclusive('\n').any(|line| {
                                          line.ends_with('\n')
                                          && (line.contains("DESKTOP_READY")
-                                             || line.contains("BOOT_MEMORY_REJECTED:"))
+                                             || line.contains("BOOT_MEMORY_REJECTED:")
+                                             || line.contains("BOOT_SUPERVISOR_REJECTED:")
+                                             || line.contains("BOOT_TRANSLATION_REJECTED:"))
                                      })
         {
             return text;
@@ -94,7 +96,20 @@ fn discovered_ram_drives_boot_info_and_small_machines_are_refused_before_heap_us
             "{old_minimum}");
     assert!(!old_minimum.contains("TRAPS_READY"),
             "rejected old minimum entered normal services: {old_minimum}");
-    for mib in [256u64, 512, 8192]
+    // A static-placement minimum is not a promise that the selected fixed heap
+    // fits. A full 512 MiB contiguous lease cannot fit these RAM profiles once
+    // real firmware/image/FDT/page metadata reservations have been excluded.
+    for mib in [256u64, 512]
+    {
+        let text = boot(&output, mib);
+        assert!(text.contains("fixed System heap admission refused: 536870912 requested bytes")
+                && text.contains("increase RAM or select a smaller platform system_heap_bytes")
+                && text.contains("no reduced heap was installed"),
+                "{mib} MiB: {text}");
+        assert!(!text.contains("MMU_READY") && !text.contains("TRAPS_READY"),
+                "heap refusal entered normal services: {text}");
+    }
+    for mib in [2048u64, 8192]
     {
         let text = boot(&output, mib);
         assert!(text.contains("DESKTOP_READY"), "{mib} MiB failed:\n{text}");
@@ -121,6 +136,18 @@ fn discovered_ram_drives_boot_info_and_small_machines_are_refused_before_heap_us
                             .find(|line| line.starts_with("MMU_READY "))
                             .expect("no actual resident root activation");
         assert!(activated.contains("mode=sv39") && activated.contains("guards=2"), "{activated}");
+        let heap = text.lines()
+                       .find(|line| line.starts_with("SYSTEM_HEAP_READY "))
+                       .expect("no owned page-backed System heap mapping");
+        assert_eq!(field(heap, "base="), 0xffffffd040000000);
+        assert_eq!(field(heap, "bytes="), 512 << 20);
+        assert_eq!(field(heap, "backing_bytes="), 512 << 20);
+        assert!(heap.contains("permissions=supervisor-rw-nx roots=2 protected_reserve=false"),
+                "{heap}");
+        let heap_physical = field(heap, "physical=");
+        assert!(heap_physical >= 0x80000000
+                && heap_physical + (512 << 20) <= 0x80000000 + mib * 1024 * 1024,
+                "heap lacks a complete discovered RAM lease: {heap}");
         let actual = field(activated, "actual=");
         let kernel = field(activated, "kernel_root=");
         let firmware = field(activated, "firmware_root=");

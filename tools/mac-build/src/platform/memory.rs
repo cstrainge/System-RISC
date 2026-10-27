@@ -220,12 +220,10 @@ impl Definition
                               aligned and smaller than boot RAM"));
         }
         let system_heap_bytes = address("system_heap_bytes", &self.system_heap_bytes)?;
-        if system_heap_bytes == 0
-           || !system_heap_bytes.is_multiple_of(page)
-           || system_heap_bytes >= images.end - images.start
+        if system_heap_bytes == 0 || !system_heap_bytes.is_multiple_of(page)
         {
             return Err(error("platform memory system_heap_bytes must be nonzero, page aligned \
-                              and smaller than images"));
+                              physical heap capacity; it is not part of the image arena"));
         }
         let stacks = self.stacks.check(page)?;
         let process_accounts = self.process_accounts.check(page, stacks.application_default())?;
@@ -574,8 +572,16 @@ mod tests
         bad.boot_stack_bytes = original.boot.bytes.clone();
         assert!(bad.check().unwrap_err().to_string().contains("smaller than boot RAM"));
         let mut bad = original.clone();
-        bad.system_heap_bytes = original.images.bytes.clone();
-        assert!(bad.check().unwrap_err().to_string().contains("smaller than images"));
+        bad.system_heap_bytes = "0x0".into();
+        assert!(bad.check().unwrap_err().to_string().contains("nonzero, page aligned"));
+        let mut bad = original.clone();
+        bad.system_heap_bytes = "0x20000001".into();
+        assert!(bad.check().unwrap_err().to_string().contains("nonzero, page aligned"));
+        let mut page_backed = original.clone();
+        page_backed.system_heap_bytes = "0x20000000".into();
+        assert_eq!(page_backed.check().unwrap().system_heap_bytes,
+                   512 << 20,
+                   "the heap has its own physical lease, not image-arena storage");
         let mut bad = original.clone();
         bad.page_bytes = 3;
         assert!(bad.check().unwrap_err().to_string().contains("page_bytes must be a power of two"));

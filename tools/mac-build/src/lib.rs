@@ -84,7 +84,9 @@ pub fn build_guest() -> Result<()>
                                                        "VM_SYSTEM_IMAGE_LIMIT",
                                                        "VM_PHYSMAP_START", "VM_PHYSMAP_END",
                                                        "VM_PHYSMAP_PHYSICAL_BASE",
-                                                       "VM_SYSTEM_STACKS_START"])?)?;
+                                                       "VM_SYSTEM_STACKS_START",
+                                                       "VM_SYSTEM_HEAP_BASE",
+                                                       "VM_SYSTEM_HEAP_LIMIT"])?)?;
     let mut script =
         include_str!("native.ld").replace("@BASE@", &format!("0x{:x}", descriptor.load_base))
                                  .replace("@LENGTH@",

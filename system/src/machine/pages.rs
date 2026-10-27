@@ -186,8 +186,8 @@ fn allocate(order: u32) -> Result<Block, Error>
     Err(Error::Exhausted { order,
                            free_pages })
 }
-/// Exclusive zeroed RAM backing. CPU pointers are created only at this native
-/// binding; flat execution is replaced with stable mapped views at MMU handoff.
+/// Exclusive RAM backing. CPU pointers are created only at this native binding;
+/// initialization is selected explicitly, before creating any typed view.
 pub(crate) struct Backing
 {
     pages:    Block,
@@ -207,6 +207,21 @@ impl Backing
 
     pub(crate) fn allocate(bytes: usize) -> Result<Self, Error>
     {
+        let backing = Self::reserve_uninitialized(bytes)?;
+        // SAFETY: the unique lease owns the complete mapped extent. Existing
+        // consumers retain their zero-initialized storage contract.
+        unsafe {
+            core::ptr::write_bytes(backing.cpu_base as *mut u8, 0, backing.bytes() as usize);
+        }
+        Ok(backing)
+    }
+
+    /// Reserve raw storage without touching its contents. Only allocator
+    /// backing keeps this result uninitialized: GlobalAlloc returns raw storage and
+    /// its free-list initializer writes its own metadata. Creating initialized
+    /// Rust values or page tables still requires the caller's explicit writes.
+    pub(crate) fn reserve_uninitialized(bytes: usize) -> Result<Self, Error>
+    {
         let count = Self::planned_bytes(bytes)? / super::memory::PAGE_BYTES;
         let pages = allocate(count.ilog2())?;
         let cpu_base = POOLS.get()
@@ -215,11 +230,6 @@ impl Backing
                             .virtual_address(pages.address(), pages.bytes())
                             .map_err(Error::Mapping)?
                             .0 as usize;
-        // SAFETY: exclusive page lease, flat physical mapping, all bytes are
-        // ordinary discovered RAM. Clear prior data before any owner sees it.
-        unsafe {
-            core::ptr::write_bytes(cpu_base as *mut u8, 0, pages.bytes() as usize);
-        }
         Ok(Self { pages,
                   cpu_base })
     }
