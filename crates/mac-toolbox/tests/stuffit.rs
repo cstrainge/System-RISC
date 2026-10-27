@@ -2,19 +2,19 @@
 #![cfg(not(target_arch = "riscv64"))]
 #[path = "support/process_trace.rs"]
 mod process_trace;
-use std::{fs, path::PathBuf, process::Command};
+#[path = "support/native_capture.rs"]
+mod native_capture;
+use std::{fs, path::PathBuf};
 #[test]
 #[ignore = "requires the private image and QEMU"]
 fn classic_archives_mount_read_forks_copy_out_and_reject_corruption_and_stale_ids()
 {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
-    let output =
-        root.join("results/system7").join(format!("native-stuffit-{}", std::process::id()));
-    let result = Command::new("python3").arg(root.join("System7/scripts/capture_stuffit.py"))
-                                        .arg("--output")
-                                        .arg(&output)
-                                        .output()
-                                        .unwrap();
+    let root = native_capture::build();
+    let output = root.join("acceptance").join(format!("native-stuffit-{}", std::process::id()));
+    let result = native_capture::command("capture_stuffit.py").arg("--output")
+                                                              .arg(&output)
+                                                              .output()
+                                                              .unwrap();
     assert!(result.status.success(),
             "{}\n{}",
             String::from_utf8_lossy(&result.stdout),
@@ -50,7 +50,7 @@ fn classic_archives_mount_read_forks_copy_out_and_reject_corruption_and_stale_id
         "not_covered":"original Macintosh producer/runtime comparisons and guest cancellation during deferred source reads; real Finder double-click and eject have separate tests in this gate",
         "capture":capture});
     fs::write(output.join("rust-acceptance.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();
-    fs::write(root.join("results/system7/stuffit-checks.json"),
+    fs::write(root.join("acceptance/stuffit-checks.json"),
               serde_json::to_vec_pretty(&report).unwrap()).unwrap();
 }
 
@@ -58,15 +58,14 @@ fn classic_archives_mount_read_forks_copy_out_and_reject_corruption_and_stale_id
 #[ignore = "requires optimized private image and real Finder volume gestures"]
 fn readonly_archive_volume_dropped_on_trash_unmounts_without_modifying_the_archive()
 {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
-    let output = root.join("results/system7").join(format!("stuffit-eject-{}", std::process::id()));
-    let result = Command::new("python3").arg(root.join("System7/scripts/capture_stuffit.py"))
-                                        .arg("--output")
-                                        .arg(&output)
-                                        .arg("--finder")
-                                        .arg("--eject")
-                                        .output()
-                                        .unwrap();
+    let root = native_capture::build();
+    let output = root.join("acceptance").join(format!("stuffit-eject-{}", std::process::id()));
+    let result = native_capture::command("capture_stuffit.py").arg("--output")
+                                                              .arg(&output)
+                                                              .arg("--finder")
+                                                              .arg("--eject")
+                                                              .output()
+                                                              .unwrap();
     assert!(result.status.success(),
             "{}\n{}",
             String::from_utf8_lossy(&result.stdout),
@@ -91,15 +90,14 @@ fn readonly_archive_volume_dropped_on_trash_unmounts_without_modifying_the_archi
 #[ignore = "requires the private image and QEMU"]
 fn removing_driver_removes_archive_open_action_and_default_icons()
 {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let root = native_capture::build();
     let output =
-        root.join("results/system7").join(format!("native-stuffit-absent-{}", std::process::id()));
-    let result = Command::new("python3").arg(root.join("System7/scripts/capture_stuffit.py"))
-                                        .arg("--output")
-                                        .arg(&output)
-                                        .arg("--without-driver")
-                                        .output()
-                                        .unwrap();
+        root.join("acceptance").join(format!("native-stuffit-absent-{}", std::process::id()));
+    let result = native_capture::command("capture_stuffit.py").arg("--output")
+                                                              .arg(&output)
+                                                              .arg("--without-driver")
+                                                              .output()
+                                                              .unwrap();
     assert!(result.status.success(),
             "{}\n{}",
             String::from_utf8_lossy(&result.stdout),
@@ -118,15 +116,14 @@ fn removing_driver_removes_archive_open_action_and_default_icons()
 #[ignore = "requires the private image, QEMU and the real Finder"]
 fn finder_double_click_mounts_and_opens_archive_from_host_volume()
 {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let root = native_capture::build();
     let output =
-        root.join("results/system7").join(format!("native-stuffit-finder-{}", std::process::id()));
-    let result = Command::new("python3").arg(root.join("System7/scripts/capture_stuffit.py"))
-                                        .arg("--output")
-                                        .arg(&output)
-                                        .arg("--finder")
-                                        .output()
-                                        .unwrap();
+        root.join("acceptance").join(format!("native-stuffit-finder-{}", std::process::id()));
+    let result = native_capture::command("capture_stuffit.py").arg("--output")
+                                                              .arg(&output)
+                                                              .arg("--finder")
+                                                              .output()
+                                                              .unwrap();
     assert!(result.status.success(),
             "{}\n{}",
             String::from_utf8_lossy(&result.stdout),
@@ -155,15 +152,14 @@ fn finder_double_click_mounts_and_opens_archive_from_host_volume()
 #[ignore = "requires the private image, QEMU and the real Finder"]
 fn finder_explains_raw_archive_failure_and_can_immediately_open_the_next_file()
 {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let root = native_capture::build();
     let output =
-        root.join("results/system7").join(format!("native-stuffit-error-{}", std::process::id()));
-    let result = Command::new("python3").arg(root.join("System7/scripts/capture_stuffit.py"))
-                                        .arg("--output")
-                                        .arg(&output)
-                                        .arg("--finder-error")
-                                        .output()
-                                        .unwrap();
+        root.join("acceptance").join(format!("native-stuffit-error-{}", std::process::id()));
+    let result = native_capture::command("capture_stuffit.py").arg("--output")
+                                                              .arg(&output)
+                                                              .arg("--finder-error")
+                                                              .output()
+                                                              .unwrap();
     assert!(result.status.success(),
             "{}\n{}",
             String::from_utf8_lossy(&result.stdout),
@@ -209,19 +205,14 @@ fn assert_no_update_storm(output: &std::path::Path)
 
 fn finder_archive(source: &std::path::Path, label: &str, browse: bool)
 {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let root = native_capture::build();
     assert!(source.is_file(),
             "Provide this reference archive before running the ignored gate: {}",
             source.display());
     let output =
-        root.join("results/system7").join(format!("native-stuffit-{label}-{}", std::process::id()));
-    let mut command = Command::new("python3");
-    command.arg(root.join("System7/scripts/capture_stuffit.py"))
-           .arg("--output")
-           .arg(&output)
-           .arg("--finder")
-           .arg("--archive")
-           .arg(source);
+        root.join("acceptance").join(format!("native-stuffit-{label}-{}", std::process::id()));
+    let mut command = native_capture::command("capture_stuffit.py");
+    command.arg("--output").arg(&output).arg("--finder").arg("--archive").arg(source);
     if browse
     {
         command.arg("--browse-reference");
@@ -288,10 +279,9 @@ fn method13_stuffit5_raw_host_archive_opens_through_real_finder()
 #[ignore = "requires current private image, QEMU and the user-supplied SuperPaint reference archive"]
 fn user_supplied_stuffit5_reference_opens_through_real_finder()
 {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
     let source =
         std::env::var_os("SYSTEM7_STUFFIT_REFERENCE").map(PathBuf::from)
-                                                     .unwrap_or(root.join("System7/transfer/\
+                                                     .unwrap_or(native_capture::source().join("transfer/\
                                                                            aldussuperpaint3.5.\
                                                                            sit"));
     finder_archive(&source, "reference-finder", true);
@@ -301,24 +291,23 @@ fn user_supplied_stuffit5_reference_opens_through_real_finder()
 #[ignore = "requires current private image, QEMU and user-supplied SuperPaint reference archive"]
 fn user_supplied_stuffit5_reference_verifies_all_nine_forks_through_public_sdk()
 {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    let root = native_capture::build();
     let source =
         std::env::var_os("SYSTEM7_STUFFIT_REFERENCE").map(PathBuf::from)
-                                                     .unwrap_or(root.join("System7/transfer/\
+                                                     .unwrap_or(native_capture::source().join("transfer/\
                                                                            aldussuperpaint3.5.\
                                                                            sit"));
     assert!(source.is_file(),
             "Provide SuperPaint reference archive at {} or SYSTEM7_STUFFIT_REFERENCE",
             source.display());
-    let output = root.join("results/system7")
+    let output = root.join("acceptance")
                      .join(format!("native-stuffit-reference-sdk-{}", std::process::id()));
-    let result = Command::new("python3").arg(root.join("System7/scripts/capture_stuffit.py"))
-                                        .arg("--output")
-                                        .arg(&output)
-                                        .arg("--reference")
-                                        .arg(source)
-                                        .output()
-                                        .unwrap();
+    let result = native_capture::command("capture_stuffit.py").arg("--output")
+                                                              .arg(&output)
+                                                              .arg("--reference")
+                                                              .arg(source)
+                                                              .output()
+                                                              .unwrap();
     assert!(result.status.success(),
             "{}\n{}",
             String::from_utf8_lossy(&result.stdout),
