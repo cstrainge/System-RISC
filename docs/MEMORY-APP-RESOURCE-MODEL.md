@@ -2565,3 +2565,17 @@ on the interrupted stack and resident service work still executes there. It
 does not qualify dedicated System-stack entry, mapped guards, domain charging,
 MMU activation or lazy extension-state saving. Those remain explicit migration
 gates; no supervisor/user isolation is claimed by a separate snapshot alone.
+
+### One physical admission contract for every entry mode
+
+Graphical and headless native entries validate the same build-defined platform
+reservations and complete image arena before publishing a physical pool. The
+graphical flag adds the display-scratch loan; it no longer bypasses physical
+page ownership in the headless path. Required exclusions may be contained by a
+larger validated reservation, without changing the original account or its
+free ranges. A missing exclusion reports its exact base/length and the required
+ROM/disk rebuild. The ROM and native ABI probe consume admission constants from
+the same checked platform record. The probe discovers actual RAM from the reset
+DTB and owns its real reserved firmware heap instead of reporting guessed RAM
+and an empty reservation list. Its single-bank restriction belongs to that
+QEMU-virt probe, not the resident or firmware memory model.

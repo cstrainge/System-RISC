@@ -1,7 +1,10 @@
 //! QEMU-only entry/ABI test. This is not the future HFS disk bootstrap.
 #![no_std]
 #![no_main]
-use core::{arch::global_asm,
+#![feature(alloc_error_handler)]
+use core::{alloc::Layout,
+           arch::global_asm,
+           fmt::{self, Write},
            panic::PanicInfo,
            ptr::{read_volatile, write_volatile}};
 
@@ -10,7 +13,39 @@ use mac_abi::{ApplicationEntry, BAD_ABI, BAD_ARGUMENT, BootInfo, Header, OK, Sta
 use toolbox_quickdraw::{Point, QuickDraw, Rect, SurfacePort,
                         bitmaps::Bitmap,
                         graphics::{PortState, Shape, TransferMode, Verb}};
+#[global_allocator]
+static BOOT_HEAP: linked_list_allocator::LockedHeap = linked_list_allocator::LockedHeap::empty();
+struct BootLog;
+impl fmt::Write for BootLog
+{
+    fn write_str(&mut self, text: &str) -> fmt::Result
+    {
+        unsafe {
+            log(text.as_ptr(), text.len());
+        }
+        Ok(())
+    }
+}
+fn boot_refused(error: impl fmt::Display) -> !
+{
+    let _ = writeln!(BootLog, "ABI_BOOT_REJECTED: {error}");
+    failed()
+}
+#[alloc_error_handler]
+fn allocation_failed(layout: Layout) -> !
+{
+    let _ = writeln!(BootLog,
+                     "ABI_BOOT_ALLOCATION_FAILED: firmware heap cannot supply {} bytes with \
+                      alignment {}",
+                     layout.size(),
+                     layout.align());
+    failed()
+}
 include!(concat!(env!("OUT_DIR"), "/entries.rs"));
+mod platform_memory
+{
+    include!(concat!(env!("OUT_DIR"), "/platform-memory.rs"));
+}
 
 // Canonical acceptance logic lives with the aggregate userspace Toolbox tests.
 #[allow(dead_code)]
@@ -25,6 +60,7 @@ global_asm!(concat!(
     .option norvc
     .global _start
 _start:
+    mv s0,a1
     csrw mie, zero
     la sp, __stack_top
     la t0, trap
@@ -37,7 +73,8 @@ _start:
     sd zero, 0(t0)
     addi t0, t0, 8
     j 1b
-2:  call main
+2:  mv a0,s0
+    call main
 3:  wfi
     j 3b
     .balign 4
@@ -62,13 +99,86 @@ unsafe extern "C" fn log(bytes: *const u8, length: usize) -> Status
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn main() -> !
+extern "C" fn main(tree_address: usize) -> !
 {
-    let ram = mac_abi::BootMemoryRange { base:   0x80000000,
-                                         length: 128 * 1024 * 1024 };
+    // This private QEMU-virt probe uses the real reset DTB, not a guessed RAM
+    // size or a second fake bootstrap account. Its machine has one RAM bank.
+    let tree = unsafe {
+        if tree_address == 0 || !tree_address.is_multiple_of(8)
+        {
+            failed();
+        }
+        let header = core::slice::from_raw_parts(tree_address as *const u8, 40);
+        let bytes = u32::from_be_bytes(header[4..8].try_into().unwrap()) as usize;
+        if !(40..=platform_memory::FDT_TAIL_BYTES as usize).contains(&bytes)
+        {
+            failed();
+        }
+        bootrom::devicetree::Tree::new(core::slice::from_raw_parts(tree_address as *const u8,
+                                                                   bytes)).unwrap_or_else(|error| {
+                                                                              boot_refused(error)
+                                                                          })
+    };
+    let mut ram = mac_abi::BootMemoryRange::default();
+    tree.memory(|range| {
+            if ram.length != 0
+            {
+                return Err(mac_formats::Error::Malformed("ABI probe requires QEMU virt's \
+                                                          single RAM bank"));
+            }
+            ram = mac_abi::BootMemoryRange { base:   range.start,
+                                             length: range.end - range.start };
+            Ok(())
+        })
+        .unwrap_or_else(|error| boot_refused(error));
+    let end = ram.base.checked_add(ram.length).unwrap_or_else(|| failed());
+    let extent = |base, limit| {
+        mac_abi::BootMemoryRange { base,
+                                   length: limit - base }
+    };
+    // The entire 2MiB probe image+stack replaces the ROM's boot reservation;
+    // don't add that contained reservation again. Remaining platform owners
+    // and the discovered FDT tail are disjoint and pinned until probe exit.
+    let [_, firmware, modules, display] = platform_memory::BOOT_RESERVED;
+    let reservations =
+        [extent(platform_memory::RAM_BASE, platform_memory::IMAGE_BASE),
+         extent(platform_memory::IMAGE_BASE, platform_memory::IMAGE_LIMIT),
+         extent(firmware.0, firmware.1),
+         extent(modules.0, modules.1),
+         extent(display.0, display.1),
+         extent(end.checked_sub(platform_memory::FDT_TAIL_BYTES).unwrap_or_else(|| failed()), end)];
+    mac_abi::boot::Memory { ram:          core::slice::from_ref(&ram),
+                            reservations: &reservations }.checked(platform_memory::PAGE_BYTES, ram)
+                                                         .unwrap_or_else(|error| {
+                                                             boot_refused(error)
+                                                         });
+    let tree_end =
+        (tree_address as u64).checked_add(tree.total_size() as u64)
+                             .unwrap_or_else(|| boot_refused("device-tree range overflows"));
+    if (tree_address as u64) < end - platform_memory::FDT_TAIL_BYTES || tree_end > end
+    {
+        boot_refused("device tree lies outside the platform's reserved FDT tail");
+    }
+    tree.reservations(|range| {
+            if reservations.iter().any(|r| r.base <= range.start && r.base + r.length >= range.end)
+            {
+                Ok(())
+            }
+            else
+            {
+                Err(mac_formats::Error::Malformed("ABI bootstrap reservation does not cover a \
+                                                   discovered DTB reservation"))
+            }
+        })
+        .unwrap_or_else(|error| boot_refused(error));
+    // SAFETY: shared admission just proved this firmware-only reservation is
+    // real, exclusive RAM and disjoint from the loaded probes/System images.
+    unsafe {
+        BOOT_HEAP.lock().init(firmware.0 as *mut u8, (firmware.1 - firmware.0) as usize);
+    }
     let boot = BootInfo { header:                  Header::for_type::<BootInfo>(),
-                          ram_base:                0x80000000,
-                          ram_size:                128 * 1024 * 1024,
+                          ram_base:                ram.base,
+                          ram_size:                ram.length,
                           log:                     Some(log),
                           storage_context:         core::ptr::null_mut(),
                           disk_info:               None,
@@ -80,8 +190,8 @@ extern "C" fn main() -> !
                           startup_partition_start: 0,
                           ram_regions:             &ram,
                           ram_region_count:        1,
-                          reservations:            core::ptr::null(),
-                          reservation_count:       0,
+                          reservations:            reservations.as_ptr(),
+                          reservation_count:       reservations.len(),
                           display_scratch:         Default::default() };
     let system_entry: SystemEntry = unsafe { core::mem::transmute(SYSTEM_ENTRY) };
     let finder_entry: ApplicationEntry = unsafe { core::mem::transmute(FINDER_ENTRY) };

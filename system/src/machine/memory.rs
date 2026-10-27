@@ -48,22 +48,24 @@ pub(crate) unsafe fn validate_boot(
                                          reservations };
     let primary = mac_abi::BootMemoryRange { base:   info.ram_base,
                                              length: info.ram_size };
-    if info.flags & mac_abi::BOOT_GRAPHICAL != 0
+    let mut memory = if info.flags & mac_abi::BOOT_GRAPHICAL != 0
     {
-        let memory = memory.display_handoff(PAGE_BYTES,
-                                      primary,
-                                      info.display_scratch,
-                                      mac_abi::BootMemoryRange { base:   DISPLAY_SCRATCH_BASE,
-                                                                 length: DISPLAY_SCRATCH_BYTES })?;
-        if !memory.reserved(mac_abi::BootMemoryRange { base:   IMAGE_BASE,
-                                                       length: IMAGE_LIMIT - IMAGE_BASE })
-        {
-            return Err(mac_abi::boot::MemoryError::MissingImageArena);
-        }
-        Ok(memory)
+        memory.display_handoff(PAGE_BYTES,
+                               primary,
+                               info.display_scratch,
+                               mac_abi::BootMemoryRange { base:   DISPLAY_SCRATCH_BASE,
+                                                          length: DISPLAY_SCRATCH_BYTES })?
     }
     else
     {
-        memory.checked(PAGE_BYTES, primary)
+        memory.checked(PAGE_BYTES, primary)?
+    };
+    // Every entry mode protects the same build-defined firmware/platform
+    // owners before a pool can allocate. Graphical only adds the scratch loan.
+    for (base, end) in BOOT_RESERVED.into_iter().chain([(IMAGE_BASE, IMAGE_LIMIT)])
+    {
+        memory = memory.require_reservation(mac_abi::BootMemoryRange { base,
+                                                                       length: end - base })?;
     }
+    Ok(memory)
 }

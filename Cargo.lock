@@ -15,8 +15,11 @@ dependencies = [
 name = "abi-smoke"
 version = "0.1.0"
 dependencies = [
+ "bootrom",
+ "linked_list_allocator",
  "mac-abi",
  "mac-build",
+ "mac-formats",
  "mac-toolbox",
  "mac-traps",
  "toolbox-quickdraw",

@@ -13,7 +13,11 @@ pub enum MemoryError
     InconsistentSummary,
     PlatformMismatch,
     MissingReservation,
-    MissingImageArena
+    MissingPlatformReservation
+    {
+        base:   u64,
+        length: u64
+    }
 }
 impl core::fmt::Display for MemoryError
 {
@@ -32,10 +36,12 @@ impl core::fmt::Display for MemoryError
                             "bootstrap display-scratch handoff is not reserved; rebuild ROM and \
                              disk together"
                         }
-                        Self::MissingImageArena =>
+                        Self::MissingPlatformReservation { base,
+                                                           length } =>
                         {
-                            "bootstrap flat image arena is not fully reserved; rebuild ROM and \
-                             disk together"
+                            return write!(f,
+                                          "bootstrap does not reserve required platform RAM \
+                                           {base:#x}+{length:#x}; rebuild ROM and disk together");
                         }
                         Self::InvalidArray =>
                         {
@@ -177,6 +183,22 @@ impl<'a> CheckedMemory<'a>
             .any(|reserved| reserved.base <= range.base && end <= reserved.base + reserved.length)
     }
 
+    /// Admit a platform-required exclusion without copying or altering the
+    /// borrowed account. A larger existing reservation is valid containment.
+    pub fn require_reservation(self, range: BootMemoryRange) -> Result<Self, MemoryError>
+    {
+        end(range, self.page_bytes)?;
+        if self.reserved(range)
+        {
+            Ok(self)
+        }
+        else
+        {
+            Err(MemoryError::MissingPlatformReservation { base:   range.base,
+                                                          length: range.length })
+        }
+    }
+
     pub const fn page_bytes(self) -> u64
     {
         self.page_bytes
@@ -247,6 +269,37 @@ mod tests
     use super::*;
     const RAM: BootMemoryRange = BootMemoryRange { base:   0x80000000,
                                                    length: 0x200000000 };
+    #[test]
+    fn mandatory_platform_ranges_reject_missing_backing_without_projecting_the_account()
+    {
+        let reserved = BootMemoryRange { base:   RAM.base,
+                                         length: 16384 };
+        let exclusions = [reserved];
+        let memory = Memory { ram:          &[RAM],
+                              reservations: &exclusions }.checked(4096, RAM)
+                                                         .unwrap();
+        let required = BootMemoryRange { base:   RAM.base + 4096,
+                                         length: 4096 };
+        let checked = memory.require_reservation(required).unwrap();
+        assert_eq!(checked.free_ranges(0).unwrap().next().unwrap().base, RAM.base + 16384);
+        let missing = BootMemoryRange { base:   RAM.base + 16384,
+                                        length: 4096 };
+        let error = memory.require_reservation(missing).unwrap_err();
+        assert_eq!(error,
+                   MemoryError::MissingPlatformReservation { base:   missing.base,
+                                                             length: missing.length });
+        let text = error.to_string();
+        assert!(text.contains("0x80004000+0x1000")
+                && text.contains("rebuild ROM and disk together"));
+        assert_eq!(memory.require_reservation(BootMemoryRange { base:   RAM.base + 1,
+                                                                length: 4096 })
+                         .unwrap_err(),
+                   MemoryError::Unaligned);
+        assert_eq!(memory.require_reservation(BootMemoryRange { base:   RAM.base,
+                                                                length: 0 })
+                         .unwrap_err(),
+                   MemoryError::InvalidRange);
+    }
     #[test]
     fn validates_large_ram_and_rejects_inconsistent_or_unusable_accounts()
     {

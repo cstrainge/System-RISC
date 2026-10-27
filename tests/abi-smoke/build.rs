@@ -6,6 +6,12 @@ fn main()
     {
         mac_build::platform::validate_guest(&env::var("TARGET").unwrap(),&env::var("CARGO_CFG_TARGET_FEATURE").unwrap()).expect("native platform ISA floor; use cargo xtask");
     }
+    let output = Path::new(&env::var("OUT_DIR").unwrap()).to_owned();
+    let boot_memory =
+        mac_build::platform::current().memory()
+                                      .expect("ABI harness platform memory must validate")
+                                      .boot_admission_constants();
+    fs::write(output.join("platform-memory.rs"), boot_memory).unwrap();
     let mut constants = String::new();
     for name in ["SYSTEM", "FINDER"]
     {

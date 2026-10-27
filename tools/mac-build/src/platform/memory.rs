@@ -350,6 +350,7 @@ impl Checked
         {
             writeln!(out, "pub const {name}: u64 = {value:#x};").unwrap();
         }
+        out.push_str(&self.reservation_constant());
         out.push_str(application_region_source());
         writeln!(out, "pub const SYSTEM_HEAP_BYTES: usize = {:#x};",self.system_heap_bytes).unwrap();
         out
@@ -366,27 +367,9 @@ impl Checked
          ("DISPLAY_BACKBUFFER_BASE", self.display_scratch.start + 2 * stride)]
     }
 
-    pub(super) fn boot_constants(&self) -> String
+    fn reservation_constant(&self) -> String
     {
-        let mut out = String::from("// Generated from the checked platform memory record.\n");
-        for (name, value) in [("RAM_BASE", self.ram.start),
-                              ("MINIMUM_RAM_BYTES", self.ram.end - self.ram.start),
-                              ("DISPLAY_WIDTH", self.display_width),
-                              ("DISPLAY_HEIGHT", self.display_height),
-                              ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
-                              ("DISPLAY_SCRATCH_BYTES",
-                               self.display_scratch.end - self.display_scratch.start),
-                              ("IMAGE_BASE", self.images.start),
-                              ("IMAGE_LIMIT", self.images.end),
-                              ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
-                              ("APPLICATION_PRIMARY_LIMIT", self.definitions.start),
-                              ("APPLICATION_RELOCATION_BASE", self.application_relocation_base),
-                              ("PAGE_BYTES", self.page_bytes),
-                              ("FDT_TAIL_BYTES", self.fdt_tail_bytes)]
-        {
-            writeln!(out, "pub const {name}: u64 = {value:#x};").unwrap();
-        }
-        out.push_str(application_region_source());
+        let mut out = String::new();
         writeln!(out,
                  "pub const BOOT_RESERVED: [(u64,u64);4] = \
                   [({:#x},{:#x}),({:#x},{:#x}),({:#x},{:#x}),({:#x},{:#x})];",
@@ -398,6 +381,42 @@ impl Checked
                  self.modules.end,
                  self.display_scratch.start,
                  self.display_scratch.end).unwrap();
+        out
+    }
+
+    /// Shared physical admission inputs for firmware and native boot probes.
+    /// Topology is still discovered at reset; these are platform reservations.
+    pub fn boot_admission_constants(&self) -> String
+    {
+        let mut out = String::from("// Generated checked physical admission policy.\n");
+        for (name, value) in [("RAM_BASE", self.ram.start),
+                              ("IMAGE_BASE", self.images.start),
+                              ("IMAGE_LIMIT", self.images.end),
+                              ("PAGE_BYTES", self.page_bytes),
+                              ("FDT_TAIL_BYTES", self.fdt_tail_bytes)]
+        {
+            writeln!(out, "pub const {name}: u64 = {value:#x};").unwrap();
+        }
+        out.push_str(&self.reservation_constant());
+        out
+    }
+
+    pub(super) fn boot_constants(&self) -> String
+    {
+        let mut out = self.boot_admission_constants();
+        for (name, value) in [("MINIMUM_RAM_BYTES", self.ram.end - self.ram.start),
+                              ("DISPLAY_WIDTH", self.display_width),
+                              ("DISPLAY_HEIGHT", self.display_height),
+                              ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
+                              ("DISPLAY_SCRATCH_BYTES",
+                               self.display_scratch.end - self.display_scratch.start),
+                              ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
+                              ("APPLICATION_PRIMARY_LIMIT", self.definitions.start),
+                              ("APPLICATION_RELOCATION_BASE", self.application_relocation_base)]
+        {
+            writeln!(out, "pub const {name}: u64 = {value:#x};").unwrap();
+        }
+        out.push_str(application_region_source());
         out
     }
 }

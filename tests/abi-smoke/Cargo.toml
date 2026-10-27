@@ -11,6 +11,9 @@ test = false
 bench = false
 
 [dependencies]
+bootrom = { path = "../../bootrom" }
+linked_list_allocator = "0.10"
+mac-formats.workspace = true
 mac-abi.workspace = true
 mac-traps.workspace = true
 mac-toolbox.workspace = true

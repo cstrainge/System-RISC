@@ -596,15 +596,13 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
         serial!("BOOT_STACK_REJECTED: {kind}: {error}; update the platform policy and rebuild");
         return ptr::null();
     }
-    if info.flags & mac_abi::BOOT_GRAPHICAL != 0
+    // SAFETY: first single-hart entry owns validated physical RAM. Graphical
+    // and headless boot both supply the same real reservation contract; all
+    // native execution needs owned pages, not an implicit headless fallback.
+    if let Err(error) = unsafe { crate::machine::pages::initialize(memory) }
     {
-        // SAFETY: first single-hart entry owns validated physical RAM. The ROM
-        // account and all image arenas stay pinned for the System lifetime.
-        if let Err(error) = unsafe { crate::machine::pages::initialize(memory) }
-        {
-            serial!("BOOT_MEMORY_REJECTED: {error}");
-            return ptr::null();
-        }
+        serial!("BOOT_MEMORY_REJECTED: {error}");
+        return ptr::null();
     }
     unsafe {
         HEAP.initialize(addr_of_mut!(HEAP_MEMORY).cast::<u8>(),
