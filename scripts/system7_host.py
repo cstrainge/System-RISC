@@ -24,7 +24,8 @@ def process_exists(pid):
             return True
         return True
     # os.kill(pid, 0) terminates processes on Windows. Query a process handle
-    # instead, treating inaccessible owners conservatively as still alive.
+    # instead. Windows can retain an exited process object whose OpenProcess
+    # returns ACCESS_DENIED even though its PID is absent from the process list.
     from ctypes import wintypes
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -39,7 +40,7 @@ def process_exists(pid):
         if error == 87:  # ERROR_INVALID_PARAMETER: no such process
             return False
         if error == 5:
-            return True
+            return _windows_pid_present(kernel, pid)
         raise ctypes.WinError(error)
     try:
         result = kernel.WaitForSingleObject(handle, 0)
@@ -48,6 +49,23 @@ def process_exists(pid):
         return result == 0x102  # WAIT_TIMEOUT: not exited
     finally:
         kernel.CloseHandle(handle)
+
+
+def _windows_pid_present(kernel, pid):
+    from ctypes import wintypes
+    kernel.K32EnumProcesses.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD,
+                                       ctypes.POINTER(wintypes.DWORD)]
+    kernel.K32EnumProcesses.restype = wintypes.BOOL
+    capacity = 1024
+    while True:
+        processes = (wintypes.DWORD * capacity)()
+        used = wintypes.DWORD()
+        if not kernel.K32EnumProcesses(processes, ctypes.sizeof(processes), ctypes.byref(used)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        # A full buffer may have omitted the PID. Grow before trusting absence.
+        if used.value < ctypes.sizeof(processes):
+            return pid in processes[:used.value // ctypes.sizeof(wintypes.DWORD)]
+        capacity *= 2
 
 
 @contextmanager
