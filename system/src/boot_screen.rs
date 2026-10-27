@@ -6,13 +6,16 @@ use mac_formats::{Error, Result, resource::Resource};
 use crate::toolbox::{controls::objects::Manager,
                      quickdraw::{Canvas, Point,
                                  fonts::{FontManager, FontSelection}}};
+mod strip;
+pub(crate) use strip::Refusal as ExtensionRefusal;
 
 pub struct BootScreen
 {
-    controls: Manager,
-    id:       u64,
-    entry:    DefinitionEntry,
-    state:    ControlDefinitionState
+    controls:   Manager,
+    id:         u64,
+    entry:      DefinitionEntry,
+    state:      ControlDefinitionState,
+    extensions: strip::Strip
 }
 fn failed(_: Status) -> Error
 {
@@ -42,6 +45,31 @@ impl BootScreen
                                    .try_into()
                                    .map_err(|_| Error::Malformed("invalid boot icon resource"))?;
         let entry = definitions.resolve(*b"CDEF", CDEF_PROGRESS_BAR)?;
+        // Package admission and theme resolution happen before any paint or
+        // module callback. Every outcome then owns ready-to-copy pixels.
+        let fallback_id = crate::toolbox::quickdraw::icons_service::file_id(resources, *b"MACS", *b"INIT")
+            .map_err(|_| Error::Missing("System standard extension icon is unavailable; rebuild the System theme bundle"))?;
+        let fallback =
+            crate::toolbox::quickdraw::icons::IconFamily::from_lookup(fallback_id, |kind, id| {
+                resources.iter()
+                         .find(|resource| resource.kind == kind && resource.id == id)
+                         .map(|resource| resource.data.as_slice())
+            }).map_err(|_| {
+                  Error::Malformed("System standard extension icon is invalid; rebuild its theme \
+                                    icon family")
+              })?;
+        let extensions =
+            strip::Strip::new(crate::display::WIDTH,
+                              crate::display::HEIGHT,
+                              strip::Bitmap::prepare(&fallback).map_err(|_| {
+                                  Error::AllocationFailed("System extension theme artwork \
+                                                           admission failed; rebuild its icon \
+                                                           family or free System memory")
+                              })?).map_err(|_| {
+                                      Error::AllocationFailed("System extension startup strip \
+                                                               admission failed; free System \
+                                                               memory and restart")
+                                  })?;
         let pixels = crate::platform::back_buffer();
         mac_boot_screen::draw_panel(&mut mac_boot_screen::Raster::new(pixels, crate::display::WIDTH, crate::display::HEIGHT)
             .ok_or(Error::Malformed("invalid boot framebuffer"))?, icon);
@@ -85,7 +113,126 @@ impl BootScreen
         Ok(Self { controls,
                   id: call.id,
                   entry,
-                  state })
+                  state,
+                  extensions })
+    }
+
+    /// The loaded code's real result determines the icon. Artwork I/O and
+    /// conversion finish first; no Files, registry, desktop or framebuffer borrow
+    /// survives into the foreign initializer. A refusal does not publish hooks.
+    pub(crate) fn extension_attempt<T>(&mut self, name: &str, volume: u32, cnid: u32,
+                                       refusal: Option<ExtensionRefusal>,
+                                       call: impl FnOnce() -> core::result::Result<T, Status>)
+                                       -> core::result::Result<T, Status>
+    {
+        if let Err(error) = self.present_extensions()
+        {
+            serial!("EXTENSION_STARTUP_PRESENTATION_REFUSED name={name:?} cause={error}; \
+                     next=restart with fewer extensions or repair the display");
+            return Err(SERVICE_BUSY);
+        }
+        let family = crate::kernel::with_resources(|resident| {
+                         crate::kernel::with_files(|files| files.file_icon(volume, cnid, resident))
+                .map_err(crate::state::AccessError::status)?
+                     }).ok_or(NOT_SUPPORTED)
+                       .and_then(|family| family);
+        let (artwork, artwork_failure) = match family
+        {
+            Ok(family) =>
+            {
+                match strip::Bitmap::prepare(&family)
+                {
+                    Ok(bitmap) => (Some(bitmap), None),
+                    Err(strip::Error::Artwork(status)) => (None, Some(status)),
+                    Err(_) => (None, Some(NO_MEMORY))
+                }
+            }
+            Err(NOT_FOUND) => (None, None),
+            Err(status) => (None, Some(status))
+        };
+        let cause = refusal.or(artwork_failure.map(ExtensionRefusal::Artwork));
+        let ordinal = self.extensions.len();
+        let result = match self.extensions.attempt(name, artwork, cause, || {
+                                              if let Some(status) = artwork_failure
+                                              {
+                                                  Err(status)
+                                              }
+                                              else
+                                              {
+                                                  call()
+                                              }
+                                          })
+        {
+            Ok(result) => result,
+            Err(error) =>
+            {
+                serial!("EXTENSION_STARTUP_PRESENTATION_REFUSED name={name:?} cause={error}; \
+                         next=restart with fewer extensions or repair the System theme");
+                return Err(NO_MEMORY);
+            }
+        };
+        if let Some(view) = self.extensions.view(ordinal)
+        {
+            if let strip::Outcome::Refused(cause) = view.outcome
+            {
+                serial!("EXTENSION_STARTUP_REFUSED name={:?} cause={} next={}",
+                        view.name,
+                        cause.cause(),
+                        cause.action());
+            }
+        }
+        // The initializer's result remains authoritative even if presentation
+        // fails. A display error cannot turn published code into a fake refusal;
+        // the exact pending cell stays retained for the next presentation retry.
+        if let Err(error) = self.present_extensions()
+        {
+            serial!("EXTENSION_STARTUP_PRESENTATION_REFUSED name={name:?} cause={error}; \
+                     next=repair the display and retry presenting the retained outcome");
+        }
+        result
+    }
+
+    pub(crate) fn extension_refused(&mut self, name: &str, volume: u32, cnid: u32,
+                                    cause: ExtensionRefusal, status: Status)
+    {
+        // This is an outcome notification, not successful activation. The
+        // initializer is never called and extension_attempt reports any display
+        // refusal itself while preserving the named original refusal.
+        let _: core::result::Result<(), Status> =
+            self.extension_attempt(name, volume, cnid, Some(cause), || Err(status));
+    }
+
+    fn present_extensions(&mut self) -> core::result::Result<(), strip::Error>
+    {
+        let Some(bounds) = self.extensions.paint_pending(crate::platform::back_buffer())?
+        else
+        {
+            return Ok(());
+        };
+        crate::platform::present_rects(crate::platform::back_buffer(),
+                                       [bounds],
+                                       Default::default());
+        let ordinal = self.extensions.len() - 1;
+        if let Some(view) = self.extensions.view(ordinal)
+        {
+            serial!("EXTENSION_ICON name={:?} ordinal={} outcome={} artwork={} bounds={},{},{},{}",
+                    view.name,
+                    ordinal,
+                    if matches!(view.outcome, strip::Outcome::Loaded)
+                    {
+                        "ready"
+                    }
+                    else
+                    {
+                        "refused"
+                    },
+                    if view.source == strip::Source::Package { "package" } else { "theme" },
+                    view.bounds.left,
+                    view.bounds.top,
+                    view.bounds.right,
+                    view.bounds.bottom);
+        }
+        Ok(())
     }
 
     pub fn completed(&mut self, stage: u8) -> Result<()>

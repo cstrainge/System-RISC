@@ -1,0 +1,14 @@
+{
+  "source": "Original Mac OS 7.6.1 startup capture on a private q800 reference VM",
+  "capture_sha256": "f35c7b79ac1072e965d919c0ee96ae08489cea72e0f1d12e5509611cb8818c79",
+  "system_macbinary_sha256": "1150d6a3f74df612cc41e7d0dc045242b6e8d92d9a899eb39586e662e7b49dea",
+  "display": { "width": 640, "height": 480 },
+  "observed": { "visible_icons": 9, "icon_size": 32, "first_left": 8, "first_top": 440, "pitch": 40, "bottom_margin": 8 },
+  "documentary_source": "Apple Technical Information Library article 22059, Macintosh Startup Sequence: extension icons appear along the bottom as loaded",
+  "qualification": {
+    "first_row_geometry": "measured from retained original capture",
+    "artwork_pixel_match": "not claimed by these geometry assertions",
+    "failure_x": "native high-contrast design; no retained original failed-extension capture",
+    "row_wrapping": "native bounded layout below the welcome panel; not original-system qualified"
+  }
+}

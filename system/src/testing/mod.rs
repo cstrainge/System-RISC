@@ -7,6 +7,8 @@ pub mod scrap;
 pub mod drag;
 pub mod inspection;
 pub mod presentation;
+#[path = "../boot_screen/strip.rs"]
+pub mod extension_startup;
 pub mod power;
 mod worlds;
 mod textedit;

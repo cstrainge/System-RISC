@@ -544,9 +544,10 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     // Module-owned icon families resolve the System palettes at admission.
     // Publish immutable resource/font services before entering any driver;
     // exports still mount before Finder or another application can run.
-    crate::drivers::discover().map_err(|_| {
-                                  mac_formats::Error::Malformed("module discovery failed")
-                              })?;
+    crate::drivers::discover(&mut boot_screen).map_err(|_| {
+                                                  mac_formats::Error::Malformed("module discovery \
+                                                                                 failed")
+                                              })?;
     if let Err(status) = crate::toolbox::files::mount_startup_exports()
     {
         serial!("HOST_VOLUME_DISCOVERY_FAILED status={}", status);

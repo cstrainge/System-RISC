@@ -18,7 +18,7 @@ fn offers(metadata: &[u8], dependency: mac_module::Dependency) -> bool
                                           })
 }
 
-pub(crate) fn discover() -> Result<(), Status>
+pub(crate) fn discover(boot: &mut crate::boot_screen::BootScreen) -> Result<(), Status>
 {
     let candidates=crate::kernel::with_files(|files|files.module_candidates()).map_err(crate::state::AccessError::status)??;
     if candidates.is_empty()
@@ -36,6 +36,14 @@ pub(crate) fn discover() -> Result<(), Status>
         {
             serial!("MODULE_REJECTED name={} reason=wrong-installation-directory",
                     core::str::from_utf8(&candidate.name).unwrap_or("?"));
+            if candidate.file_type == *b"INIT"
+            {
+                boot.extension_refused(core::str::from_utf8(&candidate.name).unwrap_or("?"),
+                                       candidate.volume,
+                                       candidate.cnid,
+                                       crate::boot_screen::ExtensionRefusal::Location,
+                                       BAD_ARGUMENT);
+            }
             continue;
         }
         let metadata = crate::kernel::with_files(|files| {
@@ -54,7 +62,15 @@ pub(crate) fn discover() -> Result<(), Status>
             _ =>
             {
                 serial!("MODULE_REJECTED name={} reason=missing-or-invalid-contract",
-                        core::str::from_utf8(&candidate.name).unwrap_or("?"))
+                        core::str::from_utf8(&candidate.name).unwrap_or("?"));
+                if candidate.directory == PackageKind::Extension
+                {
+                    boot.extension_refused(core::str::from_utf8(&candidate.name).unwrap_or("?"),
+                                           candidate.volume,
+                                           candidate.cnid,
+                                           crate::boot_screen::ExtensionRefusal::Contract,
+                                           BAD_ABI);
+                }
             }
         }
     }
@@ -99,6 +115,11 @@ pub(crate) fn discover() -> Result<(), Status>
                     let (candidate, metadata) = waiting.remove(index);
                     serial!("MODULE_SKIPPED name={} reason=dependency-device-absent",
                             core::str::from_utf8(&candidate.name).unwrap_or("?"));
+                    if candidate.directory == PackageKind::Extension
+                    {
+                        boot.extension_refused(core::str::from_utf8(&candidate.name).unwrap_or("?"),
+                            candidate.volume, candidate.cnid, crate::boot_screen::ExtensionRefusal::Dependency, NOT_FOUND);
+                    }
                     absent.push(metadata);
                     progress = true;
                     continue;
@@ -128,21 +149,67 @@ pub(crate) fn discover() -> Result<(), Status>
                 serial!("MODULE_REJECTED name={} reason={:?}",
                         core::str::from_utf8(&candidate.name).unwrap_or("?"),
                         error);
+                if candidate.directory == PackageKind::Extension
+                {
+                    let cause = match error
+                    {
+                        Error::Contract(mac_module::Error::WrongLocation) =>
+                        {
+                            crate::boot_screen::ExtensionRefusal::Location
+                        }
+                        Error::Contract(mac_module::Error::MissingDependency
+                                        | mac_module::Error::MissingService) =>
+                        {
+                            crate::boot_screen::ExtensionRefusal::Dependency
+                        }
+                        Error::Contract(_) => crate::boot_screen::ExtensionRefusal::Contract,
+                        _ => crate::boot_screen::ExtensionRefusal::Initialization(status(error))
+                    };
+                    boot.extension_refused(core::str::from_utf8(&candidate.name).unwrap_or("?"),
+                                           candidate.volume,
+                                           candidate.cnid,
+                                           cause,
+                                           status(error));
+                }
                 continue;
             }
             if declared && !matched
             {
                 serial!("MODULE_SKIPPED name={} reason=device-absent",
                         core::str::from_utf8(&candidate.name).unwrap_or("?"));
+                if candidate.directory == PackageKind::Extension
+                {
+                    boot.extension_refused(core::str::from_utf8(&candidate.name).unwrap_or("?"),
+                                           candidate.volume,
+                                           candidate.cnid,
+                                           crate::boot_screen::ExtensionRefusal::Device,
+                                           NOT_FOUND);
+                }
                 absent.push(metadata);
                 continue;
             }
             let resources = crate::kernel::with_files(|files| {
                                 files.module_resources(candidate.volume, candidate.cnid)
                             }).map_err(crate::state::AccessError::status)?;
-            let result = resources.and_then(|resources| {
-                                      load(&resources, candidate.file_type, candidate.directory)
-                                  });
+            let result = if candidate.directory == PackageKind::Extension
+            {
+                boot.extension_attempt(core::str::from_utf8(&candidate.name).unwrap_or("?"),
+                                       candidate.volume,
+                                       candidate.cnid,
+                                       None,
+                                       || {
+                                           resources.and_then(|resources| {
+                                                        load(&resources, candidate.file_type,
+                                                             candidate.directory)
+                                                    })
+                                       })
+            }
+            else
+            {
+                resources.and_then(|resources| {
+                             load(&resources, candidate.file_type, candidate.directory)
+                         })
+            };
             if let Err(status) = result
             {
                 serial!("MODULE_REJECTED name={} status={}",
@@ -156,6 +223,14 @@ pub(crate) fn discover() -> Result<(), Status>
             {
                 serial!("MODULE_REJECTED name={} reason=missing-or-cyclic-dependency",
                         core::str::from_utf8(&candidate.name).unwrap_or("?"));
+                if candidate.directory == PackageKind::Extension
+                {
+                    boot.extension_refused(core::str::from_utf8(&candidate.name).unwrap_or("?"),
+                                           candidate.volume,
+                                           candidate.cnid,
+                                           crate::boot_screen::ExtensionRefusal::Cycle,
+                                           BAD_ABI);
+                }
             }
             break;
         }
