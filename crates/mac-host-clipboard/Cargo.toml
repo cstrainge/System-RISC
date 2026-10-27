@@ -1,0 +1,8 @@
+[package]
+name = "mac-host-clipboard"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+mac-vdagent-protocol.workspace = true

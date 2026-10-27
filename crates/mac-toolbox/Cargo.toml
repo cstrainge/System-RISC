@@ -26,6 +26,8 @@ toolbox-crashes = { path = "../../toolbox/crashes" }
 toolbox-dialogs = { path = "../../toolbox/dialogs" }
 
 [target.'cfg(not(target_arch = "riscv64"))'.dev-dependencies]
+mac-host-clipboard.workspace = true
+mac-vdagent-protocol.workspace = true
 mac-power-interface.workspace = true
 mac-system = { path = "../../system", features = ["test-support"] }
 serde_json.workspace = true

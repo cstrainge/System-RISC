@@ -492,6 +492,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-host-clipboard"
+version = "0.1.0"
+dependencies = [
+ "mac-vdagent-protocol",
+]
+
+[[package]]
 name = "mac-host-protocol"
 version = "0.1.0"
 
@@ -594,11 +601,13 @@ dependencies = [
  "mac-code-resource",
  "mac-formats",
  "mac-hfs-b",
+ "mac-host-clipboard",
  "mac-module",
  "mac-power-interface",
  "mac-system",
  "mac-text",
  "mac-traps",
+ "mac-vdagent-protocol",
  "serde",
  "serde-json-core",
  "serde_json",
@@ -629,6 +638,10 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
 ]
+
+[[package]]
+name = "mac-vdagent-protocol"
+version = "0.1.0"
 
 [[package]]
 name = "maybe-owned"
