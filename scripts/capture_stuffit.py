@@ -16,6 +16,7 @@ from capture_system7_applications_ui import Driver
 from capture_system7_event_trace import decode
 from hfs_b_tool import Image
 import system7_vm as vm
+from system7_capture import OwnedProcesses
 
 
 def digest(path):
@@ -60,6 +61,7 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
     dist.mkdir()
     raw = dist / 'stuffit.raw'
     process = companion = None
+    owners = OwnedProcesses()
     try:
         subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
                         str(base / 'system7.qcow2'), str(raw)], check=True)
@@ -102,13 +104,14 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
         companion = subprocess.Popen([str(host / 'risc-host'), '--export', f'Writable={exports[0]}',
                                       '--read-only-export', f'ReadOnly={exports[1]}'],
                                      stdout=subprocess.PIPE, stderr=companion_log, text=True)
+        owners.add(companion)
         companion_log.close()
         if not select.select([companion.stdout], [], [], 5)[0]:
             raise TimeoutError('private StuffIt host companion did not become ready')
         ready = companion.stdout.readline().strip()
         port = int(ready.rsplit(':', 1)[1])
         vm.DIST = dist
-        process, endpoint = vm.launch(output / 'vm', writable=True, host_bridge=port, expected_exports=2)
+        process, endpoint = owners.launch(output / 'vm', writable=True, host_bridge=port, expected_exports=2)
         termination = 'timeout'
         if finder:
             driver = Driver(endpoint, output / 'vm/serial.log')
@@ -193,21 +196,8 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
             trace_snapshot(output, endpoint, output / 'vm/serial.log', 'failure')
         raise
     finally:
-        try:
-            if process is not None:
-                if process.poll() is None:
-                    vm.qmp('quit', endpoint=endpoint)
-                process.wait(timeout=10)
-        finally:
-            if companion is not None:
-                companion.terminate()
-                companion.wait(timeout=10)
-                companion.stdout.close()
-            vm.DIST = base
-            for folder in [dist, output / 'vm']:
-                for pattern in ['*.raw', '*.qcow2', '*.bin']:
-                    for path in folder.glob(pattern):
-                        path.unlink()
+        vm.DIST = base
+        owners.cleanup(output, [dist, output / 'vm'])
 
 
 if __name__ == '__main__':

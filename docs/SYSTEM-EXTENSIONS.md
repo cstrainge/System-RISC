@@ -1,8 +1,10 @@
 # Control panels and System extensions
 
-Status: shared native module loading and target-selected resource admission are
-resident. General extension services, native control panels and the startup strip
-remain required [platform workstream P6](CORE-TOOLBOX-ROADMAP.md#p6--control-panels-and-kernel-extensions)
+Status: shared native module loading, target-selected resource admission and the
+retained startup strip are resident. Native startup acceptance covers real INIT
+success, package artwork, theme fallback and initialization refusal. General
+extension services, scheduled module workers and native control panels remain
+required [platform workstream P6](CORE-TOOLBOX-ROADMAP.md#p6--control-panels-and-kernel-extensions)
 work. Native Rust System extensions may execute in the kernel; their configuration
 UI remains an application using the public Toolbox. Finder extension execution
 has a separate, still-staged host/SDK boundary.
@@ -119,6 +121,18 @@ startup evidence when implementing the resources/presentation phase. The Host
 Clipboard Extension is the first end-to-end customer: its package-owned icon must
 appear during actual startup, with a separate missing-artwork fallback case.
 The extension's own icon is distinct from icons it registers for file kinds.
+
+`extension_startup_native.rs` qualifies the actual optimized discovery path with
+three dedicated INIT probes. An external debugger stops at the discovery symbol
+derived from that image's ELF, then at its real return before desktop construction.
+Public Icon Utilities render the expected package/theme pixels; canonical Rust
+assertions check the complete before/after frames, the refusal X, and unchanged
+pixels outside the three cells. The refused initializer remains unpublished, and
+the desktop subsequently accepts physical input. Capture processes and media are
+owned privately, including quarantine when a child cannot be reaped. This test
+adds no production delay or instrumentation. It does not activate the production
+Host Clipboard package, admit a worker, qualify original INIT execution, or claim
+an original Macintosh pixel match for native X styling or row wrapping.
 
 ## Rust extension services
 

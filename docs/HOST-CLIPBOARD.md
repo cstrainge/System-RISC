@@ -287,8 +287,12 @@ retained original Macintosh evidence. Canonical startup helper tests measure the
 retained original 7.6.1 first-row geometry and bound pixel damage to the changed
 32-pixel cell. Failure-X styling and row wrapping are native choices without an
 original failed-extension capture; neither is a complete startup pixel-match
-claim. Host helper tests and native compilation still require actual boot
-captures for successful activation, missing artwork and refused prerequisites.
+claim. Native discovery/boot captures now qualify successful package artwork,
+theme fallback and a genuine initializer refusal using three dedicated INIT
+probes, including exact public-SDK icon pixels, unchanged pixels outside the
+cells and usable desktop input afterward. These probes qualify the resident
+presentation machinery. Host Clipboard still needs its own real package/worker
+activation and missing-prerequisite campaign.
 
 Cover absent/disabled/unsupported bridges, disconnect/reconnect, timeout, malformed
 messages, allocation limits, boot without host integration and stale/foreign

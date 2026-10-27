@@ -22,6 +22,7 @@ from unittest.mock import patch
 from hfs_b_tool import Image
 from system7_platform import TARGET, guest_env
 import system7_vm as vm
+from system7_capture import stop_owned
 
 MODES = ('capabilities', 'wrong-name', 'malformed', 'absent')
 DISK_SUFFIXES = ('.raw', '.qcow2', '.qcow', '.hfs', '.hfsb', '.img')
@@ -54,23 +55,6 @@ def prepare(output, private_text=False):
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def stop_owned(process, endpoint):
-    if process is None:
-        return
-    if process.poll() is None and endpoint is not None:
-        try:
-            vm.qmp('quit', endpoint=endpoint)
-        except (OSError, ValueError, RuntimeError):
-            pass
-    if process.poll() is None:
-        process.terminate()
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=10)
 
 
 class MalformedPeer:

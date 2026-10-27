@@ -12,11 +12,11 @@ from pathlib import Path
 import select
 import shutil
 import subprocess
-import sys
 import time
 
 from hfs_b_tool import Image
 import system7_vm as vm
+from system7_capture import OwnedProcesses
 
 
 def capture_env():
@@ -31,22 +31,6 @@ def run(arguments, **options):
     env[vm.BUILD_DIR_ENV] = str(vm.build_dir())
     options.setdefault('cwd', vm.SOURCE)
     return subprocess.run(arguments, env=env, **options)
-
-
-def stop_owned(process, endpoint=None):
-    if process.poll() is None and endpoint is not None:
-        try:
-            vm.qmp('quit', endpoint=endpoint)
-        except (OSError, ValueError, RuntimeError):
-            # The PID belongs to this capture, never to a discovered desktop.
-            pass
-    if process.poll() is None:
-        process.terminate()
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=10)
 
 
 def digest(path):
@@ -101,6 +85,7 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
     dist.mkdir()
     raw = dist / 'native-host.raw'
     companion = process = None
+    owners = OwnedProcesses()
     endpoint = None
     try:
         prepare(output, sdk, disconnect=disconnect)
@@ -185,6 +170,7 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
             companion = subprocess.Popen(companion_args,
                                          stdout=subprocess.PIPE, stderr=log,
                                          cwd=vm.SOURCE, env=capture_env())
+            owners.add(companion)
             if not select.select([companion.stdout], [], [], 10)[0]:
                 raise TimeoutError('private host companion did not start')
             ready = companion.stdout.readline().decode()
@@ -193,7 +179,7 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
             (output / 'companion-ready.txt').write_text(ready)
             port = int(ready.rsplit(':', 1)[1])
             vm.DIST = dist
-            process, endpoint = vm.launch(output / 'vm', writable=sdk, host_bridge=port)
+            process, endpoint = owners.launch(output / 'vm', writable=sdk, host_bridge=port)
             termination = 'desktop-ready'
             fixture_progress = []
             if sdk:
@@ -266,7 +252,7 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
                 image.import_macbinary(output / 'packages/Finder.bin', '/System Folder')
                 run(['qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2',
                                 str(raw), str(dist / 'system7.qcow2')], check=True)
-                process, endpoint = vm.launch(output / 'restore-vm', host_bridge=port)
+                process, endpoint = owners.launch(output / 'restore-vm', host_bridge=port)
                 deadline = time.monotonic() + timeout
                 restore_termination = 'timeout'
                 while time.monotonic() < deadline:
@@ -292,32 +278,8 @@ def capture(output, sdk=False, disconnect=None, *, timeout=120):
                 'original_after': {name: digest(base / name) for name in before}
             }, indent=2) + '\n')
     finally:
-        primary_error = sys.exc_info()[1]
-        cleanup_errors = []
-        for owned, control in [(process, endpoint), (companion, None)]:
-            if owned is not None:
-                try:
-                    stop_owned(owned, control)
-                except Exception as error:
-                    cleanup_errors.append(error)
-        if companion is not None and companion.stdout is not None:
-            try:
-                companion.stdout.close()
-            except OSError as error:
-                cleanup_errors.append(error)
         vm.DIST = original_dist
-        # Retain reports/packages, not generated disks. Attempt every removal
-        # even if QMP, process teardown or an earlier unlink has failed.
-        for folder in [dist, output / 'vm', output / 'restore-vm']:
-            for pattern in ['*.raw', '*.qcow2', '*.qcow', '*.hfs', '*.hfsb', '*.img', '*.bin']:
-                for path in folder.rglob(pattern):
-                    try:
-                        path.unlink()
-                    except OSError as error:
-                        cleanup_errors.append(error)
-        if cleanup_errors:
-            causes = ([primary_error] if primary_error is not None else []) + cleanup_errors
-            raise BaseExceptionGroup('Private host-filesystem capture cleanup failed; inspect retained evidence', causes)
+        owners.cleanup(output, [dist, output / 'vm', output / 'restore-vm'])
 
 
 if __name__ == '__main__':
