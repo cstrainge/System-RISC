@@ -2920,6 +2920,15 @@ This retained authority is a prerequisite for later allocation forwarding. It
 does not yet select a global allocator, charge scheduler metadata or heaps,
 create module workers, or qualify protected recovery backing.
 
+The unique owner/account authority control blocks belong to **System foundation**.
+They establish accounting authority and must not retain allocation receipts from
+their own account, which would create a construction or retirement cycle. This
+classification is narrow: per-domain pool storage, ledger arrays, thread metadata
+and service payloads remain charged to the process/module that owns them. Actual
+control-block requests, allocator headers and backend alignment overhead must be
+measured and charged to foundation; this is not an unaccounted bootstrap bypass.
+The accounted allocator and its bootstrap transition remain to be installed.
+
 The combined resident build passes native RAM admission, Finder restart/recovery,
 independent application preemption and repeated malformed-open teardown/relaunch
 with this additional pin present. Model tests cover concurrent admission/closure,
