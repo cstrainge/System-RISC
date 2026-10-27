@@ -38,15 +38,48 @@ pub(crate) struct TrapFrame
 const _: () = assert!(core::mem::offset_of!(TrapFrame, pc) == 240
                       && core::mem::offset_of!(TrapFrame, status) == 248);
 pub(crate) const INITIAL_STATUS: usize = 0x1880 | 0x6600;
-/// Eager bridge for the ISA-floor stage; backing scales with discovered VLEN.
-/// Per-thread domain backing and dirty/lazy save policy migrate with the model.
-pub(crate) fn frame_reservation_bytes() -> usize
+/// Validate the selected sizes against this CPU before allocating pools or
+/// starting services. This is policy admission, not System-stack activation.
+pub(crate) fn validate_stack_configuration(
+    )
+    -> Result<(), (&'static str, mac_kernel_model::stack::Error)>
 {
-    let bytes: usize;
+    use mac_kernel_model::{pages::PageGeometry,
+                           stack::{self, Policy}};
+
+    use super::memory::*;
+    let vector_bytes: u64;
     unsafe {
-        asm!("csrr {},vlenb",out(reg)bytes,options(nomem,nostack));
+        asm!("csrr {},vlenb", out(reg)vector_bytes, options(nomem,nostack));
     }
-    core::mem::size_of::<TrapFrame>() + 32 * bytes
+    let cpu_bytes =
+        stack::cpu_state_bytes(size_of::<TrapFrame>() as u64, 32, vector_bytes).map_err(|error| {
+                                                                                   ("CPU frame",
+                                                                                    error)
+                                                                               })?;
+    for (name, minimum, selected, maximum) in
+        [("System per-hart", SYSTEM_STACK_MIN_BYTES, SYSTEM_STACK_BYTES, SYSTEM_STACK_MAX_BYTES),
+         ("application per-thread",
+          APPLICATION_STACK_MIN_BYTES,
+          APPLICATION_STACK_BYTES,
+          APPLICATION_STACK_MAX_BYTES)]
+    {
+        let geometry =
+            PageGeometry::new(PAGE_BYTES).map_err(|_| {
+                                             (name,
+                                              stack::Error::Policy { minimum,
+                                                                     default: selected,
+                                                                     maximum,
+                                                                     page_bytes: PAGE_BYTES })
+                                         })?;
+        Policy::new(minimum, selected, maximum, geometry).and_then(|policy| {
+                                                             policy.select(None, cpu_bytes)
+                                                         })
+                                                         .map_err(|error| (name, error))?;
+    }
+    serial!("STACK_POLICY system={} application={} cpu_state={} vector_register_bytes={}",
+            SYSTEM_STACK_BYTES, APPLICATION_STACK_BYTES, cpu_bytes, vector_bytes);
+    Ok(())
 }
 
 pub(crate) fn install()

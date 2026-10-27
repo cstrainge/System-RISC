@@ -14,7 +14,8 @@ native worker-thread API can expose additional OS threads explicitly.
 
 The first native implementation now schedules Finder and separately loaded APPLs
 on one RV64 hart. CLINT timer interrupts preempt application code independently
-of Toolbox calls. Registered, fallibly grown application thread records own independent 256 KiB stacks,
+of Toolbox calls. Registered, fallibly grown application thread records own independent page-backed stacks (4 MiB by default, selected by the checked
+platform policy within 64 KiB–8 MiB),
 saved integer/FP/vector frames (vector storage scales with hardware VLEN) and
 trusted AppId/ThreadId contexts. Kernel traps mask
 interrupts, including nested definition calls, so allocator and manager guards

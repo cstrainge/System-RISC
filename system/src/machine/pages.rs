@@ -179,7 +179,8 @@ fn allocate(order: u32) -> Result<Block, Error>
 /// quiescence. The backend returns pages through the same IRQ-safe pool gate.
 pub(crate) struct Stack
 {
-    pages: Block
+    pages: Block,
+    bytes: u64
 }
 impl Stack
 {
@@ -187,7 +188,7 @@ impl Stack
     {
         let page = super::memory::PAGE_BYTES as usize;
         let count = bytes.checked_add(page - 1)
-                         .filter(|_| bytes != 0)
+                         .filter(|_| bytes != 0 && bytes.is_multiple_of(page))
                          .map(|n| n / page)
                          .and_then(usize::checked_next_power_of_two)
                          .ok_or(Error::Geometry)?;
@@ -197,16 +198,22 @@ impl Stack
         unsafe {
             core::ptr::write_bytes(pages.address().0 as *mut u8, 0, pages.bytes() as usize);
         }
-        Ok(Self { pages })
+        Ok(Self { pages,
+                  bytes: bytes as u64 })
     }
 
     pub(crate) fn bytes(&self) -> u64
+    {
+        self.bytes
+    }
+
+    pub(crate) fn backing_bytes(&self) -> u64
     {
         self.pages.bytes()
     }
 
     pub(crate) fn top(&self) -> usize
     {
-        (self.pages.address().0 + self.pages.bytes()) as usize
+        (self.pages.address().0 + self.bytes) as usize
     }
 }

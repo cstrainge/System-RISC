@@ -197,7 +197,12 @@ Other values, including the proposed minimum/maximum ranges below, remain
 **review proposals**. Evaluate them with real image/control/account usage,
 including Res Edit and a 200 MB Text Edit document, before enabling. Approval of
 the five starting defaults does not select virtual addresses, stack/control-space
-sizes, Finder's recovery share, or emergency-kit concurrency.
+sizes, Finder's recovery share, or emergency-kit concurrency. Stack policies were
+subsequently selected on 2026-10-26: both System-per-hart and application-per-thread
+defaults are 4 MiB; System bounds are 256 KiB–8 MiB and application bounds are
+64 KiB–8 MiB. The checked platform record emits both linker symbols and Rust
+constants. Application/idle stack allocation consumes that default; the System
+stack is activated with the dedicated trap-stack stage, not by emitting a constant.
 
 | Configured policy | Minimum / initial default / maximum proposal | Reason |
 |---|---|---|
@@ -208,7 +213,8 @@ sizes, Finder's recovery share, or emergency-kit concurrency.
 | Process kernel account | 4 MiB / 16 MiB / 128 MiB | Controls, tables, zones, TCBs and frames; admission also checks global remainder |
 | Process app committed heap budget | 4 MiB / 64 MiB / 2 GiB | Grow on demand; a 200 MB file uses file-backed views, not a forced whole-file copy |
 | Application heap growth minimum | 16 KiB / 64 KiB / 2 MiB | Rounded up to target geometry; bounded by selected process budget |
-| Per-thread fixed stack | 64 KiB / 256 KiB / 8 MiB | Static per thread, charged app account, freed after switch-away |
+| Per-thread fixed stack (approved 2026-10-26) | 64 KiB / **4 MiB** / 8 MiB | Static per thread, charged app account, freed after switch-away |
+| Per-hart System stack (approved 2026-10-26) | 256 KiB / **4 MiB** / 8 MiB | Trap entry and resident work; guards and safe entry remain paging gates |
 | Designated per-control space | 1 MiB / 16 MiB / 128 MiB | A sub-budget of process kernel account, never independently guaranteed physical memory |
 | TE2 owned threshold | Tunable 0–100%, default 40%, bounded by a tunable **~3.2 MiB default ceiling** | Ratified 2026-10-23 calibration: owns strictly below both limits; at either limit uses view. The ceiling is 3,355,443 bytes (3.2 MiB rounded down), even if control space grows |
 | Process/thread/handle counts | Grow until account or memory refusal | No fixed-eight or guessed high replacement constant |
@@ -320,6 +326,11 @@ remain unchanged. Physical-pool IRQ-safe invocation is still a mandatory pre-use
 See [architecture](../ARCHITECTURE.md#native-isa-floor).
 
 ## Migration and gates
+
+The TE2/Text Edit migration is **on hold** pending the replacement common-controls
+architecture. Its earlier implementation shape is not an active work order.
+Paging, heap/reserve and domain work continue independently; existing control
+safety and lifetime contracts remain in force.
 
 Reactor Room is now the first customer for stage-2 inspection APIs and a visible
 acceptance surface for each later stage. Implement its application and native

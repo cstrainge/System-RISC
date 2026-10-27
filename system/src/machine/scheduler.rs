@@ -16,7 +16,8 @@ use crate::{context::{EventWaiter, ThreadContext},
 mod lifetime;
 pub(crate) use lifetime::{ReleaseThreads, specification};
 const IDLE: usize = usize::MAX;
-const STACK_WORDS: usize = 16384; // 256KiB, including nested service/definition frames.
+// Generated from the same checked platform policy as the linker artifacts.
+const STACK_BYTES: usize = super::memory::APPLICATION_STACK_BYTES as usize;
 // The CLINT runs at 10 MHz. At 500 us, two runnable peers can consume the
 // entire 1 ms interaction budget before a queued caller resumes. Use 250 us
 // for this resident round-robin policy; a freshly woken input consumer still
@@ -224,20 +225,11 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef, loaded: crate::k
             return Err(mac_abi::ACCESS_DENIED);
         }
         let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
-        let context_bytes = super::traps::frame_reservation_bytes();
-        if context_bytes >= STACK_WORDS * core::mem::size_of::<u128>()
-        {
-            serial!("PROCESS_CONTEXT_REFUSED: {} bytes of CPU state do not fit the configured {} \
-                     byte thread stack",
-                    context_bytes,
-                    STACK_WORDS * core::mem::size_of::<u128>());
-            return Err(mac_abi::NO_MEMORY);
-        }
-        let stack =
-            super::pages::Stack::allocate(STACK_WORDS * size_of::<u128>()).map_err(|error| {
-                serial!("THREAD_STACK_REFUSED: {error}");
-                error.status()
-            })?;
+        let stack = super::pages::Stack::allocate(STACK_BYTES).map_err(|error| {
+                                                                  serial!("THREAD_STACK_REFUSED: \
+                                                                           {error}");
+                                                                  error.status()
+                                                              })?;
         let top = stack.top();
         let frame = (top - core::mem::size_of::<TrapFrame>()) as *mut TrapFrame;
         let mut initial = TrapFrame::default();
@@ -352,11 +344,13 @@ pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
     {
         Ok(id) =>
         {
-            serial!("PROCESS_THREAD app={} thread={} stack=0x{:x} stack_bytes={}",
+            serial!("PROCESS_THREAD app={} thread={} stack=0x{:x} stack_bytes={} \
+                     stack_backing_bytes={}",
                     prepared.owner.owner().incarnation(),
                     id,
                     prepared.core.top,
-                    prepared.core._stack.bytes());
+                    prepared.core._stack.bytes(),
+                    prepared.core._stack.backing_bytes());
             Ok(id)
         }
         Err(status) =>
@@ -414,7 +408,7 @@ fn arm()
 pub fn start() -> mac_formats::Result<()>
 {
     let mut scheduler = SCHEDULER.lock();
-    let stack = super::pages::Stack::allocate(STACK_WORDS * size_of::<u128>()).map_err(|error| {
+    let stack = super::pages::Stack::allocate(STACK_BYTES).map_err(|error| {
                     serial!("IDLE_STACK_REFUSED: {error}");
                     mac_formats::Error::AllocationFailed("physical page allocation refused for \
                                                           idle stack")

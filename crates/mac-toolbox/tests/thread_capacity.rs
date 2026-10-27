@@ -93,16 +93,24 @@ fn more_than_eight_apps_receive_input_and_reuse_reclaimed_stacks()
             let stack = threads.iter().find(|line| number(line, "thread=") == id).unwrap();
             let top = number(stack, "stack=");
             let bytes = number(stack, "stack_bytes=");
-            assert!(bytes > 0 && bytes.is_power_of_two());
+            let selected =
+                mac_build::platform::current().memory().unwrap().application_stack_default();
+            assert_eq!(bytes, selected, "native thread ignored its checked stack policy: {stack}");
+            let backing = number(stack, "stack_backing_bytes=");
+            assert_eq!(backing,
+                       selected.next_power_of_two(),
+                       "page backing was not accounted separately from usable stack size: {stack}");
             let base = top.checked_sub(bytes).unwrap();
-            assert!(banks.iter().any(|(start, end)| *start <= base && top <= *end),
+            let backing_end = base.checked_add(backing).unwrap();
+            assert!(banks.iter().any(|(start, end)| *start <= base && backing_end <= *end),
                     "stack is outside the actual page pools: {stack}");
-            assert!(base.is_multiple_of(bytes), "stack has no buddy block alignment: {stack}");
+            assert!(base.is_multiple_of(backing), "stack has no buddy block alignment: {stack}");
             for &(old_base, old_top) in &ranges
             {
-                assert!(top <= old_base || old_top <= base, "concurrent stacks alias: {serial}");
+                assert!(backing_end <= old_base || old_top <= base,
+                        "concurrent stacks alias: {serial}");
             }
-            ranges.push((base, top));
+            ranges.push((base, backing_end));
         }
         cohorts.push(ranges);
     }

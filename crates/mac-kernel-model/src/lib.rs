@@ -11,6 +11,7 @@ extern crate alloc;
 pub use mac_object_table::domain::{DomainId, DomainKind, ResourceKey};
 pub mod policy;
 pub mod pages;
+pub mod stack;
 pub mod buddy;
 pub mod bootstrap;
 pub mod process;

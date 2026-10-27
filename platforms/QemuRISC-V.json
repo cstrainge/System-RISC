@@ -48,6 +48,18 @@
     "display_scratch": {
       "base": "0x86a81000",
       "bytes": "0x57f000"
+    },
+    "stacks": {
+      "system": {
+        "minimum": "0x40000",
+        "default": "0x400000",
+        "maximum": "0x800000"
+      },
+      "application": {
+        "minimum": "0x10000",
+        "default": "0x400000",
+        "maximum": "0x800000"
+      }
     }
   },
   "mmio_devices": [

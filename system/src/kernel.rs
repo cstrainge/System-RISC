@@ -591,6 +591,11 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
             return ptr::null();
         }
     };
+    if let Err((kind, error)) = crate::machine::traps::validate_stack_configuration()
+    {
+        serial!("BOOT_STACK_REJECTED: {kind}: {error}; update the platform policy and rebuild");
+        return ptr::null();
+    }
     if info.flags & mac_abi::BOOT_GRAPHICAL != 0
     {
         // SAFETY: first single-hart entry owns validated physical RAM. The ROM

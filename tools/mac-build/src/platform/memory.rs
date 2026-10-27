@@ -4,6 +4,7 @@ use std::{fmt::Write, ops::Range};
 use serde::Deserialize;
 
 use crate::{Result, error};
+mod stacks;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,7 +45,8 @@ pub(super) struct Definition
     definitions:                 Region,
     fdt_tail_bytes:              String,
     boot_stack_bytes:            String,
-    system_heap_bytes:           String
+    system_heap_bytes:           String,
+    stacks:                      stacks::Definition
 }
 /// Only validation can construct this record. All generated artifacts use it.
 #[derive(Debug)]
@@ -65,7 +67,8 @@ pub struct Checked
     pub(super) definitions:                 Range<u64>,
     pub(super) fdt_tail_bytes:              u64,
     pub(super) boot_stack_bytes:            u64,
-    pub(super) system_heap_bytes:           u64
+    pub(super) system_heap_bytes:           u64,
+    stacks:                                 stacks::Checked
 }
 fn address(name: &str, text: &str) -> Result<u64>
 {
@@ -209,6 +212,7 @@ impl Definition
             return Err(error("platform memory system_heap_bytes must be nonzero, page aligned \
                               and smaller than images"));
         }
+        let stacks = self.stacks.check(page)?;
         Ok(Checked { page_bytes: page,
                      ram,
                      flash,
@@ -224,11 +228,17 @@ impl Definition
                      definitions,
                      fdt_tail_bytes: tail,
                      boot_stack_bytes,
-                     system_heap_bytes })
+                     system_heap_bytes,
+                     stacks })
     }
 }
 impl Checked
 {
+    pub fn application_stack_default(&self) -> u64
+    {
+        self.stacks.application_default()
+    }
+
     pub fn display_dimensions(&self) -> (usize, usize)
     {
         (self.display_width as usize, self.display_height as usize)
@@ -311,6 +321,7 @@ impl Checked
              ("BOOT_STACK_BYTES", self.boot_stack_bytes),
              ("SYSTEM_HEAP_BYTES", self.system_heap_bytes)].into_iter()
                                                            .chain(self.display_buffers())
+                                                           .chain(self.stacks.constants())
         {
             writeln!(out, "__platform_{name} = {value:#x};").unwrap();
         }
@@ -335,6 +346,7 @@ impl Checked
                               ("DEFINITION_LIMIT", self.definitions.end),
                               ("IMAGE_LIMIT", self.images.end)].into_iter()
                                                                .chain(self.display_buffers())
+                                                               .chain(self.stacks.constants())
         {
             writeln!(out, "pub const {name}: u64 = {value:#x};").unwrap();
         }
@@ -486,6 +498,11 @@ mod tests
         let linker = checked.linker_symbols();
         let rust = checked.system_constants();
         assert!(linker.contains("__platform_MODULES_END = 0x87c00000;"));
+        for (name, value) in checked.stacks.constants()
+        {
+            assert!(linker.contains(&format!("__platform_{name} = {value:#x};")));
+            assert!(rust.contains(&format!("{name}: u64 = {value:#x};")));
+        }
         assert!(rust.contains("MODULE_LIMIT: u64 = 0x87c00000;"));
         assert!(linker.contains("__platform_SYSTEM_HEAP_BYTES = 0x600000;"));
         assert!(rust.contains("SYSTEM_HEAP_BYTES: usize = 0x600000;"));
