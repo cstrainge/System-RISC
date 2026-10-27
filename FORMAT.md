@@ -874,9 +874,9 @@ resource fork remains big-endian):
 | 120 | 8 | exact C boundary layout fingerprint |
 
 The fingerprint encodes pointer width (bits 0..7), Host size (bits 8..23), Instance
-size (bits 24..39), and Call size (bits 40..55). Bits 56, 57, 58 and 59 identify
+size (bits 24..39), and Call size (bits 40..55). Bits 56, 57, 58, 59 and 60 identify
 full-width provider references, request tickets, device/DMA references and
-backing-source references, respectively; the remaining high bits are zero. Current RV64
+backing-source references and ticket-free synchronous resident calls, respectively; the remaining high bits are zero. Current RV64
 sizes are 64,48,24,64 respectively. Compile-time SDK assertions and the resident
 reject a mismatch. Changing these layouts requires rebuilding all modules; there
 is no alternate old layout decoder.

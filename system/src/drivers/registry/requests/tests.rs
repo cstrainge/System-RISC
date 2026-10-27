@@ -505,3 +505,36 @@ fn serialization_tracks_transport_ack_without_waiting_for_cleanup_dispatch()
     assert_eq!(registry.requests.iter().count(), 0);
     assert!(!owner.pending(key));
 }
+
+#[test]
+fn synchronous_admission_retains_parent_authentication_without_publishing_a_ticket()
+{
+    let (mut registry, owner, subject, interface) = fixture(false);
+    let before = owner.summary();
+    for _ in 0..3
+    {
+        registry.authorize_synchronous(&subject, 0, interface, 3, 64).unwrap();
+    }
+    assert!(registry.requests.slots.is_empty());
+    assert_eq!(owner.summary().live, before.live);
+    assert_eq!(registry.authorize_synchronous(&subject, 0, interface, 65, 64),
+               Err(Error::Contract(mac_module::Error::Limit)));
+    assert!(format!("{}", Error::Contract(mac_module::Error::Limit)).contains("rebuild"));
+    let parent = begin(&mut registry, &subject, interface);
+    registry.enter_request(0, access(&subject, parent)).unwrap();
+    let invoking = registry.request_invocation(0, access(&subject, parent)).unwrap();
+    registry.authorize_synchronous(&invoking, 0, interface, 0, 0).unwrap();
+    let other =
+        registry.fixture_operations.as_ref().unwrap().admit(&Authority::Client(owner)).unwrap();
+    let forged = other.in_request(invoking.current_request().unwrap());
+    assert_eq!(registry.authorize_synchronous(&forged, 0, interface, 0, 0),
+               Err(Error::RequestParent));
+    registry.leave_request(0, access(&subject, parent)).unwrap();
+    assert_eq!(registry.authorize_synchronous(&invoking, 0, interface, 0, 0),
+               Err(Error::RequestParent));
+    registry.complete(0, access(&subject, parent), 0).unwrap();
+    let (registry, subject, _, interface, consumer) = entry_fixture(false);
+    assert_eq!(registry.authorize_synchronous(&subject, consumer, interface, 0, 16),
+               Err(Error::Access));
+    assert!(format!("{}", Error::Access).contains("does not authorize"));
+}

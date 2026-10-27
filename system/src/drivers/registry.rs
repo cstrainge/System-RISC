@@ -658,12 +658,24 @@ impl Registry
         Ok(interface)
     }
 
-    /// Caller 0 is resident System. Module callers are limited to dependencies
-    /// declared in their own admitted contract; applications use class services.
-    pub(crate) fn begin_scoped(&mut self, subject: &crate::drivers::jobs::subjects::Subject,
-                               caller: u64, interface: u64, operation: u32, input_len: usize,
-                               output_len: usize, origin: requests::Origin)
-                               -> Result<u64>
+    /// Validate a ticket-free resident call before dispatch. The resident owns
+    /// the callback forever; no independently unloadable provider is admitted.
+    pub(crate) fn authorize_synchronous(&self, subject: &crate::drivers::jobs::subjects::Subject,
+                                        caller: u64, interface: u64, input_len: usize,
+                                        output_len: usize)
+                                        -> Result<Interface>
+    {
+        let provider = self.authorize_call(caller, interface, input_len, output_len)?;
+        if provider.module != 0
+        {
+            return Err(Error::Access);
+        }
+        self.requests.validate_parent(subject, caller, requests::Origin::Direct)?;
+        Ok(provider)
+    }
+
+    fn authorize_call(&self, caller: u64, interface: u64, input_len: usize, output_len: usize)
+                      -> Result<Interface>
     {
         let provider = self.interface(interface)?;
         if input_len > provider.offer.max_request as usize
@@ -698,6 +710,17 @@ impl Registry
                 return Err(Error::Access);
             }
         }
+        Ok(provider)
+    }
+
+    /// Caller 0 is resident System. Module callers are limited to dependencies
+    /// declared in their own admitted contract; applications use class services.
+    pub(crate) fn begin_scoped(&mut self, subject: &crate::drivers::jobs::subjects::Subject,
+                               caller: u64, interface: u64, operation: u32, input_len: usize,
+                               output_len: usize, origin: requests::Origin)
+                               -> Result<u64>
+    {
+        let provider = self.authorize_call(caller, interface, input_len, output_len)?;
 
         if provider.offer.flags & Offer::SERIALIZED != 0 && self.requests.busy(interface)
         {

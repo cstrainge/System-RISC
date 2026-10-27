@@ -99,6 +99,38 @@ pub struct Provider
 }
 impl Provider
 {
+    /// Invoke an admitted resident operation that cannot defer. System creates
+    /// no broker ticket on this path; a busy result is safe to retry unchanged.
+    /// Modules and operations without this explicit contract are refused before
+    /// dispatch. Device reset must use the ticket-owning asynchronous method.
+    pub(crate) fn synchronous(self, operation: u32, input: &[u8], output: &mut [u8])
+                              -> Result<usize>
+    {
+        let mut call =
+            abi::Call { header: abi::Header::of::<abi::Call>(),
+                        ticket: 0,
+                        phase: abi::SYNCHRONOUS,
+                        class: self.class.0,
+                        operation,
+                        input: input.as_ptr(),
+                        input_len: input.len().try_into().map_err(|_| Error(BAD_ARGUMENT))?,
+                        output_capacity: output.len()
+                                               .try_into()
+                                               .map_err(|_| Error(BAD_ARGUMENT))?,
+                        output: output.as_mut_ptr(),
+                        output_len: 0,
+                        reserved: 0 };
+        let broker = self.client.host.call.ok_or(Error(NOT_SUPPORTED))?;
+        // Same admitted host and exclusive borrowed buffers as invoke(). The
+        // synchronous resident contract cannot publish a deferred operation.
+        let status = unsafe { broker(self.client.host.context, self.handle, &mut call) };
+        if call.ticket != 0 || call.output_len as usize > output.len() || status > OK
+        {
+            return Err(Error(BAD_ABI));
+        }
+        if status == OK { Ok(call.output_len as usize) } else { Err(Error(status)) }
+    }
+
     /// A provider handle is issued by the resident registry, never an address.
     /// The resident validates the declaring module's dependency/service on every
     /// call. Pending and pre-dispatch contention retain a live ticket; terminal
@@ -418,5 +450,58 @@ mod entry_tests
         assert_eq!(provider.handle, PROVIDER);
         assert_eq!(provider.invoke(&mut 0, Phase::Start, 1, &[], &mut []).unwrap(),
                    Completion::Complete(0));
+    }
+}
+
+#[cfg(test)]
+mod synchronous_tests
+{
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use mac_device_interface as wire;
+
+    use super::*;
+    use crate::abi;
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    unsafe extern "C" fn broker(_: u64, _: u64, pointer: *mut abi::Call) -> i32
+    {
+        let call = unsafe { &mut *pointer };
+        assert_eq!(call.phase, abi::SYNCHRONOUS);
+        assert_eq!(call.ticket, 0);
+        assert_eq!(call.class, wire::CLASS.0);
+        assert_eq!(call.operation, wire::COUNT);
+        assert_eq!(call.output_capacity, 4);
+        // Contention cannot create a hidden request; a fresh retry remains
+        // synchronous and has precisely the same bytes.
+        if CALLS.fetch_add(1, Ordering::SeqCst) == 0
+        {
+            return mac_abi::SERVICE_BUSY;
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(32u32.to_le_bytes().as_ptr(), call.output, 4);
+        }
+        call.output_len = 4;
+        mac_abi::OK
+    }
+    #[test]
+    fn contention_retries_without_creating_or_discarding_a_request_ticket()
+    {
+        CALLS.store(0, Ordering::SeqCst);
+        let service = Provider { client: Client { host: abi::Host { header:
+                                                                        abi::Header::of::<abi::Host>(),
+                                                                    module:   1 << 40,
+                                                                    reserved: 0,
+                                                                    context:  1 << 40,
+                                                                    call:     Some(broker),
+                                                                    resolve:  None } },
+                                 handle: 1 << 41,
+                                 class:  wire::CLASS };
+        let mut output = [0; 4];
+        assert_eq!(service.synchronous(wire::COUNT, &[], &mut output),
+                   Err(Error(mac_abi::SERVICE_BUSY)));
+        assert_eq!(service.synchronous(wire::COUNT, &[], &mut output), Ok(4));
+        assert_eq!(u32::from_le_bytes(output), 32);
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+        assert!(!wire::synchronous(wire::RESET));
     }
 }

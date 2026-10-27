@@ -430,6 +430,53 @@ unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
     use super::registry::requests::Access;
     let call = unsafe { checked_call(pointer) }?;
     call.output_len = 0;
+    if call.phase == abi::SYNCHRONOUS
+    {
+        if call.ticket != 0 || origin != super::registry::requests::Origin::Direct
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        // Only explicitly implemented, non-deferred resident operations can
+        // reach this path. No request is published and no foreign code runs.
+        if call.class != mac_device_interface::CLASS.0
+           || !mac_device_interface::synchronous(call.operation)
+        {
+            return Err(NOT_SUPPORTED);
+        }
+        RUNTIME.with(|runtime| {
+                   let interface = runtime.registry
+                                          .authorize_synchronous(subject, caller, provider,
+                                                                 call.input_len as usize,
+                                                                 call.output_capacity as usize)
+                                          .map_err(status)?;
+                   if interface.offer.class.0 != call.class
+                   {
+                       return Err(BAD_ARGUMENT);
+                   }
+                   Ok(())
+               })
+               .map_err(crate::state::AccessError::status)??;
+        let input = if call.input_len == 0
+        {
+            &[]
+        }
+        else
+        {
+            unsafe { core::slice::from_raw_parts(call.input, call.input_len as usize) }
+        };
+        let output = if call.output_capacity == 0
+        {
+            &mut []
+        }
+        else
+        {
+            unsafe { core::slice::from_raw_parts_mut(call.output, call.output_capacity as usize) }
+        };
+        let length =
+            crate::machine::driver_devices::synchronous(caller, call.operation, input, output)?;
+        call.output_len = length.try_into().map_err(|_| BAD_ABI)?;
+        return Ok(OK);
+    }
     let (module, ticket, target, invocation) =
         RUNTIME.with(|runtime| {
                    let interface = if call.phase == abi::START

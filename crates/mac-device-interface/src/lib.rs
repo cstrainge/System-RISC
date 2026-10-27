@@ -18,6 +18,13 @@ pub const COHERENT_DMA: u32 = 1;
 pub const MMIO: u32 = 2;
 pub const RESIDENT_OWNED: u32 = 4;
 
+/// Only these operations have a no-deferred-state contract. Reset must retain
+/// its explicit request ticket until hardware acknowledges quiescence.
+pub const fn synchronous(operation: u32) -> bool
+{
+    matches!(operation, PROBE | CLAIM | MAP | UNMAP | RELEASE | COUNT)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Description
 {
