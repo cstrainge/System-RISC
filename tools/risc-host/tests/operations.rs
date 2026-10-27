@@ -6,6 +6,20 @@ use std::{fs,
 
 use mac_host_protocol::{self as wire, Header, Operation as Op, status};
 use risc_host::{Export, Session};
+fn assert_no_pending_files(path: &std::path::Path)
+{
+    for entry in fs::read_dir(path).unwrap()
+    {
+        let entry = entry.unwrap();
+        assert_eq!(entry.file_name(),
+                   risc_host::PIN_DIRECTORY,
+                   "cleanup left an owned stage or user entry");
+        assert!(entry.file_type().unwrap().is_dir(), "private pin ledger changed type");
+        assert_eq!(fs::read_dir(entry.path()).unwrap().count(),
+                   0,
+                   "cleanup left a linked metadata pin");
+    }
+}
 #[test]
 fn descriptor_descriptions_preserve_stage_incarnations_and_reject_closed_foreign_or_changed_handles(
     )
@@ -40,7 +54,7 @@ fn descriptor_descriptions_preserve_stage_incarnations_and_reject_closed_foreign
                status::INVALID);
 }
 #[test]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn persistent_incarnations_survive_sessions_and_renames_but_not_replacement()
 {
     let temp = Temp::new();
@@ -189,6 +203,126 @@ fn exports(temp: &Temp, writable: bool) -> Arc<Vec<Export>>
     Arc::new(vec![Export::open("Share", &temp.0, writable).unwrap()])
 }
 #[test]
+#[cfg(windows)]
+fn shared_metadata_pins_preserve_snapshots_and_do_not_block_folder_moves()
+{
+    let temp = Temp::new();
+    fs::create_dir(temp.0.join("Folder")).unwrap();
+    fs::write(temp.0.join("Folder/Document"), b"content").unwrap();
+    // A read-only view discovers the file first. Its cached metadata capability
+    // must upgrade along with a writable view, without retaining a named child.
+    let mut reader = Client::new(exports(&temp, false));
+    let (read_folder, _) = reader.ok(Op::OpenDirectory, reader.root, 0, 0, b"Folder");
+    reader.ok(Op::Describe, read_folder.object, 0, 0, b"Document");
+    let shared = exports(&temp, true);
+    let mut first = Client::new(shared.clone());
+    let mut second = Client::new(shared);
+    let (first_folder, _) = first.ok(Op::OpenDirectory, first.root, 0, 0, b"Folder");
+    let (second_folder, _) = second.ok(Op::OpenDirectory, second.root, 0, 0, b"Folder");
+    let (snapshot, _) = first.ok(Op::OpenRead, first_folder.object, 0, 0, b"Document");
+    second.ok(Op::Describe, second_folder.object, 0, 0, b"Document");
+    let (other, _) = second.ok(Op::OpenRead, second_folder.object, 0, 0, b"Document");
+    assert_eq!(first.ok(Op::Read, snapshot.object, 0, 7, &[]).1, b"content");
+    second.ok(Op::Close, other.object, 0, 0, &[]);
+    first.ok(Op::Close, snapshot.object, 0, 0, &[]);
+    fs::rename(temp.0.join("Folder"), temp.0.join("Moved")).unwrap();
+    assert_eq!(first.ok(Op::Describe, first_folder.object, 0, 0, b"Document").0.status, status::OK);
+    assert_eq!(reader.ok(Op::OpenRead, read_folder.object, 0, 0, b"Document").0.offset, 7);
+}
+
+#[test]
+#[cfg(windows)]
+fn writable_exports_can_read_files_with_the_host_readonly_attribute()
+{
+    let temp = Temp::new();
+    let path = temp.0.join("Readonly");
+    fs::write(&path, b"readonly bytes").unwrap();
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&path, permissions).unwrap();
+    {
+        let mut client = Client::new(exports(&temp, true));
+        let (snapshot, _) = client.ok(Op::OpenRead, client.root, 0, 0, b"Readonly");
+        assert_eq!(client.ok(Op::Read, snapshot.object, 0, 14, &[]).1, b"readonly bytes");
+        client.ok(Op::Close, snapshot.object, 0, 0, &[]);
+    }
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    assert!(permissions.readonly(), "metadata discovery changed the user's host attributes");
+    permissions.set_readonly(false);
+    fs::set_permissions(path, permissions).unwrap();
+}
+#[test]
+fn read_only_exports_describe_read_and_track_external_changes()
+{
+    let temp = Temp::new();
+    fs::write(temp.0.join("plain"), b"original").unwrap();
+    let mut client = Client::new(exports(&temp, false));
+    let (_, body) = client.ok(Op::Describe, client.root, 0, 0, b"plain");
+    assert!(wire::Description::decode(&body).unwrap().identity.is_some());
+    let (source, _) = client.ok(Op::OpenRead, client.root, 0, 0, b"plain");
+    assert_eq!(client.ok(Op::Read, source.object, 0, 8, &[]).1, b"original");
+    assert_eq!(client.call(Op::BeginWrite, client.root, 0, 0, &[]).0.status, status::READ_ONLY);
+    fs::write(temp.0.join("plain"), b"modified content").unwrap();
+    assert_eq!(client.call(Op::Read, source.object, 0, 8, &[]).0.status, status::STALE);
+    client.ok(Op::Close, source.object, 0, 0, &[]);
+    let (source, _) = client.ok(Op::OpenRead, client.root, 0, 0, b"plain");
+    assert_eq!(client.ok(Op::Read, source.object, 0, 8, &[]).1, b"modified");
+}
+#[test]
+fn discovering_directory_metadata_does_not_invalidate_its_parent_scan()
+{
+    let temp = Temp::new();
+    fs::create_dir(temp.0.join("Host Folder")).unwrap();
+    fs::write(temp.0.join("Host Folder/Child.txt"), b"host child\n").unwrap();
+    let mut client = Client::new(exports(&temp, true));
+    let (_, before) = client.ok(Op::Stat, client.root, 0, 0, &[]);
+    let (scan, _) = client.ok(Op::ListBegin, client.root, 0, 0, &[]);
+    let stable = |client: &mut Client, stage: &str| {
+        for _ in 0..20
+        {
+            assert_eq!(client.ok(Op::Stat, client.root, 0, 0, &[]).1,
+                       before,
+                       "{stage} changed the parent's logical contents");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+    stable(&mut client, "starting a scan");
+    let (folder, _) = client.ok(Op::OpenDirectory, client.root, 0, 0, b"Host Folder");
+    stable(&mut client, "opening a folder");
+    assert_eq!(client.call(Op::OpenRead, folder.object, 0, 0, b".system-risc-folder").0.status,
+               status::NOT_FOUND);
+    stable(&mut client, "checking an absent private record");
+    client.ok(Op::Describe, client.root, 0, 0, b"Host Folder");
+    stable(&mut client, "describing a folder");
+    assert_eq!(client.ok(Op::ListNext, scan.object, 0, 0, &[]).1, b"Host Folder");
+    #[cfg(windows)]
+    {
+        let (changed_scan, _) = client.ok(Op::ListBegin, client.root, 0, 0, &[]);
+        use std::os::windows::fs::OpenOptionsExt;
+
+        use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS,
+                                                      FILE_WRITE_ATTRIBUTES};
+        let path = temp.0.join("Host Folder");
+        let modified =
+            fs::metadata(&path).unwrap().modified().unwrap() + std::time::Duration::from_secs(1);
+        fs::OpenOptions::new().access_mode(FILE_WRITE_ATTRIBUTES)
+                              .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                              .open(&path)
+                              .unwrap()
+                              .set_times(fs::FileTimes::new().set_modified(modified))
+                              .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while client.ok(Op::Stat, client.root, 0, 0, &[]).1 == before
+        {
+            assert!(std::time::Instant::now() < deadline,
+                    "real directory metadata change was lost");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(client.call(Op::ListNext, changed_scan.object, 0, 0, &[]).0.status,
+                   status::STALE);
+    }
+}
+#[test]
 fn staged_write_flush_replace_and_remove_reach_the_real_host_filesystem()
 {
     let temp = Temp::new();
@@ -216,7 +350,7 @@ fn staged_write_flush_replace_and_remove_reach_the_real_host_filesystem()
     let (source, _) = client.ok(Op::OpenRead, client.root, 0, 0, b"container");
     client.ok(Op::Remove, client.root, 0, source.object, b"container");
     assert!(!temp.0.join("container").exists());
-    assert_eq!(fs::read_dir(&temp.0).unwrap().count(), 0);
+    assert_no_pending_files(&temp.0);
 }
 #[test]
 fn sparse_positional_io_preserves_offsets_beyond_four_gibibytes()
@@ -465,7 +599,7 @@ fn removal_receipts_restore_on_cancel_or_disconnect_and_never_reuse_closed_token
     assert_eq!(client.ok(Op::AbortRemove, intent.object, 0, 0, &[]).0.value, 1);
     client.ok(Op::Close, intent.object, 0, 0, &[]);
     assert!(!temp.0.join("Document").exists());
-    assert_eq!(fs::read_dir(&temp.0).unwrap().count(), 0);
+    assert_no_pending_files(&temp.0);
 }
 
 #[test]

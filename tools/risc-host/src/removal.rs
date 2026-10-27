@@ -6,21 +6,22 @@ use journal::Journal;
 
 pub(super) struct Removal
 {
-    pub owner:  u32,
-    parent:     Directory,
-    original:   String,
-    hidden:     String,
-    pin:        File,
-    revision:   [u8; 32],
-    journal:    Journal,
-    directory:  Option<Dir>,
-    record:     Option<(String, File)>,
-    detached:   bool,
-    verified:   bool,
-    committing: bool,
-    removed:    bool,
-    restored:   bool,
-    closed:     bool
+    pub owner:      u32,
+    parent:         Directory,
+    original:       String,
+    hidden:         String,
+    pin:            File,
+    revision:       [u8; 32],
+    journal:        Journal,
+    directory:      Option<Dir>,
+    record:         Option<(String, File)>,
+    record_pending: Option<(String, wire::ObjectIdentity)>,
+    detached:       bool,
+    verified:       bool,
+    committing:     bool,
+    removed:        bool,
+    restored:       bool,
+    closed:         bool
 }
 fn approved_empty(directory: Option<&Dir>, record: Option<&(String, File)>) -> Result<()>
 {
@@ -48,7 +49,7 @@ fn approved_empty(directory: Option<&Dir>, record: Option<&(String, File)>) -> R
             return Err(Failure(status::NOT_EMPTY));
         }
         let actual = regular(directory, name)?;
-        if !same_object(&actual.metadata()?, &pin.metadata()?)?
+        if !same_object(&actual, &pin)?
         {
             return Err(Failure(status::CONFLICT));
         }
@@ -57,6 +58,37 @@ fn approved_empty(directory: Option<&Dir>, record: Option<&(String, File)>) -> R
 }
 impl Removal
 {
+    fn release_record(&mut self) -> Result<()>
+    {
+        #[cfg(windows)]
+        if let Some((name, file)) = self.record.as_ref()
+        {
+            let identity = object_identity(&file)?.ok_or(Failure(status::UNSUPPORTED))?;
+            self.record_pending = Some((name.clone(), identity));
+            // Windows forbids moving a parent with any descendant handle
+            // open, even with delete sharing. The durable journal already
+            // owns this exact identity; keep it through the bounded release.
+            self.record = None;
+        }
+        Ok(())
+    }
+
+    fn repin_record(&mut self) -> Result<()>
+    {
+        if let Some((name, expected)) = &self.record_pending
+        {
+            let directory = self.directory.as_ref().ok_or(Failure(status::CORRUPT))?;
+            let file = regular(directory, name)?;
+            if object_identity(&file)? != Some(*expected)
+            {
+                return Err(Failure(status::CONFLICT));
+            }
+            self.record = Some((name.clone(), file));
+            self.record_pending = None;
+        }
+        Ok(())
+    }
+
     pub(super) fn disconnect(&mut self)
     {
         if !self.closed
@@ -83,8 +115,8 @@ impl Removal
         {
             return Err(Failure(status::CONFLICT));
         }
-        let current = self.parent.root.open(name)?.into_std().metadata()?;
-        if !same_object(&current, &self.pin.metadata()?)?
+        let current = regular_or_directory(&self.parent.root, name)?;
+        if !same_object(&current, &self.pin)?
         {
             return Err(Failure(status::CONFLICT));
         }
@@ -102,29 +134,40 @@ impl Removal
         {
             return Err(Failure(status::INVALID));
         }
+        self.repin_record()?;
         if !self.detached
         {
             self.same_at(&self.original)?;
-            if fingerprint(&self.pin.metadata()?)? != self.revision
+            if file_revision(&self.pin)? != self.revision
             {
                 return Err(Failure(status::CONFLICT));
             }
             self.check_empty()?;
-            move_noreplace(&self.parent.root, &self.original, &self.parent.root, &self.hidden)?;
-            self.detached = true;
+            self.release_record()?;
+            let moved =
+                move_noreplace(&self.parent.root, &self.original, &self.parent.root, &self.hidden);
+            if moved.is_ok()
+            {
+                self.detached = true;
+            }
+            let pinned = self.repin_record();
+            moved?;
+            pinned?;
         }
         if !self.verified
         {
             self.same_at(&self.hidden)?;
-            self.revision = fingerprint(&self.pin.metadata()?)?;
+            self.revision = file_revision(&self.pin)?;
             self.verified = true;
         }
-        sync(&self.parent.root)?;
+        sync_directory(&self.parent.root)?;
+        self.parent.changes.acknowledge_child(&self.original)?;
         self.journal.phase(wire::REMOVE_QUARANTINED)
     }
 
     fn commit(&mut self) -> Result<()>
     {
+        self.repin_record()?;
         if self.restored || !self.detached || !self.verified
         {
             return Err(Failure(status::INVALID));
@@ -133,7 +176,7 @@ impl Removal
         if !self.committing
         {
             self.same_at(&self.hidden)?;
-            if fingerprint(&self.pin.metadata()?)? != self.revision
+            if file_revision(&self.pin)? != self.revision
             {
                 return Err(Failure(status::CONFLICT));
             }
@@ -154,26 +197,29 @@ impl Removal
                         Ok(_) =>
                         {
                             let current = regular(directory, name)?;
-                            if !same_object(&current.metadata()?, &pin.metadata()?)?
+                            if !same_object(&current, &pin)?
                             {
                                 return Err(Failure(status::CONFLICT));
                             }
-                            directory.remove_file(name)?;
+                            remove_file(&directory, name)?;
                         }
                         Err(e) if e.kind() == io::ErrorKind::NotFound => (),
                         Err(e) => return Err(e.into())
                     }
-                    sync(directory)?;
                 }
-                self.parent.root.remove_dir(&self.hidden)?;
+                // A deleted but still open child also blocks RemoveDirectory
+                // on Windows. Its durable committing journal owns recovery.
+                self.record = None;
+                sync_directory(directory)?;
+                remove_directory(&self.parent.root, &self.hidden)?;
             }
             else
             {
-                self.parent.root.remove_file(&self.hidden)?;
+                remove_file(&self.parent.root, &self.hidden)?;
             }
             self.removed = true;
         }
-        sync(&self.parent.root)
+        sync_directory(&self.parent.root)
     }
 
     fn abort(&mut self) -> Result<bool>
@@ -186,10 +232,19 @@ impl Removal
         if self.detached && !self.restored
         {
             self.same_at(&self.hidden)?;
-            move_noreplace(&self.parent.root, &self.hidden, &self.parent.root, &self.original)?;
-            self.restored = true;
+            self.release_record()?;
+            let moved =
+                move_noreplace(&self.parent.root, &self.hidden, &self.parent.root, &self.original);
+            if moved.is_ok()
+            {
+                self.restored = true;
+            }
+            let pinned = self.repin_record();
+            moved?;
+            pinned?;
         }
-        sync(&self.parent.root)?;
+        sync_directory(&self.parent.root)?;
+        self.parent.changes.acknowledge_child(&self.original)?;
         self.journal.phase(wire::REMOVE_ABORTED)?;
         Ok(false)
     }
@@ -243,7 +298,7 @@ impl Session
             if is_directory { Some(self.directory(expected)?.root.try_clone()?) } else { None };
         let pin = if let Some(directory) = &directory
         {
-            directory.open(".")?.into_std()
+            pin_directory_file(&directory)?
         }
         else
         {
@@ -256,7 +311,7 @@ impl Session
             (_, None) => None
         };
         approved_empty(directory.as_ref(), record.as_ref())?;
-        let revision = fingerprint(&pin.metadata()?)?;
+        let revision = file_revision(&pin)?;
         let hidden = unique()?;
         let journal = Journal::create(&parent.root,
                                       name,
@@ -272,6 +327,7 @@ impl Session
                                 pin,
                                 directory,
                                 record,
+                                record_pending: None,
                                 detached: false,
                                 verified: false,
                                 committing: false,
@@ -357,33 +413,40 @@ fn recover_one(parent: &Dir, name: &str) -> Result<()>
     let record_name = intent.record_name.map(str::to_owned);
     let record_identity = intent.record;
     let expected = intent.source;
-    let pin = match parent.open(&hidden)
+    let pin = match regular_or_directory(parent, &hidden)
     {
-        Ok(pin) => pin.into_std(),
-        Err(e) if e.kind() == io::ErrorKind::NotFound =>
+        Ok(pin) => pin,
+        Err(Failure(status::NOT_FOUND)) =>
         {
             // Never repeat deletion against the original visible path. If
             // quarantine had not committed, a restore may have already won.
             if intent.phase == wire::REMOVE_QUARANTINED
             {
                 let source = regular_or_directory(parent, &original)?;
-                if object_identity(&source.metadata()?)? != Some(expected)
+                if object_identity(&source)? != Some(expected)
                 {
                     return Err(Failure(status::CONFLICT));
                 }
             }
-            sync(parent)?;
+            sync_directory(parent)?;
             return journal.cleanup(parent);
         }
         Err(e) => return Err(e.into())
     };
     if parent.symlink_metadata(&hidden)?.file_type().is_symlink()
-       || object_identity(&pin.metadata()?)? != Some(expected)
+       || object_identity(&pin)? != Some(expected)
        || intent.phase == wire::REMOVE_ABORTED
     {
         return Err(Failure(status::CONFLICT));
     }
-    let directory = if pin.metadata()?.is_dir() { Some(parent.open_dir(&hidden)?) } else { None };
+    let directory = if pin.metadata()?.is_dir()
+    {
+        Some(pin_directory(parent.open_dir(&hidden)?)?)
+    }
+    else
+    {
+        None
+    };
     let record = match (directory.as_ref(), record_name)
     {
         (Some(directory), Some(name)) =>
@@ -392,7 +455,7 @@ fn recover_one(parent: &Dir, name: &str) -> Result<()>
             {
                 Ok(file) =>
                 {
-                    if object_identity(&file.metadata()?)? != record_identity
+                    if object_identity(&file)? != record_identity
                     {
                         return Err(Failure(status::CONFLICT));
                     }
@@ -405,7 +468,7 @@ fn recover_one(parent: &Dir, name: &str) -> Result<()>
         (None, Some(_)) => return Err(Failure(status::CORRUPT)),
         (_, None) => None
     };
-    let revision = fingerprint(&pin.metadata()?)?;
+    let revision = file_revision(&pin)?;
     let mut receipt = Removal { owner: 0,
                                 parent: Directory::new(Arc::new(parent.try_clone()?), 0, 0)?,
                                 original,
@@ -415,6 +478,7 @@ fn recover_one(parent: &Dir, name: &str) -> Result<()>
                                 journal,
                                 directory,
                                 record,
+                                record_pending: None,
                                 detached: true,
                                 verified: true,
                                 committing: committed,
@@ -434,13 +498,69 @@ fn regular_or_directory(parent: &Dir, name: &str) -> Result<File>
     {
         return Err(Failure(status::CONFLICT));
     }
-    Ok(parent.open(name)?.into_std())
+    if metadata.is_dir()
+    {
+        pin_directory_file(&pin_directory(parent.open_dir(name)?)?)
+    }
+    else
+    {
+        Ok(parent.open(name)?.into_std())
+    }
 }
 
 #[cfg(test)]
 mod tests
 {
     use super::*;
+    #[test]
+    #[cfg(windows)]
+    fn released_private_record_rejects_substitution_and_can_retry_with_its_original_identity()
+    {
+        let temp = Temp::new();
+        let root = temp.directory();
+        root.create_dir("Folder").unwrap();
+        let folder = pin_directory(root.open_dir("Folder").unwrap()).unwrap();
+        std::fs::write(temp.0.join("Folder/record"), b"approved metadata").unwrap();
+        let pin = pin_directory_file(&folder).unwrap();
+        let record = regular(&folder, "record").unwrap();
+        let hidden = unique().unwrap();
+        let journal =
+            Journal::create(&root, "Folder", &hidden, &pin, Some(("record", &record))).unwrap();
+        let mut removal = Removal { owner: 0,
+                                    parent: Directory::new(Arc::new(root), 0, 0).unwrap(),
+                                    original: "Folder".into(),
+                                    hidden,
+                                    revision: file_revision(&pin).unwrap(),
+                                    pin,
+                                    journal,
+                                    directory: Some(folder),
+                                    record: Some(("record".into(), record)),
+                                    record_pending: None,
+                                    detached: false,
+                                    verified: false,
+                                    committing: false,
+                                    removed: false,
+                                    restored: false,
+                                    closed: false };
+        removal.release_record().unwrap();
+        let path = temp.0.join("Folder/record");
+        let saved = temp.0.join("saved-record");
+        std::fs::rename(&path, &saved).unwrap();
+        std::fs::write(&path, b"replacement must never be adopted").unwrap();
+        assert_eq!(removal.repin_record().unwrap_err().0, status::CONFLICT);
+        assert!(removal.record_pending.is_some(), "failed re-pin lost its recovery identity");
+        assert!(path.exists() && saved.exists(), "failed re-pin removed source data");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::rename(&saved, &path).unwrap();
+        removal.repin_record().unwrap();
+        assert_eq!(removal.quarantine().unwrap_err().0,
+                   status::CONFLICT,
+                   "restoring the record must not hide a changed directory revision");
+        removal.abort().unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"approved metadata");
+        removal.journal.cleanup(&removal.parent.root).unwrap();
+        removal.closed = true;
+    }
     struct Temp(std::path::PathBuf);
     impl Temp
     {
@@ -469,7 +589,7 @@ mod tests
         let root = temp.directory();
         std::fs::write(temp.0.join("Document"), b"never lose these bytes").unwrap();
         let pin = regular(&root, "Document").unwrap();
-        let revision = fingerprint(&pin.metadata().unwrap()).unwrap();
+        let revision = file_revision(&pin).unwrap();
         let hidden = unique().unwrap();
         let journal = Journal::create(&root, "Document", &hidden, &pin, None).unwrap();
         Removal { owner: 0,
@@ -481,6 +601,7 @@ mod tests
                   journal,
                   directory: None,
                   record: None,
+                  record_pending: None,
                   detached: false,
                   verified: false,
                   committing: false,

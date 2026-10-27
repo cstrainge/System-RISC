@@ -15,6 +15,7 @@ if PLATFORM['name'] != NAME:
     raise ValueError(f"Platform {NAME!r} declares a different name")
 TARGET = PLATFORM['rust_target']
 CPU = PLATFORM['qemu_cpu']
+RAM = PLATFORM['qemu_ram']
 
 def cpu_model(vector_bits=None):
     if vector_bits is None:

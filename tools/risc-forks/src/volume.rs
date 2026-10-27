@@ -46,7 +46,7 @@ pub(super) fn sync(dir: &Dir) -> Result<()>
 {
     // A capability directory may use an O_PATH descriptor. Open a real read
     // descriptor relative to that capability before requesting durability.
-    dir.open(".")?.sync_all()?;
+    risc_host::sync_directory(dir)?;
     Ok(())
 }
 pub(super) struct Stage<'a>
@@ -61,7 +61,7 @@ impl Drop for Stage<'_>
     {
         if !self.published
         {
-            let _ = self.dir.remove_file(&self.name);
+            let _ = risc_host::remove_file(self.dir, &self.name);
         }
     }
 }
@@ -107,7 +107,7 @@ fn write_file(dir: &Dir, name: &str, meta: &Metadata, data: &mut impl ReadAt,
     else
     {
         dir.hard_link(&stage.name, dir, name)?;
-        dir.remove_file(&stage.name)?;
+        risc_host::remove_file(dir, &stage.name)?;
     }
     stage.published = true;
     // A publication followed by a flush error is an error, never reported as a
@@ -128,7 +128,7 @@ pub(super) fn read_entry(dir: &Dir, path: &Path, parent: u32) -> Result<Entry>
     {
         let folder = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         entry.directory =
-            Some(std::sync::Arc::new(FileIo::snapshot(dir.open(folder)?.into_std())?));
+            Some(std::sync::Arc::new(FileIo::snapshot(risc_host::pin_directory_file(&risc_host::pin_directory(dir.open_dir(folder)?)?)?)?));
     }
     Ok(entry)
 }
@@ -162,7 +162,8 @@ impl Volume
         {
             return Err(error("export root cannot be a symlink"));
         }
-        let dir = Dir::open_ambient_dir(path, cap_std::ambient_authority())?;
+        let dir =
+            risc_host::pin_directory(Dir::open_ambient_dir(path, cap_std::ambient_authority())?)?;
         if dir.entries()?.next().is_some()
         {
             return Err(error("init requires an empty directory; import files explicitly"));
@@ -174,7 +175,7 @@ impl Volume
         let lock = dir.open_with(LOCK_RECORD,
                                  OpenOptions::new().read(true).write(true).create_new(true))?
                       .into_std();
-        lock.lock()?;
+        risc_host::try_lock_file(&lock, true)?;
         lock.sync_all()?;
         write_file(&dir, ROOT_RECORD, &root, &mut Slice(&[]), &mut Slice(&[]), false)?;
         drop(lock);
@@ -188,7 +189,8 @@ impl Volume
         {
             return Err(error("export root cannot be a symlink"));
         }
-        let dir = Dir::open_ambient_dir(path, cap_std::ambient_authority())?;
+        let dir =
+            risc_host::pin_directory(Dir::open_ambient_dir(path, cap_std::ambient_authority())?)?;
         let result = Self { dir,
                             projection:
                                 std::sync::Mutex::new(super::projection::Projection::new()) };
@@ -207,11 +209,11 @@ impl Volume
             self.dir.open_with(LOCK_RECORD, OpenOptions::new().read(true).write(write))?.into_std();
         if write
         {
-            file.lock()?;
+            risc_host::try_lock_file(&file, true)?;
         }
         else
         {
-            file.lock_shared()?;
+            risc_host::try_lock_file(&file, false)?;
         }
         Ok(file)
     }
@@ -236,7 +238,7 @@ impl Volume
                 {
                     entry.path.parent().ok_or_else(|| error("invalid directory metadata path"))?
                 };
-                Ok(self.dir.open_dir(path)?)
+                Ok(risc_host::pin_directory(self.dir.open_dir(path)?)?)
             }
             Kind::File => Err(error("not a folder"))
         }
@@ -306,6 +308,14 @@ impl Volume
             if entries.len() >= MAX_ENTRIES
             {
                 return Err(error("catalog entry budget exceeded"));
+            }
+            if name == risc_host::PIN_DIRECTORY
+            {
+                if !entry.file_type()?.is_dir()
+                {
+                    return Err(error("reserved host pin ledger must be a directory"));
+                }
+                continue;
             }
             let file_type = entry.file_type()?;
             if file_type.is_symlink() || (!file_type.is_file() && !file_type.is_dir())
@@ -619,7 +629,7 @@ impl Creation<'_>
                 return Err(error("folder cannot have forks"));
             }
             dir.create_dir(&name)?;
-            let child = dir.open_dir(&name)?;
+            let child = risc_host::pin_directory(dir.open_dir(&name)?)?;
             if let Err(error) = write_file(&child, DIRECTORY_RECORD, &meta, data, resources, false)
             {
                 let _ = dir.remove_dir_all(&name);

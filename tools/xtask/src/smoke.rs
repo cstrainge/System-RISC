@@ -55,7 +55,7 @@ pub fn check(workspace: &Workspace, reports: &[Value]) -> Result<Value>
                   "-cpu",
                   workspace.platform.qemu_cpu.as_str(),
                   "-m",
-                  "128M",
+                  workspace.platform.qemu_ram.as_str(),
                   "-smp",
                   "1",
                   "-bios",

@@ -26,7 +26,7 @@ pub(super) struct Intent<'a>
 }
 fn identity(file: &File) -> Result<wire::ObjectIdentity>
 {
-    object_identity(&file.metadata()?)?.ok_or(Failure(status::UNSUPPORTED))
+    object_identity(&file)?.ok_or(Failure(status::UNSUPPORTED))
 }
 fn seal(bytes: &mut [u8; SLOT])
 {
@@ -108,7 +108,7 @@ impl Journal
         let mut bytes = [0; SLOT];
         bytes[..8].copy_from_slice(MAGIC);
         bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
-        bytes[16..48].copy_from_slice(identity(&parent.open(".")?.into_std())?.as_bytes());
+        bytes[16..48].copy_from_slice(identity(&pin_directory_file(&parent)?)?.as_bytes());
         bytes[48..80].copy_from_slice(identity(source)?.as_bytes());
         if let Some((_, file)) = record
         {
@@ -133,22 +133,21 @@ impl Journal
             parent.open_with(&name, OpenOptions::new().read(true).write(true).create_new(true))?
                   .into_std();
         let result: Result<()> = (|| {
-            file.try_lock().map_err(lock_error)?;
+            try_lock_file(&file, true)?;
             file.write_all(&bytes)?;
             file.write_all(&bytes)?;
             file.sync_all()?;
-            sync(parent)
+            sync_directory(parent)
         })();
         if let Err(error) = result
         {
             // No source namespace operation has been admitted yet.
             if let Ok(current) = parent.open(&name)
-               && let (Ok(current), Ok(expected)) = (current.into_std().metadata(), file.metadata())
-               && same_object(&current, &expected).unwrap_or(false)
+               && same_object(&current.into_std(), &file).unwrap_or(false)
             {
-                let _ = parent.remove_file(&name);
+                let _ = remove_file(&parent, &name);
             }
-            let _ = sync(parent);
+            let _ = sync_directory(parent);
             return Err(error);
         }
         Ok(Self { name,
@@ -170,7 +169,7 @@ impl Journal
         }
         let mut file =
             parent.open_with(name, OpenOptions::new().read(true).write(true))?.into_std();
-        file.try_lock().map_err(lock_error)?;
+        try_lock_file(&file, true)?;
         if file.metadata()?.len() != (2 * SLOT) as u64
         {
             return Err(Failure(status::CORRUPT));
@@ -189,7 +188,7 @@ impl Journal
         };
         let bytes = if slot == 0 { first } else { second };
         let intent = decode(&bytes)?;
-        if intent.parent != identity(&parent.open(".")?.into_std())?
+        if intent.parent != identity(&pin_directory_file(&parent)?)?
         {
             return Err(Failure(status::CONFLICT));
         }
@@ -233,15 +232,15 @@ impl Journal
         {
             Ok(file) =>
             {
-                if !same_object(&file.into_std().metadata()?, &self.file.metadata()?)?
+                if !same_object(&file.into_std(), &self.file)?
                 {
                     return Err(Failure(status::CONFLICT));
                 }
-                parent.remove_file(&self.name)?;
+                remove_file(&parent, &self.name)?;
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => (),
             Err(e) => return Err(e.into())
         }
-        sync(parent)
+        sync_directory(parent)
     }
 }

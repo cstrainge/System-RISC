@@ -1,8 +1,18 @@
 //! Host companion for explicitly selected VM directory exports. Native names,
 //! Macintosh metadata and fork semantics remain in the guest filesystem driver.
-#![forbid(unsafe_code)]
+//! Unsafe code is denied by default. Platform syscall adapters have narrow
+//! scoped allowances and safety comments for handle ownership and buffers.
+//! No guest OS code lives here.
+#![deny(unsafe_code)]
+#![cfg_attr(windows, feature(windows_by_handle, rename_noreplace))]
 
-use std::{fs::{File, Metadata, TryLockError},
+#[cfg(target_os = "macos")]
+use std::{ffi::CString,
+          os::fd::{AsRawFd, RawFd}};
+#[cfg(target_os = "windows")]
+use std::{ffi::OsStr,
+          os::windows::{ffi::OsStrExt, io::AsRawHandle}};
+use std::{fs::{File, Metadata},
           io::{self, Read, Seek, SeekFrom, Write},
           path::Path,
           sync::Arc};
@@ -12,15 +22,71 @@ use mac_host_protocol::{self as wire, Header, Operation as Op, status};
 use mac_object_table::{Kind, Table};
 use sha2::{Digest, Sha256};
 mod nodes;
-pub use nodes::{date as mac_date, object_identity};
+pub use nodes::{date as mac_date, object_identity, physical_key};
 mod changes;
 mod namespace;
 mod removal;
 pub use removal::recover_removals_in;
 
+#[cfg(windows)]
+mod windows_pins;
+pub const PIN_DIRECTORY: &str = ".system-risc-pins";
+
 pub type Result<T> = core::result::Result<T, Failure>;
 #[derive(Debug)]
 pub struct Failure(pub i32);
+impl std::fmt::Display for Failure
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+    {
+        let reason = match self.0
+        {
+            status::INVALID => "invalid host filesystem request",
+            status::STALE => "object or directory changed; refresh and retry",
+            status::UNAVAILABLE => "host filesystem requires recovery or is unavailable",
+            status::READ_ONLY => "host export is read-only",
+            status::CONFLICT => "source identity or destination conflicts with the operation",
+            status::LIMIT => "native filesystem capability budget exhausted",
+            status::IO => "native filesystem I/O failed",
+            status::NOT_FOUND => "host item was not found",
+            status::BUSY => "host item is in use; close its snapshots and retry",
+            status::UNSUPPORTED => "filesystem cannot provide the required native storage contract",
+            status::CORRUPT =>
+            {
+                "native catalog or recovery record is damaged; preserve private records for \
+                 inspection"
+            }
+            status::NOT_EMPTY => "host directory is not empty",
+            status::DENIED => "host access denied; check permissions and open files",
+            status::FULL => "host storage is full",
+            _ => "host filesystem failure"
+        };
+        write!(f, "{reason} (host filesystem status {})", self.0)
+    }
+}
+impl std::error::Error for Failure
+{
+}
+
+/// Link count from an opened object, used to retire replaced catalog pins.
+pub fn link_count(metadata: &Metadata) -> Result<u64>
+{
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(metadata.nlink())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        Ok(u64::from(metadata.number_of_links().ok_or(Failure(status::UNSUPPORTED))?))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = metadata;
+        Err(Failure(status::UNSUPPORTED))
+    }
+}
 impl From<io::Error> for Failure
 {
     fn from(error: io::Error) -> Self
@@ -54,17 +120,245 @@ impl From<mac_object_table::Exhausted> for Failure
         Self(status::LIMIT)
     }
 }
-fn lock_error(error: TryLockError) -> Failure
+#[cfg(not(windows))]
+fn lock_error(error: std::fs::TryLockError) -> Failure
 {
     match error
     {
-        TryLockError::WouldBlock => Failure(status::BUSY),
-        TryLockError::Error(e) => e.into()
+        std::fs::TryLockError::WouldBlock => Failure(status::BUSY),
+        std::fs::TryLockError::Error(e) => e.into()
     }
 }
-fn sync(directory: &Dir) -> Result<()>
+pub fn try_lock_file(file: &File, exclusive: bool) -> Result<()>
 {
-    Ok(directory.open(".")?.sync_all()?)
+    #[cfg(windows)]
+    {
+        windows_lock(file, Some(exclusive))
+    }
+    #[cfg(not(windows))]
+    {
+        if exclusive { file.try_lock() } else { file.try_lock_shared() }.map_err(lock_error)
+    }
+}
+fn unlock(file: &File) -> Result<()>
+{
+    #[cfg(windows)]
+    {
+        windows_lock(file, None)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(file.unlock()?)
+    }
+}
+/// Cooperating Windows locks use a byte beyond the supported signed file
+/// range, so mandatory byte locking does not block ordinary external edits.
+/// The same range is used by snapshots, explicit locks and recovery journals.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_lock(file: &File, exclusive: Option<bool>) -> Result<()>
+{
+    use windows_sys::Win32::{Foundation::ERROR_LOCK_VIOLATION,
+                             Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK,
+                                                   LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+                                                   UnlockFileEx},
+                             System::IO::OVERLAPPED};
+    let mut overlapped = OVERLAPPED::default();
+    overlapped.Anonymous.Anonymous.Offset = 0xfffffffe;
+    overlapped.Anonymous.Anonymous.OffsetHigh = 0xffffffff;
+    // SAFETY: a synchronous owned file handle and live, aligned OVERLAPPED.
+    // FAIL_IMMEDIATELY prevents a pending operation borrowing stack storage.
+    let ok = unsafe {
+        match exclusive
+        {
+            Some(exclusive) =>
+            {
+                LockFileEx(file.as_raw_handle(),
+                           LOCKFILE_FAIL_IMMEDIATELY
+                           | if exclusive { LOCKFILE_EXCLUSIVE_LOCK } else { 0 },
+                           0,
+                           1,
+                           0,
+                           &mut overlapped)
+            }
+            None => UnlockFileEx(file.as_raw_handle(), 0, 1, 0, &mut overlapped)
+        }
+    };
+    if ok == 0
+    {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32)
+        {
+            return Err(Failure(status::BUSY));
+        }
+        return Err(error.into());
+    }
+    Ok(())
+}
+pub fn remove_directory(directory: &Dir, name: impl AsRef<std::ffi::OsStr>) -> io::Result<()>
+{
+    #[cfg(windows)]
+    {
+        windows_unlink(directory, Path::new(name.as_ref()))
+    }
+    #[cfg(not(windows))]
+    {
+        directory.remove_dir(Path::new(name.as_ref()))
+    }
+}
+/// Unlink the directory entry before acknowledging its durability barrier.
+/// Windows' legacy delete-on-close can leave an entry pending behind a live
+/// snapshot; POSIX disposition removes the name while preserving its open pin.
+pub fn remove_file(directory: &Dir, name: impl AsRef<std::ffi::OsStr>) -> io::Result<()>
+{
+    let name = Path::new(name.as_ref());
+    #[cfg(not(windows))]
+    {
+        directory.remove_file(name)
+    }
+    #[cfg(windows)]
+    {
+        windows_unlink(directory, name)
+    }
+}
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_unlink(directory: &Dir, name: &Path) -> io::Result<()>
+{
+    windows_unlink_flags(directory, name, false)
+}
+#[cfg(windows)]
+fn windows_unlink_private(directory: &Dir, name: &Path) -> io::Result<()>
+{
+    windows_unlink_flags(directory, name, true)
+}
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_unlink_flags(directory: &Dir, name: &Path, private: bool) -> io::Result<()>
+{
+    use cap_std::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::*;
+    let file = directory.open_with(name,
+                                   OpenOptions::new().read(true)
+                                                     .access_mode(DELETE | FILE_READ_ATTRIBUTES)
+                                                     .share_mode(FILE_SHARE_READ
+                                                                 | FILE_SHARE_WRITE
+                                                                 | FILE_SHARE_DELETE)
+                                                     .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT
+                                                                   | FILE_FLAG_BACKUP_SEMANTICS))?
+                        .into_std();
+    let info = FILE_DISPOSITION_INFO_EX { Flags: FILE_DISPOSITION_FLAG_DELETE
+                                                 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+                                                 | if private
+                                                 {
+                                                     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE
+                                                 }
+                                                 else
+                                                 {
+                                                     0
+                                                 } };
+    // SAFETY: the checked capability open pins the exact namespace entry and
+    // does not follow a reparse point. The aligned fixed-size input lives for
+    // this synchronous call. No fallback may weaken unlink-before-flush.
+    let ok = unsafe {
+        SetFileInformationByHandle(file.as_raw_handle(),
+                                   FileDispositionInfoEx,
+                                   (&info as *const FILE_DISPOSITION_INFO_EX).cast(),
+                                   std::mem::size_of::<FILE_DISPOSITION_INFO_EX>() as u32)
+    };
+    if ok == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+pub fn sync_directory(directory: &Dir) -> Result<()>
+{
+    #[cfg(windows)]
+    {
+        windows_directory_file(directory, true)?.sync_all()?;
+        changes::windows_acknowledge_directory(directory)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(directory.open(".")?.sync_all()?)
+    }
+}
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_directory_file(directory: &Dir, writable: bool) -> Result<File>
+{
+    use std::os::windows::io::FromRawHandle;
+
+    use windows_sys::{Wdk::{Foundation::OBJECT_ATTRIBUTES,
+                            Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_OPEN_BY_FILE_ID,
+                                                  FILE_OPEN_FOR_BACKUP_INTENT,
+                                                  FILE_SYNCHRONOUS_IO_NONALERT, NtOpenFile}},
+                      Win32::{Foundation::{GENERIC_READ, GENERIC_WRITE, RtlNtStatusToDosError,
+                                           UNICODE_STRING},
+                              Storage::FileSystem::SYNCHRONIZE,
+                              System::IO::IO_STATUS_BLOCK}};
+    let original = pin_directory_file(directory)?;
+    let key = physical_key(&original)?;
+    let id: [u16; 8] =
+        std::array::from_fn(|i| u16::from_le_bytes([key[8 + i * 2], key[9 + i * 2]]));
+    let name = UNICODE_STRING { Length:        16,
+                                MaximumLength: 16,
+                                Buffer:        id.as_ptr().cast_mut() };
+    let attributes = OBJECT_ATTRIBUTES { Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
+                                         RootDirectory: original.as_raw_handle(),
+                                         ObjectName: &name,
+                                         ..Default::default() };
+    let mut handle = std::ptr::null_mut();
+    let mut completion = IO_STATUS_BLOCK::default();
+    // SAFETY: FILE_OPEN_BY_FILE_ID consumes this aligned, complete 128-bit ID.
+    // The original pin prevents reuse throughout this synchronous open. An
+    // unnamed directory capability follows ancestor moves without holding a
+    // namespace link open. DIRECTORY_FILE enables relative capability I/O.
+    let status = unsafe {
+        NtOpenFile(&mut handle,
+                   GENERIC_READ | SYNCHRONIZE | if writable { GENERIC_WRITE } else { 0 },
+                   &attributes,
+                   &mut completion,
+                   7,
+                   FILE_OPEN_BY_FILE_ID
+                   | FILE_DIRECTORY_FILE
+                   | FILE_OPEN_FOR_BACKUP_INTENT
+                   | FILE_SYNCHRONOUS_IO_NONALERT)
+    };
+    if status < 0
+    {
+        return Err(io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(status) } as i32).into());
+    }
+    // SAFETY: NtOpenFile returned a fresh owned handle.
+    let opened = unsafe { File::from_raw_handle(handle) };
+    if physical_key(&opened)? != key
+    {
+        return Err(Failure(status::STALE));
+    }
+    Ok(opened)
+}
+pub fn pin_directory(directory: Dir) -> Result<Dir>
+{
+    #[cfg(windows)]
+    {
+        Ok(Dir::from_std_file(windows_directory_file(&directory, false)?))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(directory)
+    }
+}
+pub fn pin_directory_file(directory: &Dir) -> Result<File>
+{
+    #[cfg(windows)]
+    {
+        Ok(directory.try_clone()?.into_std_file())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(directory.open(".")?.into_std())
+    }
 }
 fn unique() -> Result<String>
 {
@@ -73,8 +367,9 @@ fn unique() -> Result<String>
     Ok(format!(".system-risc-stage-{}",
                bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()))
 }
-fn fingerprint(metadata: &Metadata) -> Result<[u8; 32]>
+pub fn file_revision(file: &File) -> Result<[u8; 32]>
 {
+    let metadata = file.metadata()?;
     let mut digest = Sha256::new();
     digest.update(metadata.len().to_le_bytes());
     match metadata.modified()?.duration_since(std::time::UNIX_EPOCH)
@@ -101,7 +396,17 @@ fn fingerprint(metadata: &Metadata) -> Result<[u8; 32]>
         digest.update(metadata.ctime().to_le_bytes());
         digest.update(metadata.ctime_nsec().to_le_bytes());
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        digest.update(nodes::object_identity_metadata(file, &metadata)?.ok_or(Failure(status::UNSUPPORTED))?.as_bytes());
+        digest.update(change_time(file)?.to_le_bytes());
+        digest.update(metadata.file_attributes().to_le_bytes());
+        digest.update(metadata.number_of_links()
+                              .ok_or(Failure(status::UNSUPPORTED))?
+                              .to_le_bytes());
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let time = metadata.created()?
                            .duration_since(std::time::UNIX_EPOCH)
@@ -111,17 +416,31 @@ fn fingerprint(metadata: &Metadata) -> Result<[u8; 32]>
     }
     Ok(digest.finalize().into())
 }
-fn same_object(left: &Metadata, right: &Metadata) -> Result<bool>
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn change_time(file: &File) -> Result<i64>
 {
-    #[cfg(unix)]
+    use windows_sys::Win32::Storage::FileSystem::{FILE_BASIC_INFO, FileBasicInfo,
+                                                  GetFileInformationByHandleEx};
+    let mut info = FILE_BASIC_INFO::default();
+    // SAFETY: info is a properly aligned output of the specified size and the
+    // borrowed handle stays alive. Unlike std Metadata on Windows this query
+    // includes the change time, which catches edits that restore mtime.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(file.as_raw_handle(),
+                                     FileBasicInfo,
+                                     (&mut info as *mut FILE_BASIC_INFO).cast(),
+                                     std::mem::size_of::<FILE_BASIC_INFO>() as u32)
+    };
+    if ok == 0
     {
-        use std::os::unix::fs::MetadataExt;
-        Ok(left.dev() == right.dev() && left.ino() == right.ino())
+        return Err(io::Error::last_os_error().into());
     }
-    #[cfg(not(unix))]
-    {
-        Ok(fingerprint(left)? == fingerprint(right)?)
-    }
+    Ok(info.ChangeTime)
+}
+fn same_object(left: &File, right: &File) -> Result<bool>
+{
+    Ok(nodes::physical_key(left)? == nodes::physical_key(right)?)
 }
 fn regular(directory: &Dir, name: &str) -> Result<File>
 {
@@ -154,10 +473,13 @@ impl Export
         {
             return Err(Failure(status::INVALID));
         }
-        let root = Arc::new(Dir::open_ambient_dir(path, cap_std::ambient_authority())?);
+        let root =
+            Arc::new(pin_directory(Dir::open_ambient_dir(path, cap_std::ambient_authority())?)?);
         if writable
         {
             qualify_writes(&root)?;
+            #[cfg(windows)]
+            windows_pins::recover(&root)?;
         }
         Ok(Self { name: name.into(),
                   root,
@@ -172,22 +494,232 @@ fn move_noreplace(from: &Dir, old: &str, to: &Dir, new: &str) -> Result<()>
         rustix::fs::renameat_with(from, old, to, new, rustix::fs::RenameFlags::NOREPLACE).map_err(io::Error::from)?;
         Ok(())
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        renameatx_noreplace(from, old, to, new)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Paths are derived from the pinned directory handles below,
+        // never from guest input, so the guest cannot escape its export
+        // through path manipulation. The standard library's no-replace rename
+        // fails atomically if the destination exists. One narrowing versus the
+        // fd-relative Linux and macOS paths: between path derivation
+        // and the rename, a concurrent host-side rename of the source
+        // would make this fail (safe), or a file planted at the exact
+        // source path in that window would be renamed instead. That
+        // plant requires a hostile host actor, outside this
+        // single-user system's threat model. It must not be emulated
+        // with check-then-rename on top, which would widen the window.
+        let from_path = dir_path(from)?;
+        let to_path = dir_path(to)?;
+        move_file_no_replace(&join_path(&from_path, old), &join_path(&to_path, new))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         let _ = (from, old, to, new);
         Err(Failure(status::UNSUPPORTED))
     }
 }
+/// macOS atomic no-replace rename through renameatx_np. The names are
+/// single guest-validated components, as on Linux.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn renameatx_noreplace(from: &Dir, old: &str, to: &Dir, new: &str) -> Result<()>
+{
+    // SAFETY: both descriptors are valid open directory descriptors
+    // borrowed from cap-std directories, alive for the call. Both C
+    // strings are NUL-terminated with no interior NUL (construction
+    // rejects one). RENAME_EXCL makes the rename fail with EEXIST
+    // rather than replace, atomically. A -1 return means the OS error
+    // in errno, read immediately.
+    let old_c = CString::new(old).map_err(|_| Failure(status::INVALID))?;
+    let new_c = CString::new(new).map_err(|_| Failure(status::INVALID))?;
+    let ret = unsafe {
+        libc::renameatx_np(from.as_raw_fd(),
+                           old_c.as_ptr(),
+                           to.as_raw_fd(),
+                           new_c.as_ptr(),
+                           libc::RENAME_EXCL)
+    };
+    if ret == -1
+    {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+/// Force a descriptor's contents to physical storage on macOS, where
+/// plain fsync does not make that claim. Used for the probe file and
+/// for directory descriptors in the macOS write qualification.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn full_fsync_fd(fd: RawFd) -> Result<()>
+{
+    // SAFETY: fd is a valid open descriptor borrowed from a cap-std
+    // file, alive for the call. F_FULLFSYNC takes no third argument,
+    // so the variadic call passes exactly two. A -1 return means the
+    // OS error in errno, read immediately.
+    let ret = unsafe { libc::fcntl(fd, libc::F_FULLFSYNC) };
+    if ret == -1
+    {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+/// macOS directory sync: open the directory and force it to physical
+/// storage, matching the Linux probe's sync_directory(root) claim.
+#[cfg(target_os = "macos")]
+fn sync_dir_full(directory: &Dir) -> Result<()>
+{
+    let file = directory.open(".")?;
+    full_fsync_fd(file.as_raw_fd())
+}
+/// Derive the canonical path of a pinned directory on Windows, for the
+/// path-based Win32 calls below. The path names an already-open handle,
+/// never guest input: the guest cannot make this name anything outside
+/// its export. Fails closed if the handle cannot be resolved.
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+fn dir_path(directory: &Dir) -> Result<String>
+{
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+    // SAFETY: the handle is borrowed from a cap-std directory, alive
+    // for both calls. The two-call sizing pattern is the documented
+    // one: the first call returns the required UTF-16 length including
+    // the NUL, the second fills a buffer of exactly that size. A zero
+    // return, or a return that does not fit the sized buffer, means
+    // failure, read from the OS error immediately. Unpaired surrogates
+    // fail closed rather than being lossily rewritten into a wrong path.
+    let handle = directory.as_raw_handle();
+    let needed = unsafe { GetFinalPathNameByHandleW(handle, std::ptr::null_mut(), 0, 0) };
+    if needed == 0
+    {
+        return Err(io::Error::last_os_error().into());
+    }
+    let mut buffer = vec![0u16; needed as usize];
+    let got = unsafe { GetFinalPathNameByHandleW(handle, buffer.as_mut_ptr(), needed, 0) };
+    if got == 0 || got >= needed
+    {
+        return Err(io::Error::last_os_error().into());
+    }
+    buffer.truncate(got as usize);
+    String::from_utf16(&buffer).map_err(|_| Failure(status::INVALID))
+}
+/// Join a directory path and one name on Windows. Names are single
+/// guest-validated components, as on Linux; a name containing a
+/// separator would traverse exactly as the Linux fd-relative call
+/// would traverse it, and upstream validation is what confines names.
+#[cfg(target_os = "windows")]
+fn join_path(directory: &str, name: &str) -> String
+{
+    let base =
+        directory.strip_suffix('\\').or_else(|| directory.strip_suffix('/')).unwrap_or(directory);
+    format!("{base}\\{name}")
+}
+/// Windows atomic no-replace rename, including the platform's support for
+/// open descendants. The standard library owns the scoped Win32 FFI here.
+#[cfg(target_os = "windows")]
+fn move_file_no_replace(from_path: &str, to_path: &str) -> Result<()>
+{
+    Ok(std::fs::rename_noreplace(from_path, to_path)?)
+}
+/// Windows hard link by derived paths, for the write probe. Argument
+/// order is the Win32 one: new link first, existing file second.
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+fn create_hard_link(new_path: &str, existing_path: &str) -> Result<()>
+{
+    use windows_sys::Win32::Storage::FileSystem::CreateHardLinkW;
+    // SAFETY: both pointers name NUL-terminated UTF-16 buffers alive
+    // for the call; the security descriptor is null, as documented.
+    // A zero return means failure, read from the OS error immediately.
+    let new_wide: Vec<u16> = OsStr::new(new_path).encode_wide().chain([0u16]).collect();
+    let existing_wide: Vec<u16> = OsStr::new(existing_path).encode_wide().chain([0u16]).collect();
+    let ok =
+        unsafe { CreateHardLinkW(new_wide.as_ptr(), existing_wide.as_ptr(), std::ptr::null()) };
+    if ok == 0
+    {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(())
+}
 fn qualify_writes(root: &Dir) -> Result<()>
 {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        // Same probe as Linux, with macOS durability: the probe file
+        // and the directory are both forced to physical storage with
+        // F_FULLFSYNC, which is the claim Linux sync_all makes. Without
+        // it, plain fsync would not mean the same thing here.
+        sync_dir_full(root)?;
+        let first = unique()?;
+        let second = unique()?;
+        let result: Result<()> = (|| {
+            let mut file = root.open_with(&first, OpenOptions::new().write(true).create_new(true))?;
+            file.write_all(b"System RISC publication probe")?;
+            full_fsync_fd(file.as_raw_fd())?;
+            root.hard_link(&first, root, &second)?;
+            remove_file(&root, &second)?;
+            move_noreplace(root, &first, root, &second)?;
+            root.rename(&second, root, &first)?;
+            sync_dir_full(root)
+        })();
+        let mut cleanup = Ok(());
+        for name in [&first, &second]
+        {
+            match remove_file(&root, name)
+            {
+                Ok(()) => (),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+                Err(e) => cleanup = Err(Failure::from(e))
+            }
+        }
+        let flushed = sync_dir_full(root);
+        result?;
+        cleanup?;
+        flushed
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // FlushFileBuffers requires a write-capable directory handle. Probe
+        // that actual barrier before admitting any writable export; a read
+        // directory handle alone returns ERROR_ACCESS_DENIED on Windows.
+        sync_directory(root)?;
+        let first = unique()?;
+        let second = unique()?;
+        let result: Result<()> = (|| {
+            let mut file = root.open_with(&first, OpenOptions::new().write(true).create_new(true))?;
+            file.write_all(b"System RISC publication probe")?;
+            file.sync_all()?;
+            let root_path = dir_path(root)?;
+            create_hard_link(&join_path(&root_path, &second), &join_path(&root_path, &first))?;
+            remove_file(&root, &second)?;
+            move_noreplace(root, &first, root, &second)?;
+            root.rename(&second, root, &first)?;
+            sync_directory(root)
+        })();
+        let mut cleanup = Ok(());
+        for name in [&first, &second]
+        {
+            match remove_file(&root, name)
+            {
+                Ok(()) => (),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+                Err(e) => cleanup = Err(Failure::from(e))
+            }
+        }
+        result?;
+        cleanup?;
+        sync_directory(root)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         let _ = root;
         Err(Failure(status::UNSUPPORTED))
     }
     #[cfg(target_os = "linux")]
     {
-        sync(root)?;
+        sync_directory(root)?;
         let first = unique()?;
         let second = unique()?;
         let result = (|| {
@@ -195,22 +727,22 @@ fn qualify_writes(root: &Dir) -> Result<()>
             file.write_all(b"System RISC publication probe")?;
             file.sync_all()?;
             root.hard_link(&first, root, &second)?;
-            root.remove_file(&second)?;
+            remove_file(&root, &second)?;
             move_noreplace(root, &first, root, &second)?;
             root.rename(&second, root, &first)?;
-            sync(root)
+            sync_directory(root)
         })();
         let mut cleanup = Ok(());
         for name in [&first, &second]
         {
-            match root.remove_file(name)
+            match remove_file(&root, name)
             {
                 Ok(()) => (),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => (),
                 Err(e) => cleanup = Err(Failure::from(e))
             }
         }
-        let flushed = sync(root);
+        let flushed = sync_directory(root);
         result?;
         cleanup?;
         flushed
@@ -223,7 +755,8 @@ struct Directory
     root:    Arc<Dir>,
     export:  usize,
     owner:   u32,
-    changes: Arc<changes::Changes>
+    changes: Arc<changes::Changes>,
+    private: bool
 }
 impl Directory
 {
@@ -233,7 +766,8 @@ impl Directory
         Ok(Self { root,
                   export,
                   owner,
-                  changes })
+                  changes,
+                  private: false })
     }
 
     fn revision(&self) -> Result<[u8; 32]>
@@ -268,7 +802,7 @@ impl Snapshot
 {
     fn validate(&self) -> Result<()>
     {
-        if fingerprint(&self.file.metadata()?)? != self.revision
+        if file_revision(&self.file)? != self.revision
         {
             return Err(Failure(status::STALE));
         }
@@ -328,13 +862,15 @@ impl Transaction
                         return Err(Failure(status::CONFLICT));
                     }
                     let file = stage.open(entry.file_name())?.into_std();
-                    if !same_object(&file.metadata()?, &self.file.metadata()?)?
+                    if !same_object(&file, &self.file)?
                     {
                         return Err(Failure(status::CONFLICT));
                     }
-                    stage.remove_file(entry.file_name())?;
+                    remove_file(&stage, entry.file_name())?;
                 }
-                root.remove_dir(name)?;
+                drop(entries);
+                drop(stage);
+                remove_directory(&root, name)?;
             }
         }
         // Plain unpublished stages and leftover hard links after publication
@@ -343,16 +879,16 @@ impl Transaction
         {
             Ok(file) =>
             {
-                if !same_object(&file.into_std().metadata()?, &self.file.metadata()?)?
+                if !same_object(&file.into_std(), &self.file)?
                 {
                     return Err(Failure(status::CONFLICT));
                 }
-                root.remove_file(&self.name)?;
+                remove_file(&root, &self.name)?;
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => (),
             Err(e) => return Err(e.into())
         }
-        sync(root)?;
+        sync_directory(root)?;
         Ok(())
     }
 }
@@ -568,13 +1104,19 @@ impl Session
             {
                 let parent = self.directory(req.object)?;
                 let name = wire::component(payload)?;
+                #[cfg(windows)]
+                parent.changes.observe_entry(name)?;
                 if !parent.root.symlink_metadata(name)?.is_dir()
                 {
                     return Err(Failure(status::INVALID));
                 }
-                let child = Directory::new(Arc::new(parent.root.open_dir(name)?),
-                                           parent.export,
-                                           parent.owner)?;
+                let mut child = Directory::new(Arc::new(pin_directory(parent.root
+                                                                            .open_dir(name)?)?),
+                                               parent.export,
+                                               parent.owner)?;
+                child.private = parent.private || name.starts_with(".system-risc-");
+                #[cfg(windows)]
+                child.changes.observe_parent(&parent.changes, name)?;
                 reply.object = self.directories.insert(DirectoryObject::Open(child))?;
             }
             Op::ListBegin =>
@@ -653,7 +1195,17 @@ impl Session
                         enumeration.recovery = None;
                         return Err(Failure(status::STALE));
                     }
+                    if name == PIN_DIRECTORY
+                    {
+                        if !entry.file_type()?.is_dir()
+                        {
+                            return Err(Failure(status::CORRUPT));
+                        }
+                        continue;
+                    }
                     wire::component(name.as_bytes())?;
+                    #[cfg(windows)]
+                    enumeration.directory.changes.observe_entry(name)?;
                     let kind = entry.file_type()?;
                     reply.value = if kind.is_file()
                     {
@@ -679,11 +1231,21 @@ impl Session
             Op::OpenRead =>
             {
                 let directory = self.directory(req.object)?;
-                let file = regular(&directory.root, wire::component(payload)?)?;
-                file.try_lock_shared().map_err(lock_error)?;
+                let name = wire::component(payload)?;
+                #[cfg(windows)]
+                directory.changes.observe_entry(name)?;
+                let file = regular(&directory.root, name)?;
+                #[cfg(windows)]
+                if !directory.private && !name.starts_with(".system-risc-")
+                {
+                    self.ensure_node_pin(directory.export,
+                                         &file,
+                                         Some((&directory.changes, name)))?;
+                }
+                try_lock_file(&file, false)?;
                 let metadata = file.metadata()?;
                 let length = metadata.len();
-                let revision = fingerprint(&metadata)?;
+                let revision = file_revision(&file)?;
                 reply.object = self.files.insert(OwnedFile { owner: self.id, value: FileObject::Read(Snapshot { file, revision, length, export: directory.export }) })?;
                 reply.offset = length;
                 return Ok(revision.to_vec());
@@ -831,8 +1393,10 @@ impl Session
             {
                 let directory = self.directory(req.object)?;
                 self.writable(directory.export)?;
-                directory.root.create_dir(wire::component(payload)?)?;
-                sync(&directory.root)?;
+                let name = wire::component(payload)?;
+                directory.root.create_dir(name)?;
+                sync_directory(&directory.root)?;
+                directory.changes.acknowledge_child(name)?;
             }
             Op::BeginRemove =>
             {
@@ -893,11 +1457,13 @@ impl Session
                 }
                 move_noreplace(&from.root, old, &to.root, new)?;
                 self.check_moved(&to, new, req.value)?;
-                sync(&from.root)?;
+                sync_directory(&from.root)?;
                 if !Arc::ptr_eq(&from.root, &to.root)
                 {
-                    sync(&to.root)?;
+                    sync_directory(&to.root)?;
                 }
+                from.changes.acknowledge_child(old)?;
+                to.changes.acknowledge_child(new)?;
             }
             Op::Remove =>
             {
@@ -907,13 +1473,14 @@ impl Session
                 let is_dir = self.check_source(&directory, name, req.value)?;
                 if is_dir
                 {
-                    directory.root.remove_dir(name)?;
+                    remove_directory(&directory.root, name)?;
                 }
                 else
                 {
-                    directory.root.remove_file(name)?;
+                    remove_file(&directory.root, name)?;
                 }
-                sync(&directory.root)?;
+                sync_directory(&directory.root)?;
+                directory.changes.acknowledge_child(name)?;
             }
             Op::NotifyDirectory =>
             {
@@ -925,7 +1492,7 @@ impl Session
             {
                 let directory = self.directory(req.object)?;
                 self.writable(directory.export)?;
-                sync(&directory.root)?;
+                sync_directory(&directory.root)?;
             }
             Op::OpenLock =>
             {
@@ -954,7 +1521,7 @@ impl Session
                         {
                             if mode.is_some()
                             {
-                                file.unlock()?;
+                                unlock(file)?;
                                 *mode = None;
                             }
                         }
@@ -974,14 +1541,7 @@ impl Session
                                 {
                                     return Err(Failure(status::CONFLICT));
                                 }
-                                if req.value == 1
-                                {
-                                    file.try_lock()
-                                }
-                                else
-                                {
-                                    file.try_lock_shared()
-                                }.map_err(lock_error)?;
+                                try_lock_file(file, req.value == 1)?;
                                 *mode = Some(req.value);
                             }
                         }
@@ -1034,7 +1594,7 @@ impl Session
         if let Ok(snapshot) = self.snapshot(expected, parent.export)
         {
             let current = regular(&parent.root, name)?;
-            if fingerprint(&current.metadata()?)? != snapshot.revision
+            if file_revision(&current)? != snapshot.revision
             {
                 return Err(Failure(status::CONFLICT));
             }
@@ -1048,8 +1608,8 @@ impl Session
                 return Err(Failure(status::CONFLICT));
             }
             let current = parent.root.open_dir(name)?;
-            if fingerprint(&current.open(".")?.into_std().metadata()?)?
-               != fingerprint(&directory.root.open(".")?.into_std().metadata()?)?
+            if file_revision(&pin_directory_file(&current)?)?
+               != file_revision(&pin_directory_file(&directory.root)?)?
             {
                 return Err(Failure(status::CONFLICT));
             }
@@ -1067,7 +1627,7 @@ impl Session
             {
                 return Err(Failure(status::STALE));
             }
-            snapshot.file.metadata()?
+            snapshot.file.try_clone()?
         }
         else
         {
@@ -1076,21 +1636,24 @@ impl Session
             {
                 return Err(Failure(status::STALE));
             }
-            old.root.open(".")?.into_std().metadata()?
+            pin_directory_file(&old.root)?
         };
-        let current = directory.root.open(name)?.into_std().metadata()?;
-        #[cfg(unix)]
+        let current = if old.metadata()?.is_dir()
         {
-            use std::os::unix::fs::MetadataExt;
-            if old.dev() != current.dev() || old.ino() != current.ino()
-            {
-                return Err(Failure(status::CONFLICT));
-            }
+            pin_directory_file(&directory.root.open_dir(name)?)?
         }
-        #[cfg(not(unix))]
-        if fingerprint(&old)? != fingerprint(&current)?
+        else
+        {
+            directory.root.open(name)?.into_std()
+        };
+        if !same_object(&old, &current)?
         {
             return Err(Failure(status::CONFLICT));
+        }
+        #[cfg(windows)]
+        if let Some(DirectoryObject::Open(source)) = self.directories.get(expected)
+        {
+            source.changes.observe_parent(&directory.changes, name)?;
         }
         Ok(())
     }
@@ -1100,7 +1663,7 @@ impl Session
     fn close_transaction(&mut self, id: u32) -> Result<()>
     {
         self.transactions
-            .get(id)
+            .get_mut(id)
             .filter(|t| t.owner == self.id)
             .ok_or(Failure(status::STALE))?
             .cleanup()?;
@@ -1152,13 +1715,14 @@ impl Session
             transaction.publication = Some(name.into());
         }
         let transaction = self.transaction(id)?;
-        match directory.root.remove_file(&transaction.name)
+        match remove_file(&directory.root, &transaction.name)
         {
             Ok(()) => (),
             Err(e) if e.kind() == io::ErrorKind::NotFound => (),
             Err(e) => return Err(e.into())
         }
-        sync(&directory.root)?;
+        sync_directory(&directory.root)?;
+        directory.changes.acknowledge_child(name)?;
         self.transactions.get_mut(id).unwrap().cleaned = true;
         self.transactions.remove(id);
         Ok(())
@@ -1180,7 +1744,7 @@ impl Session
             {
                 return Err(Failure(status::CONFLICT));
             }
-            parent.open_dir(name)?
+            pin_directory(parent.open_dir(name)?)?
         }
         else
         {
@@ -1199,10 +1763,19 @@ impl Session
                 transaction.directory_stage = Some(stage.clone());
                 stage
             };
-            let directory = parent.open_dir(&stage)?;
+            let directory = pin_directory(parent.open_dir(&stage)?)?;
             if parent.symlink_metadata(&transaction.name).is_ok()
             {
+                #[cfg(not(windows))]
                 move_noreplace(&parent, &transaction.name, &directory, record)?;
+                #[cfg(windows)]
+                {
+                    // Keep the original pin outside the folder being moved.
+                    // POSIX unlink retires its original name while the new
+                    // private hard link retains the same flushed record.
+                    parent.hard_link(&transaction.name, &directory, record)?;
+                    remove_file(&parent, &transaction.name)?;
+                }
             }
             directory
         };
@@ -1211,7 +1784,7 @@ impl Session
             self.directories
                 .insert(DirectoryObject::Open(Directory::new(root.clone(), export, owner)?))?;
         let result = (|| {
-            sync(&root)?;
+            sync_directory(&root)?;
             let transaction = self.transaction(id)?;
             if transaction.publication.is_none()
             {
@@ -1219,7 +1792,13 @@ impl Session
                 move_noreplace(&parent, stage, &parent, name)?;
                 transaction.publication = Some(name.into());
             }
-            sync(&parent)
+            sync_directory(&parent)?;
+            self.transaction(id)?.directory.changes.acknowledge_child(name)?;
+            #[cfg(windows)]
+            self.directory(capability)?
+                .changes
+                .observe_parent(&self.transaction(id)?.directory.changes, name)?;
+            Ok(())
         })();
         if let Err(error) = result
         {

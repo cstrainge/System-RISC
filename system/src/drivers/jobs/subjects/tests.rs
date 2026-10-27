@@ -1,3 +1,4 @@
+extern crate std;
 use mac_object_table::{domain::{DomainKind, OwnerIndex},
                        registry::Release};
 

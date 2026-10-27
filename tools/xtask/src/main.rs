@@ -56,7 +56,25 @@ impl Workspace
 
     fn command(&self, program: impl AsRef<OsStr>) -> Command
     {
-        let mut command = Command::new(program);
+        let program = program.as_ref();
+        let python = if program == OsStr::new("python3")
+        {
+            Some(env::var_os("SYSTEM7_PYTHON").unwrap_or_else(|| {
+                                                  if cfg!(windows)
+                                                  {
+                                                      "python".into()
+                                                  }
+                                                  else
+                                                  {
+                                                      "python3".into()
+                                                  }
+                                              }))
+        }
+        else
+        {
+            None
+        };
+        let mut command = Command::new(python.as_deref().unwrap_or(program));
         command.env(mac_build::paths::BUILD_DIR_ENV, &self.build);
         command.env(mac_build::platform::PLATFORM_ENV, &self.platform.name);
         command
@@ -179,8 +197,17 @@ impl Workspace
         // Guest cases measure UI timing and package feature variants into a
         // shared compiler profile. Keep these captures isolated; ordinary host
         // unit tests above retain Cargo's parallel execution.
-        let checked = run(self.cargo().args(["test", "--locked", "-p", "mac-toolbox", "--test",
-                                             name, "--", "--ignored", "--test-threads=1"]));
+        let mut command = self.cargo();
+        command.args(["test", "--locked", "-p", "mac-toolbox", "--test", name, "--", "--ignored",
+                      "--test-threads=1"]);
+        // This validator consumes separately collected evidence. The automatic
+        // suite builds its own guests; it must not require an unrelated capture.
+        if env::var_os("SYSTEM7_HOST_FILESYSTEM_CAPTURE").is_none()
+        {
+            command.args(["--skip",
+                          "prepared_host_filesystem_capture_passes_public_sdk_acceptance"]);
+        }
+        let checked = run(&mut command);
         let cleaned = run(self.command("python3")
                               .current_dir(&self.repo)
                               .arg("System7/scripts/prune_system7_images.py"));

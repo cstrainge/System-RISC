@@ -10,8 +10,7 @@ use crate::{Entry, Result, Volume, error, io::FileIo};
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Key
 {
-    device:      u64,
-    inode:       u64,
+    physical:    [u8; 24],
     incarnation: Option<[u8; 32]>
 }
 pub(super) struct Projection
@@ -29,22 +28,15 @@ impl Projection
 
     fn id(&mut self, file: File, stored: Option<u32>) -> Result<u32>
     {
-        let metadata = file.metadata()?;
-        let incarnation = risc_host::object_identity(&metadata).map_err(|e| {
-                                                                   error(format!("cannot qualify \
-                                                                                  host identity: \
-                                                                                  {e:?}"))
-                                                               })?
-                                                               .map(|v| *v.as_bytes());
-        #[cfg(unix)]
-        let key = {
-            use std::os::unix::fs::MetadataExt;
-            Key { device: metadata.dev(),
-                  inode: metadata.ino(),
-                  incarnation }
-        };
-        #[cfg(not(unix))]
-        let key = return Err(error("host does not support pinned catalog identity"));
+        let incarnation = risc_host::object_identity(&file).map_err(|e| {
+                                                               error(format!("cannot qualify \
+                                                                              host identity: \
+                                                                              {e:?}"))
+                                                           })?
+                                                           .map(|v| *v.as_bytes());
+        let physical = risc_host::physical_key(&file)?;
+        let key = Key { physical,
+                        incarnation };
         if let Some(&id) = self.ids.get(&key)
         {
             if stored.is_some_and(|value| value != id)
@@ -61,24 +53,18 @@ impl Projection
            && let Some(old) =
                self.ids.iter().find_map(|(key, value)| (*value == id).then_some(*key))
         {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                let token = self.pins
-                                .iter()
-                                .find_map(|(token, file)| {
-                                    let metadata = file.metadata().ok()?;
-                                    (metadata.dev() == old.device
-                                     && metadata.ino() == old.inode
-                                     && metadata.nlink() == 0)
-                                                              .then_some(token)
-                                })
-                                .ok_or_else(|| error("duplicate annotated catalog identity"))?;
-                self.pins.remove(token);
-                self.ids.remove(&old);
-            }
-            #[cfg(not(unix))]
-            return Err(error("duplicate annotated catalog identity"));
+            let token = self.pins
+                            .iter()
+                            .find_map(|(token, file)| {
+                                let metadata = file.metadata().ok()?;
+                                let physical = risc_host::physical_key(file).ok()?;
+                                (physical == old.physical
+                                 && risc_host::link_count(&metadata).ok()? == 0)
+                                                                                .then_some(token)
+                            })
+                            .ok_or_else(|| error("duplicate annotated catalog identity"))?;
+            self.pins.remove(token);
+            self.ids.remove(&old);
         }
         let token =
             self.pins
@@ -99,11 +85,11 @@ impl Volume
     fn annotation(&self, file: &File, volume: [u8; 16])
                   -> Result<Option<[u8; format::annotation::BYTES]>>
     {
-        let Some(identity) =
-            risc_host::object_identity(&file.metadata()?).map_err(|e| {
-                                                             error(format!("cannot read host \
-                                                                            incarnation: {e:?}"))
-                                                         })?
+        let Some(identity) = risc_host::object_identity(&file).map_err(|e| {
+                                                                  error(format!("cannot read \
+                                                                                 host incarnation: \
+                                                                                 {e:?}"))
+                                                              })?
         else
         {
             return Ok(None);
@@ -140,18 +126,23 @@ impl Volume
         use std::io::Write;
 
         use cap_std::fs::OpenOptions;
-        let physical = self.dir.open(path)?.into_std();
-        let object =
-            risc_host::object_identity(&physical.metadata()?).map_err(|e| {
-                                                                 error(format!("cannot qualify \
-                                                                                created object: \
-                                                                                {e:?}"))
-                                                             })?
-                                                             .ok_or_else(|| {
-                                                                 error("host cannot persist \
-                                                                        catalog identity on this \
-                                                                        filesystem")
-                                                             })?;
+        let physical = if metadata.kind == Kind::Directory
+        {
+            risc_host::pin_directory_file(&risc_host::pin_directory(self.dir.open_dir(path)?)?)?
+        }
+        else
+        {
+            self.dir.open(path)?.into_std()
+        };
+        let object = risc_host::object_identity(&physical).map_err(|e| {
+                                                              error(format!("cannot qualify \
+                                                                             created object: \
+                                                                             {e:?}"))
+                                                          })?
+                                                          .ok_or_else(|| {
+                                                              error("host cannot persist catalog \
+                                                                     identity on this filesystem")
+                                                          })?;
         let directory = format::annotation::DIRECTORY;
         match self.dir.create_dir(directory)
         {
@@ -176,7 +167,7 @@ impl Volume
         file.write_all(&bytes)?;
         file.sync_all()?;
         dir.hard_link(&stage.name, &dir, name)?;
-        dir.remove_file(&stage.name)?;
+        risc_host::remove_file(&dir, &stage.name)?;
         stage.published = true;
         super::volume::sync(&dir)?;
         Ok(())
@@ -186,7 +177,14 @@ impl Volume
                           name: &str)
                           -> Result<Entry>
     {
-        let file = self.dir.open(path)?.into_std();
+        let file = if kind == Kind::Directory
+        {
+            risc_host::pin_directory_file(&risc_host::pin_directory(self.dir.open_dir(path)?)?)?
+        }
+        else
+        {
+            self.dir.open(path)?.into_std()
+        };
         let source = file.metadata()?;
         let mut snapshot = FileIo::snapshot(file.try_clone()?)?;
         if kind == Kind::File && !source.is_file() || kind == Kind::Directory && !source.is_dir()

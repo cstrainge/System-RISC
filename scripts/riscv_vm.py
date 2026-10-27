@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import socket
 import subprocess
 import time
@@ -17,6 +19,8 @@ KERNEL = BUILD / TARGET / 'release/quickdraw-kernel'
 
 
 def windows_path(path):
+    if os.name == 'nt':
+        return str(Path(path).resolve())
     return subprocess.check_output(['wslpath', '-w', str(Path(path).resolve())], text=True).strip()
 
 
@@ -55,13 +59,50 @@ def build():
     return KERNEL
 
 
+def native_path(value):
+    if os.name == 'nt':
+        mounted = re.fullmatch(r'/mnt/([a-zA-Z])/(.*)', str(value))
+        if mounted:
+            return Path(mounted[1] + ':/' + mounted[2])
+    elif re.match(r'^[a-zA-Z]:[\\/]|^\\\\', str(value)) and shutil.which('wslpath'):
+        return Path(subprocess.check_output(['wslpath', '-u', str(value)], text=True).strip())
+    return Path(value)
+
+
 def native_executable():
+    configured = os.environ.get('SYSTEM7_WINDOWS_QEMU')
+    if configured:
+        executable = native_path(configured).expanduser().resolve()
+        if not executable.is_file():
+            raise FileNotFoundError(f'SYSTEM7_WINDOWS_QEMU does not name a file: {executable}')
+        return executable
+    if os.name == 'nt':
+        installed = shutil.which('qemu-system-riscv64.exe')
+        if installed:
+            return Path(installed)
     config = ROOT / 'working/vm/windows-qemu.json'
     if config.exists():
-        exe = Path(json.loads(config.read_text())['executable']).with_name('qemu-system-riscv64.exe')
+        exe = native_path(json.loads(config.read_text())['executable']).with_name('qemu-system-riscv64.exe')
         if exe.exists():
             return exe
+    if os.name == 'nt':
+        for variable in ('ProgramFiles', 'ProgramFiles(x86)'):
+            directory = os.environ.get(variable)
+            if directory:
+                exe = Path(directory) / 'qemu/qemu-system-riscv64.exe'
+                if exe.is_file():
+                    return exe
     return None
+
+
+def image_executable():
+    if os.name == 'nt':
+        executable = native_executable()
+        if executable is not None:
+            image = executable.with_name('qemu-img.exe')
+            if image.is_file():
+                return str(image)
+    return shutil.which('qemu-img') or 'qemu-img'
 
 
 def launch(state, frontend='headless', animate=True):

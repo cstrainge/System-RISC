@@ -7,17 +7,15 @@ from functools import cache
 import json
 from pathlib import Path
 import subprocess
-from system7_paths import host_dir
-
-ROOT = Path(__file__).resolve().parents[2]
+from system7_paths import SOURCE, host_dir, host_tool
 
 
 @cache
 def tool():
     target = host_dir()
     subprocess.run(['cargo', 'build', '--locked', '-p', 'hfs-b', '--target-dir',
-                    str(target)], cwd=ROOT / 'System7', check=True)
-    return target / 'debug/hfs-b'
+                    str(target)], cwd=SOURCE, check=True)
+    return host_tool('hfs-b')
 
 
 class Image:
@@ -26,7 +24,7 @@ class Image:
 
     def run(self, command, *arguments):
         return subprocess.check_output([str(tool()), command, str(self.image),
-                                        *map(str, arguments)], text=True)
+                                        *map(str, arguments)], text=True, encoding='utf-8')
 
     def stat(self, path):
         return json.loads(self.run('stat', path))

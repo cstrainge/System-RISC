@@ -14,6 +14,16 @@ fn require(value: bool) -> Result<(), Error>
 {
     if value { Ok(()) } else { Err(Error::BadAbi) }
 }
+fn require_named(system: &System<'_>, name: &str, value: bool) -> Result<(), Error>
+{
+    if !value
+    {
+        system.log("HOST_FS_ASSERT_FAILED ")?;
+        system.log(name)?;
+        system.log("\n")?;
+    }
+    require(value)
+}
 /// Original string-boundary callers share the resident writer and generation
 /// checks. Only this conformance fixture uses a raw Pascal-string gate.
 pub fn check_legacy_writer(system: &System<'_>, gate: mac_toolbox::abi::TrapGate)
@@ -102,16 +112,31 @@ pub fn check(system: &System<'_>, gate: mac_toolbox::abi::TrapGate) -> Result<()
     // System, not this fixture or Finder, mounts device exports before starting
     // userspace. Repeated explicit requests must find those same live volumes.
     system.log("HOST_FS_STAGE automatic-mounts\n")?;
-    require(files.volume_count()? == 3)?;
+    require_named(system, "automatic-volume-count", files.volume_count()? == 3)?;
     let automatic_rw = files.volume_at(1)?;
     let automatic_ro = files.volume_at(2)?;
-    require(files.trash_directory(automatic_rw.id, false) == Err(Error::NotFound))?;
-    require(files.trash_directory(automatic_ro.id, false) == Err(Error::NotFound))?;
-    require(automatic_rw.name() == "Native Host" && !automatic_rw.read_only)?;
-    require(automatic_ro.name() == "Read Only Host" && automatic_ro.read_only)?;
-    require(files.mount_host_export(0)?.id == automatic_rw.id)?;
-    require(files.mount_host_export(1)?.id == automatic_ro.id)?;
-    require(files.volume_count()? == 3)?;
+    let trash = files.trash_directory(automatic_rw.id, false);
+    if let Err(error) = trash
+    {
+        crate::diagnostics::error(system, "HOST_FS_AUTOMATIC_RW_TRASH", error);
+    }
+    require_named(system, "automatic-rw-trash-absent", trash == Err(Error::NotFound))?;
+    require_named(system,
+                  "automatic-ro-trash-absent",
+                  files.trash_directory(automatic_ro.id, false) == Err(Error::NotFound))?;
+    require_named(system,
+                  "automatic-rw-name-and-mode",
+                  automatic_rw.name() == "Native Host" && !automatic_rw.read_only)?;
+    require_named(system,
+                  "automatic-ro-name-and-mode",
+                  automatic_ro.name() == "Read Only Host" && automatic_ro.read_only)?;
+    require_named(system,
+                  "automatic-rw-mount-reuse",
+                  files.mount_host_export(0)?.id == automatic_rw.id)?;
+    require_named(system,
+                  "automatic-ro-mount-reuse",
+                  files.mount_host_export(1)?.id == automatic_ro.id)?;
+    require_named(system, "automatic-mount-count-unchanged", files.volume_count()? == 3)?;
     files.unmount(automatic_rw.id)?;
     files.unmount(automatic_ro.id)?;
     let before = files.volume_count()?;
@@ -431,6 +456,7 @@ fn check_writes(system: &System<'_>, volume: VolumeId, forked: mac_toolbox::Cnid
                               replacing: None,
                               file_type: (*b"TEXT").into(),
                               creator: (*b"TEST").into() };
+    system.log("HOST_FS_WRITE create\n")?;
     let mut writer = files.create_data_at(spec, 131089, when)?;
     require(files.unmount(volume) == Err(Error::ServiceBusy))?;
     write_pattern(&mut writer, 131089, 17, 3)?;
@@ -442,8 +468,10 @@ fn check_writes(system: &System<'_>, volume: VolumeId, forked: mac_toolbox::Cnid
     require(entry.file_type == spec.file_type && entry.creator == spec.creator)?;
     require(files.lookup(volume, ROOT_ID, "RE\u{301}SUME\u{301}.JSON")?.id == entry.id)?;
     check_pattern(system, volume, entry.id, Fork::Data, 131089, 17, 3)?;
+    system.log("HOST_FS_WRITE duplicate\n")?;
     let mut duplicate = files.create_data_at(spec, 0, when)?;
     require(duplicate.finish() == Err(Error::AlreadyExists))?;
+    system.log("HOST_FS_WRITE mismatch\n")?;
     let mut mismatched = files.create_data_at(DataFileSpec { replacing: Some(forked),
                                                              ..spec },
                                               0,
@@ -451,11 +479,13 @@ fn check_writes(system: &System<'_>, volume: VolumeId, forked: mac_toolbox::Cnid
     require(mismatched.finish() == Err(Error::NotFound))?;
     let partial = DataFileSpec { name: "Unpublished",
                                  ..spec };
+    system.log("HOST_FS_WRITE partial\n")?;
     let mut writer = files.create_data_at(partial, 4, when)?;
     writer.write_all(b"ab")?;
     require(writer.finish() == Err(Error::BadArgument))?;
     drop(writer);
     require(files.lookup(volume, ROOT_ID, "Unpublished") == Err(Error::NotFound))?;
+    system.log("HOST_FS_WRITE zero\n")?;
     let mut zero = files.create_data_at(DataFileSpec { name: "Zero",
                                                        ..spec },
                                         0,
@@ -467,6 +497,7 @@ fn check_writes(system: &System<'_>, volume: VolumeId, forked: mac_toolbox::Cnid
     drop(empty);
     // Replace only an exact confirmed ID; preserve original type/creator,
     // creation date and the complete original resource fork.
+    system.log("HOST_FS_WRITE replace\n")?;
     let original = files.catalog(volume, forked)?;
     let replacement = DataFileSpec { parent: original.parent,
                                      name: original.name(),

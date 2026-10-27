@@ -122,6 +122,16 @@ class PreservationTests(unittest.TestCase):
                 user.replace_disk(self.build, self.state, self.root / 'base')
         self.assertEqual(disk.read_bytes(), b'live guest')
 
+    def test_invalid_process_record_refuses_offline_access_to_a_writable_disk(self):
+        disk = self.state / 'system7.qcow2'
+        disk.write_bytes(b'preserve this writable disk')
+        (self.state / 'pid').write_text('damaged process record')
+        with patch.object(user, 'snapshot_disk') as snapshot:
+            with self.assertRaisesRegex(RuntimeError, 'Cannot determine VM ownership.*repair its process record'):
+                user.prepare(self.build, self.state)
+            snapshot.assert_not_called()
+        self.assertEqual(disk.read_bytes(), b'preserve this writable disk')
+
     def test_failed_export_retains_previous_complete_snapshot_and_original_disk(self):
         raw = self.volume('source.hfsb')
         self.put(raw, '/Documents', 'Note', b'keep me')

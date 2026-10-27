@@ -40,7 +40,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>>
                     return Err("empty export name/path".into());
                 }
                 exports.push(Export::open(name, Path::new(path), arg == "--export")
-                    .map_err(|e| io::Error::other(format!("export {name}: status {}", e.0)))?);
+                    .map_err(|e| io::Error::other(format!("export {name} at {path}: {e}")))?);
             }
             "--help" =>
             {

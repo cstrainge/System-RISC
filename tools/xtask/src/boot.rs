@@ -52,7 +52,7 @@ fn command(workspace: &Workspace, disks: &[(&Path, &str)]) -> Command
                   "-cpu",
                   workspace.platform.qemu_cpu.as_str(),
                   "-m",
-                  "128M",
+                  workspace.platform.qemu_ram.as_str(),
                   "-smp",
                   "1",
                   "-bios",

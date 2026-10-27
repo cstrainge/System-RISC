@@ -1,24 +1,52 @@
 #!/usr/bin/env python3
 """Build and boot the System7 disk desktop through its read-only flash ROM and private working disk."""
-from system7_platform import cpu_model
+from system7_platform import RAM, cpu_model, display_size
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 from pathlib import Path
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import uuid
 
 from riscv_vm import native_executable, qmp as send_qmp, windows_path
-from system7_paths import BUILD_DIR_ENV, build_dir, dist_dir, describe
+from system7_paths import SOURCE, ROOT, BUILD_DIR_ENV, build_dir, dist_dir, describe
+from system7_host import process_options
 
-ROOT = Path(__file__).resolve().parents[2]
 STATE = ROOT / 'working/system7-vm'
 DIST = dist_dir()
+
+COCOA_SCREEN_SCRIPT = '''ObjC.import("AppKit");
+const screen = $.NSScreen.mainScreen;
+if (screen.isNil()) throw Error("No active Mac screen");
+const style = $.NSWindowStyleMaskTitled | $.NSWindowStyleMaskMiniaturizable | $.NSWindowStyleMaskClosable;
+const content = $.NSWindow.contentRectForFrameRectStyleMask(screen.visibleFrame, style);
+JSON.stringify({width: content.size.width, height: content.size.height});'''
+
+
+def cocoa_scale():
+    """Prefer 2x only when the whole titled window fits the usable Mac screen."""
+    width, height = display_size()
+    try:
+        output = subprocess.check_output(['/usr/bin/osascript', '-l', 'JavaScript', '-e',
+                                          COCOA_SCREEN_SCRIPT],
+                                         text=True, stderr=subprocess.PIPE, timeout=10)
+        size = json.loads(output)
+        if not isinstance(size, dict) or any(
+                type(size.get(axis)) not in (int, float) or not math.isfinite(size[axis])
+                or size[axis] <= 0 for axis in ('width', 'height')):
+            raise ValueError('usable screen size must contain finite positive width and height')
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        cause = getattr(error, 'stderr', None) or str(error)
+        print(f'Unable to measure the Mac screen; launching at 1x: {cause.strip()}', file=sys.stderr)
+        return 1
+    return 2 if width * 2 <= size['width'] and height * 2 <= size['height'] else 1
 
 
 def qmp(command, arguments=None, endpoint=None):
@@ -29,8 +57,8 @@ def qmp(command, arguments=None, endpoint=None):
 
 def build():
     subprocess.run(['cargo', 'xtask', 'image', '--build-dir', str(build_dir())],
-                   cwd=ROOT / 'System7', check=True,
-                   env=dict(os.environ, SYSTEM7_VM_STATE_DIR=str(STATE)))
+                   cwd=SOURCE, check=True,
+                   env=dict(os.environ, SYSTEM7_VM_STATE_DIR=str(STATE), SYSTEM7_PYTHON=sys.executable))
 
 
 def launch(state, frontend='headless', extra_disks=(), *, writable=False, preserve=False,
@@ -42,16 +70,19 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     retiring that copy; obsolete boot disks are not retained.
     """
     state = Path(state).resolve()
+    if os.name == 'nt':
+        frontend = {'headless': 'native-headless', 'gtk': 'native'}.get(frontend, frontend)
     if host_bridge is not None and (type(host_bridge) is not int or not 0 < host_bridge < 65536):
         raise ValueError('host bridge must be an explicit loopback TCP port')
     if expected_exports is not None and (type(expected_exports) is not int
                                          or not 1 <= expected_exports <= 16
                                          or host_bridge is None):
         raise ValueError('expected exports require a host bridge and a count from 1 to 16')
+    cocoa_zoom = cocoa_scale() if frontend == 'cocoa' else 1
     state.mkdir(parents=True, exist_ok=True)
     native = frontend in ('native', 'native-headless')
     if native and not native_executable():
-        raise FileNotFoundError('Portable qemu-system-riscv64.exe missing; use --frontend gtk')
+        raise FileNotFoundError('qemu-system-riscv64.exe missing; install Windows QEMU or set SYSTEM7_WINDOWS_QEMU')
     if native:
         try:
             connection = socket.create_connection(('127.0.0.1', qmp_port), timeout=.5)
@@ -85,14 +116,17 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     monitor = (f'tcp:127.0.0.1:{qmp_port},server=on,wait=off' if native
                else f'unix:{socket_path},server=on,wait=off')
     # GTK keeps host absolute input and the 2x guest viewport in the same space.
+    # Cocoa owns native macOS window/input scaling; GTK options do not apply.
+    # Its fixed scale option is provided by scripts/qemu/cocoa-scale.patch.
     display = {'native': 'gtk,gl=on,zoom-to-fit=off,scale=2,show-menubar=off',
                'gtk': 'gtk,gl=on,zoom-to-fit=off,scale=2', 'headless': 'none',
+               'cocoa': f'cocoa,zoom-to-fit=off,scale={cocoa_zoom}',
                'native-headless': 'none'}[frontend]
     serial = state / 'serial.log'
     serial.write_text('')
     identity = str(uuid.uuid4())
     args = [executable, '-uuid', identity, '-name', 'System RISC - Finder', '-machine', 'virt', '-cpu', cpu_model(vector_bits),
-            '-m', '128M', '-smp', '1', '-bios', 'none',
+            '-m', RAM, '-smp', '1', '-bios', 'none',
             '-drive', 'if=pflash,unit=0,format=raw,readonly=on,file=' + host_path(state / 'bootrom.bin'),
             '-drive', 'if=none,id=startup,format=qcow2,readonly=' + ('off' if writable else 'on') + ',file=' + host_path(disk),
             '-global', 'virtio-mmio.force-legacy=false',
@@ -115,7 +149,9 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
         shutil.copyfile(source, destination)
         args.extend(['-drive',f'if=none,id=extra{index},format=raw,readonly=on,file='+host_path(destination),
                      '-device',f'virtio-blk-device,drive=extra{index},bus=virtio-mmio-bus.{index+3}'])
-    env = dict(os.environ, GDK_BACKEND='x11')
+    env = dict(os.environ)
+    if frontend == 'gtk':
+        env['GDK_BACKEND'] = 'x11'
     if native:
         settings = {'GDK_BACKEND': 'win32', 'GDK_SCALE': '1'}
         env.update(settings)
@@ -124,14 +160,14 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     (state / 'qmp-endpoint.json').write_text(json.dumps(endpoint, indent=2) + '\n')
     with (state / 'qemu.log').open('wb') as log:
         process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                   env=env, start_new_session=True)
+                                   env=env, **process_options())
     (state / 'pid').write_text(str(process.pid) + '\n')
     # Native Windows QEMU reads WSL-hosted media through UNC paths. Its GTK
     # profile cold-boots this image in ~33 seconds, beyond the Linux budget.
     deadline = time.monotonic() + (60 if native else 25)
     try:
         while time.monotonic() < deadline:
-            log = serial.read_text(errors='replace')
+            log = serial.read_text(encoding='utf-8', errors='replace')
             if process.poll() is not None:
                 raise RuntimeError((state / 'qemu.log').read_text() + '\n' + log)
             if 'DESKTOP_READY' in log:
@@ -178,14 +214,17 @@ def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_
     if rebuild:
         build()
     if frontend == 'auto':
-        frontend = 'native' if native_executable() else 'gtk'
+        if sys.platform == 'darwin':
+            frontend = 'cocoa'
+        else:
+            frontend = 'native' if os.name == 'nt' or native_executable() else 'gtk'
     companion = None
     port = None
     initialize = None
     if transfer:
         # Private build profiles get private exports; tests never touch the
         # user's persistent source-root transfer volume.
-        initialize = ((ROOT / 'System7') if build_dir() == ROOT / 'build/system7'
+        initialize = (SOURCE if build_dir() == ROOT / 'build/system7'
                       else build_dir()) / 'transfer'
         exports = [f'Transfer={initialize}', *exports]
     try:
@@ -208,7 +247,7 @@ def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_
     print(json.dumps({'pid': process.pid, 'frontend': 'native-gtk' if frontend == 'native' else frontend,
                       'bootrom': describe(STATE / 'bootrom.bin'),
                       'disk': describe(STATE / 'system7.qcow2'), 'build_dir': str(build_dir())}))
-    print((STATE / 'serial.log').read_text())
+    print((STATE / 'serial.log').read_text(encoding='utf-8', errors='replace'))
     return process, endpoint
 
 
@@ -260,11 +299,15 @@ def check(rebuild=True, state=None):
 
 def main():
     global STATE, DIST
+    if os.name == 'nt':
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, 'reconfigure'):
+                stream.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
     build_parser = sub.add_parser('build')
     launch_parser = sub.add_parser('start')
-    launch_parser.add_argument('--frontend', choices=['auto', 'native', 'gtk', 'headless'], default='auto')
+    launch_parser.add_argument('--frontend', choices=['auto', 'native', 'native-headless', 'cocoa', 'gtk', 'headless'], default='auto')
     launch_parser.add_argument('--no-build', action='store_true')
     launch_parser.add_argument('--no-transfer', action='store_true',
                                help='Disable the default Transfer volume for this VM')
@@ -287,6 +330,16 @@ def main():
         command.add_argument('--state-dir', type=Path,
                              help='Working VM state; custom builds default to BUILD_DIR/vm')
     args = parser.parse_args()
+    if os.name == 'nt':
+        # The guest and Windows host adapter use nightly APIs. Keep a caller's
+        # explicit toolchain, and propagate this interpreter through xtask.
+        os.environ.setdefault('RUSTUP_TOOLCHAIN', 'nightly')
+        os.environ['SYSTEM7_PYTHON'] = sys.executable
+        if args.action in ('start', 'build', 'check'):
+            executable = native_executable()
+            if executable is None:
+                parser.error('Windows QEMU is required; install it or set SYSTEM7_WINDOWS_QEMU')
+            os.environ['PATH'] = str(executable.parent) + os.pathsep + os.environ.get('PATH', '')
     if args.build_dir:
         os.environ[BUILD_DIR_ENV] = str(args.build_dir.resolve())
     elif args.action == 'check':

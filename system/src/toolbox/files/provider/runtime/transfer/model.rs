@@ -166,7 +166,7 @@ pub(super) struct SourceStage
     pub directory: u32,
     pub removed:   bool
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Stage
 {
     DestinationVolume,

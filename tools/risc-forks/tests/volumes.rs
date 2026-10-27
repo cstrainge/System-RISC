@@ -266,7 +266,8 @@ fn a_bulk_import_preserves_every_sibling_and_retains_collision_validation()
     volume.import("/", &directory).unwrap();
     assert_eq!(volume.children("/Many").unwrap().len(), 256);
     assert_eq!(volume.check().unwrap(), 258);
-    fs::write(directory.join("document-001"), b"collision").unwrap();
+    fs::write(directory.join("Café"), b"first normalization").unwrap();
+    fs::write(directory.join("Cafe\u{301}"), b"normalization collision").unwrap();
     let other = Volume::initialize(&temp.0.join("other"), "Other").unwrap();
     assert!(other.import("/", &directory).is_err());
     other.check().unwrap();
@@ -290,18 +291,23 @@ fn created_container_bindings_survive_reopen_and_host_rename_for_files_and_folde
                                   &mut Slice(&[]),
                                   None)
                           .unwrap();
+    let file_id = file.metadata.catalog_id;
+    let directory_id = directory.metadata.catalog_id;
+    // Windows refuses a parent rename while a descendant file is open. Close
+    // the returned record snapshots before the external host rename.
+    drop(file);
+    drop(directory);
     fs::rename(temp.0.join("share/Before"), temp.0.join("share/After")).unwrap();
     fs::rename(temp.0.join("share/Folder Before"), temp.0.join("share/Folder After")).unwrap();
     drop(volume);
     let volume = Volume::open(&temp.0.join("share")).unwrap();
-    assert_eq!(volume.resolve("/After").unwrap().metadata.catalog_id, file.metadata.catalog_id);
-    assert_eq!(volume.resolve("/Folder After").unwrap().metadata.catalog_id,
-               directory.metadata.catalog_id);
+    assert_eq!(volume.resolve("/After").unwrap().metadata.catalog_id, file_id);
+    assert_eq!(volume.resolve("/Folder After").unwrap().metadata.catalog_id, directory_id);
     // Copying the metadata marker is an import, not a transfer of identity.
     fs::create_dir(temp.0.join("share/Copied Folder")).unwrap();
     fs::copy(temp.0.join("share/Folder After").join(mac_fork_file::DIRECTORY_RECORD),
              temp.0.join("share/Copied Folder").join(mac_fork_file::DIRECTORY_RECORD)).unwrap();
     let copy = volume.resolve("/Copied Folder").unwrap();
-    assert_ne!(copy.metadata.catalog_id, directory.metadata.catalog_id);
+    assert_ne!(copy.metadata.catalog_id, directory_id);
     assert_eq!(copy.metadata.name, "Copied Folder");
 }

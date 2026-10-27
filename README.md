@@ -69,8 +69,8 @@ python3 ./scripts/system7_vm.py check
 python3 ./scripts/system7_vm.py stop
 ```
 
-The launcher opens a separate native Windows GTK window at 2× when available,
-otherwise Linux GTK. It copies the generated ROM and disk into
+The launcher opens a native Cocoa window on macOS, a native Windows GTK window
+at 2× when available, or Linux GTK. It copies the generated ROM and disk into
 `working/system7-vm`. The ROM stays read-only; the private desktop disk is
 writable and retained across starts of the same OS build. A changed base build
 replaces the previous working disk without retaining old images. Isolated test
@@ -78,6 +78,40 @@ launches default to fresh read-only disks. `cargo xtask check` removes obsolete 
 before and after the gate; reports, screenshots and original reference media
 remain. Its QMP port is4447;
 the classic Mac and old QuickDraw machines keep their own state and ports.
+
+On Windows, run `python ./scripts/system7_vm.py start` directly from PowerShell.
+Install Python 3.11 or newer, the nightly Rust MSVC toolchain with the
+`riscv64imac-unknown-none-elf` target and its native linker prerequisites, and
+Windows QEMU including `qemu-img.exe`. The launcher selects the nightly toolchain
+unless `RUSTUP_TOOLCHAIN` explicitly selects another one, and uses the same Python
+interpreter for build and saved-file preservation helpers. WSL is not required.
+
+Windows QEMU is discovered on `PATH`, through `working/vm/windows-qemu.json`
+in the enclosing workspace, or in its standard Program Files location. For a
+portable distribution, set
+`$env:SYSTEM7_WINDOWS_QEMU = 'D:\tools\qemu\qemu-system-riscv64.exe'` before
+launching. Its sibling `qemu-img.exe` supplies disk conversion. From WSL the
+same setting accepts a Windows path or its `/mnt/d/...` path. An invalid
+configured path reports an error before launch. Linux and WSL launch commands
+continue to use their existing host tools and frontend selection.
+
+On macOS, the same command runs from Terminal:
+
+```sh
+python ./scripts/system7_vm.py start
+```
+
+Use Python 3.11 or newer, nightly Rust with the
+`riscv64imac-unknown-none-elf` target, and standalone QEMU with its Cocoa display
+backend. Put `python`, `cargo`, `qemu-system-riscv64`, `qemu-img` and
+`llvm-objcopy` on `PATH`; Homebrew and MacPorts are optional. Rust's `llvm-tools`
+component includes a compatible `llvm-objcopy`. The launcher uses the invoking
+Python interpreter for build and saved-file preservation helpers. Cocoa handles
+native window scaling and absolute tablet input. The launcher prefers fixed
+2× zoom when the complete window fits the usable screen, and otherwise uses 1×.
+It uses the [tracked QEMU Cocoa scale patch](scripts/qemu/README.md);
+apply it when building standalone QEMU. `--frontend headless` retains
+the same disk, host companion and QMP services without opening a window.
 
 Normal startup initializes `System7/transfer` on first use and exposes it as a
 read/write **Transfer** volume. It is ignored by Git and survives disk rebuilds.
@@ -99,10 +133,15 @@ cargo run --release -p risc-forks -- export transfer /Documents /tmp/saved-docum
   --read-only-export 'Reference=/path/to/readonly-volume'
 ```
 
-Read/write exports use the Linux companion, including with native Windows QEMU.
-Provider application loading, folder/rename/delete mutations, full Finder copy
-operations and external-change refresh remain implementation work; a mounted
-volume does not imply those paths are complete. Restart the VM to change its
+Read/write exports have Linux and native Windows companion adapters; Windows
+requires nightly Rust and a filesystem that passes the real file/directory
+flush and publication probes. See [the companion contracts](tools/risc-host/README.md)
+for Windows requirements, open-handle restrictions and verified coverage.
+Public-SDK guest checks cover provider application loading, folder mutations,
+recursive two-fork transfers, Trash/Put Away, external-change refresh and
+cold-boot metadata restore against native Windows companions, including a
+native Windows QEMU GTK run. Physical power-loss testing remains a separate gate.
+Restart the VM to change its
 export configuration. An existing unprepared, nonempty transfer directory is
 rejected rather than reformatted.
 
@@ -219,10 +258,11 @@ Prerequisites:
   was verified with the installed nightly toolchain.
 - The `riscv64imac-unknown-none-elf` Rust target. If needed, install it with
   `rustup target add riscv64imac-unknown-none-elf`.
-- `qemu-img` for `image`/`check`, and Linux `qemu-system-riscv64` for `check`.
+- `qemu-img` for `image`/`check`, and host-native `qemu-system-riscv64` for launching/checking.
 - `llvm-objcopy` for converting the boot ROM ELF into the flash image.
-- Python 3 with Pillow for desktop and original-reference pixel checks.
-- The existing workspace-local hfsutils installation for `image`/`check`.
+- Python 3.11 or newer, with Pillow for desktop and original-reference pixel checks.
+- The existing workspace-local hfsutils installation for original-reference
+  capture and comparison gates; the native image build does not require it.
   If absent, run `python3 ../scripts/install_hfsutils.py`.
   `SYSTEM7_HFSUTILS` can specify another directory containing those executables.
 
@@ -535,7 +575,9 @@ The QemuRISC-V platform currently defaults to an 800×600 guest framebuffer.
 `memory.display` in the platform JSON fixes the build-time width and height;
 mac-build validates geometry and scratch capacity before emitting the boot and
 System constants. Shared host conformance code uses that same checked record.
-The native launcher retains 2× zoom, giving a 1600×1200 guest viewport. Runtime
+GTK launchers use 2× zoom, giving a 1600×1200 guest viewport. The Mac launcher
+uses 2× only when that window fits after reserving the menu bar, Dock and title
+bar; otherwise it opens at 1×. Runtime
 mode switching is not implemented: rebuild the complete image after changing
 platform geometry. Window limits, pointer mapping, desktop placement and display
 buffers use the configured size; original Macintosh reference images retain
@@ -547,7 +589,8 @@ System and follows the checked platform geometry; the SDK does not duplicate a
 640×480 ceiling. PNG source decode budgets remain separate from the destination
 surface dimensions.
 
-Graphical launches enable OpenGL at 2× zoom. The software-scaled frontend can
+GTK launches enable OpenGL at 2× zoom. The software-scaled frontend can
 hold up virtual-disk progress at this viewport size; GPU presentation keeps
 storage and the display responsive. Native Windows GTK and Linux GTK launches
-are both checked; headless checks do not require a graphics context.
+are both checked; macOS uses Cocoa's native display backend. Headless checks do
+not require a graphics context.

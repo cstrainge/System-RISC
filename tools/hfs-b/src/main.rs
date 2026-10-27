@@ -62,7 +62,7 @@ fn run() -> HostResult<()>
             now()?
         };
         let mut uuid = [0; 16];
-        File::open("/dev/urandom")?.read_exact(&mut uuid)?;
+        getrandom::fill(&mut uuid).map_err(|e| format!("cannot create filesystem UUID: {e}"))?;
         format(&mut image,
                partition,
                FormatOptions { name: arg(&args, name_index)?,
@@ -201,7 +201,6 @@ fn run() -> HostResult<()>
     }
     Ok(())
 }
-use std::io::Read;
 fn main() -> ExitCode
 {
     match run()
