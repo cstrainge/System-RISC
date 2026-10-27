@@ -26,3 +26,11 @@ pub(crate) mod strings;
 pub mod processes;
 
 pub mod standard_file;
+
+#[cfg(all(test, feature = "test-support", not(target_arch = "riscv64")))]
+#[path = "processes/menu.rs"]
+pub(crate) mod test_application_menu;
+
+#[cfg(all(test, feature = "test-support", not(target_arch = "riscv64")))]
+#[path = "processes/presentation.rs"]
+pub(crate) mod test_process_presentation;

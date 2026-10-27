@@ -2854,3 +2854,19 @@ is not an installed allocation-free emergency kit. The current resident panic an
 infallible-allocation handlers report through serial and halt. A graphical System
 Panic/Restart path, protected emergency/Finder backing, and all-allocation-refused
 Save/Alert/crash service qualification remain explicit heap-stage work.
+
+
+### Prepared application-menu and focus presentation
+
+Application-menu refresh reuses a second definition state admitted at startup;
+owner-group focus reuses geometry storage admitted with its windows. Neither
+constructs a new process/window vector during exit. A failed menu measure retains
+the accepted snapshot and cancels stale tracking. This does not change the existing
+menu presentation capacity or impose a new process-admission count.
+
+Hide Others validates its surviving foreground process before one metadata pass
+and one menu refresh. Window hiding batches generation-checked IDs in admitted
+geometry scratch. The normal foreground plane requires no Region allocation or
+content update; interleaved planes compute exposure once from final survivors.
+Scratch refusal conservatively preserves affected-object damage without treating
+a bounding box as occluding cover. Repeated/empty changes do no geometry work.

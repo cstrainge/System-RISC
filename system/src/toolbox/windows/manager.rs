@@ -807,17 +807,24 @@ impl WindowManager
         self.order_group(ids, events, when, GroupFocus::Preserve);
     }
 
-    /// Reuse prepared ID storage rather than allocating a foreground plane
-    /// vector on every background window creation.
-    pub(crate) fn restore_owner_group(&mut self, owner: u64, events: &mut EventManager, when: u32)
+    /// Raise a process plane using ID storage admitted with its windows. This
+    /// also serves cleanup focus changes when the allocator refuses new work.
+    pub(crate) fn select_owner_group_focus(&mut self, owner: u64, focus: GroupFocus,
+                                           events: &mut EventManager, when: u32)
     {
         let mut ids = core::mem::take(&mut self.geometry_order);
         ids.clear();
         ids.extend(self.back_to_front()
                        .filter(|window| window.owner == owner)
                        .map(|window| window.id));
-        self.restore_group(&ids, events, when);
+        self.select_group_focus(&ids, focus, events, when);
         self.geometry_order = ids;
+    }
+
+    /// Restore a foreground plane without allocating on background creation.
+    pub(crate) fn restore_owner_group(&mut self, owner: u64, events: &mut EventManager, when: u32)
+    {
+        self.select_owner_group_focus(owner, GroupFocus::Preserve, events, when);
     }
 
     fn order_group(&mut self, ids: &[WindowId], events: &mut EventManager, when: u32,
@@ -925,6 +932,135 @@ impl WindowManager
                 self.set_hidden(id, hidden);
             }
         }
+    }
+
+    /// Batch Hide Others without rescanning every plane for each process or
+    /// damaging windows that are themselves about to disappear. Order/focus and
+    /// activation events stay unchanged. Noneligible lifetime domains retain
+    /// their windows and contribute surviving occlusion. The caller validates
+    /// a genuinely running visible foreground process.
+    pub(crate) fn hide_other_owners(&mut self, owner: u64, mut eligible: impl FnMut(u64) -> bool)
+                                    -> bool
+    {
+        let mut hidden = core::mem::take(&mut self.geometry_order);
+        hidden.clear();
+        let mut first_survivor = self.len;
+        let mut survivors = 0;
+        let mut last_hidden = 0;
+        for index in 0..self.len
+        {
+            let id = self.order[index];
+            let Some(window) = self.window_mut(id)
+            else
+            {
+                continue;
+            };
+            if window.hidden
+            {
+                continue;
+            }
+            if window.owner == owner || !eligible(window.owner)
+            {
+                first_survivor = first_survivor.min(index);
+                survivors += 1;
+            }
+            else
+            {
+                window.hidden = true;
+                hidden.push(id);
+                last_hidden = index;
+            }
+        }
+        if hidden.is_empty()
+        {
+            self.geometry_order = hidden;
+            return false;
+        }
+        self.front_cache.set(None);
+        // The normal foreground plane is already entirely in front. Removing
+        // its background planes exposes no application content at all.
+        if last_hidden < first_survivor
+        {
+            self.geometry_order = hidden;
+            return true;
+        }
+        let mut removed = Region::new();
+        let mut surviving_cover = Region::new();
+        let mut changed = hidden.iter().rev().peekable();
+        for index in (0..self.len).rev()
+        {
+            let id = self.order[index];
+            let Some(window) = self.window(id).copied()
+            else
+            {
+                continue;
+            };
+            if changed.peek().is_some_and(|&&next| next == id)
+            {
+                changed.next();
+                for &piece in window.structure_pieces()
+                {
+                    let piece = Region::from_rect(piece);
+                    // Keeping the whole piece after scratch refusal is a
+                    // conservative exposure, never lost damage.
+                    let visible =
+                        piece.combine(&surviving_cover, BooleanOp::Difference).unwrap_or(piece);
+                    removed =
+                        removed.combine(&visible, BooleanOp::Union)
+                               .unwrap_or_else(|_| {
+                                   Region::from_rect(union_rect(removed.bounds(), visible.bounds()))
+                               });
+                }
+            }
+            else if !window.hidden
+            {
+                let mut global = Rect::ZERO;
+                if sect_rect(removed.bounds(), window.bounds, &mut global)
+                {
+                    let fallback = Rect::new(global.left - window.bounds.left,
+                                             global.top - window.bounds.top,
+                                             global.right - window.bounds.left,
+                                             global.bottom - window.bounds.top);
+                    let exposed = removed.combine(&Region::from_rect(window.bounds),
+                                                  BooleanOp::Intersection)
+                                         .and_then(|region| {
+                                             region.offset(window.bounds
+                                                       .left
+                                                       .checked_neg()
+                                                       .ok_or(RegionError::CoordinateOverflow)?,
+                                                 window.bounds
+                                                       .top
+                                                       .checked_neg()
+                                                       .ok_or(RegionError::CoordinateOverflow)?)
+                                         });
+                    self.invalidate_exposure(id, exposed, fallback);
+                }
+                survivors -= 1;
+                if survivors == 0
+                {
+                    // Lower removed planes can expose only desktop pixels;
+                    // retained desktop composition already owns that work.
+                    break;
+                }
+                for &piece in window.structure_pieces()
+                {
+                    let piece = Region::from_rect(piece);
+                    // Refused subtraction may over-report a bounded update;
+                    // refused cover growth keeps an exact subset. Never use a
+                    // bounding box as cover: that could erase real exposure.
+                    if let Ok(remaining) = removed.combine(&piece, BooleanOp::Difference)
+                    {
+                        removed = remaining;
+                    }
+                    if let Ok(cover) = surviving_cover.combine(&piece, BooleanOp::Union)
+                    {
+                        surviving_cover = cover;
+                    }
+                }
+            }
+        }
+        self.geometry_order = hidden;
+        true
     }
 
     pub(crate) fn set_all_hidden(&mut self, hidden: bool)

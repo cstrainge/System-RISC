@@ -36,6 +36,7 @@ pub struct Entry<'a>
 pub struct ApplicationMenu
 {
     state:       Box<MenuDefinitionState>,
+    scratch:     Box<MenuDefinitionState>,
     actions:     [Option<Action>; MAX_ITEMS],
     labels:      [[u8; INLINE_STRING_BYTES]; 3],
     lengths:     [usize; 3],
@@ -66,6 +67,7 @@ impl ApplicationMenu
             lengths[index] = call.transferred;
         }
         Ok(Self { state: crate::toolbox::menus::new_state()?,
+                  scratch: crate::toolbox::menus::new_state()?,
                   actions: [None; MAX_ITEMS],
                   labels,
                   lengths,
@@ -75,18 +77,12 @@ impl ApplicationMenu
                   highlighted: 0 })
     }
 
-    fn invoke(&self, state: &mut MenuDefinitionState, message: i16, param: i64,
-              surface: *mut Surface)
-              -> i64
-    {
-        invoke(self.definition, self.gate, state, message, param, surface)
-    }
-
     /// Publish a complete snapshot, preserving old state if input or sizing fails.
     /// Applications appear alphabetically, as in the original Process Manager.
     /// A refresh cancels tracking so a release cannot select a stale row.
     pub fn refresh(&mut self, entries: &[Entry<'_>], foreground: u64) -> Result<(), Status>
     {
+        self.cancel();
         if entries.len() > MAX_APPLICATIONS
         {
             return Err(NO_MEMORY);
@@ -101,7 +97,8 @@ impl ApplicationMenu
             return Err(BAD_ARGUMENT);
         }
         let active = entries.iter().find(|entry| entry.id == foreground).ok_or(NOT_FOUND)?;
-        let mut state = crate::toolbox::menus::new_state()?;
+        let state = &mut *self.scratch;
+        *state = MenuDefinitionState::default();
         state.menu_id = MENU_ID;
         state.profile = APPLICATION_PROFILE;
         state.bar_bounds = Rect::new(0, 0, crate::display::WIDTH as i16, 20);
@@ -169,14 +166,13 @@ impl ApplicationMenu
         let mut pixel = [0];
         let mut canvas = Canvas::new(&mut pixel, 1, 1);
         let mut surface = Surface::from_canvas(&mut canvas);
-        let status = self.invoke(&mut state, MEASURE, 0, &mut surface);
+        let status = invoke(self.definition, self.gate, state, MEASURE, 0, &mut surface);
         if status < 0
         {
             return Err(status as Status);
         }
-        self.state = state;
+        core::mem::swap(&mut self.state, &mut self.scratch);
         self.actions = actions;
-        self.cancel();
         Ok(())
     }
 
@@ -356,3 +352,7 @@ fn invoke(definition: DefinitionEntry, gate: TrapGate, state: &mut MenuDefinitio
                                     gate };
     crate::toolbox::resources::definitions::invoke(definition, &mut call)
 }
+
+#[cfg(all(test, feature = "test-support", not(target_arch = "riscv64")))]
+#[path = "menu/tests.rs"]
+mod tests;

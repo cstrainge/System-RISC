@@ -5,6 +5,7 @@ use mac_abi::{processes::*, *};
 
 use crate::toolbox::handles::{Directory, DirectoryError, DomainKind, OwnerIndex};
 pub mod menu;
+mod presentation;
 pub(crate) mod documents;
 pub(crate) mod retirement;
 pub(crate) mod finder;
@@ -138,8 +139,27 @@ impl Manager
         // barrier closes, but are no longer running applications.
         self.entries
             .iter()
-            .filter(|entry| entry.ledger().accepting() && entry.value().info.thread != 0)
+            .filter(|entry| presentation::running(entry.ledger(), &entry.value().info))
             .map(|entry| entry.value())
+    }
+
+    pub(super) fn is_running(&self, id: u64) -> bool
+    {
+        self.entries
+            .get(id)
+            .is_some_and(|entry| presentation::running(entry.ledger(), &entry.value().info))
+    }
+
+    pub(super) fn hide_others(&mut self, foreground: u64) -> Result<bool, Status>
+    {
+        let entry = self.entries.get(foreground).ok_or(NOT_FOUND)?;
+        presentation::require_foreground(entry.ledger(), &entry.value().info)?;
+        let mut changed = false;
+        for (ledger, process) in self.entries.entries_mut()
+        {
+            changed |= presentation::hide_other(ledger, &mut process.info, foreground);
+        }
+        Ok(changed)
     }
 
     pub(super) fn stopping_after(&self, previous: u64) -> Option<u64>

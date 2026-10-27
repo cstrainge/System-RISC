@@ -1,7 +1,7 @@
 //! App-local state is swapped only at the interrupt-masked service boundary.
 //! The compositor/window registry are shared; applications never select identity.
 #![forbid(unsafe_code)]
-use alloc::{boxed::Box, vec::Vec};
+use alloc::boxed::Box;
 
 use mac_abi::{processes::*, *};
 
@@ -575,15 +575,6 @@ impl Desktop
     fn refresh_app_menu(&mut self)
     {
         self.menu_cache.invalidate();
-        let entries: Vec<_> = self.processes
-                                  .iter()
-                                  .map(|p| {
-                                      Entry { id:     p.info.id,
-                                              name:   p.info.name(),
-                                              hidden: p.info.hidden != 0,
-                                              icon:   Self::application_icon(p.image) }
-                                  })
-                                  .collect();
         if self.processes.get(self.foreground).is_ok_and(|process| process.info.thread == 0)
         {
             // A real saved recovery context can park the dying shell before
@@ -593,8 +584,31 @@ impl Desktop
             self.redraw = true;
             return;
         }
-        if let Err(status) = self.app_menu.refresh(&entries, self.foreground)
+        let refreshed = (|| {
+            // This is the existing menu presentation capacity, not a process
+            // admission limit. Never truncate a running application silently.
+            let mut entries = [Entry { id:     0,
+                                      name:   "",
+                                      hidden: false,
+                                      icon:   Default::default() };
+                               crate::toolbox::processes::menu::MAX_APPLICATIONS];
+            let mut count = 0;
+            for process in self.processes.iter()
+            {
+                let row = entries.get_mut(count).ok_or(NO_MEMORY)?;
+                *row = Entry { id:     process.info.id,
+                               name:   process.info.name(),
+                               hidden: process.info.hidden != 0,
+                               icon:   Self::application_icon(process.image) };
+                count += 1;
+            }
+            self.app_menu.refresh(&entries[..count], self.foreground)
+        })();
+        if let Err(status) = refreshed
         {
+            // Retain the previous accepted pixels/actions. Even a refused
+            // membership refresh must cancel tracking of its prior selection.
+            self.app_menu.cancel();
             serial!("APPLICATION_MENU_FAILED status={}", status);
         }
         self.redraw = true;
@@ -630,12 +644,7 @@ impl Desktop
         self.foreground = id;
         self.cursor_dirty |= self.responsiveness.foreground(id, Self::when());
         self.windows.set_owner_hidden(id, false);
-        let ids: Vec<_> = self.windows
-                              .back_to_front()
-                              .filter(|w| self.window_owner(w.id) == Some(id))
-                              .map(|w| w.id)
-                              .collect();
-        self.windows.select_group_focus(&ids, focus, &mut self.events, Self::when());
+        self.windows.select_owner_group_focus(id, focus, &mut self.events, Self::when());
         self.route_events();
         self.sync_input_state();
         self.enter(id);
@@ -665,25 +674,24 @@ impl Desktop
         Ok(())
     }
 
+    fn hide_other_processes(&mut self) -> Result<(), Status>
+    {
+        if self.processes.hide_others(self.foreground)?
+        {
+            let processes = &self.processes;
+            self.windows.hide_other_owners(self.foreground, |owner| processes.is_running(owner));
+            self.refresh_app_menu();
+        }
+        Ok(())
+    }
+
     pub fn application_action(&mut self, action: Action)
     {
         let result = match action
         {
             Action::Activate(id) => self.activate_process(id),
             Action::HideCurrent => self.hide_process(self.foreground),
-            Action::HideOthers =>
-            {
-                let ids: Vec<_> = self.processes
-                                      .iter()
-                                      .filter(|p| p.info.id != self.foreground)
-                                      .map(|p| p.info.id)
-                                      .collect();
-                for id in ids
-                {
-                    let _ = self.hide_process(id);
-                }
-                Ok(())
-            }
+            Action::HideOthers => self.hide_other_processes(),
             Action::ShowAll =>
             {
                 let changed = self.processes.iter().any(|p| p.info.hidden != 0);
