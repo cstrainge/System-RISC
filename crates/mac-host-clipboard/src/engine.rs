@@ -169,6 +169,21 @@ struct Fetch
     stale: bool,
     state: FetchState
 }
+struct Handshake
+{
+    peer:       Option<Capabilities>,
+    advertised: bool,
+    replied:    bool
+}
+impl Handshake
+{
+    fn new() -> Self
+    {
+        Self { peer:       None,
+               advertised: false,
+               replied:    false }
+    }
+}
 
 /// One outstanding unlabelled host fetch, one immutable local snapshot, and four
 /// bounded outbound message owners. Only one queued text response is admitted.
@@ -180,6 +195,7 @@ pub struct Engine<S: Snapshot>
     epoch:        Epoch,
     counter:      u64,
     capabilities: Capabilities,
+    handshake:    Handshake,
     local:        Option<S>,
     local_error:  Option<Error>,
     dirty:        bool,
@@ -199,6 +215,7 @@ impl<S: Snapshot> Engine<S>
                epoch: Epoch(0),
                counter: 0,
                capabilities: Capabilities::empty(),
+               handshake: Handshake::new(),
                local: None,
                local_error: None,
                dirty: false,
@@ -249,6 +266,9 @@ impl<S: Snapshot> Engine<S>
     /// replaced. Reopening this state alone cannot revoke old bytes in a device.
     /// The initial local pin is observed without exporting preexisting content;
     /// subsequent stable `observe` calls identify actual local copy operations.
+    /// Exactly one immutable capability request is queued. Readiness additionally
+    /// requires its full write acceptance and the host's request=0 reply; a
+    /// crossed host request=1 never queues another guest advertisement.
     pub fn open_after_transport_reset(&mut self, snapshot: S) -> Result<Epoch, Error>
     {
         self.reset();
@@ -264,7 +284,7 @@ impl<S: Snapshot> Engine<S>
         self.offer = 0;
         self.capabilities = Capabilities::empty();
         let message = OwnedMessage::announce(local_capabilities(), true, self.config.limits)?;
-        self.enqueue(message, Purpose::Control)?;
+        self.enqueue(message, Purpose::Capabilities)?;
         self.phase = Phase::Negotiating;
         Ok(self.epoch)
     }
@@ -288,6 +308,21 @@ impl<S: Snapshot> Engine<S>
         self.desired = None;
         self.owner = Owner::None;
         self.dirty = false;
+        self.handshake = Handshake::new();
+    }
+
+    fn finish_handshake(&mut self) -> bool
+    {
+        if self.phase == Phase::Negotiating && self.handshake.advertised && self.handshake.replied
+        {
+            if let Some(capabilities) = self.handshake.peer
+            {
+                self.capabilities = capabilities;
+                self.phase = Phase::Ready;
+                return true;
+            }
+        }
+        false
     }
 
     fn check(&self, epoch: Epoch) -> Result<(), Error>
@@ -535,21 +570,34 @@ impl<S: Snapshot> Engine<S>
                     self.reset();
                     return Err(Error::UnsupportedPeer);
                 }
-                if self.phase == Phase::Ready && capabilities != self.capabilities
+                if self.handshake.peer.is_some_and(|previous| previous != capabilities)
                 {
                     self.reset();
                     return Err(Error::CapabilitiesChanged);
                 }
-                if peer.requests_reply()
+                // This QEMU profile advertises once per actual connection.
+                // Its immutable request=1 is already queued/sent and answers
+                // the host's crossed initial request. Sending another response
+                // makes QEMU reset clipboard serials after peer registration,
+                // closing the port. Await the request=0 reply to our own request
+                // instead. Unchanged later announcements do not restart it.
+                self.handshake.peer = Some(capabilities);
+                if !peer.requests_reply()
                 {
-                    self.room()?;
-                    let reply =
-                        OwnedMessage::announce(local_capabilities(), false, self.config.limits)?;
-                    self.enqueue(reply, Purpose::Control)?;
+                    self.handshake.replied = true;
                 }
-                self.capabilities = capabilities;
-                self.phase = Phase::Ready;
-                Ok(Effect::Negotiated)
+                if self.finish_handshake()
+                {
+                    Ok(Effect::Negotiated)
+                }
+                else if self.phase == Phase::Ready
+                {
+                    Ok(Effect::Ignored)
+                }
+                else
+                {
+                    Ok(Effect::Idle)
+                }
             }
             Message::ClientDisconnected =>
             {
@@ -825,6 +873,14 @@ impl<S: Snapshot> Engine<S>
         }
         let purpose = tx.purpose;
         self.output.remove(0);
+        if let Purpose::Capabilities = purpose
+        {
+            self.handshake.advertised = true;
+            if self.finish_handshake()
+            {
+                return Ok(Sent::Negotiated);
+            }
+        }
         if let Purpose::Fetch(token) = purpose
         {
             if let Some(fetch) = &mut self.fetch

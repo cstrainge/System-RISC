@@ -170,6 +170,99 @@ fn capability_handshake_is_explicit_and_connection_labels_never_accept_old_work(
 }
 
 #[test]
+fn qemu_crossed_initial_request_is_answered_by_the_single_queued_guest_advertisement()
+{
+    let mut engine = Engine::new(config());
+    let epoch = engine.open_after_transport_reset(Pin::text(1, "local")).unwrap();
+    // QEMU emits this request as soon as the frontend opens, independently of
+    // the guest's request. It can arrive before any guest bytes were written.
+    frame(OwnedMessage::announce(caps(), true, limits()).unwrap(), |frame| {
+        assert!(matches!(engine.receive(epoch, frame), Ok(Effect::Idle)));
+    });
+    assert_eq!(engine.phase(), Phase::Negotiating);
+    assert_eq!(engine.queued_messages(), 1);
+    let (guest_wire, _) = drain(&mut engine);
+    assert_eq!(guest_wire,
+               encode(OwnedMessage::announce(caps(), true, limits()).unwrap()),
+               "a second guest announcement resets QEMU's registered clipboard peer");
+    assert_eq!(engine.phase(), Phase::Negotiating, "crossed host request is not the reply to ours");
+    frame(OwnedMessage::announce(caps(), false, limits()).unwrap(), |frame| {
+        assert!(matches!(engine.receive(epoch, frame), Ok(Effect::Negotiated)));
+    });
+    assert_eq!(engine.phase(), Phase::Ready);
+    assert_eq!(engine.queued_messages(), 0);
+}
+
+#[test]
+fn coalesced_qemu_initial_request_and_reply_finish_once_without_a_second_guest_caps_frame()
+{
+    let mut engine = Engine::new(config());
+    let epoch = engine.open_after_transport_reset(Pin::empty(1)).unwrap();
+    let (guest_wire, _) = drain(&mut engine);
+    let mut host_wire = encode(OwnedMessage::announce(caps(), true, limits()).unwrap());
+    host_wire.extend_from_slice(&encode(OwnedMessage::announce(caps(), false, limits()).unwrap()));
+    let mut decoder = Decoder::new(limits());
+    let mut offset = 0;
+    let mut transitions = 0;
+    while offset < host_wire.len()
+    {
+        let feed = decoder.feed(&host_wire[offset..]).unwrap();
+        offset += feed.consumed;
+        let frame = feed.frame.unwrap();
+        if matches!(engine.receive(epoch, &frame).unwrap(), Effect::Negotiated)
+        {
+            transitions += 1;
+        }
+    }
+    assert_eq!(transitions, 1);
+    assert_eq!(engine.phase(), Phase::Ready);
+    assert_eq!(guest_wire, encode(OwnedMessage::announce(caps(), true, limits()).unwrap()));
+    assert_eq!(engine.queued_messages(), 0);
+}
+
+#[test]
+fn early_peer_reply_does_not_publish_ready_until_the_owned_advertisement_is_fully_accepted()
+{
+    let mut engine = Engine::new(config());
+    let epoch = engine.open_after_transport_reset(Pin::text(1, "local")).unwrap();
+    let token = engine.output().unwrap().token;
+    engine.accepted(token, 8).unwrap();
+    frame(OwnedMessage::announce(caps(), true, limits()).unwrap(), |frame| {
+        assert!(matches!(engine.receive(epoch, frame), Ok(Effect::Idle)));
+    });
+    frame(OwnedMessage::announce(caps(), false, limits()).unwrap(), |frame| {
+        assert!(matches!(engine.receive(epoch, frame), Ok(Effect::Idle)));
+    });
+    assert_eq!(engine.phase(), Phase::Negotiating);
+    assert_eq!(engine.queued_messages(), 1);
+    let output = engine.output().unwrap();
+    let token = output.token;
+    let count = output.remaining_bytes();
+    assert_eq!(engine.accepted(token, count).unwrap(), Sent::Negotiated);
+    assert_eq!(engine.phase(), Phase::Ready);
+    assert_eq!(engine.queued_messages(), 0);
+}
+
+#[test]
+fn capabilities_cannot_change_between_the_crossed_request_and_its_reply()
+{
+    let mut engine = Engine::new(config());
+    let epoch = engine.open_after_transport_reset(Pin::text(1, "preserved")).unwrap();
+    frame(OwnedMessage::announce(caps(), true, limits()).unwrap(), |frame| {
+        engine.receive(epoch, frame).unwrap();
+    });
+    let changed = Capabilities::empty().with(Capability::ClipboardByDemand);
+    let error = deliver(&mut engine,
+                        epoch,
+                        OwnedMessage::announce(changed, false, limits()).unwrap()).unwrap_err();
+    assert_eq!(error, Error::CapabilitiesChanged);
+    assert!(error.to_string().contains("reset and negotiate"));
+    assert_eq!(engine.phase(), Phase::ResetRequired);
+    assert!(engine.output().is_none());
+    assert_eq!(engine.local_revision(), Some(1));
+}
+
+#[test]
 fn guest_copies_offer_on_change_and_answer_demand_with_exact_unicode_and_newlines()
 {
     let (mut engine, epoch) = ready();
@@ -358,21 +451,27 @@ fn partially_sent_text_is_not_reused_after_a_new_local_copy()
 }
 
 #[test]
-fn queue_bounds_refuse_before_consumption_and_the_same_retained_frame_can_retry()
+fn unchanged_capability_requests_do_not_emit_another_advertisement_or_reset_live_state()
 {
     let (mut engine, epoch) = ready();
-    for _ in 0..4
+    engine.observe(Pin::text(2, "first guest copy")).unwrap();
+    drain(&mut engine);
+    for _ in 0..16
     {
-        deliver(&mut engine,epoch,OwnedMessage::announce(caps(),true,limits()).unwrap()).unwrap();
+        frame(OwnedMessage::announce(caps(), true, limits()).unwrap(), |frame| {
+            assert!(matches!(engine.receive(epoch, frame), Ok(Effect::Ignored)));
+        });
     }
-    assert_eq!(engine.queued_messages(), 4);
-    frame(OwnedMessage::announce(caps(), true, limits()).unwrap(), |frame| {
-        assert_eq!(engine.receive(epoch, frame).unwrap_err(), Error::QueueFull);
-        assert_eq!(engine.queued_messages(), 4);
-        drain(&mut engine);
-        assert!(matches!(engine.receive(epoch, frame), Ok(Effect::Negotiated)));
+    assert_eq!(engine.queued_messages(), 0);
+    engine.observe(Pin::text(3, "second guest copy")).unwrap();
+    assert_eq!(drain(&mut engine).0, encode(grab(2, &[Format::UTF8_TEXT])));
+    let pending = offer(&mut engine, epoch, 3);
+    frame(OwnedMessage::announce(caps(), false, limits()).unwrap(), |frame| {
+        assert!(matches!(engine.receive(epoch, frame), Ok(Effect::Ignored)));
     });
-    assert_eq!(engine.queued_messages(), 1);
+    assert_eq!(engine.pending_fetch(), Some(pending));
+    assert!(!engine.fetch_is_quarantined());
+    assert_eq!(engine.queued_messages(), 0);
 }
 
 #[test]

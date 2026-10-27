@@ -24,8 +24,13 @@ interchangeable authorization.
 
 1. Reset the real byte transport and replace its receive `Decoder`, then call
    `open_after_transport_reset`. An engine epoch alone cannot flush old device
-   bytes. The engine sends a capability request and admits clipboard traffic
-   only after a compatible peer announcement. It negotiates by-demand text,
+   bytes. The engine sends exactly one capability announcement with request=1
+   per connection. QEMU independently queues an initial host request=1; that
+   crossed request is already answered by the immutable guest advertisement,
+   so the engine does not send a second announcement. Clipboard traffic becomes
+   ready only after the guest advertisement is fully accepted and the host's
+   request=0 reply is received. `Effect::Negotiated` or `Sent::Negotiated` marks
+   whichever event completes that exchange. It negotiates by-demand text,
    selection prefixes and grab serials. Host serial ties win. Decreasing serials
    are stale; guest serial exhaustion requires a reset rather than reuse.
 2. For each complete codec frame, call `receive` with the current `Epoch`. Keep
@@ -51,6 +56,19 @@ interchangeable authorization.
    retryable local-offer allocation refusal. It performs no work when unchanged.
    On disconnect, disable or cancellation, call `close` and revoke the separate
    resident registration. Reconnect with a new actual channel session.
+
+This one-advertisement QEMU profile is deliberate. In
+[QEMU v10.1.0's capability handler](https://github.com/qemu/qemu/blob/v10.1.0/ui/vdagent.c#L652-L679),
+every received guest announcement resets clipboard serials. Once its clipboard
+peer is registered, another announcement causes the
+[serial-reset callback](https://github.com/qemu/qemu/blob/v10.1.0/ui/vdagent.c#L428-L435)
+to close the channel. The same reset behavior was present in upstream master
+when inspected on 2026-10-27. Unchanged subsequent peer requests/replies are
+ignored without output, allocation or serial/fetch reset. A change in negotiated
+capabilities, including between the crossed request and its reply, requires a
+real channel reset and a fresh exchange; the engine never changes live layouts
+or invents a fallback handshake. The caller must also bound the initial handshake
+wait; an absent compatible request=0 reply leaves sharing inactive.
 
 `observe` consumes a newer snapshot even when export fails: the real local copy
 already happened, so its revision must invalidate an older host fetch. `poll`
@@ -92,7 +110,8 @@ host profile; these tests do not establish that interoperability.
 ## Checks
 
 `cargo test --locked -p mac-host-clipboard` exercises the real codec with fragmented
-input, demand exchange, empty/NONE distinctions, limits, malformed Unicode,
+input, crossed/coalesced capability announcements and partial write completion,
+demand exchange, empty/NONE distinctions, limits, malformed Unicode,
 stale offers/data/completions, serial ordering, queue bounds, partial writes,
 timeouts, reconnect, generic CAS causes and real allocation refusal/retry.
 No test claims authenticated resident integration, scheduling, or a real host

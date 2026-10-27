@@ -192,7 +192,7 @@ fn failed_fetch_admission_preserves_offer_retry_and_borrowed_import_needs_no_eng
     assert_eq!(engine.queued_messages(), 0);
 }
 #[test]
-fn full_queue_and_duplicate_response_refusals_precede_payload_allocation()
+fn unchanged_capability_requests_and_duplicate_response_refusals_do_not_allocate()
 {
     let mut engine = ready();
     let epoch = engine.epoch();
@@ -210,17 +210,15 @@ fn full_queue_and_duplicate_response_refusals_precede_payload_allocation()
         assert_eq!(count, 0);
     });
     drain(&mut engine);
-    for _ in 0..4
+    for _ in 0..16
     {
         frame(OwnedMessage::announce(caps(), true, Limits::qemu()).unwrap(), |frame| {
-            engine.receive(epoch, frame).unwrap();
+            let (result, count) = refuse(|| engine.receive(epoch, frame));
+            assert!(matches!(result, Ok(Effect::Ignored)));
+            assert_eq!(count, 0);
         });
     }
-    frame(request(), |frame| {
-        let (result, count) = refuse(|| engine.receive(epoch, frame));
-        assert!(matches!(result, Err(Error::QueueFull)));
-        assert_eq!(count, 0);
-    });
+    assert_eq!(engine.queued_messages(), 0);
 }
 
 #[test]

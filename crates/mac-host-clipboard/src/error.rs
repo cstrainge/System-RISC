@@ -68,7 +68,8 @@ impl fmt::Display for Error
             }
             Self::HandshakeRequired =>
             {
-                f.write_str("requires the host capability handshake before clipboard traffic")?
+                f.write_str("requires the host capability reply and accepted guest advertisement \
+                             before clipboard traffic")?
             }
             Self::UnsupportedPeer =>
             {

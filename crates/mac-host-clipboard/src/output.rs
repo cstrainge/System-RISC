@@ -28,12 +28,15 @@ pub enum Sent
 {
     Progress,
     Message,
+    /// The host reply arrived before local write bookkeeping completed. Both
+    /// sides of the capability exchange are now confirmed, so Phase is Ready.
+    Negotiated,
     Fetch(FetchToken)
 }
 #[derive(Clone, Copy)]
 pub(crate) enum Purpose
 {
-    Control,
+    Capabilities,
     Guest,
     Response,
     Fetch(FetchToken)
