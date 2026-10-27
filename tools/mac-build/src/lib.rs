@@ -46,8 +46,22 @@ pub fn build_guest() -> Result<()>
     // that boundary instead of assuming a fixed OUT_DIR ancestor depth.
     // Watching nonexistent definition paths makes every build dirty and also
     // misses the actual artifacts on a changed definition.
-    let artifacts = paths::artifact_profile(out)?;
-    for source in manifest.source_files(&path, artifacts)
+    let has_native_artifacts =
+        manifest.resources
+                .iter()
+                .any(|resource| matches!(resource.payload, manifest::Payload::NativeCode { .. }));
+    let artifacts = if has_native_artifacts
+    {
+        println!("cargo:rerun-if-env-changed={}", paths::ARTIFACT_DIR_ENV);
+        println!("cargo:rerun-if-env-changed=CARGO_BUILD_BUILD_DIR");
+        Some(paths::artifact_profile(out)?)
+    }
+    else
+    {
+        None
+    };
+    // File payloads ignore the artifact-directory argument entirely.
+    for source in manifest.source_files(&path, artifacts.as_deref().unwrap_or(out))
     {
         println!("cargo:rerun-if-changed={}", source.display());
     }

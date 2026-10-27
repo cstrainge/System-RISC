@@ -2,7 +2,7 @@
 """Private native-module transport. Rust creates malformed packages and owns
 acceptance; this script compiles fixtures, imports requested files, and boots.
 """
-from system7_platform import guest_env
+from system7_fixture_build import guest_env as fixture_guest_env, host_env as fixture_host_env
 import argparse
 import hashlib
 import json
@@ -21,32 +21,32 @@ def digest(path):
 
 def prepare(output):
     output.mkdir(parents=True, exist_ok=True)
-    target = vm.build_dir() / 'fixtures/modules'
     for fixture, binary in [('driver-provider', 'ModuleEcho'), ('driver-client', 'ModuleClient')]:
+        target = vm.build_dir() / 'fixtures' / fixture
         manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
         subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(manifest),
                         '--release', '--target', 'riscv64imac-unknown-none-elf', '--bin', binary,
-                        '--target-dir', str(target)], cwd=vm.ROOT, env=guest_env(), check=True)
+                        '--target-dir', str(target)], cwd=vm.ROOT, env=fixture_guest_env(target), check=True)
         subprocess.run(['cargo', 'run', '--locked', '--manifest-path', str(manifest),
-                        '--bin', 'package', '--target-dir', str(vm.build_dir() / 'host'), '--',
+                        '--bin', 'package', '--target-dir', str(target), '--',
                         str(target / 'riscv64imac-unknown-none-elf/release' / binary),
-                        str(output / 'packages')], cwd=vm.ROOT, check=True)
+                        str(output / 'packages')], cwd=vm.ROOT, env=fixture_host_env(target), check=True)
 
 
 def prepare_recovery(output):
     prepare(output)
-    target = vm.build_dir() / 'fixtures/modules'
+    target = vm.build_dir() / 'fixtures/driver-abandon'
     manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures/driver-abandon/Cargo.toml'
     for mode, features in [('ack', []), ('no-ack', ['--features', 'no-ack']),
                            ('reply', ['--features', 'reply'])]:
         subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(manifest),
                         '--release', '--target', 'riscv64imac-unknown-none-elf',
                         '--bin', 'ModuleAbandon', '--target-dir', str(target), *features],
-                       cwd=vm.ROOT, env=guest_env(), check=True)
+                       cwd=vm.ROOT, env=fixture_guest_env(target), check=True)
         subprocess.run(['cargo', 'run', '--locked', '--manifest-path', str(manifest),
-                        '--bin', 'package', '--target-dir', str(vm.build_dir() / 'host'), '--',
+                        '--bin', 'package', '--target-dir', str(target), '--',
                         str(target / 'riscv64imac-unknown-none-elf/release/ModuleAbandon'),
-                        str(output / 'packages' / mode)], cwd=vm.ROOT, check=True)
+                        str(output / 'packages' / mode)], cwd=vm.ROOT, env=fixture_host_env(target), check=True)
 
 
 def capture(output, cases):

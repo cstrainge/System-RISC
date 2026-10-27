@@ -6,7 +6,7 @@ Waiting for input acknowledgements is transport synchronization, not an oracle.
 """
 from system7_platform import tablet_axis
 from hfs_b_tool import Image as NativeImage
-from system7_platform import guest_env
+from system7_fixture_build import guest_env as fixture_guest_env, host_env as fixture_host_env
 import argparse
 import hashlib
 import json
@@ -27,12 +27,12 @@ def private_probe_disk(output, menus=False, deferred=False):
     target = vm.build_dir() / 'fixtures/window-probe'
     subprocess.run(['cargo','build','--manifest-path',str(fixture/'Cargo.toml'),'--locked',
                     '--release','--target','riscv64imac-unknown-none-elf','--bin','Finder',
-                    '--target-dir',str(target),*(['--features','deferred-close'] if deferred else ['--features','menus'] if menus else [])],cwd=vm.ROOT,env=guest_env(), check=True)
+                    '--target-dir',str(target),*(['--features','deferred-close'] if deferred else ['--features','menus'] if menus else [])],cwd=vm.ROOT,env=fixture_guest_env(target), check=True)
     packaged = output / 'package'
     subprocess.run(['cargo','run','--manifest-path',str(fixture/'Cargo.toml'),'--locked',
                     '--bin','package','--target-dir',str(target),'--',
                     str(target/'riscv64imac-unknown-none-elf/release/Finder'),str(packaged)],
-                   cwd=vm.ROOT,check=True)
+                   cwd=vm.ROOT,env=fixture_host_env(target), check=True)
     private = output / 'dist'
     private.mkdir()
     raw = private / 'probe.raw'
