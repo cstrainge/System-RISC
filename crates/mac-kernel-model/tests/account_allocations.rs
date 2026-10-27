@@ -92,3 +92,36 @@ fn admitted_receipts_settle_close_and_refund_without_heap_or_current_selection()
     assert_eq!(account.kernel().committed(), 0);
     assert!(WAKES.load(Ordering::Relaxed) > 0);
 }
+
+#[test]
+fn retained_authority_admission_cloning_refusal_and_drop_need_no_allocation()
+{
+    let account = Account::try_new(owner(), limit(128), limit(128)).unwrap();
+    let other = Account::try_new(owner(), limit(128), limit(128)).unwrap();
+    let observed = Observe::begin(true, None);
+    let authority = account.admit_use().unwrap();
+    let clone = authority.clone();
+    let kernel = authority.reserve_kernel(64).unwrap().commit();
+    let application = clone.reserve_application(32).unwrap();
+    let budget = clone.reserve_kernel(65).err();
+    let identity = clone.owner();
+    let before = account.close_and_ready();
+    let closed = clone.reserve_kernel(0).err();
+    let new_use = account.admit_use().err();
+    drop(kernel);
+    drop(application);
+    drop(authority);
+    let retained = account.close_and_ready();
+    drop(clone);
+    let after = account.close_and_ready();
+    let count = observed.finish();
+    assert_eq!(count, 0, "retained authority must reuse the authentic account's admitted backing");
+    assert_eq!(identity, account.owner());
+    assert!(matches!(budget, Some(Error::Budget(error)) if error.owner == identity && error.used == 64 && error.limit == 128 && error.requested == 65));
+    assert_eq!(closed, Some(Error::Closed { owner: identity }));
+    assert_eq!(new_use, Some(Error::Closed { owner: identity }));
+    assert!(!before && !retained && after,
+            "retirement must wait for the last actual use even with zero charged bytes");
+    assert_eq!((account.kernel().committed(), account.application().reserved()), (0, 0));
+    assert_eq!((other.kernel().committed(), other.application().reserved()), (0, 0));
+}

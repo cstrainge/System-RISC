@@ -4,6 +4,8 @@
 //! or copied usage snapshot is observational data, never authority to construct
 //! an account or select a refund destination. Each receipt retains its original
 //! account even after execution moves to a different subject or the root closes.
+//! A retained AccountUse carries that same authority on a real thread; observing
+//! a DomainId cannot construct one or redirect its charges.
 //!
 //! Every counter/metadata access uses the explicitly selected architecture gate
 //! and the account lock. No lock escapes, allocates, destroys backing or invokes
@@ -193,21 +195,24 @@ impl<G: InvocationGate> Account<G>
 
     fn reserve(&self, class: Class, bytes: u64) -> Result<Reserved<G>, Error>
     {
+        self.inner.reserve(class, bytes)
+    }
+
+    /// Retain this exact account for an admitted execution context. The pin is
+    /// created under the same closure gate as reservations; it cannot reset a
+    /// budget or authorize retirement. Creation and cloning allocate nothing.
+    pub fn admit_use(&self) -> Result<AccountUse<G>, Error>
+    {
         G::run(|| {
-            let mut state = self.inner.state.lock();
+            let state = self.inner.state.lock();
             let owner = self.inner.owner.owner();
             if state.closing || !self.inner.owner.accepting()
             {
                 return Err(Error::Closed { owner });
             }
-            state.usage(class).reserve(owner, class.public(), bytes).map_err(Error::Budget)?;
-            // Arc cloning cannot allocate. Hold the counter lock through this
-            // pin so a concurrent close cannot miss even a zero-byte receipt.
-            Ok(Reserved { receipt: Receipt { inner: Some(self.inner.clone()),
-                                             owner,
-                                             class,
-                                             bytes,
-                                             phase: Phase::Reserved } })
+            Ok(AccountUse { inner:    self.inner.clone(),
+                            _release: ReleaseWake { owner,
+                                                    _gate: core::marker::PhantomData } })
         })
     }
 
@@ -230,6 +235,96 @@ impl<G: InvocationGate> Drop for Account<G>
         G::run(|| self.inner.state.lock().closing = true);
         // The default atomic Arc field drop runs after the metadata lock/gate.
         // Outstanding receipts retain the real owner and counters until refund.
+    }
+}
+/// Retained allocation authority, derived only from a canonical account root.
+/// Clones share that original account; they neither create an account nor keep
+/// admission open after its owner stops. A live use pins account retirement,
+/// including when it currently owns no charged bytes.
+///
+/// An observed identity cannot manufacture this authority:
+/// ```compile_fail
+/// use mac_kernel_model::{account::AccountUse, DomainId};
+/// use mac_object_table::shared::InvocationGate;
+/// fn forge<G: InvocationGate>(owner: DomainId) -> AccountUse<G> {
+///     AccountUse { owner }
+/// }
+/// ```
+/// Uses cannot close or reset their original root:
+/// ```compile_fail
+/// use mac_kernel_model::account::AccountUse;
+/// use mac_object_table::shared::InvocationGate;
+/// fn close<G: InvocationGate>(authority: AccountUse<G>) {
+///     authority.close_and_ready();
+/// }
+/// ```
+pub struct AccountUse<G: InvocationGate>
+{
+    // Fields drop in declaration order: release the Arc before waking a reaper
+    // which can immediately check the root's exact outstanding-pin barrier.
+    inner:    Arc<Inner<G>>,
+    _release: ReleaseWake<G>
+}
+impl<G: InvocationGate> AccountUse<G>
+{
+    pub fn owner(&self) -> DomainId
+    {
+        G::run(|| self.inner.owner.owner())
+    }
+
+    pub fn reserve_kernel(&self, bytes: u64) -> Result<Reserved<G>, Error>
+    {
+        self.inner.reserve(Class::Kernel, bytes)
+    }
+
+    pub fn reserve_application(&self, bytes: u64) -> Result<Reserved<G>, Error>
+    {
+        self.inner.reserve(Class::Application, bytes)
+    }
+}
+impl<G: InvocationGate> Clone for AccountUse<G>
+{
+    fn clone(&self) -> Self
+    {
+        Self { inner:    self.inner.clone(),
+               _release: ReleaseWake { owner: self._release.owner,
+                                       _gate: core::marker::PhantomData } }
+    }
+}
+struct ReleaseWake<G: InvocationGate>
+{
+    owner: DomainId,
+    _gate: core::marker::PhantomData<fn() -> G>
+}
+impl<G: InvocationGate> Drop for ReleaseWake<G>
+{
+    fn drop(&mut self)
+    {
+        // AccountUse's Arc has already been dropped, and neither an account
+        // lock nor an owner lock is held across the notification.
+        G::released(self.owner);
+    }
+}
+impl<G: InvocationGate> Inner<G>
+{
+    fn reserve(self: &Arc<Self>, class: Class, bytes: u64) -> Result<Reserved<G>, Error>
+    {
+        G::run(|| {
+            let mut state = self.state.lock();
+            let owner = self.owner.owner();
+            if state.closing || !self.owner.accepting()
+            {
+                return Err(Error::Closed { owner });
+            }
+            state.usage(class).reserve(owner, class.public(), bytes).map_err(Error::Budget)?;
+            // Root and retained uses share this admission. Hold the counter
+            // lock through the allocation-free pin, including zero-byte uses.
+            Ok(Reserved { receipt: Receipt { inner: Some(self.clone()),
+                                             owner,
+                                             class,
+                                             bytes,
+                                             phase: Phase::Reserved } })
+        })
     }
 }
 #[derive(Clone, Copy)]
@@ -589,6 +684,128 @@ mod tests
         assert_eq!(used(&current), [0, 32, 0, 0]);
         drop(other);
         assert_eq!(used(&current), [0; 4]);
+    }
+
+    #[test]
+    fn retained_authorities_share_limits_and_refund_the_original_account()
+    {
+        let original = account(64, 32);
+        let other = account(128, 128);
+        let authority = original.admit_use().unwrap();
+        let peer = authority.clone();
+        assert_eq!(authority.owner(), original.owner());
+        assert_ne!(authority.owner(), other.owner());
+        let kernel = authority.reserve_kernel(64).unwrap().commit();
+        let application = peer.reserve_application(32).unwrap();
+        assert_eq!(used(&original), [0, 64, 32, 0]);
+        assert_eq!(used(&other), [0; 4]);
+        let Error::Budget(error) = peer.reserve_kernel(1).err().unwrap()
+        else
+        {
+            panic!("retained authority must enforce its original root's limit");
+        };
+        assert_eq!(error.owner, original.owner());
+        assert_eq!((error.used, error.limit, error.requested), (64, 64, 1));
+        assert!(error.to_string().contains("1 bytes requested"));
+        drop(authority);
+        drop(peer);
+        assert!(!original.close_and_ready());
+        drop(kernel);
+        drop(application);
+        assert_eq!(used(&original), [0; 4]);
+        assert_eq!(used(&other), [0; 4]);
+        assert!(original.close_and_ready());
+    }
+
+    #[test]
+    fn authority_pins_release_before_the_last_retirement_wake()
+    {
+        let account = Shared::new(account(0, 0));
+        let first = account.admit_use().unwrap();
+        let last = first.clone();
+        WAKES.with(|wakes| wakes.set(0));
+        WAKE_READY.with(|ready| ready.set(false));
+        PROBE.with(|probe| *probe.borrow_mut() = Some(Shared::downgrade(&account)));
+        assert_eq!(used(&account), [0; 4]);
+        assert!(!account.close_and_ready(), "a quiescent thread's authority still pins retirement");
+        drop(first);
+        assert!(!WAKE_READY.with(Cell::get), "one actual thread authority remains");
+        assert_eq!(WAKES.with(Cell::get), 1);
+        drop(last);
+        assert!(WAKE_READY.with(Cell::get), "wake must observe the disposed authority Arc");
+        assert_eq!(WAKES.with(Cell::get), 2);
+        assert_eq!(DEPTH.with(Cell::get), 0);
+        PROBE.with(|probe| *probe.borrow_mut() = None);
+    }
+
+    #[test]
+    fn stopped_owner_and_dropped_root_never_reauthorize_a_retained_use()
+    {
+        let owner = owner();
+        let account = Account::try_new(owner.clone(), limit(64), limit(64)).unwrap();
+        let authority = account.admit_use().unwrap();
+        let pending = authority.reserve_kernel(16).unwrap();
+        let retained = Arc::downgrade(&account.inner);
+        owner.stop_admission();
+        assert_eq!(account.admit_use().err(), Some(Error::Closed { owner: owner.owner() }));
+        assert_eq!(authority.reserve_kernel(0).err(), Some(Error::Closed { owner: owner.owner() }));
+        assert_eq!(authority.reserve_application(1).err(),
+                   Some(Error::Closed { owner: owner.owner() }));
+        drop(account);
+        let clone = authority.clone();
+        assert_eq!(clone.reserve_kernel(1).err(), Some(Error::Closed { owner: owner.owner() }));
+        let committed = pending.commit();
+        assert_eq!(committed.owner(), owner.owner());
+        drop(committed);
+        drop(authority);
+        assert!(retained.upgrade().is_some(), "the last actual use retains the original account");
+        drop(clone);
+        assert!(retained.upgrade().is_none(), "dropping the root cannot orphan retained metadata");
+        assert!(Error::Closed { owner: owner.owner() }.to_string()
+                                                      .contains("closed or its owner is stopping"));
+    }
+
+    #[test]
+    fn concurrent_authority_admission_and_closure_share_one_retirement_barrier()
+    {
+        for _ in 0..32
+        {
+            let account = Shared::new(account(0, 0));
+            let start = Shared::new(Barrier::new(3));
+            let admit = {
+                let (account, start) = (account.clone(), start.clone());
+                thread::spawn(move || {
+                    start.wait();
+                    account.admit_use()
+                })
+            };
+            let close = {
+                let (account, start) = (account.clone(), start.clone());
+                thread::spawn(move || {
+                    start.wait();
+                    account.close_and_ready()
+                })
+            };
+            start.wait();
+            let authority = admit.join().unwrap();
+            let ready = close.join().unwrap();
+            match authority
+            {
+                Ok(authority) =>
+                {
+                    assert!(!ready, "retirement missed an admitted authority with zero usage");
+                    assert_eq!(authority.reserve_kernel(0).err(),
+                               Some(Error::Closed { owner: account.owner() }));
+                    drop(authority);
+                }
+                Err(error) =>
+                {
+                    assert_eq!(error, Error::Closed { owner: account.owner() });
+                    assert!(ready);
+                }
+            }
+            assert!(account.close_and_ready());
+        }
     }
 
     #[test]

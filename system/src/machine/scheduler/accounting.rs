@@ -4,7 +4,7 @@
 
 use core::{fmt, ops::Deref};
 
-use mac_kernel_model::account::{Account, Committed, Reserved};
+use mac_kernel_model::account::{Account, AccountUse, Committed, Reserved};
 
 use crate::{machine::{interrupts::NativeInvocationGate,
                       pages,
@@ -12,6 +12,7 @@ use crate::{machine::{interrupts::NativeInvocationGate,
             toolbox::handles::OwnerRef};
 
 pub(crate) type ProcessAccount = Account<NativeInvocationGate>;
+pub(crate) type AllocationAuthority = AccountUse<NativeInvocationGate>;
 
 #[derive(Debug)]
 pub(crate) enum Error
@@ -76,8 +77,9 @@ pub(crate) fn account_status(error: &mac_kernel_model::account::Error) -> mac_ab
 /// A failed preparation drops these and refunds without publishing a thread.
 pub(crate) struct ThreadCharges
 {
-    stack: Reserved<NativeInvocationGate>,
-    cpu:   Reserved<NativeInvocationGate>
+    stack:      Reserved<NativeInvocationGate>,
+    cpu:        Reserved<NativeInvocationGate>,
+    allocation: AllocationAuthority
 }
 impl ThreadCharges
 {
@@ -89,16 +91,21 @@ impl ThreadCharges
         }
         let stack_bytes = pages::Backing::planned_bytes(super::STACK_BYTES).map_err(Error::Pages)?;
         let cpu_bytes = SavedState::planned_backing_bytes().map_err(Error::Pages)?;
-        let stack = account.reserve_application(stack_bytes).map_err(Error::Account)?;
-        let cpu = account.reserve_kernel(cpu_bytes).map_err(Error::Account)?;
+        let allocation = account.admit_use().map_err(Error::Account)?;
+        let stack = allocation.reserve_application(stack_bytes).map_err(Error::Account)?;
+        let cpu = allocation.reserve_kernel(cpu_bytes).map_err(Error::Account)?;
         Ok(Self { stack,
-                  cpu })
+                  cpu,
+                  allocation })
     }
 
-    pub(super) fn allocate(self, owner: &OwnerRef, initial: impl FnOnce(usize) -> TrapFrame)
-                           -> Result<(Charged<pages::Stack>, Charged<SavedState>), Error>
+    pub(super) fn allocate(
+        self, owner: &OwnerRef, initial: impl FnOnce(usize) -> TrapFrame)
+        -> Result<(Charged<pages::Stack>, Charged<SavedState>, AllocationAuthority), Error>
     {
-        if self.stack.owner() != owner.owner() || self.cpu.owner() != owner.owner()
+        if self.allocation.owner() != owner.owner()
+           || self.stack.owner() != owner.owner()
+           || self.cpu.owner() != owner.owner()
         {
             return Err(Error::Foreign);
         }
@@ -114,7 +121,8 @@ impl ThreadCharges
         Ok((Charged { value:   stack,
                       _charge: self.stack.commit() },
             Charged { value:   cpu,
-                      _charge: self.cpu.commit() }))
+                      _charge: self.cpu.commit() },
+            self.allocation))
     }
 }
 

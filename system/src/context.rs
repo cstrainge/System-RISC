@@ -180,8 +180,9 @@ impl Drop for TrapScope<'_>
 #[cfg(target_arch = "riscv64")]
 struct ThreadOwner
 {
-    owner: crate::toolbox::handles::OwnerRef,
-    image: crate::images::Binding
+    owner:       crate::toolbox::handles::OwnerRef,
+    image:       crate::images::Binding,
+    _allocation: crate::machine::scheduler::accounting::AllocationAuthority
 }
 #[cfg(target_arch = "riscv64")]
 pub struct ThreadContext
@@ -227,13 +228,15 @@ impl ThreadContext
     }
 
     pub(crate) fn assign(&self, owner: crate::toolbox::handles::OwnerRef, thread: u64,
-                         image: crate::images::Binding)
+                         image: crate::images::Binding,
+                         allocation: &crate::machine::scheduler::accounting::AllocationAuthority)
                          -> Result<(), mac_abi::Status>
     {
         use core::sync::atomic::Ordering::Relaxed;
 
         use mac_object_table::shared::InvocationGate as _;
         if thread == 0
+           || allocation.owner() != owner.owner()
            || image.owner() != owner.owner().incarnation()
            || owner.owner().kind() != mac_object_table::domain::DomainKind::Process
         {
@@ -254,7 +257,8 @@ impl ThreadContext
             self.app.store(owner.owner().incarnation(), Relaxed);
             self.thread.store(thread, Relaxed);
             *binding = Some(ThreadOwner { owner,
-                                          image });
+                                          image,
+                                          _allocation: allocation.clone() });
             Ok(())
         })
     }
@@ -268,6 +272,9 @@ impl ThreadContext
             self.io_subject.reset(ThreadId(0));
             self.app.store(0, core::sync::atomic::Ordering::Relaxed);
             self.thread.store(0, core::sync::atomic::Ordering::Relaxed);
+            // The allocation pin leaves with the quiescent context before
+            // process account readiness is checked. No owner lock is held
+            // over its original-account retirement notification.
             drop(owner);
         });
     }

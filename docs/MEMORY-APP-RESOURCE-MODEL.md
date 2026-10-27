@@ -2905,6 +2905,21 @@ or cancels on Drop, without allocating to update or refund counters. The
 receipt always retains its original account, independently of the execution
 context in which destruction occurs.
 
+Thread-charge admission also retains an `AccountUse` from that canonical root
+and uses it for the real stack and CPU reservations. The prepared thread carries
+that authority into its actual scheduler context; no scalar process/domain ID
+can reconstruct or redirect it. Root and retained-use admission share the same
+counter implementation. Cloning a use allocates nothing and cannot reopen a
+closed account. Even a use with no charged bytes pins retirement; its final Drop
+releases that pin before posting the normal retirement wake. Once a thread is
+quiescent, context release drops its retained allocation authority before process
+account readiness can succeed. Ordinary input/event paths do not resolve or
+clone this authority.
+
+This retained authority is a prerequisite for later allocation forwarding. It
+does not yet select a global allocator, charge scheduler metadata or heaps,
+create module workers, or qualify protected recovery backing.
+
 The native backing wrapper keeps physical storage and its receipt inseparable.
 Physical destruction precedes the corresponding refund; stack/CPU destruction
 also precedes releasing the image execution pin. Stopped process retirement

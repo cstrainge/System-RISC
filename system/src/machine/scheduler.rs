@@ -203,8 +203,9 @@ struct ThreadCore
 }
 pub(crate) struct PreparedThread
 {
-    owner: crate::toolbox::handles::OwnerRef,
-    core:  mac_object_table::retained::Read<ThreadCore>
+    owner:      crate::toolbox::handles::OwnerRef,
+    core:       mac_object_table::retained::Read<ThreadCore>,
+    allocation: accounting::AllocationAuthority
 }
 pub(crate) struct PrepareFailure
 {
@@ -226,26 +227,27 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
             return Err(mac_abi::ACCESS_DENIED);
         }
         let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
-        let (stack, cpu) = charges.allocate(&owner, |top| {
-                                      let mut initial = TrapFrame::default();
-                                      initial.pc = app_start as *const () as usize;
-                                      initial.status = super::traps::INITIAL_STATUS;
-                                      initial.registers[8] = loaded.entry();
-                                      initial.stack_pointer = top;
-                                      // gp is unused by the freestanding PC-relative executable
-                                      // contract.
-                                      initial
-                                  })
-                                  .map_err(|error| {
-                                      serial!("THREAD_BACKING_REFUSED: {error}");
-                                      error.status()
-                                  })?;
+        let (stack, cpu, allocation) = charges.allocate(&owner, |top| {
+                                                  let mut initial = TrapFrame::default();
+                                                  initial.pc = app_start as *const () as usize;
+                                                  initial.status = super::traps::INITIAL_STATUS;
+                                                  initial.registers[8] = loaded.entry();
+                                                  initial.stack_pointer = top;
+                                                  // gp is unused by the freestanding PC-relative
+                                                  // executable
+                                                  // contract.
+                                                  initial
+                                              })
+                                              .map_err(|error| {
+                                                  serial!("THREAD_BACKING_REFUSED: {error}");
+                                                  error.status()
+                                              })?;
         let top = stack.top();
-        Ok((context, stack, cpu, top))
+        Ok((context, stack, cpu, top, allocation))
     })();
     match prepared
     {
-        Ok((context, stack, cpu, top)) =>
+        Ok((context, stack, cpu, top, allocation)) =>
         {
             let binding = loaded.binding();
             let mut core = match Arc::try_new(ThreadCore { cpu: Mutex::new(cpu),
@@ -273,7 +275,8 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
             storage._loaded = Some(loaded);
             Ok(PreparedThread { owner,
                                 core: mac_object_table::retained::Read::new(core,
-                                                                            context_released) })
+                                                                            context_released),
+                                allocation })
         }
         Err(status) =>
         {
@@ -317,7 +320,10 @@ pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
         // invalidated ordinary lookup. An unstarted refusal retains the same
         // preparation; its stack/image pins are never dropped under this lock.
         let assigned =
-            prepared.core.context.assign(prepared.owner.clone(), id, prepared.core.binding);
+            prepared.core.context.assign(prepared.owner.clone(),
+                                         id,
+                                         prepared.core.binding,
+                                         &prepared.allocation);
         if let Err(status) = assigned
         {
             let removed = scheduler.records.as_mut().and_then(|store| store.remove(id));
