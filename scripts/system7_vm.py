@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Build and boot the System7 disk desktop through its read-only flash ROM and private working disk."""
-from system7_platform import RAM, cpu_model
+from system7_platform import RAM, cpu_model, display_size
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -20,6 +21,32 @@ from system7_host import process_options
 
 STATE = ROOT / 'working/system7-vm'
 DIST = dist_dir()
+
+COCOA_SCREEN_SCRIPT = '''ObjC.import("AppKit");
+const screen = $.NSScreen.mainScreen;
+if (screen.isNil()) throw Error("No active Mac screen");
+const style = $.NSWindowStyleMaskTitled | $.NSWindowStyleMaskMiniaturizable | $.NSWindowStyleMaskClosable;
+const content = $.NSWindow.contentRectForFrameRectStyleMask(screen.visibleFrame, style);
+JSON.stringify({width: content.size.width, height: content.size.height});'''
+
+
+def cocoa_scale():
+    """Prefer 2x only when the whole titled window fits the usable Mac screen."""
+    width, height = display_size()
+    try:
+        output = subprocess.check_output(['/usr/bin/osascript', '-l', 'JavaScript', '-e',
+                                          COCOA_SCREEN_SCRIPT],
+                                         text=True, stderr=subprocess.PIPE, timeout=10)
+        size = json.loads(output)
+        if not isinstance(size, dict) or any(
+                type(size.get(axis)) not in (int, float) or not math.isfinite(size[axis])
+                or size[axis] <= 0 for axis in ('width', 'height')):
+            raise ValueError('usable screen size must contain finite positive width and height')
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        cause = getattr(error, 'stderr', None) or str(error)
+        print(f'Unable to measure the Mac screen; launching at 1x: {cause.strip()}', file=sys.stderr)
+        return 1
+    return 2 if width * 2 <= size['width'] and height * 2 <= size['height'] else 1
 
 
 def qmp(command, arguments=None, endpoint=None):
@@ -51,6 +78,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
                                          or not 1 <= expected_exports <= 16
                                          or host_bridge is None):
         raise ValueError('expected exports require a host bridge and a count from 1 to 16')
+    cocoa_zoom = cocoa_scale() if frontend == 'cocoa' else 1
     state.mkdir(parents=True, exist_ok=True)
     native = frontend in ('native', 'native-headless')
     if native and not native_executable():
@@ -92,7 +120,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     # Its fixed scale option is provided by scripts/qemu/cocoa-scale.patch.
     display = {'native': 'gtk,gl=on,zoom-to-fit=off,scale=2,show-menubar=off',
                'gtk': 'gtk,gl=on,zoom-to-fit=off,scale=2', 'headless': 'none',
-               'cocoa': 'cocoa,zoom-to-fit=off,scale=2',
+               'cocoa': f'cocoa,zoom-to-fit=off,scale={cocoa_zoom}',
                'native-headless': 'none'}[frontend]
     serial = state / 'serial.log'
     serial.write_text('')

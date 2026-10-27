@@ -1,7 +1,11 @@
 # QEMU Cocoa scaling
 
-The macOS launcher uses `-display cocoa,zoom-to-fit=off,scale=2` so the
-800×600 guest opens in a 1600×1200 content area. Sizes are macOS window points;
+The macOS launcher uses `-display cocoa,zoom-to-fit=off,scale=2` only when the
+whole 1600×1200 window content area fits on the active screen. It queries
+AppKit once at launch, excludes the menu bar and Dock, and reserves the Cocoa
+window's title bar. Otherwise it requests `scale=1` for an 800×600 content area.
+If screen measurement fails, it reports the cause and selects 1×. The decision
+uses the selected platform's guest dimensions. Sizes are macOS window points;
 Retina backing pixels follow the display's own scale. Guest geometry and native
 tablet coordinates remain unchanged. Headless launches do not use this option.
 

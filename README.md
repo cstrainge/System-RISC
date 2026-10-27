@@ -107,8 +107,9 @@ backend. Put `python`, `cargo`, `qemu-system-riscv64`, `qemu-img` and
 `llvm-objcopy` on `PATH`; Homebrew and MacPorts are optional. Rust's `llvm-tools`
 component includes a compatible `llvm-objcopy`. The launcher uses the invoking
 Python interpreter for build and saved-file preservation helpers. Cocoa handles
-native window scaling and absolute tablet input. The launcher requests fixed
-2× zoom using the [tracked QEMU Cocoa scale patch](scripts/qemu/README.md);
+native window scaling and absolute tablet input. The launcher prefers fixed
+2× zoom when the complete window fits the usable screen, and otherwise uses 1×.
+It uses the [tracked QEMU Cocoa scale patch](scripts/qemu/README.md);
 apply it when building standalone QEMU. `--frontend headless` retains
 the same disk, host companion and QMP services without opening a window.
 
@@ -574,7 +575,9 @@ The QemuRISC-V platform currently defaults to an 800×600 guest framebuffer.
 `memory.display` in the platform JSON fixes the build-time width and height;
 mac-build validates geometry and scratch capacity before emitting the boot and
 System constants. Shared host conformance code uses that same checked record.
-The native launcher retains 2× zoom, giving a 1600×1200 guest viewport. Runtime
+GTK launchers use 2× zoom, giving a 1600×1200 guest viewport. The Mac launcher
+uses 2× only when that window fits after reserving the menu bar, Dock and title
+bar; otherwise it opens at 1×. Runtime
 mode switching is not implemented: rebuild the complete image after changing
 platform geometry. Window limits, pointer mapping, desktop placement and display
 buffers use the configured size; original Macintosh reference images retain

@@ -15,6 +15,45 @@ import system7_exports
 
 
 class LauncherTests(unittest.TestCase):
+    def test_cocoa_zoom_requires_both_dimensions_to_fit_including_the_boundary(self):
+        import json
+        width, height = vm.display_size()
+        for available_width, available_height, expected in [
+                (width * 2, height * 2, 2),
+                (width * 2 - 1, height * 2, 1),
+                (width * 2, height * 2 - 1, 1),
+                (width * 3, height * 3, 2),
+                (width, height, 1)]:
+            with self.subTest(size=(available_width, available_height)), \
+                 patch.object(vm.subprocess, 'check_output', return_value=json.dumps({
+                     'width': available_width, 'height': available_height})):
+                self.assertEqual(vm.cocoa_scale(), expected)
+
+    def test_cocoa_zoom_uses_the_selected_platform_geometry(self):
+        with patch.object(vm, 'display_size', return_value=(1000, 700)), \
+             patch.object(vm.subprocess, 'check_output', return_value='{"width":1920,"height":1080}'):
+            self.assertEqual(vm.cocoa_scale(), 1)
+
+    def test_cocoa_probe_failures_use_1x_and_explain_the_cause(self):
+        import io
+        import subprocess
+        cases = [
+            (None, OSError('screen probe missing'), 'screen probe missing'),
+            (None, subprocess.CalledProcessError(1, 'osascript', stderr='No active Mac screen'), 'No active Mac screen'),
+            (None, subprocess.TimeoutExpired('osascript', 10), 'timed out'),
+            ('invalid JSON', None, 'Expecting value'),
+            ('{"width":0,"height":1200}', None, 'finite positive width and height'),
+            ('{"width":false,"height":1200}', None, 'finite positive width and height'),
+            ('{"width":1600,"height":NaN}', None, 'finite positive width and height'),
+            ('[]', None, 'finite positive width and height')]
+        for output, error, cause in cases:
+            with self.subTest(cause=cause), \
+                 patch.object(vm.subprocess, 'check_output', return_value=output, side_effect=error), \
+                 patch.object(vm.sys, 'stderr', new_callable=io.StringIO) as diagnostics:
+                self.assertEqual(vm.cocoa_scale(), 1)
+                self.assertIn('launching at 1x', diagnostics.getvalue())
+                self.assertIn(cause, diagnostics.getvalue())
+
     def test_macos_start_selects_cocoa_without_windows_qemu_discovery(self):
         from unittest.mock import Mock
         with tempfile.TemporaryDirectory() as folder:
@@ -42,6 +81,7 @@ class LauncherTests(unittest.TestCase):
                 (state / 'serial.log').write_text('DESKTOP_READY\n')
                 return Mock(pid=999999999, poll=lambda: None)
             with patch.object(vm, 'DIST', dist), patch.dict(os.environ, clear=True), \
+                 patch.object(vm, 'cocoa_scale', return_value=2), \
                  patch.object(vm.subprocess, 'Popen', side_effect=spawn) as process, \
                  patch.object(vm, 'qmp', return_value={'status': 'running'}):
                 vm.launch(state, 'cocoa')
@@ -66,7 +106,7 @@ class LauncherTests(unittest.TestCase):
                 identity = args[args.index('-uuid') + 1]
                 qmp.return_value = {'UUID': identity}
                 return process
-            with patch.object(vm, 'DIST', dist), \
+            with patch.object(vm, 'DIST', dist), patch.object(vm, 'cocoa_scale', return_value=1), \
                  patch.object(vm.subprocess, 'Popen', side_effect=spawn), \
                  patch.object(vm, 'qmp') as qmp:
                 with self.assertRaisesRegex(RuntimeError, 'startup resource unavailable'):
@@ -156,6 +196,7 @@ class LauncherTests(unittest.TestCase):
                 (state/'serial.log').write_text('DESKTOP_READY\n')
                 return Mock(pid=999999999,poll=lambda:None)
             with patch.object(vm,'DIST',dist),patch.object(vm.subprocess,'Popen',side_effect=start), \
+                 patch.object(vm, 'cocoa_scale', side_effect=AssertionError('screen probe in headless launch')), \
                  patch.object(vm,'qmp',return_value={'status':'running'}):
                 vm.launch(state,preserve=True)
             self.assertEqual((state/'system7.qcow2').read_bytes(),b'guest saved changes')
