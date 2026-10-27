@@ -2836,3 +2836,21 @@ of an arbitrary multi-glyph string, native CFF/VARC/OpenType qualification, inst
 emergency-service backing, or recovery from arbitrary privileged faults. Protected
 account/reserve enforcement and the complete failure-service kit remain heap-stage
 gates.
+
+
+### System-owned failure-UI formatting
+
+Resource-backed Alert substitution computes its UTF-8 extent before allocation,
+and text wrapping borrows paragraph spans. Crash labels use their existing bounded
+resource reply storage; diagnostic formatting grows fallibly, and tab expansion
+reuses one admitted visible-line buffer. Failure of a full System-owned paint
+discards only its own staged transaction, preserves the committed content/hover
+policy and restores that window's consumed damage for retry. Partial mask updates
+retain their existing cancellation path.
+
+These paths preserve ordinary refusal and retry. They still allocate window,
+control, retained drawing and other ordinary backing; fallible formatting alone
+is not an installed allocation-free emergency kit. The current resident panic and
+infallible-allocation handlers report through serial and halt. A graphical System
+Panic/Restart path, protected emergency/Finder backing, and all-allocation-refused
+Save/Alert/crash service qualification remain explicit heap-stage work.

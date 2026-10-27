@@ -1,6 +1,9 @@
 //! Host userspace conformance harness, available only under `test-support`.
 //! Calls enter the same resident service dispatchers as native userspace; this
 //! module supplies lifetime/scoping and the host adapter, never canned results.
+#[cfg(test)]
+#[path = "../../../crates/mac-toolbox/tests/support/allocations.rs"]
+pub(crate) mod allocations;
 pub mod shared;
 pub mod menus;
 pub mod scrap;
