@@ -687,33 +687,50 @@ impl DomainSlots
         let len = self.generations.len();
         for (start, end) in [(self.quarantine_cursor, len), (0, self.quarantine_cursor)]
         {
-            let mut at = start;
-            while at < end
+            if let Some(ticket) = self.resume_quarantined_range(start, end)
             {
-                let word = at / 64;
-                let first = at % 64;
-                let take = (end - at).min(64 - first);
-                let mask = if take == 64 { u64::MAX } else { ((1u64 << take) - 1) << first };
-                let bits = self.quarantined[word] & mask;
-                if bits != 0
-                {
-                    let slot = word * 64 + bits.trailing_zeros() as usize;
-                    let generation = if self.retired[word] & (1 << (slot % 64)) != 0
-                    {
-                        u64::MAX
-                    }
-                    else
-                    {
-                        self.generations[slot].checked_sub(1)?
-                    };
-                    self.quarantined[word] &= !(1 << (slot % 64));
-                    self.quarantined_count -= 1;
-                    self.quarantine_cursor = if slot + 1 == len { 0 } else { slot + 1 };
-                    return Some(ReleasedResource { key: ResourceKey { owner: self.owner, kind: self.kind,
-                        slot, generation: NonZeroU64::new(generation)?, registration: self.registration } });
-                }
-                at += take;
+                self.quarantine_cursor =
+                    if ticket.key.slot + 1 == len { 0 } else { ticket.key.slot + 1 };
+                return Some(ticket);
             }
+        }
+        None
+    }
+
+    fn resume_quarantined_range(&mut self, start: usize, end: usize) -> Option<ReleasedResource>
+    {
+        let end = end.min(self.generations.len());
+        let mut at = start;
+        while at < end
+        {
+            let word = at / 64;
+            let first = at % 64;
+            let take = (end - at).min(64 - first);
+            let mask = if take == 64 { u64::MAX } else { ((1u64 << take) - 1) << first };
+            let bits = self.quarantined[word] & mask;
+            if bits != 0
+            {
+                let slot = word * 64 + bits.trailing_zeros() as usize;
+                let generation = if self.retired[word] & (1 << (slot % 64)) != 0
+                {
+                    u64::MAX
+                }
+                else
+                {
+                    self.generations[slot].checked_sub(1)?
+                };
+                let key = ResourceKey { owner: self.owner,
+                                        kind: self.kind,
+                                        slot,
+                                        generation: NonZeroU64::new(generation)?,
+                                        registration: self.registration };
+                // Finish structural validation before transferring the unique
+                // ticket out of its reserved quarantine bitmap.
+                self.quarantined[word] &= !(1 << (slot % 64));
+                self.quarantined_count -= 1;
+                return Some(ReleasedResource { key });
+            }
+            at += take;
         }
         None
     }
@@ -835,6 +852,17 @@ impl ReleasedResource
         self.key
     }
 }
+/// A bounded metadata scan, not resource authority. Only its originating ledger
+/// can transfer tickets through it. No callback receives the private cursors.
+pub(crate) struct QuarantineRetry
+{
+    owner: DomainId,
+    pools: usize,
+    pool:  usize,
+    slot:  usize,
+    limit: Option<usize>
+}
+
 /// Central owner index shape; registering pools/dispatchers and draining queues
 /// are the next runtime migration. No manager-specific cleanup list belongs here.
 pub struct OwnerIndex
@@ -1205,6 +1233,39 @@ impl OwnerIndex
                 self.revision = self.revision.saturating_add(1);
                 return Some(ticket);
             }
+        }
+        None
+    }
+
+    pub(crate) fn quarantine_retry(&self) -> QuarantineRetry
+    {
+        QuarantineRetry { owner: self.owner,
+                          pools: self.pools.len(),
+                          pool:  0,
+                          slot:  0,
+                          limit: None }
+    }
+
+    pub(crate) fn resume_quarantined_in(&mut self, cursor: &mut QuarantineRetry)
+                                        -> Option<ReleasedResource>
+    {
+        if cursor.owner != self.owner
+        {
+            return None;
+        }
+        while cursor.pool < cursor.pools
+        {
+            let pool = self.pools.get_mut(cursor.pool)?;
+            let limit = *cursor.limit.get_or_insert(pool.generations.len());
+            if let Some(ticket) = pool.resume_quarantined_range(cursor.slot, limit)
+            {
+                cursor.slot = ticket.key.slot + 1;
+                self.revision = self.revision.saturating_add(1);
+                return Some(ticket);
+            }
+            cursor.pool += 1;
+            cursor.slot = 0;
+            cursor.limit = None;
         }
         None
     }
@@ -1628,6 +1689,32 @@ impl OwnerIndex
 mod tests
 {
     use super::*;
+
+    #[test]
+    fn quarantine_retry_cursor_cannot_transfer_another_owner_ticket()
+    {
+        let kind = KindCode(*b"RETR");
+        let mut first = OwnerIndex::issue(DomainKind::Module).unwrap();
+        let mut second = OwnerIndex::issue(DomainKind::Module).unwrap();
+        for owner in [&mut first, &mut second]
+        {
+            owner.add_pool(kind, CapacityPolicy::GrowableUntilMemory).unwrap();
+            owner.grow(kind, 1).unwrap();
+            let key = owner.allocate(kind).unwrap();
+            let ticket = owner.invalidate(key).unwrap();
+            owner.quarantine(ticket).unwrap();
+        }
+        let mut cursor = first.quarantine_retry();
+        let original = second.summary();
+        assert!(second.resume_quarantined_in(&mut cursor).is_none());
+        assert_eq!(second.summary(), original);
+        let own = first.resume_quarantined_in(&mut cursor).unwrap();
+        assert_eq!(own.key().owner(), first.owner());
+        first.complete_release(own).unwrap();
+        assert!(first.resume_quarantined_in(&mut cursor).is_none());
+        let retained = second.resume_quarantined().unwrap();
+        second.complete_release(retained).unwrap();
+    }
     #[test]
     fn retirement_discards_domain_history_without_reopening_its_incarnation()
     {

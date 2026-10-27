@@ -10,6 +10,8 @@ pub enum CallingConvention
     CodeSegment,
     CodeJumpTable,
     Initializer,
+    SystemExtension,
+    FinderExtension,
     Driver,
     FunctionKey,
     ControlPanel,

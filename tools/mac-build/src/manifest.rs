@@ -5,6 +5,7 @@ use std::{collections::BTreeSet,
 use mac_formats::{native::{Descriptor, Role},
                   resource::Resource,
                   text};
+use mac_module::{ExtensionTarget, PackageKind};
 use serde::{Deserialize, Serialize};
 
 use crate::{Result, error};
@@ -16,33 +17,67 @@ pub struct Manifest
     /// Lossless resource archive: preserve every supplied resource verbatim.
     /// Build manifests keep automatic NABI/RV64/vers generation.
     #[serde(default)]
-    pub archive:         bool,
+    pub archive:          bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resource_format: Option<ResourceFormat>,
+    pub resource_format:  Option<ResourceFormat>,
     #[serde(default)]
-    pub data_fork:       Option<Payload>,
+    pub data_fork:        Option<Payload>,
     #[serde(default)]
-    pub file_flags:      u16,
+    pub file_flags:       u16,
     #[serde(default)]
     /// Microseconds since 1904-01-01, matching native catalog metadata.
-    pub created:         u64,
+    pub created:          u64,
     #[serde(default)]
-    pub modified:        u64,
-    pub name:            String,
+    pub modified:         u64,
+    pub name:             String,
     /// Cargo executable name, when the Macintosh filename contains spaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binary_name:     Option<String>,
-    pub file_type:       String,
-    pub creator:         String,
-    pub role:            String,
-    pub abi_version:     u32,
-    pub load_base:       String,
-    pub load_limit:      String,
+    pub binary_name:      Option<String>,
+    pub file_type:        String,
+    /// INIT execution part. Resource names remain optional metadata; this target
+    /// chooses the RV64/EABI resource ID emitted by the module packager.
+    #[serde(default,
+            skip_serializing_if = "Option::is_none",
+            serialize_with = "serialize_extension_target",
+            deserialize_with = "deserialize_extension_target")]
+    pub extension_target: Option<ExtensionTarget>,
+    pub creator:          String,
+    pub role:             String,
+    pub abi_version:      u32,
+    pub load_base:        String,
+    pub load_limit:       String,
     #[serde(skip)]
-    pub cargo_version:   String,
-    pub description:     String,
+    pub cargo_version:    String,
+    pub description:      String,
     #[serde(default)]
-    pub resources:       Vec<Definition>
+    pub resources:        Vec<Definition>
+}
+
+fn serialize_extension_target<S: serde::Serializer>(value: &Option<ExtensionTarget>, serializer: S)
+                                                    -> std::result::Result<S::Ok, S::Error>
+{
+    value.map(|target| {
+             match target
+             {
+                 ExtensionTarget::System => "system",
+                 ExtensionTarget::Finder => "finder"
+             }
+         })
+         .serialize(serializer)
+}
+fn deserialize_extension_target<'de, D: serde::Deserializer<'de>>(
+    deserializer: D)
+    -> std::result::Result<Option<ExtensionTarget>, D::Error>
+{
+    Option::<String>::deserialize(deserializer)?.map(|target| {
+                                                    match target.as_str()
+        {
+            "system" => Ok(ExtensionTarget::System),
+            "finder" => Ok(ExtensionTarget::Finder),
+            _ => Err(serde::de::Error::custom("extension_target must be system or finder"))
+        }
+                                                })
+                                                .transpose()
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -359,6 +394,10 @@ impl Manifest
         }
         fourcc(&self.file_type)?;
         fourcc(&self.creator)?;
+        if self.extension_target.is_some() && (self.archive || self.file_type != "INIT")
+        {
+            return Err(error("extension_target requires a built INIT extension package"));
+        }
         if !self.archive
         {
             self.descriptor()?.encode()?;
@@ -374,6 +413,11 @@ impl Manifest
             return Err(error("lossless archives require raw hex payloads"));
         }
         let mut keys = BTreeSet::from([(*b"RV64", 0), (*b"NABI", 0), (*b"RLOC", 0), (*b"vers", 1)]);
+        if let Some(kind) = crate::module::kind(self)
+        {
+            keys.insert((kind.code_type(), self.module_code_id()));
+            keys.insert((kind.metadata_type(), self.module_code_id()));
+        }
         let mut symbols = BTreeSet::from(["NATIVE_CODE", "NATIVE_ABI", "VERSION"]);
         if self.archive
         {
@@ -442,21 +486,41 @@ impl Manifest
     pub fn rust_ids(&self) -> String
     {
         let mut output = String::from("// Generated from resources.json; do not edit.\n");
-        for (symbol, kind, id) in [
-            ("NATIVE_CODE", "RV64", 0),
-            ("NATIVE_ABI", "NABI", 0),
-            ("VERSION", "vers", 1),
-        ]
-        .into_iter()
-        .chain(
-            self.resources
-                .iter()
-                .map(|r| (r.symbol.as_str(), r.kind.as_str(), r.id)),
-        ) {
+        let module = crate::module::kind(self);
+        let code = module.map_or(*b"RV64", PackageKind::code_type);
+        let metadata = module.map_or(*b"NABI", PackageKind::metadata_type);
+        for (symbol, kind, id) in
+            [("NATIVE_CODE",
+              core::str::from_utf8(&code).expect("native code resource FourCC invariant"),
+              self.module_code_id()),
+             ("NATIVE_ABI",
+              core::str::from_utf8(&metadata).expect("native metadata resource FourCC invariant"),
+              self.module_code_id()),
+             ("VERSION", "vers", 1)].into_iter()
+                                    .chain(self.resources.iter().map(|r| {
+                                                                    (r.symbol.as_str(),
+                                                                     r.kind.as_str(),
+                                                                     r.id)
+                                                                }))
+        {
             let kind = fourcc(kind).expect("validated manifest");
-            output.push_str(&format!("#[allow(dead_code)]\npub const {symbol}: mac_abi::ResourceKey = mac_abi::ResourceKey::from_bytes({kind:?}, {id});\n"));
+            output.push_str(&format!("#[allow(dead_code)]\npub const {symbol}: \
+                                      mac_abi::ResourceKey = \
+                                      mac_abi::ResourceKey::from_bytes({kind:?}, {id});\n"));
         }
         output
+    }
+
+    pub(crate) fn module_code_id(&self) -> i16
+    {
+        if self.file_type == "INIT"
+        {
+            self.extension_target.unwrap_or(ExtensionTarget::System).resource_id()
+        }
+        else
+        {
+            0
+        }
     }
 
     pub fn source_files(&self, path: &Path, artifacts: &Path) -> Vec<PathBuf>
@@ -772,5 +836,52 @@ version="12.3.4-beta.2"
         let mut m = manifest();
         m.resources[0].kind = "MENU".into();
         assert!(m.compile_resources(Path::new("x"), b"", None).is_err());
+    }
+
+    #[test]
+    fn extension_targets_drive_generated_ids_and_reserve_the_final_package_keys()
+    {
+        for target in ExtensionTarget::ALL
+        {
+            let mut m = manifest();
+            m.file_type = "INIT".into();
+            m.role = "code_resource".into();
+            m.extension_target = Some(target);
+            m.validate().unwrap();
+            let generated = m.rust_ids();
+            assert!(generated.contains(&format!("NATIVE_CODE: mac_abi::ResourceKey = \
+                                                 mac_abi::ResourceKey::from_bytes({:?}, {});",
+                                                *b"RV64",
+                                                target.resource_id())),
+                    "{generated}");
+            assert!(generated.contains(&format!("NATIVE_ABI: mac_abi::ResourceKey = \
+                                                 mac_abi::ResourceKey::from_bytes({:?}, {});",
+                                                *b"EABI",
+                                                target.resource_id())),
+                    "{generated}");
+            let encoded = serde_json::to_value(&m).unwrap();
+            assert_eq!(encoded["extension_target"], match target
+            {
+                ExtensionTarget::System => "system",
+                ExtensionTarget::Finder => "finder"
+            });
+            let decoded: Manifest = serde_json::from_value(encoded).unwrap();
+            assert_eq!(decoded.extension_target, Some(target));
+            m.resources[0].kind = "EABI".into();
+            m.resources[0].id = target.resource_id();
+            assert!(m.validate().is_err(), "generated target metadata is reserved");
+        }
+        let mut m = manifest();
+        m.file_type = "INIT".into();
+        assert_eq!(m.module_code_id(), ExtensionTarget::System.resource_id());
+        m.extension_target = Some(ExtensionTarget::Finder);
+        m.file_type = "APPL".into();
+        let cause = m.validate().unwrap_err().to_string();
+        assert!(cause.contains("built INIT"), "{cause}");
+        let mut encoded = serde_json::to_value(manifest()).unwrap();
+        encoded["extension_target"] = "unknown".into();
+        assert!(serde_json::from_value::<Manifest>(encoded).unwrap_err()
+                                                           .to_string()
+                                                           .contains("system or finder"));
     }
 }

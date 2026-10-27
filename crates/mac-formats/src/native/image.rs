@@ -37,18 +37,30 @@ pub struct Image
 
 pub fn decode(bytes: &[u8], descriptor: &Descriptor) -> Result<Image>
 {
-    let mut segments = Vec::new();
+    let mut count = 0;
     let end = inspect(bytes.len(),
                       descriptor,
                       |at, out| {
                           out.copy_from_slice(crate::slice(bytes, at, out.len())?);
                           Ok(())
                       },
-                      |segment| segments.push(segment))?;
+                      |_| count += 1)?;
     if end != bytes.len()
     {
         return Err(Error::Malformed("trailing data in RV64 segment resource"));
     }
+    // Validate all wire geometry before allocating from its segment count.
+    // Inspection reads metadata only; it does not copy or scan segment bodies.
+    let mut segments = Vec::new();
+    segments.try_reserve_exact(count)
+            .map_err(|_| Error::AllocationFailed("native segment metadata allocation failed"))?;
+    inspect(bytes.len(),
+            descriptor,
+            |at, out| {
+                out.copy_from_slice(crate::slice(bytes, at, out.len())?);
+                Ok(())
+            },
+            |segment| segments.push(segment))?;
     Ok(Image { segments })
 }
 /// BSS and all other uninitialized reservation bytes are implicit zeros.

@@ -153,18 +153,20 @@ pub(crate) fn initialize() -> Result<(), Status>
                   .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
     let devices = Devices::new(PlatformBus, crate::toolbox::handles::system_owner()?, kinds)?;
     DEVICES.publish(devices).map_err(crate::state::AccessError::status)?;
-    drivers::register_service(Offer { class:          wire::CLASS,
-                                      version:        wire::VERSION,
-                                      request_schema: 1,
-                                      reply_schema:   1,
-                                      max_request:    24,
-                                      max_reply:      wire::DESCRIPTION_BYTES as u32,
-                                      flags:          Offer::KERNEL_ONLY | Offer::EXCLUSIVE,
-                                      capabilities:   0 },
-                              request)?;
+    drivers::register_synchronous_service(Offer { class:          wire::CLASS,
+                                                  version:        wire::VERSION,
+                                                  request_schema: 1,
+                                                  reply_schema:   1,
+                                                  max_request:    24,
+                                                  max_reply:      wire::DESCRIPTION_BYTES as u32,
+                                                  flags:          Offer::KERNEL_ONLY
+                                                                  | Offer::EXCLUSIVE,
+                                                  capabilities:   0 },
+                                          synchronous,
+                                          Some(request))?;
     Ok(())
 }
-fn request(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompletion, Status>
+fn request(call: ResidentCall<'_>, _: &mut [u8]) -> Result<ResidentCompletion, Status>
 {
     let owner = drivers::module_authority(call.caller)?;
     if call.operation == wire::RESET && matches!(call.phase, abi::POLL | abi::CANCEL)
@@ -186,16 +188,42 @@ fn request(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompleti
     {
         return Err(BAD_ARGUMENT);
     }
-    match call.operation
+    if call.operation != wire::RESET
+    {
+        return Err(NOT_SUPPORTED);
+    }
+    let device = token(call.input)?;
+    Ok(if with(|devices| devices.start_reset(&owner, device, call.ticket))?
+       {
+           ResidentCompletion::Complete(0)
+       }
+       else
+       {
+           ResidentCompletion::Pending
+       })
+}
+
+/// No request/cancellation storage is created here. All effects and their
+/// returned handles complete inside this bounded invocation. A busy lock fails
+/// before its operation; retrying cannot duplicate a successful side effect.
+pub(crate) fn synchronous(caller: u64, operation: u32, input: &[u8], output: &mut [u8])
+                          -> Result<usize, Status>
+{
+    if !wire::synchronous(operation)
+    {
+        return Err(NOT_SUPPORTED);
+    }
+    let owner = drivers::module_authority(caller)?;
+    match operation
     {
         wire::COUNT =>
         {
-            if !call.input.is_empty() || output.len() < 4
+            if !input.is_empty() || output.len() < 4
             {
                 return Err(BAD_ARGUMENT);
             }
             output[..4].copy_from_slice(&(DEVICE_SLOTS as u32).to_le_bytes());
-            Ok(ResidentCompletion::Complete(4))
+            Ok(4)
         }
         wire::PROBE | wire::CLAIM =>
         {
@@ -203,11 +231,11 @@ fn request(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompleti
             {
                 return Err(BAD_ARGUMENT);
             }
-            let ordinal = word(call.input)?;
+            let ordinal = word(input)?;
             let description = with(|devices| devices.probe(ordinal))?;
-            let description = if call.operation == wire::CLAIM
+            let description = if operation == wire::CLAIM
             {
-                drivers::device_allowed(call.caller, description.bus, description.key)?;
+                drivers::device_allowed(caller, description.bus, description.key)?;
                 with(|devices| devices.claim(&owner, ordinal, description))?
             }
             else
@@ -215,47 +243,33 @@ fn request(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompleti
                 description
             };
             output[..wire::DESCRIPTION_BYTES].copy_from_slice(&description.encode());
-            Ok(ResidentCompletion::Complete(wire::DESCRIPTION_BYTES))
+            Ok(wire::DESCRIPTION_BYTES)
         }
         wire::MAP =>
         {
-            if call.input.len() != 24 || output.len() < wire::MAPPING_BYTES
+            if input.len() != 24 || output.len() < wire::MAPPING_BYTES
             {
                 return Err(BAD_ARGUMENT);
             }
-            let device = token(&call.input[..8])?;
-            let address =
-                u64::from_le_bytes(call.input[8..16].try_into().map_err(|_| BAD_ARGUMENT)?);
-            let length =
-                u64::from_le_bytes(call.input[16..24].try_into().map_err(|_| BAD_ARGUMENT)?);
-            drivers::owns_memory(call.caller, address, length)?;
+            let device = token(&input[..8])?;
+            let address = u64::from_le_bytes(input[8..16].try_into().map_err(|_| BAD_ARGUMENT)?);
+            let length = u64::from_le_bytes(input[16..24].try_into().map_err(|_| BAD_ARGUMENT)?);
+            drivers::owns_memory(caller, address, length)?;
             let mapping = with(|devices| devices.map(&owner, device, address, length))?;
             output[..wire::MAPPING_BYTES].copy_from_slice(&mapping.encode());
-            Ok(ResidentCompletion::Complete(wire::MAPPING_BYTES))
-        }
-        wire::RESET =>
-        {
-            let device = token(call.input)?;
-            Ok(if with(|devices| devices.start_reset(&owner, device, call.ticket))?
-               {
-                   ResidentCompletion::Complete(0)
-               }
-               else
-               {
-                   ResidentCompletion::Pending
-               })
+            Ok(wire::MAPPING_BYTES)
         }
         wire::UNMAP =>
         {
-            let id = token(call.input)?;
+            let id = token(input)?;
             with(|devices| devices.unmap(&owner, id))?;
-            Ok(ResidentCompletion::Complete(0))
+            Ok(0)
         }
         wire::RELEASE =>
         {
-            let id = token(call.input)?;
+            let id = token(input)?;
             with(|devices| devices.release(&owner, id))?;
-            Ok(ResidentCompletion::Complete(0))
+            Ok(0)
         }
         _ => Err(NOT_SUPPORTED)
     }

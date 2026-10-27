@@ -71,8 +71,12 @@ pub fn drain<C: ?Sized, G: InvocationGate, E, F: CleanupFailure>(context: &mut C
     run(context, owner, false, &mut resolve, &mut failed)
 }
 
-/// Retry each currently quarantined ticket at most once. Rotating pool/slot
-/// cursors prevent a permanently failing entry from starving its neighbours.
+/// Retry without wrapping a pool/slot position during this pass. A refused
+/// ticket cannot consume another ticket's turn, even when pools have unequal
+/// quarantine counts. Pool count is captured at entry; each pool's slot bound
+/// is captured on its first visit. Newly quarantined slots ahead of the cursor
+/// may join this pass; passed slots and new pools wait for the next one. No
+/// snapshot allocation or callback under the owner metadata lock is required.
 pub fn retry<C: ?Sized, G: InvocationGate, E, F: CleanupFailure>(context: &mut C,
                                                                  owner: &OwnerRef<G>,
                                                                  mut resolve: impl FnMut(&C,
@@ -98,6 +102,7 @@ fn run<C: ?Sized, G: InvocationGate, E, F: CleanupFailure>(context: &mut C, owne
                                                            -> Result<Report, Stopped>
 {
     let mut report = Report::default();
+    let mut retry_cursor = retry.then(|| owner.quarantine_retry());
     // Completion refusals already own their unique tickets. Retry only their
     // metadata acknowledgement, never an interrupted payload destructor.
     for _ in 0..owner.summary().completion_faults
@@ -123,10 +128,16 @@ fn run<C: ?Sized, G: InvocationGate, E, F: CleanupFailure>(context: &mut C, owne
             }
         }
     }
-    let attempts = if retry { owner.summary().quarantined } else { usize::MAX };
-    for _ in 0..attempts
+    loop
     {
-        let ticket = if retry { owner.resume_quarantined() } else { owner.invalidate_next() };
+        let ticket = if let Some(cursor) = &mut retry_cursor
+        {
+            owner.resume_quarantined_in(cursor)
+        }
+        else
+        {
+            owner.invalidate_next()
+        };
         let Some(ticket) = ticket
         else
         {

@@ -19,7 +19,7 @@ fn raster() -> Option<Raster<'static>>
     };
     Raster::new(pixels, WIDTH, HEIGHT)
 }
-pub fn init() -> bool
+pub fn init() -> Result<bool, mac_boot_screen::ramfb::Error>
 {
     // Initialize physical bytes before publishing any reference. The boot hart
     // exclusively owns this range until the successful System RAMFB handoff.
@@ -29,7 +29,7 @@ pub fn init() -> bool
     let Some(mut canvas) = raster()
     else
     {
-        return false;
+        return Ok(false);
     };
     canvas.background();
     // Static pinned RAM remains valid after the ROM hands off to System.
@@ -46,7 +46,15 @@ pub fn init() -> bool
     {
         let _ = writeln!(crate::Serial, "BOOT_RAMFB_REJECTED: {error}");
     }
-    result.is_ok()
+    match result
+    {
+        Ok(()) => Ok(true),
+        // ROM and System have separately linked ownership statics. Never enter
+        // System while ROM's device may still own DMA: a fresh System guard
+        // cannot establish quiescence for an earlier firmware transfer.
+        Err(error) if error.dma_ownership_unknown() => Err(error),
+        Err(_) => Ok(false)
+    }
 }
 pub fn happy()
 {

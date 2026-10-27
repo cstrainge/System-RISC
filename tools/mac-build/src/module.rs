@@ -3,7 +3,8 @@
 use std::{fs, path::Path, process::Command};
 
 use mac_formats::{native::Role, resource::Resource};
-use mac_module::{ClassId, Dependency, DeviceMatch, Offer, PackageKind, Service, Spec, Target};
+use mac_module::{ClassId, Dependency, DeviceMatch, ExtensionTarget, Offer, PackageKind, Service,
+                 Spec, Target};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -171,7 +172,7 @@ pub fn declaration(path: &Path, manifest: &Manifest) -> Result<Vec<u8>>
                       kernel_abi: mac_formats::native::ABI_VERSION,
                       target: Target::RVA23U64,
                       identity: id(&declared.identity)?,
-                      code_id: 0,
+                      code_id: manifest.module_code_id(),
                       code_digest: [0; 32],
                       heap_bytes: declared.heap_bytes,
                       stack_bytes: declared.stack_bytes,
@@ -214,21 +215,84 @@ pub fn finish(path: &Path, manifest: &Manifest, elf: &[u8], resources: &mut Vec<
     envelope.extend_from_slice(&get(*b"RV64")?.data);
     envelope.extend_from_slice(&get(*b"RLOC")?.data);
     metadata[88..120].copy_from_slice(&Sha256::digest(&envelope));
-    resources.retain(|r| ![*b"NABI", *b"RV64", *b"RLOC"].contains(&r.kind));
-    if resources.iter().any(|r| [kind.file_type(), *b"DABI", *b"EABI"].contains(&r.kind))
+    resources.retain(|r| !(r.id == 0 && [*b"NABI", *b"RV64", *b"RLOC"].contains(&r.kind)));
+    let code_id = manifest.module_code_id();
+    if resources.iter().any(|r| {
+                           r.kind == kind.file_type()
+                           || r.id == code_id
+                              && [kind.code_type(), *b"DABI", *b"EABI"].contains(&r.kind)
+                       })
     {
         return Err(error("module entry/contract resources are generated, not supplied"));
     }
-    resources.push(Resource { kind:       kind.file_type(),
-                              id:         0,
-                              name:       None,
-                              attributes: 0,
-                              data:       envelope });
+    resources.push(entry_resource(kind, code_id, envelope)?);
     resources.push(Resource { kind:       kind.metadata_type(),
-                              id:         0,
+                              id:         code_id,
                               name:       None,
                               attributes: 0,
                               data:       metadata });
-    mac_formats::module::Package::inspect(resources, kind.file_type())?;
+    match kind
+    {
+        PackageKind::Driver =>
+        {
+            mac_formats::module::Package::inspect(resources, kind.file_type())?;
+        }
+        PackageKind::Extension =>
+        {
+            let target = ExtensionTarget::from_resource_id(code_id).ok_or_else(|| {
+                                                                       error("extension target \
+                                                                              must select RV64 0 \
+                                                                              (System) or RV64 1 \
+                                                                              (Finder)")
+                                                                   })?;
+            mac_formats::module::Package::inspect_extension(resources, target)?;
+        }
+    }
     Ok(())
+}
+
+fn entry_resource(kind: PackageKind, code_id: i16, data: Vec<u8>) -> Result<Resource>
+{
+    let name = match kind
+    {
+        PackageKind::Driver => None,
+        PackageKind::Extension =>
+        {
+            Some(ExtensionTarget::from_resource_id(code_id).ok_or_else(|| {
+                                                               error("extension target must \
+                                                                      select RV64 0 (System) or \
+                                                                      RV64 1 (Finder)")
+                                                           })?
+                                                           .conventional_name()
+                                                           .as_bytes()
+                                                           .to_vec())
+        }
+    };
+    Ok(Resource { kind: kind.code_type(),
+                  id: code_id,
+                  name,
+                  attributes: 0,
+                  data })
+}
+
+#[cfg(test)]
+mod tests
+{
+    use super::*;
+    #[test]
+    fn builders_emit_conventional_extension_names_and_keep_driver_entries_distinct()
+    {
+        for target in ExtensionTarget::ALL
+        {
+            let resource =
+                entry_resource(PackageKind::Extension, target.resource_id(), vec![1]).unwrap();
+            assert_eq!(resource.kind, *b"RV64");
+            assert_eq!(resource.id, target.resource_id());
+            assert_eq!(resource.name.as_deref(), Some(target.conventional_name().as_bytes()));
+        }
+        let driver = entry_resource(PackageKind::Driver, 0, vec![1]).unwrap();
+        assert_eq!((driver.kind, driver.id, driver.name), (*b"DRVR", 0, None));
+        let cause = entry_resource(PackageKind::Extension, 2, vec![]).unwrap_err().to_string();
+        assert!(cause.contains("System") && cause.contains("Finder"), "{cause}");
+    }
 }

@@ -79,20 +79,22 @@ fn boot(output: &Path, mib: u64) -> String
 fn discovered_ram_drives_boot_info_and_small_machines_are_refused_before_heap_use()
 {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
-    let output = root.join("results/system7").join(format!("boot-memory-{}", std::process::id()));
+    let output =
+        mac_build::paths::build_dir(&root).join("acceptance")
+                                          .join(format!("boot-memory-{}", std::process::id()));
     fs::create_dir_all(&output).unwrap();
     let small = boot(&output, 64);
     assert!(small.contains("discovered RAM is smaller than the platform minimum; increase VM \
                             RAM or select another platform"),
             "{small}");
     assert!(!small.contains("TRAPS_READY"), "rejected machine entered System: {small}");
-    let insufficient_metadata = boot(&output, 128);
-    assert!(insufficient_metadata.contains("needs")
-            && insufficient_metadata.contains("contiguous bytes of reserved buddy metadata"),
-            "{insufficient_metadata}");
-    assert!(!insufficient_metadata.contains("TRAPS_READY"),
-            "pool refusal entered normal services: {insufficient_metadata}");
-    for mib in [512u64, 8192]
+    let old_minimum = boot(&output, 128);
+    assert!(old_minimum.contains("discovered RAM is smaller than the platform minimum; increase \
+                                  VM RAM or select another platform"),
+            "{old_minimum}");
+    assert!(!old_minimum.contains("TRAPS_READY"),
+            "rejected old minimum entered normal services: {old_minimum}");
+    for mib in [256u64, 512, 8192]
     {
         let text = boot(&output, mib);
         assert!(text.contains("DESKTOP_READY"), "{mib} MiB failed:\n{text}");

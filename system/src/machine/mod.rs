@@ -24,3 +24,4 @@ pub(crate) const MODULE_TARGET: mac_module::Target = mac_module::Target::RVA23U6
 pub(crate) mod power;
 
 pub(crate) mod paging;
+pub(crate) mod emergency;

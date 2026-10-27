@@ -158,13 +158,14 @@ mod tests
 }
 
 
-/// Board failure signal emitted alongside the checked memory artifacts.
+/// Board terminal failure/restart signals emitted from one checked record.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FatalShutdown
 {
     device:        String,
-    failure_value: u32
+    failure_value: u32,
+    restart_value: u32
 }
 pub fn guest_artifacts() -> Result<(String, String)>
 {
@@ -236,13 +237,20 @@ fn artifacts_for(device: &FatalShutdown, devices: &[devices::Checked]) -> Result
         return Err(error("platform fatal-shutdown MMIO requires a nonzero aligned u32 register \
                           and failure value"));
     }
+    if device.restart_value == 0 || device.restart_value == device.failure_value
+    {
+        return Err(error("platform fatal_shutdown.restart_value must be nonzero and distinct \
+                          from failure_value; select the board's documented reset command"));
+    }
     let rust = format!("// Generated from the validated platform definition.\npub const \
                         FATAL_FINISHER_ADDRESS: u64 = {address};\npub const \
-                        FATAL_FINISHER_FAILURE: u32 = {};\n",
-                       device.failure_value);
+                        FATAL_FINISHER_FAILURE: u32 = {};\npub const FATAL_FINISHER_RESTART: u32 \
+                        = {};\n",
+                       device.failure_value, device.restart_value);
     let linker = format!("\nPROVIDE(__platform_fatal_finisher = \
-                          0x{address:x});\nPROVIDE(__platform_fatal_failure = 0x{:x});\n",
-                         device.failure_value);
+                          0x{address:x});\nPROVIDE(__platform_fatal_failure = \
+                          0x{:x});\nPROVIDE(__platform_fatal_restart = 0x{:x});\n",
+                         device.failure_value, device.restart_value);
     Ok((rust, linker))
 }
 
@@ -263,6 +271,9 @@ mod artifact_tests
                                        platform.fatal_shutdown.failure_value)));
         assert!(linker.contains(&format!("__platform_fatal_failure = 0x{:x}",
                                          platform.fatal_shutdown.failure_value)));
+        assert_eq!(platform.fatal_shutdown.restart_value, 0x7777);
+        assert!(rust.contains("FATAL_FINISHER_RESTART: u32 = 30583;"));
+        assert!(linker.contains("__platform_fatal_restart = 0x7777"));
         for name in ["../QemuRISC-V", "QemuRISC-V/other", ""]
         {
             assert!(load(name).err().unwrap().to_string().contains("platform name must contain"));
@@ -285,5 +296,26 @@ mod artifact_tests
         let mut bad = load("QemuRISC-V").unwrap();
         bad.mmio_devices.push(bad.mmio_devices[0].clone());
         assert!(bad.device_artifacts().err().unwrap().to_string().contains("non-overlapping"));
+    }
+    #[test]
+    fn emergency_restart_is_required_checked_and_generated_from_the_selected_record()
+    {
+        for restart in [0, 78643]
+        {
+            let mut platform = load("QemuRISC-V").unwrap();
+            platform.fatal_shutdown.restart_value = restart;
+            let error = platform.device_artifacts().unwrap_err().to_string();
+            assert!(error.contains("fatal_shutdown.restart_value"), "{error}");
+            assert!(error.contains("nonzero and distinct from failure_value"), "{error}");
+            assert!(error.contains("board's documented reset command"), "{error}");
+        }
+        let mut platform = load("QemuRISC-V").unwrap();
+        platform.fatal_shutdown.restart_value = 0x1234;
+        let (rust, linker) = platform.device_artifacts().unwrap();
+        assert!(rust.contains("FATAL_FINISHER_RESTART: u32 = 4660;"));
+        assert!(linker.contains("__platform_fatal_restart = 0x1234"));
+        let error = serde_json::from_str::<FatalShutdown>(r#"{"device":"sifive-test","failure_value":78643}"#)
+            .err().unwrap().to_string();
+        assert!(error.contains("missing field `restart_value`"), "{error}");
     }
 }

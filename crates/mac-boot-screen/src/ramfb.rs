@@ -6,7 +6,7 @@ use core::fmt;
 #[allow(unsafe_code)]
 mod native;
 #[cfg(target_arch = "riscv64")]
-pub use native::configure;
+pub use native::{PreparedTerminal, configure, prepare_terminal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error
@@ -43,6 +43,29 @@ pub enum Error
     },
     InFlight,
     Timeout
+}
+impl Error
+{
+    /// Errors produced by this binding for which device/DMA quiescence is not
+    /// proven. Firmware must not hand the device to a separately linked System
+    /// with a fresh ownership guard after either refusal. Other errors arise
+    /// before submission or after the device acknowledges command completion.
+    pub const fn dma_ownership_unknown(self) -> bool
+    {
+        match self
+        {
+            Self::InFlight | Self::Timeout => true,
+            Self::Geometry { .. }
+            | Self::FramebufferAddress { .. }
+            | Self::DmaAddress { .. }
+            | Self::Signature
+            | Self::DmaSignature
+            | Self::MissingFile
+            | Self::DirectoryCount { .. }
+            | Self::ConfigurationSize { .. }
+            | Self::TransferFailed { .. } => false
+        }
+    }
 }
 impl fmt::Display for Error
 {
@@ -98,14 +121,165 @@ impl fmt::Display for Error
             }
             Self::InFlight =>
             {
-                f.write_str("RAMFB configuration is still owned by an earlier timed-out DMA \
-                             transfer; reset before retrying")
+                f.write_str("RAMFB device or permanent DMA scratch is owned by another operation \
+                             or terminal mode; an earlier timed-out transfer requires reset \
+                             before retrying")
             }
             Self::Timeout =>
             {
                 f.write_str("RAMFB configuration DMA did not complete within the bounded \
                              bootstrap poll")
             }
+        }
+    }
+}
+#[cfg(any(target_arch = "riscv64", test))]
+fn directory_count(observed: u32) -> Result<(), Error>
+{
+    if observed > 4096 { Err(Error::DirectoryCount { observed }) } else { Ok(()) }
+}
+#[cfg(any(target_arch = "riscv64", test))]
+fn configuration_size(observed: u32) -> Result<(), Error>
+{
+    if observed != 28 { Err(Error::ConfigurationSize { observed }) } else { Ok(()) }
+}
+#[cfg(any(target_arch = "riscv64", test))]
+fn completion(control: u32) -> Option<Result<(), Error>>
+{
+    if control == 0
+    {
+        Some(Ok(()))
+    }
+    else if control & 1 != 0
+    {
+        Some(Err(Error::TransferFailed { control }))
+    }
+    else
+    {
+        None
+    }
+}
+#[cfg(any(target_arch = "riscv64", test))]
+#[repr(C, align(8))]
+struct Dma
+{
+    control: u32,
+    length:  u32,
+    address: u64
+}
+#[cfg(any(target_arch = "riscv64", test))]
+impl Dma
+{
+    const fn empty() -> Self
+    {
+        Self { control: 0,
+               length:  0,
+               address: 0 }
+    }
+
+    fn configuration(selector: u16, data_bus: u64) -> Self
+    {
+        Self { control: ((u32::from(selector) << 16) | 8 | 16).to_be(),
+               length:  28u32.to_be(),
+               address: data_bus.to_be() }
+    }
+}
+/// One device's exclusive ownership, shared by normal and terminal paths.
+/// No lock or waiter is needed: contending callers receive a typed refusal.
+#[cfg(any(target_arch = "riscv64", test))]
+struct Ownership(core::sync::atomic::AtomicU8);
+#[cfg(any(target_arch = "riscv64", test))]
+impl Ownership
+{
+    const IDLE: u8 = 0;
+    const NORMAL: u8 = 1;
+    const PREPARED: u8 = 3;
+    const PREPARED_NORMAL: u8 = 4;
+    const PREPARING: u8 = 2;
+    const TERMINAL: u8 = 5;
+    const TIMED_OUT: u8 = 6;
+
+    const fn new() -> Self
+    {
+        Self(core::sync::atomic::AtomicU8::new(Self::IDLE))
+    }
+
+    fn normal(&self) -> Result<Claim<'_>, Error>
+    {
+        use core::sync::atomic::Ordering;
+        let previous = self.0.load(Ordering::Acquire);
+        let active = match previous
+        {
+            Self::IDLE => Self::NORMAL,
+            Self::PREPARED => Self::PREPARED_NORMAL,
+            _ => return Err(Error::InFlight)
+        };
+        self.0
+            .compare_exchange(previous, active, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| Error::InFlight)?;
+        Ok(Claim { owner: self,
+                   previous,
+                   retained: false,
+                   armed: true })
+    }
+
+    fn prepare(&self) -> Result<Claim<'_>, Error>
+    {
+        use core::sync::atomic::Ordering;
+        self.0
+            .compare_exchange(Self::IDLE, Self::PREPARING, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| Error::InFlight)?;
+        Ok(Claim { owner:    self,
+                   previous: Self::IDLE,
+                   retained: false,
+                   armed:    true })
+    }
+
+    fn terminal(&self) -> Result<(), Error>
+    {
+        use core::sync::atomic::Ordering;
+        self.0
+            .compare_exchange(Self::PREPARED, Self::TERMINAL, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| Error::InFlight)
+    }
+}
+#[cfg(any(target_arch = "riscv64", test))]
+struct Claim<'a>
+{
+    owner:    &'a Ownership,
+    previous: u8,
+    retained: bool,
+    armed:    bool
+}
+#[cfg(any(target_arch = "riscv64", test))]
+impl Claim<'_>
+{
+    fn submitted(&mut self)
+    {
+        self.retained = true;
+    }
+
+    fn completed(&mut self)
+    {
+        self.retained = false;
+    }
+
+    fn publish(mut self)
+    {
+        self.owner.0.store(Ownership::PREPARED, core::sync::atomic::Ordering::Release);
+        self.armed = false;
+    }
+}
+#[cfg(any(target_arch = "riscv64", test))]
+impl Drop for Claim<'_>
+{
+    fn drop(&mut self)
+    {
+        if self.armed
+        {
+            self.owner.0.store(if self.retained { Ownership::TIMED_OUT } else { self.previous },
+                               core::sync::atomic::Ordering::Release);
         }
     }
 }
@@ -186,6 +360,32 @@ mod tests
     }
 
     #[test]
+    fn firmware_handoff_requires_proven_dma_quiescence_for_every_error_family()
+    {
+        for error in [Error::InFlight, Error::Timeout]
+        {
+            assert!(error.dma_ownership_unknown(), "{error}");
+            assert!(!error.to_string().is_empty());
+        }
+        for error in [Error::Geometry { width:  0,
+                                        height: 600 },
+                      Error::FramebufferAddress { physical: u64::MAX,
+                                                  bytes:    4 },
+                      Error::DmaAddress { cpu_address: 0,
+                                          bytes:       16 },
+                      Error::Signature,
+                      Error::DmaSignature,
+                      Error::MissingFile,
+                      Error::DirectoryCount { observed: 4097 },
+                      Error::ConfigurationSize { observed: 27 },
+                      Error::TransferFailed { control: 1 }]
+        {
+            assert!(!error.dma_ownership_unknown(), "{error}");
+            assert!(!error.to_string().is_empty());
+        }
+    }
+
+    #[test]
     fn dma_uses_the_binding_translation_and_retains_typed_refusal_details()
     {
         let data = [0u8; 28];
@@ -207,6 +407,118 @@ mod tests
                        Error::DmaAddress { cpu_address: data.as_ptr() as usize,
                                            bytes:       data.len() });
             assert!(error.to_string().contains("contiguous device-visible RAM mapping"));
+        }
+    }
+    #[test]
+    fn admitted_directory_and_dma_wire_preserve_sizes_selectors_and_endianness()
+    {
+        for count in [0, 1, 4096]
+        {
+            directory_count(count).unwrap();
+        }
+        assert_eq!(directory_count(4097), Err(Error::DirectoryCount { observed: 4097 }));
+        assert!(directory_count(u32::MAX).unwrap_err().to_string().contains("4096-entry"));
+        configuration_size(28).unwrap();
+        for length in [0, 27, 29, u32::MAX]
+        {
+            assert_eq!(configuration_size(length),
+                       Err(Error::ConfigurationSize { observed: length }));
+        }
+        assert_eq!(size_of::<Dma>(), 16);
+        assert_eq!(align_of::<Dma>(), 8);
+        let empty = Dma::empty();
+        assert_eq!((empty.control, empty.length, empty.address), (0, 0, 0));
+        let command = Dma::configuration(0x1234, 0x2468_ace0_0000_1000);
+        assert_eq!(command.control.to_ne_bytes(), [0x12, 0x34, 0, 24]);
+        assert_eq!(command.length.to_ne_bytes(), [0, 0, 0, 28]);
+        assert_eq!(command.address.to_ne_bytes(), [0x24, 0x68, 0xac, 0xe0, 0, 0, 0x10, 0]);
+        assert_eq!(completion(0), Some(Ok(())));
+        assert_eq!(completion(24), None);
+        assert_eq!(completion(u32::MAX), Some(Err(Error::TransferFailed { control: u32::MAX })));
+    }
+    #[test]
+    fn preparation_and_normal_admission_roll_back_before_device_submission()
+    {
+        let owner = Ownership::new();
+        assert_eq!(owner.terminal(), Err(Error::InFlight));
+        {
+            let _claim = owner.prepare().unwrap();
+            assert!(matches!(owner.prepare(), Err(Error::InFlight)));
+            assert!(matches!(owner.normal(), Err(Error::InFlight)));
+            assert_eq!(owner.terminal(), Err(Error::InFlight));
+        }
+        // Any pre-submission validation/translation refusal drops its claim.
+        drop(owner.normal().unwrap());
+        owner.prepare().unwrap().publish();
+        assert!(matches!(owner.prepare(), Err(Error::InFlight)));
+        drop(owner.normal().unwrap());
+        owner.terminal().unwrap();
+        assert!(matches!(owner.normal(), Err(Error::InFlight)));
+        assert!(matches!(owner.prepare(), Err(Error::InFlight)));
+        assert_eq!(owner.terminal(), Err(Error::InFlight));
+    }
+    #[test]
+    fn submitted_timeout_keeps_normal_device_and_dma_ownership_until_reset()
+    {
+        for prepared in [false, true]
+        {
+            let owner = Ownership::new();
+            if prepared
+            {
+                owner.prepare().unwrap().publish();
+            }
+            let mut claim = owner.normal().unwrap();
+            claim.submitted();
+            assert_eq!(owner.terminal(), Err(Error::InFlight));
+            drop(claim); // A timeout cannot prove DMA quiescence.
+            assert!(matches!(owner.normal(), Err(Error::InFlight)));
+            assert!(matches!(owner.prepare(), Err(Error::InFlight)));
+            assert_eq!(owner.terminal(), Err(Error::InFlight));
+        }
+        assert!(Error::InFlight.to_string().contains("requires reset"));
+    }
+    #[test]
+    fn completed_normal_dma_releases_device_but_terminal_claim_never_does()
+    {
+        for result in [completion(0).unwrap(), completion(1).unwrap()]
+        {
+            let owner = Ownership::new();
+            owner.prepare().unwrap().publish();
+            let mut claim = owner.normal().unwrap();
+            claim.submitted();
+            assert_eq!(owner.terminal(), Err(Error::InFlight));
+            assert!(matches!(result, Ok(()) | Err(Error::TransferFailed { .. })));
+            claim.completed();
+            drop(claim);
+            owner.terminal().unwrap();
+            assert!(matches!(owner.normal(), Err(Error::InFlight)));
+            assert_eq!(owner.terminal(), Err(Error::InFlight));
+        }
+    }
+    #[test]
+    fn terminal_and_normal_claims_cannot_win_the_same_prepared_device()
+    {
+        use std::{sync::{Arc, Barrier},
+                  thread};
+        for _ in 0..32
+        {
+            let owner = Arc::new(Ownership::new());
+            owner.prepare().unwrap().publish();
+            let start = Arc::new(Barrier::new(2));
+            let finish = Arc::new(Barrier::new(2));
+            let normal = {
+                let (owner, start, finish) = (owner.clone(), start.clone(), finish.clone());
+                thread::spawn(move || {
+                    start.wait();
+                    let claim = owner.normal();
+                    finish.wait(); // Keep a successful normal claim pinned.
+                    claim.is_ok()
+                })
+            };
+            start.wait();
+            let terminal = owner.terminal().is_ok();
+            finish.wait();
+            assert_ne!(normal.join().unwrap(), terminal);
         }
     }
 }

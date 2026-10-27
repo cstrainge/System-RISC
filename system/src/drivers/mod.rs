@@ -3,6 +3,8 @@ pub mod devices;
 pub mod file_sources;
 pub mod jobs;
 pub(crate) mod registry;
+#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+pub(crate) mod synchronous;
 pub use registry::*;
 #[cfg(target_arch = "riscv64")]
 mod runtime;

@@ -7,7 +7,9 @@ publish.workspace = true
 [features]
 guest = []
 event-trace = []
-test-support = ["dep:mac-definition", "dep:mac-traps", "dep:toolbox-quickdraw"]
+emergency-qualification = []
+emergency-qualification-oom = ["emergency-qualification"]
+test-support = ["dep:mac-definition", "dep:mac-driver", "dep:mac-traps", "dep:toolbox-quickdraw"]
 
 [[bin]]
 name = "System"
@@ -19,6 +21,7 @@ bench = false
 [dependencies]
 mac-file-types.workspace = true
 mac-module.workspace = true
+mac-scrap-extension-interface.workspace = true
 mac-device-interface.workspace = true
 mac-power-interface.workspace = true
 mac-object-table.workspace = true
@@ -60,6 +63,7 @@ spin = { version = "=0.12.3", default-features = false, features = ["once"] }
 linked_list_allocator = "0.10"
 
 [target.'cfg(not(target_arch = "riscv64"))'.dependencies]
+mac-driver = { path = "../crates/mac-driver", optional = true }
 mac-definition = { workspace = true, optional = true }
 mac-traps = { workspace = true, optional = true }
 toolbox-quickdraw = { path = "../toolbox/quickdraw", optional = true }

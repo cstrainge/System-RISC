@@ -188,3 +188,46 @@ fn size_limits_and_masked_device_matches()
     value.devices = &invalid;
     assert_eq!(value.encode(&mut output), Err(Error::Contract));
 }
+
+#[test]
+fn extension_contract_selects_system_and_finder_by_id_without_changing_native_abi()
+{
+    for target in ExtensionTarget::ALL
+    {
+        let mut value = spec();
+        value.kind = PackageKind::Extension;
+        value.kernel_abi = 1;
+        value.code_id = target.resource_id();
+        let mut output = [0; MAX_BYTES];
+        let encoded = value.encode(&mut output).unwrap();
+        let contract = Contract::decode(encoded).unwrap();
+        assert_eq!(contract.kind, PackageKind::Extension);
+        assert_eq!(contract.code_type, *b"RV64");
+        assert_eq!(contract.code_id, target.resource_id());
+        assert_eq!(contract.kernel_abi, 1);
+        assert_eq!(contract.broker_abi, 1);
+        let mut resident = policy();
+        resident.directory = PackageKind::Extension;
+        resident.file_type = *b"INIT";
+        resident.kernel_abi = 1;
+        assert_eq!(resident.validate(contract),
+                   match target
+                   {
+                       ExtensionTarget::System => Ok(()),
+                       ExtensionTarget::Finder => Err(Error::WrongLocation)
+                   },
+                   "Finder metadata must never admit a kernel initializer");
+        let mut obsolete = encoded.to_vec();
+        obsolete[56..60].copy_from_slice(b"INIT");
+        assert_eq!(Contract::decode(&obsolete).unwrap_err(), Error::Contract);
+    }
+    let mut value = spec();
+    value.kind = PackageKind::Extension;
+    for id in [-1, 2, i16::MAX]
+    {
+        value.code_id = id;
+        assert_eq!(value.encode(&mut [0; MAX_BYTES]), Err(Error::Contract));
+    }
+    assert_eq!(ExtensionTarget::System.conventional_name(), "System");
+    assert_eq!(ExtensionTarget::Finder.conventional_name(), "Finder");
+}

@@ -255,3 +255,27 @@ replacement/New Folder/cancellation, UTF8 and legacy Pascal names, generation
 reuse/foreign IDs, atomic data saves, remounts and injected I/O failures. The
 original Standard File probe and DLOG/DITL provenance live in
 `fixtures/standard-file-original` and `data/standard-file`.
+
+## System extension startup
+
+`extension_startup_native.rs` uses three real INIT packages to qualify package
+artwork, theme fallback and an initializer refusal before desktop construction.
+The capture requires Linux QEMU, `gdb-multiarch`, `nm` and an explicit private
+optimized installation. It derives discovery breakpoints from that installation's
+ELF; production boot has no test delay or instrumentation.
+
+```sh
+export SYSTEM7_BUILD_DIR=/tmp/system-risc-startup-check
+export CARGO_TARGET_DIR="$SYSTEM7_BUILD_DIR/host"
+cargo xtask image --build-dir "$SYSTEM7_BUILD_DIR"
+cargo test --locked -p mac-toolbox --test extension_startup_native \
+  native_init_outcomes_match_public_icon_services_with_exact_cell_damage -- --ignored --exact
+```
+
+Rust compares complete screenshots against public Icon Utilities rendering,
+checks the native refusal X and unchanged pixels outside its cells, then verifies
+usable desktop input. Owned capture processes must be reaped before private media
+is pruned; a failed reap retains the exact media and owner state. This qualifies
+the resident startup presentation, not production clipboard worker activation or
+original Macintosh INIT execution. `SYSTEM7_EXTENSION_STARTUP_CAPTURE` selects an
+existing capture for the separate prepared-evidence assertion.

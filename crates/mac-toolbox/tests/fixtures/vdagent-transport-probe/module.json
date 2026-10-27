@@ -1,0 +1,8 @@
+{
+  "identity": "7731a000000000000000000000000061",
+  "heap_bytes": 16384,
+  "stack_bytes": 32768,
+  "dependencies": [
+    { "class": "VBYT", "version": 1, "module": "7731a000000000000000000000000050", "optional": true }
+  ]
+}

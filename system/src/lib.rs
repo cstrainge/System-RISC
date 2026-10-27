@@ -5,6 +5,7 @@ extern crate alloc;
 #[cfg(target_arch = "riscv64")]
 macro_rules! serial { ($($arg:tt)*) => {{ use core::fmt::Write as _; let _ = writeln!($crate::kernel::Serial, $($arg)*); }} }
 pub(crate) mod display;
+pub(crate) mod emergency;
 pub mod toolbox;
 pub mod drivers;
 pub(crate) mod state;

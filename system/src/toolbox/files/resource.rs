@@ -2,6 +2,211 @@
 use super::*;
 use crate::toolbox::quickdraw::{icons, icons_service};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModuleReadError
+{
+    Storage(Status),
+    Format(mac_formats::Error)
+}
+impl core::fmt::Display for ModuleReadError
+{
+    fn fmt(&self, output: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Storage(NO_MEMORY) =>
+            {
+                output.write_str("module resource storage read exceeded available memory or its \
+                                  admission budget; retain the package, free System memory and \
+                                  retry")
+            }
+            Self::Storage(status) =>
+            {
+                write!(output,
+                       "module resource storage read failed with status {status}; retain the \
+                        package, repair or remount its volume and retry")
+            }
+            Self::Format(cause @ mac_formats::Error::AllocationFailed(_)) =>
+            {
+                write!(output,
+                       "module resource memory admission failed ({cause}); free System memory and \
+                        retry")
+            }
+            Self::Format(cause) => cause.fmt(output)
+        }
+    }
+}
+impl ModuleReadError
+{
+    pub fn status(self) -> Status
+    {
+        match self
+        {
+            Self::Storage(status) => status,
+            Self::Format(mac_formats::Error::BudgetExceeded(_)
+                         | mac_formats::Error::AllocationFailed(_)) => NO_MEMORY,
+            Self::Format(mac_formats::Error::Missing(_)) => NOT_FOUND,
+            Self::Format(mac_formats::Error::TranslationRequired(_)) => TRANSLATION_REQUIRED,
+            Self::Format(mac_formats::Error::Malformed(_)) => BAD_ABI
+        }
+    }
+}
+
+#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+fn module_headers(index: mac_formats::resource::stream::ReferenceIndex<'_>)
+                  -> impl Iterator<Item = mac_formats::module::ResourceHeader> + Clone
+{
+    index.entries().map(mac_formats::module::ResourceHeader::from)
+}
+
+#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+fn module_length(row: mac_formats::resource::index::Entry<'_>,
+                 read: &mut dyn FnMut(u64, &mut [u8]) -> mac_formats::Result<()>)
+                 -> mac_formats::Result<usize>
+{
+    let mut word = [0; 4];
+    read(row.offset, &mut word)?;
+    let length = u32::from_be_bytes(word) as usize;
+    if row.offset + 4 + length as u64 > row.data_end
+    {
+        return Err(mac_formats::Error::Malformed("module resource payload lies outside its \
+                                                  indexed data region; rebuild the package"));
+    }
+    Ok(length)
+}
+
+#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+fn module_contract(index: mac_formats::resource::stream::ReferenceIndex<'_>,
+                   row: mac_formats::resource::index::Entry<'_>, file_type: [u8; 4],
+                   read: &mut dyn FnMut(u64, &mut [u8]) -> mac_formats::Result<()>)
+                   -> mac_formats::Result<Option<mac_formats::resource::Resource>>
+{
+    use mac_formats::{Error, resource::Resource};
+    let size = module_length(row, read)?;
+    mac_formats::module::validate_contract_size(size)?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(size).map_err(|_| {
+                                      Error::AllocationFailed("module contract metadata \
+                                                               allocation failed; free System \
+                                                               memory and retry")
+                                  })?;
+    bytes.resize(size, 0);
+    read(row.offset + 4, &mut bytes)?;
+    mac_formats::module::validate_contract(&bytes, row.into(), file_type, module_headers(index))?;
+    if row.id != 0
+    {
+        return Ok(None);
+    }
+    let name = if let Some(source) = row.name
+    {
+        let mut name = Vec::new();
+        name.try_reserve_exact(source.len()).map_err(|_| {
+                                                 Error::AllocationFailed("module metadata name \
+                                                                          allocation failed; free \
+                                                                          System memory and retry")
+                                             })?;
+        name.extend_from_slice(source);
+        Some(name)
+    }
+    else
+    {
+        None
+    };
+    Ok(Some(Resource { kind: row.kind,
+                       id: row.id,
+                       name,
+                       attributes: row.attributes,
+                       data: bytes }))
+}
+
+#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+fn module_preflight(index: mac_formats::resource::stream::ReferenceIndex<'_>, file_type: [u8; 4],
+                    read: &mut dyn FnMut(u64, &mut [u8]) -> mac_formats::Result<()>)
+                    -> mac_formats::Result<mac_formats::resource::Resource>
+{
+    use mac_formats::Error;
+    mac_formats::module::validate_index(file_type, module_headers(index))?;
+    if file_type == *b"INIT"
+    {
+        mac_formats::module::require_extension_target(mac_module::ExtensionTarget::System,
+                                                      module_headers(index))?;
+    }
+    for row in index.entries()
+    {
+        let size = module_length(row, read)?;
+        mac_formats::module::validate_code_size(row.kind, size)?;
+    }
+    let mut selected = None;
+    for row in index.entries().filter(|row| [*b"DABI", *b"EABI"].contains(&row.kind))
+    {
+        if let Some(metadata) = module_contract(index, row, file_type, read)?
+        {
+            selected = Some(metadata);
+        }
+    }
+    selected.ok_or(Error::Malformed("module has no selected System contract; rebuild the package"))
+}
+
+/// Complete framing and both target contracts are validated before selected
+/// System code is admitted. Finder body/digest/relocations remain uninspected;
+/// its code stays on disk after indexed range and stored-size validation.
+#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+fn project_module(length: u64, file_type: [u8; 4], metadata_only: bool,
+                  mut storage: impl FnMut(u64, &mut [u8]) -> Result<(), Status>)
+                  -> Result<Vec<mac_formats::resource::Resource>, ModuleReadError>
+{
+    use mac_formats::{Error, resource::stream};
+    if length == 0
+    {
+        return Err(ModuleReadError::Format(Error::Missing("module resource fork is missing; \
+                                                           rebuild the package")));
+    }
+    let mut selected_metadata = None;
+    let mut io_error = None;
+    // Retained System metadata adds at most MAX_BYTES after this projection;
+    // selected storage stays within the existing 2 MiB + metadata budget.
+    // Finder metadata is temporary preflight only.
+    let budget = stream::Budget { payload_bytes: mac_module::MAX_CODE_BYTES,
+                                  ..Default::default() };
+    let select = |kind, id| {
+        !metadata_only
+        && ((kind == *b"RV64" && id == 0)
+            || kind == *b"DRVR"
+            || [*b"FASS", *b"ICN#", *b"icl4", *b"icl8", *b"ics#", *b"ics4", *b"ics8", *b"ICON",
+                *b"SICN", *b"cicn"].contains(&kind))
+    };
+    let result = stream::read_selected_with_index(length,
+                                                  budget,
+                                                  select,
+                                                  |index, read| {
+                                                      selected_metadata =
+                                                          Some(module_preflight(index,
+                                                                                file_type, read)?);
+                                                      Ok(())
+                                                  },
+                                                  |offset, output| {
+                                                      storage(offset, output).map_err(|status| {
+                                                          io_error = Some(status);
+                                                          Error::Malformed("module resource \
+                                                                            storage read failed")
+                                                      })
+                                                  });
+    let mut resources = result.map_err(|cause| {
+                                  io_error.map(ModuleReadError::Storage)
+                                          .unwrap_or(ModuleReadError::Format(cause))
+                              })?;
+    let metadata =
+        selected_metadata.ok_or(ModuleReadError::Format(Error::Malformed("module preflight \
+                                                                          did not retain the \
+                                                                          selected contract; \
+                                                                          rebuild System")))?;
+    resources.try_reserve(1).map_err(|_| {
+        ModuleReadError::Format(Error::AllocationFailed("module selected metadata admission failed; free System memory and retry"))
+    })?;
+    resources.push(metadata);
+    Ok(resources)
+}
+
 pub(super) fn application_format_status(error: mac_formats::Error) -> Status
 {
     match error
@@ -327,7 +532,8 @@ pub(crate) struct ModuleCandidate
 impl Manager
 {
     /// Discover metadata only in the selected blessed installation. This never
-    /// enters DRVR/INIT code, including packages placed in the wrong directory.
+    /// enters DRVR or System RV64/0 code, including misplaced packages. Finder
+    /// RV64/1 is never selected by this resident discovery path.
     pub(crate) fn module_candidates(&mut self) -> Result<Vec<ModuleCandidate>, Status>
     {
         let id = self.volumes
@@ -387,77 +593,62 @@ impl Manager
                 Ok(candidates)
             })
     }
+}
 
+#[cfg(any(target_arch = "riscv64", feature = "test-support"))]
+impl Manager
+{
+    #[cfg(target_arch = "riscv64")]
     pub(crate) fn module_metadata(&mut self, volume: u32, cnid: u32) -> Result<Vec<u8>, Status>
     {
-        self.with_volume(volume, |volume| {
-                let entry = required(io(volume.entry(cnid))?)?;
-                let mut fork = entry.resources.ok_or(NOT_FOUND)?;
-                let mut metadata =
-                    crate::toolbox::resources::file::read_selected(fork.length,
-                                                                   |key| {
-                                                                       key.kind == *b"DABI"
-                                                                       || key.kind == *b"EABI"
-                                                                   },
-                                                                   mac_module::MAX_BYTES,
-                                                                   |offset, output| {
-                                                                       if io(volume.read(&mut fork,
-                                                                                     offset,
-                                                                                     output))?
-                                                                      == output.len()
-                                                                   {
-                                                                       Ok(())
-                                                                   }
-                                                                   else
-                                                                   {
-                                                                       Err(IO_ERROR)
-                                                                   }
-                                                                   })?;
-                if metadata.len() != 1 || metadata[0].id != 0 || metadata[0].attributes & 1 != 0
-                {
-                    return Err(BAD_ABI);
-                }
-                Ok(metadata.remove(0).data)
-            })
+        let mut resources = self.module_projected(volume, cnid, true).map_err(|cause| {
+            serial!("SYSTEM_MODULE_METADATA_REFUSED: {cause}");
+            cause.status()
+        })?;
+        resources.pop().map(|resource| resource.data).ok_or(BAD_ABI)
     }
 
+    #[cfg(target_arch = "riscv64")]
     pub(crate) fn module_resources(&mut self, volume: u32, cnid: u32)
                                    -> Result<Vec<mac_formats::resource::Resource>, Status>
+    {
+        self.module_resources_checked(volume, cnid).map_err(|cause| {
+                                                       serial!("SYSTEM_MODULE_PACKAGE_REFUSED: \
+                                                                {cause}");
+                                                       cause.status()
+                                                   })
+    }
+
+    pub(crate) fn module_resources_checked(
+        &mut self, volume: u32, cnid: u32)
+        -> Result<Vec<mac_formats::resource::Resource>, ModuleReadError>
+    {
+        self.module_projected(volume, cnid, false)
+    }
+
+    fn module_projected(&mut self, volume: u32, cnid: u32, metadata_only: bool)
+                        -> Result<Vec<mac_formats::resource::Resource>, ModuleReadError>
     {
         self.with_volume(volume, |volume| {
                 let entry = required(io(volume.entry(cnid))?)?;
                 if entry.directory
-                   || ![*b"DRVR", *b"INIT"].contains(&entry.finder_info[..4].try_into()
-                                                                            .map_err(|_| {
-                                                                                BAD_ARGUMENT
-                                                                            })?)
                 {
                     return Err(BAD_ARGUMENT);
                 }
+                let file_type = entry.finder_info[..4].try_into().map_err(|_| BAD_ARGUMENT)?;
                 let mut fork = entry.resources.ok_or(NOT_FOUND)?;
-                crate::toolbox::resources::file::read_selected(fork.length,
-                                                               |key| {
-                                                                   [*b"DRVR", *b"INIT", *b"DABI",
-                                                                    *b"EABI", *b"NABI", *b"RV64",
-                                                                    *b"RLOC", *b"FASS", *b"ICN#", *b"icl4", *b"icl8",
-                                                                    *b"ics#", *b"ics4", *b"ics8", *b"ICON", *b"SICN", *b"cicn"].contains(&key.kind)
-                                                               },
-                                                               2 * 1024 * 1024
-                                                               + mac_module::MAX_BYTES,
-                                                               |offset, output| {
-                                                                   if io(volume.read(&mut fork,
-                                                                                     offset,
-                                                                                     output))?
-                                                                      == output.len()
-                                                                   {
-                                                                       Ok(())
-                                                                   }
-                                                                   else
-                                                                   {
-                                                                       Err(IO_ERROR)
-                                                                   }
-                                                               })
+                Ok(project_module(fork.length, file_type, metadata_only, |offset, output| {
+                    if io(volume.read(&mut fork, offset, output))? == output.len()
+                    {
+                        Ok(())
+                    }
+                    else
+                    {
+                        Err(IO_ERROR)
+                    }
+                }))
             })
+            .map_err(ModuleReadError::Storage)?
     }
 }
 

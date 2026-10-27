@@ -52,7 +52,7 @@ requires that field and uses its corresponding encoder. Res Edit exports the
 actual format along with raw resource payloads, names and attributes. Normal
 build manifests use native RRF1 regardless of architecture.
 
-Native executables use an `'RV64'` resource ID 0 and a companion `'NABI'`
+Native System/application executables use an `'RV64'` resource ID 0 and a companion `'NABI'`
 resource ID 0. The unreleased format is **version 1**. ELF is a build-time input,
 never a runtime resource container. The old unreleased ELF-backed layout is
 replaced, not supported by a second decoder. Rebuild ROM, System, Finder,
@@ -815,15 +815,24 @@ requests retain their ordinary refusals.
 ## Native kernel module contracts (DABI/EABI, schema 1)
 
 A driver has Finder type `DRVR`, exactly one native `DRVR` entry resource and one
-`DABI` 0 resource. A System extension has Finder type `INIT`, exactly one native
-`INIT` entry and one `EABI` 0 resource. Discovery is restricted to the selected
+`DABI` 0 resource. An extension has Finder **file type** `INIT`. Its System code
+is the native envelope in **`RV64` resource 0** with **`EABI` 0**; its Finder code
+is the native envelope in **`RV64` resource 1** with **`EABI` 1**. Builders name the
+code resources **System** and **Finder** by convention, but names are optional
+and have no role in loader selection. A bundle may contain either target or
+both; each present target has exactly one code/contract pair. System admission
+requires target 0 and never substitutes target 1. Finder execution and its SDK
+remain staged; package inspection alone is not execution authority.
+Discovery is restricted to the selected
 blessed System Folder's Drivers and Extensions directories respectively; placement
 in the other directory is rejected before entry. The common module registry and
 its class identifiers are independent of these discovery paths.
 
 The entry resource uses the existing version-1 definition envelope: 40-byte NABI
 with role CodeResource, minimal RV64 segment stream, then RLOC. There are no
-separate NABI/RV64/RLOC resources and no ELF in a module fork. Its reservation is
+separate NABI or RLOC resources and no ELF in a module fork. In an extension,
+`RV64` names this complete **RVN1 code-resource envelope**, not the raw RV64
+segment stream used by an application executable. Its reservation is
 compacted to the page-rounded linked memory extent, including BSS. All module
 code is relocatable. The code digest below covers the complete envelope, including
 NABI, initialized segments and relocations. This detects mismatched code/contract
@@ -848,8 +857,8 @@ resource fork remains big-endian):
 | 28 | 4 | calling convention, 1 C ABI |
 | 32 | 8 | required ISA features; RV64 bits 0..3 are I/M/A/C; bit 4 requires the complete RVA23U64 profile (including V/F/D/B and mandatory Z extensions). Current module mask is 31 |
 | 40 | 16 | nonzero module identity |
-| 56 | 4 | native entry resource type, matching package kind |
-| 60 | 2 | signed entry resource ID |
+| 56 | 4 | native entry resource type: `DRVR` for a driver, `RV64` for an extension |
+| 60 | 2 | signed entry resource ID; extension 0 selects System, 1 selects Finder; must match its EABI resource ID |
 | 62 | 2 | provided interface count |
 | 64 | 2 | required provider/dependency count |
 | 66 | 2 | required resident service count |
@@ -865,8 +874,10 @@ resource fork remains big-endian):
 | 120 | 8 | exact C boundary layout fingerprint |
 
 The fingerprint encodes pointer width (bits 0..7), Host size (bits 8..23), Instance
-size (bits 24..39), and Call size (bits 40..55); bits 56..63 are zero. Current RV64
-sizes are 64,48,24,56 respectively. Compile-time SDK assertions and the resident
+size (bits 24..39), and Call size (bits 40..55). Bits 56, 57, 58, 59 and 60 identify
+full-width provider references, request tickets, device/DMA references and
+backing-source references and ticket-free synchronous resident calls, respectively; the remaining high bits are zero. Current RV64
+sizes are 64,48,24,64 respectively. Compile-time SDK assertions and the resident
 reject a mismatch. Changing these layouts requires rebuilding all modules; there
 is no alternate old layout decoder.
 
@@ -911,13 +922,24 @@ The common matcher does not assume PCI, virtio or sector-addressable storage.
 
 mac-build generates contracts from module.json declarations, the resolved Cargo
 version, current native service and broker SDK constants, target and compiler
-provenance. `mac-driver::export_driver!` retains that generated declaration in a
+provenance. INIT manifests select `extension_target: "system"` (default) or
+`"finder"` in resources.json. This single selector determines the code/EABI IDs,
+generated `NATIVE_CODE`/`NATIVE_ABI` keys and the conventional code-resource name;
+package loading does not validate that name. `mac-driver::export_driver!` retains that generated declaration in a
 build-time ELF section. Packaging requires an exact match to the linked declaration,
 then fills the actual code-envelope digest and emits DABI/EABI. The ELF section
 is build evidence; ELF section tables/headers never enter a native resource fork.
 LLVM's GNU retained-section OSABI marker is accepted by the build-time extractor.
 
-The generic C entry receives a borrowed Host descriptor and initializes Instance.
+Extension startup presentation belongs to System, not executable-resource names
+or author drawing callbacks. A required facility refusal leaves registrations
+unpublished and records the extension's name, cause and a useful next action;
+the startup strip displays an X over its package icon. In particular, Host
+Clipboard requires compatible QEMU channel/protocol facilities before activation.
+The EABI/code pair remains inspectable as a package after refusal; its presence
+alone is not evidence of an active hook or service.
+
+The generic resident C entry receives a borrowed Host descriptor and initializes Instance.
 Host exposes the full u64 boot-unique module incarnation, dependency resolution
 and broker invocation; it and the code stay pinned until reboot. Resolve writes a
 u64 provider identity and Broker accepts that complete u64 value. The contract
@@ -1032,10 +1054,18 @@ Alignment and each exhausted budget have distinct diagnostic errors. The machine
 adapter still admits modules only while their complete reservations fit its
 actual remaining arena. These checks are admission limits, not an MMU or quota.
 
-On the current 128 MiB QEMU virt board, the machine adapter reserves
-`0x87800000..0x87e00000` for modules. This leaves the ROM's live storage scratch
-heap at `0x87000000..0x87800000` and the high2 MiB device-tree reservation untouched.
-These addresses belong to the machine adapter, not the class-neutral registry.
+The checked QEMU virt platform reserves `0x87800000..0x88000000` (8 MiB) for
+modules, separately from the ROM's live storage scratch heap at
+`0x87000000..0x87800000`. Its default RAM remains 8 GiB; the checked physical map
+requires at least 256 MiB so this reservation and the high 2 MiB device-tree tail
+are disjoint. Generated boot reservations, pager constants and linker symbols
+use this same record. Page metadata starts after the module reservation.
+The image builder sums complete installed System-module descriptor spans,
+including BSS/private heaps, and refuses an over-capacity installation with its
+package name and required bytes. Runtime admission independently reports the
+remaining reservation and requested extent. Code capacity does not grant a
+module worker, heap account or stack budget. These addresses belong to the
+machine adapter, not the class-neutral registry.
 
 ## Driver-owned file associations (FASS 0, version 1)
 
@@ -1093,7 +1123,7 @@ payload (not a host path). This supplies its actual UTF-8 name and timestamps
 for the mounted root. Host-export Mount continues to have no payload.
 
 The driver declares the kernel-only `FORK` service, version 1. All fields are
-little endian. Both operations have an exact 24-byte START argument:
+little endian. Both operations use an exact 24-byte initial argument:
 
 | Offset | Size | Field |
 | --- | --- | --- |
@@ -1103,10 +1133,12 @@ little endian. Both operations have an exact 24-byte START argument:
 | 20 | 4 | reserved zero |
 
 Info (operation 1) requires zero offset/length and returns an eight-byte u64 fork
-length. It is resident metadata only. Read (2) returns positional fork bytes,
-short at EOF, without changing any public file mark. Overflowing ranges and
-offsets beyond EOF fail. POLL/CANCEL carry empty input and retain the same broker
-ticket and source lease; borrowed input/output storage never survives a call.
+length through the ticket-free synchronous resident phase. It performs no
+backing I/O and cannot defer; contention is safe to retry without a hidden
+request. Read (2) uses START and returns positional fork bytes, short at EOF,
+without changing any public file mark. Overflowing ranges and offsets beyond
+EOF fail. READ POLL/CANCEL carry empty input and retain the same broker ticket
+and source lease; borrowed input/output storage never survives a call.
 
 Sources (`FSRC`) and their backing (`FSSB`) are registered native module-owned
 leased-fork capabilities; the global file/catalog remains System-owned. Ordinary
@@ -1892,3 +1924,47 @@ immutable root, caches contiguous matching spans once on explicit request and
 validates unmapped guards before publication. It does not report planned
 mappings as installed mappings. Failed allocation leaves initialization
 retryable. Private process maps and per-domain budget gauges remain later gates.
+
+
+## Resident Scrap extension service (SCEX, version 1)
+
+SCEX is a kernel-only synchronous resident service for declared INIT modules.
+The broker authenticates the actual module; the service requires a committed
+extension and a live module ledger, then validates every generation-tagged
+session and snapshot against that owner. Labels and expected content revisions
+confer no authority. Applications use the ordinary Toolbox Scrap calls.
+
+Every operation uses the ticket-free synchronous broker phase and borrows fresh
+buffers. The caller supplies 512..4096 reply bytes. Before any effect, System
+validates the declared input and reply bounds. A terminal reply has an eight-byte
+little-endian header: status i32 and payload length u32. Status zero carries the
+operation result. A negative status carries a nonempty UTF-8 diagnostic from the
+original typed cause. Broker contention before dispatch has no effect or hidden
+ticket and is safe to retry. No independently linked callback runs under Scrap.
+
+| Operation | Input | Success payload |
+| --- | --- | --- |
+| OPEN (1) | writable u32, exactly 0 or 1 | session u64 |
+| NOTICE (2) | session u64 | latest pending content revision u64; 0 means unchanged |
+| SNAPSHOT (3) | session u64 | immutable snapshot pin u64 |
+| READ (4) | session u64, pin u64, byte offset u64 | up to 4088 text bytes |
+| IMPORT (5) | session u64, pin u64, UTF-8 text | committed content revision u64 |
+| CLOSE_PIN (6) | session u64, pin u64 | empty |
+| DISCONNECT (7) | session u64 | empty |
+| INFO (8) | session u64, pin u64 | revision u64, content kind u32, text length u32 |
+
+INFO kind 0 is absent/empty Scrap, 1 is UTF-8 text including an empty string, and 2 is
+unsupported content. Non-text kinds have length zero. READ pins one immutable
+revision across chunks. Successful commits replace one pending revision per
+session without allocating notification queues. Snapshot allocation failure
+preserves both its pending notice and the previous pins. The scheduled observer
+chooses the final batching boundary; no clear/put end marker is invented.
+
+IMPORT accepts at most 1 MiB minus 32 text bytes and also applies the resident
+Scrap bound. It checks the exact live writable session, its snapshot pin and the
+current content revision before replacement. A conflict, storage failure or bad
+input preserves the previous Scrap. The origin session acknowledges only its
+committed import; other observers retain the notice. DISCONNECT revokes its pins.
+Owner cleanup retains original quarantine tickets through acknowledged release.
+The contract does not itself admit a worker, schedule observer callbacks or
+qualify host clipboard interoperability.

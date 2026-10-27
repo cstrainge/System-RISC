@@ -11,6 +11,7 @@ import time
 
 from hfs_b_tool import Image
 import system7_vm as vm
+from system7_capture import OwnedProcesses
 
 
 def digest(path):
@@ -21,7 +22,7 @@ def capture(output):
     output.mkdir(parents=True, exist_ok=False)
     for fixture, binary in [('file-source-provider', 'FileSourceProvider'), ('file-source-app', 'Finder')]:
         target = vm.build_dir() / 'fixtures' / fixture
-        manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
+        manifest = vm.SOURCE / 'crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
         subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(manifest),
                         '--release', '--target', 'riscv64imac-unknown-none-elf', '--bin', binary,
                         '--target-dir', str(target)], env=fixture_guest_env(target), check=True)
@@ -35,6 +36,7 @@ def capture(output):
     dist.mkdir()
     raw = dist / 'file-source.raw'
     process = None
+    owners = OwnedProcesses()
     try:
         subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
                         str(base / 'system7.qcow2'), str(raw)], check=True)
@@ -47,7 +49,7 @@ def capture(output):
                         str(dist / 'system7.qcow2')], check=True)
         shutil.copyfile(base / 'bootrom.bin', dist / 'bootrom.bin')
         vm.DIST = dist
-        process, endpoint = vm.launch(output / 'vm', writable=True)
+        process, endpoint = owners.launch(output / 'vm', writable=True)
         termination = 'timeout'
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
@@ -64,17 +66,8 @@ def capture(output):
             'original_before': before, 'original_after': {name: digest(base / name) for name in before}
         }, indent=2) + '\n')
     finally:
-        try:
-            if process is not None:
-                if process.poll() is None:
-                    vm.qmp('quit', endpoint=endpoint)
-                process.wait(timeout=10)
-        finally:
-            vm.DIST = base
-            for folder in [dist, output / 'vm']:
-                for pattern in ['*.raw', '*.qcow2', '*.bin']:
-                    for path in folder.glob(pattern):
-                        path.unlink()
+        vm.DIST = base
+        owners.cleanup(output, [dist, output / 'vm'])
 
 
 if __name__ == '__main__':

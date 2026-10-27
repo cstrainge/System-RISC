@@ -594,7 +594,12 @@ extern "C" fn boot_main(tree_address: usize) -> !
             memory.ram.len(),
             memory.reserved.len());
     serial!("System RISC Boot ROM v1 at 0x{:x}", boot_main as *const () as usize);
-    let _ = screen::init();
+    if let Err(error) = screen::init()
+    {
+        serial!("BOOT_RAMFB_OWNERSHIP_REJECTED: {error}; DMA quiescence is unproven; refusing \
+                 System handoff and requesting terminal shutdown");
+        fatal_shutdown();
+    }
     serial!("Searching virtio disks for a blessed HFS-B System Folder...");
     let mut disks = Vec::new();
     for slot in 0..memory::VIRTIO_MMIO_SLOTS

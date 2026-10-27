@@ -175,7 +175,10 @@ latency and Cursor Test responsiveness in the acceptance report.
 `mac-module` owns the allocation-free contract codec, open class identifiers and
 admission rules. `mac-driver` supplies the borrowed-buffer C boundary and safe
 Rust driver body/dependency client. `mac-build` generates and verifies linked
-contracts and emits native DRVR/DABI (or INIT/EABI) resources. The resident
+contracts and emits native DRVR/DABI driver resources or target-selected
+RV64/EABI extension resources. INIT is the extension file type; System code is
+RV64/0 and Finder code is RV64/1, conventionally named System/Finder with optional
+names. The resident
 `system/src/drivers` registry owns staged registration, generations, dependency
 resolution and request state; callbacks execute outside registry/File Manager
 guards. The current machine adapter reserves a module arena disjoint from the
@@ -211,7 +214,14 @@ class has its own `mac-device-interface` layout and thin `mac-driver::devices`
 binding. Its safe resident manager owns generation-tagged claims and DMA maps,
 with a narrow QEMU virt MMIO bus adapter. It checks DABI bus matches, module RAM
 bounds and owners, and refuses map release before stopped acknowledgement.
-Polling/cancellation reset requests retain their broker ticket until terminal.
+COUNT, PROBE, CLAIM, MAP, UNMAP and RELEASE use the broker's strictly synchronous
+resident phase: authorization and contention checks precede the operation, no
+request ticket is allocated, and no deferred effect can survive the return. A
+busy result is safe to retry with the same arguments. This phase rejects external
+module providers and reset before dispatch. RESET alone uses START/POLL/CANCEL;
+its caller retains the explicit broker ticket through terminal acknowledgement.
+All packages must be rebuilt for the fingerprint's synchronous-contract bit;
+the development ABI remains version 1.
 Firmware block devices and resident input are reserved, so modules cannot steal
 them while extraction is incomplete. See [FORMAT.md](../FORMAT.md#resident-device-service-vdev-version-1).
 

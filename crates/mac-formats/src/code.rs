@@ -40,6 +40,8 @@ pub struct NativeCode
 
 pub struct CodeRegistry
 {
+    // Standard profiles are immutable static data. Store only registrations and
+    // overrides, rather than copying the complete table for each loader.
     profiles: Vec<([u8; 4], CallingConvention)>
 }
 impl Default for CodeRegistry
@@ -53,12 +55,12 @@ impl CodeRegistry
 {
     pub fn new() -> Self
     {
-        Self { profiles: STANDARD_CODE_TYPES.to_vec() }
+        Self { profiles: Vec::new() }
     }
 
     /// Managers/component records may declare other executable resource types.
     /// Ordinary Resource Manager data loads never trigger translation.
-    pub fn register(&mut self, kind: [u8; 4], convention: CallingConvention)
+    pub fn register(&mut self, kind: [u8; 4], convention: CallingConvention) -> Result<()>
     {
         if let Some(profile) = self.profiles.iter_mut().find(|p| p.0 == kind)
         {
@@ -66,13 +68,29 @@ impl CodeRegistry
         }
         else
         {
+            self.profiles.try_reserve(1).map_err(|_| {
+                                             Error::AllocationFailed("executable resource \
+                                                                      registration allocation \
+                                                                      failed")
+                                         })?;
             self.profiles.push((kind, convention));
         }
+        Ok(())
     }
 
     pub fn convention(&self, kind: [u8; 4], id: i16) -> Option<CallingConvention>
     {
-        let convention = self.profiles.iter().find(|p| p.0 == kind)?.1;
+        if kind == mac_module::ExtensionTarget::RESOURCE_TYPE
+        {
+            return mac_module::ExtensionTarget::from_resource_id(id).map(|target| {
+                                                                        match target
+                {
+                    mac_module::ExtensionTarget::System => CallingConvention::SystemExtension,
+                    mac_module::ExtensionTarget::Finder => CallingConvention::FinderExtension
+                }
+                                                                    });
+        }
+        let convention = self.profiles.iter().chain(STANDARD_CODE_TYPES).find(|p| p.0 == kind)?.1;
         Some(if kind == *b"CODE" && id == 0
              {
                  CallingConvention::CodeJumpTable
@@ -95,6 +113,11 @@ impl CodeRegistry
         }
         else
         {
+            if resource.kind == mac_module::ExtensionTarget::RESOURCE_TYPE
+            {
+                return Err(Error::Malformed("extension RV64 resource must contain a native \
+                                             code-resource envelope; rebuild the extension"));
+            }
             translated = translator.translate(TranslationRequest { resource,
                                                                    origin,
                                                                    convention })?;
@@ -128,9 +151,18 @@ impl CodeRegistry
                                             &descriptor,
                                             Some(&body[end..]),
                                             descriptor.load_base)?;
+        let mut code = Vec::new();
+        code.try_reserve_exact(end)
+            .map_err(|_| Error::AllocationFailed("native code resource body allocation failed"))?;
+        let mut relocations = Vec::new();
+        relocations.try_reserve_exact(body.len() - end).map_err(|_| {
+                       Error::AllocationFailed("native code resource relocation allocation failed")
+                   })?;
+        code.extend_from_slice(&body[..end]);
+        relocations.extend_from_slice(&body[end..]);
         Ok(NativeCode { descriptor,
-                        code: body[..end].to_vec(),
-                        relocations: body[end..].to_vec() })
+                        code,
+                        relocations })
     }
 }
 
@@ -187,7 +219,7 @@ mod tests
         {
             assert!(registry.convention(kind, 0).is_none());
         }
-        registry.register(*b"TEST", CallingConvention::Custom);
+        registry.register(*b"TEST", CallingConvention::Custom).unwrap();
         assert_eq!(registry.convention(*b"TEST", 1), Some(CallingConvention::Custom));
         let resource = Resource { kind:       *b"WDEF",
                                   id:         0,

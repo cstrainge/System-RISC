@@ -322,6 +322,13 @@ impl Checked
         Ok(())
     }
 
+    /// Capacity of the pinned, relocatable resident module code reservation.
+    /// This is separate from every module's declared or charged heap policy.
+    pub fn module_capacity(&self) -> u64
+    {
+        self.modules.end - self.modules.start
+    }
+
     pub fn flash_base(&self) -> u64
     {
         self.flash.start
@@ -560,6 +567,7 @@ mod tests
                    .to_string()
                    .contains("application_relocation_base must be page aligned inside images"));
         let mut bad = original.clone();
+        bad.minimum_ram_bytes = "0x8000000".into();
         bad.fdt_tail_bytes = "0x300000".into();
         assert!(bad.check().unwrap_err().to_string().contains("FDT tail overlaps modules"));
         let mut bad = original.clone();

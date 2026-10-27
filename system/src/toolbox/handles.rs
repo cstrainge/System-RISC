@@ -191,6 +191,10 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                        crate::drivers::registry::dependencies::ReleaseDependencies(storage))
                                        .map_err(KindAccessError::Registry)?;
                                }
+                               for kind in crate::toolbox::scrap::extension::Registration::ALL {
+                                   registry.register(&owner, kind.specification(), kind)
+                                       .map_err(KindAccessError::Registry)?;
+                               }
                                for kind in crate::drivers::devices::lifetime::Registration::ALL {
                                    registry.register(&owner, kind.specification(), kind)
                                        .map_err(KindAccessError::Registry)?;

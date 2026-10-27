@@ -41,6 +41,18 @@ impl ResidentHeap
     {
         crate::machine::interrupts::with_masked(|| self.heap.lock().free())
     }
+
+    /// Private native qualification deliberately never returns or releases the
+    /// guard. Production failure handling must work without this lock.
+    #[cfg(feature = "emergency-qualification")]
+    pub(crate) fn qualify_while_locked(&self, call: impl FnOnce() -> core::convert::Infallible)
+                                       -> !
+    {
+        match crate::machine::interrupts::with_masked(|| {
+                  let _held = self.heap.lock();
+                  call()
+              }) {}
+    }
 }
 // SAFETY: the backend owns its initialized range and serializes allocation and
 // deallocation. Masking local preemption before its lock prevents a timer from

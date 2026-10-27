@@ -109,6 +109,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                       (applications, "Applications", "Res Edit"),
                                       (applications, "Applications", "Reactor Room"),
                                       (drivers, "System Folder/Drivers", "Host Transport"),
+                                      (drivers, "System Folder/Drivers", "VDAgent Channel"),
                                       (drivers, "System Folder/Drivers", "Host Filesystem"),
                                       (drivers, "System Folder/Drivers", "StuffIt Filesystem"),
                                       (drivers, "System Folder/Drivers", "Qemu Power Device")]

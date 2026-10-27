@@ -22,18 +22,7 @@ impl DeviceService
 
     fn synchronous(self, operation: u32, input: &[u8], output: &mut [u8]) -> Result<usize>
     {
-        let mut ticket = 0;
-        match self.provider.invoke(&mut ticket, Phase::Start, operation, input, output)?
-        {
-            Completion::Complete(length) => Ok(length),
-            Completion::Pending =>
-            {
-                // Synchronous operations cannot acquire a deferred lifetime.
-                // A mismatched kernel is an ABI error, never fake success.
-                let _ = self.provider.invoke(&mut ticket, Phase::Cancel, operation, &[], &mut []);
-                Err(Error(BAD_ABI))
-            }
-        }
+        self.provider.synchronous(operation, input, output)
     }
 
     pub fn probe(self, ordinal: u32) -> Result<Description>

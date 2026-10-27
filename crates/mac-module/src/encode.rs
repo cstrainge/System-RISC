@@ -70,7 +70,7 @@ impl Spec<'_>
         put(data, 28, &self.target.convention.to_le_bytes());
         put(data, 32, &self.target.features.to_le_bytes());
         put(data, 40, &self.identity);
-        put(data, 56, &self.kind.file_type());
+        put(data, 56, &self.kind.code_type());
         put(data, 60, &self.code_id.to_le_bytes());
         for (offset, count) in [(62, self.offers.len()),
                                 (64, self.dependencies.len()),

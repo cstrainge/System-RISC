@@ -88,6 +88,45 @@ pub(super) struct Location
     pub name:       Option<Range<usize>>,
     pub offset:     u64
 }
+
+/// Borrowed, completely parsed map metadata. Enumerating unselected references
+/// does not load their payloads. Offsets point to checked in-region length words;
+/// a caller reading one must still validate its payload length against data_end.
+#[derive(Clone, Copy)]
+pub struct ReferenceIndex<'a>
+{
+    header:    Header,
+    map:       &'a [u8],
+    locations: &'a [Location]
+}
+impl<'a> ReferenceIndex<'a>
+{
+    pub fn entries(self) -> impl ExactSizeIterator<Item = super::index::Entry<'a>> + Clone
+    {
+        self.locations.iter().enumerate().map(move |(number, location)| {
+                                             super::index::Entry { reference_offset:
+                                                                       self.header.map
+                                                                       + location.reference as u64,
+                                                                   number,
+                                                                   kind: location.kind,
+                                                                   id: location.id,
+                                                                   attributes:
+                                                                       location.attributes,
+                                                                   name: location.name
+                                                                                 .clone()
+                                                                                 .map(|range| {
+                                                                                     &self.map
+                                                                                         [range]
+                                                                                 }),
+                                                                   offset: self.header.data
+                                                                           + location.offset,
+                                                                   data_end: self.header.data
+                                                                             + self.header
+                                                                                   .data_length,
+                                                                   length: None }
+                                         })
+    }
+}
 /// Parse reference/name records once for both borrowed and seekable decoders.
 pub(super) fn locations(map: &[u8], data_length: u64, limit: usize, encoding: Encoding)
                         -> Result<Vec<Location>>
@@ -231,6 +270,22 @@ pub fn read_selected(length: u64, budget: Budget, mut select: impl FnMut([u8; 4]
                      mut read: impl FnMut(u64, &mut [u8]) -> Result<()>)
                      -> Result<Vec<Resource>>
 {
+    read_selected_with_index(length, budget, &mut select, |_, _| Ok(()), &mut read)
+}
+
+/// Validate complete package framing before admitting any selected payload.
+/// The validator can inspect every reference, and use bounded caller-owned
+/// scratch to read required headers or small contract metadata. Its reads and
+/// allocations must impose their own limits; payload_bytes bounds the later
+/// selected projection. No map borrow escapes into executable module entry.
+pub fn read_selected_with_index(length: u64, budget: Budget,
+                                mut select: impl FnMut([u8; 4], i16) -> bool,
+                                validate: impl FnOnce(ReferenceIndex<'_>,
+                                       &mut dyn FnMut(u64, &mut [u8]) -> Result<()>)
+                                       -> Result<()>,
+                                mut read: impl FnMut(u64, &mut [u8]) -> Result<()>)
+                                -> Result<Vec<Resource>>
+{
     let mut header = [0; 16];
     if length < 16
     {
@@ -245,6 +300,10 @@ pub fn read_selected(length: u64, budget: Budget, mut select: impl FnMut([u8; 4]
     let mut map = buffer(h.map_length)?;
     read(h.map, &mut map)?;
     let locations = locations(&map, h.data_length, budget.resources, h.encoding)?;
+    validate(ReferenceIndex { header:    h,
+                              map:       &map,
+                              locations: &locations },
+             &mut read)?;
     let mut out = Vec::new();
     let mut remaining = budget.payload_bytes;
     let mut remaining_names = budget.map_bytes;

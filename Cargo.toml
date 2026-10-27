@@ -10,6 +10,11 @@ members = [
     "crates/mac-riscv-pages",
     "crates/mac-fork-file",
     "crates/mac-host-protocol",
+    "crates/mac-vdagent-protocol",
+    "crates/mac-host-clipboard",
+    "crates/mac-virtio-console",
+    "crates/mac-byte-channel",
+    "crates/mac-scrap-extension-interface",
     "crates/mac-file-types",
     "crates/mac-driver",
     "crates/mac-driver-alloc",
@@ -50,6 +55,11 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+mac-host-clipboard = { path = "crates/mac-host-clipboard" }
+mac-vdagent-protocol = { path = "crates/mac-vdagent-protocol" }
+mac-virtio-console = { path = "crates/mac-virtio-console" }
+mac-byte-channel = { path = "crates/mac-byte-channel" }
+mac-scrap-extension-interface = { path = "crates/mac-scrap-extension-interface" }
 mac-riscv-pages = { path = "crates/mac-riscv-pages" }
 mac-kernel-model = { path = "crates/mac-kernel-model" }
 mac-definition = { path = "crates/mac-definition" }

@@ -375,6 +375,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-byte-channel"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-driver",
+]
+
+[[package]]
 name = "mac-code-resource"
 version = "0.1.0"
 dependencies = [
@@ -414,6 +422,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-driver",
+ "mac-scrap-extension-interface",
 ]
 
 [[package]]
@@ -490,6 +499,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-host-clipboard"
+version = "0.1.0"
+dependencies = [
+ "mac-vdagent-protocol",
+ "serde",
+ "serde-json-core",
+]
+
+[[package]]
 name = "mac-host-protocol"
 version = "0.1.0"
 
@@ -531,6 +549,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-scrap-extension-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
+]
+
+[[package]]
 name = "mac-sit"
 version = "0.1.0"
 dependencies = [
@@ -549,6 +574,7 @@ dependencies = [
  "mac-build",
  "mac-definition",
  "mac-device-interface",
+ "mac-driver",
  "mac-file-source-interface",
  "mac-file-types",
  "mac-filesystem",
@@ -561,6 +587,7 @@ dependencies = [
  "mac-object-table",
  "mac-power-interface",
  "mac-riscv-pages",
+ "mac-scrap-extension-interface",
  "mac-toolbox",
  "mac-traps",
  "minipng",
@@ -590,13 +617,18 @@ dependencies = [
  "mac-block",
  "mac-build",
  "mac-code-resource",
+ "mac-driver",
+ "mac-driver-alloc",
  "mac-formats",
  "mac-hfs-b",
+ "mac-host-clipboard",
  "mac-module",
  "mac-power-interface",
+ "mac-scrap-extension-interface",
  "mac-system",
  "mac-text",
  "mac-traps",
+ "mac-vdagent-protocol",
  "serde",
  "serde-json-core",
  "serde_json",
@@ -626,6 +658,18 @@ name = "mac-traps"
 version = "0.1.0"
 dependencies = [
  "mac-abi",
+]
+
+[[package]]
+name = "mac-vdagent-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "mac-virtio-console"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-driver",
 ]
 
 [[package]]
@@ -1189,6 +1233,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
+name = "vdagent-channel"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-byte-channel",
+ "mac-driver",
+ "mac-virtio-console",
+ "spinning_top",
+]
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1221,6 +1277,7 @@ dependencies = [
  "mac-build",
  "mac-driver",
  "mac-host-protocol",
+ "mac-virtio-console",
  "spinning_top",
 ]
 

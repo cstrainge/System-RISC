@@ -1,11 +1,13 @@
 # Memory, application and resource model: first-cut design
 
 Status: §13.1 accepted by Chloe, 2026-10-23; proceeding with §13.2. The complete
-RVA23 floor is live. Process identity/directory migration has begun; the live
-accounted allocator and private process mappings remain pending. Kernel
-self-virtualization now uses owned Sv39 roots and a guarded System stack. Registered owner-walk cleanup and
-growable native scheduler records are resident; later accounting/module/privilege
-gates remain open. This document describes the implemented foundations,
+RVA23 floor is live. Process identity/directory, owner-walk cleanup and growable
+native scheduler records are resident. Process stacks and saved CPU backing carry
+live account charges; the general accounted allocator and private process mappings
+remain pending. Kernel self-virtualization uses owned Sv39 roots and a guarded
+System stack. Graphical boot now pins an independent terminal panic/OOM kit;
+the complete protected recovery reserve and module/privilege gates remain open.
+This document describes the implemented foundations,
 architectural decisions and remaining migration gates.
 
 ## What landed
@@ -22,7 +24,7 @@ alone does not activate its page or allocator model.
 |---|---|---|
 | Buddy pool | `crates/mac-kernel-model/src/buddy.rs` | Caller-supplied metadata and order heads, split, O(1) unlink, coalescing, unique RAII block leases; never touches free-page bytes |
 | Page layer | `…/pages.rs` | Platform geometry, typed addresses, permissions/ownership, borrowed boot reservations, largest-leaf mapping plan, reserved `PageBox`/address-space root |
-| Domains/accounts | `…/policy.rs`, `mac-object-table/src/domain.rs` | Boot-monotonic incarnation, account/reserve records, checked registry construction; no live allocator charges yet |
+| Domains/accounts | `…/policy.rs`, `mac-object-table/src/domain.rs` | Boot-monotonic incarnation, canonical process accounts, checked admission and original-account receipts; live charges cover process stacks and saved CPU backing only |
 | Facility v2 | `mac-object-table/src/domain.rs` | Owner-index-authorized per-kind bitmap pools, generations, rotation, retirement, capacity policy, release tickets and registration shapes; managed controls use owner-backed value storage |
 | Shared aliases | `mac-object-table/src/aliases.rs`, `system/src/images.rs` | System-owned immutable image sources and registered process aliases; source reads, definition bindings and execution pins retain backing through actual cleanup |
 | Process/thread | `…/process.rs` | Address-space, image/memory/legacy capabilities, dynamic threads, saved manager slots, backend frame, vector marker and discovered save-area layout |
@@ -30,7 +32,7 @@ alone does not activate its page or allocator model.
 | Control zone | `…/zone.rs` | Same-owner instance/zone binding, configured zone header, host-forwarding allocator contract; no allocator installed |
 | Uniform layout | `…/policy.rs` | One checked range record emits named linker symbols; no unapproved addresses or duplicate linker constants |
 | TE2 rope | `…/text.rs` | Immutable balanced chunk tree, byte/hard-break augmentation, shared snapshot roots, logarithmic chunk lookup; no edit/rebalance/control/file-provider migration yet |
-| Emergency kit | `…/emergency.rs` | Borrowed, checked requirement manifest and aligned size calculation; no failure path claims until backing kit is installed |
+| Emergency kit | `…/emergency.rs`, `system/src/machine/emergency.rs` | Checked requirement manifest plus boot-pinned terminal display/stack/input backing; complete protected recovery reserve and Save/Alert/Finder kits remain pending |
 
 The shared facility remains the sole active ID issuer. Process identity now
 uses its complete u64 domain incarnation and a growable owner directory, retaining
@@ -93,8 +95,9 @@ isolation or memory-scale acceptance.
 
 `ReleasedResource` records invalidation-before-dispatch. Registered controls now
 use the live dispatcher described below; this is not a proof of quiescence for
-the remaining managers. Alias pinning and account charging remain integration
-work. A drained observation alone cannot authorize page reuse.
+the remaining managers. Full alias and account integration remains work beyond
+the active image pins and stack/CPU receipts. A drained observation alone cannot
+authorize page reuse.
 
 ## Architecture and platform boundaries
 
@@ -253,9 +256,12 @@ Demand paging is a separate [DECIDE], not an implicit change here.
 
 ## Emergency services: draft enumeration for ratification
 
-Heap initialization must be immediately followed by kit reservation and pinning,
-before fonts, modules, Finder or ordinary service allocation. Failure to reserve
-the kit is a boot admission failure with a minimal ROM/framebuffer report.
+The complete heap-stage kit must be reserved and pinned before fonts, modules,
+Finder or ordinary service allocation. Its first installed consumer, the terminal
+panic/OOM kit described below, is admitted even earlier: after permanent page
+roots and physical pools, before GlobalAlloc initialization. A terminal-kit
+admission failure refuses graphical boot and reports its typed cause through the
+bootstrap UART. It does not enter ordinary services with an incomplete kit.
 
 | Service | Preallocated contents / zero-allocation obligation |
 |---|---|
@@ -2532,9 +2538,11 @@ conditions remain the barriers: pages return before the original cleanup ticket
 acknowledges physical disposal. No timer-driven allocation or free-page scan is
 introduced. The configured QEMU default adopts 8 GiB. The static 10 MiB System
 heap, domain charges/budgets, reserve and kernel trap-stack migration remain
-later work; page-backed stacks alone do not qualify those gates. At 128 MiB the
-current pinned flat arenas leave no contiguous metadata space, so boot reports
-that real storage refusal before heap/services rather than clobbering live RAM.
+later work; page-backed stacks alone do not qualify those gates. The checked
+platform minimum is now 256 MiB, with an 8 MiB pinned module-code reservation.
+128 MiB is rejected before heap/services because that enlarged reservation and
+the required device-tree tail cannot coexist. Page metadata follows the generated
+module limit; code capacity does not grant live account or worker admission.
 
 The platform JSON now also owns the approved Sv39 reservations. One checked
 record validates canonical halves, page alignment, overlap, preferred image
@@ -2858,10 +2866,10 @@ retain their existing cancellation path.
 
 These paths preserve ordinary refusal and retry. They still allocate window,
 control, retained drawing and other ordinary backing; fallible formatting alone
-is not an installed allocation-free emergency kit. The current resident panic and
-infallible-allocation handlers report through serial and halt. A graphical System
-Panic/Restart path, protected emergency/Finder backing, and all-allocation-refused
-Save/Alert/crash service qualification remain explicit heap-stage work.
+is not an installed allocation-free general emergency kit. Resident panic and
+infallible-allocation failure now enter the independent terminal display/input
+path described below. Protected Save/Alert/Finder backing and all-allocation-
+refused qualification of those ordinary services remain explicit heap-stage work.
 
 
 ### Prepared application-menu and focus presentation
@@ -2909,8 +2917,9 @@ CPU state only**. The two usage records come from one counter lock; they are
 observations, not allocation authority. An unrelated mapping snapshot continues
 to report full per-domain accounting as unavailable. Process heaps, images,
 account/scheduler metadata, System recovery reserves, module workers and the
-emergency-service kit are not covered by these first charge consumers. Their
-admission, physical backing and recovery qualification remain required work.
+general emergency-service kit are not covered by these first charge consumers.
+Their accounting, physical backing and recovery qualification remain required
+work. The separate boot-pinned terminal kit does not charge a process account.
 
 Qualification covers concurrent reservation/closure, overflow, exact-limit and
 metadata-allocation refusals, zero-byte lifetime pins and original-account refunds
@@ -2921,3 +2930,89 @@ retirement and relaunch behavior, preserve observer charges while workers quit,
 and exercise repeated malformed launch plus Finder recovery/refusal. They do not
 qualify native global-heap exhaustion or complete process quotas before the
 remaining charge consumers and protected recovery backing are installed.
+
+### Boot-pinned terminal panic and OOM path
+
+Graphical startup admits a terminal-only kit after permanent roots and physical
+pools, before the ordinary global allocator or services start. It owns an
+independent scanout frame and a stack using the checked System stack policy
+(currently 4 MiB). Static dedicated input rings, display DMA scratch and bounded
+screen/cursor/decoder state stay pinned until reset. No terminal framebuffer or
+input-ring bytes alias the normal compositor or normal input queues. Preparation
+validates DMA translations and device capabilities before publishing the kit.
+The checked requirement manifest counts the actual rounded frame and stack
+backing plus the static state and DMA extents; `EMERGENCY_KIT_READY` reports that
+census with `full_recovery_reserve=false`.
+
+The current 800×600 profile needs 1,920,000 visible pixel bytes, admitted as a
+2 MiB physical extent, alongside its 4 MiB terminal stack. Other state is measured
+from its actual layouts rather than assigned a guessed reserve. The 1,024-byte
+diagnostic payload reuses the existing definition-panic bound; record formatting
+preserves a whole UTF-8 prefix and flags truncation or formatter failure. Its
+storage lives on the terminal stack. The original bomb bitmap, exact Chicago
+strike and arrow cursor come from resident bundled assets, without querying the
+Font, Resource, Window or Control Managers.
+
+On resident panic, infallible-allocation failure or a privileged trap, a one-shot
+terminal claim masks interrupts and switches to that independent stack. It
+abandons interrupted execution permanently: no unwinding, scheduler service,
+ordinary lock acquisition or resumption of suspended code occurs. Direct bounded
+UART writes retain diagnostics without asking the failed allocator for statistics
+or consulting execution-context machinery. The safe renderer consumes only its
+bounded record and owned pixels. Formatting implementations supplied to this path
+must also avoid allocation and service calls; a bounded destination cannot make
+arbitrary `Display` implementations safe.
+
+The resident panic handler therefore reads only the panic message's captured
+string, when available, and primitive source location fields. It never invokes
+the panic payload's `Display` implementation. If Rust retained dynamic formatting
+arguments rather than a captured string, the dialog reports that those arguments
+were not evaluated and preserves the source location. This deliberately limits
+diagnostic detail instead of risking a deadlock before the terminal can draw.
+OOM request sizes and CPU trap fields use trusted primitive formatting; definition
+panic reports arrive as already-captured bounded text.
+
+The RAM framebuffer handoff uses separately retained, prevalidated DMA state.
+Normal configuration and terminal activation arbitrate ownership; uncertain DMA
+completion never licenses scratch reuse. Terminal input resets devices before
+publishing its separate rings, validates every completion before indexing storage,
+and retains failed endpoints' buffers. Restart uses the checked platform reset
+register directly, without the normal driver registry or callbacks. Recursive
+failure, unavailable terminal backing, or an unusable display/input handoff reports
+and requests a loud platform shutdown. These are terminal actions, not recovery
+of a privileged call. The current contract admits only one running hart; a proven
+stop-other-harts protocol is required before extending terminal takeover to SMP.
+
+The platform's required `fatal_shutdown` record names its MMIO device and supplies
+distinct nonzero `failure_value` and `restart_value` commands. Build validation
+checks the device against the mapped inventory and emits the Rust constants and
+linker symbols from that same record. Normal graceful Shutdown and Restart still
+use the selected external power driver; this direct register path belongs only
+to terminal failure handling.
+
+The Restart button supports default-key activation, pointer tracking, cancellation
+and release outside. Button updates damage only the button. The cursor saves and
+restores its own pixels, and unchanged motion does no pixel work. Host tests run
+formatting, drawing, input and cursor behavior with allocation refused. The native
+definition-panic test verifies original bomb pixels, bounded cursor/button damage,
+cancel restoration, diagnostic contents and an input-driven platform restart into
+a second ROM and desktop boot. Private native qualification also passes for a
+real Rust panic with the allocator and desktop locks held, followed by pointer
+Restart, and an oversized request refused by the actual allocator backend,
+followed by allocation-error handling with those locks held and keyboard Restart.
+The refusal probe calls the concrete backend directly: an unused global
+allocation/deallocation pair can be optimized away and is not exhaustion evidence.
+All three scenarios verify unchanged base media and reap their owned guest.
+Device-completion rejection, loss of the last input endpoint and cancellation of
+an abandoned press have allocation-refusal host coverage through the same safe
+logic used by the native driver; physical device-failure injection is not claimed.
+
+This installs one terminal service, not the approved 32 MiB protected floor or
+the complete emergency-service kit. The live global heap remains the platform's
+static 10 MiB backing; the approved 512 MiB page-backed heap has not been enabled.
+Save/Save As, core alerts, ledger teardown and Finder restart still require their
+own measured protected backing and refusal/concurrency qualification. Module
+workers still require original-account allocation authority and real stack, CPU
+and metadata charges before activation. Arbitrary privileged-fault containment is
+**unproven** and is a **required future gate** (M-D04); displaying a terminal
+diagnostic and restarting does not satisfy that gate.

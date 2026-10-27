@@ -16,6 +16,7 @@ from capture_system7_applications_ui import Driver
 from capture_system7_event_trace import decode
 from hfs_b_tool import Image
 import system7_vm as vm
+from system7_capture import OwnedProcesses
 
 
 def digest(path):
@@ -44,7 +45,7 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
     (output / 'pid').write_text(str(os.getpid()))
     for fixture, binary in ([] if finder else [('stuffit-app', 'Finder')]):
         target = vm.build_dir() / 'fixtures' / fixture
-        manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
+        manifest = vm.SOURCE / 'crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
         subprocess.run(['cargo', 'build', '--locked', '--manifest-path', str(manifest),
                         '--release', '--target', 'riscv64imac-unknown-none-elf', '--bin', binary,
                         '--target-dir', str(target)], env=fixture_guest_env(target), check=True)
@@ -54,12 +55,13 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
                         str(output / 'packages')], env=fixture_host_env(target), check=True)
     base = vm.DIST
     subprocess.run(['cargo', 'build', '--locked', '-p', 'risc-host', '-p', 'risc-forks',
-                    '--target-dir', str(vm.build_dir() / 'host')], cwd=vm.ROOT / 'System7', check=True)
+                    '--target-dir', str(vm.build_dir() / 'host')], cwd=vm.SOURCE, check=True)
     before = {name: digest(base / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
     dist = output / 'dist'
     dist.mkdir()
     raw = dist / 'stuffit.raw'
     process = companion = None
+    owners = OwnedProcesses()
     try:
         subprocess.run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'raw', '-S', '4k',
                         str(base / 'system7.qcow2'), str(raw)], check=True)
@@ -79,7 +81,7 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
             folder = output / directory
             subprocess.run([str(host / 'risc-forks'), 'init', str(folder), directory], check=True)
             source = output / 'Examples.sit'
-            shutil.copyfile(archive or (vm.ROOT / 'System7/crates/mac-sit/tests/fixtures/nested-v1.sit'), source)
+            shutil.copyfile(archive or (vm.SOURCE / 'crates/mac-sit/tests/fixtures/nested-v1.sit'), source)
             if finder_error:
                 # Raw host files, rather than only pre-imported fork containers.
                 # The failed open must not poison selection or the next open.
@@ -91,9 +93,9 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
             else:
                 subprocess.run([str(host / 'risc-forks'), 'import', str(folder), str(source)], check=True)
             if not finder:
-                shutil.copyfile(vm.ROOT / 'System7/crates/mac-sit/tests/fixtures/arsenic-v5.sit', folder / 'Arsenic.sit')
+                shutil.copyfile(vm.SOURCE / 'crates/mac-sit/tests/fixtures/arsenic-v5.sit', folder / 'Arsenic.sit')
                 for variant in ['shared-v2', 'separate-v5', 'bad-crc-v5']:
-                    shutil.copyfile(vm.ROOT / f'System7/crates/mac-sit/tests/fixtures/method13-{variant}.sit',
+                    shutil.copyfile(vm.SOURCE / f'crates/mac-sit/tests/fixtures/method13-{variant}.sit',
                                     folder / f'Method13-{variant}.sit')
                 if reference is not None:
                     shutil.copyfile(reference, folder / 'Reference.sit')
@@ -102,13 +104,14 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
         companion = subprocess.Popen([str(host / 'risc-host'), '--export', f'Writable={exports[0]}',
                                       '--read-only-export', f'ReadOnly={exports[1]}'],
                                      stdout=subprocess.PIPE, stderr=companion_log, text=True)
+        owners.add(companion)
         companion_log.close()
         if not select.select([companion.stdout], [], [], 5)[0]:
             raise TimeoutError('private StuffIt host companion did not become ready')
         ready = companion.stdout.readline().strip()
         port = int(ready.rsplit(':', 1)[1])
         vm.DIST = dist
-        process, endpoint = vm.launch(output / 'vm', writable=True, host_bridge=port, expected_exports=2)
+        process, endpoint = owners.launch(output / 'vm', writable=True, host_bridge=port, expected_exports=2)
         termination = 'timeout'
         if finder:
             driver = Driver(endpoint, output / 'vm/serial.log')
@@ -193,21 +196,8 @@ def capture(output, without_driver=False, finder=False, finder_error=False, arch
             trace_snapshot(output, endpoint, output / 'vm/serial.log', 'failure')
         raise
     finally:
-        try:
-            if process is not None:
-                if process.poll() is None:
-                    vm.qmp('quit', endpoint=endpoint)
-                process.wait(timeout=10)
-        finally:
-            if companion is not None:
-                companion.terminate()
-                companion.wait(timeout=10)
-                companion.stdout.close()
-            vm.DIST = base
-            for folder in [dist, output / 'vm']:
-                for pattern in ['*.raw', '*.qcow2', '*.bin']:
-                    for path in folder.glob(pattern):
-                        path.unlink()
+        vm.DIST = base
+        owners.cleanup(output, [dist, output / 'vm'])
 
 
 if __name__ == '__main__':

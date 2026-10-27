@@ -79,13 +79,28 @@ pub const START: u32 = 1;
 pub const POLL: u32 = 2;
 pub const CANCEL: u32 = 3;
 pub const QUIESCE: u32 = 4;
+/// Strictly synchronous resident operations: no ticket is created, no work may
+/// remain pending, and contention occurs before side effects. RESET is excluded.
+/// System validates a live subject scope inside its native invocation gate and
+/// keeps this bounded resident leaf on that hart through return. Such callbacks
+/// cannot yield, park or call independently linked code; SMP needs a real
+/// concurrent root-use/removal pin before this local gate can be widened.
+pub const SYNCHRONOUS: u32 = 5;
 pub const PENDING: i32 = 1;
 /// Exact contract fingerprint includes boundary sizes, pointer width and the
 /// full-width provider-reference signature (bit 56) request tickets (bit 57), and device/DMA
-/// references (bit 58) and backing-source references (bit 59). ABI remains unreleased v1. Generated
+/// references (bit 58), backing-source references (bit 59), and ticket-free
+/// synchronous resident calls (bit 60). ABI remains unreleased v1. Generated
 /// metadata and the resident reject a mismatch before entry.
-pub const LAYOUT_ID: u64 =
-    64 | (48 << 8) | (24 << 24) | (64 << 40) | (1 << 56) | (1 << 57) | (1 << 58) | (1 << 59);
+pub const LAYOUT_ID: u64 = 64
+                           | (48 << 8)
+                           | (24 << 24)
+                           | (64 << 40)
+                           | (1 << 56)
+                           | (1 << 57)
+                           | (1 << 58)
+                           | (1 << 59)
+                           | (1 << 60);
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(core::mem::size_of::<Host>() == 48);

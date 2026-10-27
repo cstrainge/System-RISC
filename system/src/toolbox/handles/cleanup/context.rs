@@ -1,15 +1,32 @@
 //! One resident cleanup catalog serves boot-time modules and GUI processes.
 //! These borrowed Rust contexts never cross an independently linked ABI.
 #![forbid(unsafe_code)]
+use mac_object_table::domain::ReleasedResource;
 #[cfg(target_arch = "riscv64")]
-use mac_object_table::{domain::ReleasedResource, registry::Release};
+use mac_object_table::registry::Release;
 
-#[cfg(target_arch = "riscv64")]
 use super::Failure;
 
 pub(crate) trait Context
 {
     fn driver_registry(&mut self) -> Option<&mut crate::drivers::Registry>;
+
+    fn release_scrap_extension(&mut self, ticket: ReleasedResource,
+                               registration: crate::toolbox::scrap::extension::Registration)
+                               -> Result<(), Failure>
+    {
+        #[cfg(target_arch = "riscv64")]
+        {
+            crate::kernel::with_scrap_owned(ticket, |ticket, manager| {
+                manager.extension_release(ticket, registration)
+            }).unwrap_or_else(|(cause, ticket)| Err(Failure::scrap_unavailable(ticket, cause)))
+        }
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            let _ = registration;
+            Err(Failure::context_unavailable(ticket, "Scrap extension manager"))
+        }
+    }
 
     #[cfg(target_arch = "riscv64")]
     fn desktop(&mut self) -> Option<&mut crate::toolbox::runtime::Desktop>;

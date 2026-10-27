@@ -587,7 +587,8 @@ impl Desktop
                             super::handles::cleanup::Cause::MemoryManagerUnavailable(error)
                             | super::handles::cleanup::Cause::FileManagerUnavailable(error)
                             | super::handles::cleanup::Cause::RequestRegistryUnavailable(error)
-                            | super::handles::cleanup::Cause::DeviceManagerUnavailable(error) =>
+                            | super::handles::cleanup::Cause::DeviceManagerUnavailable(error)
+                            | super::handles::cleanup::Cause::ScrapManagerUnavailable(error) =>
                             {
                                 error.status()
                             }

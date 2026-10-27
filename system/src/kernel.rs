@@ -297,6 +297,12 @@ pub(crate) fn with_scrap<R>(call: impl FnOnce(&mut crate::toolbox::scrap::Manage
 {
     SCRAP.with(call)
 }
+pub(crate) fn with_scrap_owned<A, R>(argument: A,
+                                     call: impl FnOnce(A, &mut crate::toolbox::scrap::Manager) -> R)
+                                     -> Result<R, (AccessError, A)>
+{
+    SCRAP.with_owned(argument, call)
+}
 pub(crate) fn fonts() -> Option<&'static crate::toolbox::quickdraw::fonts::FontManager>
 {
     FONTS.get()
@@ -446,6 +452,7 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                            mac_formats::Error::Malformed("module RAM reservation unavailable")
                        })?;
     crate::drivers::initialize(module_arena,crate::machine::MODULE_TARGET).map_err(|_|mac_formats::Error::Malformed("module runtime initialization failed"))?;
+    crate::toolbox::scrap::extension_runtime::initialize().map_err(|_| mac_formats::Error::Malformed("Scrap extension service initialization failed"))?;
     crate::machine::driver_devices::initialize().map_err(|_| {
                                                     mac_formats::Error::Malformed("device service \
                                                                                    initialization \
@@ -548,9 +555,10 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     // Module-owned icon families resolve the System palettes at admission.
     // Publish immutable resource/font services before entering any driver;
     // exports still mount before Finder or another application can run.
-    crate::drivers::discover().map_err(|_| {
-                                  mac_formats::Error::Malformed("module discovery failed")
-                              })?;
+    crate::drivers::discover(&mut boot_screen).map_err(|_| {
+                                                  mac_formats::Error::Malformed("module discovery \
+                                                                                 failed")
+                                              })?;
     if let Err(status) = crate::toolbox::files::mount_startup_exports()
     {
         serial!("HOST_VOLUME_DISCOVERY_FAILED status={}", status);
@@ -672,6 +680,12 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
 /// Entry validated the pinned BootInfo and switched onto the owned System stack.
 unsafe fn start_services(info: &BootInfo) -> *const SystemServices
 {
+    if info.flags & mac_abi::BOOT_GRAPHICAL != 0
+       && let Err(error) = crate::machine::emergency::prepare()
+    {
+        crate::machine::emergency::serial(format_args!("BOOT_EMERGENCY_KIT_REJECTED: {error}"));
+        return ptr::null();
+    }
     unsafe {
         HEAP.initialize(addr_of_mut!(HEAP_MEMORY).cast::<u8>(),
                         crate::machine::memory::SYSTEM_HEAP_BYTES);
@@ -727,19 +741,83 @@ unsafe fn start_services(info: &BootInfo) -> *const SystemServices
 
 pub fn allocation_failed(layout: Layout) -> !
 {
-    let free = heap_available();
-    serial!("SYSTEM_ALLOCATION_FAILED: {} bytes, {} free", layout.size(), free);
-    halt()
+    crate::machine::emergency::enter(crate::emergency::Kind::OutOfMemory,
+                                     format_args!("Resident System allocation failed: {} bytes, \
+                                                   alignment {}. Allocator statistics are not \
+                                                   read on the failure path.",
+                                                  layout.size(),
+                                                  layout.align()))
+}
+
+/// Native-only qualification rides an authenticated faulting definition in a
+/// private image; it adds no application-visible trap or production switch.
+#[cfg(feature = "emergency-qualification")]
+pub(crate) fn qualify_emergency_with_allocator_locked() -> !
+{
+    #[cfg(feature = "emergency-qualification-oom")]
+    {
+        use core::alloc::GlobalAlloc;
+
+        let (_, capacity) = HEAP.statistics();
+        let layout = match capacity.checked_add(1)
+                                   .and_then(|size| Layout::from_size_align(size, 4096).ok())
+        {
+            Some(layout) => layout,
+            None =>
+            {
+                crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                                 format_args!("Emergency qualification layout \
+                                                               could not be represented"))
+            }
+        };
+        // Invoke the real backend directly. Rust's global allocation intrinsic
+        // may elide an unused allocation/deallocation pair and assume success;
+        // that would qualify an optimizer assumption instead of heap refusal.
+        let pointer = unsafe { HEAP.alloc(layout) };
+        if !pointer.is_null()
+        {
+            unsafe {
+                HEAP.dealloc(pointer, layout);
+            }
+            crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                             format_args!("Emergency qualification expected \
+                                                           real allocator refusal"));
+        }
+        crate::machine::emergency::serial(format_args!("EMERGENCY_QUALIFICATION_OOM_REFUSED \
+                                                        bytes={} align={}",
+                                                       layout.size(),
+                                                       layout.align()));
+        HEAP.qualify_while_locked(|| alloc::alloc::handle_alloc_error(layout))
+    }
+    #[cfg(not(feature = "emergency-qualification-oom"))]
+    HEAP.qualify_while_locked(|| {
+            panic!("EMERGENCY_QUALIFICATION_PANIC: allocator and ordinary Desktop locks are held")
+        })
 }
 pub fn panic(info: &PanicInfo<'_>) -> !
 {
-    serial!("SYSTEM_PANIC: {}", info);
-    halt()
-}
-fn halt() -> !
-{
-    loop
+    // PanicInfo's Display may invoke an arbitrary application-supplied
+    // formatter, including one waiting on the very lock we interrupted. Only
+    // borrow already-captured text and primitive source fields on this path.
+    let message =
+        info.message()
+            .as_str()
+            .unwrap_or("Dynamic panic arguments were not evaluated: their formatter may require \
+                        a failed allocator or an interrupted lock.");
+    match info.location()
     {
-        core::hint::spin_loop();
+        Some(location) =>
+        {
+            crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                             format_args!("{message}\nSource: {}:{}:{}",
+                                                          location.file(),
+                                                          location.line(),
+                                                          location.column()))
+        }
+        None =>
+        {
+            crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                             format_args!("{message}\nSource unavailable"))
+        }
     }
 }

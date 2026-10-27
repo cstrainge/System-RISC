@@ -12,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
@@ -61,8 +62,161 @@ def build():
                    env=dict(os.environ, SYSTEM7_VM_STATE_DIR=str(STATE), SYSTEM7_PYTHON=sys.executable))
 
 
+def clipboard_backend(executable):
+    """Inspect capabilities only; never read or change the host clipboard."""
+    try:
+        result = subprocess.run([str(executable), '-machine', 'none', '-nodefaults',
+                                 '-display', 'none', '-chardev', 'help'],
+                                capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f'Cannot check QEMU clipboard backend: {error}') from error
+    output = result.stdout + result.stderr
+    if result.returncode != 0 or not re.search(r'^\s*qemu-vdagent\s*$', output, re.MULTILINE):
+        cause = output.strip()[-2000:]
+        raise RuntimeError('Selected QEMU does not advertise the qemu-vdagent clipboard backend; '
+                           'install QEMU with qemu-vdagent and a clipboard-capable graphical display'
+                           + (f':\n{cause}' if cause else ''))
+
+
+def qmp_schema(executable):
+    """Query a CPU-less QEMU over an owned loopback connection, then reap it.
+
+    Windows QEMU's console stdio transport cannot reliably consume piped QMP.
+    The listener retains its ephemeral port until QEMU connects as a client;
+    no existing monitor, display, disk or clipboard is opened.
+    """
+    process = None
+    with tempfile.TemporaryFile() as errors, socket.socket() as listener:
+        try:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen(1)
+            listener.settimeout(10)
+            port = listener.getsockname()[1]
+            process = subprocess.Popen([str(executable), '-machine', 'none', '-nodefaults',
+                                        '-display', 'none', '-S', '-qmp', f'tcp:127.0.0.1:{port}',
+                                        '-monitor', 'none', '-serial', 'none'],
+                                       stdin=subprocess.DEVNULL, stdout=errors, stderr=errors,
+                                       **process_options())
+            connection, _ = listener.accept()
+            with connection:
+                deadline = time.monotonic() + 10
+                pending = bytearray()
+                limit = 16 * 1024 * 1024
+                def budget():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError('QMP schema exchange exceeded its 10-second deadline')
+                    connection.settimeout(remaining)
+                def receive():
+                    budget()
+                    while b'\n' not in pending:
+                        if len(pending) >= limit:
+                            raise ValueError('QMP response exceeded 16 MiB')
+                        budget()
+                        data = connection.recv(min(65536, limit - len(pending)))
+                        if not data:
+                            raise ValueError('QMP response ended early')
+                        pending.extend(data)
+                    end = pending.index(b'\n') + 1
+                    line = bytes(pending[:end])
+                    del pending[:end]
+                    value = json.loads(line)
+                    if not isinstance(value, dict):
+                        raise ValueError('QMP response must be an object')
+                    return value
+                if 'QMP' not in receive():
+                    raise ValueError('selected QEMU did not send its QMP greeting')
+                def execute(command, wait_result=True):
+                    budget()
+                    connection.sendall((json.dumps({'execute': command, 'id': command}) + '\n').encode())
+                    if not wait_result:
+                        return
+                    for _ in range(64):
+                        response = receive()
+                        if response.get('id') == command:
+                            if 'error' in response:
+                                raise RuntimeError(str(response['error']))
+                            if 'return' not in response:
+                                raise ValueError(f'QMP {command} omitted its result')
+                            return response['return']
+                    raise ValueError(f'QMP {command} exceeded 64 unrelated messages')
+                execute('qmp_capabilities')
+                schema = execute('query-qmp-schema')
+                # Some QEMU versions close the socket before delivering
+                # quit's reply. Successful process exit acknowledges quit.
+                execute('quit', wait_result=False)
+            process.wait(timeout=5)
+            if process.returncode != 0 or not isinstance(schema, list):
+                raise ValueError('selected QEMU did not return a valid GTK clipboard schema')
+            return schema
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            errors.seek(0)
+            detail = errors.read().decode('utf-8', errors='replace').strip()[-2000:]
+            raise RuntimeError(f'Cannot query the selected QEMU GTK clipboard schema: {error}'
+                               + (f': {detail}' if detail else '')) from error
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+
+
+def gtk_clipboard_schema(executable):
+    """GTK clipboard is an explicit runtime field beginning with QEMU 11.1."""
+    schema = qmp_schema(executable)
+    # Introspection deliberately masks non-ABI type names with opaque IDs.
+    # Follow query-display-options -> tagged DisplayOptions -> gtk variant.
+    records = {record['name']: record for record in schema
+               if isinstance(record, dict) and isinstance(record.get('name'), str)}
+    command = records.get('query-display-options', {})
+    display = records.get(command.get('ret-type'), {})
+    variants = display.get('variants', [])
+    if not isinstance(variants, list):
+        raise RuntimeError('Selected QEMU returned malformed GTK display variants')
+    gtk = next((variant for variant in variants
+                if isinstance(variant, dict) and variant.get('case') == 'gtk'), None)
+    if gtk is None:
+        return False
+    members = records.get(gtk.get('type'), {}).get('members', [])
+    if not isinstance(members, list):
+        raise RuntimeError('Selected QEMU returned malformed GTK clipboard members')
+    for member in members:
+        if isinstance(member, dict) and member.get('name') == 'clipboard':
+            value_type = records.get(member.get('type'), {})
+            return value_type.get('meta-type') == 'builtin' and value_type.get('json-type') == 'boolean'
+    return False
+
+
+def select_clipboard(frontend, preference):
+    if preference is not None and type(preference) is not bool:
+        raise ValueError('clipboard must be automatic (None) or an explicit boolean')
+    if preference is False:
+        return False, 'Host clipboard sharing was explicitly disabled with --no-clipboard'
+    if frontend not in ('gtk', 'native', 'cocoa'):
+        return False, 'Headless display has no host clipboard peer; guest clipboard stays local'
+    executable = native_executable() if frontend == 'native' else 'qemu-system-riscv64'
+    try:
+        if executable is None:
+            raise RuntimeError('Windows QEMU is missing; install it or set SYSTEM7_WINDOWS_QEMU')
+        clipboard_backend(executable)
+        if frontend in ('gtk', 'native') and not gtk_clipboard_schema(executable):
+            raise RuntimeError('Selected QEMU GTK has no declared clipboard facility; use QEMU '
+                               'with the DisplayGTK.clipboard schema (11.1 or newer). '
+                               'Legacy GTK builds remain local-only until separately qualified')
+    except RuntimeError as error:
+        reason = str(error)
+        print('Host clipboard unavailable; keeping the guest clipboard local: ' + reason,
+              file=sys.stderr)
+        return False, reason
+    return True, 'QEMU advertises the standard vdagent backend; graphical clipboard peer requested'
+
+
 def launch(state, frontend='headless', extra_disks=(), *, writable=False, preserve=False,
-           qmp_port=4447, host_bridge=None, expected_exports=None, vector_bits=None):
+           qmp_port=4447, host_bridge=None, expected_exports=None, vector_bits=None,
+           clipboard=None):
     """Launch a private disk copy. Tests default to read-only and fresh copies.
 
     Persistent desktop starts retain their writable copy while the build is unchanged.
@@ -72,6 +226,12 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     state = Path(state).resolve()
     if os.name == 'nt':
         frontend = {'headless': 'native-headless', 'gtk': 'native'}.get(frontend, frontend)
+    clipboard, clipboard_reason = select_clipboard(frontend, clipboard)
+    extra_disks = tuple(extra_disks)
+    extra_limit = 3 if clipboard else 4
+    if len(extra_disks) > extra_limit:
+        raise ValueError(f'At most {extra_limit} additional disks fit beside graphics/input'
+                         + (' and clipboard devices; use --no-clipboard for four extra disks' if clipboard else ' devices'))
     if host_bridge is not None and (type(host_bridge) is not int or not 0 < host_bridge < 65536):
         raise ValueError('host bridge must be an explicit loopback TCP port')
     if expected_exports is not None and (type(expected_exports) is not int
@@ -122,6 +282,9 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
                'gtk': 'gtk,gl=on,zoom-to-fit=off,scale=2', 'headless': 'none',
                'cocoa': f'cocoa,zoom-to-fit=off,scale={cocoa_zoom}',
                'native-headless': 'none'}[frontend]
+    if clipboard and frontend in ('gtk', 'native'):
+        # Selection was qualified against this exact binary's QMP schema.
+        display += ',clipboard=on'
     serial = state / 'serial.log'
     serial.write_text('')
     identity = str(uuid.uuid4())
@@ -131,24 +294,28 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
             '-drive', 'if=none,id=startup,format=qcow2,readonly=' + ('off' if writable else 'on') + ',file=' + host_path(disk),
             '-global', 'virtio-mmio.force-legacy=false',
             '-device', 'virtio-blk-device,drive=startup,bus=virtio-mmio-bus.0',
-            '-device', 'ramfb', '-device', 'virtio-keyboard-device', '-device', 'virtio-tablet-device',
+            '-device', 'ramfb',
+            '-device', 'virtio-keyboard-device,bus=virtio-mmio-bus.1',
+            '-device', 'virtio-tablet-device,bus=virtio-mmio-bus.2',
             '-display', display, '-nic', 'none', '-serial', 'file:' + host_path(serial),
             '-parallel', 'none', '-monitor', 'none', '-qmp', monitor]
     if host_bridge is not None:
-        # Bus 3 is reserved for this optional transport. Extra disks start at 4.
+        # A dedicated named controller is the admitted transport profile.
         # The listener owns the explicit exports; this never exports a default
         # workspace or accepts an arbitrary QEMU device/command string.
         args.extend(['-chardev', f'socket,id=hostbridge,host=127.0.0.1,port={host_bridge},reconnect-ms=100',
-                     '-device', 'virtio-serial-device,bus=virtio-mmio-bus.3',
-                     '-device', 'virtconsole,chardev=hostbridge'])
+                     '-device', 'virtio-serial-device,id=hostserial,bus=virtio-mmio-bus.3,max_ports=2',
+                     '-device', 'virtserialport,bus=hostserial.0,nr=1,chardev=hostbridge,name=org.system-risc.host-filesystem'])
+    if clipboard:
+        args.extend(['-chardev', 'qemu-vdagent,id=clipboard,clipboard=on,mouse=off',
+                     '-device', 'virtio-serial-device,id=clipboardserial,bus=virtio-mmio-bus.4,max_ports=2',
+                     '-device', 'virtserialport,bus=clipboardserial.0,nr=1,chardev=clipboard,name=com.redhat.spice.0'])
     for index, source in enumerate(extra_disks, start=1):
-        if index > 4:
-            raise ValueError('At most four additional disks fit beside graphics/input devices')
         source = Path(source).resolve()
         destination = state / f'extra-{index}.raw'
         shutil.copyfile(source, destination)
         args.extend(['-drive',f'if=none,id=extra{index},format=raw,readonly=on,file='+host_path(destination),
-                     '-device',f'virtio-blk-device,drive=extra{index},bus=virtio-mmio-bus.{index+3}'])
+                     '-device',f'virtio-blk-device,drive=extra{index},bus=virtio-mmio-bus.{index+3+int(clipboard)}'])
     env = dict(os.environ)
     if frontend == 'gtk':
         env['GDK_BACKEND'] = 'x11'
@@ -156,6 +323,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
         settings = {'GDK_BACKEND': 'win32', 'GDK_SCALE': '1'}
         env.update(settings)
         env['WSLENV'] = ':'.join(filter(None, [env.get('WSLENV', ''), *settings]))
+    (state / 'clipboard.json').write_text(json.dumps({'configured': clipboard, 'reason': clipboard_reason}, indent=2) + '\n')
     (state / 'command.json').write_text(json.dumps(args, indent=2) + '\n')
     (state / 'qmp-endpoint.json').write_text(json.dumps(endpoint, indent=2) + '\n')
     with (state / 'qemu.log').open('wb') as log:
@@ -198,7 +366,10 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
         raise
 
 
-def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_exports=(), transfer=True):
+def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_exports=(), transfer=True,
+          clipboard=None):
+    if clipboard is not None and type(clipboard) is not bool:
+        raise ValueError('clipboard must be automatic (None) or an explicit boolean')
     count = len(exports) + len(readonly_exports) + int(transfer)
     if count > 16:
         raise ValueError('select at most sixteen explicit host exports')
@@ -207,17 +378,17 @@ def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_
     except (OSError, ValueError, RuntimeError):
         pass
     else:
-        if exports or readonly_exports:
-            raise RuntimeError('VM is already running; stop it before changing host exports')
+        if exports or readonly_exports or clipboard is not None:
+            raise RuntimeError('VM is already running; stop it before changing host exports or clipboard sharing')
         print(json.dumps({'already_running': status}))
         return
-    if rebuild:
-        build()
     if frontend == 'auto':
         if sys.platform == 'darwin':
             frontend = 'cocoa'
         else:
             frontend = 'native' if os.name == 'nt' or native_executable() else 'gtk'
+    if rebuild:
+        build()
     companion = None
     port = None
     initialize = None
@@ -239,12 +410,13 @@ def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_
             'port': port}, indent=2) + '\n')
         process, endpoint = launch(STATE, frontend, writable=True, preserve=True,
                                    qmp_port=qmp_port, host_bridge=port,
-                                   expected_exports=count or None)
+                                   expected_exports=count or None, clipboard=clipboard)
     except BaseException:
         if companion is not None:
             system7_exports.stop(companion)
         raise
     print(json.dumps({'pid': process.pid, 'frontend': 'native-gtk' if frontend == 'native' else frontend,
+                      'clipboard_policy': 'automatic' if clipboard is None else 'enabled' if clipboard else 'disabled',
                       'bootrom': describe(STATE / 'bootrom.bin'),
                       'disk': describe(STATE / 'system7.qcow2'), 'build_dir': str(build_dir())}))
     print((STATE / 'serial.log').read_text(encoding='utf-8', errors='replace'))
@@ -311,6 +483,8 @@ def main():
     launch_parser.add_argument('--no-build', action='store_true')
     launch_parser.add_argument('--no-transfer', action='store_true',
                                help='Disable the default Transfer volume for this VM')
+    launch_parser.add_argument('--no-clipboard', action='store_true',
+                               help='Disable automatic host clipboard sharing; keep the guest clipboard local')
     from system7_exports import export_argument
     launch_parser.add_argument('--export', action='append', default=[], type=export_argument,
                                metavar='NAME=PATH', help='Expose a prepared read/write host volume (repeatable)')
@@ -354,7 +528,7 @@ def main():
     elif args.action == 'start':
         start(args.frontend, not args.no_build, args.qmp_port,
               exports=args.export, readonly_exports=args.read_only_export,
-              transfer=not args.no_transfer)
+              transfer=not args.no_transfer, clipboard=False if args.no_clipboard else None)
     elif args.action == 'check':
         check(not args.no_build, args.state_dir.resolve() if args.state_dir else None)
     elif args.action == 'status':

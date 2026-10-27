@@ -144,12 +144,15 @@ fn dispatch_frame(frame: &mut TrapFrame) -> *mut TrapFrame
 
     if frame.cause != 9
     {
-        serial!("SYSTEM_TRAP: cause={} pc=0x{:x} value=0x{:x}", frame.cause, frame.pc, frame.value);
-        if let Some((kind, id)) = crate::context::current_thread_context().definitions.current()
-        {
-            serial!("DEFINITION_FAULT_FATAL: kind=0x{kind:08x} id={id}");
-        }
-        super::power::fatal_shutdown();
+        super::emergency::serial(format_args!("SYSTEM_TRAP: cause={} pc=0x{:x} value=0x{:x}",
+                                              frame.cause, frame.pc, frame.value));
+        // No context/definition/registry lock is safe to reacquire after an
+        // arbitrary privileged fault. Report trusted CPU fields and terminate;
+        // this is a terminal screen/reset, never mid-call recovery (M-D04).
+        super::emergency::enter(crate::emergency::Kind::PrivilegedFault,
+                                format_args!("Privileged trap: cause {}, PC {:#x}, fault \
+                                              address {:#x}. Execution cannot safely continue.",
+                                             frame.cause, frame.pc, frame.value));
     }
     let thread = crate::context::current_thread_context();
     let scope = thread.traps.enter();
@@ -454,20 +457,27 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             let bytes = kind.to_be_bytes();
             let family = core::str::from_utf8(&bytes).unwrap_or("invalid family");
             let identity = crate::context::current_thread_context().identity();
-            serial!("DEFINITION_PANIC_FATAL: kind={family} id={id} app={} thread={} flags={} \
-                     {text}",
-                    identity.app.0,
-                    identity.thread.0,
-                    report.flags);
+            super::emergency::serial(format_args!("DEFINITION_PANIC_FATAL: kind={family} \
+                                                   id={id} app={} thread={} flags={} {text}",
+                                                  identity.app.0, identity.thread.0, report.flags));
             if report.flags & mac_abi::definitions::DefinitionPanic::TRUNCATED != 0
             {
-                serial!("DEFINITION_DIAGNOSTIC_TRUNCATED: retained {} UTF-8 bytes", report.length);
+                super::emergency::serial(format_args!("DEFINITION_DIAGNOSTIC_TRUNCATED: \
+                                                       retained {} UTF-8 bytes",
+                                                      report.length));
             }
             if report.flags & mac_abi::definitions::DefinitionPanic::FORMAT_FAILED != 0
             {
-                serial!("DEFINITION_DIAGNOSTIC_FORMAT_FAILED: partial panic information retained");
+                super::emergency::serial(format_args!("DEFINITION_DIAGNOSTIC_FORMAT_FAILED: \
+                                                       partial panic information retained"));
             }
-            super::power::fatal_shutdown()
+            #[cfg(feature = "emergency-qualification")]
+            crate::kernel::qualify_emergency_with_allocator_locked();
+            #[cfg(not(feature = "emergency-qualification"))]
+            super::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                    format_args!("Definition panic: {family} {id}, app {}, \
+                                                  thread {}, flags {}.\n{text}",
+                                                 identity.app.0, identity.thread.0, report.flags))
         }
         THEME =>
         {

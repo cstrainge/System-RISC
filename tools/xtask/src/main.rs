@@ -4,6 +4,7 @@ mod boot;
 mod docs;
 mod authority;
 mod resource_map;
+mod modules;
 
 use std::{env,
           ffi::OsStr,
@@ -115,6 +116,7 @@ impl Workspace
                         | "native-mdef")
                || matches!(*package,
                            "vhost-transport"
+                           | "vdagent-channel"
                            | "vhost-filesystem"
                            | "stuffit-filesystem"
                            | "qemu-power-device")
@@ -142,7 +144,8 @@ impl Workspace
                            "native-mdef", "native-progress-bar-cdef", "native-static-text-cdef"])?;
         self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "cursor-test",
                            "panic-test", "resedit", "reactor", "bootrom", "vhost-transport",
-                           "vhost-filesystem", "stuffit-filesystem", "qemu-power-device"])?;
+                           "vhost-filesystem", "stuffit-filesystem", "qemu-power-device",
+                           "vdagent-channel"])?;
         // Keep userspace's allocation-free serde graph independent of the
         // resident System's alloc-enabled serde. Cargo feature unification
         // across the kernel and an app must not impose a userspace heap.
@@ -159,6 +162,7 @@ impl Workspace
              ("apps/resedit", "Res Edit", "ResEdit"),
              ("apps/reactor", "Reactor Room", "Reactor"),
              ("drivers/vhost-transport", "Host Transport", "HostTransport"),
+             ("drivers/vdagent-channel", "VDAgent Channel", "VDAgentChannel"),
              ("drivers/vhost-filesystem", "Host Filesystem", "HostFilesystem"),
              ("drivers/stuffit-filesystem", "StuffIt Filesystem", "StuffItFilesystem"),
              ("drivers/qemu-power-device", "Qemu Power Device", "QemuPowerDevice")]
@@ -187,6 +191,9 @@ impl Workspace
                 }
             }
         }
+        let module_bytes = modules::footprint(&reports, self.platform.memory()?.module_capacity())?;
+        println!("Resident module code: {module_bytes} of {} reserved bytes",
+                 self.platform.memory()?.module_capacity());
         let report = json!({"platform": self.platform.name, "target": &self.platform.rust_target, "guest_profile": "release", "build_dir": self.build, "toolchain": {"cargo": output(self.cargo().arg("--version"))?, "rustc": output(Command::new("rustc").arg("--version"))?}, "packages": reports});
         write_json(&self.build.join("dist/build.json"), &report)?;
         Ok(reports)

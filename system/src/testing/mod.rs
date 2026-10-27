@@ -4,12 +4,18 @@
 #[cfg(test)]
 #[path = "../../../crates/mac-toolbox/tests/support/allocations.rs"]
 pub(crate) mod allocations;
+#[cfg(test)]
+#[path = "../drivers/runtime/admission.rs"]
+mod module_admission;
 pub mod shared;
 pub mod menus;
 pub mod scrap;
+pub mod scrap_extension;
 pub mod drag;
 pub mod inspection;
 pub mod presentation;
+#[path = "../boot_screen/strip.rs"]
+pub mod extension_startup;
 pub mod power;
 mod worlds;
 mod textedit;

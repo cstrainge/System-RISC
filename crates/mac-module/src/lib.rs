@@ -45,6 +45,48 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ClassId(pub [u8; 4]);
+/// Extension execution domain is selected by resource ID, never by the optional
+/// resource name. A bundle may carry both parts; each loader admits only its
+/// own target. This selector does not provide Finder execution machinery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtensionTarget
+{
+    System,
+    Finder
+}
+impl ExtensionTarget
+{
+    pub const ALL: [Self; 2] = [Self::System, Self::Finder];
+    pub const RESOURCE_TYPE: [u8; 4] = *b"RV64";
+
+    pub const fn resource_id(self) -> i16
+    {
+        match self
+        {
+            Self::System => 0,
+            Self::Finder => 1
+        }
+    }
+
+    pub const fn from_resource_id(id: i16) -> Option<Self>
+    {
+        match id
+        {
+            0 => Some(Self::System),
+            1 => Some(Self::Finder),
+            _ => None
+        }
+    }
+
+    pub const fn conventional_name(self) -> &'static str
+    {
+        match self
+        {
+            Self::System => "System",
+            Self::Finder => "Finder"
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PackageKind
 {
@@ -53,6 +95,15 @@ pub enum PackageKind
 }
 impl PackageKind
 {
+    pub const fn code_type(self) -> [u8; 4]
+    {
+        match self
+        {
+            Self::Driver => *b"DRVR",
+            Self::Extension => ExtensionTarget::RESOURCE_TYPE
+        }
+    }
+
     pub const fn file_type(self) -> [u8; 4]
     {
         match self

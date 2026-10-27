@@ -49,7 +49,7 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
     for name in ["success", "success-reversed", "no-device", "no-device-reversed", "unknown-bus",
                  "wrong-directory", "missing-contract", "duplicate-contract", "wrong-abi",
                  "wrong-target", "wrong-layout", "obsolete-host-layout", "obsolete-device-layout",
-                 "obsolete-source-layout", "bad-digest", "bad-relocation"]
+                 "obsolete-source-layout", "obsolete-sync-contract", "bad-digest", "bad-relocation"]
     {
         let mut entries = resources.clone();
         let contract = entries.iter().position(|r| r.kind == *b"DABI").unwrap();
@@ -107,6 +107,11 @@ fn native_modules_relocate_resolve_dependencies_and_reject_bad_packages_before_e
             "obsolete-source-layout" =>
             {
                 let obsolete = mac_module::abi::LAYOUT_ID & !(1u64 << 59);
+                entries[contract].data[120..128].copy_from_slice(&obsolete.to_le_bytes());
+            }
+            "obsolete-sync-contract" =>
+            {
+                let obsolete = mac_module::abi::LAYOUT_ID & !(1u64 << 60);
                 entries[contract].data[120..128].copy_from_slice(&obsolete.to_le_bytes());
             }
             "bad-digest" =>
@@ -379,11 +384,13 @@ fn module_workspace_is_separate_from_stored_code_and_budget_failures_explain_the
         [(heap + 1,
           stack,
           5 * 1024 * 1024,
-          "module declared heap exceeds the 4 MiB admission budget"),
+          "module declared heap exceeds the 4 MiB admission budget; rebuild the corresponding \
+           package part"),
          (heap,
           stack + 1,
           5 * 1024 * 1024,
-          "module callback stack exceeds the 64 KiB admission budget"),
+          "module callback stack exceeds the 64 KiB admission budget; rebuild the corresponding \
+           package part"),
          (heap,
           stack,
           mac_module::MAX_LOAD_BYTES + 4096,
@@ -394,6 +401,8 @@ fn module_workspace_is_separate_from_stored_code_and_budget_failures_explain_the
             mac_formats::module::Package::inspect(&bad, *b"DRVR").err()
                                                                  .expect("over-budget module was \
                                                                           admitted");
+        assert!(matches!(error, mac_formats::Error::BudgetExceeded(_)),
+                "budget refusal lost its typed identity: {error}");
         assert_eq!(error.to_string(), message);
         assert!(mac_formats::module::Package::inspect(&good, *b"DRVR").is_ok(),
                 "failed admission contaminated later validation");
@@ -404,5 +413,7 @@ fn module_workspace_is_separate_from_stored_code_and_budget_failures_explain_the
         mac_formats::module::Package::inspect(&oversized, *b"DRVR").err()
                                                                    .expect("oversized stored \
                                                                             code was admitted");
-    assert_eq!(error.to_string(), "module stored code exceeds the 2 MiB loading budget");
+    assert!(matches!(error, mac_formats::Error::BudgetExceeded(_)));
+    assert_eq!(error.to_string(),
+               "module stored code exceeds the 2 MiB loading budget; rebuild the package");
 }

@@ -1,9 +1,13 @@
 # Control panels and System extensions
 
-Status: design/backlog, tracked as [platform workstream P6](CORE-TOOLBOX-ROADMAP.md#p6--control-panels-and-kernel-extensions).
-No kernel-extension loader or native control-panel API is implemented by this
-document. Native Rust extensions may execute in the kernel; their configuration
-UI remains an application using the public Toolbox.
+Status: shared native module loading, target-selected resource admission and the
+retained startup strip are resident. Native startup acceptance covers real INIT
+success, package artwork, theme fallback and initialization refusal. General
+extension services, scheduled module workers and native control panels remain
+required [platform workstream P6](CORE-TOOLBOX-ROADMAP.md#p6--control-panels-and-kernel-extensions)
+work. Native Rust System extensions may execute in the kernel; their configuration
+UI remains an application using the public Toolbox. Finder extension execution
+has a separate, still-staged host/SDK boundary.
 
 [P14 driver extraction](DRIVERS.md) uses this module machinery for in-kernel
 device drivers. The minimal block path stays built into System; other backends
@@ -50,8 +54,13 @@ they do not require migration code. Report the reset or required recreation.
 ## Resource packaging and build
 
 - Package native extension code as independently linked executable resources in
-  native resource-fork files installed in System Folder/Extensions. Declare a
-  native `INIT` entry and its extension calling convention explicitly; driver
+  native resource-fork files installed in System Folder/Extensions. The `INIT`
+  **file type** classifies an extension package; it is not the native executable
+  resource type. System extension code lives in `RV64` resource **0**, and Finder
+  extension code lives in `RV64` resource **1**. Our builders conventionally name
+  these resources **System** and **Finder**, respectively. Names are optional:
+  loaders select the numeric execution target and never require or infer a
+  target from a resource name. Declare each target's calling convention explicitly; driver
   packages are installed separately in System Folder/Drivers and use the P14
   DRVR entry and mandatory DABI contract. Never cast an application or WDEF entry
   to either ABI. Metadata declares stable
@@ -72,6 +81,17 @@ they do not require migration code. Report the reset or required recreation.
   steps. Installing or rebuilding a module must not require editing System's
   source or statically linking its implementation into every application.
 
+Each extension part pairs its `RV64` code envelope with an `EABI` contract of
+the same ID: `RV64/0` with `EABI/0` for System, `RV64/1` with `EABI/1` for Finder.
+A bundle may contain either part or both, with separate code digests, entry
+points and admission. Set `extension_target` to `system` (the INIT build default)
+or `finder` in `resources.json`; the packager and generated Rust resource keys
+use the same selector. The shared package inspector can validate either part.
+System's resident loader admits only part 0; missing System code never falls
+back to Finder code, even if resource names are exchanged. Finder execution,
+its author SDK/calling boundary and lifecycle acceptance remain staged; validating
+or packaging part 1 does not execute it or give it kernel-module authority.
+
 ## Extension icons and startup presentation
 
 Each extension may provide its own icon family through the same `resources.json`
@@ -87,11 +107,32 @@ artwork during the strip's lifetime, and avoid resource decoding or extension
 callbacks in the paint path. The boot UI owns this presentation; extension
 authors supply resources and do not implement a drawing/tracking loop.
 
+An enabled extension whose required facilities refuse activation is displayed
+with an **X over its package icon**. Retain the package's admitted artwork (or
+theme fallback) and the named, actionable refusal; update only that icon's bounds.
+The crossed icon reports a failed activation, not a successfully published
+provider. Required subscriptions/hooks/services remain unpublished after failed
+initialization. For Host Clipboard, missing or incompatible required QEMU
+channel/protocol facilities refuse activation and use this failure presentation;
+System continues with the resident local Scrap service.
+
 Qualify strip placement, icon sizing and appearance against original Macintosh
 startup evidence when implementing the resources/presentation phase. The Host
 Clipboard Extension is the first end-to-end customer: its package-owned icon must
 appear during actual startup, with a separate missing-artwork fallback case.
 The extension's own icon is distinct from icons it registers for file kinds.
+
+`extension_startup_native.rs` qualifies the actual optimized discovery path with
+three dedicated INIT probes. An external debugger stops at the discovery symbol
+derived from that image's ELF, then at its real return before desktop construction.
+Public Icon Utilities render the expected package/theme pixels; canonical Rust
+assertions check the complete before/after frames, the refusal X, and unchanged
+pixels outside the three cells. The refused initializer remains unpublished, and
+the desktop subsequently accepts physical input. Capture processes and media are
+owned privately, including quarantine when a child cannot be reaped. This test
+adds no production delay or instrumentation. It does not activate the production
+Host Clipboard package, admit a worker, qualify original INIT execution, or claim
+an original Macintosh pixel match for native X styling or row wrapping.
 
 ## Rust extension services
 
@@ -160,6 +201,14 @@ them; do not use cross-directory fallback discovery. Resolve declared dependenci
 across both package sets in the shared registry. Define named service-ready phases
 and allowed calls per phase; initialize shared registries once before concurrent
 extension execution or secondary-hart startup.
+
+Resident discovery validates the complete resource map, every indexed payload
+range/length and all present EABI contracts, then allocates and loads only the
+System RV64 code. It does not load or validate the Finder code body, digest or
+relocations. A Finder-only package is not a resident initializer and receives an
+actionable missing-System diagnostic. Finder's future loader owns that code
+validation, activation, lifetime and accounting; System never runs part 1 during
+boot.
 
 Resolve a deterministic dependency graph: reject duplicate identities, cycles,
 missing prerequisites and incompatible versions before entry. Do not use file

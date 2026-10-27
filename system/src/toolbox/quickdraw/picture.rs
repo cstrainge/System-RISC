@@ -1861,9 +1861,9 @@ mod tests
                                     **p != expected
                                 })
                                 .count();
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let directory =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../results/\
-                                                                   quickdraw-reference");
+            mac_build::paths::build_dir(&workspace).join("acceptance/quickdraw-reference");
         std::fs::create_dir_all(&directory).unwrap();
         let mut ppm = b"P6\n220 120\n255\n".to_vec();
         for p in &pixels

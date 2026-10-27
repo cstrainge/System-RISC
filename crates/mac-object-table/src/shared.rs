@@ -7,7 +7,7 @@ use spinning_top::Spinlock;
 
 use crate::domain::{CapacityPolicy, CompletionError, DirectoryError, DomainId, KindCode,
                     LedgerReadError, LedgerSummary, OwnerIndex, PoolError, PoolSummary,
-                    ReleasedResource, ResourceKey};
+                    QuarantineRetry, ReleasedResource, ResourceKey};
 
 /// The resident adapter must mask local interrupts/preemption before calling
 /// the closure, and restore the previous state afterward, including nesting.
@@ -213,6 +213,17 @@ impl<G: InvocationGate> OwnerRef<G>
     pub fn resume_quarantined(&self) -> Option<ReleasedResource>
     {
         self.access(OwnerIndex::resume_quarantined)
+    }
+
+    pub(crate) fn quarantine_retry(&self) -> QuarantineRetry
+    {
+        self.access(|index| index.quarantine_retry())
+    }
+
+    pub(crate) fn resume_quarantined_in(&self, cursor: &mut QuarantineRetry)
+                                        -> Option<ReleasedResource>
+    {
+        self.access(|index| index.resume_quarantined_in(cursor))
     }
 
     pub fn live(&self) -> usize

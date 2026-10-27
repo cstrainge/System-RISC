@@ -37,15 +37,27 @@ pub fn inspect(bytes: &[u8]) -> Result<Value>
                  .find(|r| r.kind == kind && r.id == 0)
                  .ok_or_else(|| error("missing native code or ABI resource"))
     };
-    let module = if [*b"DRVR", *b"INIT"].contains(&file.file_type)
+    let mut modules = Vec::new();
+    if file.file_type == *b"DRVR"
     {
-        Some(mac_formats::module::Package::inspect(&resources, file.file_type)?)
+        modules.push(mac_formats::module::Package::inspect(&resources, file.file_type)?);
     }
-    else
+    else if file.file_type == *b"INIT"
     {
-        None
-    };
-    let (descriptor, code) = if let Some(module) = &module
+        for target in mac_module::ExtensionTarget::ALL
+        {
+            if resources.iter().any(|r| r.kind == *b"EABI" && r.id == target.resource_id())
+            {
+                modules.push(mac_formats::module::Package::inspect_extension(&resources, target)?);
+            }
+        }
+        if modules.is_empty()
+        {
+            // Use the shared validator's actionable missing-System diagnostic.
+            modules.push(mac_formats::module::Package::inspect(&resources, file.file_type)?);
+        }
+    }
+    let (descriptor, code) = if let Some(module) = modules.first()
     {
         (module.code.descriptor, &module.code.code)
     }
@@ -62,6 +74,11 @@ pub fn inspect(bytes: &[u8]) -> Result<Value>
         "format_version": mac_formats::native::FORMAT_VERSION, "entry": descriptor.entry, "code_sha256": sha256(code), "resource_fork_sha256": sha256(&file.resources), "macbinary_sha256": sha256(bytes),
         "segments": image.segments.iter().map(|s| json!({"address": descriptor.load_base + s.offset, "offset": s.offset, "length": s.length, "flags": s.flags})).collect::<Vec<_>>(),
         "resources": resources.iter().map(|r| json!({"type": text::decode(&r.kind), "id": r.id, "name": r.name.as_deref().map(text::decode), "attributes": r.attributes, "size": r.data.len(), "sha256": sha256(&r.data)})).collect::<Vec<_>>()
+        ,"extension_parts": if file.file_type == *b"INIT" { modules.iter().map(|module| json!({
+            "target": mac_module::ExtensionTarget::from_resource_id(module.contract.code_id).map(mac_module::ExtensionTarget::conventional_name),
+            "resource_type": text::decode(&module.contract.code_type), "resource_id": module.contract.code_id,
+            "entry": module.code.descriptor.entry, "load_base": module.code.descriptor.load_base, "load_limit": module.code.descriptor.load_limit
+        })).collect::<Vec<_>>() } else { Vec::new() }
     }))
 }
 

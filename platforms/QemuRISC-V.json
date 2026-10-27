@@ -6,12 +6,13 @@
   "qemu_ram": "8G",
   "fatal_shutdown": {
     "failure_value": 78643,
+    "restart_value": 30583,
     "device": "sifive-test"
   },
   "memory": {
     "page_bytes": 4096,
     "ram_base": "0x80000000",
-    "minimum_ram_bytes": "0x8000000",
+    "minimum_ram_bytes": "0x10000000",
     "flash": {
       "base": "0x20000000",
       "bytes": "0x2000000"
@@ -44,7 +45,7 @@
     },
     "modules": {
       "base": "0x87800000",
-      "bytes": "0x600000"
+      "bytes": "0x800000"
     },
     "application_relocation_base": "0x83000000",
     "fdt_tail_bytes": "0x200000",

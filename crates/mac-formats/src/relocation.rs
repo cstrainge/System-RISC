@@ -28,7 +28,11 @@ pub fn patches(table: &[u8], base: u64, extent: u64, destination: u64,
     {
         return Err(Error::Malformed("invalid relocation count"));
     }
-    let mut output = Vec::new();
+    let image_end =
+        base.checked_add(extent).ok_or(Error::Malformed("relocation extent overflow"))?;
+    destination.checked_add(extent).ok_or(Error::Malformed("relocation destination overflow"))?;
+    // Untrusted count and record geometry must be valid before they drive
+    // allocation. Read values only in the output pass, once per relocation.
     let mut previous = 0;
     for (i, record) in table[8..].as_chunks::<8>().0.iter().enumerate()
     {
@@ -39,10 +43,20 @@ pub fn patches(table: &[u8], base: u64, extent: u64, destination: u64,
             return Err(Error::Malformed("invalid or overlapping relocation"));
         }
         previous = offset + u64::from(width);
+        if previous > extent
+        {
+            return Err(Error::Malformed("relocation outside initialized image"));
+        }
+    }
+    let mut output = Vec::new();
+    output.try_reserve_exact(count)
+          .map_err(|_| Error::AllocationFailed("native relocation patch allocation failed"))?;
+    for record in table[8..].as_chunks::<8>().0
+    {
+        let offset = u32le(record, 0)? as u64;
+        let width = record[4];
         let old = read(offset, width)?;
-        if old < base
-           || old
-              > base.checked_add(extent).ok_or(Error::Malformed("relocation extent overflow"))?
+        if old < base || old > image_end
         {
             return Err(Error::Malformed("relocation target outside image"));
         }

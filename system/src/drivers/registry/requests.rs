@@ -122,21 +122,30 @@ impl Requests
         self.slots.binary_search_by_key(&id, |slot| slot.receipt.id()).ok()
     }
 
-    pub(super) fn insert(&mut self, subject: &Subject, value: Request) -> Result<u64>
+    /// Synchronous resident calls authenticate the same nesting boundary but
+    /// cannot publish requests or retain cancellation state.
+    pub(super) fn validate_parent(&self, subject: &Subject, caller: u64, origin: Origin)
+                                  -> Result<Option<CompletionKey>>
     {
         let parent = subject.current_request();
         if let Some(receipt) = parent
         {
             let record = self.store.completing(&receipt).ok_or(Error::RequestParent)?;
             let invoking = record.value.get();
-            if value.origin != Origin::Direct
+            if origin != Origin::Direct
                || !invoking.active
-               || invoking.module != value.caller
+               || invoking.module != caller
                || !record.subject.scope().same_scope(subject.scope())
             {
                 return Err(Error::RequestParent);
             }
         }
+        Ok(parent)
+    }
+
+    pub(super) fn insert(&mut self, subject: &Subject, value: Request) -> Result<u64>
+    {
+        let parent = self.validate_parent(subject, value.caller, value.origin)?;
         self.slots.try_reserve(1).map_err(|_| Error::Exhausted)?;
         let cancellation = if value.origin == Origin::Direct && parent.is_none()
         {
