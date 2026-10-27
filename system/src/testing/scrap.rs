@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use mac_abi::*;
 
 use crate::state::TryState;
+pub use crate::toolbox::scrap::{ChangeError, Revision, Snapshot, SnapshotContent};
 static SESSION: Mutex<Option<Arc<TryState<crate::toolbox::scrap::Manager>>>> = Mutex::new(None);
 static SCOPE: Mutex<()> = Mutex::new(());
 struct Cleanup;
@@ -14,6 +15,44 @@ impl Drop for Cleanup
     {
         *SESSION.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
+}
+
+fn state() -> Result<Arc<TryState<crate::toolbox::scrap::Manager>>, Status>
+{
+    SESSION.lock().unwrap_or_else(|error| error.into_inner()).clone().ok_or(NOT_SUPPORTED)
+}
+/// Read-only probe over the same production store reached by public SDK calls.
+/// This bypasses no guest registration gate: it is a host acceptance fixture.
+pub fn snapshot() -> Result<Snapshot, Status>
+{
+    state()?.with(|manager| manager.snapshot()).map_err(crate::state::AccessError::status)
+}
+#[derive(Debug)]
+pub enum ProbeError
+{
+    Unavailable(Status),
+    Change(ChangeError)
+}
+impl core::fmt::Display for ProbeError
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Unavailable(_) =>
+            {
+                f.write_str("Scrap acceptance store is unavailable; install the fixture and retry")
+            }
+            Self::Change(cause) => cause.fmt(f)
+        }
+    }
+}
+pub fn compare_replace(expected: Revision, text: &str) -> Result<Revision, ProbeError>
+{
+    state().map_err(ProbeError::Unavailable)?
+           .with(|manager| manager.compare_replace_text(expected, text))
+           .map_err(|error| ProbeError::Unavailable(error.status()))?
+           .map_err(ProbeError::Change)
 }
 pub fn with_services<R>(run: impl FnOnce(&SystemServices) -> R) -> R
 {

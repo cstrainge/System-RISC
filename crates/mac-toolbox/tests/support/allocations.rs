@@ -13,12 +13,24 @@ fn allocation(size: usize) -> bool
             let value = mode.get();
             let selected = value != 0
                            && (value <= 2
+                               || value == 5
                                || SIZE.try_with(|target| target.get() == size).unwrap_or(false));
-            if selected
+            let ordinal = if selected
             {
-                let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
+                ALLOCATIONS.try_with(|n| {
+                               let next = n.get() + 1;
+                               n.set(next);
+                               next
+                           })
+                           .unwrap_or(0)
             }
-            value == 2 || value == 3 && selected
+            else
+            {
+                0
+            };
+            value == 2
+            || value == 3 && selected
+            || value == 5 && SIZE.try_with(|target| target.get() == ordinal).unwrap_or(false)
         })
         .unwrap_or(false)
 }
@@ -60,6 +72,20 @@ static ALLOCATOR: Allocator = Allocator;
 pub struct Observe;
 impl Observe
 {
+    /// Refuse one observed admission by ordinal, without knowing a resident
+    /// structure's layout or mirroring its allocation implementation.
+    pub fn fail_nth(ordinal: usize) -> Self
+    {
+        assert!(ordinal > 0);
+        ALLOCATIONS.with(|count| count.set(0));
+        SIZE.with(|target| target.set(ordinal));
+        MODE.with(|mode| {
+                assert_eq!(mode.get(), 0);
+                mode.set(5);
+            });
+        Self
+    }
+
     pub fn begin(refuse: bool, size: Option<usize>) -> Self
     {
         ALLOCATIONS.with(|n| n.set(0));
