@@ -1,6 +1,6 @@
 //! A shared resource search chain for native applications and resident managers.
 #![forbid(unsafe_code)]
-use alloc::{collections::BTreeSet, vec::Vec};
+use alloc::vec::Vec;
 
 use mac_abi::{resources::*, *};
 use mac_formats::{resource::Resource, text};
@@ -70,78 +70,53 @@ impl<'a> Manager<'a>
         scope
     }
 
-    pub fn all(self, scope: mac_abi::resources::Scope)
-               -> Result<Vec<(Scope, &'a Resource)>, Status>
+    fn selected(self, scope: Scope) -> Result<[(Scope, &'a [Resource]); 3], Status>
     {
+        let empty = (SYSTEM, &[][..]);
         if let Some(image) = scope.image_id()
         {
             let resources =
                 self.images.ok_or(BAD_ARGUMENT)?.resources(image).ok_or(BAD_ARGUMENT)?;
-            return Ok(resources.iter().map(|resource| (scope, resource)).collect());
+            return Ok([(scope, resources), empty, empty]);
         }
-        if ![CHAIN, SYSTEM, APPLICATION].contains(&scope)
+        match scope
         {
-            return Err(BAD_ARGUMENT);
-        }
-        let mut resources = Vec::new();
-        if scope == CHAIN || scope == APPLICATION
-        {
-            for r in self.application
+            CHAIN =>
             {
-                resources.push((self.resolved_scope(APPLICATION), r));
+                Ok([(self.resolved_scope(APPLICATION), self.application),
+                    (SYSTEM, self.system),
+                    (SYSTEM, self.fonts)])
             }
+            APPLICATION => Ok([(self.resolved_scope(APPLICATION), self.application), empty, empty]),
+            SYSTEM => Ok([(SYSTEM, self.system), (SYSTEM, self.fonts), empty]),
+            _ => Err(BAD_ARGUMENT)
         }
-        if scope == CHAIN || scope == SYSTEM
-        {
-            for r in self.system.iter().chain(self.fonts)
-            {
-                resources.push((SYSTEM, r));
-            }
-        }
-        Ok(resources)
     }
 
-    pub fn get(self, scope: mac_abi::resources::Scope, key: ResourceKey)
-               -> Result<(Scope, &'a Resource), Status>
+    pub(crate) fn iter(self, scope: Scope)
+                       -> Result<impl Iterator<Item = (Scope, &'a Resource)>, Status>
     {
-        if let Some(image) = scope.image_id()
-        {
-            let resources =
-                self.images.ok_or(BAD_ARGUMENT)?.resources(image).ok_or(BAD_ARGUMENT)?;
-            return resources.iter()
-                            .find(|resource| resource.kind == key.kind && resource.id == key.id)
-                            .map(|resource| (scope, resource))
-                            .ok_or(NOT_FOUND);
-        }
-        // Lookup is allocation-free, including nested manager/resource requests.
-        if (scope == CHAIN || scope == APPLICATION)
-           && let Some(r) = self.application.iter().find(|r| r.kind == key.kind && r.id == key.id)
-        {
-            return Ok((self.resolved_scope(APPLICATION), r));
-        }
-        if (scope == CHAIN || scope == SYSTEM)
-           && let Some(r) =
-               self.system.iter().chain(self.fonts).find(|r| r.kind == key.kind && r.id == key.id)
-        {
-            return Ok((SYSTEM, r));
-        }
-        if ![CHAIN, SYSTEM, APPLICATION].contains(&scope)
-        {
-            Err(BAD_ARGUMENT)
-        }
-        else
-        {
-            Err(NOT_FOUND)
-        }
+        Ok(self.selected(scope)?
+               .into_iter()
+               .flat_map(|(origin, rows)| rows.iter().map(move |row| (origin, row))))
     }
 
-    pub fn named(self, scope: mac_abi::resources::Scope, kind: [u8; 4], name: &str)
+    pub fn get(self, scope: Scope, key: ResourceKey) -> Result<(Scope, &'a Resource), Status>
+    {
+        self.iter(scope)?.find(|(_, row)| row.kind == key.kind && row.id == key.id).ok_or(NOT_FOUND)
+    }
+
+    pub fn named(self, scope: Scope, kind: [u8; 4], name: &str)
                  -> Result<(Scope, &'a Resource), Status>
     {
-        self.all(scope)?
-            .into_iter()
-            .find(|(_, r)| {
-                r.kind == kind && r.name.as_ref().is_some_and(|bytes| text::decode(bytes) == name)
+        self.iter(scope)?
+            .find(|(_, row)| {
+                row.kind == kind && row.name.as_ref().is_some_and(|bytes| {
+                                                         bytes.iter()
+                                                              .copied()
+                                                              .map(text::character)
+                                                              .eq(name.chars())
+                                                     })
             })
             .ok_or(NOT_FOUND)
     }
@@ -156,13 +131,18 @@ impl<'a> Manager<'a>
                                       ..Default::default() };
         if let Some(name) = &resource.name
         {
-            let name = text::decode(name);
-            let mut length = name.len().min(info.name.len());
-            while !name.is_char_boundary(length)
+            let mut length = 0;
+            for byte in name
             {
-                length -= 1;
+                let mut buffer = [0; 4];
+                let value = text::character(*byte).encode_utf8(&mut buffer);
+                if value.len() > info.name.len() - length
+                {
+                    break;
+                }
+                info.name[length..length + value.len()].copy_from_slice(value.as_bytes());
+                length += value.len();
             }
-            info.name[..length].copy_from_slice(&name.as_bytes()[..length]);
             info.name_length = length as u32;
         }
         info
@@ -184,24 +164,19 @@ impl<'a> Manager<'a>
             COUNT =>
             {
                 call.index =
-                    self.all(call.scope)?.iter().filter(|(_, r)| r.kind == call.key.kind).count()
-                    as u32;
+                    self.iter(call.scope)?.filter(|(_, r)| r.kind == call.key.kind).count() as u32;
                 return Ok(());
             }
             COUNT_TYPES | TYPE_INDEX =>
             {
-                let mut seen = BTreeSet::new();
-                let types: Vec<_> = self.all(call.scope)?
-                                        .iter()
-                                        .filter_map(|(_, r)| seen.insert(r.kind).then_some(r.kind))
-                                        .collect();
+                let mut types = distinct_ordered(self.iter(call.scope)?.map(|(_, row)| row.kind))?;
                 if call.operation == COUNT_TYPES
                 {
                     call.index = types.len() as u32;
                 }
                 else
                 {
-                    call.key.kind = *types.get(call.index as usize).ok_or(NOT_FOUND)?;
+                    call.key.kind = types.nth(call.index as usize).ok_or(NOT_FOUND)?;
                 }
                 return Ok(());
             }
@@ -214,8 +189,7 @@ impl<'a> Manager<'a>
             NAMED => self.named(call.scope, call.key.kind, name)?,
             INDEX =>
             {
-                self.all(call.scope)?
-                    .into_iter()
+                self.iter(call.scope)?
                     .filter(|(_, r)| r.kind == call.key.kind)
                     .nth(call.index as usize)
                     .ok_or(NOT_FOUND)?
@@ -248,13 +222,24 @@ impl<'a> Manager<'a>
                 return Err(BAD_ARGUMENT);
             }
             let length = usize::from(*data.get(at).ok_or(BAD_ARGUMENT)?);
-            let value = text::decode(data.get(at + 1..at + 1 + length).ok_or(BAD_ARGUMENT)?);
-            if output.len() < value.len()
+            let bytes = data.get(at + 1..at + 1 + length).ok_or(BAD_ARGUMENT)?;
+            let needed =
+                bytes.iter()
+                     .try_fold(0usize, |n, &byte| n.checked_add(text::character(byte).len_utf8()))
+                     .ok_or(NO_MEMORY)?;
+            if output.len() < needed
             {
                 return Err(NO_MEMORY);
             }
-            output[..value.len()].copy_from_slice(value.as_bytes());
-            call.transferred = value.len();
+            let mut cursor = 0;
+            for byte in bytes
+            {
+                let mut buffer = [0; 4];
+                let value = text::character(*byte).encode_utf8(&mut buffer);
+                output[cursor..cursor + value.len()].copy_from_slice(value.as_bytes());
+                cursor += value.len();
+            }
+            call.transferred = cursor;
         }
         if call.operation == READ
         {
@@ -269,6 +254,27 @@ impl<'a> Manager<'a>
         Ok(())
     }
 }
+/// Fallible deduplication retaining first-appearance order. Sorting value/index
+/// pairs avoids infallible tree-node allocation and per-item linear rescans.
+pub(crate) fn distinct_ordered<T: Copy + Ord>(values: impl Iterator<Item = T>)
+                                              -> Result<impl ExactSizeIterator<Item = T>, Status>
+{
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(values.size_hint().1.unwrap_or(0)).map_err(|_| NO_MEMORY)?;
+    for (index, value) in values.enumerate()
+    {
+        if rows.len() == rows.capacity()
+        {
+            rows.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        }
+        rows.push((value, index));
+    }
+    rows.sort_unstable();
+    rows.dedup_by_key(|(value, _)| *value);
+    rows.sort_unstable_by_key(|(_, index)| *index);
+    Ok(rows.into_iter().map(|(value, _)| value))
+}
+
 #[cfg(test)]
 mod tests
 {

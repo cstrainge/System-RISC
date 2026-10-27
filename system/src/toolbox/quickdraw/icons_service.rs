@@ -1,6 +1,6 @@
 //! Icons resolve through the same immutable resource chain as pictures and fonts.
 #![forbid(unsafe_code)]
-use alloc::{collections::BTreeSet, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 
 use mac_abi::{quickdraw::*,
               resources::{CHAIN, SYSTEM},
@@ -15,16 +15,28 @@ use crate::toolbox::resources::manager::Manager;
 pub fn file_id(resources: &[mac_formats::resource::Resource], creator: [u8; 4], file_type: [u8; 4])
                -> Result<i16, Status>
 {
-    let refs: Vec<_> = resources.iter()
-                                .map(|r| {
-                                    ResourceRef { kind:       r.kind,
-                                                  id:         r.id,
-                                                  name:       r.name.as_deref(),
-                                                  attributes: r.attributes,
-                                                  data:       &r.data }
-                                })
-                                .collect();
+    let refs = resource_refs(resources.iter())?;
     icons::file_icon_id(&refs, creator, file_type).map_err(status)
+}
+/// Reserve the borrowed catalogue before decoding a file-local bundle.
+fn resource_refs<'a>(resources: impl Iterator<Item = &'a mac_formats::resource::Resource>)
+                     -> Result<Vec<ResourceRef<'a>>, Status>
+{
+    let mut refs = Vec::new();
+    refs.try_reserve_exact(resources.size_hint().1.unwrap_or(0)).map_err(|_| NO_MEMORY)?;
+    for row in resources
+    {
+        if refs.len() == refs.capacity()
+        {
+            refs.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        }
+        refs.push(ResourceRef { kind:       row.kind,
+                                id:         row.id,
+                                name:       row.name.as_deref(),
+                                attributes: row.attributes,
+                                data:       &row.data });
+    }
+    Ok(refs)
 }
 pub fn status(error: icons::IconError) -> Status
 {
@@ -32,8 +44,10 @@ pub fn status(error: icons::IconError) -> Status
     {
         icons::IconError::NotFound => NOT_FOUND,
         icons::IconError::Unsupported => NOT_SUPPORTED,
-        icons::IconError::TooLarge => NO_MEMORY,
-        _ => BAD_ARGUMENT
+        icons::IconError::TooLarge | icons::IconError::Allocation => NO_MEMORY,
+        icons::IconError::Truncated
+        | icons::IconError::InvalidData
+        | icons::IconError::MissingMask => BAD_ARGUMENT
     }
 }
 pub fn family(manager: Manager<'_>, scope: mac_abi::resources::Scope, id: i16)
@@ -66,26 +80,20 @@ pub(crate) fn load_file(files: &mut crate::toolbox::files::Manager, manager: Man
 }
 pub fn query(manager: Manager<'_>, call: &mut IconCall) -> Result<(), Status>
 {
-    let resources = manager.all(call.scope)?;
+    let resources = manager.iter(call.scope)?;
     match call.operation
     {
         ICON_COUNT | ICON_AT =>
         {
-            let mut seen = BTreeSet::new();
-            let ids: Vec<_> =
-                resources.iter()
-                         .filter_map(|(_, r)| {
-                             (matches!(&r.kind, b"ICN#" | b"ics#" | b"ICON" | b"SICN" | b"cicn")
-                              && seen.insert(r.id)).then_some(r.id)
-                         })
-                         .collect();
+            let mut ids=crate::toolbox::resources::manager::distinct_ordered(resources.filter_map(|(_,row)|
+                matches!(&row.kind,b"ICN#"|b"ics#"|b"ICON"|b"SICN"|b"cicn").then_some(row.id)))?;
             if call.operation == ICON_COUNT
             {
                 call.index = ids.len() as u32;
             }
             else
             {
-                call.id = *ids.get(call.index as usize).ok_or(NOT_FOUND)?;
+                call.id = ids.nth(call.index as usize).ok_or(NOT_FOUND)?;
             }
             Ok(())
         }
@@ -103,16 +111,7 @@ pub fn query(manager: Manager<'_>, call: &mut IconCall) -> Result<(), Status>
             {
                 // BNDL local IDs are meaningful only inside their own fork.
                 // Never let another scope's FREF or icon shadow this mapping.
-                let refs: Vec<_> = resources.iter()
-                                            .filter(|(origin, _)| *origin == scope)
-                                            .map(|(_, r)| {
-                                                ResourceRef { kind:       r.kind,
-                                                              id:         r.id,
-                                                              name:       r.name.as_deref(),
-                                                              attributes: r.attributes,
-                                                              data:       &r.data }
-                                            })
-                                            .collect();
+                let refs = resource_refs(manager.iter(scope)?.map(|(_, row)| row))?;
                 match icons::file_icon_id(&refs, call.creator, call.file_type)
                 {
                     Ok(id) =>
@@ -133,16 +132,7 @@ pub fn query(manager: Manager<'_>, call: &mut IconCall) -> Result<(), Status>
             // The System's type bundles own generic driver/extension icons.
             // A third-party creator need not duplicate these resources; its
             // specific bundle above still wins. This remains resource based.
-            let refs: Vec<_> = resources.iter()
-                                        .filter(|(origin, _)| *origin == SYSTEM)
-                                        .map(|(_, r)| {
-                                            ResourceRef { kind:       r.kind,
-                                                          id:         r.id,
-                                                          name:       r.name.as_deref(),
-                                                          attributes: r.attributes,
-                                                          data:       &r.data }
-                                        })
-                                        .collect();
+            let refs = resource_refs(manager.iter(SYSTEM)?.map(|(_, row)| row))?;
             call.id = icons::file_icon_id(&refs, *b"MACS", call.file_type).map_err(status)?;
             call.origin = SYSTEM;
             Ok(())
@@ -188,7 +178,7 @@ impl Drawing
         let family = IconFamily::from_lookup(0, |candidate, id| {
                          (id == 0 && candidate == kind).then_some(data)
                      }).map_err(status)?;
-        Ok(Self { family: family.into(),
+        Ok(Self { family: Arc::try_new(family).map_err(|_| NO_MEMORY)?,
                   destination,
                   flags: IconFlags::default(),
                   port: Port::default() })
@@ -213,7 +203,9 @@ impl Drawing
     pub fn new(manager: Manager<'_>, call: &IconCall, port: Port) -> Result<Self, Status>
     {
         let flags = IconFlags::from_transform(call.flags).map_err(status)?;
-        Ok(Self { family: family(manager, call.scope, call.id)?.into(),
+        Ok(Self { family: Arc::try_new(family(manager, call.scope, call.id)?).map_err(|_| {
+                                                                                 NO_MEMORY
+                                                                             })?,
                   destination: call.destination,
                   flags,
                   port })

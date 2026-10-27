@@ -1,6 +1,8 @@
 //! Safe decoding and drawing of classic icon families and Finder bundle mappings.
 #![forbid(unsafe_code)]
-use alloc::{vec, vec::Vec};
+#[cfg(test)]
+use alloc::vec;
+use alloc::vec::Vec;
 
 use mac_formats::resource::{Resource, ResourceRef};
 
@@ -14,7 +16,8 @@ pub enum IconError
     InvalidData,
     MissingMask,
     Unsupported,
-    TooLarge
+    TooLarge,
+    Allocation
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IconFlags
@@ -94,18 +97,19 @@ impl IconDisplay
 #[derive(Clone, Debug)]
 pub struct IconPalettes
 {
-    pub four:  Vec<u32>,
-    pub eight: Vec<u32>
+    pub four:  [u32; 16],
+    pub eight: [u32; 256]
 }
 impl Default for IconPalettes
 {
     fn default() -> Self
     {
         // Original Macintosh ROM clut 4; supplied resource tables override this.
-        let four = vec![0xffffff, 0xfcf305, 0xff6402, 0xdd0806, 0xf20884, 0x4600a5, 0x0000d4,
-                        0x02abea, 0x1fb714, 0x006411, 0x562c05, 0x90713a, 0xc0c0c0, 0x808080,
-                        0x404040, 0];
-        let mut eight = Vec::new();
+        let four = [0xffffff, 0xfcf305, 0xff6402, 0xdd0806, 0xf20884, 0x4600a5, 0x0000d4,
+                    0x02abea, 0x1fb714, 0x006411, 0x562c05, 0x90713a, 0xc0c0c0, 0x808080,
+                    0x404040, 0];
+        let mut eight = [0; 256];
+        let mut cursor = 0;
         for r in [255, 204, 153, 102, 51, 0]
         {
             for g in [255, 204, 153, 102, 51, 0]
@@ -114,7 +118,8 @@ impl Default for IconPalettes
                 {
                     if r != 0 || g != 0 || b != 0
                     {
-                        eight.push((r << 16) | (g << 8) | b);
+                        eight[cursor] = (r << 16) | (g << 8) | b;
+                        cursor += 1;
                     }
                 }
             }
@@ -123,14 +128,16 @@ impl Default for IconPalettes
         {
             for value in [238, 221, 187, 170, 136, 119, 85, 68, 34, 17]
             {
-                eight.push(value << channel);
+                eight[cursor] = value << channel;
+                cursor += 1;
             }
         }
         for value in [238, 221, 187, 170, 136, 119, 85, 68, 34, 17]
         {
-            eight.push(value * 0x010101);
+            eight[cursor] = value * 0x010101;
+            cursor += 1;
         }
-        eight.push(0);
+        eight[cursor] = 0;
         Self { four,
                eight }
     }
@@ -140,7 +147,7 @@ impl IconPalettes
     pub fn from_resource_refs(resources: &[ResourceRef<'_>]) -> Result<Self, IconError>
     {
         let mut result = Self::default();
-        for (id, target) in [(4, &mut result.four), (8, &mut result.eight)]
+        for (id, target) in [(4, &mut result.four[..]), (8, &mut result.eight[..])]
         {
             if let Some(resource) = find(resources, *b"clut", id)
             {
@@ -174,17 +181,23 @@ fn find<'a>(resources: &[ResourceRef<'a>], kind: [u8; 4], id: i16) -> Option<Res
 {
     resources.iter().find(|r| r.kind == kind && r.id == id).copied()
 }
-fn refs(resources: &[Resource]) -> Vec<ResourceRef<'_>>
+fn refs(resources: &[Resource]) -> Result<Vec<ResourceRef<'_>>, IconError>
 {
-    resources.iter()
-             .map(|r| {
-                 ResourceRef { kind:       r.kind,
-                               id:         r.id,
-                               name:       r.name.as_deref(),
-                               attributes: r.attributes,
-                               data:       &r.data }
-             })
-             .collect()
+    let mut result = allocated(resources.len())?;
+    result.extend(resources.iter().map(|r| {
+                                      ResourceRef { kind:       r.kind,
+                                                    id:         r.id,
+                                                    name:       r.name.as_deref(),
+                                                    attributes: r.attributes,
+                                                    data:       &r.data }
+                                  }));
+    Ok(result)
+}
+fn allocated<T>(count: usize) -> Result<Vec<T>, IconError>
+{
+    let mut values = Vec::new();
+    values.try_reserve_exact(count).map_err(|_| IconError::Allocation)?;
+    Ok(values)
 }
 fn word(data: &[u8], offset: usize) -> Result<u16, IconError>
 {
@@ -206,7 +219,8 @@ fn color_table(data: &[u8]) -> Result<Vec<(usize, u32)>, IconError>
         return Err(IconError::InvalidData);
     }
     let flags = word(data, 4)?;
-    let mut result = Vec::new();
+    data.get(8..8 + count * 8).ok_or(IconError::Truncated)?;
+    let mut result = allocated(count)?;
     for i in 0..count
     {
         let at = 8 + i * 8;
@@ -237,8 +251,9 @@ fn packed(data: &[u8], width: usize, height: usize, depth: u8, palette: &[u32],
     {
         return Err(IconError::Truncated);
     }
-    let mut pixels = Vec::with_capacity(width * height);
-    let mut alpha = Vec::with_capacity(width * height);
+    let count = width.checked_mul(height).ok_or(IconError::TooLarge)?;
+    let mut pixels = allocated(count)?;
+    let mut alpha = allocated(count)?;
     for y in 0..height
     {
         for x in 0..width
@@ -271,29 +286,38 @@ impl IconFamily
     pub fn from_lookup<'a>(id: i16, mut lookup: impl FnMut([u8; 4], i16) -> Option<&'a [u8]>)
                            -> Result<Self, IconError>
     {
-        let mut resources = Vec::new();
-        for (kind, resource_id) in [(*b"clut", 4),
-                                    (*b"clut", 8),
-                                    (*b"ICN#", id),
-                                    (*b"icl4", id),
-                                    (*b"icl8", id),
-                                    (*b"ics#", id),
-                                    (*b"ics4", id),
-                                    (*b"ics8", id),
-                                    (*b"ICON", id),
-                                    (*b"SICN", id),
-                                    (*b"cicn", id)]
+        const MEMBERS: [([u8; 4], i16); 11] = [(*b"clut", 4),
+                                               (*b"clut", 8),
+                                               (*b"ICN#", 0),
+                                               (*b"icl4", 0),
+                                               (*b"icl8", 0),
+                                               (*b"ics#", 0),
+                                               (*b"ics4", 0),
+                                               (*b"ics8", 0),
+                                               (*b"ICON", 0),
+                                               (*b"SICN", 0),
+                                               (*b"cicn", 0)];
+        let empty = ResourceRef { kind:       [0; 4],
+                                  id:         0,
+                                  name:       None,
+                                  attributes: 0,
+                                  data:       &[] };
+        let mut resources = [empty; MEMBERS.len()];
+        let mut count = 0;
+        for (kind, fixed) in MEMBERS
         {
+            let resource_id = if kind == *b"clut" { fixed } else { id };
             if let Some(data) = lookup(kind, resource_id)
             {
-                resources.push(ResourceRef { kind,
-                                             id: resource_id,
-                                             name: None,
-                                             attributes: 0,
-                                             data });
+                resources[count] = ResourceRef { kind,
+                                                 id: resource_id,
+                                                 name: None,
+                                                 attributes: 0,
+                                                 data };
+                count += 1;
             }
         }
-        Self::from_resource_refs(&resources, id)
+        Self::from_resource_refs(&resources[..count], id)
     }
 
     /// Keyboard icons use their own resource-ID namespace but the small-icon format.
@@ -322,7 +346,7 @@ impl IconFamily
 
     pub fn from_resources(resources: &[Resource], id: i16) -> Result<Self, IconError>
     {
-        Self::from_resource_refs(&refs(resources), id)
+        Self::from_resource_refs(&refs(resources)?, id)
     }
 
     pub fn from_resource_refs(resources: &[ResourceRef<'_>], id: i16) -> Result<Self, IconError>
@@ -333,7 +357,35 @@ impl IconFamily
     pub fn with_palettes(resources: &[ResourceRef<'_>], id: i16, palettes: &IconPalettes)
                          -> Result<Self, IconError>
     {
-        let mut images = Vec::new();
+        let small_count = if let Some(r) = find(resources, *b"SICN", id)
+        {
+            if r.data.is_empty() || !r.data.len().is_multiple_of(32)
+            {
+                return Err(IconError::InvalidData);
+            }
+            r.data.len() / 32
+        }
+        else
+        {
+            0
+        };
+        if !resources.iter().any(|r| {
+                                r.id == id
+                                && matches!(&r.kind,
+                                            b"ICN#"
+                                            | b"icl4"
+                                            | b"icl8"
+                                            | b"ics#"
+                                            | b"ics4"
+                                            | b"ics8"
+                                            | b"ICON"
+                                            | b"SICN"
+                                            | b"cicn")
+                            })
+        {
+            return Err(IconError::NotFound);
+        }
+        let mut images = allocated(8usize.checked_add(small_count).ok_or(IconError::TooLarge)?)?;
         for (size, mono, color4, color8) in
             [(32, *b"ICN#", *b"icl4", *b"icl8"), (16, *b"ics#", *b"ics4", *b"ics8")]
         {
@@ -356,7 +408,7 @@ impl IconFamily
                 images.push(packed(&r.data[..bytes], size, size, 1, &[0xffffff, 0], mask)?);
             }
             for (kind, depth, palette) in
-                [(color4, 4, &palettes.four), (color8, 8, &palettes.eight)]
+                [(color4, 4, &palettes.four[..]), (color8, 8, &palettes.eight[..])]
             {
                 if let Some(r) = find(resources, kind, id)
                 {
@@ -454,19 +506,36 @@ impl IconImage
         }
         // Open icons replace their source colors with a patterned mask silhouette.
         // Validate other transforms before mutating any destination pixels.
-        let colors: Vec<u32> = if flags.open
+        let mut inline = None::<[u32; 32 * 32]>;
+        let mut large;
+        let colors: &[u32] = if flags.open
         {
-            Vec::new()
+            &[]
+        }
+        else if display == IconDisplay::LogicalRgb
+                  && !flags.selected
+                  && !flags.disabled
+                  && self.pixels.iter().all(|pixel| pixel & 0xff000000 == 0)
+        {
+            &self.pixels
         }
         else
         {
-            self.pixels
-                .iter()
-                .zip(&self.mask)
-                .map(|(&pixel, &mask)| {
-                         if mask == 0 { Ok(0) } else { display.transform(pixel & 0xffffff, flags) }
-                     })
-                .collect::<Result<_, IconError>>()?
+            let target: &mut [u32] = if size <= 32 * 32
+            {
+                &mut inline.insert([0; 32 * 32])[..size]
+            }
+            else
+            {
+                large = allocated(size)?;
+                large.resize(size, 0);
+                &mut large
+            };
+            for ((target, &pixel), &mask) in target.iter_mut().zip(&self.pixels).zip(&self.mask)
+            {
+                *target = if mask == 0 { 0 } else { display.transform(pixel & 0xffffff, flags)? };
+            }
+            target
         };
         // Original Icon Utilities has a bitmap path for standard target sizes
         // and a region path for larger/scaled targets. Their outline and pattern
@@ -597,11 +666,12 @@ pub fn decode_cicn(data: &[u8]) -> Result<IconImage, IconError>
         let slot = palette.get_mut(index).ok_or(IconError::InvalidData)?;
         *slot = Some(color);
     }
-    let mut result = IconImage { width:  width as u16,
-                                 height: height as u16,
-                                 depth:  depth as u8,
-                                 pixels: Vec::with_capacity(width * height),
-                                 mask:   Vec::with_capacity(width * height) };
+    let mut result =
+        IconImage { width:  width as u16,
+                    height: height as u16,
+                    depth:  depth as u8,
+                    pixels: allocated(width.checked_mul(height).ok_or(IconError::TooLarge)?)?,
+                    mask:   allocated(width.checked_mul(height).ok_or(IconError::TooLarge)?)? };
     for y in 0..height
     {
         for x in 0..width
@@ -643,13 +713,18 @@ pub fn decode_bundle(data: &[u8]) -> Result<Bundle, IconError>
     let version = word(data, 4)?;
     let count = word(data, 6)?.wrapping_add(1);
     let mut cursor = 8;
-    let mut mappings = Vec::new();
+    if usize::from(count) > data.len().saturating_sub(cursor) / 6
+    {
+        return Err(IconError::Truncated);
+    }
+    let mut mappings = allocated(usize::from(count))?;
     for _ in 0..count
     {
         let kind = data.get(cursor..cursor + 4).ok_or(IconError::Truncated)?.try_into().unwrap();
         let count = word(data, cursor + 4)?.wrapping_add(1);
         cursor += 6;
-        let mut entries = Vec::new();
+        data.get(cursor..cursor + usize::from(count) * 4).ok_or(IconError::Truncated)?;
+        let mut entries = allocated(usize::from(count))?;
         for _ in 0..count
         {
             entries.push((word(data, cursor)? as i16, word(data, cursor + 2)? as i16));
@@ -678,11 +753,13 @@ pub fn decode_fref(data: &[u8]) -> Result<FileReference, IconError>
     let file_type = data.get(..4).ok_or(IconError::Truncated)?.try_into().unwrap();
     let local_icon_id = word(data, 4)? as i16;
     let length = usize::from(*data.get(6).ok_or(IconError::Truncated)?);
-    let name = data.get(7..7 + length).ok_or(IconError::Truncated)?.to_vec();
+    let bytes = data.get(7..7 + length).ok_or(IconError::Truncated)?;
     if data.len() != 7 + length
     {
         return Err(IconError::InvalidData);
     }
+    let mut name = allocated(length)?;
+    name.extend_from_slice(bytes);
     Ok(FileReference { file_type,
                        local_icon_id,
                        name })
@@ -774,7 +851,7 @@ mod tests
         let resources = vec![resource(*b"ics#", 7, ordinary),
                              resource(*b"kcs#", 7, keyboard),
                              resource(*b"kcs4", 7, vec![0; 128])];
-        let refs = refs(&resources);
+        let refs = refs(&resources).unwrap();
         let normal = IconFamily::from_resource_refs(&refs, 7).unwrap();
         let keyboard = IconFamily::keyboard_from_resource_refs(&refs, 7).unwrap();
         assert_eq!(normal.images.len(), 1);
@@ -819,8 +896,9 @@ mod tests
         let mut bundle = b"TEST\0\0\0\x01ICN#\0\0\0\x07\x12\x34FREF\0\0\0\x02\0\x63".to_vec();
         let resources = vec![resource(*b"BNDL", 128, bundle.clone()),
                              resource(*b"FREF", 99, b"TEXT\0\x07\0".to_vec())];
-        assert_eq!(file_icon_id(&refs(&resources), *b"TEST", *b"TEXT"), Ok(0x1234));
-        assert_eq!(file_icon_id(&refs(&resources), *b"NOPE", *b"TEXT"), Err(IconError::NotFound));
+        assert_eq!(file_icon_id(&refs(&resources).unwrap(), *b"TEST", *b"TEXT"), Ok(0x1234));
+        assert_eq!(file_icon_id(&refs(&resources).unwrap(), *b"NOPE", *b"TEXT"),
+                   Err(IconError::NotFound));
         bundle.pop();
         assert!(decode_bundle(&bundle).is_err());
         assert!(decode_fref(b"TEXT\0\0\x03hi").is_err());

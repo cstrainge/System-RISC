@@ -922,7 +922,7 @@ fn colored_animation_advance_and_timer_borrow_admitted_palettes_without_allocati
         assert_ne!(first, second,
                    "present must borrow the selected frame's palette, not a stale copied palette");
         let before = cursor.info().unwrap();
-        let observed = Observe::begin(true);
+        let observed = Observe::begin(true, None);
         let mut result = Ok(());
         for _ in 0..31
         {
@@ -938,7 +938,7 @@ fn colored_animation_advance_and_timer_borrow_admitted_palettes_without_allocati
         assert_ne!(after.flags & CURSOR_COLOR, 0);
         assert!(after.frame_index < after.frame_count);
         let old = after;
-        let observed = Observe::begin(true);
+        let observed = Observe::begin(true, None);
         let resource_refused = cursor.animate_resource(29, 1);
         let allocations = observed.finish();
         assert_eq!(resource_refused.err(),
@@ -952,7 +952,7 @@ fn colored_animation_advance_and_timer_borrow_admitted_palettes_without_allocati
         let mut different = after.cursor;
         different.image[0] ^= 0xffff;
         let colors = [0x123456; 256];
-        let observed = Observe::begin(true);
+        let observed = Observe::begin(true, None);
         let refused = cursor.set_color(different, &colors);
         let allocations = observed.finish();
         assert_eq!(refused.err(), Some(mac_toolbox::Error::NoMemory));
@@ -964,7 +964,7 @@ fn colored_animation_advance_and_timer_borrow_admitted_palettes_without_allocati
         assert!(cursor.advance_animation().is_ok(), "palette refusal must leave animation usable");
         assert!(cursor.set_color(different, &colors).is_ok(),
                 "new palette selection remains retryable");
-        let observed = Observe::begin(true);
+        let observed = Observe::begin(true, None);
         let same = cursor.set_color(different, &colors);
         let mut changed_image = different;
         changed_image.image[0] ^= 0xff;

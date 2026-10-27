@@ -17,7 +17,7 @@ fn managed_draw_highlight_value_and_cancel_do_not_allocate()
             system.controls().create_standard(WindowId(0), StandardKind::Button, state).unwrap();
         let control = button.control();
         control.draw().unwrap();
-        let observed = Observe::begin(false);
+        let observed = Observe::begin(false, None);
         let mut result = Ok(());
         for _ in 0..32
         {
@@ -63,7 +63,7 @@ fn title_allocation_refusal_preserves_state_capture_and_retry()
         let before = control.info().unwrap();
         let mut next = StandardState::new(Rect::new(4, 4, 94, 26), "After");
         next.value = 1;
-        let observed = Observe::begin(true);
+        let observed = Observe::begin(true, None);
         let result = control.configure(StandardKind::Button, next);
         let allocations = observed.finish();
         assert_eq!(result.err(), Some(Error::NoMemory));
@@ -72,7 +72,7 @@ fn title_allocation_refusal_preserves_state_capture_and_retry()
         let after = control.info().unwrap();
         assert!(before.standard == after.standard && before.tracking == after.tracking,
                 "refused configuration changed published state or capture");
-        let observed = Observe::begin(true);
+        let observed = Observe::begin(true, None);
         let cancel = control.cancel();
         let draw = control.draw();
         let allocations = observed.finish();

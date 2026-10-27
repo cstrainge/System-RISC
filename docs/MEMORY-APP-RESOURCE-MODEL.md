@@ -2723,3 +2723,25 @@ rather than becoming a missing-resource report. Public SDK refusal tests verify
 that animation remains usable after failed replacement and that existing-frame
 advances require no allocation. This is an allocator/presentation lifetime check,
 not closure of the separately open physical-input latency gate.
+
+
+### Icon and resource heap preflight
+
+Icon decoding reserves image, pixel, mask, color-table and bundle storage fallibly
+before publishing a drawing. Default palettes and the small lookup catalogue use
+bounded arrays. Standard 16/32-pixel icon transforms use bounded stack scratch;
+larger images admit scratch fallibly before changing destination pixels. Drawing
+snapshots share a fallibly admitted family. Refused decode or transform admission
+returns NoMemory without a partial icon; retry remains available.
+
+The resource chain is a borrowed iterator. Named lookup, count/index, inline
+metadata and Pascal-to-UTF-8 string output do not allocate temporary catalogues or
+strings. String output validates both serialized bounds and the full UTF-8 extent
+before writing. Type/icon enumeration uses fallible sort/dedup storage and preserves
+first-appearance order across the search chain. File-local bundle lookup never
+combines one fork's BNDL with another fork's FREF or icon.
+
+Public SDK refusal checks exercise these paths through resident services, including
+unchanged pixels/output buffers and retry. This closes these specific admission
+paths, not the remaining Picture/Region raster allocations or the complete
+recovery graph. The page-backed heap/account/reserve activation gate remains open.
