@@ -666,6 +666,16 @@ impl Registry
                                         -> Result<Interface>
     {
         let provider = self.authorize_call(caller, interface, input_len, output_len)?;
+        // A borrowed/inherited Subject is not the unique owner of its external
+        // root. Authenticate that real scope even when there is no parent
+        // request; dropping the external root revokes fresh leaf admission.
+        // Subject stop alone does not revoke a still-open admitted operation.
+        subject.scope().admitting().map_err(|cause| {
+                                        Error::Owner(
+            mac_object_table::domain::PoolError::Scope {
+                owner: subject.scope().subject(), kind: subject.scope().kind(), cause
+            })
+                                    })?;
         if provider.module != 0
         {
             return Err(Error::Access);

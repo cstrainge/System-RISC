@@ -81,6 +81,10 @@ pub const CANCEL: u32 = 3;
 pub const QUIESCE: u32 = 4;
 /// Strictly synchronous resident operations: no ticket is created, no work may
 /// remain pending, and contention occurs before side effects. RESET is excluded.
+/// System validates a live subject scope inside its native invocation gate and
+/// keeps this bounded resident leaf on that hart through return. Such callbacks
+/// cannot yield, park or call independently linked code; SMP needs a real
+/// concurrent root-use/removal pin before this local gate can be widened.
 pub const SYNCHRONOUS: u32 = 5;
 pub const PENDING: i32 = 1;
 /// Exact contract fingerprint includes boundary sizes, pointer width and the
