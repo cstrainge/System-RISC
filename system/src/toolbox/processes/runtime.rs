@@ -193,7 +193,8 @@ impl Desktop
     pub(crate) fn spawn_process(&self, id: u64, loaded: crate::kernel::LoadedImage)
                                 -> Result<u64, Status>
     {
-        crate::machine::scheduler::spawn(self.processes.ledger(id)?, loaded)
+        let charges = self.processes.thread_charges(id)?;
+        crate::machine::scheduler::spawn(self.processes.ledger(id)?, loaded, charges)
     }
 
     pub(super) fn post_drag_notice(&mut self, notice: crate::toolbox::drag::Notice)

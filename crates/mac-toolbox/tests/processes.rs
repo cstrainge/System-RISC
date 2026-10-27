@@ -61,6 +61,52 @@ fn run(malformed: bool)
                    8);
     }
     assert!(!serial.contains("PROCESS_FAIL"), "canonical assertion failed:\n{serial}");
+    // Actual public account bytes must equal the real physical leases in the
+    // scheduler trace, not a copied configured stack/CPU size in inspection.
+    let field = |line: &str, name: &str| -> u64 {
+        line.split_whitespace()
+            .find_map(|part| part.strip_prefix(name))
+            .unwrap_or_else(|| panic!("missing {name}: {line}"))
+            .parse()
+            .unwrap()
+    };
+    let accounts: Vec<_> =
+        serial.lines().filter(|line| line.starts_with("PROCESS_EXECUTION_ACCOUNT ")).collect();
+    assert_eq!(accounts.iter().filter(|line| line.contains(" actor=worker ")).count(),
+               4,
+               "ordinary workers must all read their own real account: {serial}");
+    assert_eq!(accounts.iter().filter(|line| line.contains(" actor=observed-worker ")).count(), 2);
+    for row in accounts
+    {
+        assert!(row.ends_with("coverage=stack-cpu-only"), "account overclaimed coverage: {row}");
+        let owner = field(row, "app=");
+        let backing =
+            serial.lines()
+                  .find(|line| line.starts_with(&format!("PROCESS_THREAD app={owner} ")))
+                  .unwrap_or_else(|| panic!("account has no actual native thread backing: {row}"));
+        assert_eq!(field(row, "application="),
+                   field(backing, "stack_backing_bytes="),
+                   "stack lease and public account disagree: {row}; {backing}");
+        assert_eq!(field(row, "kernel="),
+                   field(backing, "cpu_backing_bytes="),
+                   "CPU lease and public account disagree: {row}; {backing}");
+    }
+    let retired_accounts: Vec<_> =
+        serial.lines()
+              .filter(|line| line.starts_with("PROCESS_EXECUTION_ACCOUNT_RETIRED "))
+              .collect();
+    assert_eq!(retired_accounts.len(),
+               2,
+               "both observed child accounts must retire after their physical backing is \
+                reclaimed: {serial}");
+    for row in retired_accounts
+    {
+        let owner = field(row, "app=");
+        let reclaimed = serial.find(&format!("PROCESS_THREAD_RECLAIMED app={owner} "))
+                              .expect("account retired before backing reclamation");
+        let retired = serial.find(row).unwrap();
+        assert!(reclaimed < retired, "account vanished before its backing was reclaimed: {row}");
+    }
     let finder = serial.lines()
                        .find_map(|line| line.strip_prefix("BOOT_FINDER_DOMAIN app="))
                        .expect("bootstrap did not provision Finder before its image");

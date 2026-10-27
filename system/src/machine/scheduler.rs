@@ -14,6 +14,7 @@ use super::traps::TrapFrame;
 use crate::{context::{EventWaiter, ThreadContext},
             toolbox::handles::{OwnerRef, Store}};
 mod lifetime;
+pub(crate) mod accounting;
 pub(crate) use lifetime::{ReleaseThreads, specification};
 const IDLE: usize = usize::MAX;
 // Generated from the same checked platform policy as the linker artifacts.
@@ -192,8 +193,8 @@ pub(crate) fn has_threads(app: u64) -> bool
 struct ThreadCore
 {
     // CPU state and stack disposal precede the image execution/source pin.
-    cpu:     Mutex<super::traps::SavedState>,
-    _stack:  super::pages::Stack,
+    cpu:     Mutex<accounting::Charged<super::traps::SavedState>>,
+    _stack:  accounting::Charged<super::pages::Stack>,
     _loaded: Option<crate::kernel::LoadedImage>,
     context: Arc<ThreadContext>,
     release: Mutex<Option<ReleasedResource>>,
@@ -215,33 +216,33 @@ pub(crate) struct SpawnFailure
     pub(crate) status:   mac_abi::Status,
     pub(crate) prepared: PreparedThread
 }
-pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef, loaded: crate::kernel::LoadedImage)
+pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
+                      loaded: crate::kernel::LoadedImage, charges: accounting::ThreadCharges)
                       -> Result<PreparedThread, PrepareFailure>
 {
-    let prepared =
-        (|| {
-            if !owner.accepting() || loaded.binding().owner() != owner.owner().incarnation()
-            {
-                return Err(mac_abi::ACCESS_DENIED);
-            }
-            let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
-            let stack = super::pages::Stack::allocate(STACK_BYTES).map_err(|error| {
-                            serial!("THREAD_STACK_REFUSED: {error}");
-                            error.status()
-                        })?;
-            let top = stack.top();
-            let mut initial = TrapFrame::default();
-            initial.pc = app_start as *const () as usize;
-            initial.status = super::traps::INITIAL_STATUS;
-            initial.registers[8] = loaded.entry();
-            initial.stack_pointer = top;
-            // gp is unused by the freestanding PC-relative executable contract.
-            let cpu = super::traps::SavedState::new(initial).map_err(|error| {
-                          serial!("THREAD_CPU_STATE_REFUSED: {error}");
-                          error.status()
-                      })?;
-            Ok((context, stack, cpu, top))
-        })();
+    let prepared = (|| {
+        if !owner.accepting() || loaded.binding().owner() != owner.owner().incarnation()
+        {
+            return Err(mac_abi::ACCESS_DENIED);
+        }
+        let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
+        let (stack, cpu) = charges.allocate(&owner, |top| {
+                                      let mut initial = TrapFrame::default();
+                                      initial.pc = app_start as *const () as usize;
+                                      initial.status = super::traps::INITIAL_STATUS;
+                                      initial.registers[8] = loaded.entry();
+                                      initial.stack_pointer = top;
+                                      // gp is unused by the freestanding PC-relative executable
+                                      // contract.
+                                      initial
+                                  })
+                                  .map_err(|error| {
+                                      serial!("THREAD_BACKING_REFUSED: {error}");
+                                      error.status()
+                                  })?;
+        let top = stack.top();
+        Ok((context, stack, cpu, top))
+    })();
     match prepared
     {
         Ok((context, stack, cpu, top)) =>
@@ -389,9 +390,11 @@ pub(crate) fn start_prepared(thread: u64, owner: &OwnerRef) -> Result<(), mac_ab
     record.update(|state| state.live = true);
     Ok(())
 }
-pub fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage) -> Result<u64, mac_abi::Status>
+pub(crate) fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
+                    charges: accounting::ThreadCharges)
+                    -> Result<u64, mac_abi::Status>
 {
-    let prepared = prepare(owner, loaded).map_err(|failure| failure.status)?;
+    let prepared = prepare(owner, loaded, charges).map_err(|failure| failure.status)?;
     spawn_prepared(prepared, true).map_err(|failure| failure.status)
 }
 

@@ -50,8 +50,9 @@ pub struct MemorySummary
     pub heap_capacity:          u64,
     pub root_physical:          u64,
     pub region_count:           u64,
-    /// Applications still share this supervisor address space. Per-domain
-    /// charges, recovery reserves and private-app gauges are not installed yet.
+    /// Applications still share this supervisor address space. Full per-domain
+    /// heap/accounting, recovery reserves and private-app gauges are unavailable;
+    /// domain rows separately expose their explicitly covered execution backing.
     pub shared_supervisor:      bool,
     pub accounting_unavailable: bool
 }

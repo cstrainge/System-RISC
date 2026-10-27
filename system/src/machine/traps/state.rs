@@ -12,10 +12,21 @@ pub(crate) struct SavedState
 }
 impl SavedState
 {
-    pub(crate) fn new(initial: TrapFrame) -> Result<Self, Error>
+    fn layout() -> Result<(usize, usize), Error>
     {
         let stride = *super::CPU_STATE_BYTES.get().ok_or(Error::Unavailable)?;
         let bytes = stride.checked_mul(super::CPU_SLOTS).ok_or(Error::Geometry)?;
+        Ok((stride, bytes))
+    }
+
+    pub(crate) fn planned_backing_bytes() -> Result<u64, Error>
+    {
+        Backing::planned_bytes(Self::layout()?.1)
+    }
+
+    pub(crate) fn new(initial: TrapFrame) -> Result<Self, Error>
+    {
+        let (stride, bytes) = Self::layout()?;
         let vector_bytes = stride.checked_sub(size_of::<TrapFrame>()).ok_or(Error::Geometry)?;
         let backing = Backing::allocate(bytes)?;
         let frame = backing.cpu_base().checked_add(vector_bytes).ok_or(Error::Geometry)?;

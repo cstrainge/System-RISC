@@ -31,6 +31,20 @@ impl PageGeometry
         bytes.div_ceil(self.bytes)
     }
 
+    /// Complete physical extent of one nonempty buddy allocation. Admission,
+    /// allocation and build-time quota checks share this rounding contract.
+    pub fn buddy_bytes(self, bytes: u64) -> Result<u64, ModelError>
+    {
+        if bytes == 0
+        {
+            return Err(ModelError::InvalidGeometry);
+        }
+        self.pages(bytes)
+            .checked_next_power_of_two()
+            .and_then(|pages| pages.checked_mul(self.bytes))
+            .ok_or(ModelError::Overflow)
+    }
+
     pub const fn aligned(self, address: u64) -> bool
     {
         address.is_multiple_of(self.bytes)

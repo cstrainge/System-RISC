@@ -155,9 +155,11 @@ fn step(work: Work) -> Option<Work>
                         admission,
                         loaded } =>
         {
-            let next = match desktop(&old, |desktop| {
+            let (next, charges) = match desktop(&old, |desktop| {
+                      let charges = desktop.processes.thread_charges(admission.id())?;
                       desktop.bind_finder_image(&admission, loaded.binding())?;
-                      desktop.processes.resource_binding(admission.id())
+                      let next = desktop.processes.resource_binding(admission.id())?;
+                      Ok((next, charges))
                   })
             {
                 Ok(next) => next,
@@ -173,7 +175,7 @@ fn step(work: Work) -> Option<Work>
                                                 status });
                 }
             };
-            match scheduler::prepare(admission.owner().clone(), loaded)
+            match scheduler::prepare(admission.owner().clone(), loaded, charges)
             {
                 Ok(prepared) =>
                 {

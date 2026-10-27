@@ -6,6 +6,7 @@ use serde::Deserialize;
 use crate::{Result, error};
 mod stacks;
 mod io;
+mod accounts;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,7 +50,8 @@ pub(super) struct Definition
     fdt_tail_bytes:              String,
     boot_stack_bytes:            String,
     system_heap_bytes:           String,
-    stacks:                      stacks::Definition
+    stacks:                      stacks::Definition,
+    process_accounts:            accounts::Definition
 }
 /// Only validation can construct this record. All generated artifacts use it.
 #[derive(Debug)]
@@ -73,7 +75,8 @@ pub struct Checked
     pub(super) fdt_tail_bytes:              u64,
     pub(super) boot_stack_bytes:            u64,
     pub(super) system_heap_bytes:           u64,
-    stacks:                                 stacks::Checked
+    stacks:                                 stacks::Checked,
+    process_accounts:                       accounts::Checked
 }
 fn address(name: &str, text: &str) -> Result<u64>
 {
@@ -225,6 +228,7 @@ impl Definition
                               and smaller than images"));
         }
         let stacks = self.stacks.check(page)?;
+        let process_accounts = self.process_accounts.check(page, stacks.application_default())?;
         Ok(Checked { page_bytes: page,
                      ram,
                      flash,
@@ -243,7 +247,8 @@ impl Definition
                      fdt_tail_bytes: tail,
                      boot_stack_bytes,
                      system_heap_bytes,
-                     stacks })
+                     stacks,
+                     process_accounts })
     }
 }
 impl Checked
@@ -363,26 +368,27 @@ impl Checked
     pub(super) fn system_constants(&self) -> String
     {
         let mut out = String::from("// Generated from the checked platform memory record.\n");
-        for (name, value) in [("PAGE_BYTES", self.page_bytes),
-                              ("FLASH_BASE", self.flash.start),
-                              ("FLASH_BYTES", self.flash.end - self.flash.start),
-                              ("FW_CFG_BASE", self.fw_cfg.start),
-                              ("IMAGE_BASE", self.images.start),
-                              ("MODULE_BASE", self.modules.start),
-                              ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
-                              ("DISPLAY_SCRATCH_BYTES",
-                               self.display_scratch.end - self.display_scratch.start),
-                              ("MODULE_LIMIT", self.modules.end),
-                              ("FDT_TAIL_BYTES", self.fdt_tail_bytes),
-                              ("APPLICATION_RELOCATION_BASE", self.application_relocation_base),
-                              ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
-                              ("APPLICATION_PRIMARY_LIMIT", self.definitions.start),
-                              ("DEFINITION_BASE", self.definitions.start),
-                              ("DEFINITION_LIMIT", self.definitions.end),
-                              ("IMAGE_LIMIT", self.images.end)].into_iter()
-                                                               .chain(self.display_buffers())
-                                                               .chain(self.stacks.constants())
-                                                               .chain(self.bootstrap_io.constants())
+        for (name, value) in
+            [("PAGE_BYTES", self.page_bytes),
+             ("FLASH_BASE", self.flash.start),
+             ("FLASH_BYTES", self.flash.end - self.flash.start),
+             ("FW_CFG_BASE", self.fw_cfg.start),
+             ("IMAGE_BASE", self.images.start),
+             ("MODULE_BASE", self.modules.start),
+             ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
+             ("DISPLAY_SCRATCH_BYTES", self.display_scratch.end - self.display_scratch.start),
+             ("MODULE_LIMIT", self.modules.end),
+             ("FDT_TAIL_BYTES", self.fdt_tail_bytes),
+             ("APPLICATION_RELOCATION_BASE", self.application_relocation_base),
+             ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
+             ("APPLICATION_PRIMARY_LIMIT", self.definitions.start),
+             ("DEFINITION_BASE", self.definitions.start),
+             ("DEFINITION_LIMIT", self.definitions.end),
+             ("IMAGE_LIMIT", self.images.end)].into_iter()
+                                              .chain(self.display_buffers())
+                                              .chain(self.stacks.constants())
+                                              .chain(self.process_accounts.constants())
+                                              .chain(self.bootstrap_io.constants())
         {
             writeln!(out, "pub const {name}: u64 = {value:#x};").unwrap();
         }

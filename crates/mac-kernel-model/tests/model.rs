@@ -44,6 +44,22 @@ fn key(index: &mut OwnerIndex, code: &[u8; 4]) -> ResourceKey
     index.allocate(kind).unwrap()
 }
 #[test]
+fn buddy_backing_size_is_checked_and_uses_platform_page_geometry()
+{
+    for page in [4096, 65536]
+    {
+        let geometry = PageGeometry::new(page).unwrap();
+        assert_eq!(geometry.buddy_bytes(page - 1), Ok(page));
+        assert_eq!(geometry.buddy_bytes(page), Ok(page));
+        assert_eq!(geometry.buddy_bytes(page + 1), Ok(2 * page));
+        assert_eq!(geometry.buddy_bytes(3 * page), Ok(4 * page));
+        assert_eq!(geometry.buddy_bytes(0), Err(ModelError::InvalidGeometry));
+        assert_eq!(geometry.buddy_bytes(u64::MAX), Err(ModelError::Overflow));
+        assert_eq!(geometry.buddy_bytes(u64::MAX - (page - 1)), Err(ModelError::Overflow));
+    }
+    assert_eq!(PageGeometry::new(1).unwrap().buddy_bytes(u64::MAX), Err(ModelError::Overflow));
+}
+#[test]
 fn layout_and_large_maps_do_not_assume_a_cpu_or_base_page_size()
 {
     let range = |a, b| AddressRange::new(a, b).unwrap();

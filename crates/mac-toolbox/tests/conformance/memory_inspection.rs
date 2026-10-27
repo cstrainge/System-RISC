@@ -23,6 +23,39 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
             && summary.heap_used > 0
             && summary.heap_used <= summary.heap_capacity,
             "real native heap counters")?;
+    let own = system.inspection()
+                    .snapshot(mac_toolbox::inspection::Scope::Own)
+                    .map_err(service)?
+                    .at(0)
+                    .map_err(service)?;
+    require(own.incarnation == system.processes().current()?.id.0,
+            "account row has genuine current identity")?;
+    let mac_toolbox::inspection::MemoryAccounting::StackAndCpuOnly { kernel,
+                                                                     application,
+                                                                     closing } = own.accounting
+    else
+    {
+        return Err(Failure::Mismatch("actual process execution account unavailable"));
+    };
+    require(!closing
+            && kernel.limit == 16 * 1024 * 1024
+            && application.limit == 64 * 1024 * 1024
+            && kernel.reserved == 0
+            && application.reserved == 0
+            && application.committed == 4 * 1024 * 1024
+            && kernel.committed > 0
+            && kernel.committed % u64::from(summary.page_bytes) == 0,
+            "execution-only configured limits and actual stack/CPU backing")?;
+    let mut account_line = LogBuffer::new();
+    let _ = writeln!(account_line,
+                     "MEMORY_EXECUTION_ACCOUNT app={} kernel_limit={} application_limit={} \
+                      kernel_committed={} application_committed={} coverage=stack-cpu-only",
+                     own.incarnation,
+                     kernel.limit,
+                     application.limit,
+                     kernel.committed,
+                     application.committed);
+    system.log(account_line.text())?;
     let mut previous = None;
     let mut count = 0;
     let mut stack = None::<Region>;

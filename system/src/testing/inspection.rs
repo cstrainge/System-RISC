@@ -8,7 +8,8 @@ pub(crate) struct Metadata
 {
     label:           String,
     scheduler_alias: Option<u64>,
-    authority:       u64
+    authority:       u64,
+    account:         Option<mac_kernel_model::account::Account<Gate>>
 }
 impl crate::toolbox::inspection::Subject for Metadata
 {
@@ -20,6 +21,11 @@ impl crate::toolbox::inspection::Subject for Metadata
     fn foreground(&self) -> bool
     {
         false
+    }
+
+    fn execution_account(&self) -> Option<mac_kernel_model::account::Snapshot>
+    {
+        self.account.as_ref().map(|account| account.snapshot())
     }
 
     fn authority(&self) -> u64
@@ -39,7 +45,8 @@ pub fn add(label: &str, authority: u64) -> u64
                       directory.insert(ledger,
                                        Metadata { scheduler_alias: None,
                                                   label: label.into(),
-                                                  authority })
+                                                  authority,
+                                                  account: None })
                                .unwrap()
                                .incarnation()
                   })
@@ -231,7 +238,8 @@ pub(crate) fn caller_ledger(alias: u64)
                       let id = directory.insert(ledger,
                                                 Metadata { scheduler_alias: Some(alias),
                                                            label:           "Fixture app".into(),
-                                                           authority:       0 })
+                                                           authority:       0,
+                                                           account:         None })
                                         .map_err(|_| mac_abi::NO_MEMORY)?;
                       Ok(directory.get(id.incarnation()).unwrap().ledger().clone())
                   })
@@ -517,4 +525,67 @@ pub(super) fn memory(directory: &Domains, caller: Option<u64>,
     }
     let authority = caller.and_then(|id| directory.get(id)).map(|e| e.value().authority());
     request(authority, &Unavailable, call)
+}
+
+/// Attach a real account to the fixture's genuine directory ledger. Its
+/// counters are observed only through the public inspection dispatcher.
+pub fn install_account(owner: u64, kernel: u64, application: u64)
+{
+    super::SESSION.with(|slot| {
+                      let mut slot = slot.borrow_mut();
+                      let directory = &mut slot.as_mut().unwrap().inspection;
+                      let ledger = directory.get(owner).unwrap().ledger().clone();
+                      let range = |bytes| {
+                          mac_kernel_model::policy::ConfiguredRange::new(0, bytes, bytes).unwrap()
+                      };
+                      let account =
+                          mac_kernel_model::account::Account::try_new(ledger,
+                                                                      range(kernel),
+                                                                      range(application)).unwrap();
+                      let entry = directory.get_mut(owner).unwrap();
+                      assert!(entry.account.is_none());
+                      entry.account = Some(account);
+                  });
+}
+pub struct ExecutionCharges
+{
+    _kernel:      mac_kernel_model::account::Committed<Gate>,
+    _application: mac_kernel_model::account::Committed<Gate>
+}
+pub fn execution_charges(owner: u64, kernel: u64, application: u64) -> ExecutionCharges
+{
+    super::SESSION.with(|slot| {
+                      let slot = slot.borrow();
+                      let account = slot.as_ref()
+                                        .unwrap()
+                                        .inspection
+                                        .get(owner)
+                                        .unwrap()
+                                        .value()
+                                        .account
+                                        .as_ref()
+                                        .unwrap();
+                      ExecutionCharges { _kernel:      account.reserve_kernel(kernel)
+                                                              .unwrap()
+                                                              .commit(),
+                                         _application: account.reserve_application(application)
+                                                              .unwrap()
+                                                              .commit() }
+                  })
+}
+pub fn close_account(owner: u64) -> bool
+{
+    super::SESSION.with(|slot| {
+                      slot.borrow()
+                          .as_ref()
+                          .unwrap()
+                          .inspection
+                          .get(owner)
+                          .unwrap()
+                          .value()
+                          .account
+                          .as_ref()
+                          .unwrap()
+                          .close_and_ready()
+                  })
 }

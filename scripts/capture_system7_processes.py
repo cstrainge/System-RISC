@@ -37,8 +37,8 @@ def capture(output, frontend='headless', vector_bits=None, malformed_standard_fi
     original = vm.DIST
     before = {name: packaging.sha(original / name)
               for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
-    extra = (original / 'System.bin',) if malformed_standard_file else ()
-    private, observer = packaging.private_disk(output, 'process-observer', package_arguments=extra)
+    extra = (original / 'System.bin',)
+    private, observer = packaging.private_disk(output, 'process-observer', package_arguments=extra, replace_system=True)
     children = [child(output, fixture, binary)
                 for fixture, binary in [('process-worker', 'ProcessWorker'),
                                         ('process-spinner', 'ProcessSpinner'),

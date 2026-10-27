@@ -134,6 +134,27 @@ impl Default for Pool
     }
 }
 
+/// Accounting coverage is separate from the completeness of handle ledgers.
+pub const ACCOUNT_UNAVAILABLE: u32 = 0;
+pub const ACCOUNT_STACK_CPU_ONLY: u32 = 1;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AccountUsage
+{
+    pub limit:     u64,
+    pub reserved:  u64,
+    pub committed: u64
+}
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Account
+{
+    pub coverage:    u32,
+    pub closing:     u32,
+    pub kernel:      AccountUsage,
+    pub application: AccountUsage
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Domain
@@ -154,7 +175,9 @@ pub struct Domain
     pub deaths:            u64,
     pub name:              [u8; crate::INLINE_STRING_BYTES],
     pub name_length:       u32,
-    pub reserved:          u32
+    pub reserved:          u32,
+    /// Real account counters; current coverage is execution backing only.
+    pub account:           Account
 }
 impl Default for Domain
 {
@@ -176,7 +199,8 @@ impl Default for Domain
                deaths:            0,
                name:              [0; crate::INLINE_STRING_BYTES],
                name_length:       0,
-               reserved:          0 }
+               reserved:          0,
+               account:           Account::default() }
     }
 }
 

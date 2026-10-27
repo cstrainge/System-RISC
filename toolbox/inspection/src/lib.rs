@@ -45,6 +45,48 @@ fn failure(cause: Error, call: &wire::Call) -> Failure
               detail: InlineText::from_reply(call.detail, call.detail_length).unwrap_or_default() }
 }
 
+/// Bytes covered by one selected budget. These are observations, not authority
+/// to reserve memory or a proof that the subject is ready for retirement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AccountUsage
+{
+    pub limit:     u64,
+    pub reserved:  u64,
+    pub committed: u64
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoryAccounting
+{
+    Unavailable,
+    /// Only actual process stack and saved CPU-state backing is counted.
+    /// Heap, executable images, service metadata and recovery reserves are
+    /// excluded. Application stacks and CPU backing use separate budgets.
+    StackAndCpuOnly
+    {
+        kernel:      AccountUsage,
+        application: AccountUsage,
+        closing:     bool
+    }
+}
+fn accounting(value: wire::Account) -> Option<MemoryAccounting>
+{
+    if value.coverage == wire::ACCOUNT_UNAVAILABLE
+    {
+        return (value == wire::Account::default()).then_some(MemoryAccounting::Unavailable);
+    }
+    if value.coverage != wire::ACCOUNT_STACK_CPU_ONLY || value.closing > 1
+    {
+        return None;
+    }
+    let usage = |value: wire::AccountUsage| {
+        value.reserved.checked_add(value.committed).filter(|&used| used <= value.limit)
+            .map(|_| AccountUsage { limit: value.limit, reserved: value.reserved, committed: value.committed })
+    };
+    Some(MemoryAccounting::StackAndCpuOnly { kernel:      usage(value.kernel)?,
+                                             application: usage(value.application)?,
+                                             closing:     value.closing != 0 })
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Domain
 {
@@ -65,6 +107,7 @@ pub struct Domain
     pub births:             u64,
     pub deaths:             u64,
     pub counters_saturated: bool,
+    pub accounting:         MemoryAccounting,
     pub name:               InlineText<{ mac_abi::INLINE_STRING_BYTES }>
 }
 
@@ -346,6 +389,9 @@ impl<'a> Snapshot<'a>
                     births: row.births,
                     deaths: row.deaths,
                     counters_saturated: row.flags & wire::COUNTERS_SATURATED != 0,
+                    accounting: accounting(row.account).ok_or_else(|| {
+                                                           failure(Error::BadAbi, &call)
+                                                       })?,
                     name: InlineText::from_reply(row.name, row.name_length).map_err(|e| {
                                                                                failure(e, &call)
                                                                            })? })
@@ -492,5 +538,35 @@ impl LedgerSnapshot<'_>
                   deaths: row.deaths,
                   generation_headroom: row.generation_headroom,
                   counters_saturated: row.flags & wire::COUNTERS_SATURATED != 0 })
+    }
+}
+
+#[cfg(test)]
+mod account_tests
+{
+    use super::*;
+    #[test]
+    fn accounting_wire_rejects_unknown_coverage_bad_flags_overflow_and_hidden_counters()
+    {
+        assert_eq!(accounting(wire::Account::default()), Some(MemoryAccounting::Unavailable));
+        let mut value = wire::Account { coverage: wire::ACCOUNT_STACK_CPU_ONLY,
+                                        ..Default::default() };
+        value.kernel.limit = 4096;
+        value.kernel.committed = 4096;
+        assert!(matches!(accounting(value), Some(MemoryAccounting::StackAndCpuOnly { .. })));
+        value.closing = 2;
+        assert_eq!(accounting(value), None);
+        value.closing = 0;
+        value.kernel.reserved = 1;
+        assert_eq!(accounting(value), None);
+        value.kernel.limit = u64::MAX;
+        value.kernel.committed = u64::MAX;
+        assert_eq!(accounting(value), None);
+        value.kernel.reserved = 0;
+        value.coverage = wire::ACCOUNT_UNAVAILABLE;
+        assert_eq!(accounting(value), None);
+        value = wire::Account { coverage: u32::MAX,
+                                ..Default::default() };
+        assert_eq!(accounting(value), None);
     }
 }

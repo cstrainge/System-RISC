@@ -2878,3 +2878,46 @@ geometry scratch. The normal foreground plane requires no Region allocation or
 content update; interleaved planes compute exposure once from final survivors.
 Scratch refusal conservatively preserves affected-object damage without treating
 a bounding box as occluding cover. Repeated/empty changes do no geometry work.
+
+
+### Live process charges: stack and saved CPU state
+
+Each process directory entry now owns one canonical account, constructed from
+that entry's authentic lifetime ledger before process admission returns. The
+checked platform record selects the kernel and application caps (initially
+16 MiB and 64 MiB). These are admission limits, not physical reservations or
+guarantees that all of that capacity is currently available.
+
+Thread preparation reserves the complete buddy-rounded application stack and
+saved CPU-state extents before requesting pages. Stack backing charges the
+application side; saved CPU backing charges the kernel side. Build-time stack
+fit validation, native admission and actual allocation share the same checked
+rounding rule. An owned reservation either settles into one committed receipt
+or cancels on Drop, without allocating to update or refund counters. The
+receipt always retains its original account, independently of the execution
+context in which destruction occurs.
+
+The native backing wrapper keeps physical storage and its receipt inseparable.
+Physical destruction precedes the corresponding refund; stack/CPU destruction
+also precedes releasing the image execution pin. Stopped process retirement
+waits for scheduler readers, cleanup completion and the account's outstanding
+receipts. Closing an account refuses new admission, while already admitted
+reservations can settle and must drain before retirement.
+
+Public domain inspection labels this coverage explicitly as **stack and saved
+CPU state only**. The two usage records come from one counter lock; they are
+observations, not allocation authority. An unrelated mapping snapshot continues
+to report full per-domain accounting as unavailable. Process heaps, images,
+account/scheduler metadata, System recovery reserves, module workers and the
+emergency-service kit are not covered by these first charge consumers. Their
+admission, physical backing and recovery qualification remain required work.
+
+Qualification covers concurrent reservation/closure, overflow, exact-limit and
+metadata-allocation refusals, zero-byte lifetime pins and original-account refunds
+in the shared model. Public SDK tests cover truthful partial snapshots, commit,
+refund, closure, malformed replies and access refusals. Native disk-booted SDK
+campaigns correlate process rows with the actual stack/CPU backing extents, prove
+retirement and relaunch behavior, preserve observer charges while workers quit,
+and exercise repeated malformed launch plus Finder recovery/refusal. They do not
+qualify native global-heap exhaustion or complete process quotas before the
+remaining charge consumers and protected recovery backing are installed.

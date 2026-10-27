@@ -195,14 +195,19 @@ pub(crate) struct Backing
 }
 impl Backing
 {
+    /// Exact buddy extent used by allocation and by its caller's admission.
+    /// The caller charges the complete physical block, including rounding.
+    pub(crate) fn planned_bytes(bytes: usize) -> Result<u64, Error>
+    {
+        PageGeometry::new(super::memory::PAGE_BYTES).and_then(|geometry| {
+                                                        geometry.buddy_bytes(bytes as u64)
+                                                    })
+                                                    .map_err(Error::Model)
+    }
+
     pub(crate) fn allocate(bytes: usize) -> Result<Self, Error>
     {
-        let page = super::memory::PAGE_BYTES as usize;
-        let count = bytes.checked_add(page - 1)
-                         .filter(|_| bytes != 0)
-                         .map(|n| n / page)
-                         .and_then(usize::checked_next_power_of_two)
-                         .ok_or(Error::Geometry)?;
+        let count = Self::planned_bytes(bytes)? / super::memory::PAGE_BYTES;
         let pages = allocate(count.ilog2())?;
         let cpu_base = POOLS.get()
                             .ok_or(Error::Unavailable)?

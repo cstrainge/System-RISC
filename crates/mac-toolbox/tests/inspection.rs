@@ -683,3 +683,60 @@ fn memory_addresses_require_policy_and_host_fixture_refuses_invented_native_mapp
         });
     });
 }
+
+#[test]
+fn own_execution_account_is_real_partial_coverage_with_refund_and_close()
+{
+    use mac_toolbox::inspection::MemoryAccounting;
+    with_services(|services| {
+        let system = unsafe { System::from_raw(services) }.unwrap();
+        let owner = fixture::add("Execution account", 0);
+        fixture::install_account(owner, 16_384, 65_536);
+        with_owner(owner, || {
+            let snapshot = system.inspection().snapshot(Scope::Own).unwrap();
+            let charges = fixture::execution_charges(owner, 4096, 8192);
+            let read = || snapshot.at(0).unwrap().accounting;
+            match read()
+            {
+                MemoryAccounting::StackAndCpuOnly { kernel,
+                                                    application,
+                                                    closing } =>
+                {
+                    assert_eq!((kernel.limit, kernel.reserved, kernel.committed),
+                               (16_384, 0, 4096));
+                    assert_eq!((application.limit, application.reserved, application.committed),
+                               (65_536, 0, 8192));
+                    assert!(!closing);
+                }
+                _ => panic!("real account omitted")
+            }
+            let denied = system.inspection().snapshot(Scope::All).err().unwrap();
+            assert_eq!(denied.cause, Error::AccessDenied);
+            assert!(!denied.to_string().is_empty());
+            assert!(!fixture::close_account(owner));
+            assert!(matches!(read(),
+                             MemoryAccounting::StackAndCpuOnly { closing: true,
+                                                                 .. }));
+            drop(charges);
+            match read()
+            {
+                MemoryAccounting::StackAndCpuOnly { kernel,
+                                                    application,
+                                                    closing } =>
+                {
+                    assert_eq!((kernel.reserved,
+                                kernel.committed,
+                                application.reserved,
+                                application.committed),
+                               (0, 0, 0, 0));
+                    assert!(closing);
+                }
+                _ => panic!("closed account omitted")
+            }
+            assert!(fixture::close_account(owner));
+            // Host fixtures prove projection/refund; actual backing retirement
+            // is covered by the native Process Manager acceptance fixture.
+            fixture::try_retire(owner).unwrap();
+        });
+    });
+}

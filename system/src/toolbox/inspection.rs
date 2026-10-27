@@ -12,6 +12,12 @@ pub(crate) trait Subject
     fn label(&self) -> &str;
     fn foreground(&self) -> bool;
     fn authority(&self) -> u64;
+    /// Only actually adopted execution-backing accounting is exposed. Other
+    /// managers/modules remain unavailable instead of reporting invented zeroes.
+    fn execution_account(&self) -> Option<mac_kernel_model::account::Snapshot>
+    {
+        None
+    }
 }
 
 fn reject(call: &mut Call, status: Status, message: &str) -> Status
@@ -486,6 +492,22 @@ fn request_sources<T: Subject, M: Subject, G: InvocationGate>(source: Sources<'_
                                 {
                                     0
                                 },
+                         account: match entry.value().execution_account()
+                         {
+                             None => Account::default(),
+                             Some(snapshot) =>
+                             {
+                                 let usage = |value: mac_kernel_model::policy::AccountUsage| {
+                                     AccountUsage { limit:     value.limit().default_value(),
+                                                    reserved:  value.reserved(),
+                                                    committed: value.committed() }
+                                 };
+                                 Account { coverage:    ACCOUNT_STACK_CPU_ONLY,
+                                           closing:     u32::from(snapshot.closing),
+                                           kernel:      usage(snapshot.kernel),
+                                           application: usage(snapshot.application) }
+                             }
+                         },
                          ledger_revision: ledger.revision,
                          kinds: ledger.kinds as u64,
                          live: ledger.live as u64,

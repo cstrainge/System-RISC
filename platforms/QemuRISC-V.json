@@ -63,6 +63,10 @@
       "base": "0x86a81000",
       "bytes": "0x57f000"
     },
+    "process_accounts": {
+      "kernel_bytes": "0x1000000",
+      "application_bytes": "0x4000000"
+    },
     "stacks": {
       "system": {
         "minimum": "0x40000",

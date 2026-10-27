@@ -9,9 +9,23 @@ fn main()
     let output = std::path::Path::new(&args[2]);
     if let Some(system) = args.get(3)
     {
+        use mac_formats::authority;
+        // Explicit image-bound grant only on this private observer disk. The
+        // independently packaged workers retain ordinary own-domain access.
+        let application = macbinary::decode(&std::fs::read(output.join("Finder.bin")).expect("read observer package")).expect("decode observer package");
+        let digest = authority::image_digest(&resource::decode(&application.resources).expect("decode observer resources")).expect("digest observer image");
         let mut file = macbinary::decode(&std::fs::read(system).expect("read current System package")).expect("decode current System package");
         let mut resources =
             resource::decode(&file.resources).expect("decode current System resources");
+        resources.iter_mut()
+                 .find(|resource| resource.kind == authority::RESOURCE_KIND && resource.id == 0)
+                 .expect("System authority policy")
+                 .data =
+            authority::encode(&[(digest, authority::INSPECT_DOMAINS)]).expect("encode private \
+                                                                               observer grant");
+        file.resources =
+            resource::encode_native(&resources).expect("encode observer policy System resources");
+        std::fs::write(output.join("System.bin"), macbinary::encode(&file).expect("encode private observer System package")).expect("write private observer System package");
         resources.iter_mut()
                  .find(|resource| resource.kind == *b"DLOG" && resource.id == -6042)
                  .expect("System Open layout")
@@ -19,8 +33,7 @@ fn main()
                  .clear();
         file.resources =
             resource::encode_native(&resources).expect("encode malformed-layout System resources");
-        std::fs::write(output.join("Malformed System.bin"), macbinary::encode(&file).expect("encode private System package"))
-            .expect("write malformed-layout System package");
+        std::fs::write(output.join("Malformed System.bin"), macbinary::encode(&file).expect("encode private System package")).expect("write malformed-layout System package");
     }
     let budget=resource::encode(&[Resource {kind:*b"DATA",id:1,name:None,attributes:0,
         data:vec![0;4*1024*1024+1]}]).expect("encode valid resource fork above application payload budget");
@@ -35,7 +48,8 @@ fn main()
                               attributes: 0,
                               data:       vec![0] });
     let missing = resource::encode_native(&missing).expect("encode missing relocation fixture");
-    let malformed = resource::encode_native(&malformed).expect("encode malformed relocation fixture");
+    let malformed =
+        resource::encode_native(&malformed).expect("encode malformed relocation fixture");
     for (name, resources) in [("Budget App", budget),
                               ("Corrupt App", vec![0; 16]),
                               ("Missing Code", missing),

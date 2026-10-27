@@ -28,6 +28,13 @@ impl From<mac_toolbox::Error> for Failure
         Self::Service(value.status())
     }
 }
+impl From<mac_toolbox::inspection::Failure> for Failure
+{
+    fn from(value: mac_toolbox::inspection::Failure) -> Self
+    {
+        Self::Service(value.cause.status())
+    }
+}
 impl From<i32> for Failure
 {
     fn from(value: i32) -> Self
@@ -43,6 +50,74 @@ fn menu(system: &System<'_>) -> Result<()>
 }
 
 type Result<T> = core::result::Result<T, Failure>;
+/// The public row counts only actual stack and saved CPU backing. Physical
+/// byte extents are independently correlated with scheduler traces by Rust's
+/// host acceptance; no heap or process-isolation claim follows from this row.
+fn execution_account(system: &System<'_>, row: mac_toolbox::inspection::Domain, actor: &str)
+                     -> Result<(u64, u64)>
+{
+    let mac_toolbox::inspection::MemoryAccounting::StackAndCpuOnly { kernel,
+                                                                     application,
+                                                                     closing } = row.accounting
+    else
+    {
+        return Err(Failure::Contract("real process execution accounting unavailable"));
+    };
+    require(!closing
+            && kernel.limit == 16 * 1024 * 1024
+            && application.limit == 64 * 1024 * 1024
+            && kernel.reserved == 0
+            && application.reserved == 0
+            && kernel.committed > 0
+            && application.committed == 4 * 1024 * 1024,
+            "execution account limits, actual backing, or coverage changed")?;
+    let mut line = crate::LogBuffer::new();
+    use core::fmt::Write;
+    let _ = writeln!(line,
+                     "PROCESS_EXECUTION_ACCOUNT actor={actor} app={} kernel={} application={} \
+                      coverage=stack-cpu-only",
+                     row.incarnation, kernel.committed, application.committed);
+    system.log(line.text())?;
+    Ok((kernel.committed, application.committed))
+}
+fn own_execution_account(system: &System<'_>, actor: &str) -> Result<(u64, u64)>
+{
+    let own = system.inspection().snapshot(mac_toolbox::inspection::Scope::Own)?;
+    require(own.count == 1, "own execution account count")?;
+    let row = own.at(0)?;
+    require(row.incarnation == system.processes().current()?.id.0, "own account identity")?;
+    execution_account(system, row, actor)
+}
+fn observed_execution_domain(system: &System<'_>, child: ProcessId)
+                             -> Result<Option<mac_toolbox::inspection::Domain>>
+{
+    // Reacquire after membership changes; never invent a stale diagnostic ID.
+    loop
+    {
+        let snapshot = system.inspection().snapshot(mac_toolbox::inspection::Scope::All)?;
+        let mut stale = false;
+        for index in 0..snapshot.count
+        {
+            match snapshot.at(index)
+            {
+                Ok(row) if row.incarnation == child.0 => return Ok(Some(row)),
+                Ok(_) =>
+                {}
+                Err(error) if error.cause == mac_toolbox::Error::ScanStale =>
+                {
+                    stale = true;
+                    break;
+                }
+                Err(error) => return Err(error.into())
+            }
+        }
+        if !stale
+        {
+            return Ok(None);
+        }
+    }
+}
+
 const OBSERVER_SYNTHETIC: u32 = 0xa11c0001;
 const WORKER_SYNTHETIC: u32 = 0xa11c0002;
 
@@ -268,6 +343,7 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
             && me.foreground == true,
             "trusted observer identity")?;
     require(processes.count()? == 1, "initial process count")?;
+    let observer_account = own_execution_account(system, "observer")?;
     resource(system, "process-observer")?;
     menu(system)?;
     let mut handle = system.memory().handle_from_bytes(b"observer-owned memory")?;
@@ -467,6 +543,10 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
         require(processes.launch(volume, worker.id)?.id == child.id,
                 "duplicate launch made another instance")?;
         require(processes.count()? == 2, "live worker count")?;
+        let row = observed_execution_domain(system, child.id)?.ok_or(Failure::Contract("running child account missing"))?;
+        execution_account(system, row, "observed-worker")?;
+        require(own_execution_account(system, "observer-live-child")? == observer_account,
+                "child backing charged to observer account")?;
         let mut child_window = None;
         wait(system, || {
             let mut bytes = [0; 64];
@@ -605,6 +685,17 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
         wait_mask(system,
                   || Ok(find(system, child.id)?.is_none()),
                   EVERY_EVENT & !(activation_mask | (1 << EventKind::Application1 as u16)))?;
+        // Native removal enforces account close_and_ready. The final zero-use
+        // row need not survive long enough to be observed; disappearance after
+        // a positive live row proves its real receipt barrier completed.
+        wait(system, || Ok(observed_execution_domain(system, child.id)?.is_none()))?;
+        require(own_execution_account(system, "observer-retired-child")? == observer_account,
+                "child refund altered observer account")?;
+        let mut retired = crate::LogBuffer::new();
+        let _ = writeln!(retired,
+                         "PROCESS_EXECUTION_ACCOUNT_RETIRED app={} original-account=refunded",
+                         child.id.0);
+        system.log(retired.text())?;
         require(child_view.read(0, &mut child_bytes) == Err(mac_toolbox::Error::NotFound),
                 "saved resource view retargeted or retained a retired application")?;
         image_lifetimes::stale(system,
@@ -807,6 +898,17 @@ pub fn worker(system: &System<'_>) -> Result<()>
     require(identity.id != mac_toolbox::ProcessId(0)
             && identity.thread != mac_toolbox::ThreadId(0),
             "worker execution identity")?;
+    own_execution_account(system, "worker")?;
+    let denied = system.inspection()
+                       .snapshot(mac_toolbox::inspection::Scope::All)
+                       .err()
+                       .ok_or(Failure::Contract("ordinary worker gained inspector authority"))?;
+    let mut denied_detail = crate::LogBuffer::new();
+    let _ = write!(denied_detail, "{denied}");
+    require(denied.cause == mac_toolbox::Error::AccessDenied
+            && denied_detail.text()
+                            .contains("cross-domain inspection requires a System policy grant"),
+            "ordinary account read must not grant cross-domain detail")?;
     POINTER.store((identity.id).0, core::sync::atomic::Ordering::Relaxed);
     let handle = system.memory().handle_from_bytes(b"worker-owned memory")?;
     let window = system.windows()

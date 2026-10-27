@@ -290,8 +290,9 @@ impl fmt::Display for BudgetExceeded
                self.class, self.owner, self.used, self.limit, self.requested, self.reason)
     }
 }
-/// The same account covers service metadata and its subzones. Charging and
-/// lease release will be implemented with the live allocator, not simulated.
+/// One counter model for a domain's kernel and application commitments. The
+/// live account owner supplies synchronized admission and unique refund receipts;
+/// this record and its identity alone confer no allocation authority.
 pub struct DomainAccount
 {
     owner:       DomainId,
@@ -320,6 +321,16 @@ impl DomainAccount
     pub const fn application(&self) -> &AccountUsage
     {
         &self.application
+    }
+
+    pub(crate) fn kernel_mut(&mut self) -> &mut AccountUsage
+    {
+        &mut self.kernel
+    }
+
+    pub(crate) fn application_mut(&mut self) -> &mut AccountUsage
+    {
+        &mut self.application
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -351,6 +362,50 @@ impl AccountUsage
     pub const fn limit(self) -> ConfiguredRange
     {
         self.limit
+    }
+
+    pub(crate) fn reserve(&mut self, owner: DomainId, class: MemoryClass, requested: u64)
+                          -> Result<(), BudgetExceeded>
+    {
+        // Only successful admission grows either counter. Therefore the
+        // existing combined total is representable before every operation.
+        let used = self.committed + self.reserved;
+        let failure = |reason| {
+            BudgetExceeded { owner,
+                             class,
+                             used,
+                             limit: self.limit.default_value(),
+                             requested,
+                             reason }
+        };
+        let total =
+            used.checked_add(requested).ok_or_else(|| failure(BudgetReason::AccountingOverflow))?;
+        if total > self.limit.default_value()
+        {
+            return Err(failure(BudgetReason::DomainLimit));
+        }
+        self.reserved += requested;
+        Ok(())
+    }
+
+    /// Called only by the unique receipt for bytes still in reserved state.
+    /// Admission proved reserved + committed <= u64::MAX. Moving that receipt
+    /// preserves the combined total, so neither arithmetic operation can fail.
+    pub(crate) fn commit_reserved(&mut self, bytes: u64)
+    {
+        self.reserved -= bytes;
+        self.committed += bytes;
+    }
+
+    /// Unique, non-Clone receipts refund only their own admitted contribution.
+    pub(crate) fn release_reserved(&mut self, bytes: u64)
+    {
+        self.reserved -= bytes;
+    }
+
+    pub(crate) fn release_committed(&mut self, bytes: u64)
+    {
+        self.committed -= bytes;
     }
 }
 pub struct SystemReserve

@@ -47,7 +47,8 @@ pub struct Process
     pub info:         ProcessInfo,
     pub(crate) image: Option<crate::images::Binding>,
     pub stamp:        u64,
-    cleanup:          crate::toolbox::handles::cleanup::Checkpoint
+    cleanup:          crate::toolbox::handles::cleanup::Checkpoint,
+    account:          Option<crate::machine::scheduler::accounting::ProcessAccount>
 }
 
 /// A cleanup resource context is minted from one directory entry, never from
@@ -93,6 +94,11 @@ impl crate::toolbox::inspection::Subject for Process
             .and_then(|image| crate::kernel::with_image(image, |image| image.authority))
             .unwrap_or(0)
     }
+
+    fn execution_account(&self) -> Option<mac_kernel_model::account::Snapshot>
+    {
+        self.account.as_ref().map(|account| account.snapshot())
+    }
 }
 pub struct Manager
 {
@@ -119,6 +125,19 @@ impl Manager
     pub(crate) fn ledger(&self, id: u64) -> Result<crate::toolbox::handles::OwnerRef, Status>
     {
         self.entries.get(id).map(|entry| entry.ledger().clone()).ok_or(NOT_FOUND)
+    }
+
+    pub(crate) fn thread_charges(
+        &self, id: u64)
+        -> Result<crate::machine::scheduler::accounting::ThreadCharges, Status>
+    {
+        use crate::machine::scheduler::accounting::ThreadCharges;
+        let entry = self.entries.get(id).ok_or(NOT_FOUND)?;
+        let account = entry.value().account.as_ref().ok_or(BAD_ABI)?;
+        ThreadCharges::admit(entry.ledger(), account).map_err(|error| {
+            serial!("PROCESS_THREAD_ADMISSION_REFUSED: {error}");
+            error.status()
+        })
     }
 
     pub(crate) fn resource_binding(&self, id: u64) -> Result<ResourceBinding, Status>
@@ -229,11 +248,55 @@ impl Manager
                     Process { info,
                               image: None,
                               stamp: 0,
-                              cleanup })
+                              cleanup,
+                              account: None })
             .map_err(|error| {
                 serial!("PROCESS_DOMAIN_REFUSED: {error}");
                 NO_MEMORY
             })?;
+        let account = (|| {
+            use mac_kernel_model::policy::ConfiguredRange;
+
+            use crate::machine::{memory,
+                                 scheduler::accounting::{ProcessAccount, account_status}};
+            // These selected caps come from the checked platform record. They
+            // are not physical reservations or claims about uncharged heaps.
+            let kernel =
+                ConfiguredRange::new(0,
+                                     memory::PROCESS_KERNEL_BUDGET_BYTES,
+                                     memory::PROCESS_KERNEL_BUDGET_BYTES).map_err(|_| BAD_ABI)?;
+            let application =
+                ConfiguredRange::new(0,
+                                     memory::PROCESS_APPLICATION_BUDGET_BYTES,
+                                     memory::PROCESS_APPLICATION_BUDGET_BYTES).map_err(|_| {
+                                                                                  BAD_ABI
+                                                                              })?;
+            let ledger = self.ledger(id)?;
+            ProcessAccount::try_new(ledger, kernel, application).map_err(|error| {
+                serial!("PROCESS_ACCOUNT_REFUSED: {error}");
+                account_status(&error)
+            })
+        })();
+        match account
+        {
+            Ok(account) => self.get_mut(id)?.account = Some(account),
+            Err(status) =>
+            {
+                // No thread or app resource has been published. If even this
+                // empty-record rollback refuses, retain its stopped owner for
+                // the existing retirement walk instead of losing authority.
+                if let Err(error) = self.entries.stop_admission(id)
+                {
+                    serial!("PROCESS_ACCOUNT_ROLLBACK_STOP_REFUSED: {error}");
+                }
+                if let Err(error) = self.entries.remove(id)
+                {
+                    serial!("PROCESS_ACCOUNT_ROLLBACK_RETAINED: {error}");
+                    retirement::resources_released();
+                }
+                return Err(status);
+            }
+        }
         Ok(id)
     }
 
@@ -292,6 +355,13 @@ impl Manager
             return Err(SERVICE_BUSY);
         }
         if self.cleanup_checkpoint(id)?.ensure_settled().is_err()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        // A cancelled preparation or retained thread reader can outlive its
+        // ordinary scheduler ID. The account's original receipts are part of
+        // the domain's death barrier, including zero-byte reservations.
+        if self.get(id)?.account.as_ref().is_some_and(|account| !account.close_and_ready())
         {
             return Err(SERVICE_BUSY);
         }
