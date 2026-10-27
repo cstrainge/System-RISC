@@ -23,11 +23,8 @@ def schema_connection(messages):
     connection = MagicMock()
     connection.__enter__.return_value = connection
     listener.accept.return_value = (connection, ('127.0.0.1', 51234))
-    stream = MagicMock()
-    stream.__enter__.return_value = stream
-    stream.readline.side_effect = [(json.dumps(message) + '\n').encode() for message in messages]
-    connection.makefile.return_value = stream
-    return listener, stream
+    connection.recv.side_effect = [(json.dumps(message) + '\n').encode() for message in messages]
+    return listener, connection
 
 
 def display_schema(members):
@@ -81,7 +78,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(command[command.index('-qmp') + 1], 'tcp:127.0.0.1:41234')
         listener.bind.assert_called_once_with(('127.0.0.1', 0))
         self.assertNotIn('input', run.call_args.kwargs)
-        requests = [json.loads(call.args[0])['execute'] for call in stream.write.call_args_list]
+        requests = [json.loads(call.args[0])['execute'] for call in stream.sendall.call_args_list]
         self.assertEqual(requests, ['qmp_capabilities', 'query-qmp-schema', 'quit'])
         process.wait.assert_called_once_with(timeout=5)
         process.terminate.assert_not_called()
@@ -90,6 +87,39 @@ class LauncherTests(unittest.TestCase):
         for members in ([], [{'name': 'clipboard', 'type': 'str'}], [{'name': 'scale', 'type': 'number'}]):
             with self.subTest(members=members), patch.object(vm, 'qmp_schema', return_value=display_schema(members)):
                 self.assertFalse(vm.gtk_clipboard_schema('legacy-qemu'))
+
+    def test_qmp_schema_accepts_fragmented_and_coalesced_socket_replies(self):
+        import json
+        from unittest.mock import Mock
+        schema = display_schema([{'name': 'clipboard', 'type': 'bool'}])
+        messages = [{'QMP': {}}, {'return': {}, 'id': 'qmp_capabilities'},
+                    {'return': schema, 'id': 'query-qmp-schema'}]
+        wire = b''.join((json.dumps(message) + '\n').encode() for message in messages)
+        listener, connection = schema_connection([])
+        connection.recv.side_effect = [wire[:5], wire[5:19], wire[19:]]
+        with patch.object(vm.socket, 'socket', return_value=listener), \
+             patch.object(vm.subprocess, 'Popen', return_value=Mock(returncode=0, poll=lambda: 0)):
+            self.assertTrue(vm.gtk_clipboard_schema('selected-qemu'))
+
+    def test_qmp_schema_deadline_and_unrelated_message_bounds_reap_the_probe(self):
+        from unittest.mock import Mock
+        listener, _ = schema_connection([])
+        process = Mock(poll=lambda: None)
+        with patch.object(vm.socket, 'socket', return_value=listener), \
+             patch.object(vm.subprocess, 'Popen', return_value=process), \
+             patch.object(vm.time, 'monotonic', side_effect=[0, 11]):
+            with self.assertRaisesRegex(RuntimeError, '10-second deadline'):
+                vm.gtk_clipboard_schema('slow-qemu')
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=5)
+        listener, _ = schema_connection([{'QMP': {}}, *[{'event': 'UNRELATED'}] * 64])
+        process = Mock(poll=lambda: None)
+        with patch.object(vm.socket, 'socket', return_value=listener), \
+             patch.object(vm.subprocess, 'Popen', return_value=process):
+            with self.assertRaisesRegex(RuntimeError, '64 unrelated messages'):
+                vm.gtk_clipboard_schema('event-only-qemu')
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=5)
 
     def test_gtk_schema_probe_failures_preserve_the_actual_cause(self):
         from unittest.mock import Mock

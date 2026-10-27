@@ -99,36 +99,52 @@ def qmp_schema(executable):
                                        **process_options())
             connection, _ = listener.accept()
             with connection:
-                connection.settimeout(10)
-                with connection.makefile('rwb') as stream:
-                    def receive():
-                        line = stream.readline(16 * 1024 * 1024)
-                        if not line.endswith(b'\n'):
-                            raise ValueError('QMP response ended early or exceeded 16 MiB')
-                        value = json.loads(line)
-                        if not isinstance(value, dict):
-                            raise ValueError('QMP response must be an object')
-                        return value
-                    if 'QMP' not in receive():
-                        raise ValueError('selected QEMU did not send its QMP greeting')
-                    def execute(command, wait_result=True):
-                        stream.write((json.dumps({'execute': command, 'id': command}) + '\n').encode())
-                        stream.flush()
-                        if not wait_result:
-                            return
-                        while True:
-                            response = receive()
-                            if response.get('id') == command:
-                                if 'error' in response:
-                                    raise RuntimeError(str(response['error']))
-                                if 'return' not in response:
-                                    raise ValueError(f'QMP {command} omitted its result')
-                                return response['return']
-                    execute('qmp_capabilities')
-                    schema = execute('query-qmp-schema')
-                    # Some QEMU versions close the socket before delivering
-                    # quit's reply. Successful process exit acknowledges quit.
-                    execute('quit', wait_result=False)
+                deadline = time.monotonic() + 10
+                pending = bytearray()
+                limit = 16 * 1024 * 1024
+                def budget():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError('QMP schema exchange exceeded its 10-second deadline')
+                    connection.settimeout(remaining)
+                def receive():
+                    budget()
+                    while b'\n' not in pending:
+                        if len(pending) >= limit:
+                            raise ValueError('QMP response exceeded 16 MiB')
+                        budget()
+                        data = connection.recv(min(65536, limit - len(pending)))
+                        if not data:
+                            raise ValueError('QMP response ended early')
+                        pending.extend(data)
+                    end = pending.index(b'\n') + 1
+                    line = bytes(pending[:end])
+                    del pending[:end]
+                    value = json.loads(line)
+                    if not isinstance(value, dict):
+                        raise ValueError('QMP response must be an object')
+                    return value
+                if 'QMP' not in receive():
+                    raise ValueError('selected QEMU did not send its QMP greeting')
+                def execute(command, wait_result=True):
+                    budget()
+                    connection.sendall((json.dumps({'execute': command, 'id': command}) + '\n').encode())
+                    if not wait_result:
+                        return
+                    for _ in range(64):
+                        response = receive()
+                        if response.get('id') == command:
+                            if 'error' in response:
+                                raise RuntimeError(str(response['error']))
+                            if 'return' not in response:
+                                raise ValueError(f'QMP {command} omitted its result')
+                            return response['return']
+                    raise ValueError(f'QMP {command} exceeded 64 unrelated messages')
+                execute('qmp_capabilities')
+                schema = execute('query-qmp-schema')
+                # Some QEMU versions close the socket before delivering
+                # quit's reply. Successful process exit acknowledges quit.
+                execute('quit', wait_result=False)
             process.wait(timeout=5)
             if process.returncode != 0 or not isinstance(schema, list):
                 raise ValueError('selected QEMU did not return a valid GTK clipboard schema')
