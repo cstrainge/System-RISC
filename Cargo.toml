@@ -4,6 +4,7 @@ exclude = ["vendor/skrifa", "vendor/ab_glyph_rasterizer"]
 members = [
     "crates/mac-abi",
     "crates/mac-definition",
+    "crates/mac-definition-macros",
     "crates/mac-module",
     "crates/mac-object-table",
     "crates/mac-kernel-model",

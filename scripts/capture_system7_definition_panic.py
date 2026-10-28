@@ -32,7 +32,7 @@ def capture(output, scenario):
     report = {'scenario': scenario, 'original_before': before, 'stages': stages,
               'input': actions, 'result': 'transport-incomplete'}
     try:
-        fixture = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures/definition-panic'
+        fixture = vm.SOURCE / 'crates/mac-toolbox/tests/fixtures/definition-panic'
         target = vm.build_dir() / 'fixtures/definition-panic'
         manifest = fixture / 'Cargo.toml'
         subprocess.run(['cargo', 'build', '--manifest-path', str(manifest), '--locked', '--release',

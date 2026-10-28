@@ -34,8 +34,8 @@ other Finder controls use shared SDK tracking. TextEdit selections and Finder ic
 are content interactions rather than standard controls.
 
 Canonical tracking/ownership assertions live in
-`crates/mac-toolbox/tests/conformance/managed_controls.rs`, shared by host and
-disk-booted RV64 tests. Original CDEF pixel/hit fixtures remain the appearance
+`crates/mac-toolbox/tests/conformance/managed_controls.rs`, executed through disk-booted RV64 ECALL tests. Host-linked control validation
+is retired. Original CDEF pixel/hit fixtures remain the appearance
 oracle. Custom controls, focus traversal and arbitrary action callbacks remain
 separate work; this is not full classic Control Manager parity.
 

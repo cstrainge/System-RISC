@@ -51,7 +51,8 @@ impl CaptionFont
         }
     }
 }
-fn handle<'a>(message: Message<'a, Button<'a>>, services: Services<'a>) -> Result<Reply>
+#[mac_definition::cdef_main]
+fn main<'a>(message: Message<'a, Button<'a>>, services: Services<'a>) -> Result<Reply>
 {
     match message
     {
@@ -68,7 +69,6 @@ fn handle<'a>(message: Message<'a, Button<'a>>, services: Services<'a>) -> Resul
     }
     Ok(Reply::Done)
 }
-mac_definition::define_buttons!(standard_control_definition, handle);
 /// Full control rectangle hit, including push-button rounded corners (original
 /// CDEF0 offsets3f4..424). Hilite254 is a distinct original part result.
 pub fn hit(state: &Button<'_>, point: Point) -> Part

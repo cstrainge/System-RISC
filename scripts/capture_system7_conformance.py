@@ -6,6 +6,7 @@ ROM/System graphically (headless display), and retain serial/outcome evidence.
 Rust owns every compatibility assertion and the acceptance marker.
 """
 from hfs_b_tool import Image as NativeImage
+from system7_capture import OwnedProcesses
 from system7_fixture_build import guest_env as fixture_guest_env, host_env as fixture_host_env
 import argparse
 import hashlib
@@ -26,7 +27,7 @@ def private_disk(output, fixture_name='conformance', *, features=(), package_arg
     # Own the whole capture before its disk exists. The VM's pid is too late:
     # other fixtures may still be compiling while this prepared disk is live.
     (output / 'pid').write_text(str(os.getpid()))
-    fixture = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture_name
+    fixture = vm.SOURCE / 'crates/mac-toolbox/tests/fixtures' / fixture_name
     target = vm.build_dir() / 'fixtures' / fixture_name
     manifest = fixture / 'Cargo.toml'
     arguments = ['cargo', 'build', '--manifest-path', str(manifest), '--locked',
@@ -63,13 +64,16 @@ def capture(output):
     output.mkdir(parents=True, exist_ok=False)
     original = vm.DIST
     before = {name: sha(original / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
-    private, binary = private_disk(output)
-    vm.DIST = private
-    date_disk = vm.ROOT / 'System7/crates/mac-toolbox/tests/data/files/dates-2026.hfs'
-    process, endpoint = vm.launch(output / 'vm', extra_disks=[date_disk])
-    serial = output / 'vm/serial.log'
-    termination = 'timeout'
+    owners = OwnedProcesses()
+    private = output / 'dist'
+    report = {'original_before': before, 'termination': 'transport-incomplete'}
     try:
+        private, binary = private_disk(output)
+        vm.DIST = private
+        date_disk = vm.SOURCE / 'crates/mac-toolbox/tests/data/files/dates-2026.hfs'
+        process, endpoint = owners.launch(output / 'vm', extra_disks=[date_disk], frontend='headless')
+        serial = output / 'vm/serial.log'
+        termination = 'timeout'
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             text = serial.read_text(errors='replace')
@@ -88,16 +92,16 @@ def capture(output):
                   'original_before': before,
                   'original_after': {name: sha(original / name) for name in before},
                   'fixture_elf_sha256': sha(binary),
-                  'fixture_manifest_sha256': sha(vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures/conformance/resources.json'),
+                  'fixture_manifest_sha256': sha(vm.SOURCE / 'crates/mac-toolbox/tests/fixtures/conformance/resources.json'),
                   'launch': json.loads((output / 'vm/command.json').read_text()),
                   'serial': 'vm/serial.log', 'serial_sha256': sha(serial)}
-        (output / 'capture.json').write_text(json.dumps(report, indent=2) + '\n')
     finally:
+        vm.DIST = original
         try:
-            if process.poll() is None:
-                vm.qmp('quit', endpoint=endpoint)
+            report['cleanup'] = owners.cleanup(output, [private, output / 'vm'])
         finally:
-            process.wait(timeout=10)
+            (output / 'capture.json').write_text(json.dumps(report, indent=2) + '\n')
+
 
 
 if __name__ == '__main__':

@@ -46,6 +46,7 @@ impl Write for LogBuffer
 #[cfg(not(any(feature = "alert-tracking", feature = "memory-inspection")))]
 fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
 {
+    conformance::controls::author_families(system, gate)?;
     conformance::run_all(system)?;
     conformance::dates::filesystem(system)?;
     conformance::strings::shared(system, gate)?;

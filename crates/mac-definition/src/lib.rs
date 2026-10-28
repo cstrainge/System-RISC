@@ -7,6 +7,8 @@ mod binding;
 mod families;
 pub use families::{Button, ButtonKind, CaptionMode, Highlight, Progress, ProgressRange,
                    ProgressStyle, Reply, Scrollbar};
+/// Generate the CDEF entry and panic scaffold for the family named by `Message`.
+pub use mac_definition_macros::cdef_main;
 pub use toolbox_controls::Part;
 #[cfg(any(target_arch = "riscv64", test))]
 #[doc(hidden)]
@@ -65,52 +67,6 @@ pub enum Message<'a, S>
         after:  S,
         damage: &'a mut [Rect; 2]
     }
-}
-
-/// Platform-owned entry/panic scaffold shared by all control families.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! control_entry {
-    ($entry:ident,$binding:ident,$handler:path) => {
-        #[allow(unsafe_code)]
-        pub unsafe extern "C" fn $entry(call: *mut $crate::__abi::DefinitionCall) -> i64
-        {
-            unsafe { $crate::$binding(call, $handler) }
-        }
-        #[cfg(target_arch = "riscv64")]
-        #[allow(unsafe_code)]
-        #[unsafe(no_mangle)]
-        #[unsafe(link_section = ".text.entry")]
-        pub unsafe extern "C" fn _start(call: *mut $crate::__abi::DefinitionCall) -> i64
-        {
-            unsafe { $entry(call) }
-        }
-        $crate::definition_panic_handler!();
-    };
-}
-#[macro_export]
-macro_rules! define_static_text {
-    ($entry:ident,$handler:path) => {
-        $crate::control_entry!($entry, static_text_entry, $handler);
-    };
-}
-#[macro_export]
-macro_rules! define_buttons {
-    ($entry:ident,$handler:path) => {
-        $crate::control_entry!($entry, buttons_entry, $handler);
-    };
-}
-#[macro_export]
-macro_rules! define_progress_bar {
-    ($entry:ident,$handler:path) => {
-        $crate::control_entry!($entry, progress_entry, $handler);
-    };
-}
-#[macro_export]
-macro_rules! define_scrollbar {
-    ($entry:ident,$handler:path) => {
-        $crate::control_entry!($entry, scrollbar_entry, $handler);
-    };
 }
 
 /// Synchronous resident services available during this definition invocation.

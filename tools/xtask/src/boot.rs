@@ -364,11 +364,12 @@ pub fn check(workspace: &Workspace) -> Result<Value>
                     &[(&missing_finder, "raw")],
                     &["startup file is missing", "BOOT_NO_SYSTEM:"],
                     false)?);
-    for (alteration, expected) in [("code", "invalid RV64 segment resource header"),
-                                   ("elf-resource", "ELF-backed code resources are unsupported"),
-                                   ("obsolete-nabi", "obsolete ELF-backed NABI layout"),
-                                   ("role", "not a compatible System"),
-                                   ("address", "reservation overlaps firmware")]
+    for (alteration, expected) in
+        [("code", "invalid RV64 segment resource header"),
+         ("elf-resource", "ELF-backed code resources are unsupported"),
+         ("obsolete-nabi", "obsolete ELF-backed NABI layout"),
+         ("role", "not a compatible System"),
+         ("address", "System execution reservation disagrees with the selected virtual platform")]
     {
         let path = directory.join(format!("bad-{alteration}.hfsb"));
         clone_raw(&raw, &path)?;

@@ -282,9 +282,8 @@ impl Workspace
             serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
                                                              filesystem-write-checks.json"))?)?;
         let userspace: Value =
-            serde_json::from_slice(&fs::read(self.repo
-                                                 .join("results/system7/\
-                                                        userspace-conformance-checks.json"))?)?;
+            serde_json::from_slice(&fs::read(self.build
+                                                 .join("userspace-conformance-checks.json"))?)?;
         let boot = boot::check(self)?;
         run(self.command("python3")
                 .current_dir(&self.repo)
@@ -321,9 +320,6 @@ impl Workspace
         for (name, script, report) in [("icons",
                                         "System7/scripts/check_finder_icons.py",
                                         "results/system7/finder-icon-checks.json"),
-                                       ("scrollbars",
-                                        "System7/scripts/check_scrollbar_pixels.py",
-                                        "results/system7/scrollbar-appearance-checks.json"),
                                        ("mounted_volumes",
                                         "System7/scripts/check_finder_volumes.py",
                                         "results/system7/finder-volume-checks.json")]

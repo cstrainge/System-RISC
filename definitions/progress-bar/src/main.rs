@@ -69,7 +69,8 @@ fn draw(port: &mut SurfacePort<'_>, state: &Progress, theme: mac_definition::The
                     if mono { theme.content } else { theme.progress_track })?;
     Ok(())
 }
-fn handle<'a>(message: Message<'a, Progress>, services: Services<'a>) -> Result<Reply>
+#[mac_definition::cdef_main]
+fn main<'a>(message: Message<'a, Progress>, services: Services<'a>) -> Result<Reply>
 {
     match message
     {
@@ -95,4 +96,3 @@ fn handle<'a>(message: Message<'a, Progress>, services: Services<'a>) -> Result<
     }
     Ok(Reply::Done)
 }
-mac_definition::define_progress_bar!(progress_bar_definition, handle);

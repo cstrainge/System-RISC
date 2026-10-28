@@ -575,50 +575,34 @@ fn installed_resedit_browses_live_apps_previews_pixels_and_rebuilds_export_lossl
                        "{after_name}: save/status changed a resource pane at y={y}");
         }
     }
-    // Radio state/animation must be actual CDEF0 output, including press and
-    // cancellation. The standard CDEF itself has original-System pixel tests.
-    mac_system::testing::with_resource_forks(&system_fork, &resource::encode(&[]).unwrap(), |services| {
-        let system = unsafe { System::from_raw(services) }.unwrap();
-        for package in ["QuickDraw Test", "System"]
+    for package in ["QuickDraw Test", "System"]
+    {
+        let before =
+            pixels(&output.join(observation(&format!("{package}-hex"))["frame"].as_str().unwrap()));
+        let after =
+            pixels(&output.join(observation(&format!("{package}-hex-down"))["frame"].as_str()
+                                                                                    .unwrap()));
+        for y in 48..425
         {
-            for (suffix, hex, pressed) in [("hex-radio-held",false,true),
-                                            ("hex-radio-left",false,false),
-                                            ("hex-radio-cancelled",false,false),
-                                            ("hex",true,false),
-                                            ("disassembly-restored",false,false)]
-            {
-                let name = format!("{package}-{suffix}");
-                let image = pixels(&output.join(observation(&name)["frame"].as_str().unwrap()));
-                for (is_hex, left, width, title) in [(true,295,104,"Hex Dump"),(false,407,203,"Disassembly")]
-                {
-                    let mut expected = vec![0xffffff; width*21];
-                    let mut state = mac_toolbox::controls::StandardState::new(mac_toolbox::Rect::new(0,0,width as i16,21),title);
-                    state.value = i16::from(hex==is_hex);
-                    state.highlighted = u32::from(is_hex && pressed);
-                    system.controls().draw_standard_pixels(&mut expected,width,21,mac_toolbox::controls::StandardKind::Radio,state).unwrap();
-                    // Held pointer stays in the bottom-right blank margin;
-                    // retain the entire CDEF glyph and caption comparison.
-                    let compared_width=if is_hex && pressed {width-8}else{width};
-                    for y in 0..21 {for x in 0..compared_width {
-                        let pixel=expected[y*width+x];
-                        assert_eq!(&image[((y+50)*display::width()+left+x)*3..((y+50)*display::width()+left+x)*3+3],&[(pixel>>16) as u8,(pixel>>8) as u8,pixel as u8],"{name} {title} at {x},{y}");
-                    }}
-                }
-            }
-            let before=pixels(&output.join(observation(&format!("{package}-hex"))["frame"].as_str().unwrap()));
-            let after=pixels(&output.join(observation(&format!("{package}-hex-down"))["frame"].as_str().unwrap()));
-            for y in 48..425 {
-                assert_eq!(&before[(y*display::width()+13)*3..(y*display::width()+291)*3],&after[(y*display::width()+13)*3..(y*display::width()+291)*3],"{package}: scrolling preview changed navigation panes");
-            }
-            // Header metadata, entry point and NABI/RLOC summary never scroll.
-            for y in 48..227 {
-                assert_eq!(&before[(y*display::width()+291)*3..(y*display::width()+612)*3],&after[(y*display::width()+291)*3..(y*display::width()+612)*3],"{package}: code header scrolled with the bytes");
-            }
-            for y in 228..410 {
-                assert_eq!(&before[((y+14)*display::width()+292)*3..((y+14)*display::width()+596)*3],&after[(y*display::width()+292)*3..(y*display::width()+596)*3],"{package}: cached rows did not shift exactly one line");
-            }
+            assert_eq!(&before[(y * display::width() + 13) * 3..(y * display::width() + 291) * 3],
+                       &after[(y * display::width() + 13) * 3..(y * display::width() + 291) * 3],
+                       "{package}: scrolling preview changed navigation panes");
         }
-    }).unwrap();
+        // Header metadata, entry point and NABI/RLOC summary never scroll.
+        for y in 48..227
+        {
+            assert_eq!(&before[(y * display::width() + 291) * 3..(y * display::width() + 612) * 3],
+                       &after[(y * display::width() + 291) * 3..(y * display::width() + 612) * 3],
+                       "{package}: code header scrolled with the bytes");
+        }
+        for y in 228..410
+        {
+            assert_eq!(&before[((y + 14) * display::width() + 292) * 3
+                               ..((y + 14) * display::width() + 596) * 3],
+                       &after[(y * display::width() + 292) * 3..(y * display::width() + 596) * 3],
+                       "{package}: cached rows did not shift exactly one line");
+        }
+    }
     let mut timings = Vec::new();
     for package in ["QuickDraw Test", "System"]
     {

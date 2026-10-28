@@ -28,19 +28,7 @@ use toolbox::resources::loader;
 #[cfg(test)]
 #[path = "../../definitions/wdef/src/main.rs"]
 pub(crate) mod test_wdef;
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../definitions/buttons/src/main.rs"]
-pub(crate) mod test_cdef;
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../definitions/scrollbar/src/main.rs"]
-pub(crate) mod test_scrollbar;
 
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../definitions/progress-bar/src/main.rs"]
-pub(crate) mod test_progress_bar;
-#[cfg(any(test, feature = "test-support"))]
-#[path = "../../definitions/static-text/src/main.rs"]
-pub(crate) mod test_static_text;
 
 #[cfg(all(feature = "test-support", not(target_arch = "riscv64")))]
 #[path = "../../definitions/mdef/src/main.rs"]

@@ -48,7 +48,8 @@ fn draw(canvas: &mut SurfacePort<'_>, state: StaticText<'_>, text_color: u32) ->
     }
     Ok(())
 }
-fn handle<'a>(message: Message<'a, StaticText<'a>>, services: Services<'a>) -> Result<Reply>
+#[mac_definition::cdef_main]
+fn main<'a>(message: Message<'a, StaticText<'a>>, services: Services<'a>) -> Result<Reply>
 {
     match message
     {
@@ -68,4 +69,3 @@ fn handle<'a>(message: Message<'a, StaticText<'a>>, services: Services<'a>) -> R
     }
     Ok(Reply::Done)
 }
-mac_definition::define_static_text!(static_text_definition, handle);
