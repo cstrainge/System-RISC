@@ -19,6 +19,9 @@ use crate::{loader::Definitions,
                       windows::{Action, WindowId, WindowManager, WindowPart}},
             virtio_input};
 
+#[path = "menus/feedback.rs"]
+mod menu_feedback;
+
 #[path = "crashes/runtime.rs"]
 mod crash_runtime;
 #[path = "standard_file/runtime.rs"]
@@ -87,6 +90,7 @@ pub struct Desktop
     foreground:                       u64,
     locals:                           Vec<local::Saved>,
     pub(in crate::toolbox) processes: super::processes::Manager,
+    menu_feedback:                    Option<menu_feedback::Feedback>,
     app_menu:                         super::processes::menu::ApplicationMenu
 }
 
@@ -392,6 +396,8 @@ impl Desktop
         })?;
         serial!("UI_OBSERVER address={} bytes=128 version=1",
                 super::quickdraw::observer::address());
+        let mut presentation_damage = Vec::new();
+        InvocationGate::with_system_allocation(|| presentation_damage.try_reserve_exact(4)).map_err(|_| NO_MEMORY)?;
         let mut content_damage = Vec::new();
         InvocationGate::with_system_allocation(|| content_damage.try_reserve_exact(1)).map_err(|_| NO_MEMORY)?;
         // The live Finder queue belongs to Finder. Its inactive row contains
@@ -443,7 +449,8 @@ impl Desktop
                   last_action: "READY",
                   redraw: true,
                   content_damage,
-                  presentation_damage:Vec::new(),
+                  presentation_damage,
+                  menu_feedback: None,
                   feedback_dirty: false,
                   feedback: Default::default(),
                   outline_clip: Default::default(),
@@ -493,15 +500,16 @@ impl Desktop
         result.map_or_else(|status| status, |_| OK)
     }
 
-    fn menu_selection(&mut self, selection: mac_abi::menus::Selection, when: u32)
+    fn menu_selection(&mut self, selection: mac_abi::menus::Selection, when: u32, point: Point,
+                      modifiers: u16)
     {
         self.events.post_system(Event { payload: 0,
                                         kind: EventKind::MenuCommand,
                                         message: ((selection.menu_id as u16 as u32) << 16)
                                                  | u32::from(selection.item),
                                         when,
-                                        where_: self.events.mouse,
-                                        modifiers: self.events.modifiers,
+                                        where_: point,
+                                        modifiers,
                                         window: 0 });
         self.last_action = "MENU";
     }
@@ -1912,6 +1920,10 @@ impl Desktop
         {
             return;
         }
+        if self.menu_feedback_input(input)
+        {
+            return;
+        }
         match input
         {
             Input::Move(point) =>
@@ -2046,19 +2058,26 @@ impl Desktop
                 {
                     if self.app_menu.is_tracking()
                     {
-                        self.redraw = true;
                         if let Some(action) = self.app_menu.release(point)
                         {
-                            self.application_action(action);
+                            self.start_application_menu_feedback(action, when);
+                        }
+                        else
+                        {
+                            self.redraw = true;
                         }
                         return;
                     }
                     if self.menus.is_tracking()
                     {
-                        self.redraw |= self.menus.selected_menu().is_some();
+                        let was_open = self.menus.selected_menu().is_some();
                         if let Some(selection) = self.menus.release_tracking(point)
                         {
-                            self.menu_selection(selection, when);
+                            self.start_menu_feedback(selection, false, when);
+                        }
+                        else
+                        {
+                            self.redraw |= was_open;
                         }
                         return;
                     }
@@ -2087,7 +2106,7 @@ impl Desktop
                    && self.menus.has_key(character)
                    && let Some(selection) = self.menus.key(character)
                 {
-                    self.menu_selection(selection, when);
+                    self.start_menu_feedback(selection, true, when);
                     return;
                 }
                 // Menu policy can still reflect the previous frame while the
@@ -2253,6 +2272,7 @@ impl Desktop
     pub fn present(&mut self)
     {
         crate::trace::record(crate::trace::PRESENT, self.owner, 0, 0, 0, 0);
+        self.tick_menu_feedback();
         self.tick_cursor();
         if !self.redraw
            && !self.cursor_dirty
@@ -2659,6 +2679,7 @@ damaged.push(clip);
         {
             platform::present_rects(back, damaged.iter().copied(), overlays);
         }
+        self.acknowledge_menu_feedback();
         self.feedback = feedback;
         self.feedback_dirty = !full && self.redraw;
         if self.presentation_damage.capacity() < damaged.capacity()

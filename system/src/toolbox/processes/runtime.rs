@@ -446,7 +446,7 @@ impl Desktop
         let previous_activity = self.activity;
         let pointer_activity = self.poll_inputs();
         let fresh_input = previous_activity != self.activity;
-        let cursor_activity = self.tick_cursor();
+        let cursor_activity = self.tick_menu_feedback() | self.tick_cursor();
         let now = Self::when();
         self.cursor_dirty |=
             self.responsiveness.tick(self.foreground,
@@ -788,6 +788,7 @@ impl Desktop
         {
             return Ok(());
         }
+        self.cancel_menu_feedback();
         self.processes.activate(id)?;
         self.foreground = id;
         self.cursor_dirty |= self.responsiveness.foreground(id, Self::when());

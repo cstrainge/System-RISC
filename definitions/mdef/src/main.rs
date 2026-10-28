@@ -25,16 +25,13 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
             return Ok(());
         }
         let selected = state.bar_selected != 0;
-        if selected && state.profile != APPLICATION_PROFILE
-        {
-            // Original MBDF0 leaves the top row and bottom bar rule intact.
-            // Title selection extends into the adjacent inter-title spacing.
-            canvas.paint_rect(Rect::new(state.title_bounds.left - 1,
-                                        1,
-                                        state.title_bounds.right + 4,
-                                        19),
-                              0)?;
-        }
+        // Keep the top edge and bar rule intact; icons are painted normally
+        // over the selected background rather than inverted after drawing.
+        canvas.paint_rect(Rect::new(state.title_bounds.left - 1,
+                                    1,
+                                    state.title_bounds.right + 4,
+                                    19),
+                          if selected { 0 } else { 0xffffff })?;
         if state.profile == APPLICATION_PROFILE
         {
             let icon = state.title_icon;
@@ -45,13 +42,6 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
                                      icon.id,
                                      Rect::new(left, 1, left + 16, 17),
                                      icon.flags)?;
-            }
-            if selected
-            {
-                canvas.invert_rect(Rect::new(state.title_bounds.left - 1,
-                                             1,
-                                             state.title_bounds.right + 4,
-                                             19))?;
             }
             return Ok(());
         }
@@ -92,106 +82,109 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
                       0)?;
     canvas.paint_rect(outer, 0xffffff)?;
     canvas.frame_rect(outer, 0)?;
-    for (index, item) in state.items[..state.item_count as usize].iter().enumerate()
+    for index in 0..state.item_count as usize
     {
-        let r = item.bounds;
-        if item.separator != 0
-        {
-            canvas.paint_rect(Rect::new(r.left, r.top + 8, r.right, r.top + 9), 0xa5a5a5)?;
-            continue;
-        }
-        let selected = state.highlighted == index as i16 + 1;
-        let invert = selected && state.profile == APPLICATION_PROFILE;
-        let fg = if selected && !invert
-        {
-            0xffffff
-        }
-        else if item.enabled != 0
-        {
-            0
-        }
-        else
-        {
-            0xa5a5a5
-        };
-        if selected && !invert
-        {
-            canvas.paint_rect(r, 0)?;
-        }
-        let baseline =
-            r.top
-            + if state.profile == APPLICATION_PROFILE && item.icon.present != 0 { 13 } else { 12 };
-        if item.checked != 0
-        {
-            canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
-                             r.left + 2,
-                             baseline,
-                             "\u{12}",
-                             14,
-                             fg)?;
-        }
-        let label = text(&item.text, item.text_length).map_err(mac_traps::Error::from_status)?;
-        let label_left = r.left + if item.icon.present != 0 { 34 } else { 14 };
-        if item.icon.present != 0
-        {
-            canvas.icon_resource(mac_traps::types::ResourceScope::from_raw(item.icon.scope)?,
-                                 item.icon.id,
-                                 Rect::new(r.left + 16, r.top + 1, r.left + 32, r.top + 17),
-                                 item.icon.flags)?;
-        }
-        if item.style == 0
-        {
-            canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
-                             label_left,
-                             baseline,
-                             label,
-                             r.right - label_left,
-                             fg)?;
-        }
-        else
-        {
-            canvas.styled_text(u16::from(item.style), label_left, baseline, label, fg)?;
-        }
-        if item.checked == 0 && item.mark != 0
-        {
-            if item.mark >= 128
-            {
-                return Err(mac_traps::Error::NotSupported);
-            }
-            let bytes = [item.mark];
-            let mark = core::str::from_utf8(&bytes).map_err(|_| mac_traps::Error::BadArgument)?;
-            canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
-                             r.left + 2,
-                             baseline,
-                             mark,
-                             14,
-                             fg)?;
-        }
-        if item.key != 0
-        {
-            canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
-                             r.right - 24,
-                             baseline,
-                             "\u{11}",
-                             14,
-                             fg)?;
-            let key = [item.key.to_ascii_uppercase()];
-            let key = core::str::from_utf8(&key).map_err(|_| mac_traps::Error::NotSupported)?;
-            let command_width = canvas.text_width(toolbox_quickdraw::font::CHICAGO_12, "\u{11}")?;
-            canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
-                             r.right - 24 + command_width,
-                             baseline,
-                             key,
-                             13,
-                             fg)?;
-        }
-        if invert
-        {
-            // Original application-menu selection uses full-row pixel inversion,
-            // including the small icon; desktop selected-icon tint is different.
-            canvas.invert_rect(r)?;
-        }
+        paint_item(state, index, false, canvas)?;
     }
+    Ok(())
+}
+fn paint_item(state: &MenuDefinitionState, index: usize, clear: bool, canvas: &mut SurfacePort)
+              -> mac_traps::Result<()>
+{
+    let item = state.items
+                    .get(index)
+                    .filter(|_| index < state.item_count as usize)
+                    .ok_or(mac_traps::Error::BadArgument)?;
+    let r = item.bounds;
+    let selected = state.highlighted == index as i16 + 1;
+    if clear && !selected
+    {
+        canvas.paint_rect(r, 0xffffff)?;
+    }
+    if item.separator != 0
+    {
+        canvas.paint_rect(Rect::new(r.left, r.top + 8, r.right, r.top + 9), 0xa5a5a5)?;
+        return Ok(());
+    }
+    let fg = if selected
+    {
+        0xffffff
+    }
+    else if item.enabled != 0
+    {
+        0
+    }
+    else
+    {
+        0xa5a5a5
+    };
+    if selected
+    {
+        canvas.paint_rect(r, 0)?;
+    }
+    let baseline =
+        r.top
+        + if state.profile == APPLICATION_PROFILE && item.icon.present != 0 { 13 } else { 12 };
+    if item.checked != 0
+    {
+        canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
+                         r.left + 2,
+                         baseline,
+                         "\u{12}",
+                         14,
+                         fg)?;
+    }
+    let label = text(&item.text, item.text_length).map_err(mac_traps::Error::from_status)?;
+    let label_left = r.left + if item.icon.present != 0 { 34 } else { 14 };
+    if item.icon.present != 0
+    {
+        canvas.icon_resource(mac_traps::types::ResourceScope::from_raw(item.icon.scope)?,
+                             item.icon.id,
+                             Rect::new(r.left + 16, r.top + 1, r.left + 32, r.top + 17),
+                             item.icon.flags)?;
+    }
+    if item.style == 0
+    {
+        canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
+                         label_left,
+                         baseline,
+                         label,
+                         r.right - label_left,
+                         fg)?;
+    }
+    else
+    {
+        canvas.styled_text(u16::from(item.style), label_left, baseline, label, fg)?;
+    }
+    if item.checked == 0 && item.mark != 0
+    {
+        if item.mark >= 128
+        {
+            return Err(mac_traps::Error::NotSupported);
+        }
+        let bytes = [item.mark];
+        let mark = core::str::from_utf8(&bytes).map_err(|_| mac_traps::Error::BadArgument)?;
+        canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12, r.left + 2, baseline, mark, 14, fg)?;
+    }
+    if item.key != 0
+    {
+        canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
+                         r.right - 24,
+                         baseline,
+                         "\u{11}",
+                         14,
+                         fg)?;
+        let key = [item.key.to_ascii_uppercase()];
+        let key = core::str::from_utf8(&key).map_err(|_| mac_traps::Error::NotSupported)?;
+        let command_width = canvas.text_width(toolbox_quickdraw::font::CHICAGO_12, "\u{11}")?;
+        canvas.draw_text(toolbox_quickdraw::font::CHICAGO_12,
+                         r.right - 24 + command_width,
+                         baseline,
+                         key,
+                         13,
+                         fg)?;
+    }
+
     Ok(())
 }
 fn measure(state: &mut MenuDefinitionState, canvas: &mut SurfacePort) -> mac_traps::Result<()>
@@ -304,6 +297,15 @@ pub unsafe extern "C" fn standard_menu_definition(pointer: *mut DefinitionCall) 
         MEASURE => measure(state, &mut canvas),
         DRAW_BAR => paint(state, false, &mut canvas),
         DRAW_POPUP => paint(state, true, &mut canvas),
+        DRAW_ITEM =>
+        {
+            usize::try_from(call.param).ok()
+                                       .and_then(|row| row.checked_sub(1))
+                                       .ok_or(mac_traps::Error::BadArgument)
+                                       .and_then(|index| {
+                                           paint_item(state, index, true, &mut canvas)
+                                       })
+        }
         _ => Err(mac_traps::Error::NotSupported)
     };
     result.map_or_else(|e| e.status() as i64, |_| 0)

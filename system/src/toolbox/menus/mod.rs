@@ -47,6 +47,7 @@ struct Bar
     tracking:    bool,
     active:      Option<u64>,
     highlighted: i16,
+    popup:       bool,
     scratch:     Box<MenuDefinitionState>,
     reflow:      Vec<(u64, Layout)>
 }
@@ -75,7 +76,8 @@ impl Bar
                   reflow,
                   tracking: false,
                   active: None,
-                  highlighted: 0 })
+                  highlighted: 0,
+                  popup: true })
     }
 
     fn cancel(&mut self)
@@ -83,6 +85,7 @@ impl Bar
         self.tracking = false;
         self.active = None;
         self.highlighted = 0;
+        self.popup = true;
     }
 }
 pub struct Manager
@@ -513,6 +516,7 @@ impl Manager
             return false;
         };
         bar.tracking = true;
+        bar.popup = true;
         self.hover(point);
         true
     }
@@ -579,11 +583,89 @@ impl Manager
         let selected =
             self.bar()
                 .and_then(|bar| bar.active.and_then(|id| self.selection(id, bar.highlighted)));
+        if selected.is_none()
+        {
+            self.cancel_tracking();
+        }
+        selected
+    }
+
+    pub(crate) fn cancel_tracking(&mut self)
+    {
         if let Some(bar) = self.bar_mut()
         {
             bar.cancel();
         }
-        selected
+    }
+
+    pub(crate) fn feedback_target(&self) -> Option<(u64, Rect)>
+    {
+        let bar = self.bar()?;
+        let id = bar.active?;
+        let menu = self.objects.get(id)?;
+        let item = usize::try_from(bar.highlighted).ok()?.checked_sub(1)?;
+        Some((id, menu.state.items.get(item)?.bounds))
+    }
+
+    pub(crate) fn begin_key_feedback(&mut self, selection: Selection) -> Option<(u64, Rect)>
+    {
+        let id = self.menu_id(selection.menu_id)?;
+        let title = self.objects.get(id)?.state.title_bounds;
+        let bar = self.bar_mut()?;
+        bar.active = Some(id);
+        bar.tracking = true;
+        bar.popup = false;
+        bar.highlighted = 0;
+        Some((id, Rect::new(title.left - 1, 1, title.right + 4, 19)))
+    }
+
+    pub(crate) fn feedback_valid(&self, id: u64, selection: Selection) -> bool
+    {
+        self.bar().is_some_and(|bar| bar.tracking && bar.active == Some(id))
+        && self.selection(id, selection.item as i16)
+               .is_some_and(|current| {
+                   current.menu_id == selection.menu_id && current.command == selection.command
+               })
+    }
+
+    pub(crate) fn feedback_highlight(&mut self, item: i16)
+    {
+        if let Some(bar) = self.bar_mut()
+        {
+            bar.highlighted = item;
+        }
+    }
+
+    pub(crate) fn paint_feedback(&mut self, id: u64, item: u16, keyboard: bool,
+                                 canvas: &mut Canvas<'_>)
+                                 -> Result<(), Status>
+    {
+        let highlighted = self.bar().ok_or(NOT_FOUND)?.highlighted;
+        let menu = self.objects.get_mut(id).ok_or(NOT_FOUND)?;
+        menu.state.highlighted = highlighted;
+        menu.state.first = 0;
+        menu.state.bar_selected = u32::from(highlighted != 0);
+        let mut surface = Surface::from_canvas(canvas);
+        surface.clip = if keyboard
+        {
+            let title = menu.state.title_bounds;
+            Rect::new(title.left - 1, 1, title.right + 4, 19)
+        }
+        else
+        {
+            menu.state
+                .items
+                .get(usize::from(item).checked_sub(1).ok_or(BAD_ARGUMENT)?)
+                .ok_or(BAD_ARGUMENT)?
+                .bounds
+        };
+        let status = invoke(self.entry,
+                            self.gate,
+                            &mut menu.state,
+                            if keyboard { DRAW_BAR } else { DRAW_ITEM },
+                            i64::from(item),
+                            &mut surface);
+        if status == 0 { Ok(()) } else { Err(status as Status) }
     }
 
     fn selection(&self, id: u64, item: i16) -> Option<Selection>
@@ -636,6 +718,7 @@ impl Manager
             return;
         }
         let active = self.bar().and_then(|bar| bar.active);
+        let selected = self.bar().is_some_and(|bar| bar.popup || bar.highlighted != 0);
         for index in 0..count
         {
             let Some(id) = self.id_at(index)
@@ -649,7 +732,7 @@ impl Manager
                 continue;
             };
             menu.state.first = u32::from(index == 0);
-            menu.state.bar_selected = u32::from(active == Some(id));
+            menu.state.bar_selected = u32::from(active == Some(id) && selected);
             let mut surface = Surface::from_canvas(canvas);
             invoke(self.entry, self.gate, &mut menu.state, DRAW_BAR, 0, &mut surface);
         }
@@ -663,6 +746,10 @@ impl Manager
         {
             return;
         };
+        if !bar.popup
+        {
+            return;
+        }
         let (active, highlighted) = (bar.active, bar.highlighted);
         if let Some(menu) = active.and_then(|id| self.objects.get_mut(id))
         {

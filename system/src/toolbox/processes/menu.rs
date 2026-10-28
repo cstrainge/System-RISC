@@ -279,8 +279,52 @@ impl ApplicationMenu
                                              .filter(|row| *row < self.state.item_count as usize)
                                              .filter(|row| self.state.items[*row].enabled != 0)
                                              .and_then(|row| self.actions[row]);
-        self.cancel();
+        if selected.is_none()
+        {
+            self.cancel();
+        }
         selected
+    }
+
+    pub(crate) fn feedback_target(&self) -> Option<(i16, Rect)>
+    {
+        let index = usize::try_from(self.highlighted).ok()?.checked_sub(1)?;
+        Some((self.highlighted, self.state.items.get(index)?.bounds))
+    }
+
+    pub(crate) fn feedback_valid(&self, item: i16, action: Action) -> bool
+    {
+        let Some(index) = usize::try_from(item).ok().and_then(|row| row.checked_sub(1))
+        else
+        {
+            return false;
+        };
+        self.tracking
+        && index < self.state.item_count as usize
+        && self.state.items[index].enabled != 0
+        && self.actions[index] == Some(action)
+    }
+
+    pub(crate) fn feedback_highlight(&mut self, item: i16)
+    {
+        self.highlighted = item;
+    }
+
+    pub(crate) fn paint_feedback(&mut self, item: i16, canvas: &mut Canvas<'_>)
+                                 -> Result<(), Status>
+    {
+        let index =
+            usize::try_from(item).ok().and_then(|row| row.checked_sub(1)).ok_or(BAD_ARGUMENT)?;
+        self.state.highlighted = self.highlighted;
+        let mut surface = Surface::from_canvas(canvas);
+        surface.clip = self.state.items.get(index).ok_or(BAD_ARGUMENT)?.bounds;
+        let status = invoke(self.definition,
+                            self.gate,
+                            &mut self.state,
+                            DRAW_ITEM,
+                            i64::from(item),
+                            &mut surface);
+        if status == 0 { Ok(()) } else { Err(status as Status) }
     }
 
     pub fn cancel(&mut self)

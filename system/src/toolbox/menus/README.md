@@ -22,6 +22,23 @@ path. The event preserves signed 16-bit menu IDs and one-based item indices;
 The one-byte Apple title uses original System icon family -16386 through resident
 Icon Utilities; title selection preserves its rainbow colors.
 
+A committed mouse selection flashes its item three times before the command or
+System application-menu action is delivered. Deferred app commands retain the
+selection-time timestamp, pointer position and modifiers. Command-key shortcuts flash the
+menu title three times. Each off/on phase holds for at least three 60 Hz ticks;
+late presentation delays a phase rather than skipping a flash. The resident
+input/timer path owns this state, so MDEF never waits or spins. The selected row
+or title is repainted through MDEF with bounded presentation damage; flash
+phases do not recompose unrelated windows. Escape cancels pending feedback.
+Foreground changes, menu disposal/mutation and application-menu membership
+refresh cancel stale selections before delivery.
+
+MDEF draws a black highlight with white text and marks. Application-menu title
+and item icons keep their normal colours and resource flags, including hidden
+application dimming; selection does not invert icon pixels. The private native
+`DRAW_ITEM` definition message repaints the one-based row supplied in `param`,
+using the same row renderer as a full popup. Rebuild System and MDEF together.
+
 ## Planned System-owned Apple menu
 
 Status: backlog; drawing an installed Apple-title MENU resource does not yet
@@ -81,7 +98,7 @@ assertions; Rust acceptance remains under `crates/mac-toolbox/tests/menus.rs`.
 This is a bounded native implementation: only MDEF0 is installed, menu item count
 is limited to 31 and installed menus to 8. Apple/Label icon rows, hierarchical and
 scrolling menus, tear-off/pop-up placement, arbitrary custom MDEFs, complete
-MacRoman mark/key handling, dynamic insertion/deletion and original menu flashing
+MacRoman mark/key handling, dynamic insertion/deletion and original menu-flash timing parity
 are not established by the current oracle. Original classic MenuSelect/MenuKey
 trap adaptation is a separate gate; native `MenuCommand` is not claimed as a
 classic Event Manager event. Current runtime ownership is the foreground

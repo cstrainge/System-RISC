@@ -21,6 +21,8 @@ pub const MEASURE: i16 = 0;
 pub const DRAW_BAR: i16 = 1;
 pub const DRAW_POPUP: i16 = 2;
 pub const HIT_ITEM: i16 = 3;
+/// Repaint one one-based popup row, supplied in DefinitionCall::param.
+pub const DRAW_ITEM: i16 = 4;
 pub const STANDARD_PROFILE: u16 = 0;
 pub const APPLICATION_PROFILE: u16 = 1;
 /// An icon family identity. Registered application scopes remain owned by System.
