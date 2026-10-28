@@ -50,6 +50,7 @@ pub(super) struct Definition
     fdt_tail_bytes:              String,
     boot_stack_bytes:            String,
     system_heap_bytes:           String,
+    system_recovery_bytes:       String,
     stacks:                      stacks::Definition,
     process_accounts:            accounts::Definition
 }
@@ -75,6 +76,7 @@ pub struct Checked
     pub(super) fdt_tail_bytes:              u64,
     pub(super) boot_stack_bytes:            u64,
     pub(super) system_heap_bytes:           u64,
+    system_recovery_bytes:                  u64,
     stacks:                                 stacks::Checked,
     process_accounts:                       accounts::Checked
 }
@@ -225,7 +227,22 @@ impl Definition
             return Err(error("platform memory system_heap_bytes must be nonzero, page aligned \
                               physical heap capacity; it is not part of the image arena"));
         }
+        let system_recovery_bytes = address("system_recovery_bytes", &self.system_recovery_bytes)?;
+        if system_recovery_bytes == 0
+           || !system_recovery_bytes.is_multiple_of(page)
+           || system_recovery_bytes >= system_heap_bytes
+        {
+            return Err(error("platform memory system_recovery_bytes must be nonzero, page \
+                              aligned and smaller than system_heap_bytes; it is protected \
+                              storage inside that same heap, not additional physical capacity"));
+        }
         let stacks = self.stacks.check(page)?;
+        if framebuffer_reservation.checked_add(stacks.system_default())
+                                  .is_none_or(|bytes| bytes > system_recovery_bytes)
+        {
+            return Err(error("platform memory system_recovery_bytes cannot hold the terminal \
+                              framebuffer and independent System stack"));
+        }
         let process_accounts = self.process_accounts.check(page, stacks.application_default())?;
         Ok(Checked { page_bytes: page,
                      ram,
@@ -245,6 +262,7 @@ impl Definition
                      fdt_tail_bytes: tail,
                      boot_stack_bytes,
                      system_heap_bytes,
+                     system_recovery_bytes,
                      stacks,
                      process_accounts })
     }
@@ -360,10 +378,12 @@ impl Checked
              ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
              ("FDT_TAIL_BYTES", self.fdt_tail_bytes),
              ("BOOT_STACK_BYTES", self.boot_stack_bytes),
-             ("SYSTEM_HEAP_BYTES", self.system_heap_bytes)].into_iter()
-                                                           .chain(self.display_buffers())
-                                                           .chain(self.stacks.constants())
-                                                           .chain(self.bootstrap_io.constants())
+             ("SYSTEM_HEAP_BYTES", self.system_heap_bytes),
+             ("SYSTEM_RECOVERY_BYTES", self.system_recovery_bytes)].into_iter()
+                                                                   .chain(self.display_buffers())
+                                                                   .chain(self.stacks.constants())
+                                                                   .chain(self.bootstrap_io
+                                                                              .constants())
         {
             writeln!(out, "__platform_{name} = {value:#x};").unwrap();
         }
@@ -401,6 +421,9 @@ impl Checked
         out.push_str(&self.bootstrap_io.ranges_source(&self.fw_cfg));
         out.push_str(application_region_source());
         writeln!(out, "pub const SYSTEM_HEAP_BYTES: usize = {:#x};",self.system_heap_bytes).unwrap();
+        writeln!(out,
+                 "pub const SYSTEM_RECOVERY_BYTES: usize = {:#x};",
+                 self.system_recovery_bytes).unwrap();
         out
     }
 

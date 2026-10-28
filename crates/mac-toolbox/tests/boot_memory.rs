@@ -142,8 +142,10 @@ fn discovered_ram_drives_boot_info_and_small_machines_are_refused_before_heap_us
         assert_eq!(field(heap, "base="), 0xffffffd040000000);
         assert_eq!(field(heap, "bytes="), 512 << 20);
         assert_eq!(field(heap, "backing_bytes="), 512 << 20);
-        assert!(heap.contains("permissions=supervisor-rw-nx roots=2 protected_reserve=false"),
+        assert!(heap.contains("permissions=supervisor-rw-nx roots=2 protected_reserve=true"),
                 "{heap}");
+        assert_eq!(field(heap, "ordinary_bytes="), 480 << 20);
+        assert_eq!(field(heap, "reserve_bytes="), 32 << 20);
         let heap_physical = field(heap, "physical=");
         assert!(heap_physical >= 0x80000000
                 && heap_physical + (512 << 20) <= 0x80000000 + mib * 1024 * 1024,

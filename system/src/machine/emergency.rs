@@ -8,8 +8,7 @@ use core::{cell::UnsafeCell,
 
 use mac_kernel_model::emergency::{EmergencyManifest, EmergencyService, Requirement};
 
-use super::{input,
-            pages::{Backing, Stack}};
+use super::{input, paging::ProtectedRange};
 use crate::emergency::{Action, Cursor, Kind, Record, Screen};
 
 struct State
@@ -20,8 +19,8 @@ struct State
 }
 struct Kit
 {
-    frame:   Backing,
-    stack:   Stack,
+    frame:   ProtectedRange,
+    stack:   ProtectedRange,
     display: mac_boot_screen::ramfb::PreparedTerminal,
     state:   UnsafeCell<State>
 }
@@ -39,7 +38,7 @@ static CLAIMED: AtomicBool = AtomicBool::new(false);
 #[derive(Debug)]
 pub(crate) enum Error
 {
-    Pages(super::pages::Error),
+    Reserve(super::paging::Error),
     Display(mac_boot_screen::ramfb::Error),
     Input(input::Error),
     Geometry(crate::emergency::GeometryError),
@@ -52,7 +51,7 @@ impl fmt::Display for Error
     {
         match self
         {
-            Self::Pages(error) => error.fmt(out),
+            Self::Reserve(error) => error.fmt(out),
             Self::Display(error) => error.fmt(out),
             Self::Input(error) => error.fmt(out),
             Self::Geometry(error) => error.fmt(out),
@@ -63,8 +62,8 @@ impl fmt::Display for Error
 }
 
 /// Called after permanent roots/page pools, before GlobalAlloc and ordinary
-/// services. This is the terminal consumer only, not the full recovery floor,
-/// Finder allowance or Save/Alert emergency-service kit.
+/// services. This consumes the protected floor for the terminal only; Finder
+/// recovery allowance and Save/Alert emergency-service kits remain undefined.
 pub(crate) fn prepare() -> Result<(), Error>
 {
     KIT.try_call_once(|| -> Result<Kit,Error> {
@@ -75,9 +74,8 @@ pub(crate) fn prepare() -> Result<(), Error>
             .map_err(Error::Geometry)?;
         let bytes = crate::display::WIDTH.checked_mul(crate::display::HEIGHT)
             .and_then(|pixels| pixels.checked_mul(size_of::<u32>())).ok_or(Error::Size)?;
-        let frame = Backing::allocate(bytes).map_err(Error::Pages)?;
-        let stack = Stack::allocate(super::memory::SYSTEM_STACK_BYTES as usize)
-            .map_err(Error::Pages)?;
+        let (frame, stack) = super::paging::reserve_terminal_storage(
+            bytes, super::memory::SYSTEM_STACK_BYTES as usize).map_err(Error::Reserve)?;
         let input = input::prepare_terminal().map_err(Error::Input)?;
         // SAFETY: exclusive single-hart bootstrap, permanent independent scanout
         // lease and stable CPU-to-bus translation. The sealed capability retains
@@ -87,27 +85,43 @@ pub(crate) fn prepare() -> Result<(), Error>
                 frame.physical().0, crate::display::WIDTH, crate::display::HEIGHT,
                 |pointer, length| super::paging::bus_address(pointer as u64, length as u64))
         }.map_err(Error::Display)?;
+        // These dedicated statics live in System's pinned image, outside the
+        // fixed heap. Screen/Cursor/decoders are already embedded in Kit;
+        // Record is created on the protected stack, so neither is added twice.
+        let image_storage = (input.bytes as u64)
+            .checked_add(size_of::<spin::Once<Kit>>() as u64)
+            .and_then(|n| n.checked_add(size_of::<AtomicBool>() as u64))
+            .and_then(|n| n.checked_add(mac_boot_screen::ramfb::PreparedTerminal::storage_layout().size() as u64))
+            .ok_or(Error::Size)?;
+        // Exact immutable payloads used by this terminal. Shared code, string
+        // literals and the normal/terminal shared RAMFB ownership byte are not
+        // extra reserve allocations and are not a dedicated terminal footprint.
+        let image_assets = include_bytes!("../../assets/crashes/classic-bomb.icon").len()
+            + include_bytes!("../../assets/cursors/arrow.curs").len()
+            + include_bytes!("../toolbox/quickdraw/assets/chicago-12.font").len();
+        let reserve_bytes = frame.bytes().checked_add(stack.bytes()).ok_or(Error::Size)?;
         let requirement = Requirement {
             service: EmergencyService::SystemPanicRestart,
-            bytes: frame.bytes().checked_add(stack.backing_bytes())
-                .and_then(|bytes| bytes.checked_add(input.bytes as u64))
-                .and_then(|bytes| bytes.checked_add(size_of::<spin::Once<Kit>>() as u64))
-                .and_then(|bytes| bytes.checked_add(size_of::<AtomicBool>() as u64))
-                .and_then(|bytes| bytes.checked_add(mac_boot_screen::ramfb::PreparedTerminal::storage_layout().size() as u64))
-                .ok_or(Error::Size)?,
+            bytes: reserve_bytes.checked_add(image_storage)
+                .and_then(|n| n.checked_add(image_assets as u64)).ok_or(Error::Size)?,
             alignment: super::memory::PAGE_BYTES
         };
         let requirements = [requirement];
         let manifest = EmergencyManifest::new(&requirements).map_err(Error::Manifest)?;
+        let reserve = super::paging::protected_heap_statistics().ok_or(Error::Size)?;
         serial(format_args!("EMERGENCY_KIT_READY services=terminal frame_bytes={} \
             frame_backing={} stack_backing={} input_bytes={} input_alignment={} devices={} \
             state_bytes={} dma_bytes={} record_bytes={} screen_bytes={} cursor_bytes={} pinned_bytes={} \
-            alignment={} full_recovery_reserve=false",
-            bytes, frame.bytes(), stack.backing_bytes(), input.bytes, input.alignment,
+            alignment={} protected_capacity={} protected_used={} image_storage_bytes={} \
+            image_asset_payload_bytes={} protected_cpu={:#x} protected_physical={:#x} \
+            heap_backing_bytes={} full_recovery_kit=false",
+            bytes, frame.bytes(), stack.bytes(), input.bytes, input.alignment,
             input.devices, size_of::<spin::Once<Kit>>() + size_of::<AtomicBool>(),
             mac_boot_screen::ramfb::PreparedTerminal::storage_layout().size(),
             size_of::<Record>(), size_of::<Screen>(),
-            size_of::<Cursor>(), manifest.bytes(), manifest.alignment()));
+            size_of::<Cursor>(), manifest.bytes(), manifest.alignment(),
+            reserve.capacity_bytes, reserve.used_bytes, image_storage, image_assets,
+            reserve.cpu_base, reserve.physical_base, reserve.full_backing_bytes));
         Ok(Kit { frame, stack, display,
             state: UnsafeCell::new(State { screen, cursor,
                 decoders: [crate::toolbox::events::input::Decoder::new(),

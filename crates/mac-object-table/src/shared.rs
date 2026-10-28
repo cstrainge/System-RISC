@@ -1,13 +1,14 @@
 //! Shared owner authority. The selected architecture gate encloses every lock
 //! operation; callers never receive a mutable index or an escaping lock guard.
 use alloc::sync::Arc;
-use core::marker::PhantomData;
+use core::{marker::PhantomData,
+           sync::atomic::{AtomicBool, Ordering}};
 
 use spinning_top::Spinlock;
 
-use crate::domain::{CapacityPolicy, CompletionError, DirectoryError, DomainId, KindCode,
-                    LedgerReadError, LedgerSummary, OwnerIndex, PoolError, PoolSummary,
-                    QuarantineRetry, ReleasedResource, ResourceKey};
+use crate::domain::{CapacityPolicy, CompletionError, DirectoryError, DomainId, DomainKind,
+                    IndexError, KindCode, LedgerReadError, LedgerSummary, OwnerIndex, PoolError,
+                    PoolSummary, QuarantineRetry, ReleasedResource, ResourceKey, UnpublishedIndex};
 
 /// The resident adapter must mask local interrupts/preemption before calling
 /// the closure, and restore the previous state afterward, including nesting.
@@ -99,9 +100,10 @@ impl<G: InvocationGate> OwnerLedger for OwnerRef<G>
 
 struct State<G: InvocationGate>
 {
-    owner: DomainId,
-    index: Spinlock<OwnerIndex>,
-    gate:  PhantomData<fn() -> G>
+    owner:     DomainId,
+    admission: Arc<AtomicBool>,
+    index:     Spinlock<OwnerIndex>,
+    gate:      PhantomData<fn() -> G>
 }
 
 /// Clones refer to the same authoritative ledger, never a new identity issuer.
@@ -119,10 +121,21 @@ impl<G: InvocationGate> Clone for OwnerRef<G>
 }
 impl<G: InvocationGate> OwnerRef<G>
 {
+    /// Allocate the complete shared root before publishing its namespace. A
+    /// backing refusal leaves the unique System issuer available for retry.
+    pub fn issue(kind: DomainKind) -> Result<Self, IndexError>
+    {
+        UnpublishedIndex::prepare(kind)?.into_shared()
+    }
+
+    /// Share an already issued index. Issuance remains irreversible even when
+    /// this separate allocation fails; use `issue` to create a new shared root.
     pub fn try_new(index: OwnerIndex) -> Result<Self, DirectoryError>
     {
         let owner = index.owner();
+        let admission = index.admission();
         let state = Arc::try_new(State { owner,
+                                         admission,
                                          index: Spinlock::new(index),
                                          gate: PhantomData }).map_err(|_| {
                                                                  DirectoryError::Storage { owner }
@@ -263,7 +276,17 @@ impl<G: InvocationGate> OwnerRef<G>
 
     pub fn accepting(&self) -> bool
     {
-        self.access(|index| index.accepting())
+        self.state.admission.load(Ordering::Acquire)
+    }
+
+    /// Release empty stopped-owner ledger storage before an account's death
+    /// barrier. Destruction/refunds occur after the invocation lock is released.
+    /// Retrying after a successful drain is harmless and never reopens admission.
+    pub fn drain_stopped(&self) -> Result<(), DirectoryError>
+    {
+        let pools = self.access(OwnerIndex::drain_stopped)?;
+        drop(pools);
+        Ok(())
     }
 
     pub fn invalidate_next(&self) -> Option<ReleasedResource>
@@ -294,6 +317,8 @@ impl<G: InvocationGate> OwnerRef<G>
 
     pub(crate) fn retire(&self) -> Result<(), DirectoryError>
     {
-        self.access(OwnerIndex::retire)
+        let pools = self.access(OwnerIndex::retire)?;
+        drop(pools);
+        Ok(())
     }
 }

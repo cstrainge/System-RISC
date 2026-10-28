@@ -2977,10 +2977,14 @@ input-ring bytes alias the normal compositor or normal input queues. Preparation
 validates DMA translations and device capabilities before publishing the kit.
 The checked requirement manifest counts the actual rounded frame and stack
 backing plus the static state and DMA extents; `EMERGENCY_KIT_READY` reports that
-census with `full_recovery_reserve=false`.
+census with `full_recovery_kit=false`; protected capacity and usage are separate
+from dedicated image storage and immutable asset payloads.
 
-The current 800×600 profile needs 1,920,000 visible pixel bytes, admitted as a
-2 MiB physical extent, alongside its 4 MiB terminal stack. Other state is measured
+The current 800×600 profile needs 1,920,000 visible pixel bytes, page-rounded to
+1,921,024 bytes, alongside its 4 MiB terminal stack. Both come from disjoint
+subranges of the protected heap, consuming 6,115,328 bytes together. They hold
+no additional buddy leases. Dedicated input/DMA/control statics and immutable
+assets remain separately pinned in the System image; they are not heap bytes. Other state is measured
 from its actual layouts rather than assigned a guessed reserve. The 1,024-byte
 diagnostic payload reuses the existing definition-panic bound; record formatting
 preserves a whole UTF-8 prefix and flags truncation or formatter failure. Its
@@ -3042,10 +3046,9 @@ Device-completion rejection, loss of the last input endpoint and cancellation of
 an abandoned press have allocation-refusal host coverage through the same safe
 logic used by the native driver; physical device-failure injection is not claimed.
 
-This installs one terminal service, not the approved 32 MiB protected floor or
-the complete emergency-service kit. The fixed page-backed heap described below
-replaces the earlier static 10 MiB backing; it does not turn this kit into a
-general protected recovery allowance.
+This installs one terminal service within the protected 32 MiB heap partition.
+It does not complete the emergency-service kit or provide a general recovery
+allocator to ordinary callers.
 Save/Save As, core alerts, ledger teardown and Finder restart still require their
 own measured protected backing and refusal/concurrency qualification. Module
 workers still require original-account allocation authority and real stack, CPU
@@ -3093,11 +3096,14 @@ cause, names the requested capacity, asks for more RAM or a smaller configured
 capacity and stops before service/allocator startup. No fallback heap is installed.
 Even sufficient total free bytes do not promise a contiguous buddy extent.
 
-This changes physical backing only. It does not install original-account global
-heap charges, metadata attribution, module workers, private application roots or
-the approved 32 MiB protected floor. The terminal kit remains its separately
-pinned first consumer. Full recovery-service census, Finder allowances and
-protected admission require their own qualification before those gates can close.
+The checked `memory.system_recovery_bytes` policy reserves 32 MiB inside this
+same 512 MiB backing. The ordinary allocator receives 480 MiB; protected subrange
+capabilities are unique, initialized before use and permanently reserved until
+reset. The mapping inventory covers all 512 MiB while allocator capacity excludes
+the protected portion. This does not install original-account global heap charges,
+complete metadata attribution, module workers or private application roots.
+Full recovery-service census and Finder allowances remain open; reserved capacity
+alone does not qualify those services.
 
 Qualification covers checked map collisions, full stack-window exclusion,
 canonicality, alignment, overflow and capacity-dependent artifact generation.
@@ -3108,6 +3114,28 @@ guarded stack and unchanged partial process-account coverage. The full native
 host-filesystem workflow exercises real device DMA and firmware I/O with the new
 resident heap: both forks, writes, recursive transfers, readonly refusals,
 cancellation, owner cleanup and an actual cold metadata restart. These checks do
-not qualify complete heap accounting, protected recovery admission or SMP. The
+not qualify complete heap accounting, the full recovery-service kit or SMP. The
 headless native/classic trap ABI and public Toolbox conformance probe also boots
 through the same page-backed heap and owned-root admission path.
+
+### Canonical admission and stopped metadata reclamation
+
+OwnerIndex and shared OwnerRef now hold the same atomic admission authority.
+Allocator admission can read that authority without reacquiring a ledger whose
+metadata growth caused the allocation. Stopping a domain publishes closure
+before stopping its pools under the existing invocation gate. The standalone
+namespace issuer remains irreversible once returned. Shared System construction
+prepares admission and owner-state backing before committing its sole issuer,
+so a backing refusal does not consume an unpublished System namespace.
+
+Process retirement first waits for scheduler quiescence and settled cleanup.
+Only an empty stopped ledger may detach its pool/bitmap storage; pending
+resources and completion faults refuse with their typed cause. Detached storage
+is destroyed outside the owner lock before the account death barrier. The
+stopped identity cannot reopen, and its actual manager generations retain their
+existing rules.
+
+These changes prepare original-account heap charging; they do not activate it.
+Target build checks and existing guest lifecycle scenarios provide bounded
+evidence. Explicit allocation-refusal retry, concurrent issuer/stop races and
+allocator recursion with actual per-allocation charges remain unverified.

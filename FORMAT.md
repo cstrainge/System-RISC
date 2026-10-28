@@ -389,9 +389,11 @@ retained physical backing, not extra usable heap. The ordinary allocator starts
 only after the root is installed. The selected QemuRISC-V capacity is 512 MiB;
 smaller machines may refuse that admission despite satisfying static placement
 checks. They report the requested capacity and remedy, never silently shrink it.
-The separate boot-pinned terminal kit is not the protected 32 MiB recovery floor.
-Domain heap/metadata charges, the complete recovery floor and per-process
-protection remain staged work.
+The checked `memory.system_recovery_bytes` reserves 32 MiB inside that same
+backing. Only the remaining 480 MiB is ordinary allocator capacity. Terminal
+frame/stack storage consumes unique protected subranges; image-backed terminal
+state/assets stay separately pinned. Domain heap/metadata charges, the complete
+recovery-service kit and per-process protection remain staged work.
 
 Native catalog and volume names have256-byte UTF8 buffers, enough for255-byte
 NFC names plus a spare byte. Catalog dates are unsigned64-bit microseconds since

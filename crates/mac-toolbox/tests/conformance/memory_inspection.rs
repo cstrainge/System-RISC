@@ -118,8 +118,14 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
     require(lower.is_some_and(|r| r.virtual_base + r.bytes == stack.virtual_base)
             && upper.is_some_and(|r| r.virtual_base == stack.virtual_base + stack.bytes),
             "unmapped guards bracket real stack")?;
-    require(heap == summary.heap_capacity && direct == summary.ram_bytes && code,
-            "heap extent and RAM aliases agree with backend counts")?;
+    // This existing guest scenario checks the selected QemuRISC-V defaults:
+    // mapped reserve bytes must never be advertised as ordinary allocator space.
+    require(heap == 512 * 1024 * 1024
+            && summary.heap_capacity == 480 * 1024 * 1024
+            && heap - summary.heap_capacity == 32 * 1024 * 1024
+            && direct == summary.ram_bytes
+            && code,
+            "mapped heap includes protected floor; ordinary capacity excludes it")?;
     for (left, right) in memory.regions().zip(memory.regions())
     {
         require(left.map_err(service)? == right.map_err(service)?,
@@ -138,13 +144,14 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
     let mut line = LogBuffer::new();
     let _ = writeln!(line,
                      "MEMORY_SNAPSHOT root={:#x} rows={} ram={} page={} heap_used={} \
-                      heap_capacity={} free_pages={} stack={} guards={}",
+                      heap_capacity={} mapped_heap={} free_pages={} stack={} guards={}",
                      summary.root_physical,
                      summary.region_count,
                      summary.ram_bytes,
                      summary.page_bytes,
                      summary.heap_used,
                      summary.heap_capacity,
+                     heap,
                      summary.free_pages,
                      stack.bytes,
                      guard_count);

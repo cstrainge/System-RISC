@@ -358,6 +358,27 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
+        let retirement_error = |error| {
+            serial!("PROCESS_DOMAIN_RETIRE_REFUSED: {error}");
+            match error
+            {
+                DirectoryError::NotFound { .. } => NOT_FOUND,
+                DirectoryError::AdmissionOpen { .. }
+                | DirectoryError::LiveResources { .. }
+                | DirectoryError::PendingResources { .. }
+                | DirectoryError::CompletionFaults { .. } => SERVICE_BUSY,
+                DirectoryError::Storage { .. } => NO_MEMORY
+            }
+        };
+        // Empty per-domain pools still own accounted bitmap/generation backing.
+        // Detach it only after actual cleanup, and release it outside the owner
+        // lock before asking that account whether its final receipts are gone.
+        self.entries
+            .get(id)
+            .ok_or(NOT_FOUND)?
+            .ledger()
+            .drain_stopped()
+            .map_err(&retirement_error)?;
         // A cancelled preparation or retained thread reader can outlive its
         // ordinary scheduler ID. The account's original receipts are part of
         // the domain's death barrier, including zero-byte reservations.
@@ -365,20 +386,7 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        self.entries.remove(id).map(|_| ()).map_err(|error| {
-                                               serial!("PROCESS_DOMAIN_RETIRE_REFUSED: {error}");
-                                               match error
-                                               {
-                                                   DirectoryError::NotFound { .. } => NOT_FOUND,
-                                                   DirectoryError::LiveResources { .. }
-                                                   | DirectoryError::PendingResources { .. }
-                                                   | DirectoryError::CompletionFaults { .. } =>
-                                                   {
-                                                       SERVICE_BUSY
-                                                   }
-                                                   DirectoryError::Storage { .. } => NO_MEMORY
-                                               }
-                                           })
+        self.entries.remove(id).map(|_| ()).map_err(retirement_error)
     }
 
     pub fn snapshot(&self, id: u64) -> Result<ProcessInfo, Status>

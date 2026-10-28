@@ -20,18 +20,14 @@ impl<T> Modules<T>
     pub(super) fn insert(&mut self, value: T) -> Result<u64, Error>
     {
         let ledger = OwnerIndex::issue(DomainKind::Module).map_err(|error| {
-                                                              match error
-                                                              {
-                                                                  IndexError::Identity(error) =>
-                                                                  {
-                                                                      Error::Identity(error)
-                                                                  }
-                                                                  IndexError::Pool(error) =>
-                                                                  {
-                                                                      Error::Owner(error)
-                                                                  }
-                                                              }
-                                                          })?;
+                         match error
+                         {
+                             IndexError::Identity(error) => Error::Identity(error),
+                             IndexError::AdmissionStorage { .. }
+                             | IndexError::SharedStorage { .. } => Error::Exhausted,
+                             IndexError::Pool(error) => Error::Owner(error)
+                         }
+                     })?;
         let id = self.entries.insert(ledger, value).map_err(Error::Domain)?.incarnation();
         #[cfg(target_arch = "riscv64")]
         crate::toolbox::inspection::membership_changed();

@@ -5,11 +5,183 @@ root and the public Toolbox facade in `crates/mac-toolbox`. Finder depends only
 on that facade at runtime. Resident implementations belong in System's internal
 Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
 
+## Current work order — 2026-10-28
+
+The user explicitly resumed the memory work to unblock dependent features.
+Defer the Rust-test removal, whole-code audit and new validation-framework design
+until after this work. Existing in-VM checks may be used for their specific
+scenarios; host passes are not OS acceptance. The permanent evidence, production
+architecture and instrumentation guardrails below still apply. Keep TE2/common
+control migration deferred. Notify the user when an actual executable module
+worker backend meets its stated gates; do not automatically resume the extension
+agent or claim production clipboard readiness.
+
+## Verification failure and recovery order — 2026-10-27
+
+This instruction supersedes earlier testing rules and claims of verification.
+Treat the codebase as **unvalidated**. Previous Rust test pass counts do not
+establish correctness of the shipping OS. Unsupported assurances are false
+correctness claims; users may depend on them when making engineering decisions.
+
+### Permanent agent discipline
+
+These are decision rules for every future change, not only the cleanup:
+
+- Before saying **tested**, **verified**, **working** or **complete**, identify
+  the exact artifact/configuration, where it ran, the production path exercised,
+  the observed result and what remains unverified. If those facts are missing,
+  do not make the claim.
+- Never treat shared source, a public-looking API, a passing host suite or a
+  familiar test name as proof of equivalent target execution. Trace what
+  actually ran. If a substitution removes the property being checked, its
+  result cannot establish that property.
+- Never add production indirection, exports, alternate implementations or
+  configuration branches merely to make a harness run. Challenge the harness
+  design first. Keep production-purpose abstractions and safety boundaries.
+- Never replace missing runtime evidence with pass counts, compilation success,
+  model reasoning, convenient assumptions or optimistic wording. A plausible
+  implementation is still unverified.
+- Treat allocation, interrupt state, preemption, synchronization, timing and
+  cleanup behavior as correctness requirements. Investigate configuration
+  differences before relying on a result; do not wave them away as equivalent.
+- Give the user the limitations before they depend on the conclusion. Correct
+  unsupported claims explicitly. Speed, token/time pressure and a desire to
+  announce progress do not justify weaker evidence or hidden shortcuts.
+
+### Findings
+
+- Much of the suite compiled host-configured services with `std`, host
+  allocation/synchronization, thread-local sessions and a replacement trap gate.
+  In the OS repository, `system/src/testing/mod.rs::with_services` supplies
+  `host_gate`. This bypasses production RV64 trap entry, MMU, interrupt,
+  preemption, scheduler and allocator paths. Exercising shared source through
+  this setup cannot qualify those production paths.
+- Host testability also affected production structure. The System imports
+  definition `main.rs` files into host test-support modules, while the CDEF
+  scaffold forwards through a named entry, family adapter and binding before
+  the author handler. Audit this coupling and justify every production layer.
+  The observed source structure does not establish machine-code timing or
+  overhead; measure those properties before making claims.
+- Some retained QEMU runs execute real guest code. Their evidence applies only
+  to the exact artifacts, paths and scenarios exercised. It does not establish
+  broader coverage or rehabilitate the host suite.
+- Runtime configuration and timing are part of correctness. Differences in
+  allocation, interrupt masking, preemption, call paths or failure handling can
+  hide intermittent failures and deadlocks. Compilation, boot success, screenshots,
+  pass markers and a large pass count are insufficient on their own.
+
+### Required work on explicit resumption
+
+Development remains paused until the user explicitly resumes it. Editing these
+instructions does not resume implementation, validation runs or extension work.
+
+1. **First remove ALL Rust tests and test-only plumbing.** Include unit,
+   integration and documentation tests; test-only modules, features, dependencies,
+   fixtures and runners; and exports or forwarding layers whose only purpose is
+   the removed harness. Trace references and preserve genuine production
+   functionality, API documentation, validation and safety checks. Do not retain
+   a preferred subset or silently introduce a replacement Rust test framework.
+2. **Then audit the ENTIRE codebase.** Cover shared crates, kernel/resident
+   services, Toolbox and driver SDKs, CDEF/WDEF and other definitions, drivers,
+   extensions, applications, host tools and build paths. Look for alternate
+   implementations/dispatch, host-only assumptions, direct inclusion of guest
+   entry sources, redundant adapters/call chains, test-only API leakage,
+   allocation/lifetime mistakes, and interrupt/scheduling/timing assumptions.
+   Distinguish legitimate platform/tool boundaries from harness accommodations.
+   Record each finding, its production rationale or defect, remediation and
+   remaining uncertainty.
+3. After removal and audit, implement the user-selected native test applications,
+   test kernel and production invariant checks described below. Agree on remaining
+   execution/reporting details before adding machinery. Do not carry forward old
+   pass counts or completion labels as acceptance. Memory/allocator, common-control
+   and extension feature work remains behind this recovery order.
+
+### Native diagnostics and stress validation
+
+The user has selected native test applications and a test kernel for future
+validation. This is not permission to resume now or retain the old Rust suite.
+
+- Build diagnostic/stress applications as real target applications using the
+  public SDK, normal packaging/loading and actual traps. A dedicated test kernel
+  must exercise the production implementation and real architecture/allocator
+  paths. Do not create another kernel implementation or host service substitute.
+- Put debug assertions and invariant checks in the real code. Check ownership,
+  generations, accounting, pool structure, lifecycle transitions and balanced
+  protocol state where those properties change, so the first violation is
+  detected near its cause. Give failures useful, bounded context.
+- Boundary validation and checks needed for safe release behavior stay active
+  in the shipping configuration. `debug_assert!` disappears when disabled;
+  it cannot be the only enforcement of a safety requirement. Exercise optimized
+  builds with invariant checking and the normal shipping configuration, recording
+  instrumentation/configuration differences and their limits.
+- Preserve typed handling of malformed requests, stale/foreign objects, budget
+  refusal and ordinary failures. Assertions must not replace recovery logic or
+  evade cleanup/reap/paint panic discipline. Retain cleanup tickets and quarantine
+  appropriately. Genuine unrecoverable System corruption follows the declared
+  terminal diagnostic contract; do not claim arbitrary fault recovery.
+- Keep hot-path checks bounded, preferably local and allocation-free, using
+  existing synchronization. Do not introduce global check/log locks, extra
+  fences, interrupts-off intervals, I/O or scheduling changes merely to observe
+  an invariant. Expensive whole-structure checks need explicit diagnostic or
+  quiescent execution rather than per-event scans.
+- Native stress applications must hammer the real kernel with sustained,
+  overlapping workloads and multiple real applications/threads: allocation and
+  disposal, handle/resource reuse, launch/quit, file I/O and cancellation, UI/event
+  traffic, pressure and failure paths. Include stale/foreign requests, interrupted
+  operations and subsequent reuse. Honor actual configured concurrency support;
+  a single-hart run does not establish SMP correctness.
+- Avoid serializing the workload through a host acknowledgment after each
+  operation or through test-only global barriers. Serial output, structured
+  result encoding, synchronous transport and added synchronization can perturb
+  timing, order execution and hide races. Use minimal instrumentation, bounded
+  preallocated failure records and deferred/batched summaries where appropriate.
+  Even memory tracing has cost; compare relevant behavior with tracing disabled.
+- Retain workload/configuration provenance and reproducible seeds where used.
+  Capture the first failure before later cleanup obscures it. Measure timing in
+  the target runtime, report observer overhead and distinguish what was exercised
+  from what is proven. Successful stress runs do not prove absence of races.
+- Run destructive and stress scenarios in private guest environments, preserving
+  the user's live VM and data. The authorized future guest applications/kernel
+  are not a replacement host Rust unit/integration/doctest framework.
+
+### Production design, evidence and reporting
+
+- Production architecture serves the OS contract. Validation machinery must
+  adapt to that architecture. Every retained abstraction must have a production
+  purpose. Preserve the safe typed definition-author API and one narrow audited
+  unsafe ABI boundary; removing wrappers must not push raw pointer/wire handling
+  back into application or definition authors.
+- OS acceptance must exercise the actual target artifacts and relevant shipping
+  build configuration in the target runtime. For the current kernel and low-level
+  modules that includes their real `no_std` implementation, allocator, trap,
+  resource loading/relocation, interrupt and scheduler paths. This does not
+  cancel the separate plan for application `std` support.
+- An external host harness may drive QEMU and collect evidence. It cannot replace
+  guest services with host-linked implementations and claim equivalent coverage.
+  Agree on new validation machinery before adding it; the removal directive
+  does not authorize another Rust testing framework.
+- Label instrumented or fault-injection builds and their differences from the
+  shipping configuration. They require production-path evidence for the property
+  claimed. Preserve artifact/configuration provenance, observations, failure and
+  cleanup behavior, and the limits of each result. Timing claims require measured
+  target-runtime evidence; QEMU evidence alone does not qualify other hardware.
+- Never report a feature, synchronization guarantee, failure path, performance
+  property or milestone as verified without evidence supporting that exact
+  claim. Report missing coverage as **unverified**. Build, format and static
+  checks establish only their stated properties. Correct or withdraw unsupported
+  completion claims; preserve historical evidence without presenting it as proof.
+- Keep reports in root `status.txt` and coordinate through root `comms.txt`.
+  The extension worker backend remains unready. Do not resume the paused
+  extension agent automatically or equate heap capacity, retained application
+  account authority, or transport demos with a complete worker/clipboard service.
+
+## Architecture, runtime and project rules
+
 - No backward compatibility with earlier System RISC builds is required during
   this unreleased phase. Break internal APIs, ABIs, resource/native disk formats
   and preference schemas directly; update all producers, consumers, tools and
-  tests together and rebuild the whole system. Regenerate generated media and
-  remove superseded implementations. Do not add compatibility shims, dual
+  validation paths together and rebuild the whole system. Regenerate generated
+  media and remove superseded implementations. Do not add compatibility shims, dual
   decoders, fallbacks or migrations solely to preserve old project artifacts.
   Keep validation and clear rebuild/recreate errors for incompatible artifacts.
   Original Macintosh compatibility and external-format support remain explicit
@@ -26,12 +198,13 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
 - Prune obsolete generated HD images at check boundaries, including on failure.
   Include HFS and other raw disk formats; retain only current build/live VM disks
   and original reference media. Reports and screenshots do not require old disks.
-- Tests build their installation under a separate build/media root from the
-  regular desktop. Propagate SYSTEM7_BUILD_DIR through all builders, guest
+- Runtime validation uses an installation under a separate build/media root
+  from the regular desktop. Propagate SYSTEM7_BUILD_DIR through all builders, guest
   launchers and acceptance readers; never hardcode the normal installation in
   a check. Native guest builds use the optimized release profile, including for
   the regular launcher; a host debug xtask must not imply a debug guest.
-- P15's native HFS-B boot/default-image cutover is verified. Preserve its shared
+- P15's native HFS-B boot/default-image cutover is implemented. Reassess earlier
+  verification claims under the recovery order above. Preserve its shared
   read/write core, resident/ROM boot, bounded resource-loading and public-SDK
   acceptance gates; host-only verification is insufficient for storage changes.
   Existing no_std apps remain the initial launch gate. Follow docs/HFS-B.md and
@@ -40,9 +213,9 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
   disk and Unicode contract. Changing Unicode requires a new filesystem version
   and rebuilding all affected file/name/index representations with collision
   checks; the Unicode header field is validation, not an independent selector.
-- P15 and the public Rust Toolbox API audit are verified
-  (see `docs/TOOLBOX-RUST-API.md`). The current sequence is the class-neutral
-  driver/module interface, exercised by
+- Reassess P15 and public Rust Toolbox API audit verification claims
+  (see `docs/TOOLBOX-RUST-API.md`) under the recovery order above. The later
+  feature sequence is the class-neutral driver/module interface, exercised by
   StuffIt volumes and the vhost filesystem/block-device pair, then the virtual
   host clipboard extension. Bring in the necessary P6 loader/service machinery
   for these milestones; input/network/display extraction and std migration follow
@@ -55,10 +228,9 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
   admission/lifetimes and the bootstrap support needed to load them. Applications
   call System services; System selects a compatible driver by its declared
   interface and capabilities, never by a driver filename.
-- Canonical new Toolbox compatibility assertions belong in
-  `crates/mac-toolbox/tests` and exercise the public SDK through real services.
-  Capture scripts may collect evidence; Rust owns new acceptance decisions.
-  Use original System behavior and code to resolve ambiguity; retain provenance.
+- After the removal and audit, define Toolbox acceptance against the actual
+  guest services and loaded resources. Use original System behavior and code
+  to resolve ambiguity; retain provenance.
 - New Rust apps get native functionality through Rust interfaces. Legacy
   Pascal/MacRoman conversion is exposed through legacy traps, backed by the
   same services. Keep date APIs compatible with2026 and checked epoch conversion.
@@ -108,7 +280,7 @@ Toolbox modules; WDEF/CDEF and other definition resources own their unique code.
 
 Performance bar: the code must not do unnecessary work. Full recomputation is the last resort, not the default: prefer bounded invalidation over full repaints, early-out on no-change, cache what doesn't move, and never do per-event work when per-change work will do. "Input happened" is not "pixels changed." When in doubt, the Cursor Test's responsiveness and the present() trace timings are the benchmarks — the mouse is the profiler.
 
-- Every workflow test includes relevant unhappy paths and asserts informative
+- Every workflow validation exercise includes relevant unhappy paths and checks informative
   error messages, not just status codes. Preserve causes through driver, resident
   service and app boundaries. Ordinary errors must release owned protocol state
   and leave the UI immediately usable; verify cleanup, retry and cancellation.

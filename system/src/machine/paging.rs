@@ -2,9 +2,11 @@
 //! existing reference changes its address; every RAM view starts in physmap.
 pub(crate) mod inspection;
 mod alias;
-
+mod heap_partition;
 use core::{arch::asm, fmt, marker::PhantomData, ptr};
 
+use heap_partition::HeapPartition;
+pub(crate) use heap_partition::{ProtectedHeapStatistics, ProtectedRange};
 use mac_abi::{BootInfo, BootMemoryRange,
               boot::{CheckedMemory, MemoryError,
                      execution::{self, EXECUTE, FIRMWARE_ONLY, READ, Region, WRITE}}};
@@ -44,6 +46,7 @@ pub(crate) enum Error
     Physical(PhysicalError),
     Policy(ModelError),
     Pages(super::pages::Error),
+    HeapPartition(heap_partition::Error),
     Tables(MapError<FrameError>),
     Missing,
     AlreadyActive,
@@ -75,6 +78,7 @@ impl fmt::Display for Error
             Self::Physical(e) => e.fmt(f),
             Self::Policy(e) => e.fmt(f),
             Self::Pages(e) => e.fmt(f),
+            Self::HeapPartition(e) => e.fmt(f),
             Self::Tables(e) => e.fmt(f),
             Self::Missing =>
             {
@@ -382,7 +386,7 @@ struct Spaces
     kernel:        Space,
     firmware:      Space,
     stack:         Stack,
-    heap:          Backing,
+    heap:          HeapPartition,
     distinct_tags: bool
 }
 fn permissions(flags: u32, global: bool) -> Permissions
@@ -493,6 +497,7 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
                    Error::HeapAdmission { requested: SYSTEM_HEAP_BYTES,
                                           cause }
                })?;
+    let heap = HeapPartition::new(heap).map_err(Error::HeapPartition)?;
     let backing = Backing::allocate(SYSTEM_STACK_BYTES as usize).map_err(Error::Pages)?;
     let distinct_tags = boot.tag_mask & 1 != 0;
     let kernel = prepare_space(boot,
@@ -537,19 +542,40 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
             VM_SYSTEM_STACKS_START + PAGE_BYTES,
             SYSTEM_STACK_BYTES);
     serial!("SYSTEM_HEAP_READY base={:#x} bytes={} physical={:#x} backing_bytes={} \
-             permissions=supervisor-rw-nx roots=2 protected_reserve=false",
+             permissions=supervisor-rw-nx roots=2 protected_reserve=true ordinary_bytes={} \
+             reserve_bytes={}",
             VM_SYSTEM_HEAP_BASE,
             SYSTEM_HEAP_BYTES,
             spaces.heap.physical().0,
-            spaces.heap.bytes());
+            spaces.heap.bytes(),
+            spaces.heap.ordinary_range().1,
+            SYSTEM_RECOVERY_BYTES);
     Ok(call(&spaces.stack))
 }
 /// The allocation range is valid only once both permanent roots own the exact
 /// mapping and its physical lease. Numeric facts confer no independent owner.
 pub(crate) fn heap_range() -> Option<(usize, usize)>
 {
+    Some(SPACES.get()?.heap.ordinary_range())
+}
+/// Full mapped bytes, including protected storage. This does not grant allocator access.
+pub(crate) fn mapped_heap_range() -> Option<(usize, usize)>
+{
     SPACES.get()?;
     Some((VM_SYSTEM_HEAP_BASE as usize, SYSTEM_HEAP_BYTES))
+}
+pub(crate) fn protected_heap_statistics() -> Option<ProtectedHeapStatistics>
+{
+    Some(SPACES.get()?.heap.statistics())
+}
+pub(crate) fn reserve_terminal_storage(frame_bytes: usize, stack_bytes: usize)
+                                       -> Result<(ProtectedRange, ProtectedRange), Error>
+{
+    SPACES.get()
+          .ok_or(Error::Missing)?
+          .heap
+          .terminal_storage(frame_bytes, stack_bytes)
+          .map_err(Error::HeapPartition)
 }
 struct RootScope
 {

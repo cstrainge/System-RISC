@@ -51,6 +51,7 @@
     "fdt_tail_bytes": "0x200000",
     "boot_stack_bytes": "0x40000",
     "system_heap_bytes": "0x20000000",
+    "system_recovery_bytes": "0x2000000",
     "application_primary_base": "0x81000000",
     "definitions": {
       "base": "0x82000000",

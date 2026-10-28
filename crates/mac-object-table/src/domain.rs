@@ -1,7 +1,7 @@
 //! Lifetime-domain identity, the resident process owner directory, and ledger
 //! metadata. Other managers migrate under memory/app/resource spec §13.
 //! Native/legacy wire projections remain the responsibility of the facility.
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use core::{fmt,
            num::NonZeroU64,
            sync::atomic::{AtomicBool, AtomicU64, Ordering}};
@@ -869,7 +869,7 @@ pub struct OwnerIndex
 {
     owner:                  DomainId,
     pools:                  Vec<DomainSlots>,
-    accepting:              bool,
+    admission:              Arc<AtomicBool>,
     revision:               u64,
     quarantine_pool_cursor: usize,
     completions:            crate::completion::Queue
@@ -1022,6 +1022,10 @@ pub enum DirectoryError
     CompletionFaults
     {
         owner: DomainId, faults: usize
+    },
+    AdmissionOpen
+    {
+        owner: DomainId
     }
 }
 impl fmt::Display for DirectoryError
@@ -1031,6 +1035,10 @@ impl fmt::Display for DirectoryError
         match self
         {
             Self::Storage { owner } => write!(f, "owner-directory allocation refused for {owner}"),
+            Self::AdmissionOpen { owner } =>
+            {
+                write!(f, "cannot drain {owner}: resource admission is still open")
+            }
             Self::NotFound { incarnation } =>
             {
                 write!(f, "lifetime domain incarnation {incarnation} not found")
@@ -1187,6 +1195,14 @@ impl<T, G: InvocationGate> Drop for Directory<T, G>
 pub enum IndexError
 {
     Identity(IncarnationsExhausted),
+    AdmissionStorage
+    {
+        kind: DomainKind
+    },
+    SharedStorage
+    {
+        kind: DomainKind
+    },
     Pool(PoolError)
 }
 impl fmt::Display for IndexError
@@ -1196,10 +1212,81 @@ impl fmt::Display for IndexError
         match self
         {
             Self::Identity(e) => e.fmt(f),
+            Self::AdmissionStorage { kind } =>
+            {
+                write!(f,
+                       "cannot allocate {kind:?} owner admission authority; backing allocation \
+                        refused")
+            }
+            Self::SharedStorage { kind } =>
+            {
+                write!(f,
+                       "cannot allocate {kind:?} shared owner authority; backing allocation \
+                        refused")
+            }
             Self::Pool(e) => e.fmt(f)
         }
     }
 }
+
+/// A fresh, empty namespace that has not escaped as owner authority. Its only
+/// publication paths commit the boot-wide issuer before returning the index or
+/// shared root. No fallible backing allocation follows that commitment.
+pub(crate) struct UnpublishedIndex
+{
+    index: OwnerIndex
+}
+impl UnpublishedIndex
+{
+    pub(crate) fn prepare(kind: DomainKind) -> Result<Self, IndexError>
+    {
+        if kind == DomainKind::System && SYSTEM_INDEX_ISSUED.load(Ordering::Relaxed)
+        {
+            return Err(IndexError::Pool(PoolError::SystemIndexAlreadyIssued));
+        }
+        let admission =
+            Arc::try_new(AtomicBool::new(true)).map_err(|_| IndexError::AdmissionStorage { kind })?;
+        let owner = DomainId::issue(kind).map_err(IndexError::Identity)?;
+        Ok(Self { index: OwnerIndex { owner,
+                                      pools: Vec::new(),
+                                      admission,
+                                      revision: 1,
+                                      quarantine_pool_cursor: 0,
+                                      completions: crate::completion::Queue::new() } })
+    }
+
+    fn commit(kind: DomainKind) -> Result<(), IndexError>
+    {
+        if kind == DomainKind::System
+           && SYSTEM_INDEX_ISSUED.compare_exchange(false,
+                                                   true,
+                                                   Ordering::Relaxed,
+                                                   Ordering::Relaxed)
+                                 .is_err()
+        {
+            return Err(IndexError::Pool(PoolError::SystemIndexAlreadyIssued));
+        }
+        Ok(())
+    }
+
+    fn into_standalone(self) -> Result<OwnerIndex, IndexError>
+    {
+        Self::commit(self.index.owner.kind())?;
+        Ok(self.index)
+    }
+
+    pub(crate) fn into_shared<G: InvocationGate>(self) -> Result<OwnerRef<G>, IndexError>
+    {
+        let kind = self.index.owner.kind();
+        // Neither the candidate nor a clone escapes before both Arc allocations
+        // succeed. Refusal drops only unpublished backing, leaving System free
+        // for a genuine retry; failed non-System incarnations remain consumed.
+        let root = OwnerRef::try_new(self.index).map_err(|_| IndexError::SharedStorage { kind })?;
+        G::run(|| Self::commit(kind))?;
+        Ok(root)
+    }
+}
+
 impl OwnerIndex
 {
     pub fn quarantine(&mut self, released: ReleasedResource) -> Result<(), CompletionError>
@@ -1305,7 +1392,7 @@ impl OwnerIndex
         let mut result = LedgerSummary { revision: self.revision,
                                          kinds: self.pools.len(),
                                          completion_faults: self.completions.len(),
-                                         accepting: self.accepting,
+                                         accepting: self.accepting(),
                                          ..Default::default() };
         for pool in &self.pools
         {
@@ -1326,22 +1413,7 @@ impl OwnerIndex
     /// authorizes recreating its incarnation or resetting its generations.
     pub fn issue(kind: DomainKind) -> Result<Self, IndexError>
     {
-        if kind == DomainKind::System
-           && SYSTEM_INDEX_ISSUED.compare_exchange(false,
-                                                   true,
-                                                   Ordering::Relaxed,
-                                                   Ordering::Relaxed)
-                                 .is_err()
-        {
-            return Err(IndexError::Pool(PoolError::SystemIndexAlreadyIssued));
-        }
-        let owner = DomainId::issue(kind).map_err(IndexError::Identity)?;
-        Ok(Self { owner,
-                  pools: Vec::new(),
-                  accepting: true,
-                  revision: 1,
-                  quarantine_pool_cursor: 0,
-                  completions: crate::completion::Queue::new() })
+        UnpublishedIndex::prepare(kind)?.into_standalone()
     }
 
     pub(crate) fn note_scope_change(&mut self)
@@ -1409,7 +1481,7 @@ impl OwnerIndex
                                                                          cause }
                                                   });
         }
-        if !self.accepting
+        if !self.accepting()
         {
             return Err(PoolError::Stopping { owner: self.owner });
         }
@@ -1456,9 +1528,16 @@ impl OwnerIndex
         self.owner
     }
 
-    pub const fn accepting(&self) -> bool
+    pub fn accepting(&self) -> bool
     {
-        self.accepting
+        self.admission.load(Ordering::Acquire)
+    }
+
+    /// The shared reference observes this same authority without entering the
+    /// ledger lock, including allocator admission during metadata growth.
+    pub(crate) fn admission(&self) -> Arc<AtomicBool>
+    {
+        self.admission.clone()
     }
 
     pub fn pools(&self) -> impl Iterator<Item = &DomainSlots>
@@ -1473,7 +1552,7 @@ impl OwnerIndex
 
     pub fn add_pool(&mut self, kind: KindCode, policy: CapacityPolicy) -> Result<(), PoolError>
     {
-        if !self.accepting
+        if !self.accepting()
         {
             return Err(PoolError::Stopping { owner: self.owner });
         }
@@ -1489,7 +1568,7 @@ impl OwnerIndex
                                                   kind });
         }
         let mut pool = DomainSlots::new(self.owner, kind, policy)?;
-        if !self.accepting
+        if !self.accepting()
         {
             pool.stop_admission();
         }
@@ -1632,18 +1711,19 @@ impl OwnerIndex
 
     pub fn stop_admission(&mut self)
     {
-        if self.accepting
+        // Publish closure before stopping the individual pools. Shared reads
+        // never take this lock; writers remain inside the invocation gate.
+        if self.admission.swap(false, Ordering::AcqRel)
         {
             self.revision = self.revision.saturating_add(1);
         }
-        self.accepting = false;
         for pool in &mut self.pools
         {
             pool.stop_admission();
         }
     }
 
-    pub(crate) fn retire(&mut self) -> Result<(), DirectoryError>
+    fn ensure_empty(&self) -> Result<(), DirectoryError>
     {
         if self.completions.len() != 0
         {
@@ -1662,13 +1742,39 @@ impl OwnerIndex
             return Err(DirectoryError::PendingResources { owner: self.owner,
                                                           pending });
         }
-        // Check and close under the caller's single metadata lock. A manager's
-        // surviving reference is only a closed identity stub, not a pin on all
-        // of the dead domain's bitmap/generation storage. Incarnation uniqueness
-        // makes discarding this history safe; this index can never reopen.
-        self.stop_admission();
-        self.pools = Vec::new();
         Ok(())
+    }
+
+    /// Detach only a quiescent, closed domain's metadata. The caller must drop
+    /// the returned backing after leaving its owner lock. The stopped identity
+    /// remains authoritative and can never acquire a replacement namespace.
+    pub(crate) fn drain_stopped(&mut self) -> Result<Vec<DomainSlots>, DirectoryError>
+    {
+        self.ensure_empty()?;
+        if self.accepting()
+        {
+            return Err(DirectoryError::AdmissionOpen { owner: self.owner });
+        }
+        Ok(self.detach_pools())
+    }
+
+    fn detach_pools(&mut self) -> Vec<DomainSlots>
+    {
+        if !self.pools.is_empty()
+        {
+            self.revision = self.revision.saturating_add(1);
+        }
+        self.quarantine_pool_cursor = 0;
+        core::mem::take(&mut self.pools)
+    }
+
+    pub(crate) fn retire(&mut self) -> Result<Vec<DomainSlots>, DirectoryError>
+    {
+        self.ensure_empty()?;
+        // Existing callers may retire an empty open ledger. Check and close
+        // under the same metadata lock before detaching any generation history.
+        self.stop_admission();
+        Ok(self.detach_pools())
     }
 
     /// Kind dispatch is resolved by the caller after dropping its registry lock.
@@ -1758,7 +1864,7 @@ mod tests
             OwnerIndex { owner:                  DomainId { kind: DomainKind::Process,
                                                             incarnation },
                          pools:                  Vec::new(),
-                         accepting:              true,
+                         admission:              Arc::new(AtomicBool::new(true)),
                          revision:               1,
                          quarantine_pool_cursor: 0,
                          completions:            crate::completion::Queue::new() }
