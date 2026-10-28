@@ -12,11 +12,7 @@ mod font_choices;
 mod encoding;
 mod documents;
 mod batch;
-mod resources
-{
-    use mac_toolbox as mac_abi;
-    include!(concat!(env!("OUT_DIR"), "/resource_ids.rs"));
-}
+include_resource_ids!();
 mod menus;
 mod ui;
 use ui::{Text, text};

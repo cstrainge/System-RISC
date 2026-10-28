@@ -6,11 +6,7 @@
 use mac_toolbox::*;
 
 mod demo;
-mod resources
-{
-    use mac_toolbox as mac_abi;
-    include!(concat!(env!("OUT_DIR"), "/resource_ids.rs"));
-}
+include_resource_ids!();
 
 const CLOSE: u32 = u32::from_be_bytes(*b"clos");
 const QUIT: u32 = u32::from_be_bytes(*b"quit");

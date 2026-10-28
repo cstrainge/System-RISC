@@ -3,11 +3,7 @@
 #![no_main]
 
 use mac_toolbox::{System, *};
-mod resources
-{
-    use mac_toolbox as mac_abi;
-    include!(concat!(env!("OUT_DIR"), "/resource_ids.rs"));
-}
+include_resource_ids!();
 
 mod ui;
 mod clipboard;
