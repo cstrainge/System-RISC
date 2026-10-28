@@ -19,6 +19,27 @@ pub trait InvocationGate
 {
     fn run<R>(operation: impl FnOnce() -> R) -> R;
 
+    /// Attribute backing for shared resident indexes and System-owned objects
+    /// to the platform's ordinary System allocation authority. This changes
+    /// only new allocations in this bounded operation; existing backing keeps
+    /// its original refund destination. It neither authenticates an owner nor
+    /// opens a ledger lock. Platforms without domain allocation attribution
+    /// use the neutral default.
+    fn with_system_allocation<R>(operation: impl FnOnce() -> R) -> R
+    {
+        operation()
+    }
+
+    /// Attribute only the canonical owner/account authority control blocks to
+    /// System foundation. These establish authority and cannot carry receipts
+    /// from the account they create. Per-domain Claims, ledger arrays, slots
+    /// and payloads are ordinary owner allocations. As above, the neutral
+    /// default supports platforms without domain allocation attribution.
+    fn with_foundation_allocation<R>(operation: impl FnOnce() -> R) -> R
+    {
+        operation()
+    }
+
     /// A stopped ledger has actually completed cleanup. Called after payload
     /// destruction and metadata unlock; the resident adapter may post a cheap,
     /// coalesced retirement wake. This must not allocate or run cleanup itself.
@@ -125,7 +146,9 @@ impl<G: InvocationGate> OwnerRef<G>
     /// backing refusal leaves the unique System issuer available for retry.
     pub fn issue(kind: DomainKind) -> Result<Self, IndexError>
     {
-        UnpublishedIndex::prepare(kind)?.into_shared()
+        // Preparation allocates only the admission control block; conversion
+        // below separately scopes its canonical shared root allocation.
+        G::with_foundation_allocation(|| UnpublishedIndex::prepare(kind))?.into_shared()
     }
 
     /// Share an already issued index. Issuance remains irreversible even when
@@ -134,12 +157,12 @@ impl<G: InvocationGate> OwnerRef<G>
     {
         let owner = index.owner();
         let admission = index.admission();
-        let state = Arc::try_new(State { owner,
-                                         admission,
-                                         index: Spinlock::new(index),
-                                         gate: PhantomData }).map_err(|_| {
-                                                                 DirectoryError::Storage { owner }
-                                                             })?;
+        let state = G::with_foundation_allocation(|| {
+                        Arc::try_new(State { owner,
+                                             admission,
+                                             index: Spinlock::new(index),
+                                             gate: PhantomData })
+                    }).map_err(|_| DirectoryError::Storage { owner })?;
         Ok(Self { state })
     }
 

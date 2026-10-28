@@ -1,5 +1,8 @@
 //! Queue metadata is locked only outside foreign callbacks.
+use mac_object_table::shared::InvocationGate as _;
+
 use super::*;
+use crate::toolbox::handles::InvocationGate;
 impl Core
 {
     pub const fn new() -> Self
@@ -42,8 +45,11 @@ impl Core
         // A detached callback may return Ready or complete after later jobs
         // enter. Reserve for every retained record before publication, so
         // callback return, cancellation and cleanup never allocate.
-        if self.ready.try_reserve(needed.saturating_sub(self.ready.len())).is_err()
-           || self.notices.try_reserve(needed.saturating_sub(self.notices.len())).is_err()
+        let capacity = InvocationGate::with_system_allocation(|| {
+            self.ready.try_reserve(needed.saturating_sub(self.ready.len()))?;
+            self.notices.try_reserve(needed.saturating_sub(self.notices.len()))
+        });
+        if capacity.is_err()
         {
             return Err(SubmissionError { status: NO_MEMORY,
                                          work });

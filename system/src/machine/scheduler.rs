@@ -139,6 +139,47 @@ pub fn current_context() -> crate::context::ContextRef
               .unwrap_or(crate::context::ContextRef::Bootstrap)
     })
 }
+/// Reserve from the actual active executor without a ContextRef/retained-reader
+/// clone. The callback path is allocation-free and cannot escape borrowed state.
+/// Release ACTIVE, selection and account locks before the allocator uses backing.
+pub(crate) fn reserve_allocation(
+    bytes: u64)
+    -> Result<crate::allocator::Reservation, crate::allocator::Error>
+{
+    super::interrupts::with_masked(|| {
+        if IO.load(Ordering::Relaxed)
+        {
+            return crate::context::reserve_bootstrap_allocation(bytes);
+        }
+        let active = ACTIVE.lock();
+        match active.as_ref()
+        {
+            Some(context) => context.reserve_allocation(bytes),
+            None => crate::context::reserve_bootstrap_allocation(bytes)
+        }
+    })
+}
+
+/// Reallocation retains the original receipt. Borrow the current operation only
+/// as a possible same-account continuation, without cloning readers or authority.
+pub(crate) fn reserve_replacement(
+    receipt: &crate::allocator::Receipt, bytes: u64)
+    -> Result<crate::allocator::Reservation, crate::allocator::Error>
+{
+    super::interrupts::with_masked(|| {
+        if IO.load(Ordering::Relaxed)
+        {
+            return crate::context::reserve_bootstrap_replacement(receipt, bytes);
+        }
+        let active = ACTIVE.lock();
+        match active.as_ref()
+        {
+            Some(context) => context.reserve_replacement(receipt, bytes),
+            None => crate::context::reserve_bootstrap_replacement(receipt, bytes)
+        }
+    })
+}
+
 // Scheduler -> ACTIVE is the only held-lock ordering. Lookup releases ACTIVE
 // before any caller runs, including completion-before-park under scheduler lock.
 fn activate_context(context: Option<&Arc<ThreadContext>>)
@@ -221,7 +262,13 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                       loaded: crate::kernel::LoadedImage, charges: accounting::ThreadCharges)
                       -> Result<PreparedThread, PrepareFailure>
 {
-    let prepared = (|| {
+    let target = crate::allocator::Target::Owner { account: charges.allocation().clone(),
+                                                   class:
+                                                       mac_kernel_model::policy::MemoryClass::Kernel };
+    // The child's genuine account scopes BOTH Arc allocations. Keep loaded
+    // borrowed until every fallible preparation has succeeded, so refusal can
+    // return the original image use without publishing or losing it.
+    let prepared = crate::context::with_allocation(target, || {
         if !owner.accepting() || loaded.binding().owner() != owner.owner().incarnation()
         {
             return Err(mac_abi::ACCESS_DENIED);
@@ -234,8 +281,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                                   initial.registers[8] = loaded.entry();
                                                   initial.stack_pointer = top;
                                                   // gp is unused by the freestanding PC-relative
-                                                  // executable
-                                                  // contract.
+                                                  // executable contract.
                                                   initial
                                               })
                                               .map_err(|error| {
@@ -243,28 +289,19 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                                   error.status()
                                               })?;
         let top = stack.top();
-        Ok((context, stack, cpu, top, allocation))
-    })();
+        let core = Arc::try_new(ThreadCore { cpu: Mutex::new(cpu),
+                                             _stack: stack,
+                                             _loaded: None,
+                                             context,
+                                             release: Mutex::new(None),
+                                             binding: loaded.binding(),
+                                             top }).map_err(|_| mac_abi::NO_MEMORY)?;
+        Ok((core, allocation))
+    });
     match prepared
     {
-        Ok((context, stack, cpu, top, allocation)) =>
+        Ok((mut core, allocation)) =>
         {
-            let binding = loaded.binding();
-            let mut core = match Arc::try_new(ThreadCore { cpu: Mutex::new(cpu),
-                                                           _stack: stack,
-                                                           _loaded: None,
-                                                           context,
-                                                           release: Mutex::new(None),
-                                                           binding,
-                                                           top })
-            {
-                Ok(core) => core,
-                Err(_) =>
-                {
-                    return Err(PrepareFailure { status: mac_abi::NO_MEMORY,
-                                                loaded });
-                }
-            };
             let Some(storage) = Arc::get_mut(&mut core)
             else
             {
@@ -288,63 +325,67 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
 pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
                              -> Result<u64, SpawnFailure>
 {
-    let published = (|| {
-        let mut scheduler = SCHEDULER.lock();
-        let slot = scheduler.prepare()?;
-        if !prepared.owner.accepting()
-        {
-            return Err(mac_abi::ACCESS_DENIED);
-        }
-        let store = scheduler.records.as_mut().ok_or(mac_abi::BAD_ABI)?;
-        let publication = store.insert_with_receipt(&prepared.owner, |id| {
-                                   Thread { id,
-                                            core: prepared.core.share(),
-
-                                            state: Cell::new(RunState { live:     false,
-                                                                        retired:  false,
-                                                                        switches: 0,
-                                                                        waiting:  None,
-                                                                        woken:    0 }) }
-                               })
-                               .map_err(lifetime::pool_status)?;
-        let (id, receipt) = publication.into_parts();
-        if slot == scheduler.threads.len()
-        {
-            scheduler.threads.push(Some(receipt));
-        }
-        else
-        {
-            scheduler.threads[slot] = Some(receipt);
-        }
-        // Publication's receipt remains valid if a stopping walk has already
-        // invalidated ordinary lookup. An unstarted refusal retains the same
-        // preparation; its stack/image pins are never dropped under this lock.
-        let assigned =
-            prepared.core.context.assign(prepared.owner.clone(),
-                                         id,
-                                         prepared.core.binding,
-                                         &prepared.allocation);
-        if let Err(status) = assigned
-        {
-            let removed = scheduler.records.as_mut().and_then(|store| store.remove(id));
-            if removed.is_some()
+    let published =
+        (|| {
+            let mut scheduler = SCHEDULER.lock();
+            let slot = crate::allocator::with_system(crate::allocator::SystemClass::Ordinary,
+                                                     || scheduler.prepare())?;
+            if !prepared.owner.accepting()
             {
-                scheduler.threads[slot] = None;
+                return Err(mac_abi::ACCESS_DENIED);
             }
-            else if let Some(thread) = scheduler.thread(slot)
+            let store = scheduler.records.as_mut().ok_or(mac_abi::BAD_ABI)?;
+            // Shared Store indices grow under their narrow System hook. Its actual
+            // per-owner Claim, slots and completions belong to this admitted child.
+            let publication = crate::context::with_allocation(crate::allocator::Target::Owner {
+                account: prepared.allocation.clone(),
+                class: mac_kernel_model::policy::MemoryClass::Kernel
+            }, || store.insert_with_receipt(&prepared.owner, |id| {
+                Thread { id,
+                         core: prepared.core.share(),
+                         state: Cell::new(RunState { live: false,
+                                                    retired: false,
+                                                    switches: 0,
+                                                    waiting: None,
+                                                    woken: 0 }) }
+            })).map_err(lifetime::pool_status)?;
+            let (id, receipt) = publication.into_parts();
+            if slot == scheduler.threads.len()
             {
-                retire(thread);
+                scheduler.threads.push(Some(receipt));
             }
-            drop(scheduler);
-            drop(removed);
-            return Err(status);
-        }
-        if let Some(thread) = scheduler.thread(slot)
-        {
-            thread.update(|state| state.live = runnable);
-        }
-        Ok(id)
-    })();
+            else
+            {
+                scheduler.threads[slot] = Some(receipt);
+            }
+            // Publication's receipt remains valid if a stopping walk has already
+            // invalidated ordinary lookup. An unstarted refusal retains the same
+            // preparation; its stack/image pins are never dropped under this lock.
+            let assigned = prepared.core.context.assign(prepared.owner.clone(),
+                                                        id,
+                                                        prepared.core.binding,
+                                                        &prepared.allocation);
+            if let Err(status) = assigned
+            {
+                let removed = scheduler.records.as_mut().and_then(|store| store.remove(id));
+                if removed.is_some()
+                {
+                    scheduler.threads[slot] = None;
+                }
+                else if let Some(thread) = scheduler.thread(slot)
+                {
+                    retire(thread);
+                }
+                drop(scheduler);
+                drop(removed);
+                return Err(status);
+            }
+            if let Some(thread) = scheduler.thread(slot)
+            {
+                thread.update(|state| state.live = runnable);
+            }
+            Ok(id)
+        })();
     match published
     {
         Ok(id) =>
@@ -781,18 +822,23 @@ pub(crate) fn reclaim_retired()
 
 pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
 {
-    // Device input and cursor publication precede all ordinary maintenance.
-    // Never enable nested preemption while a resident manager owns its guards.
-    let fresh_input = crate::kernel::poll_waiting_events();
-    if INPUT_PRIORITY.background_allowed(fresh_input)
-    {
-        reclaim_retired();
-        crate::drivers::pump_jobs();
-        crate::toolbox::files::pump_provider_operations();
-        crate::toolbox::processes::documents::pump();
-        crate::toolbox::processes::retirement::pump();
-        crate::toolbox::processes::finder::pump();
-    }
+    // ACTIVE still names the interrupted app until a new CPU frame is selected.
+    // Generic scheduler maintenance uses permanent System authority; provider
+    // callbacks must explicitly restore their own retained subject selection.
+    crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+        // Device input and cursor publication precede all ordinary maintenance.
+        // Never enable nested preemption while a resident manager owns its guards.
+        let fresh_input = crate::kernel::poll_waiting_events();
+        if INPUT_PRIORITY.background_allowed(fresh_input)
+        {
+            reclaim_retired();
+            crate::drivers::pump_jobs();
+            crate::toolbox::files::pump_provider_operations();
+            crate::toolbox::processes::documents::pump();
+            crate::toolbox::processes::retirement::pump();
+            crate::toolbox::processes::finder::pump();
+        }
+    });
     let current = CURRENT.load(Ordering::Relaxed);
     let mut scheduler = SCHEDULER.lock();
     scheduler.ticks += 1;

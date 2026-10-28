@@ -52,7 +52,8 @@ pub(super) struct Definition
     system_heap_bytes:           String,
     system_recovery_bytes:       String,
     stacks:                      stacks::Definition,
-    process_accounts:            accounts::Definition
+    process_accounts:            accounts::Definition,
+    module_accounts:             accounts::ModuleDefinition
 }
 /// Only validation can construct this record. All generated artifacts use it.
 #[derive(Debug)]
@@ -78,7 +79,8 @@ pub struct Checked
     pub(super) system_heap_bytes:           u64,
     system_recovery_bytes:                  u64,
     stacks:                                 stacks::Checked,
-    process_accounts:                       accounts::Checked
+    process_accounts:                       accounts::Checked,
+    module_accounts:                        accounts::ModuleChecked
 }
 fn address(name: &str, text: &str) -> Result<u64>
 {
@@ -244,6 +246,7 @@ impl Definition
                               framebuffer and independent System stack"));
         }
         let process_accounts = self.process_accounts.check(page, stacks.application_default())?;
+        let module_accounts = self.module_accounts.check(page)?;
         Ok(Checked { page_bytes: page,
                      ram,
                      flash,
@@ -264,7 +267,8 @@ impl Definition
                      system_heap_bytes,
                      system_recovery_bytes,
                      stacks,
-                     process_accounts })
+                     process_accounts,
+                     module_accounts })
     }
 }
 impl Checked
@@ -413,6 +417,7 @@ impl Checked
                                               .chain(self.display_buffers())
                                               .chain(self.stacks.constants())
                                               .chain(self.process_accounts.constants())
+                                              .chain(self.module_accounts.constants())
                                               .chain(self.bootstrap_io.constants())
         {
             writeln!(out, "pub const {name}: u64 = {value:#x};").unwrap();

@@ -156,15 +156,22 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
                 let length = files(|m| m.publish_provider_file(state.handle, &bytes))?;
                 let _ = files(|m| m.begin_resource_inspection(flight.owner.label(), state.handle))?;
                 state.reading = true;
-                state.loader =
-                    Some(Loader::selected(length,state.selection.budget(),state.selection.includes()).map_err(resources_format_status)?);
+                state.loader = Some(state.selection
+                                         .with_source_allocation(|| {
+                                             Loader::selected(length,
+                                                              state.selection.budget(),
+                                                              state.selection.includes())
+                                         })
+                                         .map_err(resources_format_status)?);
                 state.stage = Stage::Read;
                 read(flight.provider, &state).map(Some)
             }
             Stage::Read =>
             {
                 let loader = state.loader.as_mut().ok_or(BAD_ABI)?;
-                loader.received(&bytes).map_err(resources_format_status)?;
+                state.selection
+                     .with_source_allocation(|| loader.received(&bytes))
+                     .map_err(resources_format_status)?;
                 if loader.request().is_some()
                 {
                     read(flight.provider, &state).map(Some)
@@ -188,13 +195,17 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
         Ok(None) =>
         {
             let outcome = (|| {
-                let resources = state.loader
-                                     .take()
-                                     .ok_or(BAD_ABI)?
-                                     .finish()
+                let loader = state.loader.take().ok_or(BAD_ABI)?;
+                let resources = state.selection
+                                     .with_source_allocation(|| loader.finish())
                                      .map_err(resources_format_status)?;
-                Box::try_new(Loaded { catalog: state.catalog.ok_or(BAD_ABI)?,
-                                      resources }).map_err(|_| NO_MEMORY)
+                let catalog = state.catalog.ok_or(BAD_ABI)?;
+                state.selection
+                     .with_source_allocation(|| {
+                         Box::try_new(Loaded { catalog,
+                                               resources })
+                     })
+                     .map_err(|_| NO_MEMORY)
             })();
             close(flight, state, outcome)
         }

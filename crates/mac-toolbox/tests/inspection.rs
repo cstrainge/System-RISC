@@ -698,9 +698,9 @@ fn own_execution_account_is_real_partial_coverage_with_refund_and_close()
             let read = || snapshot.at(0).unwrap().accounting;
             match read()
             {
-                MemoryAccounting::StackAndCpuOnly { kernel,
-                                                    application,
-                                                    closing } =>
+                MemoryAccounting::ExecutionAndResidentHeap { kernel,
+                                                             application,
+                                                             closing } =>
                 {
                     assert_eq!((kernel.limit, kernel.reserved, kernel.committed),
                                (16_384, 0, 4096));
@@ -715,14 +715,14 @@ fn own_execution_account_is_real_partial_coverage_with_refund_and_close()
             assert!(!denied.to_string().is_empty());
             assert!(!fixture::close_account(owner));
             assert!(matches!(read(),
-                             MemoryAccounting::StackAndCpuOnly { closing: true,
-                                                                 .. }));
+                             MemoryAccounting::ExecutionAndResidentHeap { closing: true,
+                                                                          .. }));
             drop(charges);
             match read()
             {
-                MemoryAccounting::StackAndCpuOnly { kernel,
-                                                    application,
-                                                    closing } =>
+                MemoryAccounting::ExecutionAndResidentHeap { kernel,
+                                                             application,
+                                                             closing } =>
                 {
                     assert_eq!((kernel.reserved,
                                 kernel.committed,

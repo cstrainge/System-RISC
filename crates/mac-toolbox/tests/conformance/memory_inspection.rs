@@ -30,9 +30,10 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
                     .map_err(service)?;
     require(own.incarnation == system.processes().current()?.id.0,
             "account row has genuine current identity")?;
-    let mac_toolbox::inspection::MemoryAccounting::StackAndCpuOnly { kernel,
-                                                                     application,
-                                                                     closing } = own.accounting
+    let mac_toolbox::inspection::MemoryAccounting::ExecutionAndResidentHeap { kernel,
+                                                                              application,
+                                                                              closing } =
+        own.accounting
     else
     {
         return Err(Failure::Mismatch("actual process execution account unavailable"));
@@ -44,18 +45,49 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
             && application.reserved == 0
             && application.committed == 4 * 1024 * 1024
             && kernel.committed > 0
-            && kernel.committed % u64::from(summary.page_bytes) == 0,
-            "execution-only configured limits and actual stack/CPU backing")?;
+            && kernel.committed >= u64::from(summary.page_bytes),
+            "configured limits, actual stack and resident heap charges")?;
     let mut account_line = LogBuffer::new();
     let _ = writeln!(account_line,
                      "MEMORY_EXECUTION_ACCOUNT app={} kernel_limit={} application_limit={} \
-                      kernel_committed={} application_committed={} coverage=stack-cpu-only",
+                      kernel_committed={} application_committed={} \
+                      coverage=execution-resident-heap",
                      own.incarnation,
                      kernel.limit,
                      application.limit,
                      kernel.committed,
                      application.committed);
     system.log(account_line.text())?;
+    // This scenario starts before this owner's Memory Manager zone is backed.
+    // Growing its actual resident Vec must appear in this account. Disposal
+    // leaves reusable zone capacity until the domain's real teardown.
+    let mut handle = system.memory().handle_from_bytes(b"original account")?;
+    handle.resize(64 * 1024)?;
+    let mut contents = [0; 16];
+    require(handle.read(0, &mut contents)? == 16 && &contents == b"original account",
+            "resident realloc preserved contents")?;
+    require(handle.resize(2 * 1024 * 1024) == Err(Error::MemoryFull)
+            && handle.len()? == 64 * 1024,
+            "bounded handle refusal preserves original backing and remains usable")?;
+    let row = system.inspection()
+                    .snapshot(mac_toolbox::inspection::Scope::Own)
+                    .map_err(service)?
+                    .at(0)
+                    .map_err(service)?;
+    let mac_toolbox::inspection::MemoryAccounting::ExecutionAndResidentHeap { kernel:
+                                                                                  allocated,
+                                                                              application:
+                                                                                  same_stack,
+                                                                              .. } = row.accounting
+    else
+    {
+        return Err(Failure::Mismatch("resident account disappeared"));
+    };
+    require(allocated.committed > kernel.committed + 60 * 1024 && same_stack == application,
+            "resident zone backing and headers charged to actual owner, not System or stack")?;
+    handle.dispose()?;
+    system.log("MEMORY_RESIDENT_ACCOUNT zone=original-owner realloc=preserved refusal=usable \
+                stack=unchanged disposal=passed\n")?;
     let mut previous = None;
     let mut count = 0;
     let mut stack = None::<Region>;

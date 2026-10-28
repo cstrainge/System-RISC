@@ -1003,6 +1003,10 @@ impl<T, G: InvocationGate> DomainEntry<T, G>
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DirectoryError
 {
+    Duplicate
+    {
+        owner: DomainId
+    },
     Storage
     {
         owner: DomainId
@@ -1034,6 +1038,7 @@ impl fmt::Display for DirectoryError
     {
         match self
         {
+            Self::Duplicate { owner } => write!(f, "lifetime domain {owner} is already registered"),
             Self::Storage { owner } => write!(f, "owner-directory allocation refused for {owner}"),
             Self::AdmissionOpen { owner } =>
             {
@@ -1083,16 +1088,21 @@ impl<T, G: InvocationGate> Directory<T, G>
         self.entries.is_empty()
     }
 
-    /// Consumes the sole owner index. Neither insertion nor payload mutation
-    /// allows the caller to substitute another owner's ledger afterward.
-    pub fn insert(&mut self, ledger: OwnerIndex, value: T) -> Result<DomainId, DirectoryError>
+    /// Retains an authentic prebuilt ledger. Authority construction and shared
+    /// directory storage have different allocation owners.
+    pub fn insert(&mut self, ledger: OwnerRef<G>, value: T) -> Result<DomainId, DirectoryError>
     {
         let owner = ledger.owner();
-        let ledger = OwnerRef::try_new(ledger)?;
-        // OwnerIndex's issuer prohibits duplicate incarnations, including System.
         let at =
-            self.entries.partition_point(|entry| entry.owner().incarnation() < owner.incarnation());
-        self.entries.try_reserve(1).map_err(|_| DirectoryError::Storage { owner })?;
+            match self.entries.binary_search_by_key(&owner.incarnation(), |entry| {
+                                  entry.owner().incarnation()
+                              })
+            {
+                Ok(_) => return Err(DirectoryError::Duplicate { owner }),
+                Err(at) => at
+            };
+        G::with_system_allocation(|| self.entries.try_reserve(1))
+            .map_err(|_| DirectoryError::Storage { owner })?;
         self.entries.insert(at,
                             DomainEntry { ledger,
                                           value });
@@ -1872,8 +1882,8 @@ mod tests
         let low = 7;
         let high = (1u64 << 40) | low;
         let mut directory = Directory::<_, HostGate>::new();
-        directory.insert(ledger(low), "low").unwrap();
-        directory.insert(ledger(high), "high").unwrap();
+        directory.insert(OwnerRef::try_new(ledger(low)).unwrap(), "low").unwrap();
+        directory.insert(OwnerRef::try_new(ledger(high)).unwrap(), "high").unwrap();
         assert_eq!(directory.get(low).unwrap().value(), &"low");
         assert_eq!(directory.get(high).unwrap().value(), &"high");
         assert_eq!(directory.remove(high).unwrap(), "high");
@@ -1884,8 +1894,8 @@ mod tests
     fn mutable_payload_iteration_retains_authentic_directory_identity()
     {
         let mut directory = Directory::<_, HostGate>::new();
-        let a = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), 0).unwrap();
-        let b = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), 0).unwrap();
+        let a = directory.insert(OwnerRef::issue(DomainKind::Process).unwrap(), 0).unwrap();
+        let b = directory.insert(OwnerRef::issue(DomainKind::Process).unwrap(), 0).unwrap();
         for (ledger, payload) in directory.entries_mut()
         {
             *payload = ledger.owner().incarnation();

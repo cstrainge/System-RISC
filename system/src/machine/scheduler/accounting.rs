@@ -1,5 +1,6 @@
 //! First resident account consumers: application stacks and saved CPU backing.
-//! Heap, scheduler metadata and image storage are not covered by these receipts.
+//! Physical stack/CPU receipts are distinct from the original-account heap
+//! receipts carried by allocator-backed thread metadata. Image backing is separate.
 #![forbid(unsafe_code)]
 
 use core::{fmt, ops::Deref};
@@ -63,15 +64,7 @@ impl fmt::Display for Error
         }
     }
 }
-pub(crate) fn account_status(error: &mac_kernel_model::account::Error) -> mac_abi::Status
-{
-    match error
-    {
-        mac_kernel_model::account::Error::Closed { .. } => mac_abi::SERVICE_BUSY,
-        mac_kernel_model::account::Error::Budget(_)
-        | mac_kernel_model::account::Error::Metadata { .. } => mac_abi::NO_MEMORY
-    }
-}
+pub(crate) use crate::allocation::account_status;
 
 /// Sealed, unique reservations taken from the actual process-directory account.
 /// A failed preparation drops these and refunds without publishing a thread.
@@ -83,6 +76,13 @@ pub(crate) struct ThreadCharges
 }
 impl ThreadCharges
 {
+    /// Borrow this child's canonical admitted authority before allocating either
+    /// thread control block; observing its owner ID grants no such authority.
+    pub(super) fn allocation(&self) -> &AllocationAuthority
+    {
+        &self.allocation
+    }
+
     pub(crate) fn admit(owner: &OwnerRef, account: &ProcessAccount) -> Result<Self, Error>
     {
         if owner.owner() != account.owner()

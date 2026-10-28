@@ -2,7 +2,10 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 
+use mac_object_table::shared::InvocationGate as _;
+
 use super::Canvas;
+use crate::toolbox::handles::InvocationGate;
 pub const BYTES: usize = crate::display::WIDTH * 21 * 4;
 
 #[derive(Default)]
@@ -34,7 +37,7 @@ impl MenuBarCache
         self.paints = self.paints.wrapping_add(1);
         if self.pixels.is_empty()
         {
-            if self.pixels.try_reserve_exact(count).is_err()
+            if InvocationGate::with_system_allocation(|| self.pixels.try_reserve_exact(count)).is_err()
             {
                 return;
             }

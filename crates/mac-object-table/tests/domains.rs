@@ -1,5 +1,5 @@
 use mac_object_table::{domain::{CapacityPolicy, DirectoryError, DomainKind, KindCode, OwnerIndex},
-                       shared::InvocationGate};
+                       shared::{InvocationGate, OwnerRef}};
 struct HostGate;
 impl InvocationGate for HostGate
 {
@@ -22,7 +22,8 @@ fn directory_preserves_owner_identity_and_has_no_fixed_eight_limit()
     // incarnation, not insertion order or a mutable payload's ID field.
     for (index, ledger) in indices.into_iter().enumerate().rev()
     {
-        assert_eq!(directory.insert(ledger, index).unwrap(), owners[index]);
+        assert_eq!(directory.insert(OwnerRef::try_new(ledger).unwrap(), index).unwrap(),
+                   owners[index]);
     }
     assert_eq!(directory.len(), 32);
     for (index, owner) in owners.iter().enumerate()
@@ -47,9 +48,9 @@ fn directory_preserves_owner_identity_and_has_no_fixed_eight_limit()
 fn retired_domain_cannot_alias_reused_directory_storage_or_a_new_directory()
 {
     let mut directory = Directory::new();
-    let first = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), "first").unwrap();
+    let first = directory.insert(OwnerRef::issue(DomainKind::Process).unwrap(), "first").unwrap();
     assert_eq!(directory.remove(first.incarnation()).unwrap(), "first");
-    let next = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), "next").unwrap();
+    let next = directory.insert(OwnerRef::issue(DomainKind::Process).unwrap(), "next").unwrap();
     assert!(next.incarnation() > first.incarnation());
     assert!(directory.get(first.incarnation()).is_none());
     assert!(directory.get_mut(first.incarnation()).is_none());
@@ -57,7 +58,7 @@ fn retired_domain_cannot_alias_reused_directory_storage_or_a_new_directory()
                Err(DirectoryError::NotFound { incarnation: first.incarnation() }));
     drop(directory);
     let mut recreated = Directory::new();
-    recreated.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), "recreated").unwrap();
+    recreated.insert(OwnerRef::issue(DomainKind::Process).unwrap(), "recreated").unwrap();
     assert!(recreated.get(first.incarnation()).is_none());
     assert!(recreated.get(next.incarnation()).is_none());
     assert!(recreated.remove(next.incarnation()).unwrap_err().to_string().contains("not found"));
@@ -72,7 +73,8 @@ fn retirement_refuses_live_resources_and_succeeds_only_after_invalidation()
     ledger.grow(kind, 1).unwrap();
     let key = ledger.allocate(kind).unwrap();
     let mut directory = Directory::new();
-    let owner = directory.insert(ledger, "payload remains available").unwrap();
+    let owner =
+        directory.insert(OwnerRef::try_new(ledger).unwrap(), "payload remains available").unwrap();
     let error = directory.remove(owner.incarnation()).unwrap_err();
     assert_eq!(error,
                DirectoryError::LiveResources { owner,
@@ -105,7 +107,7 @@ fn retirement_refuses_live_resources_and_succeeds_only_after_invalidation()
 fn manager_references_share_one_ledger_and_cannot_reopen_a_retired_owner()
 {
     let mut directory = Directory::new();
-    let owner = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), ()).unwrap();
+    let owner = directory.insert(OwnerRef::issue(DomainKind::Process).unwrap(), ()).unwrap();
     let first = directory.get(owner.incarnation()).unwrap().ledger().clone();
     let second = first.clone();
     let kind = KindCode(*b"SHAR");
@@ -137,7 +139,7 @@ fn concurrent_admission_cannot_slip_between_empty_check_and_retirement()
     for _ in 0..100
     {
         let mut directory = Directory::new();
-        let owner = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), ()).unwrap();
+        let owner = directory.insert(OwnerRef::issue(DomainKind::Process).unwrap(), ()).unwrap();
         let ledger = directory.get(owner.incarnation()).unwrap().ledger().clone();
         ledger.add_pool(kind, CapacityPolicy::GrowableUntilMemory).unwrap();
         ledger.grow(kind, 1).unwrap();
@@ -175,7 +177,7 @@ fn concurrent_admission_cannot_slip_between_empty_check_and_retirement()
 fn dropping_directory_closes_admission_without_losing_raii_cleanup_keys()
 {
     let mut directory = Directory::new();
-    let owner = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), ()).unwrap();
+    let owner = directory.insert(OwnerRef::issue(DomainKind::Process).unwrap(), ()).unwrap();
     let reference = directory.get(owner.incarnation()).unwrap().ledger().clone();
     let kind = KindCode(*b"DROP");
     reference.add_pool(kind, CapacityPolicy::GrowableUntilMemory).unwrap();

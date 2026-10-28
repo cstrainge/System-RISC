@@ -627,7 +627,8 @@ pub(super) fn subject(core: &mut Core, owner: Owner) -> Result<super::subjects::
         fixture.owners.push((owner, authority.clone()));
         authority
     };
-    fixture.operations.admit(&crate::toolbox::handles::subject::Authority::Client(authority))
+    fixture.operations
+           .admit_current(&crate::toolbox::handles::subject::Authority::Client(authority))
 }
 
 pub(super) fn admitted(

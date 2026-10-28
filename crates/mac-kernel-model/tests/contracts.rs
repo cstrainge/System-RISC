@@ -82,8 +82,12 @@ fn execution_binding_accepts_shared_authority_and_checks_its_live_generation()
         }
     }
     let mut owners = mac_object_table::domain::Directory::<_, HostGate>::new();
-    let module = owners.insert(OwnerIndex::issue(DomainKind::Module).unwrap(), ()).unwrap();
-    let process = owners.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), ()).unwrap();
+    let module =
+        owners.insert(mac_object_table::shared::OwnerRef::issue(DomainKind::Module).unwrap(), ())
+              .unwrap();
+    let process =
+        owners.insert(mac_object_table::shared::OwnerRef::issue(DomainKind::Process).unwrap(), ())
+              .unwrap();
     let module = owners.get(module.incarnation()).unwrap().ledger().clone();
     let process = owners.get(process.incarnation()).unwrap().ledger().clone();
     let mut keys = Vec::new();

@@ -20,6 +20,21 @@ pub(crate) enum Selection
 }
 impl Selection
 {
+    /// Full application packages become shared immutable System image sources.
+    /// Open-type queries stay with their requesting subject. This scope affects
+    /// new source backing only, never an existing buffer's refund authority.
+    pub(crate) fn with_source_allocation<R>(self, operation: impl FnOnce() -> R) -> R
+    {
+        match self
+        {
+            Self::All =>
+            {
+                crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, operation)
+            }
+            Self::OpenTypes => operation()
+        }
+    }
+
     pub fn includes(self) -> fn([u8; 4], i16) -> bool
     {
         match self
@@ -61,10 +76,16 @@ pub(crate) fn read_selected(owner: u64, volume: u32, cnid: u32, selection: Selec
     {
         let (catalog, resources) = crate::kernel::with_files(|m| {
                                        m.validate_transfer_read(owner, volume, cnid)?;
-                                       m.application_resources_selected(volume, cnid, selection)
+                                       selection.with_source_allocation(|| {
+                                                    m.application_resources_selected(volume, cnid,
+                                                                                     selection)
+                                                })
                                    }).map_err(|e| e.status())??;
-        Box::try_new(Loaded { catalog,
-                              resources }).map_err(|_| NO_MEMORY)
+        selection.with_source_allocation(|| {
+                     Box::try_new(Loaded { catalog,
+                                           resources })
+                 })
+                 .map_err(|_| NO_MEMORY)
     }
 }
 

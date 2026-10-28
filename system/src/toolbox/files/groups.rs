@@ -172,7 +172,7 @@ impl Manager
         #[cfg(target_arch = "riscv64")]
         let io_subject = if provider.is_some()
         {
-            Some(crate::drivers::jobs::subjects::resident()?.admit(authority)?)
+            Some(crate::drivers::jobs::subjects::resident()?.admit_current(authority)?)
         }
         else
         {

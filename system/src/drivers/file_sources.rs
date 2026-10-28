@@ -237,9 +237,11 @@ impl<B: Clone> Sources<B>
         {
             return Err(ALREADY_EXISTS);
         }
-        self.records.try_reserve(1).map_err(|_| NO_MEMORY)?;
         let needed = self.records.len().checked_add(1).ok_or(NO_MEMORY)?;
-        self.ready.try_reserve(needed.saturating_sub(self.ready.len())).map_err(|_| NO_MEMORY)?;
+        InvocationGate::with_system_allocation(|| {
+            self.records.try_reserve(1).map_err(|_| NO_MEMORY)?;
+            self.ready.try_reserve(needed.saturating_sub(self.ready.len())).map_err(|_| NO_MEMORY)
+        })?;
         let state = Arc::try_new(State(Spinlock::new(Phase::Ready))).map_err(|_| NO_MEMORY)?;
         let (id, receipt) = self.entries
                                 .insert_with_receipt(owner, |id| {

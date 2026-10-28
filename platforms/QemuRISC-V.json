@@ -65,6 +65,10 @@
       "base": "0x86a81000",
       "bytes": "0x57f000"
     },
+    "module_accounts": {
+      "kernel_bytes": "0x1000000",
+      "worker_stack_bytes": "0x400000"
+    },
     "process_accounts": {
       "kernel_bytes": "0x1000000",
       "application_bytes": "0x4000000"

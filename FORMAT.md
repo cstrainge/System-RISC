@@ -1983,3 +1983,20 @@ committed import; other observers retain the notice. DISCONNECT revokes its pins
 Owner cleanup retains original quarantine tickets through acknowledged release.
 The contract does not itself admit a worker, schedule observer callbacks or
 qualify host clipboard interoperability.
+
+
+## Resident allocation/account coverage
+
+Domain account coverage1 means execution backing plus attributed resident heap.
+Each native resident allocation privately retains its original account/class and
+exact backend Layout, including header/alignment cost. A surviving admitted I/O
+root can continue within that original budget after ordinary owner stop; closed
+roots/accounts cannot supply new authority. Realloc preserves original account,
+class and refunds, including when a later genuine same-account root supplies
+continuation after an earlier root closes. Account observations do
+not include independent application/module heaps or executable-image physical
+pages. The ordinary heap is480 MiB within one512 MiB backing; protected32 MiB is
+excluded. Foundation/System/domain totals are categories of that same ordinary
+storage, not additive physical capacities. The checked platform module account
+policy selects16 MiB kernel admission and a4 MiB future worker stack; it does not
+activate workers. Rebuild all consumers together when changing these contracts.

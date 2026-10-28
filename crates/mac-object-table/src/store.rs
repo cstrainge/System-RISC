@@ -303,7 +303,9 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
             Err(at) => at
         };
         let error = self.storage_error(owner.owner(), 1);
-        self.owners.try_reserve(1).map_err(|_| error)?;
+        // This array indexes every owner in one resident store. Per-owner
+        // Claims, slots and payload state below retain their caller's charge.
+        G::with_system_allocation(|| self.owners.try_reserve(1)).map_err(|_| error)?;
         let mut claim = Arc::try_new(Claim { owner:  owner.clone(),
                                              kind:   self.kind,
                                              active: false }).map_err(|_| error)?;
@@ -446,7 +448,8 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
             self.registration.as_ref().map(|kind| kind.acquire(true)).transpose()?;
         let at = self.attach_with(owner, scope)?;
         let error = self.storage_error(owner.owner(), self.ids.len().saturating_add(1));
-        self.ids.try_reserve(1).map_err(|_| error)?;
+        // The cross-owner identity index belongs to the resident store.
+        G::with_system_allocation(|| self.ids.try_reserve(1)).map_err(|_| error)?;
         let id = issue_native_identity().map_err(|_| PoolError::IdentityExhausted)?.get();
         let reserve = Reserve::try_new().map_err(|_| error)?.with_projection(projection);
         let mut value = Some((make(id), reserve, root));

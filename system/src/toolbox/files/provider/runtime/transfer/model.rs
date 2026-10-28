@@ -323,12 +323,14 @@ pub(super) struct State
     pub deferred_writer:   bool,
     pub retry_at:          u64,
     pub retry_stage:       Stage,
-    pub private_name:      String
+    pub private_name:      String,
+    // Last: planning buffers and retained I/O leave before this account-use pin.
+    pub allocation:        crate::allocation::Target
 }
 impl State
 {
     pub fn new(call: &FileTransferCall, sources: &[FileTransferSource],
-               scope: crate::toolbox::files::subject::Lease)
+               scope: crate::toolbox::files::subject::Lease, allocation: crate::allocation::Target)
                -> Result<Self, Status>
     {
         let mut roots = Vec::new();
@@ -349,6 +351,7 @@ impl State
                               published:    false });
         }
         Ok(Self { scope,
+                  allocation,
                   handle: 0,
                   io: None,
                   reply: None,

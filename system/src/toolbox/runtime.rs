@@ -3,6 +3,7 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
 
 use mac_abi::*;
+use mac_object_table::shared::InvocationGate as _;
 
 use super::quickdraw::{SurfaceExt,
                        fonts::FontManager,
@@ -13,6 +14,7 @@ use crate::{loader::Definitions,
             platform,
             toolbox::{events::{BTN_STATE, EventManager,
                                input::{Decoder, Input}},
+                      handles::InvocationGate,
                       quickdraw::{Canvas, WHITE, font::GENEVA_9},
                       windows::{Action, WindowId, WindowManager, WindowPart}},
             virtio_input};
@@ -251,6 +253,10 @@ impl Desktop
         }
         else
         {
+            if self.content_damage.len() == self.content_damage.capacity()
+            {
+                InvocationGate::with_system_allocation(|| self.content_damage.reserve(1));
+            }
             self.content_damage.push((id, region));
         }
     }
@@ -315,7 +321,20 @@ impl Desktop
         serial!("UI_OBSERVER address={} bytes=128 version=1",
                 super::quickdraw::observer::address());
         let mut content_damage = Vec::new();
-        content_damage.try_reserve_exact(1).map_err(|_| NO_MEMORY)?;
+        InvocationGate::with_system_allocation(|| content_damage.try_reserve_exact(1)).map_err(|_| NO_MEMORY)?;
+        // The live Finder queue belongs to Finder. Its inactive row contains
+        // the single System-owned empty placeholder used by enter's swaps.
+        let allocation = processes.allocation(finder)?;
+        let events = crate::allocator::with_target(crate::allocator::Target::Owner {
+            account: allocation, class: mac_kernel_model::policy::MemoryClass::Kernel
+        }, || Box::try_new(EventManager::new())).map_err(|_| NO_MEMORY)?;
+        let mut locals = Vec::new();
+        {
+            use mac_object_table::shared::InvocationGate as _;
+            super::handles::InvocationGate::with_system_allocation(|| locals.try_reserve_exact(1))
+                .map_err(|_| NO_MEMORY)?;
+        }
+        locals.push(local::Saved::try_placeholder(processes.ledger(finder)?, mdef)?);
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
                   standard_file: super::standard_file::Manager::new(super::handles::file_dialog_kinds()?)?,
@@ -334,7 +353,7 @@ impl Desktop
                   worlds: super::quickdraw::worlds::Worlds::new(super::handles::world_kinds()?)?,
                   classic_font: Default::default(),
                   windows: WindowManager::with_kinds(super::handles::window_kinds()?, crate::machine::traps::gateway)?,
-                  events: Box::new(EventManager::new()),
+                  events,
                   drag: { let (sessions, receivers) = super::handles::drag_kinds()?;
                           super::drag::Manager::new(sessions, receivers)? },
                   textedit: super::textedit::Manager::new(super::handles::editor_kinds()?, processes.ledger(finder)?)?,
@@ -362,7 +381,7 @@ impl Desktop
                   last_observed: (u64::MAX, u32::MAX, u64::MAX),
                   presentations: 0,
                   compositions: 0,
-                  cdef,mdef,owner:finder,foreground:finder,locals:alloc::vec![local::Saved::try_new(processes.ledger(finder)?,mdef)?],
+                  cdef,mdef,owner:finder,foreground:finder,locals,
                   processes,
                   app_menu:crate::kernel::with_resources(|resources| super::processes::menu::ApplicationMenu::new(mdef,crate::machine::traps::gateway,resources)).ok_or(NOT_SUPPORTED)?? })
     }
@@ -470,13 +489,14 @@ impl Desktop
                     Ok(entry) => entry,
                     Err(error) => return crate::loader::status(error)
                 };
-                if self.content.try_reserve(1).is_err()
-                   || self.content_damage
-                          .try_reserve(self.content
-                                           .len()
-                                           .saturating_add(2)
-                                           .saturating_sub(self.content_damage.len()))
-                          .is_err()
+                if InvocationGate::with_system_allocation(|| {
+                       self.content.try_reserve(1)?;
+                       self.content_damage.try_reserve(self.content
+                                                           .len()
+                                                           .saturating_add(2)
+                                                           .saturating_sub(self.content_damage
+                                                                               .len()))
+                   }).is_err()
                 {
                     return NO_MEMORY;
                 }
@@ -735,7 +755,7 @@ impl Desktop
                 {
                     return BAD_ARGUMENT;
                 }
-                if self.pending_content.try_reserve(1).is_err()
+                if InvocationGate::with_system_allocation(|| self.pending_content.try_reserve(1)).is_err()
                 {
                     return NO_MEMORY;
                 }
@@ -1232,7 +1252,7 @@ impl Desktop
             {
                 return Err(BAD_ARGUMENT);
             }
-            self.pending_content.try_reserve(1).map_err(|_| NO_MEMORY)?;
+            InvocationGate::with_system_allocation(|| self.pending_content.try_reserve(1)).map_err(|_| NO_MEMORY)?;
             let content = self.content.iter().find(|c| c.id == id).ok_or(NOT_FOUND)?;
             let pending = Content::pending_patch(id, content.port.clone(), mask);
             if self.retained_bytes().saturating_add(pending.storage()) > MAX_RETAINED_BYTES
@@ -2297,7 +2317,10 @@ impl Desktop
                                 paint_failed = cache.try_paint(id, self.desktop.bounds(), &mut canvas, |canvas| {
                                     crate::kernel::with_resource_owner(crate::context::finder_app().0, || self.desktop.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef))).and_then(core::convert::identity)
                                 }).is_err();
-                                damaged.push(clip);
+                                if damaged.len() == damaged.capacity() {
+    InvocationGate::with_system_allocation(|| damaged.reserve(1));
+}
+damaged.push(clip);
                             }}
                         });
                     }
@@ -2360,6 +2383,12 @@ impl Desktop
                                                                            &mut canvas, replay)
                                                        }.is_err();
                                         window.paint_content_overlay(&mut canvas);
+                                        if damaged.len() == damaged.capacity()
+                                        {
+                                            InvocationGate::with_system_allocation(|| {
+                                                damaged.reserve(1)
+                                            });
+                                        }
                                         damaged.push(clip);
                                     }
                                 }

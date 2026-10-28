@@ -180,33 +180,37 @@ impl Drop for TrapScope<'_>
 #[cfg(target_arch = "riscv64")]
 struct ThreadOwner
 {
-    owner:       crate::toolbox::handles::OwnerRef,
-    image:       crate::images::Binding,
-    _allocation: crate::machine::scheduler::accounting::AllocationAuthority
+    owner: crate::toolbox::handles::OwnerRef,
+    image: crate::images::Binding
 }
 #[cfg(target_arch = "riscv64")]
 pub struct ThreadContext
 {
-    app:             core::sync::atomic::AtomicU64,
-    thread:          core::sync::atomic::AtomicU64,
-    owner:           spinning_top::Spinlock<Option<ThreadOwner>>,
-    resources:       selection::ScopedSelection<crate::kernel::ResourceSelection>,
-    io_subject:      selection::ScopedSelection<crate::drivers::jobs::subjects::Subject>,
-    pub traps:       ThreadTrapState,
-    pub definitions: DefinitionInvocations
+    app:              core::sync::atomic::AtomicU64,
+    thread:           core::sync::atomic::AtomicU64,
+    owner:            spinning_top::Spinlock<Option<ThreadOwner>>,
+    allocation:
+        spinning_top::Spinlock<Option<crate::machine::scheduler::accounting::AllocationAuthority>>,
+    allocation_scope: selection::ScopedSelection<crate::allocator::Target>,
+    resources:        selection::ScopedSelection<crate::kernel::ResourceSelection>,
+    io_subject:       selection::ScopedSelection<crate::drivers::jobs::subjects::Subject>,
+    pub traps:        ThreadTrapState,
+    pub definitions:  DefinitionInvocations
 }
 #[cfg(target_arch = "riscv64")]
 impl ThreadContext
 {
     pub const fn new() -> Self
     {
-        Self { app:         core::sync::atomic::AtomicU64::new(0),
-               thread:      core::sync::atomic::AtomicU64::new(1),
-               owner:       spinning_top::Spinlock::new(None),
-               resources:   selection::ScopedSelection::new(BOOT_THREAD),
-               io_subject:  selection::ScopedSelection::new(BOOT_THREAD),
-               traps:       ThreadTrapState::new(),
-               definitions: DefinitionInvocations::new() }
+        Self { app:              core::sync::atomic::AtomicU64::new(0),
+               thread:           core::sync::atomic::AtomicU64::new(1),
+               owner:            spinning_top::Spinlock::new(None),
+               allocation:       spinning_top::Spinlock::new(None),
+               allocation_scope: selection::ScopedSelection::new(BOOT_THREAD),
+               resources:        selection::ScopedSelection::new(BOOT_THREAD),
+               io_subject:       selection::ScopedSelection::new(BOOT_THREAD),
+               traps:            ThreadTrapState::new(),
+               definitions:      DefinitionInvocations::new() }
     }
 
     pub fn identity(&self) -> ExecutionContext
@@ -248,17 +252,18 @@ impl ThreadContext
         }
         crate::toolbox::handles::InvocationGate::run(|| {
             let mut binding = self.owner.lock();
-            if binding.is_some()
+            if binding.is_some() || self.allocation.lock().is_some()
             {
                 return Err(mac_abi::SERVICE_BUSY);
             }
             self.resources.reset(ThreadId(thread));
             self.io_subject.reset(ThreadId(thread));
+            self.allocation_scope.reset(ThreadId(thread));
+            *self.allocation.lock() = Some(allocation.clone());
             self.app.store(owner.owner().incarnation(), Relaxed);
             self.thread.store(thread, Relaxed);
             *binding = Some(ThreadOwner { owner,
-                                          image,
-                                          _allocation: allocation.clone() });
+                                          image });
             Ok(())
         })
     }
@@ -268,15 +273,74 @@ impl ThreadContext
         use mac_object_table::shared::InvocationGate as _;
         crate::toolbox::handles::InvocationGate::run(|| {
             let owner = self.owner.lock().take();
+            let allocation = self.allocation.lock().take();
             self.resources.reset(ThreadId(0));
             self.io_subject.reset(ThreadId(0));
+            self.allocation_scope.reset(ThreadId(0));
             self.app.store(0, core::sync::atomic::Ordering::Relaxed);
             self.thread.store(0, core::sync::atomic::Ordering::Relaxed);
             // The allocation pin leaves with the quiescent context before
             // process account readiness is checked. No owner lock is held
             // over its original-account retirement notification.
+            drop(allocation);
             drop(owner);
         });
+    }
+
+    /// Called only by the scheduler while ACTIVE is borrowed under the native
+    /// interrupt gate. No owner lookup, retained reader, backing allocation or
+    /// AccountUse destruction is part of this reservation path.
+    pub(crate) fn reserve_allocation(
+        &self, bytes: u64)
+        -> Result<crate::allocator::Reservation, crate::allocator::Error>
+    {
+        self.with_allocation_selection(|selection| selection.reserve(bytes))
+    }
+
+    /// Offer only the borrowed current capability. The allocation's original
+    /// receipt decides whether it is the same canonical account and retains
+    /// its own class/refund destination; current identity cannot retarget it.
+    pub(crate) fn reserve_replacement(
+        &self, receipt: &crate::allocator::Receipt, bytes: u64)
+        -> Result<crate::allocator::Reservation, crate::allocator::Error>
+    {
+        self.with_allocation_selection(|selection| receipt.reserve_replacement(selection, bytes))
+    }
+
+    fn with_allocation_selection<R>(&self,
+                                    operation: impl FnOnce(crate::allocator::Selection<'_>)
+                                           -> Result<R, crate::allocator::Error>)
+                                    -> Result<R, crate::allocator::Error>
+    {
+        self.allocation_scope.borrow(|selected| {
+            if let Some(selected) = selected
+            {
+                return operation(selected.selection());
+            }
+            let allocation = self.allocation.lock();
+            let account = allocation.as_ref().ok_or(crate::allocator::Error::ContextUnavailable)?;
+            operation(crate::allocator::Selection::Owner {
+                account, class: mac_kernel_model::policy::MemoryClass::Kernel
+            })
+        })
+    }
+
+    fn selected_allocation(&self) -> AllocationSelection
+    {
+        self.allocation_scope.borrow(|selected| {
+                                 if let Some(selected) = selected
+                                 {
+                                     return AllocationSelection::Selected(selected.clone());
+                                 }
+                                 match self.allocation.lock().as_ref()
+            {
+                Some(account) => AllocationSelection::Selected(crate::allocator::Target::Owner {
+                    account: account.clone(),
+                    class: mac_kernel_model::policy::MemoryClass::Kernel
+                }),
+                None => AllocationSelection::Unavailable
+            }
+                             })
     }
 
     pub(crate) fn owner(&self) -> Result<crate::toolbox::handles::OwnerRef, mac_abi::Status>
@@ -345,6 +409,129 @@ static BOOT_RESOURCES: selection::PermanentSelection<crate::kernel::ResourceSele
 static BOOT_IO_SUBJECT: selection::PermanentSelection<crate::drivers::jobs::subjects::Subject> =
     selection::PermanentSelection::new(BOOT_THREAD);
 
+/// An I/O handoff preserves absence as refusal, never as System authority.
+/// Capturing this clones genuine authority once per handoff, not per allocation.
+#[cfg(target_arch = "riscv64")]
+#[derive(Clone)]
+pub(crate) enum AllocationSelection
+{
+    Selected(crate::allocator::Target),
+    Unavailable
+}
+#[cfg(target_arch = "riscv64")]
+static BOOT_ALLOCATION: selection::PermanentSelection<AllocationSelection> =
+    selection::PermanentSelection::new(BOOT_THREAD);
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn reserve_allocation(
+    bytes: u64)
+    -> Result<crate::allocator::Reservation, crate::allocator::Error>
+{
+    crate::machine::scheduler::reserve_allocation(bytes)
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn reserve_replacement(
+    receipt: &crate::allocator::Receipt, bytes: u64)
+    -> Result<crate::allocator::Reservation, crate::allocator::Error>
+{
+    crate::machine::scheduler::reserve_replacement(receipt, bytes)
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn reserve_bootstrap_allocation(
+    bytes: u64)
+    -> Result<crate::allocator::Reservation, crate::allocator::Error>
+{
+    with_bootstrap_allocation_selection(|selection| selection.reserve(bytes))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn reserve_bootstrap_replacement(
+    receipt: &crate::allocator::Receipt, bytes: u64)
+    -> Result<crate::allocator::Reservation, crate::allocator::Error>
+{
+    with_bootstrap_allocation_selection(|selection| receipt.reserve_replacement(selection, bytes))
+}
+
+#[cfg(target_arch = "riscv64")]
+fn with_bootstrap_allocation_selection<R>(operation: impl FnOnce(crate::allocator::Selection<'_>)
+                                                 -> Result<R, crate::allocator::Error>)
+                                          -> Result<R, crate::allocator::Error>
+{
+    BOOT_ALLOCATION.borrow(|selected| match selected
+    {
+        Some(AllocationSelection::Selected(target)) => operation(target.selection()),
+        Some(AllocationSelection::Unavailable) => Err(crate::allocator::Error::ContextUnavailable),
+        // The actual permanent bootstrap executor has explicit static System
+        // authority, including first heap use before any thread is published.
+        None => operation(crate::allocator::Selection::System(crate::allocator::SystemClass::Ordinary))
+    })
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn selected_allocation() -> AllocationSelection
+{
+    let context = current_thread_context();
+    if context.is_bootstrap()
+    {
+        BOOT_ALLOCATION.borrow(|selected| {
+                           selected.cloned().unwrap_or_else(|| {
+            AllocationSelection::Selected(crate::allocator::Target::System(
+                crate::allocator::SystemClass::Ordinary))
+        })
+                       })
+    }
+    else
+    {
+        context.selected_allocation()
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn capture_allocation() -> Result<crate::allocation::Target, mac_abi::Status>
+{
+    match selected_allocation()
+    {
+        AllocationSelection::Selected(target) => Ok(target),
+        AllocationSelection::Unavailable => Err(mac_abi::WRONG_THREAD)
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_allocation<R>(target: crate::allocator::Target, operation: impl FnOnce() -> R)
+                                 -> R
+{
+    // One actual context pin owns the scope's lifetime. The allocator itself
+    // uses only the borrowed reservation operation above.
+    let context = current_thread_context();
+    if context.is_bootstrap()
+    {
+        BOOT_ALLOCATION.with(Some(AllocationSelection::Selected(target)), operation)
+    }
+    else
+    {
+        context.allocation_scope.with_pinned(target, operation)
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_system_allocation<R>(class: crate::allocator::SystemClass,
+                                        operation: impl FnOnce() -> R)
+                                        -> R
+{
+    with_allocation(crate::allocator::Target::System(class), operation)
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_bootstrap_allocation<R>(selection: AllocationSelection,
+                                           operation: impl FnOnce() -> R)
+                                           -> R
+{
+    BOOT_ALLOCATION.with(Some(selection), operation)
+}
+
+
 #[cfg(target_arch = "riscv64")]
 pub(crate) fn io_subject() -> Option<crate::drivers::jobs::subjects::Subject>
 {
@@ -357,15 +544,18 @@ pub(crate) fn with_io_subject<R>(subject: crate::drivers::jobs::subjects::Subjec
                                  call: impl FnOnce() -> R)
                                  -> Result<R, mac_abi::Status>
 {
+    let allocation = subject.allocation().clone();
     let context = current_thread_context();
-    if context.is_bootstrap()
-    {
-        Ok(BOOT_IO_SUBJECT.with(Some(subject), call))
-    }
-    else
-    {
-        context.io_subject.with(subject, call).map_err(|_| mac_abi::WRONG_THREAD)
-    }
+    with_allocation(allocation, || {
+        if context.is_bootstrap()
+        {
+            Ok(BOOT_IO_SUBJECT.with(Some(subject), call))
+        }
+        else
+        {
+            context.io_subject.with(subject, call).map_err(|_| mac_abi::WRONG_THREAD)
+        }
+    })
 }
 
 #[cfg(target_arch = "riscv64")]

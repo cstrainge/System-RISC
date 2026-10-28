@@ -59,40 +59,74 @@ impl Operations
         InvocationGate::run(|| run(&mut self.roots.lock()))
     }
 
-    pub(crate) fn admit(self: &Arc<Self>, authority: &Authority) -> Result<Subject, Status>
+    pub(crate) fn admit(self: &Arc<Self>, authority: &Authority,
+                        allocation: crate::allocation::Target)
+                        -> Result<Subject, Status>
     {
-        match authority
+        let expected = match authority
         {
-            Authority::Operation(scope) =>
+            Authority::Client(owner) => owner.owner(),
+            Authority::Operation(scope) => scope.subject()
+        };
+        let actual = allocation.owner();
+        if actual != expected
+        {
+            // Both capabilities are authentic, but pairing a foreign account
+            // with this resource subject would charge/retain the wrong domain.
+            return Err(mac_abi::ACCESS_DENIED);
+        }
+        crate::allocation::with_target(allocation.clone(), || {
+            match authority
             {
-                scope.admitting().map_err(|cause| {
-                                      pool_status(mac_object_table::domain::PoolError::Scope {
+                Authority::Operation(scope) =>
+                {
+                    scope.admitting().map_err(|cause| {
+                                          pool_status(mac_object_table::domain::PoolError::Scope {
                     owner: scope.subject(), kind: KindCode(*b"DIOP"), cause })
-                                  })?;
-                Ok(Subject { scope:      scope.clone(),
-                             _retention: None,
-                             request:    None })
-            }
-            Authority::Client(owner) =>
-            {
-                let reservation = mac_object_table::scope::Reservation::try_new(owner,
+                                      })?;
+                    let allocation =
+                        allocation.in_scope(scope)
+                                  .map_err(|error| crate::allocation::account_status(&error))?;
+                    Ok(Subject { scope: scope.clone(),
+                                 _retention: None,
+                                 request: None,
+                                 allocation })
+                }
+                Authority::Client(owner) =>
+                {
+                    let reservation = mac_object_table::scope::Reservation::try_new(owner,
                     KindCode(*b"DIOP")).map_err(pool_status)?;
-                let scope = reservation.lease();
-                let retention =
+                    let scope = reservation.lease();
+                    let retention =
                     Arc::try_new(Retention { operations: self.clone(),
                                              id:         AtomicU64::new(0),
                                              retiring:   Spinlock::new(None) }).map_err(|_| {
                                                                                    NO_MEMORY
                                                                                })?;
-                let weak = Arc::downgrade(&retention);
-                let id = self.access(|roots| roots.insert_root(reservation, weak))
-                             .map_err(pool_status)?;
-                retention.id.store(id, Ordering::Release);
-                Ok(Subject { scope,
-                             _retention: Some(retention),
-                             request: None })
+                    let weak = Arc::downgrade(&retention);
+                    let id = self.access(|roots| roots.insert_root(reservation, weak))
+                                 .map_err(pool_status)?;
+                    retention.id.store(id, Ordering::Release);
+                    let allocation =
+                        allocation.in_scope(&scope)
+                                  .map_err(|error| crate::allocation::account_status(&error))?;
+                    Ok(Subject { scope,
+                                 _retention: Some(retention),
+                                 request: None,
+                                 allocation })
+                }
             }
-        }
+        }).and_then(core::convert::identity)
+    }
+
+    /// The native adapter captures actual execution selection once. The core
+    /// admission API accepts owned authentic authority explicitly on every
+    /// platform; no owner label or missing-context System fallback is involved.
+    pub(crate) fn admit_current(self: &Arc<Self>, authority: &Authority)
+                                -> Result<Subject, Status>
+    {
+        let allocation = crate::allocation::capture_target()?;
+        self.admit(authority, allocation)
     }
 
     pub(crate) fn release(&self, ticket: ReleasedResource, storage: bool) -> Result<(), Failure>
@@ -139,10 +173,18 @@ pub(crate) struct Subject
 {
     scope:      Lease,
     _retention: Option<Arc<Retention>>,
-    request:    Option<mac_object_table::store::CompletionKey>
+    request:    Option<mac_object_table::store::CompletionKey>,
+    // Last: the account-use pin outlives scope/Retention destruction and the
+    // operation's actual cleanup acknowledgement, including delayed callbacks.
+    allocation: crate::allocation::Target
 }
 impl Subject
 {
+    pub(crate) fn allocation(&self) -> &crate::allocation::Target
+    {
+        &self.allocation
+    }
+
     pub(crate) fn scope(&self) -> &Lease
     {
         &self.scope
@@ -182,12 +224,15 @@ pub(crate) fn resident() -> Result<&'static Arc<Operations>, Status>
 {
     static OPERATIONS: spin::Once<Arc<Operations>> = spin::Once::new();
     OPERATIONS.try_call_once(|| {
-                  let kinds = crate::toolbox::handles::registry(|registry| {
-                                  Ok((registry.get(KindCode(*b"DIOP"))?,
-                                      registry.get(KindCode(*b"DIOB"))?))
-                              }).map_err(|error| error.status())?
-                                .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
-                  Operations::new(kinds)
+                  crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                      let kinds =
+                          crate::toolbox::handles::registry(|registry| {
+                              Ok((registry.get(KindCode(*b"DIOP"))?,
+                                  registry.get(KindCode(*b"DIOB"))?))
+                          }).map_err(|error| error.status())?
+                            .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
+                      Operations::new(kinds)
+                  })
               })
 }
 

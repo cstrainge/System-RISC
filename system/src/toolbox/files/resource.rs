@@ -1,6 +1,9 @@
 //! Bounded, read-only access to one disk resource; executable data stays on disk.
+use mac_object_table::shared::InvocationGate as _;
+
 use super::*;
-use crate::toolbox::quickdraw::{icons, icons_service};
+use crate::toolbox::{handles::InvocationGate,
+                     quickdraw::{icons, icons_service}};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModuleReadError
@@ -474,7 +477,11 @@ impl Manager
         {
             return Ok(family);
         }
-        let (parent, family) = self.with_volume(volume, |volume| {
+        // Cache misses create shared immutable icon backing at the storage
+        // root. Changing authority only when inserting would retain the first
+        // requesting application's account in the decoded pixels and masks.
+        InvocationGate::with_system_allocation(|| {
+            let (parent, family) = self.with_volume(volume, |volume| {
             let entry = required(io(volume.entry(cnid))?)?;
             let catalog = metadata(0, &entry);
             let mut fork = entry.resources.ok_or(NOT_FOUND)?;
@@ -499,9 +506,10 @@ impl Manager
             let id = icons_service::file_id(&metadata, catalog.creator, catalog.file_type)?;
             Ok((entry.parent, read_icon(length, id, resident, &mut read)?))
         })?;
-        let family = alloc::sync::Arc::try_new(family).map_err(|_| NO_MEMORY)?;
-        self.file_icons.insert(volume, parent, cnid, family.clone())?;
-        Ok(family)
+            let family = alloc::sync::Arc::try_new(family).map_err(|_| NO_MEMORY)?;
+            self.file_icons.insert(volume, parent, cnid, family.clone())?;
+            Ok(family)
+        })
     }
 
     pub(crate) fn resource_value(&mut self, volume: u32, cnid: u32, key: ResourceKey)

@@ -61,8 +61,9 @@ fn run(malformed: bool)
                    8);
     }
     assert!(!serial.contains("PROCESS_FAIL"), "canonical assertion failed:\n{serial}");
-    // Actual public account bytes must equal the real physical leases in the
-    // scheduler trace, not a copied configured stack/CPU size in inspection.
+    // The application class covers the actual stack lease. Kernel accounting
+    // additionally covers resident metadata/heap, so it must exceed CPU backing;
+    // neither number is a configured size substituted for a live observation.
     let field = |line: &str, name: &str| -> u64 {
         line.split_whitespace()
             .find_map(|part| part.strip_prefix(name))
@@ -78,7 +79,8 @@ fn run(malformed: bool)
     assert_eq!(accounts.iter().filter(|line| line.contains(" actor=observed-worker ")).count(), 2);
     for row in accounts
     {
-        assert!(row.ends_with("coverage=stack-cpu-only"), "account overclaimed coverage: {row}");
+        assert!(row.ends_with("coverage=execution-resident-heap"),
+                "account overclaimed coverage: {row}");
         let owner = field(row, "app=");
         let backing =
             serial.lines()
@@ -87,9 +89,8 @@ fn run(malformed: bool)
         assert_eq!(field(row, "application="),
                    field(backing, "stack_backing_bytes="),
                    "stack lease and public account disagree: {row}; {backing}");
-        assert_eq!(field(row, "kernel="),
-                   field(backing, "cpu_backing_bytes="),
-                   "CPU lease and public account disagree: {row}; {backing}");
+        assert!(field(row, "kernel=") > field(backing, "cpu_backing_bytes="),
+                "resident metadata is missing from the account: {row}; {backing}");
     }
     let retired_accounts: Vec<_> =
         serial.lines()

@@ -7,11 +7,12 @@ use core::{cell::Cell, sync::atomic::Ordering};
 
 use mac_object_table::{domain::{PoolError, ReleasedResource},
                        registry::{CleanupFailure, Release, Source, Specification},
+                       shared::InvocationGate as _,
                        store::CompletionKey};
 
 use super::{Error, Request, Result};
 use crate::{drivers::jobs::subjects::Subject,
-            toolbox::handles::{CapacityPolicy, KindCode, KindLease, Store,
+            toolbox::handles::{CapacityPolicy, InvocationGate, KindCode, KindLease, Store,
                                cleanup::{Failure, context::Context}}};
 
 /// Trusted broker provenance, never accepted from a module's mutable Call.
@@ -146,13 +147,15 @@ impl Requests
     pub(super) fn insert(&mut self, subject: &Subject, value: Request) -> Result<u64>
     {
         let parent = self.validate_parent(subject, value.caller, value.origin)?;
-        self.slots.try_reserve(1).map_err(|_| Error::Exhausted)?;
+        InvocationGate::with_system_allocation(|| self.slots.try_reserve(1)).map_err(|_| {
+                                                                                Error::Exhausted
+                                                                            })?;
         let cancellation = if value.origin == Origin::Direct && parent.is_none()
         {
             let needed = self.slots.len().checked_add(1).ok_or(Error::Exhausted)?;
-            self.cancel_ready
-                .try_reserve(needed.saturating_sub(self.cancel_ready.len()))
-                .map_err(|_| Error::Exhausted)?;
+            InvocationGate::with_system_allocation(|| {
+                self.cancel_ready.try_reserve(needed.saturating_sub(self.cancel_ready.len()))
+            }).map_err(|_| Error::Exhausted)?;
             Some(cancellation::Reservation::new(value.max_reply as usize)?)
         }
         else
@@ -168,7 +171,8 @@ impl Requests
                 {
                     self.active[at].1.checked_add(1).ok_or(Error::Exhausted)?;
                 }
-                Err(_) => self.active.try_reserve(1).map_err(|_| Error::Exhausted)?
+                Err(_) => InvocationGate::with_system_allocation(|| self.active.try_reserve(1))
+                    .map_err(|_| Error::Exhausted)?
             }
             Some(at)
         }

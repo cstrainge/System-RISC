@@ -8,6 +8,10 @@ pub(crate) use resource::ModuleReadError;
 pub(crate) mod application;
 use alloc::{string::String, vec::Vec};
 
+use mac_object_table::shared::InvocationGate as _;
+
+use crate::toolbox::handles::InvocationGate;
+
 mod objects;
 mod subject;
 pub(crate) mod pins;
@@ -742,13 +746,13 @@ impl Manager
                                              poisoned: recovery_failed,
                                              scanner: volume.catalog_scanner().ok(),
                                              catalog_revision: scan::next_revision()? };
-                result.volumes
-                      .insert_with(|id| {
-                          let mut mounted = mounted;
-                          mounted.info.id = id;
-                          Mounted::Block(mounted)
-                      })
-                      .map_err(|_| NO_MEMORY)?;
+                InvocationGate::with_system_allocation(|| {
+                    result.volumes.insert_with(|id| {
+                                      let mut mounted = mounted;
+                                      mounted.info.id = id;
+                                      Mounted::Block(mounted)
+                                  })
+                }).map_err(|_| NO_MEMORY)?;
             }
         }
         Err(NO_MEMORY)

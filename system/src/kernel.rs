@@ -75,7 +75,12 @@ pub(crate) fn load_application(owner: &crate::toolbox::handles::OwnerRef, creato
 fn admit_image(owner: &crate::toolbox::handles::OwnerRef, source: AppImage)
                -> Result<LoadedImage, Status>
 {
-    admit_shared_image(owner, alloc::sync::Arc::try_new(source).map_err(|_| NO_MEMORY)?)
+    // Immutable package sources are interned by the System image registry.
+    // Their resource backing is attributed at the storage read, before this move.
+    let source = crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                     alloc::sync::Arc::try_new(source)
+                 }).map_err(|_| NO_MEMORY)?;
+    admit_shared_image(owner, source)
 }
 
 pub(crate) fn copy_application(owner: &crate::toolbox::handles::OwnerRef,
@@ -476,11 +481,18 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                                               mac_formats::Error::Malformed("invalid Finder \
                                                                              authority policy")
                                           })?;
-    let finder_loaded = admit_image(&finder_owner,
-                                    AppImage { resources: finder,
-                                               authority,
-                                               creator: *b"MACS",
-                                               file_type: *b"FNDR" }).map_err(|status| {
+    let finder_allocation =
+        processes.allocation(finder_id)
+                 .map_err(|_| {
+                     mac_formats::Error::Malformed("Finder allocation authority unavailable")
+                 })?;
+    let finder_loaded = crate::allocator::with_target(crate::allocator::Target::Owner {
+        account: finder_allocation, class: mac_kernel_model::policy::MemoryClass::Kernel
+    }, || admit_image(&finder_owner,
+                       AppImage { resources: finder,
+                                  authority,
+                                  creator: *b"MACS",
+                                  file_type: *b"FNDR" })).map_err(|status| {
                             serial!("FINDER_IMAGE_REFUSED status={status}");
                             mac_formats::Error::Malformed("Finder image admission failed")
                         })?;
@@ -522,11 +534,20 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     let finder_owner = processes.ledger(crate::context::finder_app().0).map_err(|_| {
         mac_formats::Error::Malformed("Finder bootstrap owner is unavailable")
     })?;
-    let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut system)
-        .map_err(|status| match status {
-            mac_abi::NO_MEMORY => mac_formats::Error::AllocationFailed("cannot allocate the System font catalog"),
-            _ => mac_formats::Error::Malformed("cannot initialize the System font catalog")
-        })?;
+    let fonts =
+        crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+            crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut system)
+        }).map_err(|status| {
+              match status
+              {
+                  mac_abi::NO_MEMORY =>
+                  {
+                      mac_formats::Error::AllocationFailed("cannot allocate the System font \
+                                                            catalog")
+                  }
+                  _ => mac_formats::Error::Malformed("cannot initialize the System font catalog")
+              }
+          })?;
     serial!("FONTS_READY: families={} resources loaded from System", fonts.catalog().len());
     // Progress uses the real loaded CDEF before any application loop exists.
     let fonts = FONTS.call_once(|| fonts);
@@ -587,6 +608,15 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
                                                       })?;
     boot_screen.completed(7)?;
     drop(boot_screen);
+    let allocations = crate::allocator::statistics();
+    serial!("RESIDENT_ALLOCATION_READY capacity={} admitted={} foundation={} system={} \
+             domains={} header_bytes={} private_app_and_module_heaps=false",
+            allocations.capacity,
+            allocations.admitted,
+            allocations.foundation,
+            allocations.ordinary,
+            allocations.domains,
+            crate::allocator::HEADER_BYTES);
     Ok(())
 }
 

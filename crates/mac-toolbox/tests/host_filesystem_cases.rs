@@ -816,7 +816,145 @@ fn check_forks(system: &System<'_>, volume: VolumeId, node: mac_toolbox::Cnid)
     let dropped = files.open(volume, node, Fork::Data)?;
     require(files.unmount(volume) == Err(Error::ServiceBusy))?;
     drop(dropped);
-    Ok(())
+    check_retained_fork_growth(system, volume, node)
+}
+
+/// Separate provider I/O roots retain 24 real fork marks and force growth of
+/// the ordinary-caller-account fork pool while preserving generation history.
+/// Root drainage and fork-pool growth do not identify a realloc receipt's
+/// original admission or establish the closed-operation fallback branch.
+fn check_retained_fork_growth(system: &System<'_>, volume: VolumeId, node: mac_toolbox::Cnid)
+                              -> Result<(), Error>
+{
+    use mac_toolbox::{abi::files::{CLOSE, DATA_FORK, FileCall, OPEN, READ},
+                      files::{Fork, SeekFrom}};
+    const COUNT: usize = 24;
+    let files = system.files();
+    let client = system.client();
+    let pool = || -> Result<mac_toolbox::inspection::Pool, Error> {
+        inspection_read::own(system, |ledger| {
+            for index in 0..ledger.len()
+            {
+                let row = ledger.at(index).map_err(|failure| failure.cause)?;
+                if row.kind == *b"FFRK"
+                {
+                    return Ok(row);
+                }
+            }
+            Err(Error::BadAbi)
+        })
+    };
+    system.log("HOST_FS_STAGE retained-fork-growth\n")?;
+    let roots_before = io_roots(system)?;
+    let initial_pool = pool()?;
+    require_named(system,
+                  "growth-initial-forks-drained",
+                  initial_pool.live == 0 && initial_pool.pending == 0)?;
+    let mut warm = FileCall { operation: OPEN,
+                              volume: volume.0,
+                              cnid: node.0,
+                              fork: DATA_FORK,
+                              ..Default::default() };
+    client.file(&mut warm, "", &mut [])?;
+    let stale = warm.handle;
+    let mut bytes = [0; 32];
+    let mut read = FileCall { operation: READ,
+                              handle: stale,
+                              ..Default::default() };
+    client.file(&mut read, "", &mut bytes)?;
+    require_named(system,
+                  "growth-warm-read",
+                  read.transferred == bytes.len()
+                  && bytes.iter()
+                          .enumerate()
+                          .all(|(index, byte)| *byte == (index * 31 + 7) as u8))?;
+    client.file(&mut FileCall { operation: CLOSE,
+                                handle: stale,
+                                ..Default::default() },
+                "",
+                &mut [])?;
+    require_named(system, "growth-warm-root-closed", io_roots(system)? == roots_before)?;
+    let warm_pool = pool()?;
+    require_named(system,
+                  "growth-warm-fork-drained",
+                  warm_pool.live == 0 && warm_pool.pending == 0)?;
+
+    let mut opened: [Option<_>; COUNT] = core::array::from_fn(|_| None);
+    for slot in &mut opened
+    {
+        *slot = Some(files.open(volume, node, Fork::Data)?);
+    }
+    let expanded = pool()?;
+    require_named(system,
+                  "growth-concurrent-roots",
+                  io_roots(system)? == roots_before + COUNT as u64)?;
+    require_named(system,
+                  "growth-preserved-pool-expanded",
+                  expanded.live == COUNT as u64
+                  && expanded.pending == 0
+                  && expanded.slots >= COUNT as u64
+                  && expanded.slots > warm_pool.slots)?;
+    for (index, slot) in opened.iter_mut().enumerate()
+    {
+        let file = slot.as_mut().ok_or(Error::BadAbi)?;
+        let offset = index * 257;
+        require(file.len()? == 131089 && file.position()? == 0)?;
+        require(file.seek(SeekFrom::Start(offset as u64))? == offset as u64)?;
+        require_named(system,
+                      "growth-independent-file-contents",
+                      file.read(&mut bytes)? == bytes.len()
+                      && bytes.iter()
+                              .enumerate()
+                              .all(|(at, byte)| *byte == ((offset + at) * 31 + 7) as u8))?;
+    }
+    let mut untouched = [0xa5; 8];
+    let mut old = FileCall { operation: READ,
+                             handle: stale,
+                             ..Default::default() };
+    require_named(system,
+                  "growth-stale-read-refused",
+                  client.file(&mut old, "", &mut untouched) == Err(Error::NotFound)
+                  && untouched == [0xa5; 8]
+                  && old.transferred == 0)?;
+    require_named(system,
+                  "growth-stale-close-refused",
+                  client.file(&mut FileCall { operation: CLOSE,
+                                              handle: stale,
+                                              ..Default::default() },
+                              "",
+                              &mut [])
+                  == Err(Error::NotFound))?;
+    for (index, slot) in opened.iter_mut().enumerate()
+    {
+        let mut file = slot.take().ok_or(Error::BadAbi)?;
+        if index % 2 == 0
+        {
+            file.close()?;
+        }
+        // Alternate marks use the public owned wrapper's actual Drop close.
+        drop(file);
+    }
+    require_named(system, "growth-all-roots-drained", io_roots(system)? == roots_before)?;
+    let drained = pool()?;
+    require_named(system,
+                  "growth-forks-drained-history-preserved",
+                  drained.live == 0 && drained.pending == 0 && drained.slots == expanded.slots)?;
+    let mut retry = files.open(volume, node, Fork::Data)?;
+    require_named(system,
+                  "growth-retry-contents",
+                  retry.read(&mut bytes)? == bytes.len()
+                  && bytes.iter().enumerate().all(|(at, byte)| *byte == (at * 31 + 7) as u8))?;
+    retry.close()?;
+    let final_pool = pool()?;
+    require_named(system,
+                  "growth-retry-drained",
+                  io_roots(system)? == roots_before
+                  && final_pool.live == 0
+                  && final_pool.pending == 0
+                  && final_pool.slots == expanded.slots)?;
+    system.log("HOST_FS_RETAINED_FORK_GROWTH_PASS count=24 roots-drained=passed \
+                fork-pool-growth=passed contents=passed stale=passed explicit-close=passed \
+                drop=passed retry=passed\n")
 }
 
 fn check_external_application(system: &System<'_>, volume: VolumeId, path: &str, writable: bool,

@@ -143,8 +143,10 @@ impl<T, G: InvocationGate> Store<T, G>
 {
     pub fn new(wire: Kind, payload: KindLease<G>, backing: KindLease<G>) -> Result<Self, Error>
     {
-        Ok(Self { projection: Arc::try_new(Projection { entries: Spinlock::new(Table::new(wire)) })
-                                  .map_err(|_| Error::ProjectionExhausted)?,
+        Ok(Self { projection: G::with_system_allocation(|| {
+                                  Arc::try_new(Projection { entries:
+                                                                Spinlock::new(Table::new(wire)) })
+                              }).map_err(|_| Error::ProjectionExhausted)?,
                   values:     store::Store::owned(payload, backing).map_err(Error::Pool)? })
     }
 
@@ -162,9 +164,9 @@ impl<T, G: InvocationGate> Store<T, G>
         }
         // No partially admitted object can be reached through an ordinary ID.
         // Generation history is consumed even when later publication refuses.
-        let wire = self.projection
-                       .access::<G, _>(|index| index.insert(0))
-                       .map_err(|_| Error::ProjectionExhausted)?;
+        let wire = G::with_system_allocation(|| {
+                       self.projection.access::<G, _>(|index| index.insert(0))
+                   }).map_err(|_| Error::ProjectionExhausted)?;
         let projection = ProjectionRelease::new::<G>(self.projection.clone(), wire);
         let native = self.values
                          .insert_projected(owner,
@@ -190,9 +192,9 @@ impl<T, G: InvocationGate> Store<T, G>
                                     make: impl FnOnce(u32) -> T)
                                     -> Result<Publication, Error>
     {
-        let wire = self.projection
-                       .access::<G, _>(|index| index.insert(0))
-                       .map_err(|_| Error::ProjectionExhausted)?;
+        let wire = G::with_system_allocation(|| {
+                       self.projection.access::<G, _>(|index| index.insert(0))
+                   }).map_err(|_| Error::ProjectionExhausted)?;
         let projection = ProjectionRelease::new::<G>(self.projection.clone(), wire);
         let native = self.values
                          .insert_root_value(reservation,
@@ -224,9 +226,9 @@ impl<T, G: InvocationGate> Store<T, G>
                                                              kind: self.values.kind(),
                                                              cause })
                           })?;
-        let wire = self.projection
-                       .access::<G, _>(|index| index.insert(0))
-                       .map_err(|_| Error::ProjectionExhausted)?;
+        let wire = G::with_system_allocation(|| {
+                       self.projection.access::<G, _>(|index| index.insert(0))
+                   }).map_err(|_| Error::ProjectionExhausted)?;
         let projection = ProjectionRelease::new::<G>(self.projection.clone(), wire);
         let native = self.values
                          .insert_scoped_value(scope,

@@ -131,7 +131,10 @@ fn step(work: Work) -> Option<Work>
         Work::Image { old,
                       admission } =>
         {
-            match crate::kernel::copy_application(admission.owner(), admission.original())
+            match crate::allocator::with_target(crate::allocator::Target::Owner {
+                account: admission.allocation(),
+                class: mac_kernel_model::policy::MemoryClass::Kernel
+            }, || crate::kernel::copy_application(admission.owner(), admission.original()))
             {
                 Ok(loaded) =>
                 {

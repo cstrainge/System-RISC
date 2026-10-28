@@ -25,19 +25,22 @@ pub(super) fn submit(subject: &Subject, provider: u64, op: FileOperation, args: 
                      capacity: usize)
                      -> Result<OwnedJob, Status>
 {
-    let mut input = Vec::new();
-    let size = fs::HEADER_BYTES.checked_add(args.payload.len()).ok_or(NO_MEMORY)?;
-    input.try_reserve_exact(size).map_err(|_| NO_MEMORY)?;
-    input.resize(size, 0);
-    args.encode(&mut input).map_err(|_| BAD_ARGUMENT)?;
-    crate::drivers::submit_background_to(subject,
-                                         provider,
-                                         mac_module::ClassId(fs::CLASS),
-                                         fs::VERSION,
-                                         op as u32,
-                                         input,
-                                         capacity)
+    crate::allocator::with_target(subject.allocation().clone(), || {
+        let mut input = Vec::new();
+        let size = fs::HEADER_BYTES.checked_add(args.payload.len()).ok_or(NO_MEMORY)?;
+        input.try_reserve_exact(size).map_err(|_| NO_MEMORY)?;
+        input.resize(size, 0);
+        args.encode(&mut input).map_err(|_| BAD_ARGUMENT)?;
+        crate::drivers::submit_background_to(subject,
+                                             provider,
+                                             mac_module::ClassId(fs::CLASS),
+                                             fs::VERSION,
+                                             op as u32,
+                                             input,
+                                             capacity)
+    })
 }
+
 fn retained(flight: Flight)
 {
     InvocationGate::run(|| {
@@ -86,7 +89,9 @@ fn begin(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompletion
                 return Err(SERVICE_BUSY);
             }
             let reserve = needed.saturating_sub(flights.len());
-            flights.try_reserve(reserve).map_err(|_| NO_MEMORY)
+            InvocationGate::with_system_allocation(|| flights.try_reserve(reserve)).map_err(|_| {
+                                                                                       NO_MEMORY
+                                                                                   })
         })?;
         sources.begin_read(&owner, args.source, call.ticket, args.offset, args.length as usize)
     })??;

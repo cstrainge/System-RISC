@@ -4,6 +4,9 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 
 use mac_abi::{scrap::*, *};
+use mac_object_table::shared::InvocationGate as _;
+
+use crate::toolbox::handles::InvocationGate;
 
 // The sole pointer boundary is isolated in this module.
 #[allow(unsafe_code)]
@@ -223,7 +226,8 @@ impl Manager
         let record = Self::text_record(text, 8)?;
         let size = 8 + text.len() + (text.len() & 1);
         let mut records = Vec::new();
-        records.try_reserve_exact(1).map_err(|_| ChangeError::Allocation)?;
+        InvocationGate::with_system_allocation(|| records.try_reserve_exact(1))
+            .map_err(|_| ChangeError::Allocation)?;
         records.push(record);
         // All storage and version admission completed before the old clipboard
         // or its classic clear count is touched. No rollback is necessary.
@@ -243,10 +247,14 @@ impl Manager
             return Err(ChangeError::PayloadLimit { bytes: text.len(),
                                                    maximum });
         }
-        let mut bytes = String::new();
-        bytes.try_reserve_exact(text.len()).map_err(|_| ChangeError::Allocation)?;
-        bytes.push_str(text);
-        let bytes = Arc::try_new(bytes).map_err(|_| ChangeError::Allocation)?;
+        // The resident Scrap owns accepted content independently of the sender.
+        // Charge both immutable backing and its sharing metadata to System.
+        let bytes = InvocationGate::with_system_allocation(|| {
+            let mut bytes = String::new();
+            bytes.try_reserve_exact(text.len()).map_err(|_| ChangeError::Allocation)?;
+            bytes.push_str(text);
+            Arc::try_new(bytes).map_err(|_| ChangeError::Allocation)
+        })?;
         Ok(Record { kind: TEXT,
                     bytes: Payload::Text(bytes),
                     offset })
@@ -338,9 +346,12 @@ impl Manager
         // Reserve and copy into staging before touching logical scrap state.
         // Fallible reservation never loses existing records or increments count.
         let mut bytes = Vec::new();
-        bytes.try_reserve_exact(input.len()).map_err(|_| NO_MEMORY)?;
+        InvocationGate::with_system_allocation(|| bytes.try_reserve_exact(input.len()))
+            .map_err(|_| NO_MEMORY)?;
         bytes.extend_from_slice(input);
-        self.records.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        InvocationGate::with_system_allocation(|| self.records.try_reserve(1)).map_err(|_| {
+                                                                                  NO_MEMORY
+                                                                              })?;
         self.records.push(Record { kind,
                                    bytes: Payload::Binary(bytes),
                                    offset: self.size + 8 });
@@ -362,7 +373,9 @@ impl Manager
             return Err(NO_MEMORY);
         }
         let record = Self::text_record(text, self.size + 8).map_err(ChangeError::status)?;
-        self.records.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        InvocationGate::with_system_allocation(|| self.records.try_reserve(1)).map_err(|_| {
+                                                                                  NO_MEMORY
+                                                                              })?;
         self.records.push(record);
         self.size = size as u32;
         self.revision = revision;

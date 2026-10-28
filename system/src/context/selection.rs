@@ -51,6 +51,28 @@ impl<T: Clone> ScopedSelection<T>
         InvocationGate::run(|| self.state.lock().current.clone())
     }
 
+    /// Borrow only for an allocation-free metadata operation. In particular,
+    /// allocator admission must not clone/drop an AccountUse on every request.
+    pub(super) fn borrow<R>(&self, operation: impl FnOnce(Option<&T>) -> R) -> R
+    {
+        InvocationGate::run(|| operation(self.state.lock().current.as_ref()))
+    }
+
+    /// The caller holds the actual current context pin until restoration. Slot
+    /// replacement cannot fail or mint account authority; reservation still
+    /// validates the selected capability. No guard escapes this closure.
+    pub(super) fn with_pinned<R>(&self, value: T, operation: impl FnOnce() -> R) -> R
+    {
+        let (thread, previous) = InvocationGate::run(|| {
+            let mut state = self.state.lock();
+            (state.thread, state.current.replace(value))
+        });
+        let _restore = Restore { state: self,
+                                 thread,
+                                 previous };
+        operation()
+    }
+
     pub(super) fn with<R>(&self, value: T, operation: impl FnOnce() -> R) -> Result<R, Reclaimed>
     {
         let (thread, previous) = InvocationGate::run(|| {
@@ -86,6 +108,11 @@ impl<T: Clone> PermanentSelection<T>
     pub(super) fn current(&self) -> Option<T>
     {
         self.inner.current()
+    }
+
+    pub(super) fn borrow<R>(&self, operation: impl FnOnce(Option<&T>) -> R) -> R
+    {
+        self.inner.borrow(operation)
     }
 
     pub(super) fn with<R>(&self, selected: Option<T>, operation: impl FnOnce() -> R) -> R
@@ -312,7 +339,7 @@ mod owned_subject_tests
     }
     fn subject(operations: &Arc<Operations>, owner: &OwnerRef) -> Subject
     {
-        operations.admit(&Authority::Client(owner.clone())).unwrap()
+        operations.admit_current(&Authority::Client(owner.clone())).unwrap()
     }
     #[test]
     fn nested_owned_subjects_restore_the_actual_scope_and_do_not_allocate_a_new_root()
@@ -380,7 +407,7 @@ mod owned_subject_tests
         selections.with(first, || {
                       let retained = selections.current().unwrap();
                       retained.scope().admitting().unwrap();
-                      assert!(matches!(operations.admit(&Authority::Client(owner.clone())),
+                      assert!(matches!(operations.admit_current(&Authority::Client(owner.clone())),
                                        Err(mac_abi::SERVICE_BUSY)));
                       assert!(owner.pending(root));
                   })

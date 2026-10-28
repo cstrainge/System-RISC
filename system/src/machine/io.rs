@@ -17,9 +17,12 @@ pub fn run<F: FnOnce() -> R, R>(function: F) -> R
         }
         let resources = crate::kernel::current_resource_selection();
         let subject = crate::context::io_subject();
+        let allocation = crate::context::selected_allocation();
         let _restore = RestoreIo(super::scheduler::io_enter());
-        crate::context::with_bootstrap_io_subject(subject, || {
-            crate::context::with_bootstrap_resources(Some(resources), function)
+        crate::context::with_bootstrap_allocation(allocation, || {
+            crate::context::with_bootstrap_io_subject(subject, || {
+                crate::context::with_bootstrap_resources(Some(resources), function)
+            })
         })
     })
 }

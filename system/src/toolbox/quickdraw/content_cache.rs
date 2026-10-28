@@ -6,7 +6,10 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 
+use mac_object_table::shared::InvocationGate as _;
+
 use super::{Canvas, Point, Rect, geometry::sect_rect, retained::SceneTarget};
+use crate::toolbox::handles::InvocationGate;
 
 const MAX_FRAGMENTS: usize = 64;
 const MAX_WINDOWS: usize = 32;
@@ -337,7 +340,13 @@ impl ContentCache
                 self.entries.swap_remove(oldest);
             }
             let mut pixels = Vec::new();
-            if self.entries.try_reserve(1).is_err() || pixels.try_reserve_exact(count).is_err()
+            // Retained compositor cache storage belongs to System. The replay
+            // callback above keeps the original drawing subject's allocation.
+            let admitted = InvocationGate::with_system_allocation(|| {
+                self.entries.try_reserve(1)?;
+                pixels.try_reserve_exact(count)
+            });
+            if admitted.is_err()
             {
                 return Ok(());
             }

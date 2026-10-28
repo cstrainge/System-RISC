@@ -15,7 +15,8 @@
 use alloc::sync::Arc;
 use core::fmt;
 
-use mac_object_table::shared::{InvocationGate, OwnerRef};
+use mac_object_table::{scope::{AllocationAdmission, Lease},
+                       shared::{InvocationGate, OwnerRef}};
 use spinning_top::Spinlock;
 
 use crate::{DomainId,
@@ -29,6 +30,12 @@ pub enum Error
         owner: DomainId
     },
     Budget(BudgetExceeded),
+    Operation(mac_object_table::scope::Failure),
+    ForeignAccount
+    {
+        original: DomainId,
+        offered:  DomainId
+    },
     Metadata
     {
         owner: DomainId
@@ -45,6 +52,18 @@ impl fmt::Display for Error
                 write!(output, "memory account for {owner} is closed or its owner is stopping")
             }
             Self::Budget(error) => error.fmt(output),
+            Self::ForeignAccount { original,
+                                   offered } =>
+            {
+                write!(output,
+                       "replacement allocation offered a different canonical account: original \
+                        {original}, offered {offered}; matching labels do not grant account \
+                        authority")
+            }
+            Self::Operation(error) =>
+            {
+                write!(output, "original operation allocation refused: {error}")
+            }
             Self::Metadata { owner } =>
             {
                 write!(output, "memory account metadata allocation refused for {owner}")
@@ -107,9 +126,12 @@ struct Inner<G: InvocationGate>
 #[derive(Clone, Copy, Debug)]
 pub struct Snapshot
 {
-    pub kernel:      AccountUsage,
-    pub application: AccountUsage,
-    pub closing:     bool
+    pub kernel:        AccountUsage,
+    pub application:   AccountUsage,
+    pub closing:       bool,
+    /// Observation only: original receipts and admitted uses beyond the root.
+    /// Admission and retirement still use the canonical account's own gate.
+    pub retained_pins: usize
 }
 /// The unique canonical account root. Cloning a receipt's admitted Arc does not
 /// mint another root or reset a budget. This type deliberately is not Clone.
@@ -139,14 +161,15 @@ impl<G: InvocationGate> Account<G>
             {
                 return Err(Error::Closed { owner: identity });
             }
-            let inner =
-                Arc::try_new(Inner { state:
+            let inner = G::with_foundation_allocation(|| {
+                            Arc::try_new(Inner { state:
                                          Spinlock::new(State { account:
                                                                    DomainAccount::new(identity,
                                                                                       kernel,
                                                                                       application),
                                                                closing: false }),
-                                     owner }).map_err(|_| Error::Metadata { owner: identity })?;
+                                     owner })
+                        }).map_err(|_| Error::Metadata { owner: identity })?;
             // The allocation itself holds no owner/counter lock. Refuse a stop
             // that raced metadata admission before handing out the root.
             if !inner.owner.accepting()
@@ -177,9 +200,10 @@ impl<G: InvocationGate> Account<G>
     {
         G::run(|| {
             let state = self.inner.state.lock();
-            Snapshot { kernel:      *state.account.kernel(),
-                       application: *state.account.application(),
-                       closing:     state.closing }
+            Snapshot { kernel:        *state.account.kernel(),
+                       application:   *state.account.application(),
+                       closing:       state.closing,
+                       retained_pins: Arc::strong_count(&self.inner) - 1 }
         })
     }
 
@@ -267,6 +291,30 @@ pub struct AccountUse<G: InvocationGate>
 }
 impl<G: InvocationGate> AccountUse<G>
 {
+    /// Bind this canonical account to an already-published genuine operation.
+    /// Ordinary owner stop does not revoke an admitted operation's continuation;
+    /// a closed root or closed account still refuses. No budget is reset, and
+    /// the capability cannot reopen ordinary owner/account admission.
+    pub fn for_operation(&self, scope: &Lease<G>) -> Result<OperationAccountUse<G>, Error>
+    {
+        let owner = self.inner.owner.owner();
+        if scope.subject() != owner
+        {
+            return Err(Error::Operation(mac_object_table::scope::Failure::ForeignOwner {
+                expected: owner, actual: scope.subject()
+            }));
+        }
+        let admission = scope.allocation_admission().map_err(Error::Operation)?;
+        G::run(|| {
+            if self.inner.state.lock().closing
+            {
+                return Err(Error::Closed { owner });
+            }
+            Ok(OperationAccountUse { account: self.clone(),
+                                     admission })
+        })
+    }
+
     pub fn owner(&self) -> DomainId
     {
         G::run(|| self.inner.owner.owner())
@@ -291,6 +339,46 @@ impl<G: InvocationGate> Clone for AccountUse<G>
                                        _gate: core::marker::PhantomData } }
     }
 }
+/// Allocation authority for the continuation of one admitted resource root.
+/// No caller flag or copied DomainId can construct it. The root's independent
+/// close gate serializes admission without reacquiring the owner ledger during
+/// allocator-backed ledger growth. This is not a physical-memory reservation.
+pub struct OperationAccountUse<G: InvocationGate>
+{
+    account:   AccountUse<G>,
+    admission: AllocationAdmission<G>
+}
+impl<G: InvocationGate> Clone for OperationAccountUse<G>
+{
+    fn clone(&self) -> Self
+    {
+        Self { account:   self.account.clone(),
+               admission: self.admission.clone() }
+    }
+}
+impl<G: InvocationGate> OperationAccountUse<G>
+{
+    pub fn owner(&self) -> DomainId
+    {
+        self.account.owner()
+    }
+
+    pub fn for_operation(&self, scope: &Lease<G>) -> Result<Self, Error>
+    {
+        self.account.for_operation(scope)
+    }
+
+    pub fn reserve_kernel(&self, bytes: u64) -> Result<Reserved<G>, Error>
+    {
+        self.account.inner.reserve_operation(&self.admission, Class::Kernel, bytes)
+    }
+
+    pub fn reserve_application(&self, bytes: u64) -> Result<Reserved<G>, Error>
+    {
+        self.account.inner.reserve_operation(&self.admission, Class::Application, bytes)
+    }
+}
+
 struct ReleaseWake<G: InvocationGate>
 {
     owner: DomainId,
@@ -309,22 +397,46 @@ impl<G: InvocationGate> Inner<G>
 {
     fn reserve(self: &Arc<Self>, class: Class, bytes: u64) -> Result<Reserved<G>, Error>
     {
+        G::run(|| self.reserve_authorized(class, bytes, None))
+    }
+
+    fn reserve_operation(self: &Arc<Self>, admission: &AllocationAdmission<G>, class: Class,
+                         bytes: u64)
+                         -> Result<Reserved<G>, Error>
+    {
+        // The admission guard is per root. Neither its bounded callback nor
+        // counter admission touches the owner ledger or allocates backing.
         G::run(|| {
-            let mut state = self.state.lock();
-            let owner = self.owner.owner();
-            if state.closing || !self.owner.accepting()
+            admission.with_admission(|| self.reserve_authorized(class, bytes, Some(admission)))
+        }).map_err(Error::Operation)?
+    }
+
+    fn reserve_authorized(self: &Arc<Self>, class: Class, bytes: u64,
+                          admission: Option<&AllocationAdmission<G>>)
+                          -> Result<Reserved<G>, Error>
+    {
+        let mut state = self.state.lock();
+        let owner = self.owner.owner();
+        if let Some(admission) = admission
+        {
+            if admission.subject() != owner
             {
-                return Err(Error::Closed { owner });
+                return Err(Error::Operation(mac_object_table::scope::Failure::ForeignOwner {
+                    expected: owner, actual: admission.subject()
+                }));
             }
-            state.usage(class).reserve(owner, class.public(), bytes).map_err(Error::Budget)?;
-            // Root and retained uses share this admission. Hold the counter
-            // lock through the allocation-free pin, including zero-byte uses.
-            Ok(Reserved { receipt: Receipt { inner: Some(self.clone()),
-                                             owner,
-                                             class,
-                                             bytes,
-                                             phase: Phase::Reserved } })
-        })
+        }
+        if state.closing || (admission.is_none() && !self.owner.accepting())
+        {
+            return Err(Error::Closed { owner });
+        }
+        state.usage(class).reserve(owner, class.public(), bytes).map_err(Error::Budget)?;
+        Ok(Reserved { receipt: Receipt { inner: Some(self.clone()),
+                                         owner,
+                                         class,
+                                         bytes,
+                                         phase: Phase::Reserved,
+                                         admission: admission.cloned() } })
     }
 }
 #[derive(Clone, Copy)]
@@ -335,11 +447,12 @@ enum Phase
 }
 struct Receipt<G: InvocationGate>
 {
-    inner: Option<Arc<Inner<G>>>,
-    owner: DomainId,
-    class: Class,
-    bytes: u64,
-    phase: Phase
+    inner:     Option<Arc<Inner<G>>>,
+    owner:     DomainId,
+    class:     Class,
+    bytes:     u64,
+    phase:     Phase,
+    admission: Option<AllocationAdmission<G>>
 }
 impl<G: InvocationGate> Receipt<G>
 {
@@ -433,6 +546,56 @@ pub struct Committed<G: InvocationGate>
 }
 impl<G: InvocationGate> Committed<G>
 {
+    /// Reserve replacement backing against this receipt's original account and
+    /// class. Closing admission still refuses growth, even if a different
+    /// subject or System is currently executing the reallocating call.
+    pub fn reserve_replacement(&self, bytes: u64) -> Result<Reserved<G>, Error>
+    {
+        let Some(inner) = &self.receipt.inner
+        else
+        {
+            return Err(Error::Closed { owner: self.receipt.owner });
+        };
+        match &self.receipt.admission
+        {
+            Some(admission) =>
+            {
+                match inner.reserve_operation(admission, self.receipt.class, bytes)
+                {
+                    // A surviving buffer can grow after its first I/O root ends
+                    // while its ORIGINAL owner/account still admits ordinary use.
+                    // Budget failure and account closure never select another pool.
+                    Err(Error::Operation(mac_object_table::scope::Failure::Closed)) =>
+                    {
+                        inner.reserve(self.receipt.class, bytes)
+                    }
+                    result => result
+                }
+            }
+            None => inner.reserve(self.receipt.class, bytes)
+        }
+    }
+
+    /// Offer a real continuation of the exact original account for a buffer
+    /// surviving an earlier operation. The offered execution class cannot
+    /// redirect this receipt's class or refund destination. This admits no new
+    /// ordinary work and cannot reopen a closed account or resource root.
+    pub fn reserve_replacement_in(&self, bytes: u64, continuation: &OperationAccountUse<G>)
+                                  -> Result<Reserved<G>, Error>
+    {
+        let Some(inner) = &self.receipt.inner
+        else
+        {
+            return Err(Error::Closed { owner: self.receipt.owner });
+        };
+        if !Arc::ptr_eq(inner, &continuation.account.inner)
+        {
+            return Err(Error::ForeignAccount { original: self.receipt.owner,
+                                               offered:  continuation.owner() });
+        }
+        inner.reserve_operation(&continuation.admission, self.receipt.class, bytes)
+    }
+
     pub fn owner(&self) -> DomainId
     {
         G::run(|| self.receipt.owner)

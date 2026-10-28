@@ -2,21 +2,24 @@
 
 Status: §13.1 accepted by Chloe, 2026-10-23; proceeding with §13.2. The complete
 RVA23 floor is live. Process identity/directory, owner-walk cleanup and growable
-native scheduler records are resident. Process stacks and saved CPU backing carry
-live account charges. A fixed 512 MiB page-backed System heap replaces the static
-heap; general heap/metadata accounting and private process mappings remain pending.
+native scheduler records are resident. Original-account allocation headers and
+scoped resident metadata routing now extend stack/CPU charges. Selected optimized
+native lifecycle/storage/recovery observations and their limits are recorded below. A fixed512 MiB page-backed System heap
+is split into480 MiB ordinary and32 MiB protected storage. Independent application
+and module heaps, image-page charges and private process mappings remain pending.
 Kernel self-virtualization uses owned Sv39 roots and a guarded
 System stack. Graphical boot now pins an independent terminal panic/OOM kit;
-the complete protected recovery reserve and module/privilege gates remain open.
+complete Save/Alert/Finder recovery kits and module/privilege gates remain open.
 This document describes the implemented foundations,
 architectural decisions and remaining migration gates.
 
 ## What landed
 
 The `no_std`, `forbid(unsafe_code)` **mac-kernel-model** crate is internal
-kernel infrastructure, not an application SDK. Keeping pure structures in a
-host-buildable crate permits checking arithmetic, ownership and allocation
-without emulating a CPU or adding test-only System traps. System now consumes
+kernel infrastructure, not an application SDK. Shared representations and
+algorithms belong here; architecture-specific mapping, allocation, interrupt and
+scheduler behavior must be exercised through the actual target implementation.
+Host-linked service/model results are not native OS acceptance. System consumes
 its execution-use gate, physical pool and page-owned kernel roots; other
 families remain staged until their resident consumers land. Linking the crate
 alone does not activate its page or allocator model.
@@ -25,7 +28,7 @@ alone does not activate its page or allocator model.
 |---|---|---|
 | Buddy pool | `crates/mac-kernel-model/src/buddy.rs` | Caller-supplied metadata and order heads, split, O(1) unlink, coalescing, unique RAII block leases; never touches free-page bytes |
 | Page layer | `…/pages.rs` | Platform geometry, typed addresses, permissions/ownership, borrowed boot reservations, largest-leaf mapping plan, reserved `PageBox`/address-space root |
-| Domains/accounts | `…/policy.rs`, `mac-object-table/src/domain.rs` | Boot-monotonic incarnation, canonical process accounts, checked admission and original-account receipts; live charges cover process stacks and saved CPU backing only |
+| Domains/accounts | `…/policy.rs`, `mac-object-table/src/domain.rs` | Boot-monotonic incarnation, canonical process/module accounts, checked admission and original-account receipts; execution plus attributed resident heap/metadata; bounded native observations below |
 | Facility v2 | `mac-object-table/src/domain.rs` | Owner-index-authorized per-kind bitmap pools, generations, rotation, retirement, capacity policy, release tickets and registration shapes; managed controls use owner-backed value storage |
 | Shared aliases | `mac-object-table/src/aliases.rs`, `system/src/images.rs` | System-owned immutable image sources and registered process aliases; source reads, definition bindings and execution pins retain backing through actual cleanup |
 | Process/thread | `…/process.rs` | Address-space, image/memory/legacy capabilities, dynamic threads, saved manager slots, backend frame, vector marker and discovered save-area layout |
@@ -72,7 +75,7 @@ The existing resident heap now has a private `ResidentHeap` wrapper using the
 same architecture gate for allocation, deallocation, initialization and free-
 space reads. This closes the preempted-heap-holder path without changing the
 then-static backing. The fixed page-backed heap described at the end now uses
-the same wrapper; its domain-accounted allocation stage remains pending.
+the same boundary with the original-account receipts described below.
 Trusted event routing also requeues directly into the fixed queue, avoiding a
 temporary heap allocation on every physical-input batch.
 
@@ -197,9 +200,9 @@ The initial configurable defaults approved on 2026-10-24 are **8 GiB native
 release VM RAM, 512 MiB fixed System heap, 32 MiB protected recovery reserve,
 16 MiB per-process kernel budget and 64 MiB app committed-heap budget**. These
 remain tunable. The release RAM and fixed page-backed System heap are active;
-the process limits currently cover stack and saved CPU charges only. The
-protected recovery reserve and complete process heap/metadata enforcement remain
-behind their live accounting/recovery gates. Physical admission can refuse a
+the process/module limits now also cover attributed resident heap blocks. The
+protected32 MiB partition is active, while complete private-heap/image enforcement
+and recovery-service kits remain behind their accounting/recovery gates. Physical admission can refuse a
 chosen heap capacity on a smaller RAM profile without silently changing policy.
 
 Other values, including the proposed minimum/maximum ranges below, remain
@@ -2892,79 +2895,101 @@ Scratch refusal conservatively preserves affected-object damage without treating
 a bounding box as occluding cover. Repeated/empty changes do no geometry work.
 
 
-### Live process charges: stack and saved CPU state
+### Original-account execution and resident heap charges
 
-Each process directory entry now owns one canonical account, constructed from
-that entry's authentic lifetime ledger before process admission returns. The
-checked platform record selects the kernel and application caps (initially
-16 MiB and 64 MiB). These are admission limits, not physical reservations or
-guarantees that all of that capacity is currently available.
+Each admitted process and module owns one canonical account constructed from its
+authentic lifetime ledger. The checked platform record selects process kernel
+and application caps (initially16 MiB and64 MiB), and a module kernel cap
+(initially16 MiB). Future module workers have a checked4 MiB stack policy; this
+configuration does not activate workers. Budgets are admission limits, not
+physical reservations or guarantees of available memory.
 
-Thread preparation reserves the complete buddy-rounded application stack and
-saved CPU-state extents before requesting pages. Stack backing charges the
-application side; saved CPU backing charges the kernel side. Build-time stack
-fit validation, native admission and actual allocation share the same checked
-rounding rule. An owned reservation either settles into one committed receipt
-or cancels on Drop, without allocating to update or refund counters. The
-receipt always retains its original account, independently of the execution
-context in which destruction occurs.
+Thread preparation reserves complete buddy-rounded stack and saved CPU-state
+extents before requesting pages. Application stacks charge the application side;
+saved CPU state charges the kernel side. Both actual thread control-block Arc
+allocations and per-owner scheduler/ledger storage use the admitted child's
+kernel authority before publication. A DomainId, module number, or copied usage
+record cannot select an account. Native allocation borrows the actual active
+context's selection without cloning retained readers or allocation authority on
+every allocation. Local interrupt/preemption exclusion remains architecture-owned.
 
-Thread-charge admission also retains an `AccountUse` from that canonical root
-and uses it for the real stack and CPU reservations. The prepared thread carries
-that authority into its actual scheduler context; no scalar process/domain ID
-can reconstruct or redirect it. Root and retained-use admission share the same
-counter implementation. Cloning a use allocates nothing and cannot reopen a
-closed account. Even a use with no charged bytes pins retirement; its final Drop
-releases that pin before posting the normal retirement wake. Once a thread is
-quiescent, context release drops its retained allocation authority before process
-account readiness can succeed. Ordinary input/event paths do not resolve or
-clone this authority.
+Every resident heap block contains its exact backing Layout and original refund
+receipts. Admission includes the header and the free-list backend's actual
+rounding; alignment padding retained by the free list is not charged. A failed
+backend request drops its reservation after releasing the heap lock. Disposal
+returns backing before refunding the original account, regardless of which
+subject frees it. Reallocation reserves replacement capacity against that same
+original account and class, charges both live blocks during copy, and preserves
+the original block on refusal. Shrinking within admitted backing retains its
+capacity and charge. Ordinary allocation closes when the owner stops. An already
+admitted I/O root retains only its original budget-capped continuation authority;
+closed accounts always refuse growth.
 
-This retained authority is a prerequisite for later allocation forwarding. It
-does not yet select a global allocator, charge scheduler metadata or heaps,
-create module workers, or qualify protected recovery backing.
+The permanent parent authority counts ordinary heap occupancy once. Foundation,
+System ordinary, and domain-attributed allocations are categories within that
+same480 MiB capacity; a domain counter is attribution of the same storage, not
+additional physical memory. The32 MiB protected partition is excluded. Authority
+control blocks use static **System foundation** receipts, including their actual
+headers and backing alignment, avoiding self-account construction and retirement
+cycles. Per-domain pool arrays, payloads and thread metadata are not foundation.
+Shared directory/index capacities, definition/image sources and retained System
+caches have narrow System scopes; drawing callbacks retain their actual subject.
 
-The unique owner/account authority control blocks belong to **System foundation**.
-They establish accounting authority and must not retain allocation receipts from
-their own account, which would create a construction or retirement cycle. This
-classification is narrow: per-domain pool storage, ledger arrays, thread metadata
-and service payloads remain charged to the process/module that owns them. Actual
-control-block requests, allocator headers and backend alignment overhead must be
-measured and charged to foundation; this is not an unaccounted bootstrap bypass.
-The accounted allocator and its bootstrap transition remain to be installed.
+A scoped allocation capability is derived only from a published live/pending
+resource root. Root closure and bounded budget reservation share a per-root
+guard, with scope-to-account lock order; allocation never reacquires the owner
+ledger or invokes backing allocation under those guards. The root's unique owner
+closes before release acknowledgement. Retaining a capability cannot keep its
+root open, create a root, or reopen ordinary owner/account admission. This is
+continuation authority, not reserved physical storage or a general OOM guarantee.
 
-The combined resident build passes native RAM admission, Finder restart/recovery,
-independent application preemption and repeated malformed-open teardown/relaunch
-with this additional pin present. Model tests cover concurrent admission/closure,
-original-account refunds and allocation-free acquisition/cloning/release; compile
-failure tests reject fabricated or account-closing uses. These checks qualify the
-retained authority and its retirement order, not general heap accounting.
+A buffer can outlive the operation which first allocated it. Replacement can use
+its original still-accepting account after that old root closes. After ordinary
+owner stop, a different surviving root can authorize replacement only through a
+genuine capability for the **same canonical account**, checked by actual account
+identity rather than DomainId equality. The original class and refund destination
+remain unchanged. Budget failure and physical exhaustion never select a different
+account or heap. System replacement likewise retains its original static category.
 
-The native backing wrapper keeps physical storage and its receipt inseparable.
-Physical destruction precedes the corresponding refund; stack/CPU destruction
-also precedes releasing the image execution pin. Stopped process retirement
-waits for scheduler readers, cleanup completion and the account's outstanding
-receipts. Closing an account refuses new admission, while already admitted
-reservations can settle and must drain before retirement.
+Queued I/O retains its original allocation target alongside genuine operation
+and resource authority. Submission buffers, queue payloads and delayed provider
+processing reinstall that target instead of inheriting a timer executor's System
+selection. Bootstrap I/O preserves selection through its actual context handoff.
+An unported architecture returns a typed unsupported result for runtime allocation
+selection; it does not substitute host allocator behavior for the native path.
 
-Public domain inspection labels this coverage explicitly as **stack and saved
-CPU state only**. The two usage records come from one counter lock; they are
-observations, not allocation authority. An unrelated mapping snapshot continues
-to report full per-domain accounting as unavailable. Process heaps, images,
-account/scheduler metadata, System recovery reserves, module workers and the
-general emergency-service kit are not covered by these first charge consumers.
-Their accounting, physical backing and recovery qualification remain required
-work. The separate boot-pinned terminal kit does not charge a process account.
+Retirement waits for actual thread quiescence and settled cleanup. It then drops
+saved manager payloads and all ready checkpoint references, detaches empty stopped
+ledger storage outside its lock, and waits for every original receipt/use before
+removing the account. The drained phase never reenters removed managers. The
+single empty queue placeholder used while swapping active saved state is System
+owned, so it cannot carry one process's account into another process indefinitely.
+Failed or pending cleanup retains its real tickets and payloads. Module metadata
+uses the same drain-before-account ordering; its original inline name remains
+available while final receipts drain.
 
-Qualification covers concurrent reservation/closure, overflow, exact-limit and
-metadata-allocation refusals, zero-byte lifetime pins and original-account refunds
-in the shared model. Public SDK tests cover truthful partial snapshots, commit,
-refund, closure, malformed replies and access refusals. Native disk-booted SDK
-campaigns correlate process rows with the actual stack/CPU backing extents, prove
-retirement and relaunch behavior, preserve observer charges while workers quit,
-and exercise repeated malformed launch plus Finder recovery/refusal. They do not
-qualify native global-heap exhaustion or complete process quotas before the
-remaining charge consumers and protected recovery backing are installed.
+Public domain inspection labels this partial coverage **execution and resident
+heap**. Usage records are atomic observations, not authority. Independent private
+application/module allocators, executable-image physical pages, module runtime
+binding storage and complete recovery-service accounting remain outside this
+coverage. The mapping summary continues to report complete per-domain accounting
+as unavailable. Genuine module workers and the full Save/Alert/Finder emergency
+kit remain gated; neither a canonical module account nor reserved capacity makes
+them ready.
+
+Optimized native guest scenarios have exercised process preemption, malformed
+launch rollback, Finder account retirement, mapping/resident allocation reads,
+module cancellation/rollback, and host-volume read/write/transfer plus abandoned
+stream rollback after owner stop. The latest artifact also exercised 24 concurrent
+provider-backed fork marks, preserved pool growth, independent offsets and data,
+stale-handle refusal, explicit and Drop close, complete root drainage and retry.
+That workload does not establish that an allocation originally admitted by a
+now-closed operation root was reallocated: the observed fork-pool growth uses
+ordinary owner admission. That specific cross-root replacement path remains
+unverified. Host model or service tests do not qualify the native allocator,
+interrupt, scheduling, teardown or module-worker contracts. Explicit concurrent
+issuer/stop races and allocation-refusal retry of shared authority construction
+also remain unverified.
 
 ### Boot-pinned terminal panic and OOM path
 
@@ -3100,8 +3125,9 @@ The checked `memory.system_recovery_bytes` policy reserves 32 MiB inside this
 same 512 MiB backing. The ordinary allocator receives 480 MiB; protected subrange
 capabilities are unique, initialized before use and permanently reserved until
 reset. The mapping inventory covers all 512 MiB while allocator capacity excludes
-the protected portion. This does not install original-account global heap charges,
-complete metadata attribution, module workers or private application roots.
+the protected portion. Partitioning alone does not install original-account
+charges. Resident allocation charging is described above; complete metadata
+attribution, module workers and private application roots remain unfinished.
 Full recovery-service census and Finder allowances remain open; reserved capacity
 alone does not qualify those services.
 
@@ -3135,7 +3161,8 @@ is destroyed outside the owner lock before the account death barrier. The
 stopped identity cannot reopen, and its actual manager generations retain their
 existing rules.
 
-These changes prepare original-account heap charging; they do not activate it.
-Target build checks and existing guest lifecycle scenarios provide bounded
-evidence. Explicit allocation-refusal retry, concurrent issuer/stop races and
-allocator recursion with actual per-allocation charges remain unverified.
+The resident allocation boundary now consumes this admission authority. The
+optimized native scenarios described above exercise actual per-allocation
+charges during real manager growth and cleanup; they do not establish every
+recursion or concurrency path. Explicit allocation-refusal retry of authority
+construction and concurrent issuer/stop races remain unverified.

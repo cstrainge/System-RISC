@@ -65,6 +65,64 @@ impl Checked
          ("PROCESS_APPLICATION_BUDGET_BYTES", self.application)]
     }
 }
+/// Module workers and their metadata share one kernel account. This is a cap,
+/// not physical admission or permission to activate a worker backend.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ModuleDefinition
+{
+    kernel_bytes:       String,
+    worker_stack_bytes: String
+}
+#[derive(Debug)]
+pub(super) struct ModuleChecked
+{
+    kernel:       u64,
+    worker_stack: u64
+}
+impl ModuleDefinition
+{
+    pub(super) fn check(&self, page: u64) -> Result<ModuleChecked>
+    {
+        let check = |name: &str, text: &str| -> Result<u64> {
+            let value = address(&format!("module_accounts.{name}"), text)?;
+            if value == 0 || !value.is_multiple_of(page)
+            {
+                return Err(error(format!("platform memory module_accounts.{name} must be \
+                                          nonzero and page aligned ({page} bytes)")));
+            }
+            Ok(value)
+        };
+        let kernel = check("kernel_bytes", &self.kernel_bytes)?;
+        let worker_stack = check("worker_stack_bytes", &self.worker_stack_bytes)?;
+        let backing =
+            PageGeometry::new(page).and_then(|geometry| geometry.buddy_bytes(worker_stack))
+                                   .map_err(|cause| {
+                                       error(format!("platform memory \
+                                                      module_accounts.worker_stack_bytes cannot \
+                                                      determine buddy backing: {cause}"))
+                                   })?;
+        if kernel < backing
+        {
+            return Err(error(format!("platform memory module_accounts.kernel_bytes ({kernel} \
+                                      bytes) must cover the selected worker stack \
+                                      ({worker_stack} requested bytes, {backing} bytes of \
+                                      buddy backing); increase the module cap or reduce its \
+                                      worker stack")));
+        }
+        Ok(ModuleChecked { kernel,
+                           worker_stack })
+    }
+}
+impl ModuleChecked
+{
+    pub(super) fn constants(&self) -> [(&'static str, u64); 2]
+    {
+        [("MODULE_KERNEL_BUDGET_BYTES", self.kernel),
+         ("MODULE_WORKER_STACK_BYTES", self.worker_stack)]
+    }
+}
+
 #[cfg(test)]
 mod tests
 {

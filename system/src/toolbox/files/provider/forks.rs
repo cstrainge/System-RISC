@@ -142,7 +142,8 @@ impl Manager
             return Err(SERVICE_BUSY);
         }
         #[cfg(target_arch = "riscv64")]
-        let io_subject = Some(crate::drivers::jobs::subjects::resident()?.admit(authority)?);
+        let io_subject =
+            Some(crate::drivers::jobs::subjects::resident()?.admit_current(authority)?);
         let handle = self.handles
                          .insert_authorized(authority, OpenFile { #[cfg(target_arch = "riscv64")] io_subject, owner:access.label(),
                                             volume,

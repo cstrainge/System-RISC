@@ -55,7 +55,8 @@ impl Fixture
         let mut registry = Registry::new(target,
                                          owner,
                                          [interfaces, storage, dependency, dependency_storage,
-                                          request, request_storage]).unwrap();
+                                          request, request_storage],
+                                         16 << 20).unwrap();
         registry.fixture_catalog = Some(kinds.clone());
         registry.fixture_operations = Some(operations);
         Self { registry,

@@ -109,7 +109,10 @@ impl Registry
                                 class: provider.offer.class,
                                 version: provider.offer.version,
                                 scope: Some(scope.clone()) };
-        self.dependencies.insert_in_scope(scope, binding).map_err(Error::Owner)?;
+        let allocation = self.module_allocation(dependent)?;
+        crate::allocation::with_kernel_allocation(allocation, || {
+            self.dependencies.insert_in_scope(scope, binding).map_err(Error::Owner)
+        }).map_err(Error::AllocationScope)??;
         Ok(())
     }
 
@@ -185,12 +188,10 @@ impl Registry
             // The host transport's Session owns its actual typed catalog and
             // drives that same walk outside this narrower Registry borrow.
             // Never fabricate a second catalog or acknowledge its resources.
-            self.modules
-                .get(module)
-                .ok_or(Error::Stale)?
-                .cleanup
-                .ensure_settled()
-                .map_err(Error::Cleanup)?;
+            if let Some(checkpoint) = &self.modules.get(module).ok_or(Error::Stale)?.cleanup
+            {
+                checkpoint.ensure_settled().map_err(Error::Cleanup)?;
+            }
             Self::module_drained(&owner)
         }
     }
@@ -202,7 +203,11 @@ impl Registry
                 crate::toolbox::handles::InvocationGate, Failure>, E>)
                                                 -> Result<()>
     {
-        let checkpoint = self.modules.get(module).ok_or(Error::Stale)?.cleanup.clone();
+        let Some(checkpoint) = self.modules.get(module).ok_or(Error::Stale)?.cleanup.clone()
+        else
+        {
+            return Self::module_drained(owner);
+        };
         let mut failed = |key: ResourceKey, failure: &mac_object_table::walk::Failure<E,
             crate::toolbox::handles::cleanup::Cause>| {
             #[cfg(target_arch = "riscv64")]
@@ -223,6 +228,47 @@ impl Registry
                   .map_err(Error::Cleanup)?;
         checkpoint.ensure_settled().map_err(Error::Cleanup)?;
         Self::module_drained(owner)
+    }
+
+    /// The account barrier follows real cleanup and disposal of every retained
+    /// charged metadata buffer. A drained retry cannot reopen or rerun cleanup.
+    pub(super) fn drain_module_metadata(&mut self, module: u64) -> Result<()>
+    {
+        let owner = self.module_ledger(module)?;
+        Self::module_drained(&owner)?;
+        if owner.accepting()
+        {
+            return Err(Error::State);
+        }
+        {
+            let record = self.modules.get_mut(module).ok_or(Error::Stale)?;
+            if let Some(checkpoint) = &record.cleanup
+            {
+                checkpoint.ensure_settled().map_err(Error::Cleanup)?;
+            }
+            drop(record.cleanup.take());
+            drop(core::mem::take(&mut record.offers));
+            drop(core::mem::take(&mut record.dependencies));
+            drop(core::mem::take(&mut record.dependency_ids));
+            drop(core::mem::take(&mut record.services));
+            drop(core::mem::take(&mut record.devices));
+            drop(core::mem::take(&mut record.file_handlers));
+        }
+        owner.drain_stopped().map_err(Error::Domain)?;
+        let account = &self.modules.get(module).ok_or(Error::Stale)?.account;
+        if !account.close_and_ready()
+        {
+            let remaining = account.snapshot();
+            return Err(Error::AccountPending { owner:                 account.owner(),
+                                               kernel_committed:      remaining.kernel.committed(),
+                                               kernel_reserved:       remaining.kernel.reserved(),
+                                               application_committed: remaining.application
+                                                                               .committed(),
+                                               application_reserved:  remaining.application
+                                                                               .reserved(),
+                                               retained_pins:         remaining.retained_pins });
+        }
+        Ok(())
     }
 
     fn module_drained(owner: &crate::toolbox::handles::OwnerRef) -> Result<()>

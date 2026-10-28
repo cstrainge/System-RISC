@@ -42,7 +42,7 @@ pub fn add(label: &str, authority: u64) -> u64
                       let mut session = session.borrow_mut();
                       let directory = &mut session.as_mut().unwrap().inspection;
                       let ledger = OwnerIndex::issue(DomainKind::Process).unwrap();
-                      directory.insert(ledger,
+                      directory.insert(crate::toolbox::handles::OwnerRef::try_new(ledger).unwrap(),
                                        Metadata { scheduler_alias: None,
                                                   label: label.into(),
                                                   authority,
@@ -235,7 +235,7 @@ pub(crate) fn caller_ledger(alias: u64)
                       }
                       let ledger =
                           OwnerIndex::issue(DomainKind::Process).map_err(|_| mac_abi::NO_MEMORY)?;
-                      let id = directory.insert(ledger,
+                      let id = directory.insert(crate::toolbox::handles::OwnerRef::try_new(ledger).map_err(|_| mac_abi::NO_MEMORY)?,
                                                 Metadata { scheduler_alias: Some(alias),
                                                            label:           "Fixture app".into(),
                                                            authority:       0,

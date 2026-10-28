@@ -208,7 +208,7 @@ impl Default for Session
             registry.register(&registrar, crate::drivers::registry::requests::specification(false),
                 crate::drivers::registry::requests::ReleaseRequests(false)).unwrap(),
             registry.register(&registrar, crate::drivers::registry::requests::specification(true),
-                crate::drivers::registry::requests::ReleaseRequests(true)).unwrap()]).unwrap();
+                crate::drivers::registry::requests::ReleaseRequests(true)).unwrap()], 16 << 20).unwrap();
         let io_root = registry.register(&registrar,
                                         crate::drivers::jobs::subjects::specification(false),
                                         crate::drivers::registry::fixture::ReleaseIo(false))

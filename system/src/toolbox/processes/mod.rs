@@ -3,7 +3,7 @@
 
 use mac_abi::{processes::*, *};
 
-use crate::toolbox::handles::{Directory, DirectoryError, DomainKind, OwnerIndex};
+use crate::toolbox::handles::{Directory, DirectoryError, DomainKind, OwnerRef};
 pub mod menu;
 mod presentation;
 pub(crate) mod documents;
@@ -47,8 +47,8 @@ pub struct Process
     pub info:         ProcessInfo,
     pub(crate) image: Option<crate::images::Binding>,
     pub stamp:        u64,
-    cleanup:          crate::toolbox::handles::cleanup::Checkpoint,
-    account:          Option<crate::machine::scheduler::accounting::ProcessAccount>
+    cleanup:          Option<crate::toolbox::handles::cleanup::Checkpoint>,
+    account:          crate::machine::scheduler::accounting::ProcessAccount
 }
 
 /// A cleanup resource context is minted from one directory entry, never from
@@ -97,7 +97,7 @@ impl crate::toolbox::inspection::Subject for Process
 
     fn execution_account(&self) -> Option<mac_kernel_model::account::Snapshot>
     {
-        self.account.as_ref().map(|account| account.snapshot())
+        Some(self.account.snapshot())
     }
 }
 pub struct Manager
@@ -133,7 +133,7 @@ impl Manager
     {
         use crate::machine::scheduler::accounting::ThreadCharges;
         let entry = self.entries.get(id).ok_or(NOT_FOUND)?;
-        let account = entry.value().account.as_ref().ok_or(BAD_ABI)?;
+        let account = &entry.value().account;
         ThreadCharges::admit(entry.ledger(), account).map_err(|error| {
             serial!("PROCESS_THREAD_ADMISSION_REFUSED: {error}");
             error.status()
@@ -234,69 +234,47 @@ impl Manager
         }
         info.name[..name.len()].copy_from_slice(name.as_bytes());
         info.name_length = name.len() as u32;
-        let cleanup =
-            crate::toolbox::handles::cleanup::Checkpoint::try_new().map_err(|_| NO_MEMORY)?;
-        let ledger = OwnerIndex::issue(DomainKind::Process).map_err(|error| {
-                                                               serial!("PROCESS_DOMAIN_REFUSED: \
-                                                                        {error}");
-                                                               NO_MEMORY
-                                                           })?;
+        use mac_kernel_model::policy::ConfiguredRange;
+
+        use crate::machine::{memory,
+                             scheduler::accounting::{ProcessAccount, account_status}};
+        let ledger = OwnerRef::issue(DomainKind::Process).map_err(|error| {
+                                                             serial!("PROCESS_DOMAIN_REFUSED: \
+                                                                      {error}");
+                                                             NO_MEMORY
+                                                         })?;
         let id = ledger.owner().incarnation();
         info.id = id;
+        let kernel =
+            ConfiguredRange::new(0,
+                                 memory::PROCESS_KERNEL_BUDGET_BYTES,
+                                 memory::PROCESS_KERNEL_BUDGET_BYTES).map_err(|_| BAD_ABI)?;
+        let application =
+            ConfiguredRange::new(0,
+                                 memory::PROCESS_APPLICATION_BUDGET_BYTES,
+                                 memory::PROCESS_APPLICATION_BUDGET_BYTES).map_err(|_| BAD_ABI)?;
+        let account =
+            ProcessAccount::try_new(ledger.clone(), kernel, application).map_err(|error| {
+                serial!("PROCESS_ACCOUNT_REFUSED: {error}");
+                account_status(&error)
+            })?;
+        let allocation = account.admit_use().map_err(|error| account_status(&error))?;
+        let cleanup = crate::allocator::with_target(crate::allocator::Target::Owner {
+            account: allocation, class: mac_kernel_model::policy::MemoryClass::Kernel
+        }, || crate::toolbox::handles::cleanup::Checkpoint::try_new()).map_err(|_| NO_MEMORY)?;
+        // Only a fully constructed owner/account/checkpoint is published. The
+        // directory scopes its retained shared vector independently.
         self.entries
             .insert(ledger,
                     Process { info,
                               image: None,
                               stamp: 0,
-                              cleanup,
-                              account: None })
+                              cleanup: Some(cleanup),
+                              account })
             .map_err(|error| {
                 serial!("PROCESS_DOMAIN_REFUSED: {error}");
                 NO_MEMORY
             })?;
-        let account = (|| {
-            use mac_kernel_model::policy::ConfiguredRange;
-
-            use crate::machine::{memory,
-                                 scheduler::accounting::{ProcessAccount, account_status}};
-            // These selected caps come from the checked platform record. They
-            // are not physical reservations or claims about uncharged heaps.
-            let kernel =
-                ConfiguredRange::new(0,
-                                     memory::PROCESS_KERNEL_BUDGET_BYTES,
-                                     memory::PROCESS_KERNEL_BUDGET_BYTES).map_err(|_| BAD_ABI)?;
-            let application =
-                ConfiguredRange::new(0,
-                                     memory::PROCESS_APPLICATION_BUDGET_BYTES,
-                                     memory::PROCESS_APPLICATION_BUDGET_BYTES).map_err(|_| {
-                                                                                  BAD_ABI
-                                                                              })?;
-            let ledger = self.ledger(id)?;
-            ProcessAccount::try_new(ledger, kernel, application).map_err(|error| {
-                serial!("PROCESS_ACCOUNT_REFUSED: {error}");
-                account_status(&error)
-            })
-        })();
-        match account
-        {
-            Ok(account) => self.get_mut(id)?.account = Some(account),
-            Err(status) =>
-            {
-                // No thread or app resource has been published. If even this
-                // empty-record rollback refuses, retain its stopped owner for
-                // the existing retirement walk instead of losing authority.
-                if let Err(error) = self.entries.stop_admission(id)
-                {
-                    serial!("PROCESS_ACCOUNT_ROLLBACK_STOP_REFUSED: {error}");
-                }
-                if let Err(error) = self.entries.remove(id)
-                {
-                    serial!("PROCESS_ACCOUNT_ROLLBACK_RETAINED: {error}");
-                    retirement::resources_released();
-                }
-                return Err(status);
-            }
-        }
         Ok(id)
     }
 
@@ -343,7 +321,50 @@ impl Manager
         &self, id: u64)
         -> Result<crate::toolbox::handles::cleanup::Checkpoint, Status>
     {
-        self.entries.get(id).map(|entry| entry.value().cleanup.clone()).ok_or(NOT_FOUND)
+        self.entries.get(id).ok_or(NOT_FOUND)?.value().cleanup.clone().ok_or(SERVICE_BUSY)
+    }
+
+    pub(crate) fn allocation(
+        &self, id: u64)
+        -> Result<crate::machine::scheduler::accounting::AllocationAuthority, Status>
+    {
+        self.get(id)?
+            .account
+            .admit_use()
+            .map_err(|error| crate::machine::scheduler::accounting::account_status(&error))
+    }
+
+    pub(super) fn cleanup_drained(&self, id: u64) -> Result<bool, Status>
+    {
+        Ok(self.get(id)?.cleanup.is_none())
+    }
+
+    /// Called after cleanup has settled and the saved managers are parked.
+    /// The caller then destroys them before checking the account barrier.
+    /// Removing this ready checkpoint is irreversible; retries wait on receipts.
+    pub(super) fn drain_checkpoint(&mut self, id: u64) -> Result<(), Status>
+    {
+        if crate::machine::scheduler::has_threads(id)
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let ledger = self.ledger(id)?;
+        let remaining = ledger.summary();
+        if ledger.accepting()
+           || remaining.live != 0
+           || remaining.pending != 0
+           || remaining.quarantined != 0
+           || remaining.completion_faults != 0
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let process = self.get_mut(id)?;
+        if let Some(checkpoint) = &process.cleanup
+        {
+            checkpoint.ensure_settled().map_err(|_| SERVICE_BUSY)?;
+        }
+        drop(process.cleanup.take());
+        Ok(())
     }
 
     pub fn remove(&mut self, id: u64) -> Result<(), Status>
@@ -354,7 +375,7 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        if self.cleanup_checkpoint(id)?.ensure_settled().is_err()
+        if self.get(id)?.cleanup.is_some()
         {
             return Err(SERVICE_BUSY);
         }
@@ -363,6 +384,7 @@ impl Manager
             match error
             {
                 DirectoryError::NotFound { .. } => NOT_FOUND,
+                DirectoryError::Duplicate { .. } => BAD_ARGUMENT,
                 DirectoryError::AdmissionOpen { .. }
                 | DirectoryError::LiveResources { .. }
                 | DirectoryError::PendingResources { .. }
@@ -382,8 +404,22 @@ impl Manager
         // A cancelled preparation or retained thread reader can outlive its
         // ordinary scheduler ID. The account's original receipts are part of
         // the domain's death barrier, including zero-byte reservations.
-        if self.get(id)?.account.as_ref().is_some_and(|account| !account.close_and_ready())
+        let account = &self.get(id)?.account;
+        let was_closing = account.snapshot().closing;
+        if !account.close_and_ready()
         {
+            if !was_closing
+            {
+                let remaining = account.snapshot();
+                serial!("PROCESS_ACCOUNT_WAIT app={id} kernel_committed={} kernel_reserved={} \
+                         application_committed={} application_reserved={} retained_pins={}; \
+                         cleanup and stacks are drained, waiting for original allocations or uses",
+                        remaining.kernel.committed(),
+                        remaining.kernel.reserved(),
+                        remaining.application.committed(),
+                        remaining.application.reserved(),
+                        remaining.retained_pins);
+            }
             return Err(SERVICE_BUSY);
         }
         self.entries.remove(id).map(|_| ()).map_err(retirement_error)

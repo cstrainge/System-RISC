@@ -149,7 +149,7 @@ fn foreign_registrations_cannot_dispatch_an_equal_kind_and_refusal_keeps_the_tic
 fn dropping_a_busy_registry_quarantines_its_root_instead_of_faking_domain_cleanup()
 {
     let mut directory = Directory::<(), Gate>::new();
-    let id = directory.insert(OwnerIndex::issue(DomainKind::Module).unwrap(), ()).unwrap();
+    let id = directory.insert(OwnerRef::issue(DomainKind::Module).unwrap(), ()).unwrap();
     let registrar = directory.get(id.incarnation()).unwrap().ledger().clone();
     let subject = owner(DomainKind::Process);
     let mut registry = Registry::<Context, Gate>::new();

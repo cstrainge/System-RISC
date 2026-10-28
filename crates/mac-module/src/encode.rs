@@ -35,7 +35,8 @@ impl Spec<'_>
             }
             length = length.checked_add(count * size).ok_or(Error::Limit)?;
         }
-        for (text, limit) in [(self.name, 128), (self.version, 64), (self.provenance, 128)]
+        for (text, limit) in
+            [(self.name, crate::MAX_NAME_BYTES), (self.version, 64), (self.provenance, 128)]
         {
             if text.len() > limit
             {

@@ -23,10 +23,13 @@ pub(crate) fn status(error: Error) -> mac_abi::Status
         Error::Owner(error) => crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error)),
         Error::Domain(mac_object_table::domain::DirectoryError::Storage { .. }) => NO_MEMORY,
         Error::Domain(mac_object_table::domain::DirectoryError::NotFound { .. }) => NOT_FOUND,
+        Error::Domain(mac_object_table::domain::DirectoryError::Duplicate { .. }) => BAD_ARGUMENT,
         Error::Domain(_) => SERVICE_BUSY,
         Error::Access | Error::RequestSubject | Error::RequestParent => ACCESS_DENIED,
-        Error::Busy | Error::State | Error::DependencyInUse { .. } | Error::BackingInUse { .. } | Error::Cleanup(_) => SERVICE_BUSY,
+        Error::Busy | Error::AccountPending { .. } | Error::State | Error::DependencyInUse { .. } | Error::BackingInUse { .. } | Error::Cleanup(_) => SERVICE_BUSY,
         Error::Exhausted => NO_MEMORY,
+        Error::Account(error) => crate::allocation::account_status(&error),
+        Error::AllocationScope(status) => status,
         Error::Contract(_) => BAD_ABI,
         Error::Duplicate | Error::Exclusive => BAD_ARGUMENT
     }

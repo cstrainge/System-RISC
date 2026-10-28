@@ -136,7 +136,7 @@ impl Default for Pool
 
 /// Accounting coverage is separate from the completeness of handle ledgers.
 pub const ACCOUNT_UNAVAILABLE: u32 = 0;
-pub const ACCOUNT_STACK_CPU_ONLY: u32 = 1;
+pub const ACCOUNT_EXECUTION_RESIDENT_HEAP: u32 = 1;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AccountUsage
@@ -176,7 +176,7 @@ pub struct Domain
     pub name:              [u8; crate::INLINE_STRING_BYTES],
     pub name_length:       u32,
     pub reserved:          u32,
-    /// Real account counters; current coverage is execution backing only.
+    /// Real account counters; execution backing and attributed resident heap only.
     pub account:           Account
 }
 impl Default for Domain

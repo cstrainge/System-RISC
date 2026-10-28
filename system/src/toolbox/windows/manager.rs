@@ -8,10 +8,11 @@ use core::cell::{Cell, RefCell};
 
 pub use mac_abi::WindowId;
 use mac_abi::{BAD_ARGUMENT, DefinitionCall, DefinitionEntry, Header, NOT_FOUND, Status, Surface};
+use mac_object_table::shared::InvocationGate as _;
 
 use super::definition::{self, WindowDefinitionState};
 use crate::toolbox::{events::*,
-                     handles::{KindLease, OwnerRef, Store, cleanup::Failure},
+                     handles::{InvocationGate, KindLease, OwnerRef, Store, cleanup::Failure},
                      quickdraw::{Canvas, Point, Rect, SurfaceExt,
                                  geometry::{sect_rect, union_rect},
                                  presentation::{Outline, indexed_tracking_xor},
@@ -645,17 +646,21 @@ impl WindowManager
         {
             return Err(CreationError::InvalidRequest);
         }
-        self.visibility
-            .get_mut()
-            .prepare(self.len.checked_add(1).ok_or(CreationError::NoMemory)?)
-            .map_err(|_| CreationError::NoMemory)?;
-        self.order.try_reserve(1).map_err(|_| CreationError::NoMemory)?;
-        self.order_scratch
-            .try_reserve((self.len + 1).saturating_sub(self.order_scratch.len()))
-            .map_err(|_| CreationError::NoMemory)?;
-        self.geometry_order
-            .try_reserve((self.len + 1).saturating_sub(self.geometry_order.len()))
-            .map_err(|_| CreationError::NoMemory)?;
+        // These arrays index all owners. Only their capacity is System-owned;
+        // the subsequent Window and owner Store backing retain caller charges.
+        InvocationGate::with_system_allocation(|| {
+            self.visibility
+                .get_mut()
+                .prepare(self.len.checked_add(1).ok_or(CreationError::NoMemory)?)
+                .map_err(|_| CreationError::NoMemory)?;
+            self.order.try_reserve(1).map_err(|_| CreationError::NoMemory)?;
+            self.order_scratch
+                .try_reserve((self.len + 1).saturating_sub(self.order_scratch.len()))
+                .map_err(|_| CreationError::NoMemory)?;
+            self.geometry_order
+                .try_reserve((self.len + 1).saturating_sub(self.geometry_order.len()))
+                .map_err(|_| CreationError::NoMemory)
+        })?;
         let previous = self.active;
         let mut window = Window { id: WindowId(0),
                                   initialized: false,
@@ -679,7 +684,8 @@ impl WindowManager
                                   hidden: false,
                                   updating: false };
         self.retry_retained_quarantines();
-        self.retained_failures.try_reserve(self.len + 1).map_err(|_| CreationError::NoMemory)?;
+        InvocationGate::with_system_allocation(|| self.retained_failures.try_reserve(self.len + 1))
+            .map_err(|_| CreationError::NoMemory)?;
         let id = WindowId(self.windows
                               .insert_with(owner, |id| {
                                   window.id = WindowId(id);
@@ -1848,7 +1854,7 @@ impl WindowManager
         }
         else
         {
-            if owned.try_reserve_exact(count).is_err()
+            if InvocationGate::with_system_allocation(|| owned.try_reserve_exact(count)).is_err()
             {
                 return;
             }

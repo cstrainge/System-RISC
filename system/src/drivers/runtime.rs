@@ -142,6 +142,12 @@ pub(crate) fn module_authority(module: u64) -> Result<crate::toolbox::handles::O
            .map_err(crate::state::AccessError::status)?
 }
 
+pub(crate) fn module_allocation(module: u64) -> Result<super::registry::ModuleAllocation, Status>
+{
+    RUNTIME.with(|runtime| runtime.registry.module_allocation(module).map_err(status))
+           .map_err(crate::state::AccessError::status)?
+}
+
 pub(crate) fn provider_module(interface: u64) -> Result<u64, Status>
 {
     RUNTIME.with(|runtime| {
@@ -203,7 +209,7 @@ pub(crate) fn initialize(arena: core::ops::Range<u64>, target: Target) -> Result
                         registry.get(crate::toolbox::handles::KindCode(*b"DRQS"))?])
                 }).map_err(|error| error.status())?
                   .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
-    RUNTIME.publish(Runtime { registry:  Registry::new(target, owner, kinds).map_err(status)?,
+    RUNTIME.publish(Runtime { registry:  Registry::new(target, owner, kinds, crate::machine::memory::MODULE_KERNEL_BUDGET_BYTES).map_err(status)?,
                               bindings:  Vec::new(),
                               residents: Vec::new(),
                               next:      arena.start,
@@ -251,7 +257,7 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
                    let module = runtime.registry
                                        .stage(package.contract, directory, file_type)
                                        .map_err(status)?;
-                   if let Err(error) = runtime.registry.install_file_handlers(module, rules)
+                   if let Err(error) = runtime.registry.install_file_handlers(module, &rules)
                    {
                        if let Err(cleanup) = runtime.registry.rollback(module)
                        {
@@ -310,8 +316,12 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
     // This result reaches the same rollback path even if admission or context
     // installation fails before any foreign code executes.
     let result = module_authority(module).and_then(|owner| {
+                                             let allocation = crate::allocation::Target::Owner {
+            account: module_allocation(module)?,
+            class: mac_kernel_model::policy::MemoryClass::Kernel
+        };
                                              super::jobs::subjects::resident()?.admit(
-            &crate::toolbox::handles::subject::Authority::Client(owner))
+            &crate::toolbox::handles::subject::Authority::Client(owner), allocation)
                                          })
                                          .and_then(|subject| {
                                              crate::context::with_io_subject(subject, || unsafe {
@@ -402,8 +412,20 @@ unsafe fn invoke_origin(origin: super::registry::requests::Origin, caller: u64, 
     {
         module_authority(caller)?
     };
-    let subject = super::jobs::subjects::resident()?.admit(
-        &crate::toolbox::handles::subject::Authority::Client(owner))?;
+    let authority = crate::toolbox::handles::subject::Authority::Client(owner);
+    let subject = if caller == 0
+    {
+        // Resident requests retain the actual executor's original allocation
+        // selection. The broker's numeric caller label grants no account.
+        super::jobs::subjects::resident()?.admit_current(&authority)?
+    }
+    else
+    {
+        super::jobs::subjects::resident()?.admit(&authority, crate::allocation::Target::Owner {
+            account: module_allocation(caller)?,
+            class: mac_kernel_model::policy::MemoryClass::Kernel
+        })?
+    };
     crate::context::with_io_subject(subject.clone(), || {
         unsafe {
             invoke_scoped(origin,
@@ -782,25 +804,30 @@ fn enqueue_job(subject: super::jobs::subjects::Subject, owner: super::jobs::Owne
                version: u32, operation: u32, input: Vec<u8>, output_bytes: usize)
                -> Result<OwnedJob, Status>
 {
-    let provider = match owner
-    {
-        super::jobs::Owner::Module(module) =>
+    let allocation = subject.allocation().clone();
+    crate::allocator::with_target(allocation, || {
+        let provider = match owner
         {
-            RUNTIME.with(|runtime| {
-                       runtime.registry.resolve(u64::from(module), class, version).map_err(status)
-                   })
-                   .map_err(crate::state::AccessError::status)??
-        }
-        _ => resolve_kernel(class, version)?
-    };
-    let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
-    let queue = &JOBS;
-    let (id, receipt) =
-        queue.submit(&subject, owner, work).map_err(|error| error.status)?.into_parts();
-    Ok(OwnedJob { owner,
-                  id,
-                  receipt,
-                  subject })
+            super::jobs::Owner::Module(module) =>
+            {
+                RUNTIME.with(|runtime| {
+                           runtime.registry
+                                  .resolve(u64::from(module), class, version)
+                                  .map_err(status)
+                       })
+                       .map_err(crate::state::AccessError::status)??
+            }
+            _ => resolve_kernel(class, version)?
+        };
+        let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
+        let queue = &JOBS;
+        let (id, receipt) =
+            queue.submit(&subject, owner, work).map_err(|error| error.status)?.into_parts();
+        Ok(OwnedJob { owner,
+                      id,
+                      receipt,
+                      subject })
+    })
 }
 
 pub(crate) fn release_job(ticket: mac_object_table::domain::ReleasedResource, storage: bool)
@@ -1019,7 +1046,7 @@ pub fn submit_job(class: ClassId, version: u32, operation: u32, input: Vec<u8>,
     {
         return Err(WRONG_THREAD);
     }
-    let subject = super::jobs::subjects::resident()?.admit(
+    let subject = super::jobs::subjects::resident()?.admit_current(
         &crate::toolbox::handles::subject::Authority::Client(crate::context::current_owner()?))?;
     enqueue_job(subject,
                 super::jobs::Owner::Thread(thread.0),
@@ -1036,27 +1063,30 @@ pub(crate) fn submit_background_to(subject: &super::jobs::subjects::Subject, pro
                                    output_bytes: usize)
                                    -> Result<OwnedJob, Status>
 {
-    RUNTIME.with(|runtime| {
-               let interface = runtime.registry.interface(provider).map_err(status)?;
-               if interface.offer.class != class
-                  || interface.offer.version != version
-                  || input.len() > interface.offer.max_request as usize
-                  || output_bytes > interface.offer.max_reply as usize
-               {
-                   return Err(BAD_ARGUMENT);
-               }
-               Ok(())
-           })
-           .map_err(crate::state::AccessError::status)??;
-    let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
-    let queue = &JOBS;
-    let (id, receipt) = queue.submit(subject, super::jobs::Owner::Kernel, work)
-                             .map_err(|error| error.status)?
-                             .into_parts();
-    Ok(OwnedJob { owner: super::jobs::Owner::Kernel,
-                  id,
-                  receipt,
-                  subject: subject.clone() })
+    let allocation = subject.allocation().clone();
+    crate::allocator::with_target(allocation, || {
+        RUNTIME.with(|runtime| {
+                   let interface = runtime.registry.interface(provider).map_err(status)?;
+                   if interface.offer.class != class
+                      || interface.offer.version != version
+                      || input.len() > interface.offer.max_request as usize
+                      || output_bytes > interface.offer.max_reply as usize
+                   {
+                       return Err(BAD_ARGUMENT);
+                   }
+                   Ok(())
+               })
+               .map_err(crate::state::AccessError::status)??;
+        let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
+        let queue = &JOBS;
+        let (id, receipt) = queue.submit(subject, super::jobs::Owner::Kernel, work)
+                                 .map_err(|error| error.status)?
+                                 .into_parts();
+        Ok(OwnedJob { owner: super::jobs::Owner::Kernel,
+                      id,
+                      receipt,
+                      subject: subject.clone() })
+    })
 }
 
 pub(crate) fn abandon_deferred_job(thread: u64, id: u64)

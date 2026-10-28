@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 
 use mac_object_table::{domain::ReleasedResource,
                        registry::{Source, Specification},
+                       shared::InvocationGate as _,
                        store};
 use spinning_top::{Spinlock, SpinlockGuard};
 
@@ -99,10 +100,10 @@ impl Records
     pub(super) fn insert(&mut self, subject: &subjects::Subject, value: Value)
                          -> Result<store::Publication, Status>
     {
-        self.receipts.try_reserve(1).map_err(|_| NO_MEMORY)?;
-        self.retiring
-            .try_reserve(self.receipts.len() + 1 - self.retiring.len())
-            .map_err(|_| NO_MEMORY)?;
+        InvocationGate::with_system_allocation(|| {
+            self.receipts.try_reserve(1)?;
+            self.retiring.try_reserve(self.receipts.len() + 1 - self.retiring.len())
+        }).map_err(|_| NO_MEMORY)?;
         let publication = self.store
                               .as_mut()
                               .ok_or(mac_abi::NOT_SUPPORTED)?

@@ -50,15 +50,15 @@ fn menu(system: &System<'_>) -> Result<()>
 }
 
 type Result<T> = core::result::Result<T, Failure>;
-/// The public row counts only actual stack and saved CPU backing. Physical
-/// byte extents are independently correlated with scheduler traces by Rust's
-/// host acceptance; no heap or process-isolation claim follows from this row.
+/// Read actual execution and attributed resident allocation counters through
+/// guest ECALLs. Private application heaps and image pages remain excluded.
 fn execution_account(system: &System<'_>, row: mac_toolbox::inspection::Domain, actor: &str)
                      -> Result<(u64, u64)>
 {
-    let mac_toolbox::inspection::MemoryAccounting::StackAndCpuOnly { kernel,
-                                                                     application,
-                                                                     closing } = row.accounting
+    let mac_toolbox::inspection::MemoryAccounting::ExecutionAndResidentHeap { kernel,
+                                                                              application,
+                                                                              closing } =
+        row.accounting
     else
     {
         return Err(Failure::Contract("real process execution accounting unavailable"));
@@ -75,7 +75,7 @@ fn execution_account(system: &System<'_>, row: mac_toolbox::inspection::Domain, 
     use core::fmt::Write;
     let _ = writeln!(line,
                      "PROCESS_EXECUTION_ACCOUNT actor={actor} app={} kernel={} application={} \
-                      coverage=stack-cpu-only",
+                      coverage=execution-resident-heap",
                      row.incarnation, kernel.committed, application.committed);
     system.log(line.text())?;
     Ok((kernel.committed, application.committed))
@@ -343,7 +343,7 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
             && me.foreground == true,
             "trusted observer identity")?;
     require(processes.count()? == 1, "initial process count")?;
-    let observer_account = own_execution_account(system, "observer")?;
+    own_execution_account(system, "observer")?;
     resource(system, "process-observer")?;
     menu(system)?;
     let mut handle = system.memory().handle_from_bytes(b"observer-owned memory")?;
@@ -511,7 +511,10 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
         system.events().post(Event { kind: EventKind::Application1,
                                       message: 0x1111aaaa,
                                       ..Default::default() }.into())?;
+        let observer_account = own_execution_account(system, "observer-before-child")?;
         let child = processes.launch(volume, worker.id)?;
+        require(own_execution_account(system, "observer-after-launch")? == observer_account,
+                "child admission retained backing in the launching account")?;
         image_lifetimes::string(system,
                                 child.image
                                      .ok_or(Failure::Contract("worker image alias missing"))?,
@@ -545,8 +548,7 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
         require(processes.count()? == 2, "live worker count")?;
         let row = observed_execution_domain(system, child.id)?.ok_or(Failure::Contract("running child account missing"))?;
         execution_account(system, row, "observed-worker")?;
-        require(own_execution_account(system, "observer-live-child")? == observer_account,
-                "child backing charged to observer account")?;
+        own_execution_account(system, "observer-live-child")?;
         let mut child_window = None;
         wait(system, || {
             let mut bytes = [0; 64];
@@ -672,6 +674,9 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
                 "observer window ownership survived switching")?;
         system.events().flush(mac_toolbox::events::EventMask::from_bits_retain(activation_mask),
                                mac_toolbox::events::EventMask::from_bits_retain(0))?;
+        // From here until exit we only poll existing state. The child's cleanup
+        // must refund its original receipts without changing our account.
+        let before_exit = own_execution_account(system, "observer-before-exit")?;
         system.log(if round == 0
                    {
                        "PROCESS_READY_FOR_INPUT_1\n"
@@ -689,7 +694,7 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
         // row need not survive long enough to be observed; disappearance after
         // a positive live row proves its real receipt barrier completed.
         wait(system, || Ok(observed_execution_domain(system, child.id)?.is_none()))?;
-        require(own_execution_account(system, "observer-retired-child")? == observer_account,
+        require(own_execution_account(system, "observer-retired-child")? == before_exit,
                 "child refund altered observer account")?;
         let mut retired = crate::LogBuffer::new();
         let _ = writeln!(retired,

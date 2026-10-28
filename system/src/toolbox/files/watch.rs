@@ -13,8 +13,9 @@ pub(crate) mod lifetime;
 
 struct ProbeState
 {
-    owner:  OwnerRef,
-    active: AtomicBool
+    owner:      OwnerRef,
+    active:     AtomicBool,
+    allocation: crate::allocation::Target
 }
 pub(crate) struct ProbeLease
 {
@@ -62,7 +63,8 @@ impl Watches
         let objects = self.objects.as_mut().ok_or(NOT_SUPPORTED)?;
         // Reserve cleanup capacity before publication, never while the owner
         // walk is retaining a provider probe's already-invalidated payload.
-        self.retiring.try_reserve(live + 1).map_err(|_| NO_MEMORY)?;
+        InvocationGate::with_system_allocation(|| self.retiring.try_reserve(live + 1))
+            .map_err(|_| NO_MEMORY)?;
         objects.insert(owner, watch).map_err(crate::toolbox::handles::projection_status)
     }
 
@@ -229,7 +231,8 @@ impl Manager
         {
             watch.probe =
                 Some(Arc::try_new(ProbeState { owner:  owner.clone(),
-                                               active: AtomicBool::new(false) }).map_err(|_| {
+                                               active: AtomicBool::new(false),
+                                               allocation: crate::allocation::capture_target()? }).map_err(|_| {
                                                                                     NO_MEMORY
                                                                                 })?);
         }
@@ -302,7 +305,9 @@ impl Manager
                 };
                 let probe = if probes
                 {
-                    Some(Arc::try_new(ProbeState { owner: caller.owner.clone(), active: AtomicBool::new(false) }).map_err(|_| NO_MEMORY)?)
+                    Some(Arc::try_new(ProbeState { owner: caller.owner.clone(),
+                                                   active: AtomicBool::new(false),
+                                                   allocation: crate::allocation::capture_target()? }).map_err(|_| NO_MEMORY)?)
                 }
                 else
                 {
@@ -764,7 +769,7 @@ mod background
             return;
         };
         let submitted = crate::drivers::jobs::subjects::resident()
-            .and_then(|operations| operations.admit(&crate::toolbox::handles::subject::Authority::Client(lease.state.owner.clone())))
+            .and_then(|operations| operations.admit(&crate::toolbox::handles::subject::Authority::Client(lease.state.owner.clone()), lease.state.allocation.clone()))
             .and_then(|subject| provider::runtime::submit_args(&subject, provider,
                                                         Operation::CheckDirectory,
                                                         Arguments { volume: lease.volume,

@@ -4,7 +4,7 @@
 use alloc::sync::Arc;
 
 use super::*;
-use crate::toolbox::handles::OwnerRef;
+use crate::toolbox::handles::{InvocationGate, OwnerRef};
 pub(crate) mod lifetime;
 mod model;
 mod plan;
@@ -162,10 +162,20 @@ fn reserve(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSourc
     {
         return Err(BAD_ARGUMENT);
     }
+    // Both native and classic bridge admission arrive here on their actual
+    // executor. Retain that authentic account with the transfer's resource root
+    // before maintenance later runs on a different allocation selection.
+    let allocation = crate::allocation::capture_target()?;
+    let account_owner = allocation.owner();
+    if account_owner != authority.owner()
+    {
+        return Err(ACCESS_DENIED);
+    }
     let reservation=mac_object_table::scope::Reservation::try_new(&authority,crate::toolbox::handles::KindCode(*b"FTXN"))
         .map_err(|error|crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error)))?;
     let scope = reservation.lease();
-    let mut state = Box::try_new(State::new(call, sources, scope.clone())?).map_err(|_| NO_MEMORY)?;
+    let mut state =
+        Box::try_new(State::new(call, sources, scope.clone(), allocation.clone())?).map_err(|_| NO_MEMORY)?;
     state.put_away = bridge.is_some_and(|key| key.operation == PUT_AWAY);
     if let Some(key) = bridge.filter(|_| query)
     {
@@ -199,7 +209,9 @@ fn reserve(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSourc
             }
         }
         m.transfers.reserve().map_err(|_| NO_MEMORY)?;
-        PARKED.lock().try_reserve(1).map_err(|_| NO_MEMORY)?;
+        InvocationGate::with_system_allocation(|| PARKED.lock().try_reserve(1)).map_err(|_| {
+                                                                                   NO_MEMORY
+                                                                               })?;
         let handle =
             m.transfers.insert_root(reservation, |handle| {
                             state.handle = handle;
@@ -225,6 +237,28 @@ fn reserve(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSourc
                                                                    notice_pending: false }) }
                         })?;
 
+        // The actual FTXN root is now published. Bind its continuation authority
+        // before any external I/O can run; a stopped owner may finish this root
+        // without gaining ordinary allocation or namespace admission.
+        let scoped = match allocation.in_scope(&scope)
+        {
+            Ok(scoped) => scoped,
+            Err(error) =>
+            {
+                // No provider operation or mutation has been submitted. This
+                // resident-only failed preparation can close and dispose now.
+                m.transfers.completing(handle).ok_or(BAD_ABI)?.record.lock().closed = true;
+                m.transfers.remove(handle).ok_or(NOT_FOUND)?;
+                return Err(crate::allocation::account_status(&error));
+            }
+        };
+        let previous = {
+            let entry = m.transfers.completing(handle).ok_or(BAD_ABI)?;
+            let mut record = entry.record.lock();
+            let state = record.state.as_mut().ok_or(BAD_ABI)?;
+            core::mem::replace(&mut state.allocation, scoped)
+        };
+        drop(previous);
         Ok(handle)
     })?;
     call.handle = handle;
@@ -353,7 +387,10 @@ pub(super) fn pump()
         {
             continue;
         };
-        state.advance();
+        // This includes parked retries and asynchronous provider completion.
+        // Scope alone authorizes resource access; allocation must also retain
+        // this same original account rather than the scheduler's System target.
+        crate::allocator::with_target(state.allocation.clone(), || state.advance());
         // A temporary guard failure must not drop an active transaction. The
         // closure borrows the owner; it moves it only after locating its mark.
         let mut owned = Some(state);

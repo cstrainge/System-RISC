@@ -10,6 +10,7 @@ pub mod toolbox;
 pub mod drivers;
 pub(crate) mod state;
 pub(crate) mod context;
+pub(crate) mod allocation;
 #[cfg(target_arch = "riscv64")]
 pub mod kernel;
 #[cfg(target_arch = "riscv64")]
