@@ -1,13 +1,14 @@
 //! Shared owner authority. The selected architecture gate encloses every lock
 //! operation; callers never receive a mutable index or an escaping lock guard.
 use alloc::sync::Arc;
-use core::marker::PhantomData;
+use core::{marker::PhantomData,
+           sync::atomic::{AtomicBool, Ordering}};
 
 use spinning_top::Spinlock;
 
-use crate::domain::{CapacityPolicy, CompletionError, DirectoryError, DomainId, KindCode,
-                    LedgerReadError, LedgerSummary, OwnerIndex, PoolError, PoolSummary,
-                    QuarantineRetry, ReleasedResource, ResourceKey};
+use crate::domain::{CapacityPolicy, CompletionError, DirectoryError, DomainId, DomainKind,
+                    IndexError, KindCode, LedgerReadError, LedgerSummary, OwnerIndex, PoolError,
+                    PoolSummary, QuarantineRetry, ReleasedResource, ResourceKey, UnpublishedIndex};
 
 /// The resident adapter must mask local interrupts/preemption before calling
 /// the closure, and restore the previous state afterward, including nesting.
@@ -18,10 +19,38 @@ pub trait InvocationGate
 {
     fn run<R>(operation: impl FnOnce() -> R) -> R;
 
+    /// Attribute backing for shared resident indexes and System-owned objects
+    /// to the platform's ordinary System allocation authority. This changes
+    /// only new allocations in this bounded operation; existing backing keeps
+    /// its original refund destination. It neither authenticates an owner nor
+    /// opens a ledger lock. Platforms without domain allocation attribution
+    /// use the neutral default.
+    fn with_system_allocation<R>(operation: impl FnOnce() -> R) -> R
+    {
+        operation()
+    }
+
+    /// Attribute only the canonical owner/account authority control blocks to
+    /// System foundation. These establish authority and cannot carry receipts
+    /// from the account they create. Per-domain Claims, ledger arrays, slots
+    /// and payloads are ordinary owner allocations. As above, the neutral
+    /// default supports platforms without domain allocation attribution.
+    fn with_foundation_allocation<R>(operation: impl FnOnce() -> R) -> R
+    {
+        operation()
+    }
+
     /// A stopped ledger has actually completed cleanup. Called after payload
     /// destruction and metadata unlock; the resident adapter may post a cheap,
     /// coalesced retirement wake. This must not allocate or run cleanup itself.
     fn released(_owner: DomainId)
+    {
+    }
+
+    /// A real resource cleanup ACK completed, with payload/pins destroyed and
+    /// all metadata/recycling locks released. The resident adapter may post one
+    /// coalesced service wake; never allocate, scan or run cleanup here.
+    fn resource_released(_owner: DomainId)
     {
     }
 
@@ -99,9 +128,10 @@ impl<G: InvocationGate> OwnerLedger for OwnerRef<G>
 
 struct State<G: InvocationGate>
 {
-    owner: DomainId,
-    index: Spinlock<OwnerIndex>,
-    gate:  PhantomData<fn() -> G>
+    owner:     DomainId,
+    admission: Arc<AtomicBool>,
+    index:     Spinlock<OwnerIndex>,
+    gate:      PhantomData<fn() -> G>
 }
 
 /// Clones refer to the same authoritative ledger, never a new identity issuer.
@@ -119,14 +149,27 @@ impl<G: InvocationGate> Clone for OwnerRef<G>
 }
 impl<G: InvocationGate> OwnerRef<G>
 {
+    /// Allocate the complete shared root before publishing its namespace. A
+    /// backing refusal leaves the unique System issuer available for retry.
+    pub fn issue(kind: DomainKind) -> Result<Self, IndexError>
+    {
+        // Preparation allocates only the admission control block; conversion
+        // below separately scopes its canonical shared root allocation.
+        G::with_foundation_allocation(|| UnpublishedIndex::prepare(kind))?.into_shared()
+    }
+
+    /// Share an already issued index. Issuance remains irreversible even when
+    /// this separate allocation fails; use `issue` to create a new shared root.
     pub fn try_new(index: OwnerIndex) -> Result<Self, DirectoryError>
     {
         let owner = index.owner();
-        let state = Arc::try_new(State { owner,
-                                         index: Spinlock::new(index),
-                                         gate: PhantomData }).map_err(|_| {
-                                                                 DirectoryError::Storage { owner }
-                                                             })?;
+        let admission = index.admission();
+        let state = G::with_foundation_allocation(|| {
+                        Arc::try_new(State { owner,
+                                             admission,
+                                             index: Spinlock::new(index),
+                                             gate: PhantomData })
+                    }).map_err(|_| DirectoryError::Storage { owner })?;
         Ok(Self { state })
     }
 
@@ -199,6 +242,7 @@ impl<G: InvocationGate> OwnerRef<G>
 
     pub(crate) fn notify_retirement(&self)
     {
+        G::resource_released(self.owner());
         if !self.accepting()
         {
             G::released(self.owner());
@@ -263,7 +307,17 @@ impl<G: InvocationGate> OwnerRef<G>
 
     pub fn accepting(&self) -> bool
     {
-        self.access(|index| index.accepting())
+        self.state.admission.load(Ordering::Acquire)
+    }
+
+    /// Release empty stopped-owner ledger storage before an account's death
+    /// barrier. Destruction/refunds occur after the invocation lock is released.
+    /// Retrying after a successful drain is harmless and never reopens admission.
+    pub fn drain_stopped(&self) -> Result<(), DirectoryError>
+    {
+        let pools = self.access(OwnerIndex::drain_stopped)?;
+        drop(pools);
+        Ok(())
     }
 
     pub fn invalidate_next(&self) -> Option<ReleasedResource>
@@ -294,6 +348,8 @@ impl<G: InvocationGate> OwnerRef<G>
 
     pub(crate) fn retire(&self) -> Result<(), DirectoryError>
     {
-        self.access(OwnerIndex::retire)
+        let pools = self.access(OwnerIndex::retire)?;
+        drop(pools);
+        Ok(())
     }
 }

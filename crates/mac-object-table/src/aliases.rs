@@ -251,12 +251,14 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         }
         else
         {
-            let publication = self.objects
-                                  .insert_with_receipt(&self.system, |_| {
-                                      Object { value,
-                                               references: AtomicUsize::new(0) }
-                                  })
-                                  .map_err(Error::Pool)?;
+            // The target and its object-store metadata belong to System.
+            // Moving value does not reattribute backing allocated by its caller.
+            let publication = G::with_system_allocation(|| {
+                                  self.objects.insert_with_receipt(&self.system, |_| {
+                                                  Object { value,
+                                                           references: AtomicUsize::new(0) }
+                                              })
+                              }).map_err(Error::Pool)?;
             let (id, completion) = publication.into_parts();
             (id, completion, true)
         };
@@ -283,7 +285,9 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
             return Err(Error::Pool(PoolError::Stopping { owner: self.system.owner() }));
         }
         let live = self.aliases.stored_len();
-        self.deferred.try_reserve(live.saturating_add(1)).map_err(|_| {
+        // One shared retirement array holds aliases from every domain; the
+        // individual alias insert below remains charged to its original owner.
+        G::with_system_allocation(|| self.deferred.try_reserve(live.saturating_add(1))).map_err(|_| {
                                                               Error::Pool(PoolError::Storage {
             owner: owner.owner(), kind: self.alias_kind, used: live,
             requested_slots: live.saturating_add(1), limit: None })

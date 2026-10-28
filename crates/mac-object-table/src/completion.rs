@@ -1,8 +1,10 @@
 //! Allocation-free cleanup refusal retention. A reservation is allocated before
 //! publication, never while absorbing failure. Tickets and registration pins
 //! remain owned until actual completion; an interrupted destructor is not retried.
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Arc};
 use core::fmt;
+
+use spinning_top::Spinlock;
 
 use crate::{domain::{CompletionError, OwnerIndex, PoolError, ReleasedResource, ResourceKey},
             registry::Use,
@@ -67,12 +69,14 @@ impl core::error::Error for Fault
 
 pub(crate) struct Record
 {
-    key:        Option<ResourceKey>,
-    ticket:     Option<ReleasedResource>,
-    projection: Option<crate::projected::ProjectionRelease>,
-    usage:      Option<Use>,
-    cause:      Cause,
-    next:       Option<Box<Record>>
+    key:             Option<ResourceKey>,
+    ticket:          Option<ReleasedResource>,
+    projection:      Option<crate::projected::ProjectionRelease>,
+    usage:           Option<Use>,
+    cause:           Cause,
+    next:            Option<Box<Record>>,
+    recycle:         Option<Arc<Recycling>>,
+    acknowledgement: Option<crate::store::AcknowledgementPin>
 }
 impl Record
 {
@@ -82,24 +86,115 @@ impl Record
                      cause: self.cause })
     }
 }
-pub(crate) struct Reserve(Box<Record>);
+// The sole preallocated completion record returns here only after destruction
+// and the authoritative ledger ACK. A refusal/interrupted destructor keeps it
+// in the existing owner quarantine, so the publisher remains unavailable.
+pub(crate) struct Recycling
+{
+    record: Spinlock<Option<Box<Record>>>,
+    give:   fn(&Spinlock<Option<Box<Record>>>, Box<Record>)
+}
+impl Recycling
+{
+    pub(crate) fn try_new<G: InvocationGate>() -> Result<Arc<Self>, alloc::alloc::AllocError>
+    {
+        let mut reserve = Reserve::try_new()?;
+        Arc::try_new(Self { record: Spinlock::new(reserve.0.take()),
+                            give:   give::<G> })
+    }
+
+    pub(crate) fn ready<G: InvocationGate>(&self) -> bool
+    {
+        G::run(|| self.record.lock().is_some())
+    }
+
+    pub(crate) fn take<G: InvocationGate>(self: &Arc<Self>) -> Option<Reserve>
+    {
+        G::run(|| {
+            let mut record = self.record.lock().take()?;
+            record.recycle = Some(self.clone());
+            Some(Reserve(Some(record)))
+        })
+    }
+}
+fn give<G: InvocationGate>(destination: &Spinlock<Option<Box<Record>>>, record: Box<Record>)
+{
+    G::run(|| {
+        let mut slot = destination.lock();
+        debug_assert!(slot.is_none(), "one reserved completion record has one return destination");
+        if slot.is_none()
+        {
+            *slot = Some(record);
+        }
+    });
+}
+
+// Completion records which have already received the real ledger ACK may be
+// dropped by the walk outside the metadata lock. Its existing drop sites need
+// no callbacks, allocations or knowledge of the reserved publisher.
+pub(crate) struct Completed(Option<Box<Record>>);
+impl Drop for Completed
+{
+    fn drop(&mut self)
+    {
+        if let Some(record) = self.0.take()
+        {
+            finish(record);
+        }
+    }
+}
+
+pub(crate) fn finish(mut record: Box<Record>)
+{
+    let recycle = record.recycle.take();
+    record.key = None;
+    record.ticket = None;
+    record.next = None;
+    // Provider and projection pins are released after the owner gate, before
+    // advertising readiness. There is no Arc cycle through a recycled record.
+    drop(record.projection.take());
+    drop(record.usage.take());
+    drop(record.acknowledgement.take());
+    record.cause = Cause::Interrupted;
+    if let Some(recycle) = recycle
+    {
+        (recycle.give)(&recycle.record, record);
+    }
+}
+
+pub(crate) struct Reserve(Option<Box<Record>>);
 impl Reserve
 {
     pub(crate) fn try_new() -> Result<Self, alloc::alloc::AllocError>
     {
-        Box::try_new(Record { key:        None,
-                              ticket:     None,
-                              projection: None,
-                              usage:      None,
-                              cause:      Cause::Interrupted,
-                              next:       None }).map(Self)
+        Box::try_new(Record { key:             None,
+                              ticket:          None,
+                              projection:      None,
+                              usage:           None,
+                              cause:           Cause::Interrupted,
+                              next:            None,
+                              recycle:         None,
+                              acknowledgement: None }).map(|record| Self(Some(record)))
     }
 
     pub(crate) fn with_projection(mut self,
                                   projection: Option<crate::projected::ProjectionRelease>)
                                   -> Self
     {
-        self.0.projection = projection;
+        if let Some(record) = &mut self.0
+        {
+            record.projection = projection;
+        }
+        self
+    }
+
+    pub(crate) fn with_acknowledgement(mut self, pin: Option<crate::store::AcknowledgementPin>)
+                                       -> Self
+    {
+        if let Some(record) = &mut self.0
+        {
+            record.acknowledgement = pin;
+        }
         self
     }
 
@@ -107,11 +202,15 @@ impl Reserve
                                           usage: Option<Use>)
                                           -> Completion<G>
     {
-        self.0.key = Some(key);
-        self.0.usage = usage;
+        let mut record = self.0.take();
+        if let Some(record) = &mut record
+        {
+            record.key = Some(key);
+            record.usage = usage;
+        }
         Completion { owner,
                      key,
-                     record: Some(self.0) }
+                     record }
     }
 
     pub(crate) fn released<G: InvocationGate>(self, owner: OwnerRef<G>, ticket: ReleasedResource,
@@ -124,6 +223,17 @@ impl Reserve
             record.ticket = Some(ticket);
         }
         completion
+    }
+}
+impl Drop for Reserve
+{
+    fn drop(&mut self)
+    {
+        // Unpublished failure returns the untouched reservation as well.
+        if let Some(record) = self.0.take()
+        {
+            finish(record);
+        }
     }
 }
 
@@ -179,7 +289,8 @@ impl<G: InvocationGate> Completion<G>
                 {
                     Ok(stopped) =>
                     {
-                        drop(record);
+                        finish(record);
+                        G::resource_released(self.owner.owner());
                         if stopped
                         {
                             G::released(self.owner.owner());
@@ -230,13 +341,13 @@ impl<G: InvocationGate> Drop for Attempt<G>
 pub(crate) enum Routed
 {
     Continue(ReleasedResource),
-    Complete(Option<Box<Record>>),
+    Complete(Option<Completed>),
     Retained(Fault)
 }
 pub(crate) enum Retry
 {
     Empty,
-    Complete(Box<Record>),
+    Complete(Completed),
     Retained(Fault)
 }
 pub(crate) struct Queue
@@ -348,7 +459,7 @@ impl Queue
                 }
                 self.count -= 1;
                 self.cursor = 0;
-                Routed::Complete(removed)
+                Routed::Complete(removed.map(|record| Completed(Some(record))))
             }
             Err(error) =>
             {
@@ -403,7 +514,7 @@ impl Queue
                         *link = removed.next.take();
                         self.count -= 1;
                         self.cursor = if self.count == 0 { 0 } else { at % self.count };
-                        return Retry::Complete(removed);
+                        return Retry::Complete(Completed(Some(removed)));
                     }
                     Err(error) =>
                     {

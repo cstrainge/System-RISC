@@ -8,6 +8,10 @@ pub(crate) use resource::ModuleReadError;
 pub(crate) mod application;
 use alloc::{string::String, vec::Vec};
 
+use mac_object_table::shared::InvocationGate as _;
+
+use crate::toolbox::handles::InvocationGate;
+
 mod objects;
 mod subject;
 pub(crate) mod pins;
@@ -34,6 +38,8 @@ use mac_abi::{files::*, *};
 use mac_filesystem::{BlockDevice, CatalogEntry, Fork, MutationError, Partition, Volume,
                      WritableBlockDevice};
 pub use mac_formats::macbinary::MacFile;
+#[cfg(target_arch = "riscv64")]
+pub(in crate::toolbox) use provider::runtime::{ResidentReply, ResidentRequest};
 #[cfg(target_arch = "riscv64")]
 pub(crate) use provider::runtime::{abandon_thread as abandon_provider_thread,
                                    mount_startup_exports, pump as pump_provider_operations,
@@ -742,13 +748,13 @@ impl Manager
                                              poisoned: recovery_failed,
                                              scanner: volume.catalog_scanner().ok(),
                                              catalog_revision: scan::next_revision()? };
-                result.volumes
-                      .insert_with(|id| {
-                          let mut mounted = mounted;
-                          mounted.info.id = id;
-                          Mounted::Block(mounted)
-                      })
-                      .map_err(|_| NO_MEMORY)?;
+                InvocationGate::with_system_allocation(|| {
+                    result.volumes.insert_with(|id| {
+                                      let mut mounted = mounted;
+                                      mounted.info.id = id;
+                                      Mounted::Block(mounted)
+                                  })
+                }).map_err(|_| NO_MEMORY)?;
             }
         }
         Err(NO_MEMORY)

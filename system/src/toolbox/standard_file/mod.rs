@@ -1,16 +1,24 @@
-//! Shared Standard File state. All IDs use the resident generation table;
-//! native and Pascal callers enter this same model. Rendering stays in System.
+//! System-owned Standard File protocol. Catalog work is a bounded owned state
+//! machine; no Files guard or caller buffer survives its asynchronous requests.
 #![forbid(unsafe_code)]
 pub mod layout;
-use alloc::{borrow::ToOwned, string::String, vec::Vec};
+pub(super) mod page;
+pub(super) mod view;
+#[cfg(target_arch = "riscv64")]
+pub(crate) mod templates;
+use alloc::vec::Vec;
 
-use mac_abi::{files::{self, CatalogInfo, FileCall, ROOT_ID},
+use mac_abi::{files::{self, CatalogInfo, FileCall, ROOT_ID, VolumeInfo},
               standard_file::*,
               *};
+use page::Page;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use templates::prepare as prepare_templates;
+use view::Text;
 
-use crate::toolbox::{files::Manager as Files,
-                     handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store},
+use crate::toolbox::{handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store},
                      textedit::Editor};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action
 {
@@ -32,7 +40,8 @@ pub enum Action
     NewFolder,
     Confirm,
     Dismiss,
-    Backspace
+    Backspace,
+    Scroll(usize)
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Sheet
@@ -42,37 +51,110 @@ pub enum Sheet
     NewFolder,
     Error
 }
+#[derive(Clone, Copy)]
+pub(super) enum Stage
+{
+    DefaultVolume,
+    Volume,
+    Directory,
+    Ancestor(u32),
+    Scan,
+    Lookup,
+    CreateFolder,
+    PrepareSave,
+    PrepareFolder,
+    VolumeCount(i32),
+    FindVolume
+    {
+        count: u32,
+        index: u32,
+        delta: i32
+    },
+    SelectVolume(u32),
+    DesktopCount,
+    DesktopVolume(u32),
+    DesktopRoot
+    {
+        index:  u32,
+        volume: u32
+    }
+}
+pub(super) enum Query
+{
+    File(FileCall, Text),
+    Scan(files::FileScanCall),
+    PrepareName
+    {
+        volume: u32,
+        name:   Text
+    }
+}
+#[derive(Clone, Copy)]
+pub(super) struct FileResult
+{
+    pub operation:   u32,
+    pub index:       u32,
+    pub volume_info: VolumeInfo,
+    pub entry:       CatalogInfo
+}
+#[derive(Clone, Copy)]
+pub(super) enum Reply
+{
+    File(FileResult),
+    Scan(files::FileScanCall),
+    Name(Text)
+}
+#[derive(Default)]
+pub(super) struct Widgets
+{
+    pub buttons:         [u64; 32],
+    pub scrollbox:       u64,
+    pub scroll_tracking: bool,
+    pub tracking:        Option<usize>
+}
 pub struct Dialog
 {
-    saved_name:          Option<String>,
-    pub owner:           u64,
-    pub window:          WindowId,
-    pub auxiliary:       WindowId,
-    pub auxiliary_sheet: Sheet,
-    pub mode:            u32,
-    pub location:        (u32, u32),
-    pub entries:         Vec<CatalogInfo>,
-    pub(super) icons:    Vec<(CatalogInfo, crate::toolbox::quickdraw::icons_service::Drawing)>,
-    pub selected:        Option<usize>,
-    pub first:           usize,
-    pub prompt:          String,
-    pub editor:          Editor,
-    pub focus_name:      bool,
-    pub state:           u32,
-    pub result:          CatalogInfo,
-    pub replacing:       bool,
-    types:               Vec<[u8; 4]>,
-    all:                 bool,
-    pub sheet:           Sheet,
-    pub error:           Status,
-    pub pressed:         Option<usize>,
-    pub hot:             bool,
-    pub last_click:      Option<(usize, u32)>,
-    pub popup:           bool,
-    pub ancestors:       Vec<CatalogInfo>,
-    pub typeahead:       String,
-    pub typed_at:        u32,
-    name_format:         mac_filesystem::Format
+    saved_name:                   Option<Text>,
+    pub owner:                    u64,
+    pub window:                   WindowId,
+    pub auxiliary:                WindowId,
+    pub auxiliary_sheet:          Sheet,
+    pub mode:                     u32,
+    pub location:                 (u32, u32),
+    pub(super) entries:           Page,
+    pub(super) icons: Vec<(CatalogInfo, crate::toolbox::quickdraw::icons_service::Drawing)>,
+    pub selected:                 Option<usize>,
+    pub first:                    usize,
+    pub(super) prompt:            Text,
+    pub editor:                   Editor,
+    pub focus_name:               bool,
+    pub(super) name_tracking:     bool,
+    pub state:                    u32,
+    pub result:                   CatalogInfo,
+    pub replacing:                bool,
+    types:                        [[u8; 4]; MAX_TYPES],
+    type_count:                   usize,
+    all:                          bool,
+    pub sheet:                    Sheet,
+    pub error:                    Status,
+    pub last_click:               Option<(usize, u32)>,
+    pub popup:                    bool,
+    pub ancestors:                Vec<CatalogInfo>,
+    typeahead:                    Text,
+    pub typed_at:                 u32,
+    name_format:                  Option<mac_filesystem::Format>,
+    pub(super) volume_info:       VolumeInfo,
+    stage:                        Option<Stage>,
+    issued:                       bool,
+    pub(super) revision:          u64,
+    desktop_count:                u32,
+    create_when:                  u64,
+    pub(super) main_widgets:      Widgets,
+    pub(super) auxiliary_widgets: Widgets,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) subject:           Option<crate::drivers::jobs::subjects::Subject>,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) recovery_activity: Option<crate::recovery::Activity>
 }
 impl Dialog
 {
@@ -86,6 +168,11 @@ impl Dialog
         self.editor.text()
     }
 
+    pub fn visible_entries(&self) -> &[CatalogInfo]
+    {
+        &self.entries.rows[..self.entries.length]
+    }
+
     pub fn active(&self) -> bool
     {
         self.state == PENDING
@@ -96,37 +183,443 @@ impl Dialog
         self.sheet != Sheet::Main
         || if self.mode == GET
         {
-            self.selected.is_some()
+            self.selected.and_then(|i| self.entries.get(i)).is_some()
         }
         else
         {
-            self.selected.is_some_and(|i| self.entries[i].is_directory())
-            || valid_name(self.name_format, self.name())
+            self.selected.and_then(|i| self.entries.get(i)).is_some_and(CatalogInfo::is_directory)
+            || (!self.name().is_empty() && self.stage.is_none_or(|s| matches!(s, Stage::Scan)))
         }
     }
 
-    fn reveal(&mut self)
+    fn restart(&mut self, location: (u32, u32)) -> Result<(), Status>
     {
-        if let Some(i) = self.selected
+        self.revision = self.revision.checked_add(1).ok_or(NO_MEMORY)?;
+        self.location = location;
+        self.entries.reset();
+        self.icons.clear();
+        self.ancestors.clear();
+        self.selected = None;
+        self.first = 0;
+        self.last_click = None;
+        self.name_tracking = false;
+        self.popup = false;
+        self.typeahead.clear();
+        self.issued = false;
+        self.stage = Some(if location.0 == 0 { Stage::DesktopCount } else { Stage::Volume });
+        Ok(())
+    }
+
+    fn reveal(&mut self) -> Result<(), Status>
+    {
+        if let Some(index) = self.selected
         {
-            if i < self.first
+            let first = if index < self.first
             {
-                self.first = i;
+                index
             }
-            else if i >= self.first + self.page()
+            else if index >= self.first + self.page()
             {
-                self.first = i + 1 - self.page();
+                index + 1 - self.page()
+            }
+            else
+            {
+                self.first
+            };
+            if self.entries.get(index).is_none()
+            {
+                self.revision = self.revision.checked_add(1).ok_or(NO_MEMORY)?;
+                self.issued = false;
+                self.first = first;
+                self.entries.request(first, false);
+                self.stage = Some(Stage::Scan);
             }
         }
+        Ok(())
     }
+
+    pub(super) fn fail(&mut self, cause: Status)
+    {
+        self.issued = false;
+        self.stage = None;
+        self.error = cause;
+        self.sheet = Sheet::Error;
+    }
+
+    pub(super) fn wants_icon(&self, call: &files::FileScanCall) -> bool
+    {
+        if call.step != files::SCAN_ENTRY
+        {
+            return false;
+        }
+        let include = self.mode != GET
+                      || self.all
+                      || (call.entry.finder_flags() & 0x4000 == 0
+                          && (call.entry.is_directory()
+                              || self.types[..self.type_count].contains(&call.entry.file_type)));
+        let prefix =
+            self.typeahead
+                .text()
+                .is_ok_and(|text| text.is_empty() || prefix_equal(call.entry.name(), text));
+        self.entries.wants_entry(self.page(), include, prefix)
+    }
+
+    pub(super) fn work_pending(&self) -> bool
+    {
+        self.active() && (self.stage.is_some() || self.issued || self.main_widgets.scroll_tracking)
+    }
+
+    pub(super) fn query(&mut self) -> Result<Option<(u64, Query)>, Status>
+    {
+        if self.issued || !self.active()
+        {
+            return Ok(None);
+        }
+        let Some(stage) = self.stage
+        else
+        {
+            return Ok(None);
+        };
+        if self.sheet != Sheet::Main && !matches!(stage, Stage::PrepareFolder | Stage::CreateFolder)
+        {
+            return Ok(None);
+        }
+        let mut call = FileCall { volume: self.location.0,
+                                  cnid: self.location.1,
+                                  ..Default::default() };
+        let mut text = Text::default();
+        match stage
+        {
+            Stage::DefaultVolume =>
+            {
+                call.operation = files::VOLUME_INDEX;
+                call.index = 0;
+            }
+            Stage::Volume => call.operation = files::VOLUME_INFO,
+            Stage::Directory => call.operation = files::CATALOG,
+            Stage::Ancestor(id) =>
+            {
+                call.operation = files::CATALOG;
+                call.cnid = id;
+            }
+            Stage::Scan =>
+            {
+                if !self.entries.scanning
+                {
+                    self.stage = None;
+                    return Ok(None);
+                }
+                self.issued = true;
+                return Ok(Some((self.revision,
+                                Query::Scan(self.entries
+                                                .query(self.location.0, self.location.1)))));
+            }
+            Stage::Lookup =>
+            {
+                call.operation = files::LOOKUP;
+                text = Text::new(self.name())?;
+            }
+            Stage::CreateFolder =>
+            {
+                call.operation = files::NEW_FOLDER;
+                call.position = self.create_when;
+                text = Text::new(self.name())?;
+            }
+            Stage::PrepareSave | Stage::PrepareFolder =>
+            {
+                self.issued = true;
+                return Ok(Some((self.revision,
+                                Query::PrepareName { volume: self.location.0,
+                                                     name:   Text::new(self.name())? })));
+            }
+            Stage::VolumeCount(_) | Stage::DesktopCount => call.operation = files::VOLUME_COUNT,
+            Stage::FindVolume { index,
+                                .. }
+            | Stage::SelectVolume(index)
+            | Stage::DesktopVolume(index) =>
+            {
+                call.operation = files::VOLUME_INDEX;
+                call.index = index;
+            }
+            Stage::DesktopRoot { volume,
+                                 .. } =>
+            {
+                call.operation = files::CATALOG;
+                call.volume = volume;
+                call.cnid = ROOT_ID;
+            }
+        }
+        self.issued = true;
+        Ok(Some((self.revision, Query::File(call, text))))
+    }
+
+    fn prepare_name(&mut self, folder: bool) -> Result<(), Status>
+    {
+        self.revision = self.revision.checked_add(1).ok_or(NO_MEMORY)?;
+        self.issued = false;
+        if self.volume_info.read_only != 0
+        {
+            return Err(READ_ONLY);
+        }
+        if let Some(format) = self.name_format
+        {
+            let (bytes,_)=format.prepare_name(self.name()).map_err(|e|match e{
+                mac_filesystem::Error::BudgetExceeded(_)|mac_filesystem::Error::AllocationFailed(_)=>NO_MEMORY,
+                _=>BAD_ARGUMENT
+            })?;
+            let name = core::str::from_utf8(&bytes).map_err(|_| BAD_ABI)?;
+            self.editor.set_text(name)?;
+            self.stage = Some(if folder { Stage::CreateFolder } else { Stage::Lookup });
+        }
+        else
+        {
+            self.stage = Some(if folder { Stage::PrepareFolder } else { Stage::PrepareSave });
+        }
+        Ok(())
+    }
+
+    pub(super) fn receive(&mut self, revision: u64, reply: Result<Reply, Status>)
+                          -> Result<bool, Status>
+    {
+        if revision != self.revision || !self.active()
+        {
+            return Ok(false);
+        }
+        self.issued = false;
+        let Some(stage) = self.stage
+        else
+        {
+            return Err(BAD_ABI);
+        };
+        let reply = match reply
+        {
+            Err(SCAN_STALE) if matches!(stage, Stage::Scan) =>
+            {
+                self.entries.reset();
+                self.selected = None;
+                self.first = 0;
+                return Ok(true);
+            }
+            Err(NOT_FOUND) if matches!(stage, Stage::Lookup) =>
+            {
+                let name = self.name().as_bytes();
+                let mut entry = CatalogInfo { volume: self.location.0,
+                                              parent: self.location.1,
+                                              ..Default::default() };
+                let dest = entry.name.get_mut(..name.len()).ok_or(BAD_ARGUMENT)?;
+                dest.copy_from_slice(name);
+                entry.name_length = name.len() as u32;
+                self.result = entry;
+                self.state = ACCEPTED;
+                self.stage = None;
+                return Ok(true);
+            }
+            Err(cause) =>
+            {
+                self.stage = None;
+                return Err(cause);
+            }
+            Ok(reply) => reply
+        };
+        match (stage, reply)
+        {
+            (Stage::DefaultVolume, Reply::File(call)) =>
+            {
+                self.location.0 = call.volume_info.id;
+                self.stage = Some(Stage::Volume);
+            }
+            (Stage::Volume, Reply::File(call)) =>
+            {
+                self.volume_info = call.volume_info;
+                self.name_format = match call.volume_info.filesystem
+                {
+                    files::FILESYSTEM_HFS => Some(mac_filesystem::Format::Hfs),
+                    files::FILESYSTEM_HFS_B => Some(mac_filesystem::Format::HfsB),
+                    _ => None
+                };
+                self.stage = Some(Stage::Directory);
+            }
+            (Stage::Directory, Reply::File(call)) =>
+            {
+                if !call.entry.is_directory()
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                self.ancestors.clear();
+                self.ancestors.push(call.entry);
+                self.stage = Some(if call.entry.id == ROOT_ID
+                                  {
+                                      Stage::Scan
+                                  }
+                                  else
+                                  {
+                                      Stage::Ancestor(call.entry.parent)
+                                  });
+            }
+            (Stage::Ancestor(_), Reply::File(call)) =>
+            {
+                if !call.entry.is_directory()
+                   || self.ancestors.iter().any(|e| e.id == call.entry.id)
+                {
+                    return Err(CORRUPT_DATA);
+                }
+                self.ancestors.push(call.entry);
+                self.stage = Some(if call.entry.id == ROOT_ID
+                                     || self.ancestors.len() == page::ANCESTORS
+                                  {
+                                      Stage::Scan
+                                  }
+                                  else
+                                  {
+                                      Stage::Ancestor(call.entry.parent)
+                                  });
+            }
+            (Stage::Scan, Reply::Scan(call)) =>
+            {
+                let include = self.mode != GET
+                              || self.all
+                              || (call.entry.finder_flags() & 0x4000 == 0
+                                  && (call.entry.is_directory()
+                                      || self.types[..self.type_count].contains(&call.entry
+                                                                                     .file_type)));
+                let prefix = self.typeahead.text()?;
+                let prefix_match = prefix.is_empty() || prefix_equal(call.entry.name(), prefix);
+                let changed = self.entries.accept(call, self.page(), include, prefix_match)?;
+                if let Some(selected) = self.entries.selected.take()
+                {
+                    self.selected = Some(selected);
+                }
+                if self.selected.is_none() && self.mode == GET && self.entries.length != 0
+                {
+                    self.selected = Some(self.entries.first);
+                }
+                self.first = self.entries.first;
+                if !self.entries.scanning
+                {
+                    self.stage = None;
+                }
+                return Ok(changed && self.entries.ready(self.page()));
+            }
+            (Stage::Lookup, Reply::File(call)) =>
+            {
+                if call.entry.is_directory()
+                {
+                    return self.restart((call.entry.volume, call.entry.id)).map(|()| true);
+                }
+                if call.entry.is_locked()
+                {
+                    return Err(ACCESS_DENIED);
+                }
+                self.result = call.entry;
+                self.sheet = Sheet::Replace;
+                self.stage = None;
+            }
+            (Stage::PrepareSave, Reply::Name(name)) | (Stage::PrepareFolder, Reply::Name(name)) =>
+            {
+                self.editor.set_text(name.text()?)?;
+                self.stage = Some(if matches!(stage, Stage::PrepareFolder)
+                                  {
+                                      Stage::CreateFolder
+                                  }
+                                  else
+                                  {
+                                      Stage::Lookup
+                                  });
+            }
+            (Stage::CreateFolder, Reply::File(call)) =>
+            {
+                if let Some(name) = self.saved_name.take()
+                {
+                    self.editor.set_text(name.text()?)?;
+                    self.editor.select(0, self.name().len() as u32)?;
+                }
+                self.sheet = Sheet::Main;
+                return self.restart((call.entry.volume, call.entry.id)).map(|()| true);
+            }
+            (Stage::VolumeCount(delta), Reply::File(call)) =>
+            {
+                if call.index == 0
+                {
+                    return Err(NOT_FOUND);
+                }
+                self.stage = Some(Stage::FindVolume { count: call.index,
+                                                      index: 0,
+                                                      delta });
+            }
+            (Stage::FindVolume { count,
+                                 index,
+                                 delta },
+             Reply::File(call)) =>
+            {
+                self.stage = Some(if call.volume_info.id == self.location.0
+                                  {
+                                      Stage::SelectVolume((i64::from(index)+i64::from(delta)).rem_euclid(i64::from(count))as u32)
+                                  }
+                                  else if index + 1 < count
+                                  {
+                                      Stage::FindVolume { count,
+                                                          index: index + 1,
+                                                          delta }
+                                  }
+                                  else
+                                  {
+                                      Stage::SelectVolume(0)
+                                  });
+            }
+            (Stage::SelectVolume(_), Reply::File(call)) =>
+            {
+                return self.restart((call.volume_info.id, ROOT_ID)).map(|()| true);
+            }
+            (Stage::DesktopCount, Reply::File(call)) =>
+            {
+                self.desktop_count = call.index;
+                self.entries.desktop_total(call.index as usize);
+                self.stage = if call.index == 0 { None } else { Some(Stage::DesktopVolume(0)) };
+            }
+            (Stage::DesktopVolume(index), Reply::File(call)) =>
+            {
+                self.stage = Some(Stage::DesktopRoot { index,
+                                                       volume: call.volume_info.id });
+            }
+            (Stage::DesktopRoot { index,
+                                  .. },
+             Reply::File(call)) =>
+            {
+                let local = (index as usize).checked_sub(self.first);
+                if let Some(local) = local.filter(|&i| i < self.page())
+                {
+                    self.entries.rows[local] = call.entry;
+                    self.entries.length = local + 1;
+                }
+                let next = index + 1;
+                self.stage = if next < self.desktop_count
+                                && next < (self.first + self.page()) as u32
+                {
+                    Some(Stage::DesktopVolume(next))
+                }
+                else
+                {
+                    None
+                };
+                if self.mode == GET && self.selected.is_none() && self.entries.length != 0
+                {
+                    self.selected = Some(self.first);
+                }
+            }
+            _ => return Err(BAD_ABI)
+        }
+        Ok(true)
+    }
+}
+fn prefix_equal(name: &str, prefix: &str) -> bool
+{
+    let mut name = name.chars().flat_map(char::to_lowercase);
+    prefix.chars().flat_map(char::to_lowercase).all(|character| name.next() == Some(character))
 }
 pub struct Manager
 {
-    slots: Store<Dialog, ApplicationState>
-}
-struct ApplicationState
-{
-    active: Option<u64>
+    slots: Store<Dialog>,
+    publication: Option<mac_object_table::store::PublicationReservation<crate::toolbox::handles::InvocationGate>>
 }
 pub(crate) fn specification(state: bool) -> mac_object_table::registry::Specification<'static>
 {
@@ -184,34 +677,14 @@ impl Manager
 {
     pub(crate) fn new((objects, storage): (KindLease, KindLease)) -> Result<Self, Status>
     {
-        Ok(Self { slots: Store::owned_state(objects, storage, |_| {
-                             Ok(ApplicationState { active: None })
-                         }).map_err(|_| BAD_ARGUMENT)? })
+        Ok(Self { slots:       Store::owned(objects, storage).map_err(|_| BAD_ARGUMENT)?,
+                  publication: None })
     }
 }
-fn file(files: &mut Files, operation: u32, volume: u32, cnid: u32, index: u32, name: &str)
-        -> Result<FileCall, Status>
+
+fn pool_status(error: mac_object_table::domain::PoolError) -> Status
 {
-    let mut c = FileCall { operation,
-                           volume,
-                           cnid,
-                           index,
-                           ..Default::default() };
-    files.request_owned(0, &mut c, name, &mut [])?;
-    Ok(c)
-}
-fn valid_name(format: mac_filesystem::Format, name: &str) -> bool
-{
-    format.prepare_name(name).is_ok()
-}
-fn name_format(files: &mut Files, volume: u32) -> Result<mac_filesystem::Format, Status>
-{
-    match file(files, files::VOLUME_INFO, volume, 0, 0, "")?.volume_info.filesystem
-    {
-        files::FILESYSTEM_HFS => Ok(mac_filesystem::Format::Hfs),
-        files::FILESYSTEM_HFS_B => Ok(mac_filesystem::Format::HfsB),
-        _ => Err(NOT_SUPPORTED)
-    }
+    crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error))
 }
 fn inline(bytes: &[u8], length: u32) -> Result<&str, Status>
 {
@@ -221,19 +694,53 @@ fn inline(bytes: &[u8], length: u32) -> Result<&str, Status>
 }
 impl Manager
 {
-    pub fn get(&self, id: u64) -> Result<&Dialog, Status>
+    pub(crate) fn prepare_recovery(&mut self, storage: &OwnerRef) -> Result<(), Status>
     {
-        self.slots.get(id).ok_or(NOT_FOUND)
+        if storage.owner().kind() != mac_object_table::domain::DomainKind::System
+        {
+            return Err(ACCESS_DENIED);
+        }
+        if self.publication.is_none()
+        {
+            self.publication =
+                Some(self.slots.reserve_publication(storage).map_err(pool_status)?);
+        }
+        Ok(())
     }
 
-    pub fn get_mut(&mut self, id: u64) -> Result<&mut Dialog, Status>
+    /// `recipient` is the native caller/service context, never a request field.
+    /// Storage belongs to System; logical ownership remains the authenticated
+    /// process for whom the one modal service was admitted.
+    pub fn get(&self, recipient: u64, id: u64) -> Result<&Dialog, Status>
     {
+        let dialog = self.slots.get(id).ok_or(NOT_FOUND)?;
+        if dialog.owner != recipient
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(dialog)
+    }
+
+    pub fn get_mut(&mut self, recipient: u64, id: u64) -> Result<&mut Dialog, Status>
+    {
+        self.get(recipient, id)?;
         self.slots.get_mut(id).ok_or(NOT_FOUND)
     }
 
-    pub fn active(&self, owner: u64) -> Option<u64>
+    /// Resident recovery uses the authenticated recipient capability to find
+    /// even a completed protocol whose app stopped before disposing it.
+    pub(crate) fn for_recipient(&self, recipient: &OwnerRef) -> Option<u64>
     {
-        self.slots.state(owner)?.active.filter(|id| self.slots.get(*id).is_some_and(Dialog::active))
+        self.slots.iter().find_map(|(id, dialog)| {
+                             (dialog.owner == recipient.owner().incarnation()).then_some(id)
+                         })
+    }
+
+    pub fn active(&self, recipient: u64) -> Option<u64>
+    {
+        self.slots
+            .iter()
+            .find_map(|(id, dialog)| (dialog.owner == recipient && dialog.active()).then_some(id))
     }
 
     pub(crate) fn take(
@@ -241,18 +748,7 @@ impl Manager
         -> Result<mac_object_table::store::Removed<Dialog, crate::toolbox::handles::InvocationGate>,
                   Status>
     {
-        let actual = self.slots.owner(id).ok_or(NOT_FOUND)?;
-        if actual.incarnation() != owner
-        {
-            return Err(ACCESS_DENIED);
-        }
-        if let Some(saved) = self.slots.state_mut(owner)
-        {
-            if saved.active == Some(id)
-            {
-                saved.active = None;
-            }
-        }
+        self.get(owner, id)?;
         self.slots.remove(id).ok_or(NOT_FOUND)
     }
 
@@ -261,11 +757,15 @@ impl Manager
         self.take(owner, id).map(drop)
     }
 
-    pub(crate) fn request(&mut self, ledger: &OwnerRef, call: &mut StandardFileCall,
-                          files: &mut Files)
+    pub(crate) fn request(&mut self, recipient: &OwnerRef, storage: &OwnerRef,
+                          call: &mut StandardFileCall)
                           -> Result<(), Status>
     {
-        let owner = ledger.owner().incarnation();
+        let owner = recipient.owner().incarnation();
+        if storage.owner().kind() != mac_object_table::domain::DomainKind::System
+        {
+            return Err(ACCESS_DENIED);
+        }
         if call.reserved != [0; 2]
         {
             return Err(BAD_ARGUMENT);
@@ -280,79 +780,109 @@ impl Manager
             {
                 return Err(BAD_ARGUMENT);
             }
-            let prompt = inline(&call.prompt, call.prompt_length)?;
+            let prompt = Text::new(inline(&call.prompt, call.prompt_length)?)?;
             let name = inline(&call.name, call.name_length)?;
             let mut editor =
                 Editor::new(Rect::new(15, 157, 4111, 173), Rect::new(15, 157, 227, 173))?;
             editor.set_text(name)?;
             editor.select(0, name.len() as u32)?;
             editor.activate(true);
-            let volume = if call.volume == 0
-            {
-                file(files, files::VOLUME_INDEX, 0, 0, 0, "")?.volume_info.id
-            }
-            else
-            {
-                call.volume
+            let mut types = [[0; 4]; MAX_TYPES];
+            let type_count = call.type_count.max(0) as usize;
+            types[..type_count].copy_from_slice(&call.types[..type_count]);
+            let mut icons = Vec::new();
+            icons.try_reserve_exact(page::ROWS).map_err(|_| NO_MEMORY)?;
+            let mut ancestors = Vec::new();
+            ancestors.try_reserve_exact(page::ANCESTORS).map_err(|_| NO_MEMORY)?;
+            let mut entries = Page::default();
+            entries.reset();
+            let dialog =
+                Dialog { saved_name: None,
+                         owner,
+                         window: WindowId(0),
+                         auxiliary: WindowId(0),
+                         auxiliary_sheet: Sheet::Main,
+                         mode: call.mode,
+                         location: (call.volume,
+                                    if call.directory == 0 { ROOT_ID } else { call.directory }),
+                         entries,
+                         icons,
+                         selected: None,
+                         first: 0,
+                         prompt,
+                         editor,
+                         focus_name: call.mode == PUT,
+                         name_tracking: false,
+                         state: PENDING,
+                         result: CatalogInfo::default(),
+                         replacing: false,
+                         types,
+                         type_count,
+                         all: call.type_count == -1,
+                         sheet: Sheet::Main,
+                         error: OK,
+                         last_click: None,
+                         popup: false,
+                         ancestors,
+                         typeahead: Text::default(),
+                         typed_at: 0,
+                         name_format: None,
+                         volume_info: VolumeInfo::default(),
+                         stage: Some(if call.volume == 0
+                                     {
+                                         Stage::DefaultVolume
+                                     }
+                                     else
+                                     {
+                                         Stage::Volume
+                                     }),
+                         issued: false,
+                         revision: 1,
+                         desktop_count: 0,
+                         create_when: 0,
+                         main_widgets: Widgets::default(),
+                         auxiliary_widgets: Widgets::default(),
+                         #[cfg(target_arch = "riscv64")]
+                         subject: None,
+                         #[cfg(target_arch = "riscv64")]
+                         recovery_activity: crate::context::recovery_activity() };
+            let reservation = self.publication.as_mut().ok_or(NOT_SUPPORTED)?;
+            let publication: Result<u64, Status> = {
+                #[cfg(target_arch = "riscv64")]
+                {
+                    let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                    if activity.recipient().owner() != recipient.owner()
+                       || activity.storage_owner().owner() != storage.owner()
+                       || !recipient.accepting()
+                       || !crate::context::io_subject().is_some_and(|subject| {
+                               subject.scope().same_scope(activity.root_subject().scope())
+                           })
+                    {
+                        return Err(ACCESS_DENIED);
+                    }
+                    let subject = activity.root_subject();
+                    self.slots.insert_reserved_in_scope_with_acknowledgement(
+                        reservation, subject.scope(), Some(activity.acknowledgement_pin()),
+                        |_| dialog).map(|publication| publication.id()).map_err(|error| {
+                            match error
+                            {
+                                mac_object_table::store::PublicationError::Busy => SERVICE_BUSY,
+                                mac_object_table::store::PublicationError::Pool(error) =>
+                                    pool_status(error)
+                            }
+                        })
+                }
+                #[cfg(not(target_arch = "riscv64"))]
+                {
+                    let _ = (reservation, dialog);
+                    Err(NOT_SUPPORTED)
+                }
             };
-            let name_format = name_format(files, volume)?;
-            if call.mode == PUT && !name.is_empty() && !valid_name(name_format, name)
-            {
-                return Err(BAD_ARGUMENT);
-            }
-            let directory = if call.directory == 0 { ROOT_ID } else { call.directory };
-            let mut types = Vec::new();
-            let n = call.type_count.max(0) as usize;
-            types.try_reserve_exact(n).map_err(|_| NO_MEMORY)?;
-            types.extend_from_slice(&call.types[..n]);
-            let mut label = String::new();
-            label.try_reserve(prompt.len()).map_err(|_| NO_MEMORY)?;
-            label.push_str(prompt);
-            let mut d = Dialog { saved_name: None,
-                                 owner,
-                                 window: WindowId(0),
-                                 auxiliary: WindowId(0),
-                                 auxiliary_sheet: Sheet::Main,
-                                 mode: call.mode,
-                                 location: (volume, directory),
-                                 entries: Vec::new(),
-                                 icons: Vec::new(),
-                                 selected: None,
-                                 first: 0,
-                                 prompt: label,
-                                 editor,
-                                 focus_name: call.mode == PUT,
-                                 state: PENDING,
-                                 result: Default::default(),
-                                 replacing: false,
-                                 types,
-                                 all: call.type_count == -1,
-                                 sheet: Sheet::Main,
-                                 error: OK,
-                                 pressed: None,
-                                 hot: false,
-                                 last_click: None,
-                                 popup: false,
-                                 ancestors: Vec::new(),
-                                 typeahead: String::new(),
-                                 typed_at: 0,
-                                 name_format };
-            Self::load(&mut d, files)?;
-            call.handle = self.slots.insert(ledger, d).map_err(|error| {
-                                                           match error {
-                mac_object_table::domain::PoolError::RegistrationUnavailable { .. }
-                | mac_object_table::domain::PoolError::Stopping { .. } => SERVICE_BUSY,
-                _ => NO_MEMORY }
-                                                       })?;
-            self.slots.state_mut(owner).ok_or(SERVICE_BUSY)?.active = Some(call.handle);
+            call.handle = publication?;
         }
         else
         {
-            let actual = self.slots.owner(call.handle).ok_or(NOT_FOUND)?;
-            if actual.incarnation() != owner
-            {
-                return Err(ACCESS_DENIED);
-            }
+            self.get(owner, call.handle)?;
             if call.operation == DISPOSE
             {
                 return self.dispose(owner, call.handle);
@@ -362,186 +892,102 @@ impl Manager
                 return Err(NOT_SUPPORTED);
             }
         }
-        let d = self.get(call.handle)?;
-        call.state = d.state;
-        call.replacing = u32::from(d.replacing);
-        call.entry = d.result;
+        let dialog = self.get(owner, call.handle)?;
+        call.state = dialog.state;
+        call.replacing = u32::from(dialog.replacing);
+        call.entry = dialog.result;
         Ok(())
     }
 
-    fn load(d: &mut Dialog, files: &mut Files) -> Result<(), Status>
+    pub fn navigate_to(&mut self, owner: u64, id: u64, location: (u32, u32)) -> Result<(), Status>
     {
-        let mut entries = Vec::new();
-        let mut ancestors = Vec::new();
-        let format =
-            if d.location.0 == 0 { d.name_format } else { name_format(files, d.location.0)? };
-        if d.location.0 == 0
-        {
-            let n = file(files, files::VOLUME_COUNT, 0, 0, 0, "")?.index;
-            for i in 0..n
-            {
-                let v = file(files, files::VOLUME_INDEX, 0, 0, i, "")?.volume_info;
-                let e = file(files, files::CATALOG, v.id, ROOT_ID, 0, "")?.entry;
-                entries.try_reserve(1).map_err(|_| NO_MEMORY)?;
-                entries.push(e);
-            }
-        }
-        else
-        {
-            let directory = file(files, files::CATALOG, d.location.0, d.location.1, 0, "")?.entry;
-            if !directory.is_directory()
-            {
-                return Err(BAD_ARGUMENT);
-            }
-            for i in 0..directory.child_count
-            {
-                let e =
-                    file(files, files::DIRECTORY_ENTRY, d.location.0, d.location.1, i, "")?.entry;
-                if d.mode == GET
-                   && !d.all
-                   && (e.finder_flags() & 0x4000 != 0
-                       || !e.is_directory() && !d.types.contains(&e.file_type))
-                {
-                    continue;
-                }
-                if entries.len() >= 4096
-                {
-                    return Err(NO_MEMORY);
-                }
-                entries.try_reserve(1).map_err(|_| NO_MEMORY)?;
-                entries.push(e);
-            }
-            let mut e = directory;
-            loop
-            {
-                ancestors.try_reserve(1).map_err(|_| NO_MEMORY)?;
-                ancestors.push(e);
-                if e.id == ROOT_ID
-                {
-                    break;
-                }
-                if ancestors.len() >= 128
-                {
-                    return Err(BAD_ARGUMENT);
-                }
-                e = file(files, files::CATALOG, d.location.0, e.parent, 0, "")?.entry;
-            }
-        }
-        d.entries = entries;
-        d.name_format = format;
-        d.icons.clear();
-        d.ancestors = ancestors;
-        d.selected = if d.mode == GET && !d.entries.is_empty() { Some(0) } else { None };
-        d.first = 0;
-        d.last_click = None;
-        d.popup = false;
-        d.typeahead.clear();
-        Ok(())
+        self.get_mut(owner, id)?.restart(location)
     }
 
-    pub fn navigate_to(&mut self, id: u64, files: &mut Files, location: (u32, u32))
-                       -> Result<(), Status>
+    pub fn action(&mut self, owner: u64, id: u64, action: Action, when: u32) -> Result<(), Status>
     {
-        let d = self.get_mut(id)?;
-        let old = d.location;
-        d.location = location;
-        if let Err(e) = Self::load(d, files)
-        {
-            d.location = old;
-            return Err(e);
-        }
-        Ok(())
-    }
-
-    pub fn action(&mut self, id: u64, files: &mut Files, action: Action, when: u32)
-                  -> Result<(), Status>
-    {
-        let d = self.get_mut(id)?;
+        let d = self.get_mut(owner, id)?;
         if !d.active()
         {
             return Err(NOT_FOUND);
         }
-        if action == Action::Cancel
+        match action
         {
-            if d.sheet == Sheet::Main
+            Action::Cancel =>
             {
-                d.state = CANCELLED;
-            }
-            else
-            {
-                if let Some(name) = d.saved_name.take()
+                if d.sheet == Sheet::Main
                 {
-                    d.editor.set_text(&name)?;
-                    d.editor.select(0, name.len() as u32)?;
+                    d.state = CANCELLED;
+                    d.revision = d.revision.checked_add(1).ok_or(NO_MEMORY)?;
                 }
-                d.sheet = Sheet::Main;
+                else
+                {
+                    if let Some(name) = d.saved_name.take()
+                    {
+                        d.editor.set_text(name.text()?)?;
+                        d.editor.select(0, d.name().len() as u32)?;
+                    }
+                    d.sheet = Sheet::Main;
+                    d.restart(d.location)?;
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
-        if action == Action::Dismiss
-        {
-            d.sheet = Sheet::Main;
-            return Ok(());
+            Action::Dismiss =>
+            {
+                d.sheet = Sheet::Main;
+                return Ok(());
+            }
+            _ => ()
         }
         if d.sheet == Sheet::Error
         {
-            if action == Action::Accept || action == Action::Confirm
+            if matches!(action, Action::Accept | Action::Confirm)
             {
                 if let Some(name) = d.saved_name.take()
                 {
-                    d.editor.set_text(&name)?;
-                    d.editor.select(0, name.len() as u32)?;
+                    d.editor.set_text(name.text()?)?;
+                    d.editor.select(0, d.name().len() as u32)?;
                 }
                 d.sheet = Sheet::Main;
+                d.restart(d.location)?;
             }
             return Ok(());
         }
         if d.sheet == Sheet::Replace
         {
-            if action == Action::Accept || action == Action::Confirm
+            if matches!(action, Action::Accept | Action::Confirm)
             {
                 d.replacing = true;
                 d.state = ACCEPTED;
+                d.stage = None;
             }
             return Ok(());
         }
         if d.sheet == Sheet::NewFolder && matches!(action, Action::Accept | Action::Confirm)
         {
-            let name = d.name().to_owned();
-            let mut c = FileCall { operation: files::NEW_FOLDER,
-                                   volume: d.location.0,
-                                   cnid: d.location.1,
-                                   position: u64::from(when),
-                                   ..Default::default() };
-            files.request_owned(d.owner, &mut c, &name, &mut [])?;
-            d.sheet = Sheet::Main;
-            d.location.1 = c.entry.id;
-            if let Some(name) = d.saved_name.take()
-            {
-                d.editor.set_text(&name)?;
-                d.editor.select(0, name.len() as u32)?;
-            }
-            return Self::load(d, files);
+            d.create_when = u64::from(when);
+            return d.prepare_name(true);
         }
         match action
         {
-            Action::Select(i) | Action::Open(i) =>
+            Action::Select(index) | Action::Open(index) =>
             {
-                if i >= d.entries.len()
+                let entry = *d.entries.get(index).ok_or(SERVICE_BUSY)?;
+                if d.selected == Some(index) && !matches!(action, Action::Open(_))
                 {
-                    return Err(BAD_ARGUMENT);
+                    return Ok(());
                 }
-                d.selected = Some(i);
+                d.selected = Some(index);
                 d.focus_name = false;
-                d.reveal();
-                if d.mode == PUT && !d.entries[i].is_directory()
+                d.reveal()?;
+                if d.mode == PUT && !entry.is_directory()
                 {
-                    d.editor.set_text(d.entries[i].name())?;
-                    d.editor.select(0, d.editor.text().len() as u32)?;
+                    d.editor.set_text(entry.name())?;
+                    d.editor.select(0, d.name().len() as u32)?;
                 }
                 if matches!(action, Action::Open(_))
                 {
-                    return self.action(id, files, Action::Accept, when);
+                    return self.action(owner, id, Action::Accept, when);
                 }
             }
             Action::Accept | Action::Confirm =>
@@ -550,129 +996,92 @@ impl Manager
                 {
                     return Ok(());
                 }
-                if let Some(e) = d.selected.map(|i| d.entries[i]).filter(CatalogInfo::is_directory)
+                let entry = d.selected.and_then(|i| d.entries.get(i)).copied();
+                if let Some(entry) = entry.filter(CatalogInfo::is_directory)
                 {
-                    return self.navigate_to(id, files, (e.volume, e.id));
+                    return d.restart((entry.volume, entry.id));
                 }
                 if d.mode == GET
                 {
-                    let e = d.entries[d.selected.ok_or(BAD_ARGUMENT)?];
-                    // Alias resolution requires the Alias Manager. Never claim
-                    // success on the unresolved alias's resource fork.
-                    if e.finder_flags() & 0x8000 != 0
+                    let entry = entry.ok_or(SERVICE_BUSY)?;
+                    if entry.finder_flags() & 0x8000 != 0
                     {
                         return Err(NOT_SUPPORTED);
                     }
-                    d.result = e;
+                    d.result = entry;
                     d.state = ACCEPTED;
+                    d.stage = None;
                 }
                 else
                 {
-                    if d.location.0 == 0 || !valid_name(d.name_format, d.name())
+                    if d.location.0 == 0
                     {
                         return Err(BAD_ARGUMENT);
                     }
-                    if file(files, files::VOLUME_INFO, d.location.0, 0, 0, "")?.volume_info
-                                                                               .read_only
-                       != 0
-                    {
-                        return Err(READ_ONLY);
-                    }
-                    let found = file(files, files::LOOKUP, d.location.0, d.location.1, 0, d.name());
-                    match found
-                    {
-                        Ok(c) =>
-                        {
-                            if c.entry.is_directory()
-                            {
-                                let volume = d.location.0;
-                                return self.navigate_to(id, files, (volume, c.entry.id));
-                            }
-                            if c.entry.is_locked()
-                            {
-                                return Err(ACCESS_DENIED);
-                            }
-                            d.result = c.entry;
-                            d.sheet = Sheet::Replace;
-                        }
-                        Err(NOT_FOUND) =>
-                        {
-                            let mut e = CatalogInfo { volume: d.location.0,
-                                                      parent: d.location.1,
-                                                      ..Default::default() };
-                            let (name, _) =
-                                d.name_format.prepare_name(d.name()).map_err(|_| BAD_ARGUMENT)?;
-                            e.name[..name.len()].copy_from_slice(&name);
-                            e.name_length = name.len() as u32;
-                            d.result = e;
-                            d.state = ACCEPTED;
-                        }
-                        Err(e) => return Err(e)
-                    }
+                    d.prepare_name(false)?;
                 }
             }
             Action::Parent =>
             {
-                let l = if d.location.1 == ROOT_ID
-                {
-                    (0, 0)
-                }
-                else
-                {
-                    (d.location.0,
-                     file(files, files::CATALOG, d.location.0, d.location.1, 0, "")?.entry.parent)
-                };
-                return self.navigate_to(id, files, l);
+                let entry = d.ancestors.first().copied().ok_or(SERVICE_BUSY)?;
+                return d.restart(if entry.id == ROOT_ID
+                                 {
+                                     (0, 0)
+                                 }
+                                 else
+                                 {
+                                     (entry.volume, entry.parent)
+                                 });
             }
-            Action::Desktop => return self.navigate_to(id, files, (0, 0)),
+            Action::Desktop => return d.restart((0, 0)),
             Action::Volume(delta) =>
             {
-                let n = file(files, files::VOLUME_COUNT, 0, 0, 0, "")?.index;
-                let mut current = 0;
-                for i in 0..n
-                {
-                    if file(files, files::VOLUME_INDEX, 0, 0, i, "")?.volume_info.id == d.location.0
-                    {
-                        current = i;
-                    }
-                }
-                let next =
-                    (current as i64 + i64::from(delta)).rem_euclid(i64::from(n.max(1))) as u32;
-                let v = file(files, files::VOLUME_INDEX, 0, 0, next, "")?.volume_info.id;
-                return self.navigate_to(id, files, (v, ROOT_ID));
+                d.stage = Some(Stage::VolumeCount(delta));
+                d.issued = false;
+                d.revision = d.revision.checked_add(1).ok_or(NO_MEMORY)?;
             }
             Action::Previous(delta) | Action::Page(delta) =>
             {
-                if !d.entries.is_empty()
+                let total = d.entries.count();
+                if total == 0
                 {
-                    let step = if matches!(action, Action::Page(_))
-                    {
-                        delta * d.page() as i32
-                    }
-                    else
-                    {
-                        delta
-                    };
-                    d.selected =
-                        Some((d.selected.unwrap_or(0) as i64 + i64::from(step)).clamp(0,
-                                                                                      d.entries
-                                                                                       .len()
-                                                                                      as i64
-                                                                                      - 1)
-                             as usize);
-                    d.focus_name = false;
-                    d.reveal();
+                    return Ok(());
                 }
+                let step = i64::from(delta)
+                           * if matches!(action, Action::Page(_)) { d.page() as i64 } else { 1 };
+                d.selected = Some((d.selected.unwrap_or(0) as i64 + step).clamp(0, total as i64 - 1)
+                                  as usize);
+                d.focus_name = false;
+                d.reveal()?;
             }
             Action::Home =>
             {
-                d.selected = (!d.entries.is_empty()).then_some(0);
-                d.reveal();
+                d.selected = (d.entries.count() != 0).then_some(0);
+                d.reveal()?;
             }
             Action::End =>
             {
-                d.selected = d.entries.len().checked_sub(1);
-                d.reveal();
+                d.selected = d.entries.count().checked_sub(1);
+                d.reveal()?;
+            }
+            Action::Scroll(first) =>
+            {
+                let first = first.min(d.entries.count().saturating_sub(d.page()));
+                if first != d.first
+                {
+                    d.revision = d.revision.checked_add(1).ok_or(NO_MEMORY)?;
+                    d.issued = false;
+                    d.first = first;
+                    d.entries.request(first, false);
+                    d.stage = Some(if d.location.0 == 0
+                                   {
+                                       Stage::DesktopVolume(first as u32)
+                                   }
+                                   else
+                                   {
+                                       Stage::Scan
+                                   });
+                }
             }
             Action::ToggleFocus =>
             {
@@ -692,31 +1101,31 @@ impl Manager
             {
                 if d.mode == PUT && d.location.0 != 0
                 {
+                    if d.volume_info.read_only != 0
+                    {
+                        return Err(READ_ONLY);
+                    }
+                    d.saved_name = Some(Text::new(d.name())?);
                     d.sheet = Sheet::NewFolder;
                     d.focus_name = true;
                     d.selected = None;
-                    let mut previous = String::new();
-                    previous.try_reserve(d.name().len()).map_err(|_| NO_MEMORY)?;
-                    previous.push_str(d.name());
-                    d.saved_name = Some(previous);
                     d.editor.set_text("")?;
-                    d.editor.select(0, d.name().len() as u32)?;
+                    d.editor.select(0, 0)?;
                 }
             }
-            Action::Edit(c) =>
+            Action::Edit(character) =>
             {
                 if d.focus_name
                 {
-                    let start = d.editor.info().selection_start as usize;
-                    let end = d.editor.info().selection_end as usize;
-                    let mut candidate = String::new();
-                    candidate.try_reserve(d.name().len() + c.len_utf8()).map_err(|_| NO_MEMORY)?;
-                    candidate.push_str(&d.name()[..start]);
-                    candidate.push(c);
-                    candidate.push_str(&d.name()[end..]);
-                    if valid_name(d.name_format, &candidate)
+                    let info = d.editor.info();
+                    let start = info.selection_start as usize;
+                    let end = info.selection_end as usize;
+                    let mut candidate = Text::new(&d.name()[..start])?;
+                    candidate.push(character.encode_utf8(&mut [0; 4]))?;
+                    candidate.push(&d.name()[end..])?;
+                    if !candidate.text()?.contains('\0')
                     {
-                        d.editor.key(c)?;
+                        d.editor.key(character)?;
                         d.selected = None;
                     }
                 }
@@ -727,15 +1136,14 @@ impl Manager
                         d.typeahead.clear();
                     }
                     d.typed_at = when;
-                    d.typeahead.try_reserve(c.len_utf8()).map_err(|_| NO_MEMORY)?;
-                    d.typeahead.push(c);
-                    let prefix = d.typeahead.to_lowercase();
-                    if let Some(i) =
-                        d.entries.iter().position(|e| e.name().to_lowercase().starts_with(&prefix))
-                    {
-                        d.selected = Some(i);
-                        d.reveal();
-                    }
+                    d.typeahead.push(character.encode_utf8(&mut [0; 4]))?;
+                    d.revision = d.revision.checked_add(1).ok_or(NO_MEMORY)?;
+                    d.issued = false;
+                    d.entries.selected = d.selected;
+                    d.entries.request(0, true);
+                    d.stage = Some(Stage::Scan);
+                    d.selected = None;
+                    d.first = 0;
                 }
             }
             Action::Backspace =>
@@ -746,15 +1154,14 @@ impl Manager
                     d.selected = None;
                 }
             }
-            Action::Navigate(m, extend) =>
+            Action::Navigate(movement, extend) =>
             {
                 if d.focus_name
                 {
-                    d.editor.navigate(m, extend)?;
+                    d.editor.navigate(movement, extend)?;
                 }
             }
-            Action::Cancel | Action::Dismiss =>
-            {}
+            Action::Cancel | Action::Dismiss => ()
         }
         Ok(())
     }

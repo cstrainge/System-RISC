@@ -5,6 +5,9 @@ use alloc::{string::String, vec::Vec};
 use mac_abi::{dialogs::*, *};
 
 use super::resources::manager::Manager;
+#[cfg(target_arch = "riscv64")]
+#[path = "core.rs"]
+pub(crate) mod core_alerts;
 #[derive(Clone)]
 pub struct Item
 {

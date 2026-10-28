@@ -16,7 +16,8 @@ pub(crate) fn specification(storage: bool) -> Specification<'static>
                     capacity: if storage
                     {
                         CapacityPolicy::HardBound { slots:  1,
-                                                    reason: "One thread backing per process domain" }
+                                                    reason: "One scheduler backing per owner \
+                                                             domain" }
                     }
                     else
                     {
@@ -56,7 +57,14 @@ impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> fo
             *pending = Some(previous);
             return Err(Failure::registration_mismatch(ticket));
         }
-        retire(thread);
+        if thread.worker.is_some()
+        {
+            cancel_worker(thread, true);
+        }
+        else
+        {
+            retire(thread);
+        }
         *pending = Some(ticket);
         Ok(())
     }

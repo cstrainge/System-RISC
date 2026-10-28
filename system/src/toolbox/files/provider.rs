@@ -5,6 +5,7 @@
 use mac_filesystem_interface as fs;
 
 use super::*;
+use crate::toolbox::handles::InvocationGate;
 mod forks;
 mod path;
 mod scan;
@@ -165,15 +166,16 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        self.volumes
-            .insert(super::Mounted::Provider(Mounted { provider,
-                                                       source,
-                                                       info: None,
-                                                       phase: Phase::Mounting,
-                                                       reads: 0,
-                                                       revision: 0,
-                                                       changes: false }))
-            .map_err(|_| NO_MEMORY)
+        let mounted = super::Mounted::Provider(Mounted { provider,
+                                                         source,
+                                                         info: None,
+                                                         phase: Phase::Mounting,
+                                                         reads: 0,
+                                                         revision: 0,
+                                                         changes: false });
+        InvocationGate::with_system_allocation(|| self.volumes.insert(mounted)).map_err(|_| {
+                                                                                   NO_MEMORY
+                                                                               })
     }
 
     pub(crate) fn publish_provider_mount(&mut self, id: u32, bytes: &[u8])

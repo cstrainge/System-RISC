@@ -8,11 +8,16 @@
 #![feature(allocator_ext)]
 extern crate alloc;
 pub mod scrap;
+pub mod workers;
 use alloc::{alloc::{alloc, dealloc},
             boxed::Box};
 use core::{alloc::Layout, ptr::NonNull};
 
+/// Original-account resident allocator for independently loaded native modules.
+pub use mac_driver::runtime::allocation::ForwardingAllocator;
 use mac_driver::{Error, Result};
+pub use workers::{PrepareFailure, PreparedWorker, StartFailure, Worker, WorkerContext,
+                  WorkerWaker, Workers};
 /// Uninitialized storage only. It cannot be read or dereferenced as T until
 /// `write` consumes the reservation and transfers ownership to a normal Box.
 pub struct Reservation<T>

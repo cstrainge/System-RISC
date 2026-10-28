@@ -13,17 +13,19 @@ use crate::toolbox::handles::{CapacityPolicy, InvocationGate, KindCode, KindLeas
 
 pub(crate) struct DialogState
 {
-    pub previous: Option<WindowId>,
-    pub window:   u64,
-    pub alert:    Option<Arc<Alert>>,
-    pub controls: Vec<Option<u64>>,
-    pub tracking: Option<usize>
+    pub previous:      Option<WindowId>,
+    pub window:        u64,
+    pub alert:         Option<Arc<Alert>>,
+    pub controls:      Vec<Option<u64>>,
+    pub tracking:      Option<usize>,
+    recovery_activity: Option<crate::recovery::Activity>
 }
-static EMPTY: DialogState = DialogState { previous: None,
-                                          window:   0,
-                                          alert:    None,
-                                          controls: Vec::new(),
-                                          tracking: None };
+static EMPTY: DialogState = DialogState { previous:          None,
+                                          window:            0,
+                                          alert:             None,
+                                          controls:          Vec::new(),
+                                          tracking:          None,
+                                          recovery_activity: None };
 impl DialogState
 {
     pub fn active(&self) -> bool
@@ -34,9 +36,10 @@ impl DialogState
 pub(crate) type Released = mac_object_table::store::Removed<DialogState, InvocationGate>;
 pub(crate) struct Manager
 {
-    owner:   OwnerRef,
-    records: Store<DialogState>,
-    current: Option<u64>
+    owner:       OwnerRef,
+    records:     Store<DialogState>,
+    current:     Option<u64>,
+    publication: Option<mac_object_table::store::PublicationReservation<InvocationGate>>
 }
 impl Deref for Manager
 {
@@ -53,7 +56,29 @@ impl Manager
     {
         Ok(Self { owner,
                   records: Store::owned(kinds.0, kinds.1).map_err(|_| BAD_ARGUMENT)?,
-                  current: None })
+                  current: None,
+                  publication: None })
+    }
+
+    pub(crate) fn owner(&self) -> &OwnerRef
+    {
+        &self.owner
+    }
+
+    /// Boot-admit the core protocol's canonical slot, ID-index capacity and
+    /// reusable completion endpoint in this exact permanent System store.
+    pub(crate) fn prepare_recovery(&mut self) -> Result<(), Status>
+    {
+        if self.owner.owner().kind() != mac_object_table::domain::DomainKind::System
+        {
+            return Err(ACCESS_DENIED);
+        }
+        if self.publication.is_none()
+        {
+            self.publication =
+                Some(self.records.reserve_publication(&self.owner).map_err(pool_status)?);
+        }
+        Ok(())
     }
 
     pub(crate) fn begin(&mut self, alert: Alert, previous: Option<WindowId>)
@@ -67,28 +92,68 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
+        let activity = crate::context::recovery_activity();
+        let core_subject = if self.owner.owner().kind()
+                              == mac_object_table::domain::DomainKind::System
+        {
+            let activity = activity.as_ref().ok_or(ACCESS_DENIED)?;
+            if activity.storage_owner().owner() != self.owner.owner()
+            {
+                return Err(ACCESS_DENIED);
+            }
+            let subject = crate::context::io_subject().ok_or(ACCESS_DENIED)?;
+            let root = activity.root_subject();
+            if !subject.scope().same_scope(root.scope())
+            {
+                return Err(ACCESS_DENIED);
+            }
+            if !self.publication.as_ref().ok_or(NOT_SUPPORTED)?.ready()
+            {
+                return Err(SERVICE_BUSY);
+            }
+            Some(subject)
+        }
+        else
+        {
+            // A protected core alert must use the one System-owned manager.
+            if activity.is_some()
+            {
+                return Err(ACCESS_DENIED);
+            }
+            None
+        };
         let mut controls = Vec::new();
         controls.try_reserve_exact(alert.items.len()).map_err(|_| NO_MEMORY)?;
         controls.resize(alert.items.len(), None);
         let alert = Arc::try_new(alert).map_err(|_| NO_MEMORY)?;
-        let id = self.records
-                     .insert(&self.owner,
-                             DialogState { previous,
-                                           window: 0,
-                                           alert: Some(alert),
-                                           controls,
-                                           tracking: None })
-                     .map_err(|error| {
-                         match error
+        let state = DialogState { previous,
+                                  window: 0,
+                                  alert: Some(alert),
+                                  controls,
+                                  tracking: None,
+                                  recovery_activity: activity.clone() };
+        let id = if let Some(subject) = core_subject
+        {
+            let reservation = self.publication.as_mut().ok_or(NOT_SUPPORTED)?;
+            let pin = activity.as_ref().ok_or(ACCESS_DENIED)?.acknowledgement_pin();
+            self.records
+                .insert_reserved_in_scope_with_acknowledgement(reservation,
+                                                               subject.scope(),
+                                                               Some(pin),
+                                                               |_| state)
+                .map_err(|error| {
+                    match error
                     {
-                        mac_object_table::domain::PoolError::Stopping { .. }
-                        | mac_object_table::domain::PoolError::RegistrationUnavailable { .. } =>
-                        {
-                            SERVICE_BUSY
-                        }
-                        _ => NO_MEMORY
+                        mac_object_table::store::PublicationError::Busy => SERVICE_BUSY,
+                        mac_object_table::store::PublicationError::Pool(error) => pool_status(error)
                     }
-                     })?;
+                })?
+                .id()
+        }
+        else
+        {
+            self.records.insert(&self.owner, state).map_err(pool_status)?
+        };
         self.current = Some(id);
         Ok(id)
     }
@@ -103,6 +168,35 @@ impl Manager
         let record = self.records.remove(self.current?)?;
         self.current = None;
         Some(record)
+    }
+
+    pub(crate) fn recovery_window(&self, activity: &crate::recovery::Activity)
+                                  -> Result<Option<u64>, Status>
+    {
+        if self.owner.owner() != activity.storage_owner().owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let Some(state) = self.current.and_then(|id| self.records.get(id))
+        else
+        {
+            return Ok(None);
+        };
+        if !state.recovery_activity.as_ref().is_some_and(|held| held.same_session(activity))
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(Some(state.window))
+    }
+
+    pub(crate) fn take_recovery(&mut self, activity: &crate::recovery::Activity)
+                                -> Result<Option<Released>, Status>
+    {
+        if self.recovery_window(activity)?.is_none()
+        {
+            return Ok(None);
+        }
+        self.take().map(Some).ok_or(NOT_FOUND)
     }
 
     pub(crate) fn take_window(&mut self, window: u64) -> Option<Released>
@@ -138,7 +232,8 @@ pub(crate) fn specification(storage: bool) -> Specification<'static>
                                                           else
                                                           {
                                                               "One active classic Alert protocol \
-                                                               per application"
+                                                               per owner; System uses one core \
+                                                               store"
                                                           } } }
 }
 pub(crate) struct ReleaseAlerts;
@@ -158,4 +253,9 @@ impl Release<crate::toolbox::runtime::Desktop, Failure> for ReleaseStorage
     {
         context.release_alert_storage(ticket).map_err(Into::into)
     }
+}
+
+fn pool_status(error: mac_object_table::domain::PoolError) -> Status
+{
+    crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error))
 }

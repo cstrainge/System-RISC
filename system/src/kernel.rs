@@ -67,7 +67,7 @@ pub(crate) fn load_application(owner: &crate::toolbox::handles::OwnerRef, creato
 {
     let authority = application_authority(&resources)?;
     admit_image(owner,
-                AppImage { authority,
+                AppImage { role: crate::images::Role::Application { authority },
                            resources,
                            creator,
                            file_type })
@@ -75,7 +75,12 @@ pub(crate) fn load_application(owner: &crate::toolbox::handles::OwnerRef, creato
 fn admit_image(owner: &crate::toolbox::handles::OwnerRef, source: AppImage)
                -> Result<LoadedImage, Status>
 {
-    admit_shared_image(owner, alloc::sync::Arc::try_new(source).map_err(|_| NO_MEMORY)?)
+    // Immutable package sources are interned by the System image registry.
+    // Their resource backing is attributed at the storage read, before this move.
+    let source = crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                     alloc::sync::Arc::try_new(source)
+                 }).map_err(|_| NO_MEMORY)?;
+    admit_shared_image(owner, source)
 }
 
 pub(crate) fn copy_application(owner: &crate::toolbox::handles::OwnerRef,
@@ -91,6 +96,10 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
                       source: alloc::sync::Arc<AppImage>)
                       -> Result<LoadedImage, Status>
 {
+    if !matches!(source.role, crate::images::Role::Application { .. })
+    {
+        return Err(ACCESS_DENIED);
+    }
     let (preferred, _) =
         crate::loader::reservation(&source.resources).map_err(crate::loader::status)?;
     let extent =
@@ -102,6 +111,7 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
                           extent,
                           crate::machine::memory::APPLICATION_RELOCATION_BASE,
                           crate::machine::memory::IMAGE_LIMIT,
+                          alloc::vec::Vec::new(),
                           |resources, base| {
                               crate::loader::application_at(resources, base).map_err(|error| {
                                   serial!("APPLICATION_IMAGE_REFUSED: {error}");
@@ -110,6 +120,56 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
                           })
           })
           .map_err(AccessError::status)?
+}
+/// Module packages use the same immutable source and owner-alias registry as
+/// applications, with their own role and the exact permanent module RAM range.
+pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,
+                          source: alloc::sync::Arc<AppImage>, base: u64, extent: u64,
+                          executable: alloc::vec::Vec<core::ops::Range<u64>>,
+                          write: impl FnOnce(&[mac_formats::resource::Resource],
+                                 u64)
+                                 -> Result<usize, Status>)
+                          -> Result<LoadedImage, Status>
+{
+    if source.role != crate::images::Role::Module
+       || owner.owner().kind() != mac_object_table::domain::DomainKind::Module
+    {
+        return Err(ACCESS_DENIED);
+    }
+    IMAGES.with(|images| {
+              images.load(owner,
+                          source,
+                          base,
+                          extent,
+                          base,
+                          base.checked_add(extent).ok_or(NO_MEMORY)?,
+                          executable,
+                          write)
+          })
+          .map_err(AccessError::status)?
+}
+pub(crate) fn module_execution(binding: crate::images::Binding)
+                               -> Result<crate::images::ModuleExecution, Status>
+{
+    IMAGES.with(|images| images.execute_module(binding)).map_err(AccessError::status)?
+}
+pub(crate) fn finish_module_images()
+{
+    let _ = IMAGES.with(|images| images.finish_module_retiring());
+}
+pub(crate) fn module_resource_selection(execution: &crate::images::ModuleExecution)
+                                        -> ResourceSelection
+{
+    ResourceSelection { owner: execution.module(),
+                        image: Some(execution.binding()) }
+}
+pub(crate) fn with_module_resources<R>(execution: &crate::images::ModuleExecution,
+                                       call: impl FnOnce() -> R)
+                                       -> Result<R, Status>
+{
+    crate::context::with_selected_resources(ResourceSelection { owner: execution.module(),
+                                                                image: Some(execution.binding()) },
+                                            call).map_err(|_| WRONG_THREAD)
 }
 pub(crate) fn release_image(ticket: mac_object_table::domain::ReleasedResource,
                             registration: crate::images::Registration)
@@ -476,11 +536,18 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                                               mac_formats::Error::Malformed("invalid Finder \
                                                                              authority policy")
                                           })?;
-    let finder_loaded = admit_image(&finder_owner,
-                                    AppImage { resources: finder,
-                                               authority,
-                                               creator: *b"MACS",
-                                               file_type: *b"FNDR" }).map_err(|status| {
+    let finder_allocation =
+        processes.allocation(finder_id)
+                 .map_err(|_| {
+                     mac_formats::Error::Malformed("Finder allocation authority unavailable")
+                 })?;
+    let finder_loaded = crate::allocator::with_target(crate::allocator::Target::Owner {
+        account: finder_allocation, class: mac_kernel_model::policy::MemoryClass::Kernel
+    }, || admit_image(&finder_owner,
+                       AppImage { resources: finder,
+                                  role: crate::images::Role::Application { authority },
+                                  creator: *b"MACS",
+                                  file_type: *b"FNDR" })).map_err(|status| {
                             serial!("FINDER_IMAGE_REFUSED status={status}");
                             mac_formats::Error::Malformed("Finder image admission failed")
                         })?;
@@ -514,6 +581,18 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     crate::machine::scheduler::start()
 }
 
+fn recovery_boot_error(service: &'static str, status: Status) -> mac_formats::Error
+{
+    serial!("RECOVERY_BOOT_REFUSED service={service} status={status}");
+    match status
+    {
+        NO_MEMORY => mac_formats::Error::AllocationFailed(service),
+        NOT_FOUND => mac_formats::Error::Missing(service),
+        TRANSLATION_REQUIRED => mac_formats::Error::TranslationRequired(service),
+        _ => mac_formats::Error::Malformed(service)
+    }
+}
+
 fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resource>,
                       processes: crate::toolbox::processes::Manager, finder_loaded: LoadedImage)
                       -> mac_formats::Result<()>
@@ -522,18 +601,48 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     let finder_owner = processes.ledger(crate::context::finder_app().0).map_err(|_| {
         mac_formats::Error::Malformed("Finder bootstrap owner is unavailable")
     })?;
-    let fonts = crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut system)
-        .map_err(|status| match status {
-            mac_abi::NO_MEMORY => mac_formats::Error::AllocationFailed("cannot allocate the System font catalog"),
-            _ => mac_formats::Error::Malformed("cannot initialize the System font catalog")
-        })?;
+    let fonts =
+        crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+            crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut system)
+        }).map_err(|status| {
+              match status
+              {
+                  mac_abi::NO_MEMORY =>
+                  {
+                      mac_formats::Error::AllocationFailed("cannot allocate the System font \
+                                                            catalog")
+                  }
+                  _ => mac_formats::Error::Malformed("cannot initialize the System font catalog")
+              }
+          })?;
     serial!("FONTS_READY: families={} resources loaded from System", fonts.catalog().len());
     // Progress uses the real loaded CDEF before any application loop exists.
     let fonts = FONTS.call_once(|| fonts);
     let files = RESOURCE_FILES.call_once(|| crate::toolbox::resources::manager::Files { system });
+    crate::toolbox::standard_file::prepare_templates().map_err(|status| {
+                                                          recovery_boot_error("Standard File \
+                                                                               template admission \
+                                                                               failed",
+                                                                              status)
+                                                      })?;
+    crate::toolbox::dialogs::core_alerts::prepare().map_err(|status| {
+                                                       recovery_boot_error("System core alert \
+                                                                            admission failed",
+                                                                           status)
+                                                   })?;
+    crate::toolbox::crashes::initialize_protected_report(crate::recovery::permit()
+        .map_err(|status| recovery_boot_error("protected report storage unavailable", status))?)
+        .map_err(|status| recovery_boot_error("full report storage admission failed", status))?;
+    crate::recovery::prepare_modal().map_err(|status| {
+                                        recovery_boot_error("System modal service admission failed",
+                                                            status)
+                                    })?;
     let mut definitions = crate::loader::Definitions::new(files);
-    let mut boot_screen =
-        crate::boot_screen::BootScreen::begin(&files.system, fonts, &mut definitions)?;
+    let mut controls = crate::toolbox::controls::objects::Manager::new(
+        crate::toolbox::handles::controls_kinds().map_err(|status| recovery_boot_error("Control Manager kind admission failed", status))?)
+        .map_err(|status| recovery_boot_error("Control Manager admission failed", status))?;
+    let mut boot_screen = crate::boot_screen::BootScreen::begin(&files.system, fonts,
+                                                                &mut definitions, &mut controls)?;
     if !crate::platform::setup_framebuffer()
     {
         return Err(mac_formats::Error::Malformed("RAM framebuffer is unavailable"));
@@ -541,8 +650,8 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     serial!("BOOT_PANEL_READY stages=7");
     // Immutable publication is acquire/release synchronized by Once. Runtime
     // readers never spin or take a mutable catalog guard.
-    boot_screen.completed(1)?;
-    boot_screen.completed(2)?;
+    boot_screen.completed(1, &mut controls)?;
+    boot_screen.completed(2, &mut controls)?;
     crate::toolbox::files::types::initialize().map_err(|status| {
                                                   serial!("FILE_TYPES_ERROR status={}", status);
                                                   mac_formats::Error::Malformed("File Types is \
@@ -560,15 +669,32 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     {
         serial!("HOST_VOLUME_DISCOVERY_FAILED status={}", status);
     }
-    boot_screen.completed(3)?;
-    let runtime =
-        crate::toolbox::runtime::Desktop::new(definitions, processes, finder_owner).map_err(|_| {
+    boot_screen.completed(3, &mut controls)?;
+    let mut runtime =
+        crate::toolbox::runtime::Desktop::new(definitions, processes, finder_owner, controls).map_err(|_| {
                                               mac_formats::Error::Malformed("Toolbox initialization failed")
                                           })?;
-    boot_screen.completed(4)?;
+    runtime.prepare_recovery_storage().map_err(|status| {
+                                           recovery_boot_error("System UI publication storage \
+                                                                admission failed",
+                                                               status)
+                                       })?;
+    if let Some(storage) = crate::allocator::recovery::statistics()
+    {
+        serial!("RECOVERY_STORAGE_READY capacity={} admitted={} foundation={} system={} \
+                 domains={} raw_backing={} full_recovery_kit=false",
+                storage.capacity,
+                storage.admitted,
+                storage.foundation,
+                storage.system,
+                storage.domains,
+                storage.raw_backing);
+    }
+    runtime.boot_progress(&mut boot_screen, 4)?;
     DESKTOP.publish(runtime)
            .map_err(|_| mac_formats::Error::Malformed("desktop already published"))?;
-    boot_screen.completed(5)?;
+    with_desktop(|desktop| desktop.boot_progress(&mut boot_screen, 5))
+        .map_err(|error| recovery_boot_error("boot progress manager unavailable", error.status()))??;
     serial!("BOOT_SYSTEM_READY: services=0x{:x}", &SERVICES as *const SystemServices as usize);
     serial!("SYSTEM_FINDER_LAUNCH entry=0x{:x}", finder_entry);
     let thread =
@@ -579,14 +705,27 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
               serial!("FINDER_THREAD_CREATION_FAILED status={status}");
               mac_formats::Error::Malformed("Finder thread creation failed")
           })?;
-    boot_screen.completed(6)?;
+    with_desktop(|desktop| desktop.boot_progress(&mut boot_screen, 6))
+        .map_err(|error| recovery_boot_error("boot progress manager unavailable", error.status()))??;
     with_desktop(|desktop| desktop.started(crate::context::finder_app().0, thread)).map_err(|_| {
                                                           mac_formats::Error::Malformed("Finder context \
                                                                               initialization \
                                                                               failed")
                                                       })?;
-    boot_screen.completed(7)?;
+    with_desktop(|desktop| desktop.boot_progress(&mut boot_screen, 7))
+        .map_err(|error| recovery_boot_error("boot progress manager unavailable", error.status()))??;
+    with_desktop(|desktop| desktop.finish_boot_progress(&mut boot_screen))
+        .map_err(|error| recovery_boot_error("boot progress cleanup unavailable", error.status()))??;
     drop(boot_screen);
+    let allocations = crate::allocator::statistics();
+    serial!("RESIDENT_ALLOCATION_READY capacity={} admitted={} foundation={} system={} \
+             domains={} header_bytes={} private_app_and_module_heaps=false",
+            allocations.capacity,
+            allocations.admitted,
+            allocations.foundation,
+            allocations.ordinary,
+            allocations.domains,
+            crate::allocator::HEADER_BYTES);
     Ok(())
 }
 
@@ -694,6 +833,21 @@ unsafe fn start_services(info: &BootInfo) -> *const SystemServices
     // This is the first heap initialization and no ordinary allocation has run.
     unsafe {
         HEAP.initialize(heap_base as *mut u8, heap_bytes);
+    }
+    if info.flags & mac_abi::BOOT_GRAPHICAL != 0
+    {
+        if let Err(status) = crate::recovery::initialize()
+        {
+            serial!("BOOT_RECOVERY_STORAGE_REFUSED status={status}");
+            return ptr::null();
+        }
+        let prepared = crate::recovery::permit()
+            .and_then(crate::machine::scheduler::initialize_finder_recovery);
+        if let Err(status) = prepared
+        {
+            serial!("BOOT_FINDER_RECOVERY_BACKING_REFUSED status={status}");
+            return ptr::null();
+        }
     }
     crate::machine::traps::install();
     let files = match unsafe { crate::toolbox::files::BootStorage::from_boot_info(info) }

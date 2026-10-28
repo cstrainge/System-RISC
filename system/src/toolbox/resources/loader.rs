@@ -12,7 +12,10 @@ use mac_formats::{Error, Result,
 pub fn read_startup(name: &str) -> Result<Vec<Resource>>
 {
     crate::kernel::with_files(|files| {
-        files.startup_resources(name, crate::kernel::heap_available())
+        // Both startup packages become immutable System registry sources.
+        crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+            files.startup_resources(name, crate::kernel::heap_available())
+        })
     }).map_err(|error| {
           serial!("STARTUP_RESOURCE_SERVICE_REFUSED name={} cause={:?}", name, error);
           Error::Malformed("startup filesystem service is unavailable")
@@ -135,7 +138,12 @@ impl Definitions
             {
                 return Ok(binding.entry);
             }
-            let code = self.registry.prepare(resource, origin, &mut NoTranslator)?;
+            // The shared definition loader owns code/relocation staging,
+            // independently of the application which first requested it.
+            let code =
+                crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                    self.registry.prepare(resource, origin, &mut NoTranslator)
+                })?;
             let d = &code.descriptor;
             let extent = d.load_limit - d.load_base;
             if extent
@@ -167,9 +175,9 @@ impl Definitions
             }
             // Reserve publication storage and retain the source before touching
             // executable memory. Refusal leaves no half-published definition.
-            self.bindings
-                .try_reserve(1)
-                .map_err(|_| Error::AllocationFailed("definition binding allocation failed"))?;
+            crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                self.bindings.try_reserve(1)
+            }).map_err(|_| Error::AllocationFailed("definition binding allocation failed"))?;
             let source = if origin == 0
             {
                 None

@@ -7,13 +7,15 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use mac_abi::{files::*, *};
 use mac_filesystem_interface::{self as fs, Arguments, Operation};
 use mac_module::ClassId;
+use mac_object_table::shared::InvocationGate as _;
 use spinning_top::Spinlock;
 
-use crate::drivers::{OwnedJob,
-                     jobs::{Failure, subjects::Subject as IoSubject}};
+use crate::{drivers::{OwnedJob,
+                      jobs::{Failure, subjects::Subject as IoSubject}},
+            toolbox::handles::InvocationGate};
 fn io_subject(owner: super::super::subject::Access<'_>) -> Result<IoSubject, Status>
 {
-    crate::drivers::jobs::subjects::resident()?.admit(&owner.authority()?)
+    crate::drivers::jobs::subjects::resident()?.admit_current(&owner.authority()?)
 }
 mod forks;
 mod paths;
@@ -26,6 +28,8 @@ mod metadata;
 mod streams;
 mod groups;
 mod background;
+mod resident;
+pub(crate) use resident::{Reply as ResidentReply, Request as ResidentRequest};
 pub(in crate::toolbox::files) mod transfer;
 pub(crate) use application::{pending as application_pending, request as request_application};
 pub(crate) use groups::request as request_group;
@@ -40,7 +44,9 @@ pub(in crate::toolbox::files::provider) use writes::request_write_cleanup;
 fn reserve_flight_storage(flights: &mut Vec<Flight>) -> Result<(), Status>
 {
     let bound = crate::toolbox::handles::Kind::DriverJobs.capacity();
-    flights.try_reserve_exact(bound.saturating_sub(flights.len())).map_err(|_| NO_MEMORY)
+    InvocationGate::with_system_allocation(|| {
+        flights.try_reserve_exact(bound.saturating_sub(flights.len()))
+    }).map_err(|_| NO_MEMORY)
 }
 static FLIGHTS: Spinlock<Vec<Flight>> = Spinlock::new(Vec::new());
 static REAP: AtomicBool = AtomicBool::new(false);
@@ -48,7 +54,7 @@ static FORK_CLEANUP: AtomicBool = AtomicBool::new(false);
 static WRITE_CLEANUP: AtomicBool = AtomicBool::new(false);
 pub(crate) fn power_ready() -> bool
 {
-    FLIGHTS.lock().is_empty()
+    FLIGHTS.lock().is_empty() && !resident::cleanup_pending()
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Record
@@ -98,6 +104,10 @@ enum Step
     Stream(streams::State),
     Group(groups::State),
     Scan(DirectoryScanCursor),
+    PrepareName
+    {
+        volume: u32
+    },
     Allocation
     {
         volume: u32,
@@ -290,45 +300,49 @@ pub(in crate::toolbox::files) fn submit_args(subject: &IoSubject, provider: u64,
                                              args: Arguments<'_>)
                                              -> Result<OwnedJob, Status>
 {
-    let mut bytes = Vec::new();
-    let length = fs::HEADER_BYTES + args.payload.len();
-    bytes.try_reserve_exact(length).map_err(|_| NO_MEMORY)?;
-    bytes.resize(length, 0);
-    args.encode(&mut bytes).map_err(|_| BAD_ARGUMENT)?;
-    let size = match op
-    {
-        Operation::Exports => 4,
-        Operation::Mount => fs::MAX_MOUNT_BYTES,
-        Operation::Catalog
-        | Operation::Lookup
-        | Operation::BeginCreate
-        | Operation::BeginReplace => fs::MAX_METADATA_BYTES,
-        Operation::Scan => 4 + fs::MAX_METADATA_BYTES,
-        Operation::FinishWrite => fs::MAX_WRITE_RECEIPT_BYTES,
-        Operation::SetMetadata | Operation::Rename | Operation::Move | Operation::Remove =>
+    let allocation = subject.allocation().clone();
+    crate::allocator::with_target(allocation, || {
+        let mut bytes = Vec::new();
+        let length = fs::HEADER_BYTES + args.payload.len();
+        bytes.try_reserve_exact(length).map_err(|_| NO_MEMORY)?;
+        bytes.resize(length, 0);
+        args.encode(&mut bytes).map_err(|_| BAD_ARGUMENT)?;
+        let size = match op
         {
-            4 + fs::MAX_METADATA_BYTES
-        }
-        Operation::AbortWrite => fs::MAX_ABORT_RECEIPT_BYTES,
-        Operation::Open => 16,
-        Operation::CheckDirectory => 33,
-        Operation::BeginIconMoves | Operation::StepIconMoves | Operation::AbortIconMoves =>
-        {
-            fs::ICON_MOVE_PROGRESS_BYTES
-        }
-        Operation::Read | Operation::ReadWrite =>
-        {
-            usize::try_from(args.length).map_err(|_| BAD_ARGUMENT)?
-        }
-        _ => 0
-    };
-    crate::drivers::submit_background_to(subject,
-                                         provider,
-                                         ClassId(fs::CLASS),
-                                         fs::VERSION,
-                                         op as u32,
-                                         bytes,
-                                         size)
+            Operation::Exports => 4,
+            Operation::PrepareName => fs::MAX_PREPARED_NAME_BYTES,
+            Operation::Mount => fs::MAX_MOUNT_BYTES,
+            Operation::Catalog
+            | Operation::Lookup
+            | Operation::BeginCreate
+            | Operation::BeginReplace => fs::MAX_METADATA_BYTES,
+            Operation::Scan => 4 + fs::MAX_METADATA_BYTES,
+            Operation::FinishWrite => fs::MAX_WRITE_RECEIPT_BYTES,
+            Operation::SetMetadata | Operation::Rename | Operation::Move | Operation::Remove =>
+            {
+                4 + fs::MAX_METADATA_BYTES
+            }
+            Operation::AbortWrite => fs::MAX_ABORT_RECEIPT_BYTES,
+            Operation::Open => 16,
+            Operation::CheckDirectory => 33,
+            Operation::BeginIconMoves | Operation::StepIconMoves | Operation::AbortIconMoves =>
+            {
+                fs::ICON_MOVE_PROGRESS_BYTES
+            }
+            Operation::Read | Operation::ReadWrite =>
+            {
+                usize::try_from(args.length).map_err(|_| BAD_ARGUMENT)?
+            }
+            _ => 0
+        };
+        crate::drivers::submit_background_to(subject,
+                                             provider,
+                                             ClassId(fs::CLASS),
+                                             fs::VERSION,
+                                             op as u32,
+                                             bytes,
+                                             size)
+    })
 }
 fn status(failure: Failure) -> Status
 {
@@ -433,205 +447,219 @@ fn release_progress(flight: &mut Flight, reply: Option<Result<Vec<u8>, Status>>)
 }
 fn advance(mut flight: Flight) -> Progress
 {
-    if matches!(&flight.step, Step::Release { closing, .. } if closing.has_reply())
-    {
-        return match release_progress(&mut flight, None)
+    let allocation = flight.job.subject().allocation().clone();
+    crate::allocator::with_target(allocation, || {
+        if matches!(&flight.step, Step::Release { closing, .. } if closing.has_reply())
         {
-            Some(result) => Progress::Done(result),
-            None => Progress::Pending(flight)
-        };
-    }
-    let (result, never_sent) = match flight.job.poll()
-    {
-        Ok(None) => return Progress::Pending(flight),
-        Ok(Some(done)) =>
-        {
-            let never_sent = matches!(done.result, Err(Failure::Cancelled));
-            (done.result.map_err(status), never_sent)
-        }
-        Err(error) => (Err(error), false)
-    };
-    match flight.step
-    {
-        Step::File(_) => forks::advance(flight, result, never_sent),
-        Step::Source(_) => mounts::advance(flight, result, never_sent),
-        Step::Release { .. } =>
-        {
-            match release_progress(&mut flight, Some(result))
+            return match release_progress(&mut flight, None)
             {
                 Some(result) => Progress::Done(result),
                 None => Progress::Pending(flight)
-            }
-        }
-        Step::Write(_) => writes::advance(flight, result, never_sent),
-        Step::Resource(_) => resources::advance(flight, result),
-        Step::Application(_) => application::advance(flight, result, never_sent),
-        Step::Metadata(_) => metadata::advance(flight, result, never_sent),
-        Step::Stream(_) => streams::advance(flight, result, never_sent),
-        Step::Group(_) => groups::advance(flight, result, never_sent),
-        Step::Scan(cursor) =>
-        {
-            let result = result.and_then(|bytes| super::scan::reply(cursor, &bytes));
-            Progress::Done(files(|manager| manager.end_provider_read(cursor.volume)).and(result).map(Reply::Scan))
-        }
-        Step::Allocation { volume,
-                           node } =>
-        {
-            let result = result.and_then(|bytes| super::catalog(volume, &bytes, Some(node), None))
-                               .map(|entry| {
-                                   if entry.is_directory()
-                                   {
-                                       Reply::Allocation(0, 0)
-                                   }
-                                   else
-                                   {
-                                       Reply::Allocation(ALLOCATION_UNKNOWN, ALLOCATION_UNKNOWN)
-                                   }
-                               });
-            Progress::Done(files(|manager| manager.end_provider_read(volume)).and(result))
-        }
-        Step::Lookup { .. } | Step::Path { .. } => paths::advance(flight, result),
-        Step::Comment { volume,
-                        node } =>
-        {
-            // Comments are already part of the provider's catalog record.
-            // Do not enumerate children merely to read a directory comment.
-            let result =
-                result.and_then(|bytes| {
-                          let metadata = fs::Metadata::decode(&bytes).map_err(|_| BAD_ABI)?;
-                          super::catalog_metadata(volume, metadata, Some(node), None)?;
-                          let mut text = Vec::new();
-                          text.try_reserve_exact(metadata.comment.len()).map_err(|_| NO_MEMORY)?;
-                          text.extend_from_slice(metadata.comment.as_bytes());
-                          Ok(Reply::Bytes(text))
-                      });
-            Progress::Done(files(|manager| manager.end_provider_read(volume)).and(result))
-        }
-        Step::Catalog { volume,
-                        node } =>
-        {
-            let result = result.and_then(|bytes| super::catalog(volume, &bytes, Some(node), None))
-                               .and_then(|entry| {
-                                   if entry.is_directory()
-                                      && entry.child_count == fs::CHILD_COUNT_UNKNOWN
-                                   {
-                                       Err(BAD_ABI)
-                                   }
-                                   else
-                                   {
-                                       Ok(entry)
-                                   }
-                               });
-            finish_read(volume, result)
-        }
-        Step::Parent { volume,
-                       node } =>
-        {
-            let result = result.and_then(|bytes| super::catalog(volume, &bytes, Some(node), None));
-            match result
-            {
-                Ok(entry) if !flight.abandoned =>
-                {
-                    let parent = if entry.id == ROOT_ID { ROOT_ID } else { entry.parent };
-                    if parent == entry.id
-                    {
-                        if entry.child_count == fs::CHILD_COUNT_UNKNOWN
-                        {
-                            return finish_read(volume, Err(BAD_ABI));
-                        }
-                        return finish_read(volume, Ok(entry));
-                    }
-                    flight.step = Step::Catalog { volume,
-                                                  node: parent };
-                    continue_read(flight,
-                                  Operation::Catalog,
-                                  Arguments { volume,
-                                              node: parent,
-                                              flags: fs::INCLUDE_CHILD_COUNT,
-                                              ..Default::default() })
-                }
-                other => finish_read(volume, other)
-            }
-        }
-        Step::Child { volume,
-                      parent,
-                      index } =>
-        {
-            match result.and_then(|bytes| super::scan_entry(volume, parent, &bytes))
-            {
-                Ok(None) if !flight.abandoned =>
-                {
-                    continue_read(flight,
-                                  Operation::Scan,
-                                  Arguments { volume,
-                                              parent,
-                                              offset: u64::from(index),
-                                              ..Default::default() })
-                }
-                Ok(None) => finish_read(volume, Err(OPERATION_CANCELLED)),
-                Ok(Some(entry)) => finish_read(volume, Ok(entry)),
-                Err(error) => finish_read(volume, Err(error))
-            }
-        }
-        Step::Count =>
-        {
-            let result = result.and_then(|bytes| {
-                                   let bytes = bytes.as_slice().try_into().map_err(|_| BAD_ABI)?;
-                                   Ok(Reply::Count(u32::from_le_bytes(bytes)))
-                               });
-            Progress::Done(result)
-        }
-        Step::Mount(volume) =>
-        {
-            if never_sent
-            {
-                // The queue guarantees this cancellation never reached the
-                // provider. Retiring its reservation needs no redundant RPC.
-                return retire_mount(flight, volume, OPERATION_CANCELLED);
-            }
-            let result = if flight.abandoned
-            {
-                Err(OPERATION_CANCELLED)
-            }
-            else
-            {
-                result.and_then(|bytes| {
-                          files(|manager| manager.publish_provider_mount(volume, &bytes))
-                      })
             };
-            match result
-            {
-                Ok(info) => Progress::Done(Ok(Reply::Mounted(info))),
-                Err(error) => cleanup_mount(flight, volume, error)
-            }
         }
-        Step::Unmount(volume) =>
+        let (result, never_sent) = match flight.job.poll()
         {
-            match result
+            Ok(None) => return Progress::Pending(flight),
+            Ok(Some(done)) =>
             {
-                Ok(bytes) if bytes.is_empty() => retire_mount(flight, volume, OK),
-                Err(NOT_FOUND) => retire_mount(flight, volume, OK),
-                error =>
+                let never_sent = matches!(done.result, Err(Failure::Cancelled));
+                (done.result.map_err(status), never_sent)
+            }
+            Err(error) => (Err(error), false)
+        };
+        match flight.step
+        {
+            Step::File(_) => forks::advance(flight, result, never_sent),
+            Step::Source(_) => mounts::advance(flight, result, never_sent),
+            Step::Release { .. } =>
+            {
+                match release_progress(&mut flight, Some(result))
+                {
+                    Some(result) => Progress::Done(result),
+                    None => Progress::Pending(flight)
+                }
+            }
+            Step::Write(_) => writes::advance(flight, result, never_sent),
+            Step::Resource(_) => resources::advance(flight, result),
+            Step::Application(_) => application::advance(flight, result, never_sent),
+            Step::Metadata(_) => metadata::advance(flight, result, never_sent),
+            Step::Stream(_) => streams::advance(flight, result, never_sent),
+            Step::Group(_) => groups::advance(flight, result, never_sent),
+            Step::Scan(cursor) =>
+            {
+                let result = result.and_then(|bytes| super::scan::reply(cursor, &bytes));
+                Progress::Done(files(|manager| manager.end_provider_read(cursor.volume)).and(result).map(Reply::Scan))
+            }
+            Step::PrepareName { volume } =>
+            {
+                Progress::Done(files(|manager| manager.end_provider_read(volume)).and(result)
+                                                                                 .map(Reply::Bytes))
+            }
+            Step::Allocation { volume,
+                               node } =>
+            {
+                let result =
+                    result.and_then(|bytes| super::catalog(volume, &bytes, Some(node), None))
+                          .map(|entry| {
+                              if entry.is_directory()
+                              {
+                                  Reply::Allocation(0, 0)
+                              }
+                              else
+                              {
+                                  Reply::Allocation(ALLOCATION_UNKNOWN, ALLOCATION_UNKNOWN)
+                              }
+                          });
+                Progress::Done(files(|manager| manager.end_provider_read(volume)).and(result))
+            }
+            Step::Lookup { .. } | Step::Path { .. } => paths::advance(flight, result),
+            Step::Comment { volume,
+                            node } =>
+            {
+                // Comments are already part of the provider's catalog record.
+                // Do not enumerate children merely to read a directory comment.
+                let result = result.and_then(|bytes| {
+                                       let metadata =
+                                           fs::Metadata::decode(&bytes).map_err(|_| BAD_ABI)?;
+                                       super::catalog_metadata(volume, metadata, Some(node), None)?;
+                                       let mut text = Vec::new();
+                                       text.try_reserve_exact(metadata.comment.len())
+                                           .map_err(|_| NO_MEMORY)?;
+                                       text.extend_from_slice(metadata.comment.as_bytes());
+                                       Ok(Reply::Bytes(text))
+                                   });
+                Progress::Done(files(|manager| manager.end_provider_read(volume)).and(result))
+            }
+            Step::Catalog { volume,
+                            node } =>
+            {
+                let result =
+                    result.and_then(|bytes| super::catalog(volume, &bytes, Some(node), None))
+                          .and_then(|entry| {
+                              if entry.is_directory()
+                                 && entry.child_count == fs::CHILD_COUNT_UNKNOWN
+                              {
+                                  Err(BAD_ABI)
+                              }
+                              else
+                              {
+                                  Ok(entry)
+                              }
+                          });
+                finish_read(volume, result)
+            }
+            Step::Parent { volume,
+                           node } =>
+            {
+                let result =
+                    result.and_then(|bytes| super::catalog(volume, &bytes, Some(node), None));
+                match result
+                {
+                    Ok(entry) if !flight.abandoned =>
+                    {
+                        let parent = if entry.id == ROOT_ID { ROOT_ID } else { entry.parent };
+                        if parent == entry.id
+                        {
+                            if entry.child_count == fs::CHILD_COUNT_UNKNOWN
+                            {
+                                return finish_read(volume, Err(BAD_ABI));
+                            }
+                            return finish_read(volume, Ok(entry));
+                        }
+                        flight.step = Step::Catalog { volume,
+                                                      node: parent };
+                        continue_read(flight,
+                                      Operation::Catalog,
+                                      Arguments { volume,
+                                                  node: parent,
+                                                  flags: fs::INCLUDE_CHILD_COUNT,
+                                                  ..Default::default() })
+                    }
+                    other => finish_read(volume, other)
+                }
+            }
+            Step::Child { volume,
+                          parent,
+                          index } =>
+            {
+                match result.and_then(|bytes| super::scan_entry(volume, parent, &bytes))
+                {
+                    Ok(None) if !flight.abandoned =>
+                    {
+                        continue_read(flight,
+                                      Operation::Scan,
+                                      Arguments { volume,
+                                                  parent,
+                                                  offset: u64::from(index),
+                                                  ..Default::default() })
+                    }
+                    Ok(None) => finish_read(volume, Err(OPERATION_CANCELLED)),
+                    Ok(Some(entry)) => finish_read(volume, Ok(entry)),
+                    Err(error) => finish_read(volume, Err(error))
+                }
+            }
+            Step::Count =>
+            {
+                let result = result.and_then(|bytes| {
+                                       let bytes =
+                                           bytes.as_slice().try_into().map_err(|_| BAD_ABI)?;
+                                       Ok(Reply::Count(u32::from_le_bytes(bytes)))
+                                   });
+                Progress::Done(result)
+            }
+            Step::Mount(volume) =>
+            {
+                if never_sent
+                {
+                    // The queue guarantees this cancellation never reached the
+                    // provider. Retiring its reservation needs no redundant RPC.
+                    return retire_mount(flight, volume, OPERATION_CANCELLED);
+                }
+                let result = if flight.abandoned
+                {
+                    Err(OPERATION_CANCELLED)
+                }
+                else
+                {
+                    result.and_then(|bytes| {
+                              files(|manager| manager.publish_provider_mount(volume, &bytes))
+                          })
+                };
+                match result
+                {
+                    Ok(info) => Progress::Done(Ok(Reply::Mounted(info))),
+                    Err(error) => cleanup_mount(flight, volume, error)
+                }
+            }
+            Step::Unmount(volume) =>
+            {
+                match result
+                {
+                    Ok(bytes) if bytes.is_empty() => retire_mount(flight, volume, OK),
+                    Err(NOT_FOUND) => retire_mount(flight, volume, OK),
+                    error =>
+                    {
+                        let _ = files(|manager| manager.quarantine_provider_mount(volume));
+                        Progress::Done(Err(error.err().unwrap_or(BAD_ABI)))
+                    }
+                }
+            }
+            Step::Cleanup { volume,
+                            status } =>
+            {
+                if matches!(&result, Ok(bytes) if bytes.is_empty())
+                   || matches!(result, Err(NOT_FOUND))
+                {
+                    retire_mount(flight, volume, status)
+                }
+                else
                 {
                     let _ = files(|manager| manager.quarantine_provider_mount(volume));
-                    Progress::Done(Err(error.err().unwrap_or(BAD_ABI)))
+                    Progress::Done(Err(ROLLBACK_FAILED))
                 }
             }
         }
-        Step::Cleanup { volume,
-                        status } =>
-        {
-            if matches!(&result, Ok(bytes) if bytes.is_empty()) || matches!(result, Err(NOT_FOUND))
-            {
-                retire_mount(flight, volume, status)
-            }
-            else
-            {
-                let _ = files(|manager| manager.quarantine_provider_mount(volume));
-                Progress::Done(Err(ROLLBACK_FAILED))
-            }
-        }
-    }
+    })
 }
 
 fn reply(call: &mut FileCall, output: &mut [u8], result: Result<Reply, Status>) -> Status
@@ -1049,6 +1077,7 @@ pub(crate) fn abandon_thread(thread: u64)
 }
 pub(crate) fn pump()
 {
+    resident::pump_cleanup();
     crate::drivers::file_sources::runtime::pump();
     transfer::pump();
     if super::super::groups::needs_cleanup()

@@ -1,7 +1,7 @@
 //! Lifetime-domain identity, the resident process owner directory, and ledger
 //! metadata. Other managers migrate under memory/app/resource spec §13.
 //! Native/legacy wire projections remain the responsibility of the facility.
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use core::{fmt,
            num::NonZeroU64,
            sync::atomic::{AtomicBool, AtomicU64, Ordering}};
@@ -404,6 +404,7 @@ pub struct DomainSlots
     kind:                  KindCode,
     policy:                CapacityPolicy,
     occupied:              Vec<u64>,
+    reserved:              Vec<u64>,
     retired:               Vec<u64>,
     pending:               Vec<u64>,
     quarantined:           Vec<u64>,
@@ -440,6 +441,7 @@ impl DomainSlots
                   kind,
                   policy,
                   occupied: Vec::new(),
+                  reserved: Vec::new(),
                   retired: Vec::new(),
                   pending: Vec::new(),
                   quarantined: Vec::new(),
@@ -492,12 +494,14 @@ impl DomainSlots
                                          requested_slots: slots,
                                          limit:           self.policy.limit() };
         self.occupied.try_reserve(words - self.occupied.len()).map_err(|_| error)?;
+        self.reserved.try_reserve(words - self.reserved.len()).map_err(|_| error)?;
         self.retired.try_reserve(words - self.retired.len()).map_err(|_| error)?;
         self.pending.try_reserve(words - self.pending.len()).map_err(|_| error)?;
         self.quarantined.try_reserve(words - self.quarantined.len()).map_err(|_| error)?;
         self.generations.try_reserve(slots - self.generations.len()).map_err(|_| error)?;
         self.parents.try_reserve(slots - self.parents.len()).map_err(|_| error)?;
         self.occupied.resize(words, 0);
+        self.reserved.resize(words, 0);
         self.retired.resize(words, 0);
         self.pending.resize(words, 0);
         self.quarantined.resize(words, 0);
@@ -553,25 +557,15 @@ impl DomainSlots
                 let first = at % 64;
                 let take = (end - at).min(64 - first);
                 let span = if take == 64 { u64::MAX } else { ((1u64 << take) - 1) << first };
-                let free = !(self.occupied[word] | self.retired[word] | self.pending[word]) & span;
+                let free = !(self.occupied[word]
+                             | self.retired[word]
+                             | self.pending[word]
+                             | self.reserved[word])
+                           & span;
                 if free != 0
                 {
                     let slot = word * 64 + free.trailing_zeros() as usize;
-                    let generation = NonZeroU64::new(self.generations[slot].max(1)).unwrap();
-                    self.generations[slot] = generation.get();
-                    self.generation_high_water = self.generation_high_water.max(generation.get());
-                    self.occupied[word] |= 1 << (slot % 64);
-                    self.parents[slot] = parent;
-                    self.scoped_count += usize::from(parent.is_some());
-                    self.live += 1;
-                    self.births = self.births.saturating_add(1);
-                    self.drain_word = self.drain_word.min(word);
-                    self.cursor = if slot + 1 == len { 0 } else { slot + 1 };
-                    return Ok(ResourceKey { owner,
-                                            kind: self.kind,
-                                            slot,
-                                            generation,
-                                            registration: self.registration });
+                    return Ok(self.occupy(slot, parent));
                 }
                 at += take;
             }
@@ -590,6 +584,76 @@ impl DomainSlots
         {
             Err(self.exhausted())
         }
+    }
+
+    fn occupy(&mut self, slot: usize, parent: Option<ResourceKey>) -> ResourceKey
+    {
+        let generation = NonZeroU64::new(self.generations[slot].max(1)).unwrap();
+        self.generations[slot] = generation.get();
+        self.generation_high_water = self.generation_high_water.max(generation.get());
+        self.occupied[slot / 64] |= 1 << (slot % 64);
+        self.parents[slot] = parent;
+        self.scoped_count += usize::from(parent.is_some());
+        self.live += 1;
+        self.births = self.births.saturating_add(1);
+        self.drain_word = self.drain_word.min(slot / 64);
+        self.cursor = if slot + 1 == self.generations.len() { 0 } else { slot + 1 };
+        ResourceKey { owner: self.owner,
+                      kind: self.kind,
+                      slot,
+                      generation,
+                      registration: self.registration }
+    }
+
+    // A reservation owns physical publication capacity, not a live object or
+    // identity. Normal allocation excludes this bit until its capability dies.
+    fn reserve_slot(&mut self) -> Result<usize, PoolError>
+    {
+        if !self.accepting
+        {
+            return Err(PoolError::Stopping { owner: self.owner });
+        }
+        for slot in 0..self.generations.len()
+        {
+            let word = slot / 64;
+            let bit = 1 << (slot % 64);
+            if (self.occupied[word] | self.pending[word] | self.retired[word] | self.reserved[word])
+               & bit
+               == 0
+            {
+                self.reserved[word] |= bit;
+                return Ok(slot);
+            }
+        }
+        let len = self.generations.len();
+        if self.policy.limit().is_some_and(|limit| len >= limit)
+        {
+            return Err(self.exhausted());
+        }
+        Err(PoolError::GrowthRequired { owner:         self.owner,
+                                        kind:          self.kind,
+                                        used:          self.live,
+                                        retired:       self.retired_count,
+                                        pending:       self.pending_count,
+                                        storage_slots: len,
+                                        policy_limit:  self.policy.limit() })
+    }
+
+    fn allocate_reserved(&mut self, slot: usize, parent: Option<ResourceKey>)
+                         -> Result<ResourceKey, PoolError>
+    {
+        if slot >= self.generations.len()
+        {
+            return Err(PoolError::InvalidGrowth);
+        }
+        let word = slot / 64;
+        let bit = 1 << (slot % 64);
+        if self.reserved[word] & bit == 0
+           || (self.occupied[word] | self.pending[word] | self.retired[word]) & bit != 0
+        {
+            return Err(self.exhausted());
+        }
+        Ok(self.occupy(slot, parent))
     }
 
     pub fn contains(&self, key: ResourceKey) -> bool
@@ -869,7 +933,7 @@ pub struct OwnerIndex
 {
     owner:                  DomainId,
     pools:                  Vec<DomainSlots>,
-    accepting:              bool,
+    admission:              Arc<AtomicBool>,
     revision:               u64,
     quarantine_pool_cursor: usize,
     completions:            crate::completion::Queue
@@ -1003,6 +1067,10 @@ impl<T, G: InvocationGate> DomainEntry<T, G>
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DirectoryError
 {
+    Duplicate
+    {
+        owner: DomainId
+    },
     Storage
     {
         owner: DomainId
@@ -1022,6 +1090,10 @@ pub enum DirectoryError
     CompletionFaults
     {
         owner: DomainId, faults: usize
+    },
+    AdmissionOpen
+    {
+        owner: DomainId
     }
 }
 impl fmt::Display for DirectoryError
@@ -1030,7 +1102,12 @@ impl fmt::Display for DirectoryError
     {
         match self
         {
+            Self::Duplicate { owner } => write!(f, "lifetime domain {owner} is already registered"),
             Self::Storage { owner } => write!(f, "owner-directory allocation refused for {owner}"),
+            Self::AdmissionOpen { owner } =>
+            {
+                write!(f, "cannot drain {owner}: resource admission is still open")
+            }
             Self::NotFound { incarnation } =>
             {
                 write!(f, "lifetime domain incarnation {incarnation} not found")
@@ -1075,16 +1152,21 @@ impl<T, G: InvocationGate> Directory<T, G>
         self.entries.is_empty()
     }
 
-    /// Consumes the sole owner index. Neither insertion nor payload mutation
-    /// allows the caller to substitute another owner's ledger afterward.
-    pub fn insert(&mut self, ledger: OwnerIndex, value: T) -> Result<DomainId, DirectoryError>
+    /// Retains an authentic prebuilt ledger. Authority construction and shared
+    /// directory storage have different allocation owners.
+    pub fn insert(&mut self, ledger: OwnerRef<G>, value: T) -> Result<DomainId, DirectoryError>
     {
         let owner = ledger.owner();
-        let ledger = OwnerRef::try_new(ledger)?;
-        // OwnerIndex's issuer prohibits duplicate incarnations, including System.
         let at =
-            self.entries.partition_point(|entry| entry.owner().incarnation() < owner.incarnation());
-        self.entries.try_reserve(1).map_err(|_| DirectoryError::Storage { owner })?;
+            match self.entries.binary_search_by_key(&owner.incarnation(), |entry| {
+                                  entry.owner().incarnation()
+                              })
+            {
+                Ok(_) => return Err(DirectoryError::Duplicate { owner }),
+                Err(at) => at
+            };
+        G::with_system_allocation(|| self.entries.try_reserve(1))
+            .map_err(|_| DirectoryError::Storage { owner })?;
         self.entries.insert(at,
                             DomainEntry { ledger,
                                           value });
@@ -1187,6 +1269,14 @@ impl<T, G: InvocationGate> Drop for Directory<T, G>
 pub enum IndexError
 {
     Identity(IncarnationsExhausted),
+    AdmissionStorage
+    {
+        kind: DomainKind
+    },
+    SharedStorage
+    {
+        kind: DomainKind
+    },
     Pool(PoolError)
 }
 impl fmt::Display for IndexError
@@ -1196,10 +1286,81 @@ impl fmt::Display for IndexError
         match self
         {
             Self::Identity(e) => e.fmt(f),
+            Self::AdmissionStorage { kind } =>
+            {
+                write!(f,
+                       "cannot allocate {kind:?} owner admission authority; backing allocation \
+                        refused")
+            }
+            Self::SharedStorage { kind } =>
+            {
+                write!(f,
+                       "cannot allocate {kind:?} shared owner authority; backing allocation \
+                        refused")
+            }
             Self::Pool(e) => e.fmt(f)
         }
     }
 }
+
+/// A fresh, empty namespace that has not escaped as owner authority. Its only
+/// publication paths commit the boot-wide issuer before returning the index or
+/// shared root. No fallible backing allocation follows that commitment.
+pub(crate) struct UnpublishedIndex
+{
+    index: OwnerIndex
+}
+impl UnpublishedIndex
+{
+    pub(crate) fn prepare(kind: DomainKind) -> Result<Self, IndexError>
+    {
+        if kind == DomainKind::System && SYSTEM_INDEX_ISSUED.load(Ordering::Relaxed)
+        {
+            return Err(IndexError::Pool(PoolError::SystemIndexAlreadyIssued));
+        }
+        let admission =
+            Arc::try_new(AtomicBool::new(true)).map_err(|_| IndexError::AdmissionStorage { kind })?;
+        let owner = DomainId::issue(kind).map_err(IndexError::Identity)?;
+        Ok(Self { index: OwnerIndex { owner,
+                                      pools: Vec::new(),
+                                      admission,
+                                      revision: 1,
+                                      quarantine_pool_cursor: 0,
+                                      completions: crate::completion::Queue::new() } })
+    }
+
+    fn commit(kind: DomainKind) -> Result<(), IndexError>
+    {
+        if kind == DomainKind::System
+           && SYSTEM_INDEX_ISSUED.compare_exchange(false,
+                                                   true,
+                                                   Ordering::Relaxed,
+                                                   Ordering::Relaxed)
+                                 .is_err()
+        {
+            return Err(IndexError::Pool(PoolError::SystemIndexAlreadyIssued));
+        }
+        Ok(())
+    }
+
+    fn into_standalone(self) -> Result<OwnerIndex, IndexError>
+    {
+        Self::commit(self.index.owner.kind())?;
+        Ok(self.index)
+    }
+
+    pub(crate) fn into_shared<G: InvocationGate>(self) -> Result<OwnerRef<G>, IndexError>
+    {
+        let kind = self.index.owner.kind();
+        // Neither the candidate nor a clone escapes before both Arc allocations
+        // succeed. Refusal drops only unpublished backing, leaving System free
+        // for a genuine retry; failed non-System incarnations remain consumed.
+        let root = OwnerRef::try_new(self.index).map_err(|_| IndexError::SharedStorage { kind })?;
+        G::run(|| Self::commit(kind))?;
+        Ok(root)
+    }
+}
+
 impl OwnerIndex
 {
     pub fn quarantine(&mut self, released: ReleasedResource) -> Result<(), CompletionError>
@@ -1305,7 +1466,7 @@ impl OwnerIndex
         let mut result = LedgerSummary { revision: self.revision,
                                          kinds: self.pools.len(),
                                          completion_faults: self.completions.len(),
-                                         accepting: self.accepting,
+                                         accepting: self.accepting(),
                                          ..Default::default() };
         for pool in &self.pools
         {
@@ -1326,22 +1487,7 @@ impl OwnerIndex
     /// authorizes recreating its incarnation or resetting its generations.
     pub fn issue(kind: DomainKind) -> Result<Self, IndexError>
     {
-        if kind == DomainKind::System
-           && SYSTEM_INDEX_ISSUED.compare_exchange(false,
-                                                   true,
-                                                   Ordering::Relaxed,
-                                                   Ordering::Relaxed)
-                                 .is_err()
-        {
-            return Err(IndexError::Pool(PoolError::SystemIndexAlreadyIssued));
-        }
-        let owner = DomainId::issue(kind).map_err(IndexError::Identity)?;
-        Ok(Self { owner,
-                  pools: Vec::new(),
-                  accepting: true,
-                  revision: 1,
-                  quarantine_pool_cursor: 0,
-                  completions: crate::completion::Queue::new() })
+        UnpublishedIndex::prepare(kind)?.into_standalone()
     }
 
     pub(crate) fn note_scope_change(&mut self)
@@ -1409,7 +1555,7 @@ impl OwnerIndex
                                                                          cause }
                                                   });
         }
-        if !self.accepting
+        if !self.accepting()
         {
             return Err(PoolError::Stopping { owner: self.owner });
         }
@@ -1456,9 +1602,16 @@ impl OwnerIndex
         self.owner
     }
 
-    pub const fn accepting(&self) -> bool
+    pub fn accepting(&self) -> bool
     {
-        self.accepting
+        self.admission.load(Ordering::Acquire)
+    }
+
+    /// The shared reference observes this same authority without entering the
+    /// ledger lock, including allocator admission during metadata growth.
+    pub(crate) fn admission(&self) -> Arc<AtomicBool>
+    {
+        self.admission.clone()
     }
 
     pub fn pools(&self) -> impl Iterator<Item = &DomainSlots>
@@ -1473,7 +1626,7 @@ impl OwnerIndex
 
     pub fn add_pool(&mut self, kind: KindCode, policy: CapacityPolicy) -> Result<(), PoolError>
     {
-        if !self.accepting
+        if !self.accepting()
         {
             return Err(PoolError::Stopping { owner: self.owner });
         }
@@ -1489,7 +1642,7 @@ impl OwnerIndex
                                                   kind });
         }
         let mut pool = DomainSlots::new(self.owner, kind, policy)?;
-        if !self.accepting
+        if !self.accepting()
         {
             pool.stop_admission();
         }
@@ -1571,6 +1724,44 @@ impl OwnerIndex
         Ok(key)
     }
 
+    pub(crate) fn reserve_value_slot(&mut self, kind: KindCode) -> Result<usize, PoolError>
+    {
+        self.authorize(kind, None)?;
+        let owner = self.owner;
+        let slot = self.pool_mut(kind)
+                       .ok_or(PoolError::UnregisteredKind { owner,
+                                                            kind })?
+                       .reserve_slot()?;
+        self.revision = self.revision.saturating_add(1);
+        Ok(slot)
+    }
+
+    pub(crate) fn unreserve_value_slot(&mut self, kind: KindCode, slot: usize)
+    {
+        if let Some(pool) = self.pool_mut(kind)
+        {
+            if let Some(word) = pool.reserved.get_mut(slot / 64)
+            {
+                *word &= !(1 << (slot % 64));
+                self.revision = self.revision.saturating_add(1);
+            }
+        }
+    }
+
+    pub(crate) fn allocate_reserved_value(&mut self, kind: KindCode, slot: usize,
+                                          scope: Option<&crate::scope::State>)
+                                          -> Result<ResourceKey, PoolError>
+    {
+        let parent = self.authorize(kind, scope)?;
+        let owner = self.owner;
+        let key = self.pool_mut(kind)
+                      .ok_or(PoolError::UnregisteredKind { owner,
+                                                           kind })?
+                      .allocate_reserved(slot, parent)?;
+        self.revision = self.revision.saturating_add(1);
+        Ok(key)
+    }
+
     /// Full parent identity for a live or pending child; it never validates a
     /// stale child generation or upgrades metadata into scope authority.
     pub fn parent(&self, key: ResourceKey) -> Option<ResourceKey>
@@ -1632,18 +1823,19 @@ impl OwnerIndex
 
     pub fn stop_admission(&mut self)
     {
-        if self.accepting
+        // Publish closure before stopping the individual pools. Shared reads
+        // never take this lock; writers remain inside the invocation gate.
+        if self.admission.swap(false, Ordering::AcqRel)
         {
             self.revision = self.revision.saturating_add(1);
         }
-        self.accepting = false;
         for pool in &mut self.pools
         {
             pool.stop_admission();
         }
     }
 
-    pub(crate) fn retire(&mut self) -> Result<(), DirectoryError>
+    fn ensure_empty(&self) -> Result<(), DirectoryError>
     {
         if self.completions.len() != 0
         {
@@ -1662,13 +1854,39 @@ impl OwnerIndex
             return Err(DirectoryError::PendingResources { owner: self.owner,
                                                           pending });
         }
-        // Check and close under the caller's single metadata lock. A manager's
-        // surviving reference is only a closed identity stub, not a pin on all
-        // of the dead domain's bitmap/generation storage. Incarnation uniqueness
-        // makes discarding this history safe; this index can never reopen.
-        self.stop_admission();
-        self.pools = Vec::new();
         Ok(())
+    }
+
+    /// Detach only a quiescent, closed domain's metadata. The caller must drop
+    /// the returned backing after leaving its owner lock. The stopped identity
+    /// remains authoritative and can never acquire a replacement namespace.
+    pub(crate) fn drain_stopped(&mut self) -> Result<Vec<DomainSlots>, DirectoryError>
+    {
+        self.ensure_empty()?;
+        if self.accepting()
+        {
+            return Err(DirectoryError::AdmissionOpen { owner: self.owner });
+        }
+        Ok(self.detach_pools())
+    }
+
+    fn detach_pools(&mut self) -> Vec<DomainSlots>
+    {
+        if !self.pools.is_empty()
+        {
+            self.revision = self.revision.saturating_add(1);
+        }
+        self.quarantine_pool_cursor = 0;
+        core::mem::take(&mut self.pools)
+    }
+
+    pub(crate) fn retire(&mut self) -> Result<Vec<DomainSlots>, DirectoryError>
+    {
+        self.ensure_empty()?;
+        // Existing callers may retire an empty open ledger. Check and close
+        // under the same metadata lock before detaching any generation history.
+        self.stop_admission();
+        Ok(self.detach_pools())
     }
 
     /// Kind dispatch is resolved by the caller after dropping its registry lock.
@@ -1758,7 +1976,7 @@ mod tests
             OwnerIndex { owner:                  DomainId { kind: DomainKind::Process,
                                                             incarnation },
                          pools:                  Vec::new(),
-                         accepting:              true,
+                         admission:              Arc::new(AtomicBool::new(true)),
                          revision:               1,
                          quarantine_pool_cursor: 0,
                          completions:            crate::completion::Queue::new() }
@@ -1766,8 +1984,8 @@ mod tests
         let low = 7;
         let high = (1u64 << 40) | low;
         let mut directory = Directory::<_, HostGate>::new();
-        directory.insert(ledger(low), "low").unwrap();
-        directory.insert(ledger(high), "high").unwrap();
+        directory.insert(OwnerRef::try_new(ledger(low)).unwrap(), "low").unwrap();
+        directory.insert(OwnerRef::try_new(ledger(high)).unwrap(), "high").unwrap();
         assert_eq!(directory.get(low).unwrap().value(), &"low");
         assert_eq!(directory.get(high).unwrap().value(), &"high");
         assert_eq!(directory.remove(high).unwrap(), "high");
@@ -1778,8 +1996,8 @@ mod tests
     fn mutable_payload_iteration_retains_authentic_directory_identity()
     {
         let mut directory = Directory::<_, HostGate>::new();
-        let a = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), 0).unwrap();
-        let b = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(), 0).unwrap();
+        let a = directory.insert(OwnerRef::issue(DomainKind::Process).unwrap(), 0).unwrap();
+        let b = directory.insert(OwnerRef::issue(DomainKind::Process).unwrap(), 0).unwrap();
         for (ledger, payload) in directory.entries_mut()
         {
             *payload = ledger.owner().incarnation();

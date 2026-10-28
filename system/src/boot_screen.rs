@@ -11,7 +11,6 @@ pub(crate) use strip::Refusal as ExtensionRefusal;
 
 pub struct BootScreen
 {
-    controls:   Manager,
     id:         u64,
     entry:      DefinitionEntry,
     state:      ControlDefinitionState,
@@ -24,7 +23,7 @@ fn failed(_: Status) -> Error
 impl BootScreen
 {
     pub fn begin(resources: &[Resource], fonts: &FontManager,
-                 definitions: &mut crate::loader::Definitions)
+                 definitions: &mut crate::loader::Definitions, controls: &mut Manager)
                  -> Result<Self>
     {
         let title = resources.iter()
@@ -70,27 +69,21 @@ impl BootScreen
                                                                        determinate: 1,
                                                                        ..Default::default() },
                                              ..Default::default() };
-        let mut controls = Manager::new(crate::toolbox::handles::controls_kinds().map_err(failed)?).map_err(failed)?;
         let mut call = ControlCall { operation: CREATE_STANDARD,
                                      procedure: PROGRESS_BAR_PROCEDURE,
                                      standard: state,
                                      ..Default::default() };
-        controls.request(&crate::toolbox::handles::system_owner().map_err(failed)?,
-                         &mut call,
-                         entry,
-                         crate::machine::traps::gateway)
+        let owner = crate::toolbox::handles::system_owner().map_err(failed)?;
+        controls.request(&owner, &owner, &mut call, entry, crate::machine::traps::gateway)
                 .map_err(failed)?;
         call.operation = DRAW_OBJECT;
-        let drawing = controls.request(&crate::toolbox::handles::system_owner().map_err(failed)?,
-                                       &mut call,
-                                       entry,
-                                       crate::machine::traps::gateway)
-                              .map_err(failed)?
-                              .ok_or(Error::Malformed("boot Progress Bar drawing is missing"))?;
+        let drawing =
+            controls.request(&owner, &owner, &mut call, entry, crate::machine::traps::gateway)
+                    .map_err(failed)?
+                    .ok_or(Error::Malformed("boot Progress Bar drawing is missing"))?;
         drawing.paint_clipped(&mut canvas).map_err(failed)?;
         crate::platform::present(pixels);
-        Ok(Self { controls,
-                  id: call.id,
+        Ok(Self { id: call.id,
                   entry,
                   state,
                   extensions })
@@ -214,7 +207,7 @@ impl BootScreen
         Ok(())
     }
 
-    pub fn completed(&mut self, stage: u8) -> Result<()>
+    pub fn completed(&mut self, stage: u8, controls: &mut Manager) -> Result<()>
     {
         let value = u64::from(stage.min(7));
         if value <= self.state.progress.completed
@@ -228,12 +221,10 @@ impl BootScreen
                                      procedure: PROGRESS_BAR_PROCEDURE,
                                      standard: next,
                                      ..Default::default() };
-        let drawing = self.controls
-                          .request(&crate::toolbox::handles::system_owner().map_err(failed)?,
-                                   &mut call,
-                                   self.entry,
-                                   crate::machine::traps::gateway)
-                          .map_err(failed)?;
+        let owner = crate::toolbox::handles::system_owner().map_err(failed)?;
+        let drawing =
+            controls.request(&owner, &owner, &mut call, self.entry, crate::machine::traps::gateway)
+                    .map_err(failed)?;
         self.state = next;
         if let Some(drawing) = drawing
         {
@@ -252,11 +243,23 @@ impl BootScreen
         }
         Ok(())
     }
-}
-impl Drop for BootScreen
-{
-    fn drop(&mut self)
+
+    /// Dispose only the boot panel's control through the same canonical manager
+    /// that the caller transfers into Desktop. A refusal retains the exact ID
+    /// for a subsequent cleanup attempt; unrelated System controls stay alive.
+    pub fn finish(&mut self, controls: &mut Manager) -> Result<()>
     {
-        self.controls.remove_owner(0);
+        if self.id == 0
+        {
+            return Ok(());
+        }
+        let owner = crate::toolbox::handles::system_owner().map_err(failed)?;
+        let mut call = ControlCall { id: self.id,
+                                     operation: DISPOSE_OBJECT,
+                                     ..Default::default() };
+        controls.request(&owner, &owner, &mut call, self.entry, crate::machine::traps::gateway)
+                .map_err(failed)?;
+        self.id = 0;
+        Ok(())
     }
 }

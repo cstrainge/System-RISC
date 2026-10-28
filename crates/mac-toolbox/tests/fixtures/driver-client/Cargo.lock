@@ -132,6 +132,16 @@ dependencies = [
  "mac-device-interface",
  "mac-file-source-interface",
  "mac-module",
+ "spinning_top",
+]
+
+[[package]]
+name = "mac-driver-alloc"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-driver",
+ "mac-scrap-extension-interface",
 ]
 
 [[package]]
@@ -178,6 +188,13 @@ name = "mac-riscv-pages"
 version = "0.1.0"
 dependencies = [
  "mac-kernel-model",
+]
+
+[[package]]
+name = "mac-scrap-extension-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
 ]
 
 [[package]]
@@ -292,8 +309,10 @@ dependencies = [
 name = "toolbox-driver-client"
 version = "0.1.0"
 dependencies = [
+ "mac-abi",
  "mac-build",
  "mac-driver",
+ "mac-driver-alloc",
 ]
 
 [[package]]

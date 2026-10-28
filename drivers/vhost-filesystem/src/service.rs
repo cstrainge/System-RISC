@@ -20,12 +20,36 @@ impl<R: Rpc> Filesystem<R>
                         | Operation::AbortIconMoves
                         | Operation::AbortWrite
                         | Operation::Read
-                        | Operation::Close)
+                        | Operation::Close
+                        | Operation::PrepareName)
         {
             return Err(Cause::Busy.into());
         }
         match op
         {
+            Operation::PrepareName =>
+            {
+                let request = fs::PrepareName::from_arguments(args).map_err(|_| Cause::Invalid)?;
+                self.writable(request.volume)?;
+                // This is the same authoritative NFC and portable-component
+                // validation used by actual create/rename admission.
+                let name = mac_hfs_b::names::normalize(request.name).map_err(|error| {
+                               if error == mac_hfs_b::Error::NoMemory
+                               {
+                                   Cause::NoMemory
+                               }
+                               else
+                               {
+                                   Cause::Invalid
+                               }
+                           })?;
+                mac_fork_file::host_component(&name).map_err(|_| Cause::Invalid)?;
+                let mut out = buffer(fs::MAX_PREPARED_NAME_BYTES)?;
+                let count = fs::PreparedName { name: &name }.encode(&mut out)
+                                                            .map_err(|_| Cause::Invalid)?;
+                out.truncate(count);
+                Ok(out)
+            }
             Operation::BeginIconMoves | Operation::StepIconMoves | Operation::AbortIconMoves =>
             {
                 let mut out = buffer(16)?;
@@ -380,6 +404,12 @@ impl<R: Rpc> Filesystem<R>
                             ..volume }
             }
             Operation::Unmount | Operation::Refresh => volume,
+            Operation::PrepareName =>
+            {
+                fs::PrepareName::from_arguments(a).map_err(|_| Cause::Invalid)?;
+                Arguments { payload: a.payload,
+                            ..volume }
+            }
             Operation::CheckDirectory => node,
             Operation::Catalog =>
             {

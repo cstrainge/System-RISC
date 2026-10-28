@@ -115,7 +115,7 @@ impl Manager
         }
         let handle =
             self.writes.insert_authorized(authority,
-                                           Pending { #[cfg(target_arch = "riscv64")] io_subject: Some(crate::drivers::jobs::subjects::resident()?.admit(authority)?), authority:     authority.clone(),
+                                           Pending { #[cfg(target_arch = "riscv64")] io_subject: Some(crate::drivers::jobs::subjects::resident()?.admit_current(authority)?), authority:     authority.clone(),
                                                      owner:         owner.label(),
                                                      volume:        call.volume,
                                                      parent:        if call.operation == MOVE_INTO
@@ -245,7 +245,7 @@ impl Manager
         let mut data = Vec::new();
         data.try_reserve_exact(call.length).map_err(|_| NO_MEMORY)?;
         call.handle = self.writes.insert_authorized(authority,
-                                                     Pending { #[cfg(target_arch = "riscv64")] io_subject: Some(crate::drivers::jobs::subjects::resident()?.admit(authority)?), authority: authority.clone(),
+                                                     Pending { #[cfg(target_arch = "riscv64")] io_subject: Some(crate::drivers::jobs::subjects::resident()?.admit_current(authority)?), authority: authority.clone(),
                                                                owner: owner.label(),
                                                                volume: call.volume,
                                                                parent,

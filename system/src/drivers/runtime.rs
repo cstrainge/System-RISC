@@ -10,6 +10,11 @@ use mac_module::{ClassId, PackageKind, Target, abi};
 use super::{Error, Registry, status};
 use crate::state::TryState;
 mod admission;
+mod allocation;
+mod critical;
+mod invocation;
+mod workers;
+pub(crate) use workers::Launch as WorkerLaunch;
 mod discovery;
 mod file_handlers;
 mod recovery;
@@ -28,6 +33,7 @@ struct Runtime
 struct Binding
 {
     module:        u64,
+    image:         crate::images::Binding,
     base:          u64,
     limit:         u64,
     _host:         Box<abi::Host>,
@@ -61,7 +67,7 @@ struct ResidentBinding
 #[derive(Clone, Copy)]
 enum DispatchTarget
 {
-    Module(abi::Instance),
+    Module(abi::Instance, crate::images::Binding),
     Resident(ResidentCallback)
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -142,6 +148,12 @@ pub(crate) fn module_authority(module: u64) -> Result<crate::toolbox::handles::O
            .map_err(crate::state::AccessError::status)?
 }
 
+pub(crate) fn module_allocation(module: u64) -> Result<super::registry::ModuleAllocation, Status>
+{
+    RUNTIME.with(|runtime| runtime.registry.module_allocation(module).map_err(status))
+           .map_err(crate::state::AccessError::status)?
+}
+
 pub(crate) fn provider_module(interface: u64) -> Result<u64, Status>
 {
     RUNTIME.with(|runtime| {
@@ -203,7 +215,7 @@ pub(crate) fn initialize(arena: core::ops::Range<u64>, target: Target) -> Result
                         registry.get(crate::toolbox::handles::KindCode(*b"DRQS"))?])
                 }).map_err(|error| error.status())?
                   .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
-    RUNTIME.publish(Runtime { registry:  Registry::new(target, owner, kinds).map_err(status)?,
+    RUNTIME.publish(Runtime { registry:  Registry::new(target, owner, kinds, crate::machine::memory::MODULE_KERNEL_BUDGET_BYTES).map_err(status)?,
                               bindings:  Vec::new(),
                               residents: Vec::new(),
                               next:      arena.start,
@@ -211,9 +223,17 @@ pub(crate) fn initialize(arena: core::ops::Range<u64>, target: Target) -> Result
            .map_err(crate::state::AccessError::status)
 }
 
-pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: PackageKind)
+pub(crate) fn load(resources: Vec<Resource>, file_type: [u8; 4], directory: PackageKind)
                    -> Result<u64, Status>
 {
+    let source =
+        crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+            alloc::sync::Arc::try_new(crate::images::Source { role: crate::images::Role::Module,
+                                                              resources,
+                                                              creator: *b"????",
+                                                              file_type })
+        }).map_err(|_| NO_MEMORY)?;
+    let resources = &source.resources[..];
     // Complete structure/hash/relocation checks before changing RAM or entry.
     let package = Package::inspect(resources, file_type).map_err(|error| {
                                                             serial!("MODULE_PACKAGE_REJECTED \
@@ -225,7 +245,7 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
     let mut rules = Vec::new();
     rules.try_reserve_exact(handlers.len()).map_err(|_| NO_MEMORY)?;
     rules.extend(handlers.iter().map(|h| h.rule));
-    let (module, entry, host, base, limit) =
+    let (module, loaded, host, base, limit) =
         RUNTIME.with(|runtime| {
                    let extent =
                        package.code.descriptor.load_limit - package.code.descriptor.load_base;
@@ -248,10 +268,11 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
                                                    Some(&package.code.relocations),
                                                    base).map_err(|_| BAD_ABI)?;
                    runtime.bindings.try_reserve(1).map_err(|_| NO_MEMORY)?;
+                   let decoded = image::decode(&package.code.code, &package.code.descriptor).map_err(|_| BAD_ABI)?;
                    let module = runtime.registry
                                        .stage(package.contract, directory, file_type)
                                        .map_err(status)?;
-                   if let Err(error) = runtime.registry.install_file_handlers(module, rules)
+                   if let Err(error) = runtime.registry.install_file_handlers(module, &rules)
                    {
                        if let Err(cleanup) = runtime.registry.rollback(module)
                        {
@@ -266,7 +287,13 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
                                                        reserved: 0,
                                                        context: u64::from(module),
                                                        call: Some(broker),
-                                                       resolve: Some(resolve) });
+                                                       resolve: Some(resolve),
+                                                       allocate: Some(allocation::allocate),
+                                                       deallocate: Some(allocation::deallocate),
+                                                       reallocate: Some(allocation::reallocate),
+                                                       with_module_allocation: Some(allocation::with_module_allocation),
+                                                       workers: Some(workers::control),
+                                                       critical_section: Some(critical::enter) });
                    let host = match host
                    {
                        Ok(host) => host,
@@ -277,29 +304,51 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
                        }
                    };
                    let pointer = &*host as *const abi::Host;
-                   // This allocator owns this whole disjoint RAM reservation until reboot.
-                   let output =
-                       unsafe { core::slice::from_raw_parts_mut(base as *mut u8, plan.length()) };
-                   if plan.write(output).is_err()
-                   {
-                       runtime.registry.rollback(module).map_err(status)?;
-                       return Err(BAD_ABI);
-                   }
-                   unsafe {
-                       core::arch::asm!("fence.i", options(nostack));
-                   }
-                   let entry = plan.entry();
+                   let loaded = (|| {
+                       let owner = runtime.registry.module_ledger(module).map_err(status)?;
+                       let account = runtime.registry.module_allocation(module).map_err(status)?;
+                       crate::allocator::with_target(crate::allocator::Target::Owner {
+                           account, class: mac_kernel_model::policy::MemoryClass::Kernel
+                       }, || {
+                           let mut executable = Vec::new();
+                           executable.try_reserve_exact(decoded.segments.len()).map_err(|_| NO_MEMORY)?;
+                           executable.extend(decoded.segments.iter().filter(|s| s.flags & image::EXECUTE != 0)
+                               .map(|s| base + s.offset .. base + s.offset + s.length as u64));
+                           crate::kernel::load_module(&owner, source.clone(), base, extent, executable, |_, _| {
+                               // Exact disjoint RAM remains reserved until reset. No reclamation is claimed.
+                               let output = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, plan.length()) };
+                               plan.write(output).map_err(|_| BAD_ABI)?;
+                               unsafe { core::arch::asm!("fence.i", options(nostack)); }
+                               Ok(plan.entry() as usize)
+                           })
+                       })
+                   })();
+                   let loaded = match loaded {
+                       Ok(loaded) => loaded,
+                       Err(error) => { runtime.registry.rollback(module).map_err(status)?; return Err(error); }
+                   };
+                   let image = loaded.binding();
                    runtime.next = limit;
-                   runtime.bindings.push(Binding { module,
+                   runtime.bindings.push(Binding { module, image,
                                                    base,
                                                    limit,
                                                    _host: host,
                                                    instance: None,
                                                    file_handlers: handlers });
-                   Ok((module, entry, pointer, base, limit))
+                   Ok((module, loaded, pointer, base, limit))
                })
                .map_err(crate::state::AccessError::status)??;
-    let entry: abi::Entry = unsafe { core::mem::transmute(entry as usize) };
+    let entry: abi::Entry = unsafe { core::mem::transmute(loaded.entry()) };
+    let execution = match loaded.into_module()
+    {
+        Ok(execution) => execution,
+        Err(error) =>
+        {
+            RUNTIME.with(|runtime| runtime.registry.rollback(module).map_err(status))
+                   .map_err(crate::state::AccessError::status)??;
+            return Err(error);
+        }
+    };
     let mut instance = abi::Instance::default();
     // No runtime/registry/Files/desktop guard is held during foreign code.
     serial!("MODULE_ENTER name={} id={} entry=0x{:x}", package.contract.name, module,
@@ -310,13 +359,19 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
     // This result reaches the same rollback path even if admission or context
     // installation fails before any foreign code executes.
     let result = module_authority(module).and_then(|owner| {
+                                             let allocation = crate::allocation::Target::Owner {
+            account: module_allocation(module)?,
+            class: mac_kernel_model::policy::MemoryClass::Kernel
+        };
                                              super::jobs::subjects::resident()?.admit(
-            &crate::toolbox::handles::subject::Authority::Client(owner))
+            &crate::toolbox::handles::subject::Authority::Client(owner), allocation)
                                          })
                                          .and_then(|subject| {
-                                             crate::context::with_io_subject(subject, || unsafe {
-                                                 entry(host, &mut instance)
-                                             })
+                                             crate::context::with_io_subject(subject, || {
+                                                 invocation::enter(&execution, || unsafe {
+                                                     entry(host, &mut instance)
+                                                 })
+                                             }).and_then(core::convert::identity)
                                          })
                                          .unwrap_or_else(|status| status);
     let valid=instance.header.valid::<abi::Instance>() && instance.dispatch.is_some_and(|dispatch|{
@@ -324,47 +379,63 @@ pub(crate) fn load(resources: &[Resource], file_type: [u8; 4], directory: Packag
         address & 1==0 && image::decode(&package.code.code,&package.code.descriptor).is_ok_and(|image|
             image.segments.iter().any(|s|s.flags & image::EXECUTE!=0 && address>=base+s.offset && address<base+s.offset+s.length as u64))
     });
-    RUNTIME.with(|runtime| {
-               if result != OK || !valid
-               {
-                   if let Err(cleanup) = runtime.registry.rollback(module)
+    drop(execution);
+    crate::machine::interrupts::with_masked(|| {
+        RUNTIME.with(|runtime| {
+                   if result != OK || !valid
                    {
-                       serial!("MODULE_INIT_CLEANUP_RETAINED module={} original={} reason={}",
-                               module,
-                               if result < 0 { result } else { BAD_ABI },
-                               cleanup);
-                       return Err(status(cleanup));
+                       if let Err(cleanup) = runtime.registry.rollback(module)
+                       {
+                           serial!("MODULE_INIT_CLEANUP_RETAINED module={} original={} reason={}",
+                                   module,
+                                   if result < 0 { result } else { BAD_ABI },
+                                   cleanup);
+                           return Err(status(cleanup));
+                       }
+                       return Err(if result < 0 { result } else { BAD_ABI });
                    }
-                   return Err(if result < 0 { result } else { BAD_ABI });
-               }
-               let binding =
-                   runtime.bindings
-                          .iter_mut()
-                          .find(|b| b.module == module && b.base == base && b.limit == limit)
-                          .ok_or(NOT_FOUND)?;
-               binding.instance = Some(instance);
-               if let Err(error) = runtime.registry.commit(module)
-               {
-                   if let Err(cleanup) = runtime.registry.rollback(module)
+                   let binding =
+                       runtime.bindings
+                              .iter_mut()
+                              .find(|b| b.module == module && b.base == base && b.limit == limit)
+                              .ok_or(NOT_FOUND)?;
+                   binding.instance = Some(instance);
+                   let owner = runtime.registry.module_ledger(module).map_err(status)?;
+                   if let Err(error) = runtime.registry.commit(module)
                    {
-                       serial!("MODULE_INIT_CLEANUP_RETAINED module={} original={} cleanup={}",
-                               module, error, cleanup);
-                       return Err(status(cleanup));
+                       if let Err(cleanup) = runtime.registry.rollback(module)
+                       {
+                           serial!("MODULE_INIT_CLEANUP_RETAINED module={} original={} cleanup={}",
+                                   module, error, cleanup);
+                           return Err(status(cleanup));
+                       }
+                       return Err(status(error));
                    }
-                   return Err(status(error));
-               }
-               serial!("MODULE_READY id={} kind={} entry=0x{:x} base=0x{:x}",
-                       module,
-                       core::str::from_utf8(&file_type).unwrap_or("????"),
-                       entry as usize,
-                       base);
-               serial!("MODULE_PUBLISHED name={} id={}", package.contract.name, module);
-               Ok(module)
-           })
-           .map_err(crate::state::AccessError::status)?
+                   // All backing was admitted while workers were dormant. Keep
+                   // registry publication and the armed-to-runnable transition in
+                   // this same resident admission turn; activation allocates nothing.
+                   crate::machine::scheduler::activate_workers(&owner);
+                   serial!("MODULE_READY id={} kind={} entry=0x{:x} base=0x{:x}",
+                           module,
+                           core::str::from_utf8(&file_type).unwrap_or("????"),
+                           entry as usize,
+                           base);
+                   serial!("MODULE_PUBLISHED name={} id={}", package.contract.name, module);
+                   Ok(module)
+               })
+               .map_err(crate::state::AccessError::status)?
+    })
 }
 unsafe extern "C" fn broker(caller: u64, provider: u64, pointer: *mut abi::Call) -> Status
 {
+    if let Err(error) = crate::context::authenticate_module(caller)
+    {
+        return error;
+    }
+    if crate::context::critical_active()
+    {
+        return WRONG_THREAD;
+    }
     // The C callback never owns or retains the caller's buffers.
     match unsafe { invoke(caller, provider, pointer) }
     {
@@ -402,8 +473,20 @@ unsafe fn invoke_origin(origin: super::registry::requests::Origin, caller: u64, 
     {
         module_authority(caller)?
     };
-    let subject = super::jobs::subjects::resident()?.admit(
-        &crate::toolbox::handles::subject::Authority::Client(owner))?;
+    let authority = crate::toolbox::handles::subject::Authority::Client(owner);
+    let subject = if caller == 0
+    {
+        // Resident requests retain the actual executor's original allocation
+        // selection. The broker's numeric caller label grants no account.
+        super::jobs::subjects::resident()?.admit_current(&authority)?
+    }
+    else
+    {
+        super::jobs::subjects::resident()?.admit(&authority, crate::allocation::Target::Owner {
+            account: module_allocation(caller)?,
+            class: mac_kernel_model::policy::MemoryClass::Kernel
+        })?
+    };
     crate::context::with_io_subject(subject.clone(), || {
         unsafe {
             invoke_scoped(origin,
@@ -482,11 +565,13 @@ unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
                    }
                    else
                    {
-                       DispatchTarget::Module(runtime.bindings
-                                                     .iter()
-                                                     .find(|b| b.module == interface.module)
-                                                     .and_then(|b| b.instance)
-                                                     .ok_or(NOT_FOUND)?)
+                       {
+                           let binding = runtime.bindings
+                                                .iter()
+                                                .find(|b| b.module == interface.module)
+                                                .ok_or(NOT_FOUND)?;
+                           DispatchTarget::Module(binding.instance.ok_or(NOT_FOUND)?, binding.image)
+                       }
                    };
                    let ticket = match call.phase
                    {
@@ -548,11 +633,14 @@ unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
         crate::context::with_io_subject(invocation, || -> Result<Status, Status> {
             Ok(match target
             {
-                DispatchTarget::Module(instance) =>
+                DispatchTarget::Module(instance, image) =>
                 {
                     let dispatch = instance.dispatch.ok_or(NOT_SUPPORTED)?;
-                    *started = true;
-                    unsafe { dispatch(instance.state, call) }
+                    let execution = crate::kernel::module_execution(image)?;
+                    invocation::enter(&execution, || {
+                        *started = true;
+                        unsafe { dispatch(instance.state, call) }
+                    })?
                 }
                 DispatchTarget::Resident(callback) =>
                 {
@@ -674,6 +762,10 @@ unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
 
 unsafe extern "C" fn resolve(caller: u64, class: u32, version: u32, output: *mut u64) -> Status
 {
+    if let Err(error) = crate::context::authenticate_module(caller)
+    {
+        return error;
+    }
     if output.is_null() || !output.is_aligned()
     {
         return BAD_ARGUMENT;
@@ -776,31 +868,83 @@ impl super::jobs::Broker for NativeBroker
 // No lock survives a foreign callback; empty pumps are one atomic flag read.
 static JOBS: super::jobs::Queue = super::jobs::Queue::new();
 
+pub(crate) fn prepare_recovery_job(owner: &crate::toolbox::handles::OwnerRef)
+    -> Result<mac_object_table::store::PublicationReservation<crate::toolbox::handles::InvocationGate>, Status>
+{
+    JOBS.reserve_publication(owner)
+}
+
+pub(crate) fn prepare_recovery_requests(owner: &crate::toolbox::handles::OwnerRef)
+    -> Result<[mac_object_table::store::PublicationReservation<crate::toolbox::handles::InvocationGate>; 2], Status>
+{
+    RUNTIME.with(|runtime| runtime.registry.reserve_recovery_requests(owner).map_err(status))
+           .map_err(crate::state::AccessError::status)?
+}
+
+fn recovery_subject(subject: &super::jobs::subjects::Subject, interface: u64)
+                    -> Result<super::jobs::subjects::Subject, Status>
+{
+    if !subject.uses_protected_publication()
+    {
+        return Ok(subject.clone());
+    }
+    let validated = RUNTIME.with(|runtime| runtime.registry.validate_recovery_graph(interface))
+                           .map_err(crate::state::AccessError::status)?;
+    match validated
+    {
+        Ok(()) => Ok(subject.clone()),
+        // Select capacity policy before publishing or entering a provider.
+        // The dispatcher and canonical identities are the same. The lifetime
+        // Activity remains pinned even when the graph needs ordinary memory.
+        Err(Error::RecoveryUnsupported) => Ok(subject.with_ordinary_publication()),
+        Err(error) => Err(status(error))
+    }
+}
+
+fn with_job_storage<R>(subject: &super::jobs::subjects::Subject, call: impl FnOnce() -> R) -> R
+{
+    if subject.uses_protected_publication()
+    {
+        if let Some(activity) = subject.recovery_activity()
+        {
+            return activity.with_storage(call);
+        }
+    }
+    crate::context::without_recovery(call)
+}
+
 /// Resident adapters enqueue only owned bytes. The owner comes from trusted
 /// execution context, never from the application's request payload.
 fn enqueue_job(subject: super::jobs::subjects::Subject, owner: super::jobs::Owner, class: ClassId,
                version: u32, operation: u32, input: Vec<u8>, output_bytes: usize)
                -> Result<OwnedJob, Status>
 {
-    let provider = match owner
-    {
-        super::jobs::Owner::Module(module) =>
+    let allocation = subject.allocation().clone();
+    crate::allocator::with_target(allocation, || {
+        let provider = match owner
         {
-            RUNTIME.with(|runtime| {
-                       runtime.registry.resolve(u64::from(module), class, version).map_err(status)
-                   })
-                   .map_err(crate::state::AccessError::status)??
-        }
-        _ => resolve_kernel(class, version)?
-    };
-    let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
-    let queue = &JOBS;
-    let (id, receipt) =
-        queue.submit(&subject, owner, work).map_err(|error| error.status)?.into_parts();
-    Ok(OwnedJob { owner,
-                  id,
-                  receipt,
-                  subject })
+            super::jobs::Owner::Module(module) =>
+            {
+                RUNTIME.with(|runtime| {
+                           runtime.registry
+                                  .resolve(u64::from(module), class, version)
+                                  .map_err(status)
+                       })
+                       .map_err(crate::state::AccessError::status)??
+            }
+            _ => resolve_kernel(class, version)?
+        };
+        let subject = recovery_subject(&subject, provider)?;
+        with_job_storage(&subject, || {
+            let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
+            let (id, receipt) =
+                JOBS.submit(&subject, owner, work).map_err(|error| error.status)?.into_parts();
+            Ok(OwnedJob { owner,
+                          id,
+                          receipt,
+                          subject: subject.clone() })
+        })
+    })
 }
 
 pub(crate) fn release_job(ticket: mac_object_table::domain::ReleasedResource, storage: bool)
@@ -1019,7 +1163,7 @@ pub fn submit_job(class: ClassId, version: u32, operation: u32, input: Vec<u8>,
     {
         return Err(WRONG_THREAD);
     }
-    let subject = super::jobs::subjects::resident()?.admit(
+    let subject = super::jobs::subjects::resident()?.admit_current(
         &crate::toolbox::handles::subject::Authority::Client(crate::context::current_owner()?))?;
     enqueue_job(subject,
                 super::jobs::Owner::Thread(thread.0),
@@ -1036,27 +1180,32 @@ pub(crate) fn submit_background_to(subject: &super::jobs::subjects::Subject, pro
                                    output_bytes: usize)
                                    -> Result<OwnedJob, Status>
 {
-    RUNTIME.with(|runtime| {
-               let interface = runtime.registry.interface(provider).map_err(status)?;
-               if interface.offer.class != class
-                  || interface.offer.version != version
-                  || input.len() > interface.offer.max_request as usize
-                  || output_bytes > interface.offer.max_reply as usize
-               {
-                   return Err(BAD_ARGUMENT);
-               }
-               Ok(())
-           })
-           .map_err(crate::state::AccessError::status)??;
-    let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
-    let queue = &JOBS;
-    let (id, receipt) = queue.submit(subject, super::jobs::Owner::Kernel, work)
-                             .map_err(|error| error.status)?
-                             .into_parts();
-    Ok(OwnedJob { owner: super::jobs::Owner::Kernel,
-                  id,
-                  receipt,
-                  subject: subject.clone() })
+    let allocation = subject.allocation().clone();
+    crate::allocator::with_target(allocation, || {
+        RUNTIME.with(|runtime| {
+                   let interface = runtime.registry.interface(provider).map_err(status)?;
+                   if interface.offer.class != class
+                      || interface.offer.version != version
+                      || input.len() > interface.offer.max_request as usize
+                      || output_bytes > interface.offer.max_reply as usize
+                   {
+                       return Err(BAD_ARGUMENT);
+                   }
+                   Ok(())
+               })
+               .map_err(crate::state::AccessError::status)??;
+        let subject = recovery_subject(subject, provider)?;
+        with_job_storage(&subject, || {
+            let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
+            let (id, receipt) = JOBS.submit(&subject, super::jobs::Owner::Kernel, work)
+                                    .map_err(|error| error.status)?
+                                    .into_parts();
+            Ok(OwnedJob { owner: super::jobs::Owner::Kernel,
+                          id,
+                          receipt,
+                          subject: subject.clone() })
+        })
+    })
 }
 
 pub(crate) fn abandon_deferred_job(thread: u64, id: u64)

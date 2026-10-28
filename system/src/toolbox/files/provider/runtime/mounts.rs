@@ -310,8 +310,10 @@ pub(super) fn advance(flight: Flight, result: Result<Vec<u8>, Status>, never_sen
             {
                 return Progress::Done(Err(error));
             }
-            let handle = match files(|m| {
-                      m.reserve_provider_source(subject.scope(), ctx.key.volume, ctx.key.cnid)
+            let handle = match crate::allocator::with_target(subject.allocation().clone(), || {
+                      files(|m| {
+                          m.reserve_provider_source(subject.scope(), ctx.key.volume, ctx.key.cnid)
+                      })
                   })
             {
                 Ok((actual, handle)) if actual == provider => handle,
@@ -352,27 +354,28 @@ pub(super) fn advance(flight: Flight, result: Result<Vec<u8>, Status>, never_sen
                                           m.retire_provider_source(subject.scope(), handle)
                                       }).and(Err(OPERATION_CANCELLED)));
             }
-            let opened = result.and_then(|bytes| {
-                                   if ctx.abandoned
-                                   {
-                                       return Err(OPERATION_CANCELLED);
-                                   }
-                                   let length = files(|m| {
-                                       m.publish_provider_source(subject.scope(), handle, &bytes)
-                                   })?;
-                                   if fs::Metadata::decode(&description).map_err(|_| BAD_ABI)?
-                                                                        .data_length
-                                      != length
-                                   {
-                                       return Err(SCAN_STALE);
-                                   }
-                                   backing::adopt(ctx.provider,
-                                                  ctx.key.volume,
-                                                  ctx.key.cnid,
-                                                  subject.clone(),
-                                                  handle,
-                                                  length)
-                               });
+            let opened =
+                result.and_then(|bytes| {
+                    if ctx.abandoned
+                    {
+                        return Err(OPERATION_CANCELLED);
+                    }
+                    let length =
+                        crate::allocator::with_target(subject.allocation().clone(), || {
+                            files(|m| m.publish_provider_source(subject.scope(), handle, &bytes))
+                        })?;
+                    if fs::Metadata::decode(&description).map_err(|_| BAD_ABI)?.data_length
+                       != length
+                    {
+                        return Err(SCAN_STALE);
+                    }
+                    backing::adopt(ctx.provider,
+                                   ctx.key.volume,
+                                   ctx.key.cnid,
+                                   subject.clone(),
+                                   handle,
+                                   length)
+                });
             match opened
             {
                 Ok(source) => ctx.mount(source, &description),

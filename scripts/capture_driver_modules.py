@@ -49,6 +49,30 @@ def prepare_recovery(output):
                         str(output / 'packages' / mode)], cwd=vm.ROOT, env=fixture_host_env(target), check=True)
 
 
+def prepare_workers(output):
+    """Existing module fixtures, independently linked with their diagnostic features."""
+    output.mkdir(parents=True, exist_ok=True)
+    artifacts = []
+    for fixture, binary, features, mode in [
+            ('driver-provider', 'ModuleEcho', 'workers', 'workers'),
+            ('driver-client', 'ModuleClient', 'workers', 'workers'),
+            ('driver-client', 'ModuleClient', 'workers-rollback', 'workers-rollback')]:
+        target = vm.build_dir() / 'fixtures' / (fixture + '-workers')
+        manifest = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures' / fixture / 'Cargo.toml'
+        command = ['cargo', 'build', '--locked', '--manifest-path', str(manifest),
+                   '--release', '--target', 'riscv64imac-unknown-none-elf', '--bin', binary,
+                   '--features', features, '--target-dir', str(target)]
+        subprocess.run(command, cwd=vm.ROOT, env=fixture_guest_env(target), check=True)
+        elf = target / 'riscv64imac-unknown-none-elf/release' / binary
+        subprocess.run(['cargo', 'run', '--locked', '--manifest-path', str(manifest),
+                        '--bin', 'package', '--features', features, '--target-dir', str(target), '--',
+                        str(elf), str(output / 'packages' / mode)],
+                       cwd=vm.ROOT, env=fixture_host_env(target), check=True)
+        artifacts.append({'fixture': fixture, 'features': features, 'mode': mode,
+                          'elf_sha256': digest(elf), 'command': command})
+    (output / 'worker-fixtures.json').write_text(json.dumps(artifacts, indent=2) + '\n')
+
+
 def capture(output, cases):
     original = vm.DIST
     before = {name: digest(original / name) for name in ['system7.qcow2', 'bootrom.bin', 'System.rsrc']}
@@ -83,9 +107,17 @@ def capture(output, cases):
             vm.DIST = dist
             process, endpoint = vm.launch(state / 'vm')
             termination = 'desktop-ready'
+            mouse = None
+            input_before_marker = None
+            if case.get('input_during'):
+                from capture_system7_applications_ui import Driver
+                driver = Driver(endpoint, state / 'vm/serial.log')
+                driver.move(115, 96)
+                mouse = driver.state()['mouse']
+                input_before_marker = case['until'] not in (state / 'vm/serial.log').read_text(errors='replace')
             if case.get('until'):
                 termination = 'timeout'
-                deadline = time.monotonic() + 10
+                deadline = time.monotonic() + case.get('timeout', 10)
                 while time.monotonic() < deadline:
                     if case['until'] in (state / 'vm/serial.log').read_text(errors='replace'):
                         termination = 'requested-marker'
@@ -94,14 +126,14 @@ def capture(output, cases):
                         termination = 'process-exited'
                         break
                     time.sleep(.01)
-            mouse = None
             if case.get('input'):
                 from capture_system7_applications_ui import Driver
                 driver = Driver(endpoint, state / 'vm/serial.log')
                 driver.move(115, 96)
                 mouse = driver.state()['mouse']
             observations.append({'name': name, 'termination': termination, 'mouse': mouse,
-                                 'serial': str(state / 'vm/serial.log')})
+                                 'serial': str(state / 'vm/serial.log'),
+                                 'input_completed_before_marker': input_before_marker})
         finally:
             if process is not None:
                 if process.poll() is None:
@@ -124,11 +156,14 @@ if __name__ == '__main__':
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--prepare', action='store_true')
     parser.add_argument('--prepare-recovery', action='store_true')
+    parser.add_argument('--prepare-workers', action='store_true')
     parser.add_argument('--cases', type=Path)
     args = parser.parse_args()
     if args.prepare:
         prepare(args.output.resolve())
     if args.prepare_recovery:
         prepare_recovery(args.output.resolve())
+    if args.prepare_workers:
+        prepare_workers(args.output.resolve())
     if args.cases:
         capture(args.output.resolve(), json.loads(args.cases.read_text()))

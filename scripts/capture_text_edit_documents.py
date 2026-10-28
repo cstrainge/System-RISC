@@ -38,7 +38,9 @@ def capture(output):
         driver.wait('TEXT_EDIT_READY\n')
         driver.key('h')
         driver.key('i')
-        driver.wait('FINDER_TEXTEDIT_STATE length=2 selection=2..2\n')
+        # The shipping Text Edit has input tracing disabled. Capture its real
+        # pixels here; the final saved document bytes establish what was typed.
+        frame('typed-document')
         driver.menu(110, 76, popup_x=145)  # View / Options
         driver.wait('TEXT_EDIT_OPTIONS_READY\n')
         driver.click(110, 156)  # Geneva in the font list
@@ -57,8 +59,8 @@ def capture(output):
 
         # Fresh Finder windows, using the ordinary resource-backed icon layout.
         driver.click(200, 36)
-        # Fresh Finder layout reserves extra cells for the wide folder label.
-        driver.click(232, 95, double=True)
+        # Fresh root layout: Applications, Documents, System Folder.
+        driver.click(166, 95, double=True)
         driver.wait_folder_ready('System Folder')
         driver.click(390, 126, double=True)
         driver.wait_folder_ready('Preferences')

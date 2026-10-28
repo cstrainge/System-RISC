@@ -119,7 +119,12 @@ fn inventory() -> Result<&'static [wire::Region], Error>
                    let space = &spaces.kernel;
                    // Mapping identity comes from the owned root/backing, not
                    // the allocator's mutable counters or a former BSS symbol.
-                   let heap = (VM_SYSTEM_HEAP_BASE, VM_SYSTEM_HEAP_LIMIT);
+                   // PTE inventory describes the whole mapped heap, including
+                   // protected storage. Summary capacity describes only the
+                   // ordinary allocator; aliases do not add physical owners.
+                   let (base, bytes) = super::mapped_heap_range().ok_or(Error::NotReady)?;
+                   let heap =
+                       (base as u64, (base as u64).checked_add(bytes as u64).ok_or(Error::Layout)?);
                    let heap_bytes = heap.1.checked_sub(heap.0).ok_or(Error::Layout)?;
                    if spaces.heap.bytes() < heap_bytes
                    {

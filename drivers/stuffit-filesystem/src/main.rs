@@ -5,16 +5,12 @@
 #![feature(alloc_error_handler)]
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use linked_list_allocator::LockedHeap;
 use mac_driver::{Client, Completion, Driver, Error, Request, Result, file_sources::FileSources};
+use mac_driver_alloc::ForwardingAllocator;
 use stuffit_filesystem::service::Service;
 
-const HEAP_BYTES: usize = 4 * 1024 * 1024;
-#[repr(align(4096))]
-struct HeapStorage([u8; HEAP_BYTES]);
-static mut STORAGE: HeapStorage = HeapStorage([0; HEAP_BYTES]);
 #[global_allocator]
-static HEAP: LockedHeap = LockedHeap::empty();
+static HEAP: ForwardingAllocator = ForwardingAllocator;
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static SERVICE: Service<FileSources> = Service::new();
 struct FilesystemDriver;
@@ -25,12 +21,6 @@ impl Driver for FilesystemDriver
         if INITIALIZED.swap(true, Ordering::AcqRel)
         {
             return Err(Error(mac_abi::SERVICE_BUSY));
-        }
-        // SAFETY: The admitted module is pinned and its BSS was zeroed before
-        // entry. This aligned private storage is initialized once and borrowed
-        // exclusively by the locked allocator for the module's entire lifetime.
-        unsafe {
-            HEAP.lock().init(core::ptr::addr_of_mut!(STORAGE.0).cast::<u8>(), HEAP_BYTES);
         }
         SERVICE.initialize(FileSources::new(host)?)
     }
@@ -47,22 +37,11 @@ impl Driver for FilesystemDriver
 }
 mac_driver::export_driver!(FilesystemDriver);
 
-// Kernel modules are trusted code. General fault isolation is a separate kernel
-// milestone; ordinary allocation/I/O failures use the fallible service paths.
+// Fallible service paths preserve ordinary allocation failures. An infallible
+// allocation or panic uses the platform diagnostic/fault contract.
 #[alloc_error_handler]
-fn allocation_failed(_: core::alloc::Layout) -> !
+fn allocation_failed(layout: core::alloc::Layout) -> !
 {
-    fatal()
+    mac_driver::runtime::allocation_failed(layout)
 }
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo<'_>) -> !
-{
-    fatal()
-}
-fn fatal() -> !
-{
-    loop
-    {
-        core::hint::spin_loop();
-    }
-}
+mac_driver::driver_panic_handler!();

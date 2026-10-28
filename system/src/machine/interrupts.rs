@@ -10,6 +10,16 @@ impl mac_object_table::shared::InvocationGate for NativeInvocationGate
         with_masked(operation)
     }
 
+    fn with_system_allocation<R>(operation: impl FnOnce() -> R) -> R
+    {
+        crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, operation)
+    }
+
+    fn with_foundation_allocation<R>(operation: impl FnOnce() -> R) -> R
+    {
+        crate::allocator::with_system(crate::allocator::SystemClass::Foundation, operation)
+    }
+
     fn scope_closed(owner: mac_object_table::domain::DomainId)
     {
         if owner.kind() == mac_object_table::domain::DomainKind::Module
@@ -17,6 +27,11 @@ impl mac_object_table::shared::InvocationGate for NativeInvocationGate
             crate::drivers::dependencies_changed();
             crate::drivers::recovery_changed();
         }
+    }
+
+    fn resource_released(_: mac_object_table::domain::DomainId)
+    {
+        crate::recovery::acknowledgement_changed();
     }
 
     fn released(owner: mac_object_table::domain::DomainId)

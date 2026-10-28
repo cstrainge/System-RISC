@@ -59,7 +59,7 @@ impl<T, K: Copy + Ord + Default> Index<T, K>
         {
             return Err(Cause::NoMemory.into());
         }
-        self.entries.try_reserve(1).map_err(|_| Cause::NoMemory.into())
+        crate::module_reserve(&mut self.entries, 1)
     }
 
     fn insert(&mut self, id: K, value: T) -> Result<()>
@@ -75,7 +75,7 @@ impl<T, K: Copy + Ord + Default> Index<T, K>
         {
             return Err(Cause::NoMemory.into());
         }
-        self.entries.try_reserve(1).map_err(|_| Cause::NoMemory)?;
+        crate::module_reserve(&mut self.entries, 1)?;
         self.entries.insert(at, (id, value));
         Ok(())
     }
@@ -123,17 +123,19 @@ impl Node
 {
     pub(crate) fn try_clone(&self) -> Result<Self>
     {
-        let mut key = String::new();
-        key.try_reserve_exact(self.key.len()).map_err(|_| Cause::NoMemory)?;
-        key.push_str(&self.key);
-        Ok(Self { metadata: self.metadata.try_clone()?,
-                  host_name: {
-                      let mut out = buffer(self.host_name.len())?;
-                      out.copy_from_slice(&self.host_name);
-                      out
-                  },
-                  key,
-                  ..*self })
+        crate::module_allocation(|| {
+            let mut key = String::new();
+            key.try_reserve_exact(self.key.len()).map_err(|_| Cause::NoMemory)?;
+            key.push_str(&self.key);
+            Ok(Self { metadata: self.metadata.try_clone()?,
+                      host_name: {
+                          let mut out = buffer(self.host_name.len())?;
+                          out.copy_from_slice(&self.host_name);
+                          out
+                      },
+                      key,
+                      ..*self })
+        })
     }
 }
 struct PendingChild
@@ -272,7 +274,7 @@ impl<R: Rpc> Filesystem<R>
         }
         if allocates
         {
-            self.caps.try_reserve(1).map_err(|_| Cause::NoMemory)?;
+            crate::module_reserve(&mut self.caps, 1)?;
         }
         let result = self.rpc
                          .invoke(operation,
@@ -395,29 +397,32 @@ impl<R: Rpc> Filesystem<R>
         let read = self.call(Op::Read, handle, 0, forks::METADATA_BYTES as u32, &[]).await;
         let result =
             read.and_then(|reply| {
-                    let bytes = reply.body.as_slice().try_into().map_err(|_| Cause::Invalid)?;
-                    let (mut metadata, layout) =
-                        forks::decode_metadata(bytes, opened.header.offset)?;
-                    if metadata.kind == Kind::File
-                    {
-                        metadata.name =
+                    crate::module_allocation(|| {
+                        let bytes = reply.body.as_slice().try_into().map_err(|_| Cause::Invalid)?;
+                        let (mut metadata, layout) =
+                            forks::decode_metadata(bytes, opened.header.offset)?;
+                        if metadata.kind == Kind::File
+                        {
+                            metadata.name =
                         mac_hfs_b::names::normalize(core::str::from_utf8(name).map_err(|_| {
                                                                                   Cause::Invalid
                                                                               })?).map_err(|_| {
                                                                                       Cause::Invalid
                                                                                   })?;
-                    }
-                    let mut physical = buffer(name.len())?;
-                    physical.copy_from_slice(name);
-                    let key =
-                        mac_hfs_b::names::comparison(&metadata.name).map_err(|_| Cause::Invalid)?;
-                    Ok(Node { parent: 0,
-                              host_name: physical,
-                              plain: false,
-                              source: None,
-                              metadata,
-                              layout,
-                              key })
+                        }
+                        let mut physical = buffer(name.len())?;
+                        physical.copy_from_slice(name);
+                        let key = mac_hfs_b::names::comparison(&metadata.name).map_err(|_| {
+                                                                                  Cause::Invalid
+                                                                              })?;
+                        Ok(Node { parent: 0,
+                                  host_name: physical,
+                                  plain: false,
+                                  source: None,
+                                  metadata,
+                                  layout,
+                                  key })
+                    })
                 });
         match result
         {
@@ -461,7 +466,7 @@ impl<R: Rpc> Filesystem<R>
         let snapshots: Result<_> = (|| {
             let info = MountInfo { metadata:  node.metadata.try_clone()?,
                                    read_only: flags & wire::WRITE == 0 };
-            let cached = info.try_clone()?;
+            let cached = crate::module_allocation(|| info.try_clone())?;
             Ok((info, cached))
         })();
         let (info, cached) = match snapshots
@@ -784,8 +789,9 @@ impl<R: Rpc> Filesystem<R>
         {
             return Err(Cause::Stale.into());
         }
-        let info = MountInfo { metadata: node.metadata.try_clone()?,
-                               read_only };
+        let info =
+            MountInfo { metadata: crate::module_allocation(|| Ok(node.metadata.try_clone()?))?,
+                        read_only };
         let mut nodes = Index::new(MAX_NODES);
         nodes.insert(ROOT, node)?;
         let mut directories = Index::new(MAX_DIRECTORIES);

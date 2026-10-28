@@ -1,18 +1,40 @@
-//! Resident, application-local panic reports. Raw UTF-8 is retained independently
-//! of the visible page, so scrolling and copying never discard diagnostic text.
+//! Resident panic reports. Native capture uses one boot-admitted System buffer;
+//! genuine saved managers retain immutable full diagnostic snapshots independently
+//! of the visible page and of a dying application account.
 #![forbid(unsafe_code)]
-use alloc::{string::String, vec::Vec};
-
+use alloc::vec::Vec;
+mod storage;
+#[cfg(target_arch = "riscv64")]
+mod pending;
 use mac_abi::{crashes::*, *};
+#[cfg(target_arch = "riscv64")]
+pub(crate) use pending::{cleanup_progress, modal_available, pump_dismissals, pump_reports};
+use storage::Payload;
 
 pub const RESOURCE_ID: i16 = -16400;
 pub const DEFAULT_COLUMNS: usize = 90;
 pub const PAGE_LINES: u32 = 23;
 
+/// Prepared once from the fixed resident report geometry and its System font.
+#[cfg(target_arch = "riscv64")]
+#[derive(Clone, Copy)]
+pub(crate) struct ReportLayout
+{
+    pub(crate) columns:    usize,
+    pub(crate) page_lines: u32
+}
+#[cfg(target_arch = "riscv64")]
+static LAYOUT: spin::Once<ReportLayout> = spin::Once::new();
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn prepared_layout() -> Result<ReportLayout, Status>
+{
+    LAYOUT.get().copied().ok_or(NOT_SUPPORTED)
+}
+
 pub struct Manager
 {
-    report:                     String,
-    starts:                     Vec<u32>,
+    payload:                    Payload,
+    archive_origin:             Option<storage::Origin>,
     columns:                    usize,
     column:                     usize,
     previous_cr:                bool,
@@ -21,6 +43,8 @@ pub struct Manager
     pub(super) controls:        [Option<u64>; 6],
     #[cfg(target_arch = "riscv64")]
     pub(super) control_enabled: [bool; 6],
+    #[cfg(target_arch = "riscv64")]
+    pub(super) control_labels:  [u32; 6],
     #[cfg(target_arch = "riscv64")]
     pub(super) tracking:        Option<usize>,
     #[cfg(target_arch = "riscv64")]
@@ -36,19 +60,57 @@ pub struct Manager
 #[cfg(any(target_arch = "riscv64", test))]
 pub(crate) struct Snapshot
 {
-    report:      String,
-    starts:      Vec<u32>,
+    payload:     Payload,
     columns:     usize,
     column:      usize,
     previous_cr: bool,
     info:        CrashInfo
 }
+#[cfg(target_arch = "riscv64")]
+impl Snapshot
+{
+    pub(crate) fn retain(&self) -> Result<Self, Status>
+    {
+        Ok(Self { payload:     self.payload.snapshot()?,
+                  columns:     self.columns,
+                  column:      self.column,
+                  previous_cr: self.previous_cr,
+                  info:        self.info })
+    }
+
+    pub(crate) fn add_flags(&mut self, flags: u32)
+    {
+        self.info.flags |= flags;
+    }
+
+    pub(crate) fn info(&self) -> CrashInfo
+    {
+        self.info
+    }
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn queue_report(binding: crate::toolbox::processes::ResourceBinding,
+                           snapshot: Snapshot, flags: u32)
+                           -> Result<CrashInfo, Status>
+{
+    pending::queue(binding, snapshot, flags)
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn queue_dismissal(binding: crate::toolbox::processes::ResourceBinding,
+                              activity: crate::recovery::Activity, snapshot: Snapshot,
+                              window: WindowId)
+                              -> Result<(), Status>
+{
+    pending::queue_dismissal(binding, activity, snapshot, window)
+}
+
 impl Default for Manager
 {
     fn default() -> Self
     {
-        Self { report:                                          String::new(),
-               starts:                                          Vec::new(),
+        Self { payload:                                         Payload::default(),
+               archive_origin:                                  None,
                columns:                                         DEFAULT_COLUMNS,
                column:                                          0,
                previous_cr:                                     false,
@@ -60,6 +122,8 @@ impl Default for Manager
                #[cfg(target_arch = "riscv64")]
                control_enabled:                                 [false; 6],
                #[cfg(target_arch = "riscv64")]
+               control_labels:                                  [u32::MAX; 6],
+               #[cfg(target_arch = "riscv64")]
                tracking:                                        None,
                #[cfg(target_arch = "riscv64")]
                copy_failed:                                     false,
@@ -69,19 +133,34 @@ impl Default for Manager
                restart_error:                                   None }
     }
 }
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn initialize_protected_report(permit: crate::allocator::recovery::Permit)
+                                          -> Result<(), Status>
+{
+    crate::context::with_recovery_allocation(permit, || {
+        crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+            let layout = crate::toolbox::runtime::Desktop::measure_crash_report_layout()?;
+            storage::prepare()?;
+            LAYOUT.call_once(|| layout);
+            Ok(())
+        })
+    })
+}
+
 impl Manager
 {
     #[cfg(any(target_arch = "riscv64", test))]
     pub(crate) fn snapshot(&self) -> Result<Snapshot, Status>
     {
-        let mut report = String::new();
-        report.try_reserve_exact(self.report.len()).map_err(|_| NO_MEMORY)?;
-        report.push_str(&self.report);
-        let mut starts = Vec::new();
-        starts.try_reserve_exact(self.starts.len()).map_err(|_| NO_MEMORY)?;
-        starts.extend_from_slice(&self.starts);
-        Ok(Snapshot { report,
-                      starts,
+        let payload = if let Some(origin) = self.archive_origin
+        {
+            Payload::from_archive(origin).ok_or(NOT_FOUND)?
+        }
+        else
+        {
+            self.payload.snapshot()?
+        };
+        Ok(Snapshot { payload,
                       columns: self.columns,
                       column: self.column,
                       previous_cr: self.previous_cr,
@@ -94,8 +173,7 @@ impl Manager
         let mut info = snapshot.info;
         info.window = WindowId(0);
         info.dismissed = 0;
-        Self { report: snapshot.report,
-               starts: snapshot.starts,
+        Self { payload: snapshot.payload,
                columns: snapshot.columns,
                column: snapshot.column,
                previous_cr: snapshot.previous_cr,
@@ -103,10 +181,86 @@ impl Manager
                ..Default::default() }
     }
 
-    pub fn set_context(&mut self, app: u64, thread: u64)
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn begin_protected(&mut self, app: u64, thread: u64, flags: u32)
+                                  -> Result<(), Status>
     {
+        let previous = self.info;
+        let previous_archive = self.archive_origin;
+        let authorized = previous_archive.or(self.payload.origin());
+        self.payload.protected_begin()?;
+        // This new origin is published only by accepted BEGIN. A refusal must
+        // not turn newly borrowed archive bytes into another manager's report.
         self.info.app = app;
         self.info.thread = thread;
+        let result = self.request(&mut CrashCall { operation: BEGIN,
+                                                   flags,
+                                                   ..Default::default() },
+                                  "",
+                                  &mut []);
+        if let Err(status) = result
+        {
+            self.info = previous;
+            self.archive_origin = previous_archive;
+            self.payload.archive();
+            if previous_archive.is_some() || self.payload.origin() != authorized
+            {
+                self.payload = Payload::default();
+            }
+            return Err(status);
+        }
+        Ok(())
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn archive(&self)
+    {
+        self.payload.archive();
+    }
+
+    /// End this saved manager's use after actual UI disposal. The System archive
+    /// retains the complete latest bytes, while the one boot buffer can be
+    /// claimed for a later report once every genuine snapshot is gone.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn release_payload(&mut self)
+    {
+        if let Some(origin) = self.payload.origin()
+        {
+            self.archive_origin = Some(origin);
+        }
+        self.payload.archive();
+        self.payload = Payload::default();
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn finish_dismissal(&mut self, snapshot: &Snapshot) -> Result<bool, Status>
+    {
+        let expected = snapshot.payload.origin().ok_or(BAD_ABI)?;
+        if self.archive_origin.or(self.payload.origin()) != Some(expected)
+        {
+            return Ok(false);
+        }
+        let changed = self.info.dismissed == 0;
+        self.set_window(WindowId(0));
+        self.request(&mut CrashCall { operation: DISMISS,
+                                      ..Default::default() },
+                     "",
+                     &mut [])?;
+        self.release_payload();
+        Ok(changed)
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn finder_recovered(&mut self)
+    {
+        self.restart_error = None;
+        self.restart_pending = false;
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn add_flags(&mut self, flags: u32)
+    {
+        self.info.flags |= flags;
     }
 
     pub fn set_window(&mut self, window: WindowId)
@@ -116,20 +270,32 @@ impl Manager
         {
             self.controls = [None; 6];
             self.control_enabled = [false; 6];
+            self.control_labels = [u32::MAX; 6];
             self.tracking = None;
         }
     }
 
     pub fn info(&self) -> CrashInfo
     {
-        CrashInfo { report_bytes: self.report.len(),
-                    line_count: self.starts.len() as u32,
+        let archived = self.archive_origin.and_then(storage::archived);
+        let (report_bytes, line_count) = if self.archive_origin.is_some()
+        {
+            archived.as_ref().map_or((0, 0), |view| {
+                                 (view.data().report.len(), view.data().starts.len() as u32)
+                             })
+        }
+        else
+        {
+            (self.payload.data().report.len(), self.payload.data().starts.len() as u32)
+        };
+        CrashInfo { report_bytes,
+                    line_count,
                     ..self.info }
     }
 
     pub fn report(&self) -> &str
     {
-        &self.report
+        &self.payload.data().report
     }
 
     pub fn set_page_lines(&mut self, count: u32)
@@ -140,9 +306,19 @@ impl Manager
 
     pub fn line(&self, index: usize) -> Option<&str>
     {
-        let start = *self.starts.get(index)? as usize;
-        let end = self.starts.get(index + 1).copied().map_or(self.report.len(), |n| n as usize);
-        self.report.get(start..end).map(|line| line.trim_end_matches(['\r', '\n']))
+        let start = *self.payload.data().starts.get(index)? as usize;
+        let end = self.payload.data().starts.get(index + 1).copied().map_or(self.payload
+                                                                                .data()
+                                                                                .report
+                                                                                .len(),
+                                                                            |n| n as usize);
+        self.payload.data().report.get(start..end).map(|line| line.trim_end_matches(['\r', '\n']))
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn columns(&self) -> usize
+    {
+        self.columns
     }
 
     pub fn set_columns(&mut self, columns: usize) -> Result<(), Status>
@@ -154,17 +330,18 @@ impl Manager
         }
         // One entry per byte is a conservative upper bound even for all-newline
         // input. Reserve before changing any layout state.
-        self.starts
-            .try_reserve(self.report.len().saturating_add(1).saturating_sub(self.starts.len()))
+        let data = self.payload.data_mut()?;
+        data.starts
+            .try_reserve(data.report.len().saturating_add(1).saturating_sub(data.starts.len()))
             .map_err(|_| NO_MEMORY)?;
         self.columns = columns;
-        self.starts.clear();
+        data.starts.clear();
         self.column = 0;
         self.previous_cr = false;
-        self.starts.push(0);
-        for (offset, character) in self.report.char_indices()
+        data.starts.push(0);
+        for (offset, character) in data.report.char_indices()
         {
-            layout(&mut self.starts, &mut self.column, &mut self.previous_cr, columns, offset,
+            layout(&mut data.starts, &mut self.column, &mut self.previous_cr, columns, offset,
                    character);
         }
         self.clamp();
@@ -174,9 +351,7 @@ impl Manager
     fn clamp(&mut self)
     {
         self.info.first_line =
-            self.info
-                .first_line
-                .min((self.starts.len() as u32).saturating_sub(self.info.page_lines));
+            self.info.first_line.min(self.info().line_count.saturating_sub(self.info.page_lines));
     }
 
     pub fn scroll(&mut self, delta: i32) -> bool
@@ -197,10 +372,16 @@ impl Manager
             {
                 let app = self.info.app;
                 let thread = self.info.thread;
-                let mut starts = Vec::new();
-                starts.try_reserve(1).map_err(|_| NO_MEMORY)?;
-                starts.push(0);
-                *self = Self { starts,
+                let data = self.payload.data_mut()?;
+                data.starts
+                    .try_reserve(usize::from(data.starts.capacity() == 0))
+                    .map_err(|_| NO_MEMORY)?;
+                data.begin_origin(app, thread);
+                data.report.clear();
+                data.starts.clear();
+                data.starts.push(0);
+                let payload = core::mem::take(&mut self.payload);
+                *self = Self { payload,
                                info: CrashInfo { app,
                                                  thread,
                                                  flags: call.flags,
@@ -211,28 +392,39 @@ impl Manager
             }
             APPEND =>
             {
-                if self.report.len().checked_add(input.len()).is_none_or(|n| n > MAX_REPORT_BYTES)
+                if input.len() > MAX_APPEND_BYTES
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                if self.payload
+                       .data()
+                       .report
+                       .len()
+                       .checked_add(input.len())
+                       .is_none_or(|n| n > MAX_REPORT_BYTES)
                 {
                     self.info.flags |= TRUNCATED;
                     call.info = self.info();
                     return Err(NO_MEMORY);
                 }
-                if self.report.try_reserve(input.len()).is_err()
-                   || self.starts.try_reserve(input.len().saturating_add(1)).is_err()
+                let data = self.payload.data_mut()?;
+                let initial = usize::from(data.starts.is_empty());
+                if data.report.try_reserve(input.len()).is_err()
+                   || data.starts.try_reserve(input.len().saturating_add(initial)).is_err()
                 {
                     self.info.flags |= TRUNCATED;
                     call.info = self.info();
                     return Err(NO_MEMORY);
                 }
-                if self.starts.is_empty()
+                if data.starts.is_empty()
                 {
-                    self.starts.push(0);
+                    data.starts.push(0);
                 }
-                let base = self.report.len();
-                self.report.push_str(input);
+                let base = data.report.len();
+                data.report.push_str(input);
                 for (offset, character) in input.char_indices()
                 {
-                    layout(&mut self.starts,
+                    layout(&mut data.starts,
                            &mut self.column,
                            &mut self.previous_cr,
                            self.columns,
@@ -250,7 +442,16 @@ impl Manager
             INFO => false,
             READ =>
             {
-                let bytes = self.report.as_bytes().get(call.offset..).ok_or(BAD_ARGUMENT)?;
+                let archived = self.archive_origin.and_then(storage::archived);
+                let data = if self.archive_origin.is_some()
+                {
+                    archived.as_ref().ok_or(NOT_FOUND)?.data()
+                }
+                else
+                {
+                    self.payload.data()
+                };
+                let bytes = data.report.as_bytes().get(call.offset..).ok_or(BAD_ARGUMENT)?;
                 let count = bytes.len().min(output.len());
                 output[..count].copy_from_slice(&bytes[..count]);
                 call.length = count;
@@ -313,7 +514,8 @@ mod recovery_tests
     fn recovery_snapshot_preserves_complete_origin_and_layout_without_ui_ids()
     {
         let mut old = Manager::default();
-        old.set_context(401, 991);
+        old.info.app = 401;
+        old.info.thread = 991;
         old.request(&mut CrashCall { operation: BEGIN,
                                      ..Default::default() },
                     "",
@@ -345,6 +547,6 @@ mod recovery_tests
                                ..info });
         assert_eq!(restored.columns, 12);
         assert_eq!(restored.column, 5);
-        assert_eq!(restored.starts.len(), info.line_count as usize);
+        assert_eq!(restored.payload.data().starts.len(), info.line_count as usize);
     }
 }

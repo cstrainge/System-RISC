@@ -184,7 +184,8 @@ impl World
         let mut registry = Registry::new(Target::RVA23U64,
                                          registrar,
                                          [interface, interface_storage, dependency,
-                                          dependency_storage, request, request_storage]).unwrap();
+                                          dependency_storage, request, request_storage],
+                                         16 << 20).unwrap();
         let interface = registry.register_service(extension::OFFER).unwrap();
         let mut scrap = Manager::default();
         scrap.prepare_extensions(kinds).unwrap();
@@ -298,8 +299,9 @@ impl Module
         self.fixture
             .with(|world| {
                 let owner = world.registry.module_ledger(self.caller).unwrap();
-                let subject =
-                    world.operations.admit(&handles::subject::Authority::Client(owner)).unwrap();
+                let subject = world.operations
+                                   .admit_current(&handles::subject::Authority::Client(owner))
+                                   .unwrap();
                 world.clients.push(ClientBinding { key,
                                                    caller: self.caller,
                                                    subject });
@@ -328,7 +330,7 @@ impl Module
                 {
                     let inherited =
                         world.operations
-                             .admit(&handles::subject::Authority::Operation(binding.subject
+                             .admit_current(&handles::subject::Authority::Operation(binding.subject
                                                                                    .scope()
                                                                                    .clone()))
                              .unwrap();
@@ -554,12 +556,18 @@ mod native
     pub(super) fn client(caller: u64, key: u64) -> mac_driver::Client
     {
         let entry = Entry(Mutex::new(None));
-        let host = abi::Host { header:   abi::Header::of::<abi::Host>(),
-                               module:   caller,
-                               reserved: 0,
-                               context:  key,
-                               call:     Some(broker),
-                               resolve:  Some(resolve) };
+        let host = abi::Host { header:                 abi::Header::of::<abi::Host>(),
+                               module:                 caller,
+                               reserved:               0,
+                               context:                key,
+                               call:                   Some(broker),
+                               resolve:                Some(resolve),
+                               allocate:               None,
+                               deallocate:             None,
+                               reallocate:             None,
+                               with_module_allocation: None,
+                               workers:                None,
+                               critical_section:       None };
         let mut instance = abi::Instance::default();
         // SAFETY: exact resident buffers and process-long static callbacks.
         // Context is a nonce, never a dereferenced fixture pointer; expired

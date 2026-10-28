@@ -14,6 +14,14 @@ use super::traps::TrapFrame;
 use crate::{context::{EventWaiter, ThreadContext},
             toolbox::handles::{OwnerRef, Store}};
 mod lifetime;
+mod worker;
+pub(crate) mod recovery;
+pub(crate) use recovery::{FinderBackingLoan, initialize_finder_recovery, pump_recovery_backing,
+                          take_finder_recovery};
+use worker::{ReapState, ThreadName, WorkerState, cancel_worker, reclaim_workers};
+pub(crate) use worker::{activate_workers, prepare_worker, publish_worker, worker_cancel,
+                        worker_current, worker_dispose, worker_exit, worker_park, worker_start,
+                        worker_status, worker_wake};
 pub(crate) mod accounting;
 pub(crate) use lifetime::{ReleaseThreads, specification};
 const IDLE: usize = usize::MAX;
@@ -29,13 +37,16 @@ static CURRENT: AtomicUsize = AtomicUsize::new(IDLE);
 static IO: AtomicBool = AtomicBool::new(false);
 static RECLAIM_PENDING: AtomicBool = AtomicBool::new(false);
 static RETIRED_COUNT: AtomicUsize = AtomicUsize::new(0);
+static WORKER_REAP_COUNT: AtomicUsize = AtomicUsize::new(0);
 static INPUT_PRIORITY: crate::toolbox::events::priority::InputPriority =
     crate::toolbox::events::priority::InputPriority::new();
 struct Thread
 {
-    id:    u64,
-    core:  Arc<ThreadCore>,
-    state: Cell<RunState>
+    id:     u64,
+    core:   Arc<ThreadCore>,
+    state:  Cell<RunState>,
+    worker: Option<Cell<WorkerState>>,
+    scope:  Option<mac_object_table::scope::Lease<crate::toolbox::handles::InvocationGate>>
 }
 #[derive(Clone, Copy)]
 struct RunState
@@ -63,9 +74,11 @@ struct Idle
 #[derive(Clone, Copy)]
 enum Wait
 {
+    Worker,
     Events
     {
-        mask: u16, deadline: u64
+        mask:     u16,
+        deadline: u64
     },
     Io
     {
@@ -139,6 +152,105 @@ pub fn current_context() -> crate::context::ContextRef
               .unwrap_or(crate::context::ContextRef::Bootstrap)
     })
 }
+/// The forwarded allocator authenticates a pinned module executor with no
+/// retained-reader or account clones and no registry lookup per callback.
+pub(crate) fn authenticate_module(module: u64) -> Result<(), mac_abi::Status>
+{
+    super::interrupts::with_masked(|| {
+        if IO.load(Ordering::Relaxed)
+        {
+            return crate::context::authenticate_bootstrap_module(module);
+        }
+        match ACTIVE.lock().as_ref()
+        {
+            Some(context) => context.authenticate_module(module),
+            None => crate::context::authenticate_bootstrap_module(module)
+        }
+    })
+}
+pub(crate) fn module_owner(module: u64) -> Result<OwnerRef, mac_abi::Status>
+{
+    super::interrupts::with_masked(|| {
+        if IO.load(Ordering::Relaxed)
+        {
+            return crate::context::bootstrap_module_owner(module);
+        }
+        match ACTIVE.lock().as_ref()
+        {
+            Some(context) => context.module_owner(module),
+            None => crate::context::bootstrap_module_owner(module)
+        }
+    })
+}
+pub(crate) fn module_callback_allowed(module: u64, address: usize) -> Result<(), mac_abi::Status>
+{
+    super::interrupts::with_masked(|| {
+        if IO.load(Ordering::Relaxed)
+        {
+            return crate::context::bootstrap_module_callback_allowed(module, address);
+        }
+        match ACTIVE.lock().as_ref()
+        {
+            Some(context) => context.module_callback_allowed(module, address),
+            None => crate::context::bootstrap_module_callback_allowed(module, address)
+        }
+    })
+}
+
+pub(crate) fn critical_active() -> bool
+{
+    super::interrupts::with_masked(|| {
+        if IO.load(Ordering::Relaxed)
+        {
+            return crate::context::bootstrap_critical_active();
+        }
+        ACTIVE.lock().as_ref().map_or_else(crate::context::bootstrap_critical_active, |context| {
+                                  context.critical_active()
+                              })
+    })
+}
+
+/// Reserve from the actual active executor without a ContextRef/retained-reader
+/// clone. The callback path is allocation-free and cannot escape borrowed state.
+/// Release ACTIVE, selection and account locks before the allocator uses backing.
+pub(crate) fn reserve_allocation(
+    bytes: u64)
+    -> Result<crate::allocator::Reservation, crate::allocator::Error>
+{
+    super::interrupts::with_masked(|| {
+        if IO.load(Ordering::Relaxed)
+        {
+            return crate::context::reserve_bootstrap_allocation(bytes);
+        }
+        let active = ACTIVE.lock();
+        match active.as_ref()
+        {
+            Some(context) => context.reserve_allocation(bytes),
+            None => crate::context::reserve_bootstrap_allocation(bytes)
+        }
+    })
+}
+
+/// Reallocation retains the original receipt. Borrow the current operation only
+/// as a possible same-account continuation, without cloning readers or authority.
+pub(crate) fn reserve_replacement(
+    receipt: &crate::allocator::Receipt, bytes: u64)
+    -> Result<crate::allocator::Reservation, crate::allocator::Error>
+{
+    super::interrupts::with_masked(|| {
+        if IO.load(Ordering::Relaxed)
+        {
+            return crate::context::reserve_bootstrap_replacement(receipt, bytes);
+        }
+        let active = ACTIVE.lock();
+        match active.as_ref()
+        {
+            Some(context) => context.reserve_replacement(receipt, bytes),
+            None => crate::context::reserve_bootstrap_replacement(receipt, bytes)
+        }
+    })
+}
+
 // Scheduler -> ACTIVE is the only held-lock ordering. Lookup releases ACTIVE
 // before any caller runs, including completion-before-park under scheduler lock.
 fn activate_context(context: Option<&Arc<ThreadContext>>)
@@ -161,6 +273,7 @@ pub(crate) fn context_released()
     {
         RECLAIM_PENDING.store(true, Ordering::Release);
     }
+    worker::context_released();
 }
 pub fn io_enter() -> bool
 {
@@ -190,22 +303,40 @@ pub(crate) fn has_threads(app: u64) -> bool
 }
 /// Own every fallible stack/image preparation before publishing a thread.
 /// The plan can wait for a retiring slot without consuming its image use.
+struct ThreadBacking
+{
+    // CPU/stack disappear before code-dependent launch/image pins.
+    cpu:    accounting::Charged<super::traps::SavedState>,
+    stack:  accounting::Charged<super::pages::Stack>,
+    loaded: Option<crate::kernel::LoadedImage>
+}
 struct ThreadCore
 {
-    // CPU state and stack disposal precede the image execution/source pin.
-    cpu:     Mutex<accounting::Charged<super::traps::SavedState>>,
-    _stack:  accounting::Charged<super::pages::Stack>,
-    _loaded: Option<crate::kernel::LoadedImage>,
-    context: Arc<ThreadContext>,
-    release: Mutex<Option<ReleasedResource>>,
-    binding: crate::images::Binding,
-    top:     usize
+    backing:         Mutex<Option<ThreadBacking>>,
+    launch:          Mutex<Option<crate::drivers::WorkerLaunch>>,
+    context:         Arc<ThreadContext>,
+    release:         Mutex<Option<ReleasedResource>>,
+    binding:         crate::images::Binding,
+    top:             usize,
+    cleanup_refusal: Mutex<Option<ReapState>>,
+    name:            Option<ThreadName>
+}
+impl ThreadCore
+{
+    fn cpu_frame(&self) -> Option<*mut TrapFrame>
+    {
+        let backing = self.backing.lock();
+        let backing = backing.as_ref()?;
+        super::traps::publish_cpu(&backing.cpu);
+        Some(backing.cpu.frame())
+    }
 }
 pub(crate) struct PreparedThread
 {
     owner:      crate::toolbox::handles::OwnerRef,
     core:       mac_object_table::retained::Read<ThreadCore>,
-    allocation: accounting::AllocationAuthority
+    allocation: accounting::AllocationAuthority,
+    recovery:   Option<crate::allocator::recovery::Permit>
 }
 pub(crate) struct PrepareFailure
 {
@@ -221,7 +352,13 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                       loaded: crate::kernel::LoadedImage, charges: accounting::ThreadCharges)
                       -> Result<PreparedThread, PrepareFailure>
 {
-    let prepared = (|| {
+    let target = crate::allocator::Target::Owner { account: charges.allocation().clone(),
+                                                   class:
+                                                       mac_kernel_model::policy::MemoryClass::Kernel };
+    // The child's genuine account scopes BOTH Arc allocations. Keep loaded
+    // borrowed until every fallible preparation has succeeded, so refusal can
+    // return the original image use without publishing or losing it.
+    let prepared = crate::context::with_allocation(target, || {
         if !owner.accepting() || loaded.binding().owner() != owner.owner().incarnation()
         {
             return Err(mac_abi::ACCESS_DENIED);
@@ -234,8 +371,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                                   initial.registers[8] = loaded.entry();
                                                   initial.stack_pointer = top;
                                                   // gp is unused by the freestanding PC-relative
-                                                  // executable
-                                                  // contract.
+                                                  // executable contract.
                                                   initial
                                               })
                                               .map_err(|error| {
@@ -243,28 +379,23 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                                   error.status()
                                               })?;
         let top = stack.top();
-        Ok((context, stack, cpu, top, allocation))
-    })();
+        let core = Arc::try_new(ThreadCore { backing:
+                                                 Mutex::new(Some(ThreadBacking { cpu,
+                                                                                 stack,
+                                                                                 loaded: None })),
+                                             launch: Mutex::new(None),
+                                             context,
+                                             release: Mutex::new(None),
+                                             binding: loaded.binding(),
+                                             top,
+                                             cleanup_refusal: Mutex::new(None),
+                                             name: None }).map_err(|_| mac_abi::NO_MEMORY)?;
+        Ok((core, allocation))
+    });
     match prepared
     {
-        Ok((context, stack, cpu, top, allocation)) =>
+        Ok((mut core, allocation)) =>
         {
-            let binding = loaded.binding();
-            let mut core = match Arc::try_new(ThreadCore { cpu: Mutex::new(cpu),
-                                                           _stack: stack,
-                                                           _loaded: None,
-                                                           context,
-                                                           release: Mutex::new(None),
-                                                           binding,
-                                                           top })
-            {
-                Ok(core) => core,
-                Err(_) =>
-                {
-                    return Err(PrepareFailure { status: mac_abi::NO_MEMORY,
-                                                loaded });
-                }
-            };
             let Some(storage) = Arc::get_mut(&mut core)
             else
             {
@@ -272,11 +403,20 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                 return Err(PrepareFailure { status: mac_abi::BAD_ABI,
                                             loaded });
             };
-            storage._loaded = Some(loaded);
+            match storage.backing.get_mut().as_mut()
+            {
+                Some(backing) => backing.loaded = Some(loaded),
+                None =>
+                {
+                    return Err(PrepareFailure { status: mac_abi::BAD_ABI,
+                                                loaded });
+                }
+            }
             Ok(PreparedThread { owner,
                                 core: mac_object_table::retained::Read::new(core,
                                                                             context_released),
-                                allocation })
+                                allocation,
+                                recovery: None })
         }
         Err(status) =>
         {
@@ -285,92 +425,190 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
         }
     }
 }
+pub(crate) struct RecoveryPrepareFailure
+{
+    pub(crate) status: mac_abi::Status,
+    pub(crate) loaded: crate::kernel::LoadedImage,
+    pub(crate) loan:   FinderBackingLoan
+}
+/// The same process entry, CPU frame and THRD publication use boot-held native
+/// backing. All fallible control-block work precedes consumption of the loan.
+pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
+                               charges: accounting::ThreadCharges, loan: FinderBackingLoan)
+                               -> Result<PreparedThread, RecoveryPrepareFailure>
+{
+    let permit = loan.permit();
+    let target = crate::allocator::Target::Owner { account: charges.allocation().clone(),
+                                                   class:
+                                                       mac_kernel_model::policy::MemoryClass::Kernel };
+    let metadata = crate::context::with_recovery_allocation(permit.clone(), || {
+        crate::context::with_allocation(target, || {
+            if !owner.accepting()
+               || owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+               || owner.owner().incarnation() != crate::context::finder_app().0
+               || loaded.binding().owner() != owner.owner().incarnation()
+            {
+                return Err(mac_abi::ACCESS_DENIED);
+            }
+            let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
+            context.install_recovery_default(permit.clone());
+            let core = ThreadCore { backing: Mutex::new(None),
+                                    launch: Mutex::new(None),
+                                    context,
+                                    release: Mutex::new(None),
+                                    binding: loaded.binding(),
+                                    top: 0,
+                                    cleanup_refusal: Mutex::new(None),
+                                    name: None };
+            Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)
+        })
+    });
+    let mut core = match metadata
+    {
+        Ok(core) => core,
+        Err(status) =>
+        {
+            return Err(RecoveryPrepareFailure { status,
+                                                loaded,
+                                                loan });
+        }
+    };
+    let Some(storage) = Arc::get_mut(&mut core)
+    else
+    {
+        return Err(RecoveryPrepareFailure { status: mac_abi::BAD_ABI,
+                                            loaded,
+                                            loan });
+    };
+    let backing = charges.allocate_recovery(&owner, loan, |top| {
+                             let mut frame = TrapFrame::default();
+                             frame.pc = app_start as *const () as usize;
+                             frame.status = super::traps::INITIAL_STATUS;
+                             frame.registers[8] = loaded.entry();
+                             frame.stack_pointer = top;
+                             frame
+                         });
+    let (stack, cpu, allocation) = match backing
+    {
+        Ok(backing) => backing,
+        Err((error, loan)) =>
+        {
+            return Err(RecoveryPrepareFailure { status: error.status(),
+                                                loaded,
+                                                loan });
+        }
+    };
+    storage.top = stack.top();
+    *storage.backing.get_mut() = Some(ThreadBacking { cpu,
+                                                      stack,
+                                                      loaded: Some(loaded) });
+    Ok(PreparedThread { owner,
+                        core: mac_object_table::retained::Read::new(core, context_released),
+                        allocation,
+                        recovery: Some(permit) })
+}
+
 pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
                              -> Result<u64, SpawnFailure>
 {
-    let published = (|| {
-        let mut scheduler = SCHEDULER.lock();
-        let slot = scheduler.prepare()?;
-        if !prepared.owner.accepting()
+    match prepared.recovery.clone()
+    {
+        Some(permit) =>
         {
-            return Err(mac_abi::ACCESS_DENIED);
+            crate::context::with_recovery_allocation(permit, || {
+                spawn_prepared_inner(prepared, runnable)
+            })
         }
-        let store = scheduler.records.as_mut().ok_or(mac_abi::BAD_ABI)?;
-        let publication = store.insert_with_receipt(&prepared.owner, |id| {
-                                   Thread { id,
-                                            core: prepared.core.share(),
-
-                                            state: Cell::new(RunState { live:     false,
-                                                                        retired:  false,
-                                                                        switches: 0,
-                                                                        waiting:  None,
-                                                                        woken:    0 }) }
-                               })
-                               .map_err(lifetime::pool_status)?;
-        let (id, receipt) = publication.into_parts();
-        if slot == scheduler.threads.len()
-        {
-            scheduler.threads.push(Some(receipt));
-        }
-        else
-        {
-            scheduler.threads[slot] = Some(receipt);
-        }
-        // Publication's receipt remains valid if a stopping walk has already
-        // invalidated ordinary lookup. An unstarted refusal retains the same
-        // preparation; its stack/image pins are never dropped under this lock.
-        let assigned =
-            prepared.core.context.assign(prepared.owner.clone(),
-                                         id,
-                                         prepared.core.binding,
-                                         &prepared.allocation);
-        if let Err(status) = assigned
-        {
-            let removed = scheduler.records.as_mut().and_then(|store| store.remove(id));
-            if removed.is_some()
+        None => spawn_prepared_inner(prepared, runnable)
+    }
+}
+fn spawn_prepared_inner(prepared: PreparedThread, runnable: bool) -> Result<u64, SpawnFailure>
+{
+    let published =
+        (|| {
+            let mut scheduler = SCHEDULER.lock();
+            let slot = crate::allocator::with_system(crate::allocator::SystemClass::Ordinary,
+                                                     || scheduler.prepare())?;
+            if !prepared.owner.accepting()
             {
-                scheduler.threads[slot] = None;
+                return Err(mac_abi::ACCESS_DENIED);
             }
-            else if let Some(thread) = scheduler.thread(slot)
+            let store = scheduler.records.as_mut().ok_or(mac_abi::BAD_ABI)?;
+            // Shared Store indices grow under their narrow System hook. Its actual
+            // per-owner Claim, slots and completions belong to this admitted child.
+            let publication = crate::context::with_allocation(crate::allocator::Target::Owner {
+                account: prepared.allocation.clone(),
+                class: mac_kernel_model::policy::MemoryClass::Kernel
+            }, || store.insert_with_receipt(&prepared.owner, |id| {
+                Thread { id,
+                         core: prepared.core.share(),
+                         worker: None, scope: None,
+                         state: Cell::new(RunState { live: false,
+                                                    retired: false,
+                                                    switches: 0,
+                                                    waiting: None,
+                                                    woken: 0 }) }
+            })).map_err(lifetime::pool_status)?;
+            let (id, receipt) = publication.into_parts();
+            if slot == scheduler.threads.len()
             {
-                retire(thread);
+                scheduler.threads.push(Some(receipt));
             }
-            drop(scheduler);
-            drop(removed);
-            return Err(status);
-        }
-        if let Some(thread) = scheduler.thread(slot)
-        {
-            thread.update(|state| state.live = runnable);
-        }
-        Ok(id)
-    })();
+            else
+            {
+                scheduler.threads[slot] = Some(receipt);
+            }
+            // Publication's receipt remains valid if a stopping walk has already
+            // invalidated ordinary lookup. An unstarted refusal retains the same
+            // preparation; its stack/image pins are never dropped under this lock.
+            let assigned = prepared.core.context.assign(prepared.owner.clone(),
+                                                        id,
+                                                        prepared.core.binding,
+                                                        &prepared.allocation);
+            if let Err(status) = assigned
+            {
+                let removed = scheduler.records.as_mut().and_then(|store| store.remove(id));
+                if removed.is_some()
+                {
+                    scheduler.threads[slot] = None;
+                }
+                else if let Some(thread) = scheduler.thread(slot)
+                {
+                    retire(thread);
+                }
+                drop(scheduler);
+                drop(removed);
+                return Err(status);
+            }
+            if let Some(thread) = scheduler.thread(slot)
+            {
+                thread.update(|state| state.live = runnable);
+            }
+            Ok(id)
+        })();
     match published
     {
         Ok(id) =>
         {
-            let (cpu_frame, cpu_bytes, cpu_base, cpu_backing, cpu_physical) = {
-                let state = prepared.core.cpu.lock();
-                (state.frame() as usize,
-                 state.bytes(),
-                 state.base(),
-                 state.backing_bytes(),
-                 state.physical())
-            };
-            serial!("PROCESS_THREAD app={} thread={} stack=0x{:x} stack_bytes={} \
-                     stack_backing_bytes={} cpu_state=0x{:x} cpu_state_bytes={} cpu_base=0x{:x} \
-                     cpu_backing_bytes={} stack_physical={:#x} cpu_physical={:#x}",
-                    prepared.owner.owner().incarnation(),
-                    id,
-                    prepared.core.top,
-                    prepared.core._stack.bytes(),
-                    prepared.core._stack.backing_bytes(),
-                    cpu_frame,
-                    cpu_bytes,
-                    cpu_base,
-                    cpu_backing,
-                    prepared.core._stack.physical().0,
-                    cpu_physical);
+            let backing = prepared.core.backing.lock();
+            if let Some(backing) = backing.as_ref()
+            {
+                serial!("PROCESS_THREAD app={} thread={} stack=0x{:x} stack_bytes={} \
+                         stack_backing_bytes={} cpu_state=0x{:x} cpu_state_bytes={} \
+                         cpu_base=0x{:x} cpu_backing_bytes={} stack_physical={:#x} \
+                         cpu_physical={:#x}",
+                        prepared.owner.owner().incarnation(),
+                        id,
+                        prepared.core.top,
+                        backing.stack.bytes(),
+                        backing.stack.backing_bytes(),
+                        backing.cpu.frame() as usize,
+                        backing.cpu.bytes(),
+                        backing.cpu.base(),
+                        backing.cpu.backing_bytes(),
+                        backing.stack.physical().0,
+                        backing.cpu.physical());
+            }
             Ok(id)
         }
         Err(status) =>
@@ -400,7 +638,16 @@ pub(crate) fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
                     charges: accounting::ThreadCharges)
                     -> Result<u64, mac_abi::Status>
 {
-    let prepared = prepare(owner, loaded, charges).map_err(|failure| failure.status)?;
+    let prepared = prepare(owner, loaded, charges).map_err(|failure| {
+                                                      let PrepareFailure { status,
+                                                                           loaded } = failure;
+                                                      // Failed preparation retains the unique image
+                                                      // until its caller accepts
+                                                      // the refusal; dispose that lease through its
+                                                      // ordinary owned path.
+                                                      drop(loaded);
+                                                      status
+                                                  })?;
     spawn_prepared(prepared, true).map_err(|failure| failure.status)
 }
 
@@ -449,16 +696,27 @@ pub fn start() -> mac_formats::Result<()>
               })?;
     scheduler.idle = Some(Idle { _stack: stack,
                                  cpu:    Mutex::new(cpu) });
-    let t = scheduler.thread(0)
-                     .expect("scheduler bootstrap publishes Finder before starting CPU frames");
-    let frame = {
-        let cpu = t.core.cpu.lock();
-        super::traps::publish_cpu(&cpu);
-        cpu.frame()
-    };
+    // Module preparations can precede Finder in the shared THRD store. Start
+    // the genuine runnable Finder process, never an inert/armed module slot.
+    let finder = crate::context::finder_app().0;
+    let (slot, t) =
+        scheduler.iter()
+                 .find(|(_, thread)| {
+                     let state = thread.state.get();
+                     thread.worker.is_none()
+                     && thread.core.context.identity().app.0 == finder
+                     && state.live
+                     && !state.retired
+                 })
+                 .ok_or(mac_formats::Error::Malformed("scheduler bootstrap has no runnable \
+                                                       Finder process"))?;
+    let frame =
+        t.core
+         .cpu_frame()
+         .ok_or(mac_formats::Error::Malformed("scheduler bootstrap Finder has no CPU backing"))?;
     t.update(|state| state.switches += 1);
     activate_context(Some(&t.core.context));
-    CURRENT.store(0, Ordering::Relaxed);
+    CURRENT.store(slot, Ordering::Relaxed);
     drop(scheduler);
     arm();
     unsafe {
@@ -682,6 +940,10 @@ pub(crate) fn retire_owner(owner: u64)
 /// outside the scheduler lock before acknowledging that unique ticket.
 pub(crate) fn reclaim_retired()
 {
+    if critical_active()
+    {
+        return;
+    }
     if !RECLAIM_PENDING.swap(false, Ordering::AcqRel)
     {
         return;
@@ -781,18 +1043,29 @@ pub(crate) fn reclaim_retired()
 
 pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
 {
-    // Device input and cursor publication precede all ordinary maintenance.
-    // Never enable nested preemption while a resident manager owns its guards.
-    let fresh_input = crate::kernel::poll_waiting_events();
-    if INPUT_PRIORITY.background_allowed(fresh_input)
-    {
-        reclaim_retired();
-        crate::drivers::pump_jobs();
-        crate::toolbox::files::pump_provider_operations();
-        crate::toolbox::processes::documents::pump();
-        crate::toolbox::processes::retirement::pump();
-        crate::toolbox::processes::finder::pump();
-    }
+    // ACTIVE still names the interrupted app until a new CPU frame is selected.
+    // Generic scheduler maintenance uses permanent System authority; provider
+    // callbacks must explicitly restore their own retained subject selection.
+    crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+        // Device input and cursor publication precede all ordinary maintenance.
+        // Never enable nested preemption while a resident manager owns its guards.
+        let fresh_input = crate::kernel::poll_waiting_events();
+        if INPUT_PRIORITY.background_allowed(fresh_input)
+        {
+            reclaim_workers();
+            reclaim_retired();
+            crate::drivers::pump_jobs();
+            crate::toolbox::files::pump_provider_operations();
+            crate::toolbox::runtime::Desktop::pump_standard_file();
+            pump_recovery_backing();
+            crate::recovery::pump();
+            crate::toolbox::crashes::pump_dismissals();
+            crate::toolbox::crashes::pump_reports();
+            crate::toolbox::processes::documents::pump();
+            crate::toolbox::processes::retirement::pump();
+            crate::toolbox::processes::finder::pump();
+        }
+    });
     let current = CURRENT.load(Ordering::Relaxed);
     let mut scheduler = SCHEDULER.lock();
     scheduler.ticks += 1;
@@ -833,11 +1106,19 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
                           state.woken = 0;
                           state.switches += 1;
                       });
-                let next = if index == current { frame } else { thread.core.cpu.lock().frame() };
-                if index != current
+                let next = if index == current
                 {
-                    super::traps::publish_cpu(&thread.core.cpu.lock());
+                    frame
                 }
+                else
+                {
+                    let Some(next) = thread.core.cpu_frame()
+                    else
+                    {
+                        continue;
+                    };
+                    next
+                };
                 activate_context(Some(&thread.core.context));
                 CURRENT.store(index, Ordering::Relaxed);
                 arm();

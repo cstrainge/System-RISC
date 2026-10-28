@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 [workspace]
+[features]
+workers = ["dep:mac-driver-alloc"]
+workers-rollback = ["workers"]
 [[bin]]
 name = "ModuleClient"
 path = "src/main.rs"
@@ -16,6 +19,8 @@ test = false
 bench = false
 [dependencies]
 mac-driver = { path = "../../../../mac-driver" }
+mac-abi = { path = "../../../../mac-abi" }
+mac-driver-alloc = { path = "../../../../mac-driver-alloc", optional = true }
 [target.'cfg(not(target_arch = "riscv64"))'.dependencies]
 mac-build = { path = "../../../../../tools/mac-build" }
 [build-dependencies]

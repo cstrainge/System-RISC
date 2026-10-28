@@ -25,7 +25,7 @@ pub unsafe fn install(services: *const SystemServices) -> Result<(), crate::abi:
 struct Writer<'a>
 {
     client:   Client<'a>,
-    buffer:   [u8; 512],
+    buffer:   [u8; crashes::MAX_APPEND_BYTES],
     used:     usize,
     resident: bool,
     flags:    crashes::ReportFlags
@@ -83,7 +83,7 @@ pub fn report(client: Client<'_>, arguments: fmt::Arguments<'_>)
     let crashes = Crashes::new(client);
     let begin = crashes.begin();
     let mut writer = Writer { client,
-                              buffer: [0; 512],
+                              buffer: [0; crashes::MAX_APPEND_BYTES],
                               used: 0,
                               resident: begin.is_ok(),
                               flags: crashes::ReportFlags::NONE };

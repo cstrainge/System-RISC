@@ -3,6 +3,14 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 
+use mac_kernel_model::{account::{Account, AccountUse},
+                       policy::ConfiguredRange};
+use mac_object_table::shared::InvocationGate as _;
+
+use crate::toolbox::handles::InvocationGate;
+type ModuleAccount = Account<InvocationGate>;
+pub(crate) type ModuleAllocation = AccountUse<InvocationGate>;
+
 use mac_module::{Available, ClassId, Contract, Offer, PackageKind, Policy, Service, Target};
 
 pub use crate::toolbox::handles::cleanup::CheckpointError;
@@ -21,11 +29,23 @@ pub enum Error
     Duplicate,
     Exclusive,
     Exhausted,
+    Account(mac_kernel_model::account::Error),
+    AllocationScope(mac_abi::Status),
+    AccountPending
+    {
+        owner:                 mac_object_table::domain::DomainId,
+        kernel_committed:      u64,
+        kernel_reserved:       u64,
+        application_committed: u64,
+        application_reserved:  u64,
+        retained_pins:         usize
+    },
     Stale,
     State,
     Access,
     RequestSubject,
     RequestParent,
+    RecoveryUnsupported,
     Busy,
     BackingInUse
     {
@@ -67,6 +87,11 @@ impl core::fmt::Display for Error
                 f.write_str("an exclusive service already has an installed provider")
             }
             Self::Exhausted => f.write_str("module registry could not reserve metadata storage"),
+            Self::Account(error) => error.fmt(f),
+            Self::AllocationScope(status) =>
+            {
+                write!(f, "module allocation scope unavailable (status {status})")
+            }
             Self::Stale =>
             {
                 f.write_str("module, interface or request identity is absent, foreign or retired; \
@@ -87,6 +112,25 @@ impl core::fmt::Display for Error
             {
                 f.write_str("nested broker call has no matching active parent invocation; use the \
                              original scoped callback or its owned queue")
+            }
+            Self::RecoveryUnsupported =>
+            {
+                f.write_str("this provider graph has no preadmitted protected request endpoints; \
+                             it requires ordinary memory admission")
+            }
+            Self::AccountPending { owner,
+                                   kernel_committed,
+                                   kernel_reserved,
+                                   application_committed,
+                                   application_reserved,
+                                   retained_pins } =>
+            {
+                write!(f,
+                       "{owner} cleanup is drained but original account receipts remain: kernel \
+                        {kernel_committed} committed/{kernel_reserved} reserved bytes, \
+                        application {application_committed} committed/{application_reserved} \
+                        reserved bytes, {retained_pins} retained uses or receipts; wait for their \
+                        original holders to release")
             }
             Self::Busy =>
             {
@@ -119,6 +163,17 @@ impl core::error::Error for Error
 {
 }
 pub type Result<T> = core::result::Result<T, Error>;
+fn records<T>(source: impl Iterator<Item = mac_module::Result<T>>) -> Result<Vec<T>>
+{
+    let mut values = Vec::new();
+    values.try_reserve(source.size_hint().0).map_err(|_| Error::Exhausted)?;
+    for value in source
+    {
+        values.try_reserve(1).map_err(|_| Error::Exhausted)?;
+        values.push(value?);
+    }
+    Ok(values)
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State
 {
@@ -129,7 +184,7 @@ pub enum State
 }
 struct Module
 {
-    name:             alloc::string::String,
+    name:             modules::Name,
     identity:         [u8; 16],
     kind:             PackageKind,
     state:            State,
@@ -140,7 +195,8 @@ struct Module
     devices:          Vec<mac_module::DeviceMatch>,
     requests:         usize,
     file_handlers:    Vec<mac_module::file_handlers::Rule>,
-    cleanup:          crate::toolbox::handles::cleanup::Checkpoint,
+    cleanup:          Option<crate::toolbox::handles::cleanup::Checkpoint>,
+    account:          ModuleAccount,
     rollback_pending: bool,
     recovery_refusal: Option<Error>
 }
@@ -175,12 +231,17 @@ impl crate::toolbox::inspection::Subject for Module
 {
     fn label(&self) -> &str
     {
-        &self.name
+        self.name.text()
     }
 
     fn foreground(&self) -> bool
     {
         false
+    }
+
+    fn execution_account(&self) -> Option<mac_kernel_model::account::Snapshot>
+    {
+        Some(self.account.snapshot())
     }
 
     fn authority(&self) -> u64
@@ -200,7 +261,8 @@ pub struct Registry
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fixture_operations: Option<alloc::sync::Arc<crate::drivers::jobs::subjects::Operations>>,
     target:     Target,
-    services:   Vec<Service>
+    services:   Vec<Service>,
+    module_kernel_bytes: u64
 }
 impl Registry
 {
@@ -216,7 +278,9 @@ impl Registry
                                                          call)
     }
 
-    pub(crate) fn new(target: Target, system: OwnerRef, kinds: [KindLease; 6]) -> Result<Self>
+    pub(crate) fn new(target: Target, system: OwnerRef, kinds: [KindLease; 6],
+                      module_kernel_bytes: u64)
+                      -> Result<Self>
     {
         let [interfaces,
              interface_storage,
@@ -235,7 +299,8 @@ impl Registry
                   system,
                   requests: requests::Requests::new((requests, request_storage))?,
                   target,
-                  services: Vec::new() })
+                  services: Vec::new(),
+                  module_kernel_bytes })
     }
 
     #[cfg(target_arch = "riscv64")]
@@ -252,7 +317,17 @@ impl Registry
     {
         let owner = if caller == 0 { self.system.clone() } else { self.module_ledger(caller)? };
         let operations = self.fixture_operations.as_ref().ok_or(Error::State)?;
-        operations.admit(&crate::toolbox::handles::subject::Authority::Client(owner))
+        let target = if caller == 0
+        {
+            crate::allocation::Target::System(crate::allocation::SystemClass::Ordinary)
+        }
+        else
+        {
+            crate::allocation::Target::Owner { account: self.module_allocation(caller)?,
+                                               class:
+                                                   mac_kernel_model::policy::MemoryClass::Kernel }
+        };
+        operations.admit(&crate::toolbox::handles::subject::Authority::Client(owner), target)
                   .map_err(|status| {
                       if status == mac_abi::NO_MEMORY { Error::Exhausted } else { Error::State }
                   })
@@ -306,7 +381,9 @@ impl Registry
         {
             return Err(Error::Exclusive);
         }
-        self.services.try_reserve(1).map_err(|_| Error::Exhausted)?;
+        InvocationGate::with_system_allocation(|| self.services.try_reserve(1)).map_err(|_| {
+                                                                                   Error::Exhausted
+                                                                               })?;
         let id = self.interfaces
                      .insert(&self.system,
                              Interface { module: 0,
@@ -357,16 +434,15 @@ impl Registry
     pub fn admit(&self, contract: Contract<'_>, directory: PackageKind, file_type: [u8; 4])
                  -> Result<()>
     {
-        let providers =
-            self.interfaces
-                .iter()
-                .filter_map(|(_, interface)| {
-                    let module = self.modules.get(interface.module)?;
-                    (module.state == State::Ready).then_some(Available { module:  module.identity,
-                                           class:   interface.offer.class,
-                                           version: interface.offer.version })
-                })
-                .collect::<Vec<_>>();
+        let providers = InvocationGate::with_system_allocation(|| {
+            records(self.interfaces.iter().filter_map(|(_, interface)| {
+                let module = self.modules.get(interface.module)?;
+                (module.state == State::Ready).then_some(Ok(Available {
+                    module: module.identity, class: interface.offer.class,
+                    version: interface.offer.version
+                }))
+            }))
+        })?;
         Policy { directory,
                  file_type,
                  kernel_abi: mac_abi::ABI_VERSION,
@@ -388,9 +464,9 @@ impl Registry
                  -> Result<u64>
     {
         self.admit(contract, directory, file_type)?;
-        let offers = contract.offers().collect::<mac_module::Result<Vec<_>>>()?;
-        for offer in &offers
+        for offer in contract.offers()
         {
+            let offer = offer?;
             if self.interfaces.iter().any(|(_, i)| {
                                          i.module == 0
                                          && i.offer.class == offer.class
@@ -409,31 +485,61 @@ impl Registry
                 return Err(Error::Exclusive);
             }
         }
-        let dependencies = contract.dependencies().collect::<mac_module::Result<Vec<_>>>()?;
-        let mut dependency_ids = Vec::new();
-        dependency_ids.try_reserve_exact(dependencies.len()).map_err(|_| Error::Exhausted)?;
-        let services = contract.services().collect::<mac_module::Result<Vec<_>>>()?;
-        let devices = contract.devices().collect::<mac_module::Result<Vec<_>>>()?;
-        let mut name = alloc::string::String::new();
-        name.try_reserve_exact(contract.name.len()).map_err(|_| Error::Exhausted)?;
-        name.push_str(contract.name);
-        let cleanup =
-            crate::toolbox::handles::cleanup::Checkpoint::try_new().map_err(|_| Error::Exhausted)?;
-        let module = self.modules.insert(Module { name,
-                                                   identity: contract.identity,
-                                                   kind: contract.kind,
-                                                   state: State::Initializing,
-                                                   offers,
-                                                   dependencies,
-                                                   dependency_ids,
-                                                   services,
-                                                   devices,
-                                                   requests: 0,
-                                                   file_handlers: Vec::new(),
-                                                   cleanup,
-                                                   rollback_pending: false,
-                                                   recovery_refusal: None })?;
-        if let Err(error) = self.bind_dependencies(module)
+        let ledger =
+            OwnerRef::issue(mac_object_table::domain::DomainKind::Module).map_err(|error| {
+                                                                             match error {
+                mac_object_table::domain::IndexError::Identity(error) => Error::Identity(error),
+                mac_object_table::domain::IndexError::AdmissionStorage { .. }
+                | mac_object_table::domain::IndexError::SharedStorage { .. } => Error::Exhausted,
+                mac_object_table::domain::IndexError::Pool(error) => Error::Owner(error)
+            }
+                                                                         })?;
+        let kernel = ConfiguredRange::new(0, self.module_kernel_bytes, self.module_kernel_bytes)
+            .map_err(|_| Error::State)?;
+        let application = ConfiguredRange::new(0, 0, 0).map_err(|_| Error::State)?;
+        let account =
+            ModuleAccount::try_new(ledger.clone(), kernel, application).map_err(Error::Account)?;
+        let allocation = account.admit_use().map_err(Error::Account)?;
+        let record = crate::allocation::with_kernel_allocation(allocation, || {
+                         let offers = records(contract.offers())?;
+                         let dependencies = records(contract.dependencies())?;
+                         let mut dependency_ids = Vec::new();
+                         dependency_ids.try_reserve_exact(dependencies.len())
+                                       .map_err(|_| Error::Exhausted)?;
+                         let services = records(contract.services())?;
+                         let devices = records(contract.devices())?;
+                         let name = modules::Name::new(contract.name)?;
+                         let cleanup = crate::toolbox::handles::cleanup::Checkpoint::try_new()
+                .map_err(|_| Error::Exhausted)?;
+                         Ok::<_, Error>(Module { name,
+                                                 identity: contract.identity,
+                                                 kind: contract.kind,
+                                                 state: State::Initializing,
+                                                 offers,
+                                                 dependencies,
+                                                 dependency_ids,
+                                                 services,
+                                                 devices,
+                                                 requests: 0,
+                                                 file_handlers: Vec::new(),
+                                                 cleanup: Some(cleanup),
+                                                 account,
+                                                 rollback_pending: false,
+                                                 recovery_refusal: None })
+                     }).map_err(Error::AllocationScope)??;
+        let module = self.modules.insert(ledger, record)?;
+        let bound = match self.module_allocation(module)
+        {
+            Ok(allocation) =>
+            {
+                crate::allocation::with_kernel_allocation(allocation, || {
+                    self.bind_dependencies(module)
+                }).map_err(Error::AllocationScope)
+                  .and_then(core::convert::identity)
+            }
+            Err(error) => Err(error)
+        };
+        if let Err(error) = bound
         {
             self.rollback(module)?;
             return Err(error);
@@ -444,6 +550,13 @@ impl Registry
     /// Transactional publication: reserve every interface first and roll back
     /// temporary registrations on exhaustion. Initializing modules stay hidden.
     pub fn commit(&mut self, module: u64) -> Result<()>
+    {
+        let allocation = self.module_allocation(module)?;
+        crate::allocation::with_kernel_allocation(allocation, || self.commit_selected(module))
+            .map_err(Error::AllocationScope)?
+    }
+
+    fn commit_selected(&mut self, module: u64) -> Result<()>
     {
         let record = self.modules.get(module).ok_or(Error::Stale)?;
         if record.state != State::Initializing
@@ -507,6 +620,7 @@ impl Registry
             return Err(Error::Busy);
         }
         drained?;
+        self.drain_module_metadata(module)?;
         self.modules.remove(module)?;
         Ok(())
     }
@@ -514,6 +628,11 @@ impl Registry
     pub(crate) fn module_ledger(&self, module: u64) -> Result<OwnerRef>
     {
         self.modules.directory().get(module).map(|entry| entry.ledger().clone()).ok_or(Error::Stale)
+    }
+
+    pub(crate) fn module_allocation(&self, module: u64) -> Result<ModuleAllocation>
+    {
+        self.modules.get(module).ok_or(Error::Stale)?.account.admit_use().map_err(Error::Account)
     }
 
     pub fn state(&self, module: u64) -> Result<State>
@@ -528,8 +647,7 @@ impl Registry
 
     /// Metadata is staged with its module. Matching never sees an initializing,
     /// failed or quiescing owner, including after generation-tagged slot reuse.
-    pub fn install_file_handlers(&mut self, module: u64,
-                                 rules: Vec<mac_module::file_handlers::Rule>)
+    pub fn install_file_handlers(&mut self, module: u64, rules: &[mac_module::file_handlers::Rule])
                                  -> Result<()>
     {
         if rules.len() > mac_module::file_handlers::MAX_RULES
@@ -555,7 +673,14 @@ impl Registry
                 return Err(Error::Duplicate);
             }
         }
-        self.modules.get_mut(module).ok_or(Error::Stale)?.file_handlers = rules;
+        let allocation = self.module_allocation(module)?;
+        let owned = crate::allocation::with_kernel_allocation(allocation, || {
+                        let mut owned = Vec::new();
+                        owned.try_reserve_exact(rules.len()).map_err(|_| Error::Exhausted)?;
+                        owned.extend_from_slice(rules);
+                        Ok::<_, Error>(owned)
+                    }).map_err(Error::AllocationScope)??;
+        self.modules.get_mut(module).ok_or(Error::Stale)?.file_handlers = owned;
         Ok(())
     }
 
@@ -898,7 +1023,7 @@ impl Registry
             return None;
         }
         module.recovery_refusal = Some(cause);
-        Some(&module.name)
+        Some(module.name.text())
     }
 
     pub(crate) fn leave_request<'a>(&mut self, caller: u64,
@@ -992,6 +1117,7 @@ impl Registry
                        });
         }
         self.drain_module(module)?;
+        self.drain_module_metadata(module)?;
         self.modules.get_mut(module).ok_or(Error::Stale)?.state = State::Failed;
         Ok(())
     }
@@ -1144,12 +1270,12 @@ mod tests
         let rule = Rule::new(*b"SIT!", Action::MountFilesystem, 128).unwrap();
         let mut registry = fixture::Fixture::new(Target::RVA23U64);
         let first = stage(&mut registry, &bytes);
-        registry.install_file_handlers(first, alloc::vec![rule]).unwrap();
+        registry.install_file_handlers(first, &[rule]).unwrap();
         assert_eq!(registry.file_handler(*b"SIT!"), None);
         registry.rollback(first).unwrap();
         let module = stage(&mut registry, &bytes);
         assert_ne!(first, module);
-        registry.install_file_handlers(module, alloc::vec![rule]).unwrap();
+        registry.install_file_handlers(module, &[rule]).unwrap();
         registry.commit(module).unwrap();
         assert_eq!(registry.file_handler(*b"SIT!"), Some((module, rule)));
         assert_eq!(registry.file_handler(*b"BINA"), None);
@@ -1302,7 +1428,7 @@ mod tests
         registry.commit(consumer).unwrap();
         let owner = registry.module_ledger(consumer).unwrap();
         let operations = registry.fixture_operations.as_ref().unwrap().clone();
-        let subject = operations.admit(&Authority::Client(owner)).unwrap();
+        let subject = operations.admit_current(&Authority::Client(owner)).unwrap();
         let last = subject.clone();
         registry.pin_backing_provider(consumer, interface, subject.scope()).unwrap();
         registry.pin_backing_provider(consumer, interface, subject.scope()).unwrap();
@@ -1344,9 +1470,10 @@ mod tests
         registry.commit(other).unwrap();
         let operations = registry.fixture_operations.as_ref().unwrap().clone();
         let owner = registry.module_ledger(consumer).unwrap();
-        let subject = operations.admit(&Authority::Client(owner.clone())).unwrap();
-        let foreign =
-            operations.admit(&Authority::Client(registry.module_ledger(other).unwrap())).unwrap();
+        let subject = operations.admit_current(&Authority::Client(owner.clone())).unwrap();
+        let foreign = operations.admit_current(&Authority::Client(registry.module_ledger(other)
+                                                                          .unwrap()))
+                                .unwrap();
         assert_eq!(registry.pin_backing_provider(consumer, interface, foreign.scope()),
                    Err(Error::Access));
         registry.pin_backing_provider(consumer, interface, subject.scope()).unwrap();

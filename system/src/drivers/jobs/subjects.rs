@@ -59,39 +59,96 @@ impl Operations
         InvocationGate::run(|| run(&mut self.roots.lock()))
     }
 
-    pub(crate) fn admit(self: &Arc<Self>, authority: &Authority) -> Result<Subject, Status>
+    pub(crate) fn admit(self: &Arc<Self>, authority: &Authority,
+                        allocation: crate::allocation::Target)
+                        -> Result<Subject, Status>
     {
-        match authority
+        let expected = match authority
         {
-            Authority::Operation(scope) =>
+            Authority::Client(owner) => owner.owner(),
+            Authority::Operation(scope) => scope.subject()
+        };
+        let actual = allocation.owner();
+        if actual != expected
+        {
+            // Both capabilities are authentic, but pairing a foreign account
+            // with this resource subject would charge/retain the wrong domain.
+            return Err(mac_abi::ACCESS_DENIED);
+        }
+        crate::allocation::with_target(allocation.clone(), || {
+            match authority
             {
-                scope.admitting().map_err(|cause| {
-                                      pool_status(mac_object_table::domain::PoolError::Scope {
+                Authority::Operation(scope) =>
+                {
+                    scope.admitting().map_err(|cause| {
+                                          pool_status(mac_object_table::domain::PoolError::Scope {
                     owner: scope.subject(), kind: KindCode(*b"DIOP"), cause })
-                                  })?;
-                Ok(Subject { scope:      scope.clone(),
-                             _retention: None,
-                             request:    None })
-            }
-            Authority::Client(owner) =>
-            {
-                let reservation = mac_object_table::scope::Reservation::try_new(owner,
+                                      })?;
+                    let allocation =
+                        allocation.in_scope(scope)
+                                  .map_err(|error| crate::allocation::account_status(&error))?;
+                    Ok(Subject { scope: scope.clone(),
+                                 _retention: None,
+                                 request: None,
+                                 #[cfg(target_arch = "riscv64")]
+                                 recovery_activity: None,
+                                 #[cfg(target_arch = "riscv64")]
+                                 protected_publication: false,
+                                 allocation })
+                }
+                Authority::Client(owner) =>
+                {
+                    let reservation = mac_object_table::scope::Reservation::try_new(owner,
                     KindCode(*b"DIOP")).map_err(pool_status)?;
-                let scope = reservation.lease();
-                let retention =
+                    let scope = reservation.lease();
+                    let retention =
                     Arc::try_new(Retention { operations: self.clone(),
                                              id:         AtomicU64::new(0),
                                              retiring:   Spinlock::new(None) }).map_err(|_| {
                                                                                    NO_MEMORY
                                                                                })?;
-                let weak = Arc::downgrade(&retention);
-                let id = self.access(|roots| roots.insert_root(reservation, weak))
-                             .map_err(pool_status)?;
-                retention.id.store(id, Ordering::Release);
-                Ok(Subject { scope,
-                             _retention: Some(retention),
-                             request: None })
+                    let weak = Arc::downgrade(&retention);
+                    let id = self.access(|roots| roots.insert_root(reservation, weak))
+                                 .map_err(pool_status)?;
+                    retention.id.store(id, Ordering::Release);
+                    let allocation =
+                        allocation.in_scope(&scope)
+                                  .map_err(|error| crate::allocation::account_status(&error))?;
+                    Ok(Subject { scope,
+                                 _retention: Some(retention),
+                                 request: None,
+                                 #[cfg(target_arch = "riscv64")]
+                                 recovery_activity: None,
+                                 #[cfg(target_arch = "riscv64")]
+                                 protected_publication: false,
+                                 allocation })
+                }
             }
+        }).and_then(core::convert::identity)
+    }
+
+    /// The native adapter captures actual execution selection once. The core
+    /// admission API accepts owned authentic authority explicitly on every
+    /// platform; no owner label or missing-context System fallback is involved.
+    pub(crate) fn admit_current(self: &Arc<Self>, authority: &Authority)
+                                -> Result<Subject, Status>
+    {
+        let allocation = crate::allocation::capture_target()?;
+        let subject = self.admit(authority, allocation)?;
+        #[cfg(target_arch = "riscv64")]
+        {
+            let mut subject = subject;
+            if let Some(parent) = crate::context::io_subject()
+               && parent.scope.same_scope(&subject.scope)
+            {
+                subject.recovery_activity = parent.recovery_activity.clone();
+                subject.protected_publication = parent.protected_publication;
+            }
+            Ok(subject)
+        }
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            Ok(subject)
         }
     }
 
@@ -137,12 +194,70 @@ impl Drop for Retention
 #[derive(Clone)]
 pub(crate) struct Subject
 {
-    scope:      Lease,
-    _retention: Option<Arc<Retention>>,
-    request:    Option<mac_object_table::store::CompletionKey>
+    scope:                 Lease,
+    _retention:            Option<Arc<Retention>>,
+    request:               Option<mac_object_table::store::CompletionKey>,
+    #[cfg(target_arch = "riscv64")]
+    recovery_activity:     Option<crate::recovery::Activity>,
+    #[cfg(target_arch = "riscv64")]
+    protected_publication: bool,
+    // Last: the account-use pin outlives scope/Retention destruction and the
+    // operation's actual cleanup acknowledgement, including delayed callbacks.
+    allocation:            crate::allocation::Target
 }
 impl Subject
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn recovery_activity(&self) -> Option<&crate::recovery::Activity>
+    {
+        self.recovery_activity.as_ref()
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn uses_protected_publication(&self) -> bool
+    {
+        self.protected_publication && self.recovery_activity.is_some()
+    }
+
+    /// The trusted registry selects ordinary admission for provider graphs not
+    /// covered by its reserved endpoints. The lifetime/root pin is preserved;
+    /// callbacks and child allocations gain no protected storage by this flag.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn with_ordinary_publication(&self) -> Self
+    {
+        let mut subject = self.clone();
+        subject.protected_publication = false;
+        subject
+    }
+
+    /// Only the resident modal coordinator annotates its own boot-held root.
+    /// Metadata retains this pin across nested calls even though foreign module
+    /// code receives no protected allocation/activity selection.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn for_recovery(activity: crate::recovery::Activity) -> Self
+    {
+        // The constructor derives its root from the genuine Activity; callers
+        // cannot pair that pin with an unrelated operation by supplying a root.
+        let mut subject = activity.root_subject();
+        subject.recovery_activity = Some(activity);
+        subject.protected_publication = true;
+        subject
+    }
+
+    /// A resident coordinator can finish its unique service session only after
+    /// all owned continuation copies are gone. Borrowed/derived operation views
+    /// cannot establish this fact or stand in for the original root owner.
+    pub(crate) fn exclusive(&self) -> bool
+    {
+        self.request.is_none()
+        && self._retention.as_ref().is_some_and(|retention| Arc::strong_count(retention) == 1)
+    }
+
+    pub(crate) fn allocation(&self) -> &crate::allocation::Target
+    {
+        &self.allocation
+    }
+
     pub(crate) fn scope(&self) -> &Lease
     {
         &self.scope
@@ -182,12 +297,15 @@ pub(crate) fn resident() -> Result<&'static Arc<Operations>, Status>
 {
     static OPERATIONS: spin::Once<Arc<Operations>> = spin::Once::new();
     OPERATIONS.try_call_once(|| {
-                  let kinds = crate::toolbox::handles::registry(|registry| {
-                                  Ok((registry.get(KindCode(*b"DIOP"))?,
-                                      registry.get(KindCode(*b"DIOB"))?))
-                              }).map_err(|error| error.status())?
-                                .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
-                  Operations::new(kinds)
+                  crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                      let kinds =
+                          crate::toolbox::handles::registry(|registry| {
+                              Ok((registry.get(KindCode(*b"DIOP"))?,
+                                  registry.get(KindCode(*b"DIOB"))?))
+                          }).map_err(|error| error.status())?
+                            .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
+                      Operations::new(kinds)
+                  })
               })
 }
 

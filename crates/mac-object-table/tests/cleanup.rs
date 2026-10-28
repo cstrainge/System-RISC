@@ -1,7 +1,7 @@
 //! Invalidation revokes identity immediately, but payload cleanup owns reuse.
 use mac_object_table::{domain::{CapacityPolicy, DirectoryError, DomainKind, KindCode, OwnerIndex,
                                 PoolError},
-                       shared::InvocationGate};
+                       shared::{InvocationGate, OwnerRef}};
 struct Gate;
 impl InvocationGate for Gate
 {
@@ -18,7 +18,7 @@ fn owner(directory: &mut Directory) -> mac_object_table::domain::DomainId
     let mut index = OwnerIndex::issue(DomainKind::Process).unwrap();
     index.add_pool(KIND, CapacityPolicy::PerDomainQuota { slots: 1 }).unwrap();
     index.grow(KIND, 1).unwrap();
-    directory.insert(index, ()).unwrap()
+    directory.insert(OwnerRef::try_new(index).unwrap(), ()).unwrap()
 }
 
 #[test]

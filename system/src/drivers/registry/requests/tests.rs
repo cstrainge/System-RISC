@@ -32,7 +32,7 @@ fn fixture(serialized: bool) -> (Fixture, OwnerRef, Subject, u64)
     let subject = registry.fixture_operations
                           .as_ref()
                           .unwrap()
-                          .admit(&Authority::Client(owner.clone()))
+                          .admit_current(&Authority::Client(owner.clone()))
                           .unwrap();
     (registry, owner, subject, interface)
 }
@@ -86,8 +86,11 @@ fn active_broker_parent_is_authenticated_and_queued_work_starts_an_independent_f
         registry.begin_scoped(&invoking, 0, interface, 7, 0, 16, Origin::Queued).unwrap_err();
     assert_eq!(error, Error::RequestParent);
     assert!(format!("{error}").contains("matching active parent invocation"));
-    let other =
-        registry.fixture_operations.as_ref().unwrap().admit(&Authority::Client(owner)).unwrap();
+    let other = registry.fixture_operations
+                        .as_ref()
+                        .unwrap()
+                        .admit_current(&Authority::Client(owner))
+                        .unwrap();
     let forged = other.in_request(invoking.current_request().unwrap());
     assert_eq!(registry.begin_scoped(&forged, 0, interface, 7, 0, 16, Origin::Direct),
                Err(Error::RequestParent));
@@ -296,7 +299,7 @@ fn invalidated_request_rejects_ordinary_ids_and_requires_its_exact_original_subj
     let other = registry.fixture_operations
                         .as_ref()
                         .unwrap()
-                        .admit(&Authority::Client(owner.clone()))
+                        .admit_current(&Authority::Client(owner.clone()))
                         .unwrap();
     let ticket = begin(&mut registry, &subject, interface);
     assert!(ticket > u64::from(u32::MAX), "native broker ticket was narrowed");
@@ -524,8 +527,11 @@ fn synchronous_admission_retains_parent_authentication_without_publishing_a_tick
     registry.enter_request(0, access(&subject, parent)).unwrap();
     let invoking = registry.request_invocation(0, access(&subject, parent)).unwrap();
     registry.authorize_synchronous(&invoking, 0, interface, 0, 0).unwrap();
-    let other =
-        registry.fixture_operations.as_ref().unwrap().admit(&Authority::Client(owner)).unwrap();
+    let other = registry.fixture_operations
+                        .as_ref()
+                        .unwrap()
+                        .admit_current(&Authority::Client(owner))
+                        .unwrap();
     let forged = other.in_request(invoking.current_request().unwrap());
     assert_eq!(registry.authorize_synchronous(&forged, 0, interface, 0, 0),
                Err(Error::RequestParent));
@@ -544,7 +550,8 @@ fn synchronous_leaf_rejects_an_inherited_closed_root_but_keeps_stopped_open_cont
 {
     let (registry, owner, external, interface) = fixture(false);
     let operations = registry.fixture_operations.as_ref().unwrap();
-    let inherited = operations.admit(&Authority::Operation(external.scope().clone())).unwrap();
+    let inherited =
+        operations.admit_current(&Authority::Operation(external.scope().clone())).unwrap();
     owner.stop_admission();
     assert!(!owner.accepting());
     assert!(!inherited.scope().closed());

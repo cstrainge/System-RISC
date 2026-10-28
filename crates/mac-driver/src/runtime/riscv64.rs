@@ -20,3 +20,18 @@ pub(super) fn fault() -> !
         core::arch::asm!("unimp", options(noreturn));
     }
 }
+
+/// Private worker switch trap. All wire/register access stays in this binding.
+pub(super) fn worker(call: &mut crate::abi::WorkerCall) -> mac_abi::Status
+{
+    let mut result = core::ptr::from_mut(call).addr();
+    // SAFETY: exact initialized stack record remains live and exclusive across
+    // the native switch. The scheduler pins this actual worker stack until it
+    // resumes or exits; trap authentication rejects other callers.
+    unsafe {
+        core::arch::asm!("ecall", in("a7") crate::abi::worker::TRAP,
+            inlateout("a0") result, in("a1") core::mem::size_of::<crate::abi::WorkerCall>(),
+            clobber_abi("C"));
+    }
+    result as mac_abi::Status
+}

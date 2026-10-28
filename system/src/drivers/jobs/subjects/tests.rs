@@ -32,7 +32,7 @@ fn stopped_subject_keeps_exact_root_until_last_owned_use_finishes()
 {
     let (_registry, operations) = operations();
     let owner = owner();
-    let subject = operations.admit(&Authority::Client(owner.clone())).unwrap();
+    let subject = operations.admit_current(&Authority::Client(owner.clone())).unwrap();
     let scope = subject.scope().clone();
     let root = scope.root().unwrap();
     let callback = subject.clone();
@@ -43,7 +43,7 @@ fn stopped_subject_keeps_exact_root_until_last_owned_use_finishes()
     assert!(owner.pending(root));
     scope.admitting().unwrap();
     assert_eq!(scope.subject(), owner.owner());
-    assert!(matches!(operations.admit(&Authority::Client(owner.clone())),
+    assert!(matches!(operations.admit_current(&Authority::Client(owner.clone())),
                      Err(mac_abi::SERVICE_BUSY)));
     drop(subject);
     assert!(owner.pending(root), "detached callback is still a real use");
@@ -59,16 +59,17 @@ fn natural_completion_invalidates_root_without_waiting_for_an_owner_walk()
 {
     let (_registry, operations) = operations();
     let owner = owner();
-    let first = operations.admit(&Authority::Client(owner.clone())).unwrap();
+    let first = operations.admit_current(&Authority::Client(owner.clone())).unwrap();
     let stale = first.scope().clone();
     let root = stale.root().unwrap();
     drop(first);
     assert!(!owner.contains(root));
     assert!(!owner.pending(root));
-    let next = operations.admit(&Authority::Client(owner.clone())).unwrap();
+    let next = operations.admit_current(&Authority::Client(owner.clone())).unwrap();
     assert_ne!(next.scope().root(), Some(root));
     assert!(stale.admitting().is_err());
-    assert!(matches!(operations.admit(&Authority::Operation(stale)), Err(mac_abi::SERVICE_BUSY)));
+    assert!(matches!(operations.admit_current(&Authority::Operation(stale)),
+                     Err(mac_abi::SERVICE_BUSY)));
     drop(next);
     assert_eq!(owner.summary().pending, 0);
 }
@@ -78,7 +79,7 @@ fn dispatcher_can_arrive_after_last_use_without_fabricating_an_acknowledgement()
 {
     let (_registry, operations) = operations();
     let owner = owner();
-    let subject = operations.admit(&Authority::Client(owner.clone())).unwrap();
+    let subject = operations.admit_current(&Authority::Client(owner.clone())).unwrap();
     let root = subject.scope().root().unwrap();
     let ticket = owner.invalidate(root).unwrap();
     drop(subject);
@@ -92,10 +93,11 @@ fn inherited_scope_stays_with_external_root_and_never_reopens_general_admission(
 {
     let (_registry, operations) = operations();
     let owner = owner();
-    let external = operations.admit(&Authority::Client(owner.clone())).unwrap();
+    let external = operations.admit_current(&Authority::Client(owner.clone())).unwrap();
     let root = external.scope().root().unwrap();
     owner.stop_admission();
-    let inherited = operations.admit(&Authority::Operation(external.scope().clone())).unwrap();
+    let inherited =
+        operations.admit_current(&Authority::Operation(external.scope().clone())).unwrap();
     assert!(inherited.scope().same_scope(external.scope()));
     drop(inherited);
     assert!(owner.contains(root));
@@ -113,7 +115,7 @@ fn final_owned_use_and_cleanup_dispatch_can_race_without_leaking_or_double_ackno
     for _ in 0..64
     {
         let owner = owner();
-        let subject = operations.admit(&Authority::Client(owner.clone())).unwrap();
+        let subject = operations.admit_current(&Authority::Client(owner.clone())).unwrap();
         let scope = subject.scope().clone();
         let root = scope.root().unwrap();
         owner.stop_admission();

@@ -2,6 +2,7 @@
 //! this module is the narrow, audited C/pointer boundary. This is not an app SDK.
 #![no_std]
 pub mod devices;
+pub mod sync;
 #[doc(hidden)]
 pub mod runtime;
 pub mod file_sources;
@@ -66,6 +67,14 @@ impl Client
     pub fn module(self) -> u64
     {
         self.host.module
+    }
+
+    /// Charge persistent module state to the module's genuine Kernel account.
+    /// The closure runs synchronously and must not yield or retain the scope.
+    /// Request futures and borrowed request buffers keep their admitted target.
+    pub fn with_module_allocation<R>(self, operation: impl FnOnce() -> R) -> Result<R>
+    {
+        runtime::allocation::with_host(&self.host, operation)
     }
 
     pub fn resolve(self, class: ClassId, version: u32) -> Result<Provider>
@@ -182,7 +191,8 @@ fn aligned<T>(pointer: *const T) -> bool
 }
 /// # Safety
 /// Host and output point to live, aligned resident buffers for these exact
-/// types. Host callback/context remain valid until reboot. Dispatch belongs to
+/// types. Host descriptor and callbacks remain immutable and valid until every module
+/// allocation is disposed and the module is unloaded. Dispatch belongs to
 /// this pinned module. The resident must serialize initialization.
 #[doc(hidden)]
 pub unsafe fn entry(driver: &impl Driver, host: *const abi::Host, output: *mut abi::Instance,
@@ -193,10 +203,31 @@ pub unsafe fn entry(driver: &impl Driver, host: *const abi::Host, output: *mut a
     {
         return BAD_ARGUMENT;
     }
-    let host = unsafe { *host };
-    if !host.header.valid::<abi::Host>() || host.reserved != 0 || host.module == 0
+    // Read only the common header until exact descriptor extent is accepted.
+    if !unsafe { &*host.cast::<abi::Header>() }.valid::<abi::Host>()
     {
         return BAD_ABI;
+    }
+    let descriptor = host;
+    let host = unsafe { *descriptor };
+    if !host.header.valid::<abi::Host>()
+       || host.reserved != 0
+       || host.module == 0
+       || host.call.is_none()
+       || host.resolve.is_none()
+       || host.allocate.is_none()
+       || host.deallocate.is_none()
+       || host.reallocate.is_none()
+       || host.with_module_allocation.is_none()
+       || host.workers.is_none()
+       || host.critical_section.is_none()
+    {
+        return BAD_ABI;
+    }
+    // SAFETY: entry's descriptor lifetime contract includes every later free.
+    if let Err(Error(status)) = unsafe { runtime::allocation::install(descriptor) }
+    {
+        return status;
     }
     match driver.initialize(Client { host })
     {
@@ -409,7 +440,13 @@ mod entry_tests
                                    reserved: 0,
                                    context: module,
                                    call: None,
-                                   resolve: None };
+                                   resolve: None,
+                                   allocate: None,
+                                   deallocate: None,
+                                   reallocate: None,
+                                   with_module_allocation: None,
+                                   workers: None,
+                                   critical_section: None };
         let mut instance = abi::Instance::default();
         assert_eq!(unsafe { entry(&probe, &host, &mut instance, dispatch) }, OK);
         assert_eq!(probe.module.load(Ordering::Relaxed), module);
@@ -439,12 +476,18 @@ mod entry_tests
             call.output_len = 0;
             OK
         }
-        let client = Client { host: abi::Host { header:   abi::Header::of::<abi::Host>(),
-                                                module:   1 << 40,
-                                                reserved: 0,
-                                                context:  1 << 40,
-                                                call:     Some(broker),
-                                                resolve:  Some(resolve) } };
+        let client = Client { host: abi::Host { header:                 abi::Header::of::<abi::Host>(),
+                                                module:                 1 << 40,
+                                                reserved:               0,
+                                                context:                1 << 40,
+                                                call:                   Some(broker),
+                                                resolve:                Some(resolve),
+                                                allocate:               None,
+                                                deallocate:             None,
+                                                reallocate:             None,
+                                                with_module_allocation: None,
+                                                workers:                None,
+                                                critical_section:       None } };
         let provider = client.resolve(ClassId(*b"TEST"), 1).unwrap();
         assert_eq!(provider.handle, PROVIDER);
         assert_eq!(provider.invoke(&mut 0, Phase::Start, 1, &[], &mut []).unwrap(),
@@ -488,11 +531,18 @@ mod synchronous_tests
         CALLS.store(0, Ordering::SeqCst);
         let service = Provider { client: Client { host: abi::Host { header:
                                                                         abi::Header::of::<abi::Host>(),
-                                                                    module:   1 << 40,
-                                                                    reserved: 0,
-                                                                    context:  1 << 40,
-                                                                    call:     Some(broker),
-                                                                    resolve:  None } },
+                                                                    module:                 1 << 40,
+                                                                    reserved:               0,
+                                                                    context:                1 << 40,
+                                                                    call:
+                                                                        Some(broker),
+                                                                    resolve:                None,
+                                                                    allocate:               None,
+                                                                    deallocate:             None,
+                                                                    reallocate:             None,
+                                                                    with_module_allocation: None,
+                                                                    workers:                None,
+                                                                    critical_section:       None } },
                                  handle: 1 << 41,
                                  class:  wire::CLASS };
         let mut output = [0; 4];
@@ -546,12 +596,18 @@ mod source_information_tests
     fn backing_info_contention_never_creates_a_hidden_request_or_cancellation()
     {
         CALLS.store(0, Ordering::SeqCst);
-        let client = Client { host: abi::Host { header:   abi::Header::of::<abi::Host>(),
-                                                module:   1 << 40,
-                                                reserved: 0,
-                                                context:  1 << 40,
-                                                call:     Some(broker),
-                                                resolve:  Some(resolve) } };
+        let client = Client { host: abi::Host { header:                 abi::Header::of::<abi::Host>(),
+                                                module:                 1 << 40,
+                                                reserved:               0,
+                                                context:                1 << 40,
+                                                call:                   Some(broker),
+                                                resolve:                Some(resolve),
+                                                allocate:               None,
+                                                deallocate:             None,
+                                                reallocate:             None,
+                                                with_module_allocation: None,
+                                                workers:                None,
+                                                critical_section:       None } };
         let service = file_sources::FileSources::new(client).unwrap();
         assert_eq!(service.info(SOURCE), Err(Error(mac_abi::SERVICE_BUSY)));
         assert_eq!(service.info(SOURCE), Ok(Info { length: 1 << 40 }));

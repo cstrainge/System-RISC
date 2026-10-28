@@ -1,10 +1,41 @@
 //! The module metadata directory owns each genuine module ledger. Incarnations
 //! come only from the shared facility; payload mutation cannot swap the ledger.
 #![forbid(unsafe_code)]
-use mac_object_table::domain::{Directory, DomainKind, IndexError, OwnerIndex};
+use mac_object_table::domain::Directory;
 
 use super::Error;
-use crate::toolbox::handles::InvocationGate;
+use crate::toolbox::handles::{InvocationGate, OwnerRef};
+
+/// Uses the existing on-disk contract bound; it adds no new module limit.
+/// The original label survives account drainage in the shared directory row.
+pub(super) struct Name
+{
+    bytes:  [u8; mac_module::MAX_NAME_BYTES],
+    length: usize
+}
+impl Name
+{
+    pub(super) fn new(text: &str) -> Result<Self, Error>
+    {
+        if text.is_empty() || text.len() > mac_module::MAX_NAME_BYTES
+        {
+            return Err(Error::Contract(mac_module::Error::Limit));
+        }
+        let mut name = Self { bytes:  [0; mac_module::MAX_NAME_BYTES],
+                              length: text.len() };
+        name.bytes[..text.len()].copy_from_slice(text.as_bytes());
+        Ok(name)
+    }
+
+    pub(super) fn text(&self) -> &str
+    {
+        match core::str::from_utf8(&self.bytes[..self.length])
+        {
+            Ok(text) => text,
+            Err(_) => "Invalid admitted module name UTF-8"
+        }
+    }
+}
 
 pub(super) struct Modules<T>
 {
@@ -17,21 +48,8 @@ impl<T> Modules<T>
         Self { entries: Directory::new() }
     }
 
-    pub(super) fn insert(&mut self, value: T) -> Result<u64, Error>
+    pub(super) fn insert(&mut self, ledger: OwnerRef, value: T) -> Result<u64, Error>
     {
-        let ledger = OwnerIndex::issue(DomainKind::Module).map_err(|error| {
-                                                              match error
-                                                              {
-                                                                  IndexError::Identity(error) =>
-                                                                  {
-                                                                      Error::Identity(error)
-                                                                  }
-                                                                  IndexError::Pool(error) =>
-                                                                  {
-                                                                      Error::Owner(error)
-                                                                  }
-                                                              }
-                                                          })?;
         let id = self.entries.insert(ledger, value).map_err(Error::Domain)?.incarnation();
         #[cfg(target_arch = "riscv64")]
         crate::toolbox::inspection::membership_changed();

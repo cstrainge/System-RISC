@@ -256,11 +256,47 @@ impl Backing
         self.pages.bytes()
     }
 }
+/// Native byte ownership for stack/CPU consumers. Protected pieces have no
+/// buddy token; dropping them returns the actual boot-admitted Finder lease.
+pub(crate) enum Storage
+{
+    Ordinary(Backing),
+    Recovery(super::scheduler::recovery::FinderPiece)
+}
+impl Storage
+{
+    pub(crate) fn cpu_base(&self) -> usize
+    {
+        match self
+        {
+            Self::Ordinary(b) => b.cpu_base(),
+            Self::Recovery(b) => b.cpu_base()
+        }
+    }
+
+    pub(crate) fn physical(&self) -> PhysicalAddress
+    {
+        match self
+        {
+            Self::Ordinary(b) => b.physical(),
+            Self::Recovery(b) => b.physical()
+        }
+    }
+
+    pub(crate) fn bytes(&self) -> u64
+    {
+        match self
+        {
+            Self::Ordinary(b) => b.bytes(),
+            Self::Recovery(b) => b.bytes()
+        }
+    }
+}
 /// Scheduler readers retain the enclosing ThreadCore. Stack and CPU backing
 /// are disposed only after CPU/reader quiescence, through the same pool gate.
 pub(crate) struct Stack
 {
-    backing:  Backing,
+    backing:  Storage,
     bytes:    u64,
     cpu_base: usize
 }
@@ -274,9 +310,19 @@ impl Stack
         }
         let backing = Backing::allocate(bytes)?;
         let cpu_base = backing.cpu_base();
-        Ok(Self { backing,
+        Ok(Self { backing: Storage::Ordinary(backing),
                   cpu_base,
                   bytes: bytes as u64 })
+    }
+
+    pub(crate) fn from_recovery(mut piece: super::scheduler::recovery::FinderPiece) -> Self
+    {
+        piece.activate();
+        let bytes = piece.bytes();
+        let cpu_base = piece.cpu_base();
+        Self { backing: Storage::Recovery(piece),
+               bytes,
+               cpu_base }
     }
 
     /// # Safety
@@ -294,7 +340,7 @@ impl Stack
         {
             return Err(Error::Geometry);
         }
-        Ok(Self { backing,
+        Ok(Self { backing: Storage::Ordinary(backing),
                   bytes,
                   cpu_base })
     }

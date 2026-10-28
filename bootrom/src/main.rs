@@ -122,6 +122,15 @@ struct Startup
     image:      image::Image
 }
 
+/// Startup code is admitted against actual firmware storage, not the generic
+/// application's selected-resource budget. The streaming reader retains its
+/// checked map/count limits and fallible allocations for metadata overhead.
+fn startup_resource_budget() -> resource::stream::Budget
+{
+    resource::stream::Budget { payload_bytes: HEAP.lock().free(),
+                               ..Default::default() }
+}
+
 fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
 {
     let mut volume = Volume::mount(disk, partition)?;
@@ -144,7 +153,7 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
     let mut fork = file.resources;
     let resources =
         resource::stream::read_selected(fork.length,
-                                        Default::default(),
+                                        startup_resource_budget(),
                                         |kind, id| {
                                             id == 0 && (kind == *b"NABI" || kind == *b"RV64")
                                         },
@@ -189,7 +198,7 @@ fn startup(disk: &mut impl BlockDevice, partition: Partition) -> Result<Startup>
     let mut fork = finder.resources;
     let finder =
         resource::stream::read_selected(fork.length,
-                                        Default::default(),
+                                        startup_resource_budget(),
                                         |kind, id| {
                                             id == 0 && matches!(&kind, b"NABI" | b"RV64" | b"RLOC")
                                         },

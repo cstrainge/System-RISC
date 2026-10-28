@@ -192,6 +192,39 @@ followed by the full WriteReceipt for an observed publication. No other values
 or trailing bytes are valid. Cleanup after a commit cannot discard the metadata
 needed to update the resident catalog or falsely claim the file was undone.
 
+### Provider name preparation
+
+PrepareName(26) accepts only the mounted volume and a UTF-8 name payload; all
+other request fields are zero. `PrepareName::arguments` and `from_arguments`
+check that exact shape and the existing 16 KiB input-name bound. This is an
+additive operation in the unreleased FSYS v4/schema 1 contract; rebuild the
+resident and bundled providers together. It does not imply that an earlier
+third-party provider implements this operation.
+
+The mounted provider supplies its canonical display name and validates the
+actual creation rules. The writable host provider uses the same NFC
+normalization and portable host-component checks as create/rename admission,
+including the reserved bookkeeping/Win32 namespace. A malformed or invalid name
+returns `BAD_ARGUMENT`; normalization/reply allocation refusal remains
+`NO_MEMORY`. Read-only mounts, including StuffIt, return `READ_ONLY` for a valid
+new-name preparation request. Unknown volumes retain their normal failure.
+
+A successful PreparedName reply has an 8-byte header followed by the exact name:
+
+| Offset | Field |
+| --- | --- |
+| 0, 2 | u16 schema 1, u16 header size 8 |
+| 4, 6 | u16 UTF-8 byte length, u16 reserved zero |
+| 8 | Nonempty canonical display name, at most 255 UTF-8 bytes |
+
+`PreparedName::encode/decode` check exact extent, header, UTF-8 and the existing
+catalog-name bound. `MAX_PREPARED_NAME_BYTES` is 263. The codec does not guess a
+filesystem's normalization rules; the provider is authoritative. Successful
+preparation does not reserve a filename, prove collision absence or promise
+that a later mutation succeeds. The resident UI continues lookup/create using
+the returned name and preserves their actual errors; it must not substitute
+HFS-B rules based on a provider's source type.
+
 ## Writability and cancellation
 
 Every mounted filesystem uses the same rules: incoming copies/moves require a

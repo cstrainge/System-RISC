@@ -120,7 +120,7 @@ impl<'a> Contract<'a>
             name_end.checked_add(usize::from(u16_at(data, 82)?)).ok_or(Error::Limit)?;
         let end = version_end.checked_add(usize::from(u16_at(data, 84)?)).ok_or(Error::Limit)?;
         if end != data.len()
-           || name_end - cursor > 128
+           || name_end - cursor > crate::MAX_NAME_BYTES
            || version_end - name_end > 64
            || end - version_end > 128
         {

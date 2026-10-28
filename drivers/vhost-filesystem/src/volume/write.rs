@@ -97,7 +97,7 @@ impl<R: Rpc> Filesystem<R>
         pending.node.as_ref().ok_or(Cause::Busy.into())
     }
 
-    pub(super) fn writable(&self, volume: u32) -> Result<()>
+    pub(crate) fn writable(&self, volume: u32) -> Result<()>
     {
         let mount = self.mounts.get(volume).ok_or(Cause::NotFound)?;
         if mount.info.read_only
@@ -221,7 +221,7 @@ impl<R: Rpc> Filesystem<R>
                         metadata.modified = when;
                     }
                 }
-                let info = metadata.try_clone()?;
+                let info = crate::module_allocation(|| metadata.try_clone().map_err(Into::into))?;
                 if already
                 {
                     self.call(Op::SyncDirectory, root, 0, 0, &[]).await?;
@@ -245,12 +245,8 @@ impl<R: Rpc> Filesystem<R>
                         replacing: bool, when: u64)
                         -> Result<Pending>
     {
-        self.mounts
-            .get_mut(volume)
-            .ok_or(Cause::NotFound)?
-            .bindings
-            .try_reserve(1)
-            .map_err(|_| Cause::NoMemory)?;
+        crate::module_reserve(&mut self.mounts.get_mut(volume).ok_or(Cause::NotFound)?.bindings,
+                              1)?;
         let parent_handle = self.mounts
                                 .get(volume)
                                 .and_then(|mount| mount.directories.get(parent))
@@ -358,11 +354,15 @@ impl<R: Rpc> Filesystem<R>
         self.writable(volume)?;
         self.writes.reserve(token)?;
         properties.validate().map_err(|_| Cause::Invalid)?;
-        let normalized = mac_hfs_b::names::normalize(properties.name).map_err(|_| Cause::Invalid)?;
+        let normalized = crate::module_allocation(|| {
+            mac_hfs_b::names::normalize(properties.name).map_err(|_| Cause::Invalid.into())
+        })?;
         forks::host_component(&normalized).map_err(|_| Cause::InvalidName)?;
-        let mut physical = buffer(normalized.len())?;
+        let mut physical = crate::module_allocation(|| buffer(normalized.len()))?;
         physical.copy_from_slice(normalized.as_bytes());
-        let key = mac_hfs_b::names::comparison(&normalized).map_err(|_| Cause::Invalid)?;
+        let key = crate::module_allocation(|| {
+            mac_hfs_b::names::comparison(&normalized).map_err(|_| Cause::Invalid.into())
+        })?;
         self.scan(volume, parent).await?;
         let mount = self.mounts.get(volume).unwrap();
         if mount.directories
@@ -375,15 +375,18 @@ impl<R: Rpc> Filesystem<R>
             return Err(Cause::Conflict.into());
         }
         // Validate lengths/name before reserving a durable catalog identity.
-        let mut metadata =
-            Metadata::new(kind, 16, mount.info.metadata.volume, &normalized, properties.created)?;
+        let mut metadata = crate::module_allocation(|| {
+            Metadata::new(kind, 16, mount.info.metadata.volume, &normalized, properties.created).map_err(Into::into)
+        })?;
         metadata.modified = properties.modified;
         metadata.backup = properties.backup;
         metadata.attributes = properties.attributes;
         metadata.finder_info = properties.finder_info;
-        metadata.comment
-                .try_reserve_exact(properties.comment.len())
-                .map_err(|_| Cause::NoMemory)?;
+        crate::module_allocation(|| {
+            metadata.comment
+                    .try_reserve_exact(properties.comment.len())
+                    .map_err(|_| Cause::NoMemory.into())
+        })?;
         metadata.comment.push_str(properties.comment);
         let layout = Layout::new(&metadata, data_length, resource_length)?;
         let lock = self.writer_lock(volume).await?;
@@ -494,7 +497,7 @@ impl<R: Rpc> Filesystem<R>
                 {
                     return self.cleanup(expected, Err(Cause::Stale.into())).await;
                 }
-                let prepared: Result<Node> = (|| {
+                let prepared: Result<Node> = crate::module_allocation(|| {
                     let mut metadata = current.metadata;
                     if let Some(properties) = properties
                     {
@@ -529,7 +532,7 @@ impl<R: Rpc> Filesystem<R>
                               metadata,
                               layout,
                               key: cached.key })
-                })();
+                });
                 let node = match prepared
                 {
                     Ok(node) => node,
@@ -766,7 +769,7 @@ impl<R: Rpc> Filesystem<R>
         }
         self.refresh_plain_directory(volume, parent).await?;
         let cached = self.cached_node(volume, parent)?.metadata.try_clone()?;
-        let mut desired = cached.try_clone()?;
+        let mut desired = crate::module_allocation(|| cached.try_clone().map_err(Into::into))?;
         desired.modified = when;
         if desired.modified != cached.modified
         {
@@ -956,14 +959,14 @@ impl<R: Rpc> Filesystem<R>
                 {
                     return Err(Cause::NoMemory.into());
                 }
-                mount.nodes.entries.try_reserve(1).map_err(|_| Cause::NoMemory)?;
+                crate::module_reserve(&mut mount.nodes.entries, 1)?;
                 if is_directory
                 {
                     mount.directories.reserve(node.metadata.catalog_id)?;
                 }
                 let directory = mount.directories.get_mut(parent).ok_or(Cause::NotFound)?;
-                directory.children.try_reserve(1).map_err(|_| Cause::NoMemory)?;
-                directory.by_name.try_reserve(1).map_err(|_| Cause::NoMemory)?;
+                crate::module_reserve(&mut directory.children, 1)?;
+                crate::module_reserve(&mut directory.by_name, 1)?;
             }
             let opened = if is_directory
             {

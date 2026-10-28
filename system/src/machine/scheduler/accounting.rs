@@ -1,5 +1,6 @@
 //! First resident account consumers: application stacks and saved CPU backing.
-//! Heap, scheduler metadata and image storage are not covered by these receipts.
+//! Physical stack/CPU receipts are distinct from the original-account heap
+//! receipts carried by allocator-backed thread metadata. Image backing is separate.
 #![forbid(unsafe_code)]
 
 use core::{fmt, ops::Deref};
@@ -63,26 +64,26 @@ impl fmt::Display for Error
         }
     }
 }
-pub(crate) fn account_status(error: &mac_kernel_model::account::Error) -> mac_abi::Status
-{
-    match error
-    {
-        mac_kernel_model::account::Error::Closed { .. } => mac_abi::SERVICE_BUSY,
-        mac_kernel_model::account::Error::Budget(_)
-        | mac_kernel_model::account::Error::Metadata { .. } => mac_abi::NO_MEMORY
-    }
-}
+pub(crate) use crate::allocation::account_status;
 
 /// Sealed, unique reservations taken from the actual process-directory account.
 /// A failed preparation drops these and refunds without publishing a thread.
 pub(crate) struct ThreadCharges
 {
-    stack:      Reserved<NativeInvocationGate>,
-    cpu:        Reserved<NativeInvocationGate>,
-    allocation: AllocationAuthority
+    stack_bytes: usize,
+    stack:       Reserved<NativeInvocationGate>,
+    cpu:         Reserved<NativeInvocationGate>,
+    allocation:  AllocationAuthority
 }
 impl ThreadCharges
 {
+    /// Borrow this child's canonical admitted authority before allocating either
+    /// thread control block; observing its owner ID grants no such authority.
+    pub(super) fn allocation(&self) -> &AllocationAuthority
+    {
+        &self.allocation
+    }
+
     pub(crate) fn admit(owner: &OwnerRef, account: &ProcessAccount) -> Result<Self, Error>
     {
         if owner.owner() != account.owner()
@@ -94,9 +95,62 @@ impl ThreadCharges
         let allocation = account.admit_use().map_err(Error::Account)?;
         let stack = allocation.reserve_application(stack_bytes).map_err(Error::Account)?;
         let cpu = allocation.reserve_kernel(cpu_bytes).map_err(Error::Account)?;
-        Ok(Self { stack,
+        Ok(Self { stack_bytes: super::STACK_BYTES,
+                  stack,
                   cpu,
                   allocation })
+    }
+
+    pub(crate) fn admit_module(owner: &OwnerRef, allocation: &AllocationAuthority)
+                               -> Result<Self, Error>
+    {
+        if owner.owner() != allocation.owner()
+           || owner.owner().kind() != mac_object_table::domain::DomainKind::Module
+        {
+            return Err(Error::Foreign);
+        }
+        let stack_bytes = crate::machine::memory::MODULE_WORKER_STACK_BYTES as usize;
+        let backing = pages::Backing::planned_bytes(stack_bytes).map_err(Error::Pages)?;
+        let stack = allocation.reserve_kernel(backing).map_err(Error::Account)?;
+        let cpu =
+            allocation.reserve_kernel(SavedState::planned_backing_bytes().map_err(Error::Pages)?)
+                      .map_err(Error::Account)?;
+        Ok(Self { stack_bytes,
+                  stack,
+                  cpu,
+                  allocation: allocation.clone() })
+    }
+
+    pub(super) fn allocate_recovery(
+        self, owner: &OwnerRef, loan: super::FinderBackingLoan,
+        initial: impl FnOnce(usize) -> TrapFrame)
+        -> Result<(Charged<pages::Stack>, Charged<SavedState>, AllocationAuthority),
+                  (Error, super::FinderBackingLoan)>
+    {
+        if owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+           || self.stack_bytes != super::STACK_BYTES
+           || self.allocation.owner() != owner.owner()
+           || self.stack.owner() != owner.owner()
+           || self.cpu.owner() != owner.owner()
+        {
+            return Err((Error::Foreign, loan));
+        }
+        if self.stack.bytes() != loan.stack_bytes() || self.cpu.bytes() != loan.cpu_bytes()
+        {
+            let error = Error::BackingMismatch { stack_expected: self.stack.bytes(),
+                                                 stack_actual:   loan.stack_bytes(),
+                                                 cpu_expected:   self.cpu.bytes(),
+                                                 cpu_actual:     loan.cpu_bytes() };
+            return Err((error, loan));
+        }
+        let (stack, cpu) = loan.into_parts();
+        let stack = pages::Stack::from_recovery(stack);
+        let cpu = SavedState::from_recovery(cpu, initial(stack.top()));
+        Ok((Charged { value:   stack,
+                      _charge: self.stack.commit() },
+            Charged { value:   cpu,
+                      _charge: self.cpu.commit() },
+            self.allocation))
     }
 
     pub(super) fn allocate(
@@ -109,7 +163,7 @@ impl ThreadCharges
         {
             return Err(Error::Foreign);
         }
-        let stack = pages::Stack::allocate(super::STACK_BYTES).map_err(Error::Pages)?;
+        let stack = pages::Stack::allocate(self.stack_bytes).map_err(Error::Pages)?;
         let cpu = SavedState::new(initial(stack.top())).map_err(Error::Pages)?;
         if stack.backing_bytes() != self.stack.bytes() || cpu.backing_bytes() != self.cpu.bytes()
         {

@@ -44,6 +44,20 @@ pub(super) fn file(owner: crate::toolbox::files::subject::Access<'_>, call: &mut
                    text: &str, capacity: usize)
                    -> Progress
 {
+    file_with_count(owner, call, text, capacity, true)
+}
+/// Metadata-only resident traversal does not enumerate a provider directory
+/// merely to obtain its name, parent or kind. Explicit scans count its contents.
+pub(super) fn metadata(owner: crate::toolbox::files::subject::Access<'_>, call: &mut FileCall,
+                       text: &str, capacity: usize)
+                       -> Progress
+{
+    file_with_count(owner, call, text, capacity, false)
+}
+fn file_with_count(owner: crate::toolbox::files::subject::Access<'_>, call: &mut FileCall,
+                   text: &str, capacity: usize, include_count: bool)
+                   -> Progress
+{
     call.capacity = capacity;
     let routed: Result<Option<u64>, Status> = files(|m| {
         if matches!(call.operation, VOLUME_INFO | VOLUME_INDEX | VOLUME_COUNT)
@@ -137,7 +151,14 @@ pub(super) fn file(owner: crate::toolbox::files::subject::Access<'_>, call: &mut
                          Operation::Catalog,
                          Arguments { volume: call.volume,
                                      node,
-                                     flags: fs::INCLUDE_CHILD_COUNT,
+                                     flags: if include_count
+                                     {
+                                         fs::INCLUDE_CHILD_COUNT
+                                     }
+                                     else
+                                     {
+                                         0
+                                     },
                                      ..Default::default() })
                     }
                 };
@@ -434,4 +455,39 @@ pub(super) fn group(owner: crate::toolbox::files::subject::Access<'_>, call: &mu
         })),
         Err(error) => Progress::Done(Err(error)),
     }
+}
+
+/// Authoritative provider naming. This is deliberately not inferred from the
+/// mounted filesystem FourCC or delegated to a different filesystem's rules.
+pub(super) fn prepare_name(owner: crate::toolbox::files::subject::Access<'_>, volume: u32,
+                           name: &str)
+                           -> Progress
+{
+    let result = (|| {
+        let arguments = fs::PrepareName { volume,
+                                          name }.arguments()
+                                                .map_err(|_| BAD_ARGUMENT)?;
+        let provider = files(|manager| manager.begin_provider_read(volume))?;
+        let job = match submit_new(owner, provider, Operation::PrepareName, arguments)
+        {
+            Ok(job) => job,
+            Err(error) =>
+            {
+                let _ = files(|manager| manager.end_provider_read(volume));
+                return Err(error);
+            }
+        };
+        let mut key = key(0, volume);
+        key.record = Record::File;
+        Ok(Flight { thread: 0,
+                    owner: owner.owned(),
+                    key,
+                    provider,
+                    step: Step::PrepareName { volume },
+                    job,
+                    abandoned: false,
+                    input: String::new(),
+                    path: None })
+    })();
+    pending(result)
 }

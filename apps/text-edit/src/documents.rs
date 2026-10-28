@@ -96,9 +96,7 @@ impl<'a> Application<'a>
         let mut body = Text::<768>::default();
         write!(&mut body, "{name}\r{error}").map_err(|_| Error::NoMemory)?;
         system.log(body.as_str())?;
-        self.alert = Some(system.dialogs().alert_owned(mac_toolbox::resources::APPLICATION,
-                                                        2001,
-                                                        body.as_str())?);
+        self.alert = Some(system.dialogs().error_owned(body.as_str())?);
         self.purpose = AlertPurpose::Error;
         Self::modal_menus(system, false)
     }
@@ -238,8 +236,7 @@ impl<'a> Application<'a>
         }
         let mut name = [0; 256];
         let name = editor.name(system, &mut name)?;
-        self.alert =
-            Some(system.dialogs().alert_owned(mac_toolbox::resources::APPLICATION, 2002, name)?);
+        self.alert = Some(system.dialogs().save_changes_owned(name)?);
         self.purpose = AlertPurpose::Close(slot);
         Self::modal_menus(system, false)
     }

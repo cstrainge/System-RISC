@@ -33,13 +33,17 @@ impl<R: Rpc> Filesystem<R>
         {
             return Err(Cause::Busy.into());
         }
-        let normalized = mac_hfs_b::names::normalize(name).map_err(|_| Cause::InvalidName)?;
+        let normalized = crate::module_allocation(|| {
+            mac_hfs_b::names::normalize(name).map_err(|_| Cause::InvalidName.into())
+        })?;
         forks::host_component(&normalized).map_err(|_| Cause::InvalidName)?;
         if before.parent == parent && before.metadata.name == normalized
         {
             return Ok(false);
         }
-        let key = mac_hfs_b::names::comparison(&normalized).map_err(|_| Cause::InvalidName)?;
+        let key = crate::module_allocation(|| {
+            mac_hfs_b::names::comparison(&normalized).map_err(|_| Cause::InvalidName.into())
+        })?;
         self.scan(volume, before.parent).await?;
         self.scan(volume, parent).await?;
         // Prevent folder cycles and mutation of an ancestor with an active
@@ -71,22 +75,12 @@ impl<R: Rpc> Filesystem<R>
         }
         let old_handle = mount.directories.get(before.parent).ok_or(Cause::NotFound)?.handle;
         let new_handle = target.handle;
-        mount.directories
-             .get_mut(parent)
-             .unwrap()
-             .children
-             .try_reserve(1)
-             .map_err(|_| Cause::NoMemory)?;
-        mount.directories
-             .get_mut(parent)
-             .unwrap()
-             .by_name
-             .try_reserve(1)
-             .map_err(|_| Cause::NoMemory)?;
+        crate::module_reserve(&mut mount.directories.get_mut(parent).unwrap().children, 1)?;
+        crate::module_reserve(&mut mount.directories.get_mut(parent).unwrap().by_name, 1)?;
         let mut node = before.try_clone()?;
         node.parent = parent;
         node.metadata.name = normalized;
-        node.host_name = buffer(node.metadata.name.len())?;
+        node.host_name = crate::module_allocation(|| buffer(node.metadata.name.len()))?;
         node.host_name.copy_from_slice(node.metadata.name.as_bytes());
         node.key = key;
         let mut payload = buffer(2 + before.host_name.len() + node.host_name.len())?;

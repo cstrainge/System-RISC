@@ -5,7 +5,7 @@ use core::fmt;
 
 use mac_abi::{crashes::*, quickdraw::*, *};
 
-use crate::toolbox::{crashes::RESOURCE_ID,
+use crate::toolbox::{crashes::{RESOURCE_ID, ReportLayout},
                      events::input::Input,
                      quickdraw::{fonts_service, icons_service, service},
                      windows::WindowPart};
@@ -150,10 +150,24 @@ fn window_request(id: WindowId) -> WindowRequest
 
 impl super::Desktop
 {
+    /// Boot preparation uses the renderer's actual managed-button requirement.
+    pub(crate) const fn crash_control_count() -> usize
+    {
+        BUTTONS.len()
+    }
+
     pub fn crash_request(&mut self, call: &mut CrashCall, input: &str, output: &mut [u8])
                          -> Result<(), Status>
     {
         let previous = self.crash.info();
+        let initial_layout = if call.operation == BEGIN
+        {
+            Some(crate::toolbox::crashes::prepared_layout()?)
+        }
+        else
+        {
+            None
+        };
         let thread = if call.operation == BEGIN || previous.app == 0
         {
             let identity = crate::context::current_thread_context().identity();
@@ -170,31 +184,61 @@ impl super::Desktop
         {
             previous.thread
         };
-        if call.operation == BEGIN || previous.app == 0
+        if previous.app == 0 && matches!(call.operation, APPEND | SHOW | SCROLL | DISMISS)
         {
-            self.crash.set_context(self.owner, thread);
+            return Err(BAD_ARGUMENT);
         }
         if call.operation == BEGIN
         {
+            // Capacity/reader refusal leaves the previous complete diagnostic
+            // and its origin untouched. Only successful BEGIN clears it.
             let old = self.crash.info().window;
             if old.0 != 0 && self.windows.window(old).is_some()
             {
-                checked(self.window(CLOSE_WINDOW, &mut window_request(old)))?;
+                // Native dispatch must first drain the actual service window
+                // under its private Activity. Capture cannot bypass that ACK.
+                return Err(SERVICE_BUSY);
             }
+            self.crash.begin_protected(self.owner, thread, call.flags)?;
         }
-        let changed = self.crash.request(call, input, output)?;
+        if call.operation == DISMISS
+        {
+            if previous.app != 0 && previous.app == crate::context::finder_app().0
+            {
+                return Err(ACCESS_DENIED);
+            }
+            let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+            // Preflight retention before admitting any destructive close.
+            let binding = self.processes.resource_binding(self.owner)?;
+            let snapshot = self.crash.snapshot()?;
+            if let Err(status) = self.close_crash_report(&activity)
+            {
+                crate::toolbox::crashes::queue_dismissal(binding,
+                                                         activity.clone(),
+                                                         snapshot,
+                                                         previous.window)?;
+                activity.close();
+                return Err(status);
+            }
+            activity.close();
+        }
+        let changed =
+            if call.operation == BEGIN { true } else { self.crash.request(call, input, output)? };
+        if let Some(layout) = initial_layout
+        {
+            // BEGIN just emptied the boot-admitted arrays. Incremental APPEND
+            // now builds the final index; SHOW never rescans the full report.
+            self.crash.set_columns(layout.columns)?;
+            self.crash.set_page_lines(layout.page_lines);
+        }
         if call.operation == SHOW
         {
             self.show_crash_report()?;
+            self.crash.archive();
         }
         else if call.operation == DISMISS
         {
-            let window = self.crash.info().window;
-            if window.0 != 0 && self.windows.window(window).is_some()
-            {
-                checked(self.window(CLOSE_WINDOW, &mut window_request(window)))?;
-            }
-            self.crash.set_window(WindowId(0));
+            self.crash.release_payload();
             serial!("CRASH_REPORT_DISMISSED app={}", self.owner);
         }
         else if changed && self.crash.info().window.0 != 0
@@ -205,8 +249,150 @@ impl super::Desktop
         Ok(())
     }
 
+    /// Boot preparation runs after the actual System font manager is ready.
+    pub(crate) fn measure_crash_report_layout() -> Result<ReportLayout, Status>
+    {
+        let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
+        let metrics = fonts.metrics(fonts_service::selection(MONACO))?;
+        let advance =
+            metrics.ascent.saturating_add(metrics.descent).saturating_add(metrics.leading).max(1);
+        let columns = ((REPORT.right - REPORT.left - 8) / metrics.max_width.max(1)).max(1) as usize;
+        let page_lines = ((REPORT.bottom - REPORT.top - 8) / advance).max(1) as u32;
+        Ok(ReportLayout { columns,
+                          page_lines })
+    }
+
+    fn prepare_crash_layout(&mut self) -> Result<(), Status>
+    {
+        let layout = crate::toolbox::crashes::prepared_layout()?;
+        if self.crash.columns() != layout.columns
+        {
+            // A fixed report cannot silently repair a foreign layout by doing
+            // a full retained-text scan inside the interrupt-masked renderer.
+            return Err(BAD_ABI);
+        }
+        self.crash.set_page_lines(layout.page_lines);
+        Ok(())
+    }
+
+    pub(crate) fn queue_crash_report(&mut self, flags: u32) -> Result<CrashInfo, Status>
+    {
+        if self.crash.info().app == 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        self.prepare_crash_layout()?;
+        self.crash.add_flags(flags);
+        let binding = self.processes.resource_binding(self.owner)?;
+        let snapshot = self.crash.snapshot()?;
+        crate::toolbox::crashes::queue_report(binding, snapshot, flags)
+    }
+
+    /// Complete normal WDEF disposal before a report recipient is transferred.
+    /// A refused close invalidates the ID but retains its original ticket and
+    /// Activity in Window Manager; only that manager's ACK clears the wait.
+    pub(crate) fn close_crash_report(&mut self, activity: &crate::recovery::Activity)
+                                     -> Result<(), Status>
+    {
+        if activity.owner() != self.owner
+        {
+            return Err(ACCESS_DENIED);
+        }
+        self.close_report_window(self.crash.info().window, activity)?;
+        self.crash.set_window(WindowId(0));
+        activity.set_object(0);
+        Ok(())
+    }
+
+    fn close_report_window(&mut self, window: WindowId, activity: &crate::recovery::Activity)
+                           -> Result<(), Status>
+    {
+        if window.0 == 0
+        {
+            return Ok(());
+        }
+        if self.windows.window(window).is_some()
+        {
+            let status = self.window(CLOSE_WINDOW, &mut window_request(window));
+            if status != OK && self.windows.window(window).is_some()
+            {
+                // Refusal before invalidation leaves the normal live payload.
+                return Err(status);
+            }
+        }
+        if self.windows.recovery_close_pending(window, activity)?
+        {
+            return Err(SERVICE_BUSY);
+        }
+        Ok(())
+    }
+
+    /// Physical teardown for an abandoned recipient; logical report state is
+    /// retained independently and no stopped app context is selected.
+    pub(crate) fn cancel_crash_report_for_recovery(&mut self,
+                                                   activity: &crate::recovery::Activity,
+                                                   window: WindowId)
+                                                   -> Result<(), Status>
+    {
+        activity.run(|| self.close_report_window(window, activity))?
+    }
+
+    /// Complete an admitted dismissal without selecting or impersonating a
+    /// stopped app. Its actual saved manager may already have been reaped.
+    pub(crate) fn finish_crash_dismissal(&mut self,
+                                         binding: &crate::toolbox::processes::ResourceBinding,
+                                         activity: &crate::recovery::Activity, window: WindowId,
+                                         snapshot: &crate::toolbox::crashes::Snapshot)
+                                         -> Result<(), Status>
+    {
+        if binding.ledger().owner() != activity.recipient().owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        self.close_report_window(window, activity)?;
+        let changed = self.finish_saved_crash_dismissal(binding, snapshot)?;
+        activity.set_object(0);
+        activity.close();
+        if changed
+        {
+            serial!("CRASH_REPORT_DISMISSED app={}", binding.owner());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn resume_crash_report(&mut self) -> Result<WindowId, Status>
+    {
+        self.show_crash_report()?;
+        self.crash.archive();
+        Ok(self.crash.info().window)
+    }
+
+    pub(crate) fn publish_pending_crash_report(&mut self,
+                                               binding:&crate::toolbox::processes::ResourceBinding,
+                                               snapshot: crate::toolbox::crashes::Snapshot)
+                                               -> Result<WindowId, Status>
+    {
+        let owner = self.processes.ledger(binding.owner())?;
+        if owner.owner() != binding.ledger().owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        self.enter(binding.owner());
+        if self.owner != binding.owner()
+        {
+            return Err(NOT_FOUND);
+        }
+        self.crash = crate::toolbox::crashes::Manager::from_snapshot(snapshot);
+        self.resume_crash_report()
+    }
+
     fn show_crash_report(&mut self) -> Result<(), Status>
     {
+        let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+        if activity.owner() != self.owner
+        {
+            return Err(ACCESS_DENIED);
+        }
         if self.dialogs.active()
            && let Err(status) = self.close_dialog()
         {
@@ -228,14 +414,7 @@ impl super::Desktop
             self.windows.end_update(id);
             self.textedit.begin_cursor_update(id);
         }
-        let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
-        let metrics = fonts.metrics(fonts_service::selection(MONACO))?;
-        let advance =
-            metrics.ascent.saturating_add(metrics.descent).saturating_add(metrics.leading).max(1);
-        self.crash
-            .set_columns(((REPORT.right - REPORT.left - 8) / metrics.max_width.max(1)).max(1)
-                         as usize)?;
-        self.crash.set_page_lines(((REPORT.bottom - REPORT.top - 8) / advance).max(1) as u32);
+        self.prepare_crash_layout()?;
         let old = self.crash.info().window;
         if old.0 != 0 && self.windows.window(old).is_some()
         {
@@ -263,6 +442,7 @@ impl super::Desktop
         request.title_length = title.len() as u32;
         checked(self.window(NEW_WINDOW, &mut request))?;
         self.crash.set_window(WindowId(request.id));
+        activity.set_object(request.id);
         request.bounds = Rect::ZERO;
         request.reserved = 0;
         checked(self.window(SET_GROW_ICON_CLIP, &mut request))?;
@@ -286,6 +466,11 @@ impl super::Desktop
                                        ..Default::default() },
                        text,
                        crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)
+    }
+
+    fn is_current_finder_report(&self) -> bool
+    {
+        self.owner == crate::context::finder_app().0 && self.crash.info().app == self.owner
     }
 
     fn crash_button_enabled(&self, index: usize) -> bool
@@ -396,14 +581,8 @@ impl super::Desktop
                                                         info.app,
                                                         label(13)?,
                                                         info.thread))?)?;
-                let description = if self.owner == crate::context::finder_app().0
-                {
-                    label(8)?
-                }
-                else
-                {
-                    label(11)?
-                };
+                let description =
+                    if self.is_current_finder_report() { label(8)? } else { label(11)? };
                 self.crash_text(window, MONACO, 14, 72, description.text()?)?;
             }
             if matches!(mode, Paint::Full | Paint::Warnings)
@@ -575,33 +754,55 @@ impl super::Desktop
         for (index, bounds) in BUTTONS.iter().enumerate()
         {
             let enabled = u32::from(self.crash_button_enabled(index));
+            // This chooses presentation only. Retry execution independently
+            // validates the retained Work admission and genuine binding.
+            let label_index = if index == 5 && self.is_current_finder_report()
+            {
+                7
+            }
+            else if index == 5
+                      && self.owner == crate::context::finder_app().0
+                      && (self.crash.restart_error.is_some() || self.crash.restart_pending)
+            {
+                21
+            }
+            else if index == 5 && self.crash.info().app != self.owner
+            {
+                20
+            }
+            else
+            {
+                LABELS[index]
+            };
             let id = match self.crash.controls[index]
             {
                 Some(id) =>
                 {
                     if self.crash.control_enabled[index] != (enabled != 0)
+                       || self.crash.control_labels[index] != label_index
                     {
                         let mut info = ControlCall { operation: INFO_OBJECT,
                                                      id,
                                                      ..Default::default() };
                         self.managed_control(&mut info)?;
                         info.standard.enabled = enabled;
+                        if self.crash.control_labels[index] != label_index
+                        {
+                            let title = label(label_index)?;
+                            info.standard.title.fill(0);
+                            info.standard.title[..title.len()].copy_from_slice(title.as_bytes());
+                            info.standard.title_length = title.len() as u32;
+                        }
                         info.operation = CONFIGURE_OBJECT;
                         self.managed_control(&mut info)?;
                         self.crash.control_enabled[index] = enabled != 0;
+                        self.crash.control_labels[index] = label_index;
                     }
                     id
                 }
                 None =>
                 {
-                    let title = label(if index == 5 && self.owner == crate::context::finder_app().0
-                                      {
-                                          7
-                                      }
-                                      else
-                                      {
-                                          LABELS[index]
-                                      })?;
+                    let title = label(label_index)?;
                     let mut standard =
                         mac_abi::definitions::ControlDefinitionState::new(*bounds, title.text()?);
                     standard.enabled = enabled;
@@ -619,6 +820,7 @@ impl super::Desktop
                     {
                         self.crash.controls[index] = Some(call.id);
                         self.crash.control_enabled[index] = enabled != 0;
+                        self.crash.control_labels[index] = label_index;
                     }
                     created?;
                     call.id
@@ -636,7 +838,7 @@ impl super::Desktop
 
     fn request_finder_restart(&mut self) -> Result<(), Status>
     {
-        if self.owner != crate::context::finder_app().0
+        if !self.is_current_finder_report()
         {
             return Err(ACCESS_DENIED);
         }
@@ -645,7 +847,8 @@ impl super::Desktop
             return Ok(());
         }
         let binding = self.processes.resource_binding(self.owner)?;
-        match crate::toolbox::processes::finder::request(binding)
+        let permit = crate::recovery::permit()?;
+        match crate::toolbox::processes::finder::request(binding, permit)
         {
             Ok(()) =>
             {
@@ -654,6 +857,26 @@ impl super::Desktop
                 {
                     self.draw_crash_warnings()?;
                 }
+                self.crash_controls(false)
+            }
+            Err(status) => self.finder_restart_failed(status)
+        }
+    }
+
+    fn retry_finder(&mut self) -> Result<(), Status>
+    {
+        if self.owner != crate::context::finder_app().0 || self.crash.restart_error.is_none()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let binding = self.processes.resource_binding(self.owner)?;
+        match crate::toolbox::processes::finder::retry(&binding)
+        {
+            Ok(()) =>
+            {
+                self.crash.restart_pending = true;
+                self.crash.restart_error = None;
+                self.draw_crash_warnings()?;
                 self.crash_controls(false)
             }
             Err(status) => self.finder_restart_failed(status)
@@ -720,9 +943,14 @@ impl super::Desktop
             }
             5 =>
             {
-                if self.owner == crate::context::finder_app().0
+                if self.is_current_finder_report()
                 {
                     return self.request_finder_restart();
+                }
+                if self.owner == crate::context::finder_app().0
+                   && self.crash.restart_error.is_some()
+                {
+                    return self.retry_finder();
                 }
                 return self.crash_request(&mut CrashCall { operation: DISMISS,
                                                            ..Default::default() },

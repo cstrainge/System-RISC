@@ -95,6 +95,23 @@ pub struct Alert<'a>
 }
 impl<'a> Dialogs<'a>
 {
+    /// Present the System error template with a complete, caller-supplied cause.
+    pub fn error_owned(self, message: &str) -> Result<Alert<'a>>
+    {
+        self.alert_owned(mac_traps::types::ResourceScope::System, CORE_ERROR_ALERT, message)
+    }
+
+    pub fn out_of_memory_owned(self, message: &str) -> Result<Alert<'a>>
+    {
+        self.alert_owned(mac_traps::types::ResourceScope::System, CORE_OUT_OF_MEMORY_ALERT, message)
+    }
+
+    /// Save=1, Cancel=2, Don't Save=3. System owns tracking and window lifetime.
+    pub fn save_changes_owned(self, document: &str) -> Result<Alert<'a>>
+    {
+        self.alert_owned(mac_traps::types::ResourceScope::System, CORE_SAVE_CHANGES_ALERT, document)
+    }
+
     pub fn alert_owned(self, scope: mac_traps::types::ResourceScope, resource: i16, text: &str)
                        -> Result<Alert<'a>>
     {

@@ -208,7 +208,7 @@ impl Default for Session
             registry.register(&registrar, crate::drivers::registry::requests::specification(false),
                 crate::drivers::registry::requests::ReleaseRequests(false)).unwrap(),
             registry.register(&registrar, crate::drivers::registry::requests::specification(true),
-                crate::drivers::registry::requests::ReleaseRequests(true)).unwrap()]).unwrap();
+                crate::drivers::registry::requests::ReleaseRequests(true)).unwrap()], 16 << 20).unwrap();
         let io_root = registry.register(&registrar,
                                         crate::drivers::jobs::subjects::specification(false),
                                         crate::drivers::registry::fixture::ReleaseIo(false))
@@ -508,7 +508,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                                let mut session = slot.borrow_mut();
                                let session = session.as_mut().unwrap();
                                session.standard_file
-                                      .request(&ledger, call, &mut session.files)
+                                      .request(&ledger, &ledger, call)
                                       .err()
                                       .unwrap_or(OK) as i64
                            })
@@ -1354,7 +1354,7 @@ pub fn standard_file_action(action: crate::toolbox::standard_file::Action, when:
                let mut s = slot.borrow_mut();
                let s = s.as_mut().unwrap();
                let id = s.standard_file.active(owner).ok_or(NOT_FOUND)?;
-               s.standard_file.action(id, &mut s.files, action, when)
+               s.standard_file.action(owner, id, action, when)
            })
 }
 pub fn standard_file_entries() -> std::vec::Vec<mac_abi::files::CatalogInfo>
@@ -1364,7 +1364,7 @@ pub fn standard_file_entries() -> std::vec::Vec<mac_abi::files::CatalogInfo>
                let s = slot.borrow();
                let s = s.as_ref().unwrap();
                let id = s.standard_file.active(owner).unwrap();
-               s.standard_file.get(id).unwrap().entries.clone()
+               s.standard_file.get(owner, id).unwrap().visible_entries().to_vec()
            })
 }
 

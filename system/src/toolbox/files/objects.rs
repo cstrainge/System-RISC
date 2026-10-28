@@ -4,7 +4,7 @@
 use mac_object_table::domain::{CompletionError, ReleasedResource};
 
 use super::*;
-use crate::toolbox::handles::{KindLease, OwnerRef};
+use crate::toolbox::handles::{InvocationGate, KindLease, OwnerRef};
 pub(super) mod storage;
 use storage::{Backend, Guard, Id, Key};
 pub(super) trait Payload: Sized
@@ -140,10 +140,12 @@ impl<T: Payload> Objects<T>
         // Completion entries include live, pending and retired payloads. Their
         // count bounds all later removals without a full object-value scan.
         let needed = self.completions.len().saturating_add(1);
-        self.retiring
-            .try_reserve(needed.saturating_sub(self.retiring.len()))
-            .map_err(|_| NO_MEMORY)?;
-        self.completions.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        // Shared completion/retirement indices outlive any individual owner.
+        // The create callback below still allocates its real owner payload.
+        InvocationGate::with_system_allocation(|| {
+            self.retiring.try_reserve(needed.saturating_sub(self.retiring.len()))?;
+            self.completions.try_reserve(1)
+        }).map_err(|_| NO_MEMORY)?;
         let objects = self.objects.as_mut().ok_or(NOT_SUPPORTED)?;
         let (wire, key) = create(objects)?;
         self.completions.push((wire, key));
@@ -234,8 +236,11 @@ impl<T: Payload> Objects<T>
 
     pub(super) fn reserve(&mut self) -> Result<(), Status>
     {
-        self.completions.try_reserve(1).map_err(|_| NO_MEMORY)?;
-        self.retiring.try_reserve(self.len() + 1).map_err(|_| NO_MEMORY)
+        let needed = self.len() + 1;
+        InvocationGate::with_system_allocation(|| {
+            self.completions.try_reserve(1)?;
+            self.retiring.try_reserve(needed)
+        }).map_err(|_| NO_MEMORY)
     }
 
     /// Explicit nonblocking disposal invalidates before scheduling storage
@@ -245,7 +250,7 @@ impl<T: Payload> Objects<T>
         let pending = self.get(id).ok_or(NOT_FOUND)?.cleanup_pending();
         if pending
         {
-            self.retiring.try_reserve(1).map_err(|_| NO_MEMORY)?;
+            InvocationGate::with_system_allocation(|| self.retiring.try_reserve(1)).map_err(|_| NO_MEMORY)?;
         }
         let mark = self.objects.as_mut().ok_or(NOT_FOUND)?.remove(id).ok_or(NOT_FOUND)?;
         if pending

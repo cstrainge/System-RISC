@@ -9,6 +9,66 @@
   "description": "System RISC native operating system",
   "resources": [
     {
+      "type": "ALRT",
+      "id": -16460,
+      "symbol": "CORE_ERROR_ALERT",
+      "name": "Core Error Alert",
+      "payload": {
+        "format": "hex",
+        "hex": "0000000000b401b0bfb44444300a"
+      }
+    },
+    {
+      "type": "DITL",
+      "id": -16460,
+      "symbol": "CORE_ERROR_ALERT_ITEMS",
+      "name": "Core Error Alert Items",
+      "payload": {
+        "format": "hex",
+        "hex": "0002000000000094016000a801a004024f4b00000000000c0014002c0034a002000200000000000c004a008801a088025e30"
+      }
+    },
+    {
+      "type": "ALRT",
+      "id": -16461,
+      "symbol": "CORE_OUT_OF_MEMORY_ALERT",
+      "name": "Core Out Of Memory Alert",
+      "payload": {
+        "format": "hex",
+        "hex": "0000000000b401b0bfb34444300a"
+      }
+    },
+    {
+      "type": "DITL",
+      "id": -16461,
+      "symbol": "CORE_OUT_OF_MEMORY_ALERT_ITEMS",
+      "name": "Core Out Of Memory Alert Items",
+      "payload": {
+        "format": "hex",
+        "hex": "0002000000000094016000a801a004024f4b00000000000c0014002c0034a002000200000000000c004a008801a088025e30"
+      }
+    },
+    {
+      "type": "ALRT",
+      "id": -16462,
+      "symbol": "CORE_SAVE_CHANGES_ALERT",
+      "name": "Core Save Changes Alert",
+      "payload": {
+        "format": "hex",
+        "hex": "000000000088016ebfb24444300a"
+      }
+    },
+    {
+      "type": "DITL",
+      "id": -16462,
+      "symbol": "CORE_SAVE_CHANGES_ALERT_ITEMS",
+      "name": "Core Save Changes Alert Items",
+      "payload": {
+        "format": "hex",
+        "hex": "0003000000000060010e0076015a04045361766500000000006000b600760102040643616e63656c00000000006000140076007c040a446f6ed57420536176650000000000120014004e015a882453617665206368616e67657320746f20d25e30d3206265666f726520636c6f73696e673f"
+      }
+    },
+    {
       "type": "STR#",
       "id": -16490,
       "symbol": "STANDARD_FILE_LABELS",
@@ -19,7 +79,7 @@
           "Desktop",
           "New Folder",
           "Save as:",
-          "The name is invalid. Use 1 to 31 Macintosh characters without a colon.",
+          "The disk rejected this name. Check its length and remove unsupported characters.",
           "The item could not be found.",
           "This operation is not available for this item.",
           "There is not enough memory to complete the operation.",
@@ -71,7 +131,9 @@
           "bytes",
           "Copy failed",
           "Finder restart failed. Try again.",
-          "Not enough memory to restart Finder. Close another application and try again."
+          "Not enough memory to restart Finder. Close another application and try again.",
+          "Close Report",
+          "Retry Finder"
         ]
       }
     },

@@ -154,6 +154,11 @@ fn dispatch_frame(frame: &mut TrapFrame) -> *mut TrapFrame
                                               address {:#x}. Execution cannot safely continue.",
                                              frame.cause, frame.pc, frame.value));
     }
+    let number = frame.registers[15] as u32;
+    if number == mac_module::abi::worker::TRAP
+    {
+        return worker_trap(frame);
+    }
     let thread = crate::context::current_thread_context();
     let scope = thread.traps.enter();
     let physical_depth = frame.prior_depth + 1;
@@ -185,7 +190,13 @@ fn dispatch_frame(frame: &mut TrapFrame) -> *mut TrapFrame
     let size = frame.registers[9];
     #[cfg(feature = "event-trace")]
     let started = crate::platform::ticks();
-    let result = if matches!(number, WAIT_EVENT | POSITIONED_EVENT) && physical_depth != 1
+    let result = if thread.is_module_worker() && number != LOG
+    {
+        // Application-only trap services never reinterpret a module executor
+        // as the bootstrap/System caller. Modules use their authenticated Host.
+        WRONG_THREAD as i64
+    }
+    else if matches!(number, WAIT_EVENT | POSITIONED_EVENT) && physical_depth != 1
     {
         WRONG_THREAD as i64
     }
@@ -262,6 +273,64 @@ fn dispatch_frame(frame: &mut TrapFrame) -> *mut TrapFrame
     frame
 }
 
+/// Private worker suspension uses the actual CPU trap/switch path. A direct C
+/// Host callback can never abandon a foreign frame or resident manager guard.
+fn worker_trap(frame: &mut TrapFrame) -> *mut TrapFrame
+{
+    use mac_module::abi::{WorkerCall, worker};
+    let operation = || -> Result<bool, Status> {
+        if frame.prior_depth != 0
+           || frame.status & (1 << 5) == 0
+           || crate::context::critical_active()
+        {
+            return Err(WRONG_THREAD);
+        }
+        let context = crate::context::current_thread_context();
+        if !context.is_worker_body()
+        {
+            return Err(WRONG_THREAD);
+        }
+        let (id, cancelled) = super::scheduler::worker_current()?;
+        if id != context.identity().thread.0
+        {
+            return Err(WRONG_THREAD);
+        }
+        let call = unsafe {
+                       request::<WorkerCall>(frame.registers[8] as *mut (), frame.registers[9])
+                   }.ok_or(BAD_ARGUMENT)?;
+        if !call.header.valid::<WorkerCall>()
+           || call.flags != 0
+           || call.reserved1 != 0
+           || !call.specification.is_null()
+           || (call.worker != 0 && call.worker != id)
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        call.worker = id;
+        call.flags = if cancelled { worker::CANCEL_REQUESTED } else { 0 };
+        match call.operation
+        {
+            worker::PARK =>
+            {
+                call.state = worker::PARKED;
+                call.exit_status = if cancelled { OPERATION_CANCELLED } else { OK };
+                super::scheduler::worker_park()
+            }
+            worker::EXIT =>
+            {
+                super::scheduler::worker_exit()?;
+                call.state = worker::FINISHED;
+                Ok(true)
+            }
+            _ => Err(BAD_ARGUMENT)
+        }
+    };
+    let result = operation();
+    frame.pc = frame.pc.wrapping_add(4);
+    frame.registers[8] = result.as_ref().map_or_else(|e| *e, |_| OK) as usize;
+    if matches!(result, Ok(true)) { super::scheduler::schedule(frame) } else { frame }
+}
+
 unsafe fn request<'a, T>(pointer: *mut (), size: usize) -> Option<&'a mut T>
 {
     if pointer.is_null()
@@ -323,7 +392,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         CRASH =>
         {
             let call = read_request!(mac_abi::crashes::CrashCall);
-            if call.length > mac_abi::crashes::MAX_REPORT_BYTES
+            if call.length > mac_abi::crashes::MAX_APPEND_BYTES
                || call.capacity > mac_abi::crashes::MAX_REPORT_BYTES
                || (call.length != 0 && call.data.is_null())
                || (call.capacity != 0 && call.output.is_null())
@@ -351,9 +420,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             {
                 unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
             };
-            crate::kernel::with_desktop(|runtime| {
-                runtime.crash_request(call, input, output).map_or_else(|status| status, |()| OK)
-            }).unwrap_or_else(|error| error.status()) as i64
+            crate::recovery::crash_request(call, input, output) as i64
         }
         CLOCK =>
         {
@@ -401,16 +468,12 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         STANDARD_FILE =>
         {
             let call = read_request!(mac_abi::standard_file::StandardFileCall);
-            crate::kernel::with_desktop(|runtime| {
-                runtime.standard_file_request(call).err().unwrap_or(OK)
-            }).unwrap_or_else(|e| e.status()) as i64
+            crate::recovery::standard_file_request(call) as i64
         }
         DIALOG =>
         {
             let call = read_request!(mac_abi::dialogs::DialogCall);
-            crate::kernel::with_desktop(|runtime| runtime.dialog(call)).unwrap_or_else(|error| {
-                                                                           error.status()
-                                                                       }) as i64
+            crate::recovery::dialog_request(call) as i64
         }
         MENU =>
         {
@@ -724,6 +787,16 @@ pub(crate) fn prepare_entry(stack: &'static super::pages::Stack)
                             -> Result<PreparedEntry, EntryError>
 {
     hart::prepare(stack)
+}
+/// The scheduler owns this nonexecuting parked CPU frame under its lock.
+/// Update only the native return register before a cancellation wake restores it.
+pub(crate) fn worker_resume_status(state: &SavedState, status: Status)
+{
+    // SAFETY: caller holds the actual parked thread's scheduler/backing locks;
+    // its complete outermost frame remains pinned and cannot execute concurrently.
+    unsafe {
+        (*state.frame()).registers[8] = status as usize;
+    }
 }
 pub(crate) fn publish_cpu(state: &SavedState)
 {

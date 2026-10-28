@@ -1,17 +1,18 @@
 //! Real lifetime ledgers select presentation membership, never mutable metadata IDs.
 use alloc::string::ToString;
 
-use mac_object_table::domain::{Directory, DomainKind, OwnerIndex};
+use mac_object_table::domain::{Directory, DomainKind};
 
 use super::*;
-use crate::{testing::allocations::Observe, toolbox::handles::InvocationGate};
+use crate::{testing::allocations::Observe,
+            toolbox::handles::{InvocationGate, OwnerRef}};
 
 #[test]
 fn hide_others_preserves_stopped_and_provisional_metadata_and_uses_ledger_identity()
 {
     let mut directory = Directory::<ProcessInfo, InvocationGate>::new();
     let mut add = |thread| {
-        directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(),
+        directory.insert(OwnerRef::issue(DomainKind::Process).unwrap(),
                          ProcessInfo { thread,
                                        ..Default::default() })
                  .unwrap()
@@ -70,12 +71,12 @@ fn hide_others_preserves_stopped_and_provisional_metadata_and_uses_ledger_identi
 fn hidden_stopped_and_provisional_foregrounds_refuse_before_hiding_anything()
 {
     let mut directory = Directory::<ProcessInfo, InvocationGate>::new();
-    let foreground = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(),
+    let foreground = directory.insert(OwnerRef::issue(DomainKind::Process).unwrap(),
                                       ProcessInfo { thread: 11,
                                                     ..Default::default() })
                               .unwrap()
                               .incarnation();
-    let provisional = directory.insert(OwnerIndex::issue(DomainKind::Process).unwrap(),
+    let provisional = directory.insert(OwnerRef::issue(DomainKind::Process).unwrap(),
                                        ProcessInfo::default())
                                .unwrap()
                                .incarnation();

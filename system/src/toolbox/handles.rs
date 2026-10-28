@@ -4,7 +4,7 @@
 pub(crate) mod cleanup;
 pub(crate) mod subject;
 #[cfg(target_arch = "riscv64")]
-pub(crate) use mac_object_table::domain::{DirectoryError, DomainKind, OwnerIndex};
+pub(crate) use mac_object_table::domain::{DirectoryError, DomainKind};
 #[cfg(target_arch = "riscv64")]
 pub(crate) type Directory<T> =
     mac_object_table::domain::Directory<T, crate::machine::interrupts::NativeInvocationGate>;
@@ -62,7 +62,6 @@ pub(crate) fn registry_status(error: &mac_object_table::registry::Error) -> mac_
 pub(crate) enum KindAccessError
 {
     Owner(mac_object_table::domain::IndexError),
-    Directory(DirectoryError),
     Registry(mac_object_table::registry::Error)
 }
 #[cfg(target_arch = "riscv64")]
@@ -73,7 +72,6 @@ impl core::fmt::Display for KindAccessError
         match self
         {
             Self::Owner(error) => error.fmt(f),
-            Self::Directory(error) => error.fmt(f),
             Self::Registry(error) => error.fmt(f)
         }
     }
@@ -85,10 +83,14 @@ impl KindAccessError
     {
         match self
         {
-            Self::Owner(mac_object_table::domain::IndexError::Identity(_))
-            | Self::Directory(DirectoryError::Storage { .. }) => mac_abi::NO_MEMORY,
+            Self::Owner(mac_object_table::domain::IndexError::Identity(_)
+                        | mac_object_table::domain::IndexError::AdmissionStorage { .. }
+                        | mac_object_table::domain::IndexError::SharedStorage { .. }) =>
+            {
+                mac_abi::NO_MEMORY
+            }
             Self::Registry(error) => registry_status(error),
-            Self::Owner(_) | Self::Directory(_) => mac_abi::BAD_ARGUMENT
+            Self::Owner(_) => mac_abi::BAD_ARGUMENT
         }
     }
 }
@@ -204,7 +206,7 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                        crate::machine::scheduler::ReleaseThreads(storage)).map_err(KindAccessError::Registry)?;
                                }
                                for kind in crate::images::Registration::ALL {
-                                   registry.register(&owner, kind.specification(), cleanup::context::Desktop(kind))
+                                   registry.register(&owner, kind.specification(), kind)
                                        .map_err(KindAccessError::Registry)?;
                                }
                                Ok::<_, KindAccessError>(spinning_top::Spinlock::new(registry))
@@ -261,10 +263,7 @@ pub(crate) fn system_owner() -> Result<OwnerRef, mac_abi::Status>
 fn system_owner_checked() -> Result<OwnerRef, KindAccessError>
 {
     static OWNER: spin::Once<OwnerRef> = spin::Once::new();
-    OWNER.try_call_once(|| {
-             let index = OwnerIndex::issue(DomainKind::System).map_err(KindAccessError::Owner)?;
-             OwnerRef::try_new(index).map_err(KindAccessError::Directory)
-         })
+    OWNER.try_call_once(|| OwnerRef::issue(DomainKind::System).map_err(KindAccessError::Owner))
          .cloned()
 }
 

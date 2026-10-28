@@ -98,7 +98,11 @@ pub(crate) fn admit(provider: u64) -> Result<Subject, Status>
     let module = crate::drivers::provider_module(provider)?;
     let owner = crate::drivers::module_authority(module)?;
     crate::drivers::jobs::subjects::resident()?.admit(
-        &crate::toolbox::handles::subject::Authority::Client(owner))
+        &crate::toolbox::handles::subject::Authority::Client(owner),
+        crate::allocation::Target::Owner {
+            account: crate::drivers::module_allocation(module)?,
+            class: mac_kernel_model::policy::MemoryClass::Kernel
+        })
 }
 pub(crate) fn pin(subject: &Subject, handler: u64, provider: u64) -> Result<(), Status>
 {
@@ -110,23 +114,31 @@ fn publish(provider: u64, volume: u32, cnid: u32, backing: &Backing, length: u64
 {
     let module = crate::drivers::provider_module(provider)?;
     let owner = crate::drivers::module_authority(module)?;
-    with(|sources| {
-        // Includes plans currently detached into resident I/O. No cleanup push
-        // needs allocation even if more sources enter before those plans return.
-        let needed = sources.records.len().checked_add(1).ok_or(NO_MEMORY)?;
-        InvocationGate::run(|| {
-            let mut cleanup = CLEANUP.lock();
-            let reserve = needed.saturating_sub(cleanup.len());
-            cleanup.try_reserve(reserve).map_err(|_| NO_MEMORY)
-        })?;
-        sources.publish(&owner,
-                        Identity { volume,
-                                   cnid,
-                                   fork: mac_abi::files::DATA_FORK },
-                        backing,
-                        length)
-    })?
+    if backing.subject.scope().subject() != owner.owner()
+    {
+        return Err(mac_abi::ACCESS_DENIED);
+    }
+    crate::allocator::with_target(backing.subject.allocation().clone(), || {
+        with(|sources| {
+            // Includes plans currently detached into resident I/O. No cleanup push
+            // needs allocation even if more sources enter before those plans return.
+            let needed = sources.records.len().checked_add(1).ok_or(NO_MEMORY)?;
+            InvocationGate::run(|| {
+                let mut cleanup = CLEANUP.lock();
+                let reserve = needed.saturating_sub(cleanup.len());
+                InvocationGate::with_system_allocation(|| cleanup.try_reserve(reserve))
+                .map_err(|_| NO_MEMORY)
+            })?;
+            sources.publish(&owner,
+                            Identity { volume,
+                                       cnid,
+                                       fork: mac_abi::files::DATA_FORK },
+                            backing,
+                            length)
+        })?
+    })
 }
+
 pub(crate) fn find(provider: u64, volume: u32, cnid: u32) -> Result<Option<u64>, Status>
 {
     let owner = crate::drivers::module_authority(crate::drivers::provider_module(provider)?)?;
@@ -152,19 +164,24 @@ pub(crate) fn lease(provider: u64, volume: u32, cnid: u32) -> Result<(u64, bool)
         return Ok((source, false));
     }
     let subject = admit(provider)?;
-    let (file, length) = files(|files| files.open_block_source(subject.scope(), volume, cnid))?;
-    let backing = Backing { file,
-                            subject };
-    match publish(provider, volume, cnid, &backing, length)
-    {
-        Ok(source) => Ok((source, true)),
-        Err(error) =>
+    // The module owns this persistent mark/source even when acquisition was
+    // requested by another process or a scheduler maintenance continuation.
+    crate::allocator::with_target(subject.allocation().clone(), || {
+        let (file, length) = files(|files| files.open_block_source(subject.scope(), volume, cnid))?;
+        let backing = Backing { file,
+                                subject };
+        match publish(provider, volume, cnid, &backing, length)
         {
-            files(|files| files.close_block_source(backing.subject.scope(), backing.file))?;
-            Err(error)
+            Ok(source) => Ok((source, true)),
+            Err(error) =>
+            {
+                files(|files| files.close_block_source(backing.subject.scope(), backing.file))?;
+                Err(error)
+            }
         }
-    }
+    })
 }
+
 fn unsubmitted(plan: Close<Backing>) -> Result<(), Status>
 {
     with(|sources| {

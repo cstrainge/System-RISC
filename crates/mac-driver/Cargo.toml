@@ -8,3 +8,4 @@ mac-module.workspace = true
 mac-device-interface.workspace = true
 mac-file-source-interface.workspace = true
 mac-abi.workspace = true
+spinning_top = "=0.2.5"

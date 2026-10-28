@@ -170,7 +170,8 @@ impl Stream
         {
             &mut discard[..1]
         };
-        let progress = self.decoder.step(input, target).map_err(format_error)?;
+        let progress =
+            crate::module_allocation(|| self.decoder.step(input, target).map_err(format_error))?;
         self.at += progress.consumed;
         self.position += progress.written as u64;
         if !skipping
@@ -193,7 +194,9 @@ impl Stream
                 return Err(Error(mac_abi::archive::ArchiveError::Truncated.status()));
             }
             let count = (self.fork.packed_length - self.packed).min(MAX_STEP as u64) as usize;
-            self.fetch = Some(Fetch::new(self.fork.offset + self.packed, count)?);
+            self.fetch = Some(crate::module_allocation(|| {
+                                  Fetch::new(self.fork.offset + self.packed, count)
+                              })?);
             self.packed += count as u64;
             self.at = 0;
             // Yield before calling the lower service. No header/decode work and

@@ -2,6 +2,10 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 
+use mac_object_table::shared::InvocationGate as _;
+
+use crate::toolbox::handles::InvocationGate;
+
 const CAPACITY: usize = 64;
 struct Sector
 {
@@ -43,7 +47,7 @@ impl Cache
         else if self.sectors.len() < CAPACITY
         {
             // A cache allocation failure leaves the successful I/O uncached.
-            if self.sectors.try_reserve(1).is_ok()
+            if InvocationGate::with_system_allocation(|| self.sectors.try_reserve(1)).is_ok()
             {
                 self.sectors.push(next);
             }

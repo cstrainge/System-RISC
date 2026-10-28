@@ -85,10 +85,11 @@ impl core::error::Error for Failure
 
 pub(crate) struct State
 {
-    owner: DomainId,
-    kind:  KindCode,
-    root:  Spinlock<Option<ResourceKey>>,
-    open:  AtomicBool
+    owner:      DomainId,
+    kind:       KindCode,
+    root:       Spinlock<Option<ResourceKey>>,
+    open:       AtomicBool,
+    allocation: Spinlock<()>
 }
 impl State
 {
@@ -135,7 +136,8 @@ impl<G: InvocationGate> Reservation<G>
         let state = Arc::try_new(State { owner: owner.owner(),
                                          kind,
                                          root: Spinlock::new(None),
-                                         open: AtomicBool::new(true) }).map_err(|_| {
+                                         open: AtomicBool::new(true),
+                                         allocation: Spinlock::new(()) }).map_err(|_| {
                         PoolError::Storage { owner: owner.owner(),
                                              kind,
                                              used: 0,
@@ -186,6 +188,10 @@ impl<G: InvocationGate> Owner<G>
     fn close(&self)
     {
         let closed = self.owner.access(|index| {
+                                   // Allocator admission never acquires the owner index. Close
+                                   // serializes with its bounded budget reservation here,
+                                   // before Store can acknowledge this root's release ticket.
+                                   let _allocation = self.state.allocation.lock();
                                    if self.state.open.swap(false, Ordering::AcqRel)
                                       && self.state.root.lock().is_some()
                                    {
@@ -260,6 +266,18 @@ impl<G: InvocationGate> Lease<G>
         self.owner.access(|index| self.state.authorize(index).map(|_| ()))
     }
 
+    /// Derive allocator admission only from a real published live/pending root.
+    /// Its separate close gate avoids recursively locking this owner index when
+    /// allocator-backed pool metadata grows while the index is already held.
+    pub fn allocation_admission(&self) -> Result<AllocationAdmission<G>, Failure>
+    {
+        self.owner.access(|index| {
+                      self.state.authorize(index)?;
+                      Ok(AllocationAdmission { owner: self.owner.clone(),
+                                               state: self.state.clone() })
+                  })
+    }
+
     /// Distinguishes two operations of the same process without a numeric tag.
     pub fn same_scope(&self, other: &Self) -> bool
     {
@@ -274,6 +292,53 @@ impl<G: InvocationGate> Lease<G>
     pub(crate) fn state(&self) -> &State
     {
         &self.state
+    }
+}
+
+/// Sealed admission for one published resource root. It retains the exact
+/// canonical scope state and owner, never authority reconstructed from a key.
+/// Keeping this capability cannot hold a root open: its unique close owner
+/// flips the same guarded state before the root release can be acknowledged.
+pub struct AllocationAdmission<G: InvocationGate>
+{
+    owner: OwnerRef<G>,
+    state: Arc<State>
+}
+impl<G: InvocationGate> Clone for AllocationAdmission<G>
+{
+    fn clone(&self) -> Self
+    {
+        Self { owner: self.owner.clone(),
+               state: self.state.clone() }
+    }
+}
+impl<G: InvocationGate> AllocationAdmission<G>
+{
+    pub fn subject(&self) -> DomainId
+    {
+        self.state.owner
+    }
+
+    pub fn same_scope(&self, scope: &Lease<G>) -> bool
+    {
+        self.subject() == scope.subject() && Arc::ptr_eq(&self.state, &scope.state)
+    }
+
+    /// Run only bounded, allocation-free budget admission. The callback must
+    /// not allocate backing, drop refund receipts, acquire an owner ledger or
+    /// invoke external code. Every such action follows release of this guard.
+    /// Root closure and this check share one gate; a naked closed() observation
+    /// is never sufficient authority to admit a reservation.
+    pub fn with_admission<R>(&self, operation: impl FnOnce() -> R) -> Result<R, Failure>
+    {
+        G::run(|| {
+            let _allocation = self.state.allocation.lock();
+            if !self.state.open.load(Ordering::Acquire)
+            {
+                return Err(Failure::Closed);
+            }
+            Ok(operation())
+        })
     }
 }
 
