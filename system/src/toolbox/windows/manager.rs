@@ -47,6 +47,43 @@ pub enum GroupFocus
     Preserve
 }
 
+/// Logical event ownership and retained resource source are different roles.
+#[cfg(target_arch = "riscv64")]
+#[derive(Clone, Copy)]
+enum WindowSource
+{
+    Application,
+    System
+    {
+        resources: crate::kernel::SystemResources,
+        recovery:  bool
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+impl WindowSource
+{
+    fn with<R>(self, owner: u64, operation: impl FnOnce() -> R) -> Result<R, Status>
+    {
+        match self
+        {
+            Self::Application =>
+            {
+                crate::context::without_recovery(|| {
+                    crate::kernel::with_resource_owner(owner, operation)
+                })
+            }
+            Self::System { resources,
+                           recovery: true } => resources.with(operation),
+            Self::System { resources,
+                           recovery: false } =>
+            {
+                crate::context::without_recovery(|| resources.with(operation))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Window
 {
@@ -54,6 +91,8 @@ pub struct Window
     initialized:         bool,
     pub bounds:          Rect,
     pub owner:           u64,
+    #[cfg(target_arch = "riscv64")]
+    source:              WindowSource,
     pub min_width:       i16,
     pub min_height:      i16,
     state:               WindowDefinitionState,
@@ -71,6 +110,21 @@ pub struct Window
 }
 impl Window
 {
+    /// Classification only; this does not authorize any caller or object ID.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn uses_system_resources(&self) -> bool
+    {
+        matches!(self.source, WindowSource::System { .. })
+    }
+
+    /// Scope the source captured from the genuine storage owner at creation.
+    /// Ordinary replay cannot inherit a surrounding modal placement permit.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn with_resources<R>(&self, operation: impl FnOnce() -> R) -> Result<R, Status>
+    {
+        self.source.with(self.owner, operation)
+    }
+
     pub fn zoomed(&self) -> bool
     {
         self.state.zoomed != 0
@@ -137,7 +191,7 @@ impl Window
     /// drawing. Preserve the compositor's damage clip, including grow-strip
     /// restrictions supplied by applications that do not use both scrollbars.
     #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
-    pub(crate) fn paint_content_overlay(&self, canvas: &mut Canvas<'_>)
+    pub(crate) fn paint_content_overlay(&self, canvas: &mut Canvas<'_>) -> Result<(), Status>
     {
         let origin = canvas.origin();
         let previous = canvas.clip();
@@ -147,16 +201,17 @@ impl Window
             grow.offset(self.bounds.left, self.bounds.top);
             if !sect_rect(grow, previous, &mut clip)
             {
-                return;
+                return Ok(());
             }
         }
         canvas.set_origin(0, 0);
         canvas.set_clip(clip);
         let mut copy = *self;
         let mut surface = Surface::from_canvas(canvas);
-        copy.call(definition::DRAW_GROW_ICON, 0, &mut surface);
+        let reply = copy.call(definition::DRAW_GROW_ICON, 0, &mut surface);
         canvas.set_clip(previous);
         canvas.set_origin(origin.h, origin.v);
+        if reply < 0 { Err(i32::try_from(reply).unwrap_or(mac_abi::BAD_ABI)) } else { Ok(()) }
     }
 
     fn call(&mut self, message: i16, param: i64, surface: *mut Surface) -> i64
@@ -175,9 +230,13 @@ impl Window
         // The manager owns state, and a supplied entry must implement this native ABI.
         #[cfg(target_arch = "riscv64")]
         {
-            crate::kernel::with_resource_owner(self.owner, || {
-                crate::toolbox::resources::definitions::invoke(self.entry, &mut call)
-            }).unwrap_or_else(i64::from)
+            // Copy source metadata before invoking the ABI: holding &Window
+            // across a call which mutates its definition state would alias it.
+            let source = self.source;
+            let owner = self.owner;
+            let entry = self.entry;
+            source.with(owner, || crate::toolbox::resources::definitions::invoke(entry, &mut call))
+                  .unwrap_or_else(i64::from)
         }
         #[cfg(not(target_arch = "riscv64"))]
         {
@@ -372,6 +431,45 @@ struct RecoveryWindow
     disposed: bool
 }
 
+/// Synchronous compositor scopes captured before mutably traversing geometry.
+/// This pins at most the two real service guards once per traversal under the
+/// manager's existing admission. Use with its synchronously borrowed Window;
+/// this grants source/placement selection, not arbitrary object mutation.
+#[cfg(target_arch = "riscv64")]
+pub(crate) struct WindowScopes
+{
+    recovery: [Option<(WindowId, crate::recovery::Activity)>; 2]
+}
+#[cfg(target_arch = "riscv64")]
+impl WindowScopes
+{
+    pub(crate) fn with_window<R>(&self, window: &Window, operation: impl FnOnce() -> R)
+                                 -> Result<R, Status>
+    {
+        match window.source
+        {
+            WindowSource::System { resources,
+                                   recovery: true } =>
+            {
+                let (_, activity) = self.recovery
+                                        .iter()
+                                        .flatten()
+                                        .find(|(id, _)| *id == window.id)
+                                        .ok_or(NOT_FOUND)?;
+                if window.owner != activity.owner()
+                   || !resources.same_source(activity.resource_source()?)
+                {
+                    return Err(mac_abi::ACCESS_DENIED);
+                }
+                // Existing Activity selection has bounded owned-capability work
+                // once per replay scope; no source Arc is cloned per pixel.
+                activity.run(operation)
+            }
+            _ => window.with_resources(operation)
+        }
+    }
+}
+
 pub struct WindowManager
 {
     // Desktop admission already excludes reentrant/mutating WM requests while
@@ -414,6 +512,21 @@ impl Default for WindowManager
 }
 impl WindowManager
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn recovery_window_capacity(&self) -> usize
+    {
+        self.recovery_windows.len()
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn resource_scopes(&self) -> WindowScopes
+    {
+        WindowScopes { recovery: core::array::from_fn(|index| {
+                           self.recovery_windows[index].as_ref()
+                                                       .map(|held| (held.id, held.activity.clone()))
+                       }) }
+    }
+
     pub(crate) fn with_kinds(kinds: (KindLease, KindLease), gate: mac_abi::TrapGate)
                              -> Result<Self, Status>
     {
@@ -955,6 +1068,19 @@ impl WindowManager
                 .map_err(|_| CreationError::NoMemory)
         })?;
         let previous = self.active;
+        #[cfg(target_arch = "riscv64")]
+        let source = if owner.owner().kind() == mac_object_table::domain::DomainKind::System
+        {
+            WindowSource::System {
+                resources: crate::kernel::system_resources(owner)
+                    .map_err(|_| CreationError::RecoveryAuthority)?,
+                recovery: recovery.is_some()
+            }
+        }
+        else
+        {
+            WindowSource::Application
+        };
         let mut logical_owner = owner.owner().incarnation();
         #[cfg(target_arch = "riscv64")]
         if let Some(activity) = &recovery
@@ -965,6 +1091,8 @@ impl WindowManager
                                   initialized: false,
                                   bounds,
                                   owner: logical_owner,
+                                  #[cfg(target_arch = "riscv64")]
+                                  source,
                                   min_width,
                                   min_height,
                                   state: WindowDefinitionState::new(bounds, title),
@@ -2142,40 +2270,131 @@ impl WindowManager
     pub fn draw_with_scratch(&self, c: &mut Canvas, scratch: Option<&mut [u32]>,
                              mut paint: impl FnMut(&Window, &mut Canvas))
     {
-        for window in self.back_to_front()
+        let _frame = self.draw_layer(c,
+                                     |_| true,
+                                     |window, canvas| {
+                                         paint(window, canvas);
+                                         Ok(())
+                                     });
+        self.draw_tracking(c, scratch);
+    }
+
+    /// Draw one selected layer through the same definitions/content renderer.
+    /// Occlusion comes only from included windows. Transient tracking belongs
+    /// on the final backbuffer and is deliberately excluded from this pass.
+    pub(crate) fn draw_layer(&self, c: &mut Canvas, include: impl Fn(&Window) -> bool,
+                             mut paint: impl FnMut(&Window, &mut Canvas) -> Result<(), Status>)
+                             -> Result<(), Status>
+    {
+        #[cfg(target_arch = "riscv64")]
+        let scopes = self.resource_scopes();
+        for window in self.back_to_front().filter(|window| include(window))
         {
-            c.reset_port();
-            let mut copy = *window;
-            copy.state.close_pressed = u32::from(matches!(self.tracking,
-                Some(Tracking::Close {window: id, armed: true}) if id == window.id));
-            copy.state.zoom_pressed = u32::from(matches!(self.tracking,
-                Some(Tracking::Zoom {window: id, armed: true}) if id == window.id));
-            let mut surface = Surface::from_canvas(c);
-            copy.call(definition::DRAW, 0, &mut surface);
-            self.for_each_visible_rect(window.id, |rect| {
+            let draw = || -> Result<(), Status> {
+                let mut copy = *window;
+                copy.state.close_pressed = u32::from(matches!(self.tracking,
+                    Some(Tracking::Close {window: id, armed: true}) if id == window.id));
+                copy.state.zoom_pressed = u32::from(matches!(self.tracking,
+                    Some(Tracking::Zoom {window: id, armed: true}) if id == window.id));
+                #[cfg(target_arch = "riscv64")]
+                let system = window.uses_system_resources();
+                #[cfg(not(target_arch = "riscv64"))]
+                let system = false;
+                self.draw_layer_piece(c, &mut copy, definition::DRAW, system)?;
+                let mut content = Ok(());
+                let mut visible = |rect| {
+                    if content.is_err()
+                    {
+                        return;
+                    }
                     c.reset_port();
                     c.set_origin(window.bounds.left, window.bounds.top);
-                    let mut local = rect;
+                    let mut local: Rect = rect;
                     local.offset(-window.bounds.left, -window.bounds.top);
                     c.set_clip(local);
-                    paint(window, c);
-                });
-            c.reset_port();
-            if let Some(mut clip) = window.grow_icon_clip
+                    content = paint(window, c);
+                };
+                if system
+                {
+                    self.for_each_visible_rect(window.id, &mut visible);
+                }
+                else
+                {
+                    self.for_each_layer_visible_rect(window.id, &include, &mut visible);
+                }
+                content?;
+                self.draw_layer_piece(c, &mut copy, definition::DRAW_GROW_ICON, system)
+            };
+            #[cfg(target_arch = "riscv64")]
+            let result = scopes.with_window(window, draw).and_then(core::convert::identity);
+            #[cfg(not(target_arch = "riscv64"))]
+            let result = {
+                let mut draw = draw;
+                draw()
+            };
+            if let Err(status) = result
             {
-                clip.offset(window.bounds.left, window.bounds.top);
-                c.set_clip(clip);
+                c.reset_port();
+                return Err(status);
             }
-            let mut surface = Surface::from_canvas(c);
-            copy.call(definition::DRAW_GROW_ICON, 0, &mut surface);
         }
         c.reset_port();
-        self.draw_tracking(c, scratch);
+        Ok(())
+    }
+
+    /// Source selection never changes z-order. Genuine System chrome and grow
+    /// pieces remain clipped below every actual higher window, including apps.
+    fn draw_layer_piece(&self, c: &mut Canvas, window: &mut Window, message: i16,
+                        actual_occlusion: bool)
+                        -> Result<(), Status>
+    {
+        let id = window.id;
+        let structure = window.structure();
+        let mut result = Ok(());
+        let mut draw = |mut clip| {
+            if result.is_err()
+            {
+                return;
+            }
+            if message == definition::DRAW_GROW_ICON
+               && let Some(mut grow) = window.grow_icon_clip
+            {
+                grow.offset(window.bounds.left, window.bounds.top);
+                let mut hit = Rect::ZERO;
+                if !sect_rect(grow, clip, &mut hit)
+                {
+                    return;
+                }
+                clip = hit;
+            }
+            c.reset_port();
+            c.set_clip(clip);
+            let mut surface = Surface::from_canvas(c);
+            let reply = window.call(message, 0, &mut surface);
+            if reply < 0
+            {
+                result = Err(i32::try_from(reply).unwrap_or(mac_abi::BAD_ABI));
+            }
+        };
+        if actual_occlusion
+        {
+            let Some(index) = self.order[..self.len].iter().position(|other| *other == id)
+            else
+            {
+                return Err(mac_abi::NOT_FOUND);
+            };
+            self.visible_fragments(structure, &self.order[index + 1..self.len], &mut draw);
+        }
+        else
+        {
+            draw(Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16));
+        }
+        result
     }
 
     /// Tracking overlays never mutate window geometry, retained content or damage.
     /// Grow geometry belongs to the loaded definition, not to the manager.
-    fn draw_tracking(&self, canvas: &mut Canvas, scratch: Option<&mut [u32]>)
+    pub(crate) fn draw_tracking(&self, canvas: &mut Canvas, scratch: Option<&mut [u32]>)
     {
         self.draw_tracking_at(canvas, scratch, 21.min(canvas.height));
     }
@@ -2252,6 +2471,74 @@ impl WindowManager
             return;
         };
         self.visible_fragments(window.bounds, &self.order[index + 1..self.len], visit);
+    }
+
+    /// The same prepared sweep, restricted to one renderer layer.
+    pub(crate) fn for_each_layer_visible_rect(&self, id: WindowId,
+                                              include: &impl Fn(&Window) -> bool,
+                                              visit: impl FnMut(Rect))
+    {
+        let Some(index) = self.order[..self.len].iter().position(|other| *other == id)
+        else
+        {
+            return;
+        };
+        let Some(window) = self.window(id).filter(|window| include(window))
+        else
+        {
+            return;
+        };
+        let rectangles =
+            self.order[index + 1..self.len].iter()
+                                           .filter_map(|id| self.window(*id))
+                                           .filter(|window| !window.hidden && include(window))
+                                           .flat_map(|window| {
+                                               window.structure_pieces().iter().copied()
+                                           });
+        self.visibility.borrow_mut().visit(window.bounds, rectangles, visit);
+    }
+
+    /// Desktop gaps for a selected layer use the same prepared visibility sweep.
+    pub(crate) fn for_each_layer_desktop_rect(&self, bounds: Rect,
+                                              include: &impl Fn(&Window) -> bool,
+                                              visit: impl FnMut(Rect))
+    {
+        let rectangles =
+            self.order[..self.len].iter()
+                                  .filter_map(|id| self.window(*id))
+                                  .filter(|window| !window.hidden && include(window))
+                                  .flat_map(|window| window.structure_pieces().iter().copied());
+        self.visibility.borrow_mut().visit(bounds, rectangles, visit);
+    }
+
+    /// Copy committed ordinary pixels only where no genuine System source
+    /// structure covers them. This never recomposes or samples service pixels.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn for_each_ordinary_underlay_rect(&self, bounds: Rect, mut visit: impl FnMut(Rect))
+    {
+        if !self.back_to_front().any(|window| window.uses_system_resources())
+        {
+            visit(bounds);
+            return;
+        }
+        self.for_each_desktop_rect(bounds, &mut visit);
+        for (index, id) in self.order[..self.len].iter().enumerate()
+        {
+            let Some(window) =
+                self.window(*id).filter(|window| !window.hidden && !window.uses_system_resources())
+            else
+            {
+                continue;
+            };
+            for piece in window.structure_pieces()
+            {
+                let mut requested = Rect::ZERO;
+                if sect_rect(bounds, *piece, &mut requested)
+                {
+                    self.visible_fragments(requested, &self.order[index + 1..self.len], &mut visit);
+                }
+            }
+        }
     }
 
     /// Desktop damage is clipped below every visible window's structure.

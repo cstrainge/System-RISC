@@ -160,15 +160,17 @@ pub(crate) fn finish_module_images()
 pub(crate) fn module_resource_selection(execution: &crate::images::ModuleExecution)
                                         -> ResourceSelection
 {
-    ResourceSelection { owner: execution.module(),
-                        image: Some(execution.binding()) }
+    ResourceSelection { owner:  execution.module(),
+                        image:  Some(execution.binding()),
+                        system: None }
 }
 pub(crate) fn with_module_resources<R>(execution: &crate::images::ModuleExecution,
                                        call: impl FnOnce() -> R)
                                        -> Result<R, Status>
 {
-    crate::context::with_selected_resources(ResourceSelection { owner: execution.module(),
-                                                                image: Some(execution.binding()) },
+    crate::context::with_selected_resources(ResourceSelection { owner:  execution.module(),
+                                                                image:  Some(execution.binding()),
+                                                                system: None },
                                             call).map_err(|_| WRONG_THREAD)
 }
 pub(crate) fn release_image(ticket: mac_object_table::domain::ReleasedResource,
@@ -376,14 +378,87 @@ pub(crate) fn heap_available() -> usize
 {
     HEAP.available()
 }
-/// Authenticated source-selection metadata. Resource invocations retain a Read
-/// for their complete borrow; carrying this receipt alone is not a lifetime pin.
+/// Authenticated source-selection metadata. Image invocations retain a Read
+/// for their complete borrow; the explicit System proof instead names the
+/// canonical reset-lifetime catalog and never depends on a recipient image.
 #[derive(Clone, Copy)]
 pub(crate) struct ResourceSelection
 {
-    owner: u64,
-    image: Option<crate::images::Binding>
+    owner:  u64,
+    image:  Option<crate::images::Binding>,
+    system: Option<SystemResources>
 }
+struct SystemResourceOwner
+{
+    owner: crate::toolbox::handles::OwnerRef
+}
+
+/// Copyable proof of the actual reset-lifetime System resource source. The
+/// retained authority always comes from the canonical System-owner factory;
+/// a logical recipient, missing app image or numeric zero cannot construct it.
+#[derive(Clone, Copy)]
+pub(crate) struct SystemResources(&'static SystemResourceOwner);
+
+pub(crate) fn system_resources(owner: &crate::toolbox::handles::OwnerRef)
+                               -> Result<SystemResources, Status>
+{
+    if owner.owner().kind() != mac_object_table::domain::DomainKind::System
+    {
+        return Err(ACCESS_DENIED);
+    }
+    static SOURCE: Once<SystemResourceOwner> = Once::new();
+    let source =
+        SOURCE.try_call_once(|| {
+                  crate::toolbox::handles::system_owner().map(|owner| SystemResourceOwner { owner })
+              })?;
+    // Both values are genuine capabilities. Full identity comparison validates
+    // the offered cap against the retained canonical factory result; it never
+    // manufactures an authority from that identity. Unique System issuance and
+    // private OwnerIndex construction prevent a second ledger for this owner.
+    if source.owner.owner() != owner.owner()
+    {
+        return Err(ACCESS_DENIED);
+    }
+    Ok(SystemResources(source))
+}
+impl SystemResources
+{
+    pub(crate) fn same_source(&self, other: Self) -> bool
+    {
+        core::ptr::eq(self.0, other.0)
+    }
+
+    pub(crate) fn with<R>(&self, operation: impl FnOnce() -> R) -> Result<R, Status>
+    {
+        let owner = self.0.owner.owner().incarnation();
+        let selection = ResourceSelection { owner,
+                                            image: None,
+                                            system: Some(*self) };
+        crate::context::with_selected_resources(selection, operation).map_err(|_| WRONG_THREAD)
+    }
+}
+
+pub(crate) fn with_system_resources<R>(owner: &crate::toolbox::handles::OwnerRef,
+                                       operation: impl FnOnce() -> R)
+                                       -> Result<R, Status>
+{
+    system_resources(owner)?.with(operation)
+}
+
+/// Definition lookup follows the installed authentic source role. System UI
+/// cannot be shadowed by an application's resource search chain.
+pub(crate) fn definition_resource_scope() -> mac_abi::resources::Scope
+{
+    if current_resource_selection().system.is_some()
+    {
+        mac_abi::resources::SYSTEM
+    }
+    else
+    {
+        mac_abi::resources::CHAIN
+    }
+}
+
 /// Capture source identity before an I/O handoff changes the executor. This is
 /// selection metadata, not an image lease; invocation callers mask preemption.
 pub(crate) fn current_resource_selection() -> ResourceSelection
@@ -395,7 +470,8 @@ pub(crate) fn current_resource_selection() -> ResourceSelection
     let context = crate::context::current_thread_context();
     let owner = context.identity().app.0;
     ResourceSelection { owner,
-                        image: if owner == 0 { None } else { context.image() } }
+                        image: if owner == 0 { None } else { context.image() },
+                        system: None }
 }
 pub(crate) fn with_resource_owner<R>(app: u64, call: impl FnOnce() -> R) -> Result<R, Status>
 {
@@ -439,8 +515,9 @@ fn with_resource_binding<R>(app: u64, index: Option<crate::images::Binding>,
         }
         None => None
     };
-    crate::context::with_selected_resources(ResourceSelection { owner: app,
-                                                                image: index },
+    crate::context::with_selected_resources(ResourceSelection { owner:  app,
+                                                                image:  index,
+                                                                system: None },
                                             call).map_err(|error| {
                                                      serial!("RESOURCE_CONTEXT_REFUSED: {error}");
                                                      WRONG_THREAD
@@ -562,8 +639,9 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
         let binding = processes.resource_binding(finder_id).map_err(|_| {
             mac_formats::Error::Malformed("Finder bootstrap resource binding is unavailable")
         })?;
-        ResourceSelection { owner: binding.owner(),
-                            image: binding.image() }
+        ResourceSelection { owner:  binding.owner(),
+                            image:  binding.image(),
+                            system: None }
     };
     crate::context::set_finder_app(finder_id);
     crate::context::with_bootstrap_resources(Some(selection), || {
@@ -658,27 +736,24 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
                                                                                  invalid or \
                                                                                  unreadable")
                                               })?;
-    // Module-owned icon families resolve the System palettes at admission.
-    // Publish immutable resource/font services before entering any driver;
-    // exports still mount before Finder or another application can run.
-    crate::drivers::discover(&mut boot_screen).map_err(|_| {
-                                                  mac_formats::Error::Malformed("module discovery \
-                                                                                 failed")
-                                              })?;
-    if let Err(status) = crate::toolbox::files::mount_startup_exports()
-    {
-        serial!("HOST_VOLUME_DISCOVERY_FAILED status={}", status);
-    }
-    boot_screen.completed(3, &mut controls)?;
-    let mut runtime =
-        crate::toolbox::runtime::Desktop::new(definitions, processes, finder_owner, controls).map_err(|_| {
-                                              mac_formats::Error::Malformed("Toolbox initialization failed")
-                                          })?;
+    // Admit the one real resident UI and its ordinary-backed indices/pixel
+    // stock before any installed module initializer can consume that heap.
+    // BootScreen retains its Control identity without borrowing the manager;
+    // move that manager once and keep the welcome panel until publication.
+    let mut runtime = crate::toolbox::runtime::Desktop::new(definitions, processes, finder_owner,
+                                                            controls).map_err(|status| {
+                          recovery_boot_error("resident Desktop admission failed", status)
+                      })?;
     runtime.prepare_recovery_storage().map_err(|status| {
                                            recovery_boot_error("System UI publication storage \
                                                                 admission failed",
                                                                status)
                                        })?;
+    runtime.prepare_ordinary_baseline().map_err(|status| {
+                                            recovery_boot_error("initial ordinary desktop \
+                                                                 admission failed",
+                                                                status)
+                                        })?;
     if let Some(storage) = crate::allocator::recovery::statistics()
     {
         serial!("RECOVERY_STORAGE_READY capacity={} admitted={} foundation={} system={} \
@@ -690,6 +765,41 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
                 storage.domains,
                 storage.raw_backing);
     }
+    // Module-owned icon families resolve the System palettes at admission.
+    // Publish immutable resource/font services before entering any driver;
+    // exports still mount before Finder or another application can run.
+    crate::drivers::discover(&mut boot_screen).map_err(|status| {
+                                                  serial!("MODULE_DISCOVERY_REFUSED \
+                                                           status={status}; inspect package \
+                                                           admission and installation directory \
+                                                           limits");
+                                                  match status
+        {
+            NO_MEMORY => mac_formats::Error::AllocationFailed("module discovery storage refused"),
+            NOT_FOUND => mac_formats::Error::Missing("module installation directory unavailable"),
+            TRANSLATION_REQUIRED =>
+            {
+                mac_formats::Error::TranslationRequired("module code requires translation")
+            }
+            _ => mac_formats::Error::Malformed("module discovery failed; see recorded status")
+        }
+                                              })?;
+    if let Err(status) = crate::toolbox::files::mount_startup_exports()
+    {
+        serial!("HOST_VOLUME_DISCOVERY_FAILED status={}", status);
+    }
+    runtime.boot_progress(&mut boot_screen, 3)?;
+    // Keep hardware activation at its original post-discovery boundary. UI
+    // admission above must not begin queueing boot-time input earlier.
+    let devices = crate::virtio_input::initialize();
+    if devices != 2
+    {
+        serial!("INPUT_UNAVAILABLE devices={}", devices);
+        return Err(recovery_boot_error("native input initialization refused", NOT_SUPPORTED));
+    }
+    serial!("VIRTIO_INPUT=READY devices={}", devices);
+    serial!("UI_OBSERVER address={} bytes=128 version=1",
+            crate::toolbox::quickdraw::observer::address());
     runtime.boot_progress(&mut boot_screen, 4)?;
     DESKTOP.publish(runtime)
            .map_err(|_| mac_formats::Error::Malformed("desktop already published"))?;

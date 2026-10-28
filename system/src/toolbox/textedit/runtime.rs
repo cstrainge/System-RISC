@@ -125,9 +125,15 @@ impl super::Desktop
                                 if crate::toolbox::quickdraw::geometry::sect_rect(screen, visible,
                                                                                   &mut rect)
                                 {
+                                    super::accumulate_presentation_damage(
+                                        &mut self.presentation_damage,
+                                        &mut self.presentation_copy_full, rect);
                                     canvas.set_clip(rect);
                                     canvas.invert_rect(rect);
-                                    self.presentation_damage.push(rect);
+                                    if !window.uses_system_resources()
+                                    {
+                                        self.ordinary_underlay.invert(rect);
+                                    }
                                 }
                             });
             }

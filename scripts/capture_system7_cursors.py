@@ -80,7 +80,9 @@ def capture(output, windows=False):
             frame(name + '-shown', [x, y])
             if name == 'arrow':
                 app = driver.app_id('Cursor Test')
-                start_trace = trace_snapshot(endpoint, driver.serial, output, 'caret-motion-before')
+                tracing = 'EVENT_TRACE address=' in driver.log()
+                start_trace = (trace_snapshot(endpoint, driver.serial, output, 'caret-motion-before')
+                               if tracing else None)
                 start_state = driver.state()
                 submitted = []
                 with input_stream(endpoint) as send:
@@ -98,10 +100,14 @@ def capture(output, windows=False):
                         submitted.append({'point': point, 'seconds': time.monotonic() - start_time})
                 driver.wait_state(lambda state: state['mouse'] == f'{point[0]},{point[1]}')
                 end_state = driver.state()
-                end_trace = trace_snapshot(endpoint, driver.serial, output, 'caret-motion-after')
+                end_trace = (trace_snapshot(endpoint, driver.serial, output, 'caret-motion-after')
+                             if tracing else None)
                 active_caret_motion = {'app': app, 'state_before': start_state,
                                        'state_after': end_state, 'submitted': submitted,
-                                       'trace': delta(start_trace, end_trace)}
+                                       'trace': delta(start_trace, end_trace) if tracing else None,
+                                       'timing_qualified': False,
+                                       'limitation': 'Paced physical input and framebuffer observations; '
+                                                     'without a trace, per-event latency is unmeasured.'}
                 driver.move(x, y)
                 # Stop caret animation for this no-scene-damage observation.
                 # Input and cursor selection still use the installed SDK app.

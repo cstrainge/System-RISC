@@ -31,6 +31,9 @@ mod event_runtime;
 mod drag_runtime;
 #[path = "textedit/runtime.rs"]
 mod textedit_runtime;
+#[path = "quickdraw/ordinary_underlay.rs"]
+mod ordinary_underlay;
+use ordinary_underlay::OrdinaryUnderlay;
 #[path = "processes/runtime.rs"]
 mod local;
 pub(crate) use local::FinderAdmission;
@@ -61,6 +64,7 @@ pub struct Desktop
     content:                          Vec<Content>,
     pending_content:                  Vec<Content>,
     content_cache:                    super::quickdraw::content_cache::ContentCache,
+    ordinary_underlay:                OrdinaryUnderlay,
     menu_cache:                       super::quickdraw::menu_cache::MenuBarCache,
     decoders:                         [Decoder; 2],
     pub revision:                     u32,
@@ -70,6 +74,7 @@ pub struct Desktop
     redraw:                           bool,
     content_damage:                   Vec<(SceneTarget, super::quickdraw::region::Region)>,
     presentation_damage:              Vec<Rect>,
+    presentation_copy_full:           bool,
     pub(super) feedback_dirty:        bool,
     feedback:                         super::quickdraw::feedback::Feedback,
     outline_clip:                     super::quickdraw::feedback::VisibilityCache,
@@ -82,6 +87,7 @@ pub struct Desktop
     presentations:                    u64,
     compositions:                     u64,
     cdef:                             DefinitionEntry,
+    system_cdef:                      DefinitionEntry,
     mdef:                             DefinitionEntry,
     owner:                            u64,
     foreground:                       u64,
@@ -142,6 +148,12 @@ impl Desktop
 
     pub(crate) fn prepare_recovery_storage(&mut self) -> Result<(), Status>
     {
+        crate::kernel::fonts().ok_or(NOT_SUPPORTED)?
+            .require_direct_bitmap(fonts_service::selection(mac_abi::quickdraw::FontSelection::default()))
+            .map_err(|status| {
+                serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=System caption bitmap status={status}");
+                status
+            })?;
         let storage = super::handles::system_owner()?;
         let controls = super::standard_file::templates::required_control_count()?
             .max(super::dialogs::core_alerts::required_control_count()?)
@@ -151,6 +163,24 @@ impl Desktop
         // stay ordinary-backed; protected data is never an implicit upgrade.
         crate::context::without_recovery(|| {
             crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                // These services create the standard dialog window, standard
+                // buttons and managed scrollbars. Load their genuine System
+                // code now: later protected heap backing cannot admit missing
+                // definition images or page metadata on their behalf.
+                let source = crate::kernel::system_resources(&storage)?;
+                self.definitions
+                    .resolve_system(source, *b"WDEF", 0)
+                    .map_err(crate::loader::status)?;
+                for operation in
+                    [mac_abi::controls::DRAW_STANDARD, mac_abi::controls::DRAW_SCROLLBAR]
+                {
+                    let id = super::controls::definition_id(&mac_abi::controls::ControlCall {
+                        operation, ..Default::default()
+                    })?;
+                    self.definitions
+                        .resolve_system(source, *b"CDEF", id)
+                        .map_err(crate::loader::status)?;
+                }
                 self.windows.prepare_recovery(&storage).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Window Manager status={status}"); status })?;
                 self.controls.prepare_recovery(&storage, controls).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Control Manager status={status}"); status })?;
                 self.prepare_core_dialogs().map_err(|status| {
@@ -164,6 +194,8 @@ impl Desktop
                 self.pending_content.try_reserve_exact(2).map_err(|_| NO_MEMORY)?;
                 self.content_damage.try_reserve_exact(3).map_err(|_| NO_MEMORY)?;
                 self.presentation_damage.try_reserve_exact(4).map_err(|_| NO_MEMORY)?;
+                self.ordinary_underlay.prepare(self.windows.recovery_window_capacity(),
+                                                self.content.capacity().saturating_add(1))?;
                 Ok(())
             })
         })
@@ -173,13 +205,19 @@ impl Desktop
     {
         // Ordinary publishers preserve the two modal slots even while another
         // app owns the service. The actual service may consume its reservation.
-        if crate::context::recovery_activity().is_some() { 0 } else { 2 }
+        if crate::context::recovery_activity().is_some()
+        {
+            0
+        }
+        else
+        {
+            self.windows.recovery_window_capacity()
+        }
     }
 
     fn retained_bytes(&self) -> usize
     {
-        self.desktop.storage()
-        + self.content.iter().chain(&self.pending_content).map(Content::storage).sum::<usize>()
+        self.retained_admission(SceneTarget::Desktop).0
     }
 
     fn content_mut(&mut self, id: impl Into<SceneTarget>) -> Result<&mut Content, Status>
@@ -303,6 +341,21 @@ impl Desktop
                             region: super::quickdraw::region::Region)
     {
         let id = id.into();
+        if !self.system_scene(id)
+        {
+            self.ordinary_underlay.changed();
+            match self.ordinary_underlay.queue_if_deferred(id, region)
+            {
+                Ok(()) => return,
+                Err(pending) => return self.queue_active_content_damage(id, pending)
+            }
+        }
+        self.queue_active_content_damage(id, region);
+    }
+
+    fn queue_active_content_damage(&mut self, id: SceneTarget,
+                                   region: super::quickdraw::region::Region)
+    {
         use super::quickdraw::region::{BooleanOp, Region};
         if region.is_empty()
         {
@@ -319,7 +372,7 @@ impl Desktop
         {
             if self.content_damage.capacity().saturating_sub(self.content_damage.len())
                <= self.scene_spare()
-               && InvocationGate::with_system_allocation(|| {
+               && shared_scene_allocation(|| {
                       self.content_damage.try_reserve(1 + self.scene_spare())
                   }).is_err()
             {
@@ -361,13 +414,10 @@ impl Desktop
         }
         definitions.resolve(*b"WDEF", 0).map_err(crate::loader::status)?;
         let cdef = definitions.resolve(*b"CDEF", 0).map_err(crate::loader::status)?;
+        let system_cdef = definitions.resolve_system(
+            crate::kernel::system_resources(&super::handles::system_owner()?)?, *b"CDEF", 0)
+            .map_err(crate::loader::status)?;
         let mdef = definitions.resolve(*b"MDEF", 0).map_err(crate::loader::status)?;
-        let devices = virtio_input::initialize();
-        if devices != 2
-        {
-            serial!("INPUT_UNAVAILABLE devices={}", devices);
-            return Err(NOT_SUPPORTED);
-        }
         let text_cursor =
             crate::kernel::with_resources(|resources| {
                 super::quickdraw::cursors::decode_mono(&resources.get(mac_abi::resources::SYSTEM,
@@ -376,7 +426,6 @@ impl Desktop
                                                                  .1
                                                                  .data)
             }).ok_or(NOT_SUPPORTED)??;
-        serial!("VIRTIO_INPUT=READY devices={}", devices);
         let mut busy_cursor = super::quickdraw::cursors::Cursors::default();
         busy_cursor.resource_request(&mut mac_abi::quickdraw::CursorResourceCall {
             operation: mac_abi::quickdraw::CURSOR_RESOURCE_ANIMATE,
@@ -390,10 +439,8 @@ impl Desktop
                 super::quickdraw::cursors::copy_resource(&resource.data)
             }).ok_or(NOT_SUPPORTED)?
         })?;
-        serial!("UI_OBSERVER address={} bytes=128 version=1",
-                super::quickdraw::observer::address());
         let mut content_damage = Vec::new();
-        InvocationGate::with_system_allocation(|| content_damage.try_reserve_exact(1)).map_err(|_| NO_MEMORY)?;
+        shared_scene_allocation(|| content_damage.try_reserve_exact(1)).map_err(|_| NO_MEMORY)?;
         // The live Finder queue belongs to Finder. Its inactive row contains
         // the single System-owned empty placeholder used by enter's swaps.
         let allocation = processes.allocation(finder)?;
@@ -402,9 +449,7 @@ impl Desktop
         }, || Box::try_new(EventManager::new())).map_err(|_| NO_MEMORY)?;
         let mut locals = Vec::new();
         {
-            use mac_object_table::shared::InvocationGate as _;
-            super::handles::InvocationGate::with_system_allocation(|| locals.try_reserve_exact(1))
-                .map_err(|_| NO_MEMORY)?;
+            shared_scene_allocation(|| locals.try_reserve_exact(1)).map_err(|_| NO_MEMORY)?;
         }
         locals.push(local::Saved::try_placeholder(processes.ledger(finder)?, mdef)?);
         Ok(Self { first_window: WindowId(0),
@@ -435,6 +480,7 @@ impl Desktop
                   content: Vec::new(),
                   pending_content: Vec::new(),
                   content_cache: Default::default(),
+                  ordinary_underlay: Default::default(),
                   menu_cache: Default::default(),
                   decoders: [Decoder::new(), Decoder::new()],
                   revision: 0,
@@ -444,6 +490,7 @@ impl Desktop
                   redraw: true,
                   content_damage,
                   presentation_damage:Vec::new(),
+                  presentation_copy_full:false,
                   feedback_dirty: false,
                   feedback: Default::default(),
                   outline_clip: Default::default(),
@@ -455,7 +502,7 @@ impl Desktop
                   last_observed: (u64::MAX, u32::MAX, u64::MAX),
                   presentations: 0,
                   compositions: 0,
-                  cdef,mdef,owner:finder,foreground:finder,locals,
+                  cdef,system_cdef,mdef,owner:finder,foreground:finder,locals,
                   processes,
                   app_menu:crate::kernel::with_resources(|resources| super::processes::menu::ApplicationMenu::new(mdef,crate::machine::traps::gateway,resources)).ok_or(NOT_SUPPORTED)?? })
     }
@@ -570,13 +617,16 @@ impl Desktop
                     Ok(entry) => entry,
                     Err(error) => return crate::loader::status(error)
                 };
-                if InvocationGate::with_system_allocation(|| {
-                       self.content.try_reserve(1 + self.scene_spare())?;
-                       self.content_damage.try_reserve(self.content
-                                                           .len()
-                                                           .saturating_add(2 + self.scene_spare())
-                                                           .saturating_sub(self.content_damage
-                                                                               .len()))
+                if shared_scene_allocation(|| {
+                       self.content.try_reserve(1 + self.scene_spare()).map_err(|_| NO_MEMORY)?;
+                       self.ordinary_underlay
+                           .prepare_scenes(self.content.capacity().saturating_add(1))?;
+                       self.content_damage
+                           .try_reserve(self.content
+                                            .len()
+                                            .saturating_add(2 + self.scene_spare())
+                                            .saturating_sub(self.content_damage.len()))
+                           .map_err(|_| NO_MEMORY)
                    }).is_err()
                 {
                     return NO_MEMORY;
@@ -705,6 +755,7 @@ impl Desktop
                 self.controls.remove_window(id.0);
                 self.content.retain(|content| content.id != id);
                 self.content_damage.retain(|(target, _)| *target != id);
+                self.ordinary_underlay.forget(SceneTarget::from(id));
                 self.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);
                 self.last_action = "CLOSE";
@@ -834,7 +885,7 @@ impl Desktop
                 {
                     return BAD_ARGUMENT;
                 }
-                if InvocationGate::with_system_allocation(|| {
+                if shared_scene_allocation(|| {
                        self.pending_content.try_reserve(1 + self.scene_spare())
                    }).is_err()
                 {
@@ -845,7 +896,8 @@ impl Desktop
                 {
                     return NOT_FOUND;
                 };
-                if self.retained_bytes().saturating_add(content.port.storage()) > MAX_RETAINED_BYTES
+                let (used, limit) = self.retained_admission(SceneTarget::from(id));
+                if used.saturating_add(content.port.storage()) > limit
                 {
                     return NO_MEMORY;
                 }
@@ -871,7 +923,7 @@ impl Desktop
                 {
                     return BAD_ARGUMENT;
                 };
-                let used = self.retained_bytes();
+                let (used, limit) = self.retained_admission(SceneTarget::from(id));
                 let bounds = self.windows.window(id).unwrap().local_bounds();
                 let Some(content) = self.content.iter_mut().find(|content| content.id == id)
                 else
@@ -884,7 +936,7 @@ impl Desktop
                 {
                     let prepared = (|| -> Result<super::quickdraw::region::Region, Status> {
                         let cursors = self.textedit.prepare_partial_cursor_update(id, &mask)?;
-                        let mask = content.commit_patch(pending, bounds, used, MAX_RETAINED_BYTES)?;
+                        let mask = content.commit_patch(pending, bounds, used, limit)?;
                         cursors.commit();
                         Ok(mask)
                     })();
@@ -1005,6 +1057,7 @@ impl Desktop
         if call.operation == DISPOSE && window != 0
         {
             let mut removed = Vec::new();
+            let mut coalesced = None;
             for content in self.content
                                .iter_mut()
                                .chain(self.pending_content.iter_mut())
@@ -1014,12 +1067,15 @@ impl Desktop
                     if let RenderCommand::ScrollBox(drawing) = command
                        && drawing.id == call.id
                     {
-                        removed.extend(drawing.bounds());
+                        for rect in drawing.bounds()
+                        {
+                            accumulate_removed_damage(&mut removed, &mut coalesced, rect);
+                        }
                     }
                     !matches!(command, RenderCommand::ScrollBox(drawing) if drawing.id == call.id)
                 });
             }
-            for rect in removed
+            for rect in removed.into_iter().chain(coalesced)
             {
                 self.content_changed_rect(window, rect);
             }
@@ -1029,7 +1085,7 @@ impl Desktop
         {
             let bounds = drawing.bounds();
             let mut old_bounds = None;
-            let used = self.retained_bytes();
+            let (used, limit) = self.retained_admission(SceneTarget::from(window));
             let size = drawing.storage();
             let id = drawing.id;
             let content = self.content_mut(window)?;
@@ -1042,7 +1098,7 @@ impl Desktop
                 {
                     old_bounds = Some(old.bounds());
                 }
-                if used - command.storage() + size > MAX_RETAINED_BYTES
+                if used - command.storage() + size > limit
                 {
                     return Err(NO_MEMORY);
                 }
@@ -1050,7 +1106,7 @@ impl Desktop
             }
             else
             {
-                if used + size > MAX_RETAINED_BYTES || content.commands.len() >= 512
+                if used + size > limit || content.commands.len() >= 512
                 {
                     return Err(NO_MEMORY);
                 }
@@ -1110,6 +1166,7 @@ impl Desktop
         if call.operation == DISPOSE_OBJECT
         {
             let mut removed = Vec::new();
+            let mut coalesced = None;
             for content in self.content
                                .iter_mut()
                                .chain(self.pending_content.iter_mut())
@@ -1119,13 +1176,13 @@ impl Desktop
                            if let RenderCommand::Control(d) = command
                               && d.id == call.id
                            {
-                               removed.push(d.bounds());
+                               accumulate_removed_damage(&mut removed, &mut coalesced, d.bounds());
                                return false;
                            }
                            true
                        });
             }
-            for bounds in removed
+            for bounds in removed.into_iter().chain(coalesced)
             {
                 self.content_changed_rect(window, bounds);
             }
@@ -1138,14 +1195,14 @@ impl Desktop
             }
             let bounds = drawing.bounds();
             let damage = drawing.damage();
-            let used = self.retained_bytes();
+            let (used, limit) = self.retained_admission(SceneTarget::from(window));
             let size = drawing.storage();
             let content = self.content_mut(window)?;
             let old = content.iter_commands_mut()
                              .find(|c| matches!(c, RenderCommand::Control(d) if d.id == call.id));
             let old_bounds = if let Some(command) = old
             {
-                if used - command.storage() + size > MAX_RETAINED_BYTES
+                if used - command.storage() + size > limit
                 {
                     return Err(NO_MEMORY);
                 }
@@ -1162,7 +1219,7 @@ impl Desktop
             }
             else
             {
-                if used + size > MAX_RETAINED_BYTES || content.commands.len() >= 512
+                if used + size > limit || content.commands.len() >= 512
                 {
                     return Err(NO_MEMORY);
                 }
@@ -1223,7 +1280,8 @@ impl Desktop
         {
             return NOT_FOUND;
         }
-        if self.retained_bytes() + drawing.storage() > MAX_RETAINED_BYTES
+        let (used, limit) = self.retained_admission(SceneTarget::from(call.window));
+        if used + drawing.storage() > limit
         {
             return NO_MEMORY;
         }
@@ -1243,7 +1301,8 @@ impl Desktop
 
     pub fn draw(&mut self, id: u64, command: DrawCommand) -> Status
     {
-        if self.retained_bytes() + core::mem::size_of::<DrawCommand>() > MAX_RETAINED_BYTES
+        let (used, limit) = self.retained_admission(SceneTarget::from(id));
+        if used + core::mem::size_of::<DrawCommand>() > limit
         {
             return NO_MEMORY;
         }
@@ -1339,12 +1398,13 @@ impl Desktop
             {
                 return Err(BAD_ARGUMENT);
             }
-            InvocationGate::with_system_allocation(|| {
+            shared_scene_allocation(|| {
                 self.pending_content.try_reserve(1 + self.scene_spare())
             }).map_err(|_| NO_MEMORY)?;
             let content = self.content.iter().find(|c| c.id == id).ok_or(NOT_FOUND)?;
             let pending = Content::pending_patch(id, content.port.clone(), mask);
-            if self.retained_bytes().saturating_add(pending.storage()) > MAX_RETAINED_BYTES
+            let (used, limit) = self.retained_admission(id);
+            if used.saturating_add(pending.storage()) > limit
             {
                 return Err(NO_MEMORY);
             }
@@ -1502,7 +1562,7 @@ impl Desktop
         {
             return self.worlds.get_mut(world.0, self.owner)?.graphics(call, points, region);
         }
-        let used = self.retained_bytes();
+        let (used, limit) = self.retained_admission(SceneTarget::decode(call.target)?);
         let content = self.content_mut(SceneTarget::decode(call.target)?)?;
         if content.commands.len() >= 512
         {
@@ -1511,7 +1571,7 @@ impl Desktop
         let saved = content.port.clone();
         if let Some(drawing) = service::graphics(&mut content.port, call, points, region)?
         {
-            if used + drawing.storage() > MAX_RETAINED_BYTES
+            if used + drawing.storage() > limit
             {
                 content.port = saved;
                 return Err(NO_MEMORY);
@@ -1535,7 +1595,7 @@ impl Desktop
         {
             return self.worlds.get_mut(world.0, self.owner)?.bitmap(call, data, palette, mask);
         }
-        let used = self.retained_bytes();
+        let (used, limit) = self.retained_admission(SceneTarget::decode(call.target)?);
         let content = self.content_mut(SceneTarget::decode(call.target)?)?;
         if content.commands.len() >= 512
         {
@@ -1546,7 +1606,7 @@ impl Desktop
                                                                             palette,
                                                                             mask,
                                                                             content.port.clone())?;
-        if used + drawing.storage() + drawing.port.storage() > MAX_RETAINED_BYTES
+        if used + drawing.storage() + drawing.port.storage() > limit
         {
             return Err(NO_MEMORY);
         }
@@ -1640,13 +1700,13 @@ impl Desktop
         {
             return self.worlds.get_mut(world.0, self.owner)?.text(call, text, fonts);
         }
-        let used = self.retained_bytes();
+        let (used, limit) = self.retained_admission(SceneTarget::decode(call.target)?);
         let content = self.content_mut(SceneTarget::decode(call.target)?)?;
         if content.commands.len() >= 512
         {
             return Err(NO_MEMORY);
         }
-        if used + text.len() + content.port.storage() + 32 > MAX_RETAINED_BYTES
+        if used + text.len() + content.port.storage() + 32 > limit
         {
             return Err(NO_MEMORY);
         }
@@ -1674,10 +1734,10 @@ impl Desktop
             return drawing.paint(&mut Canvas::new(&mut world.pixels, world.width, world.height),
                                  fonts);
         }
-        let used = self.retained_bytes();
+        let (used, limit) = self.retained_admission(SceneTarget::decode(call.target)?);
         let content = self.content_mut(SceneTarget::decode(call.target)?)?;
         drawing.port = content.port.clone();
-        if content.commands.len() >= 512 || used + drawing.storage() > MAX_RETAINED_BYTES
+        if content.commands.len() >= 512 || used + drawing.storage() > limit
         {
             return Err(NO_MEMORY);
         }
@@ -1698,10 +1758,10 @@ impl Desktop
             drawing.paint(&mut Canvas::new(&mut world.pixels, world.width, world.height));
             return Ok(());
         }
-        let used = self.retained_bytes();
+        let (used, limit) = self.retained_admission(SceneTarget::decode(call.target)?);
         let content = self.content_mut(SceneTarget::decode(call.target)?)?;
         drawing.port = content.port.clone();
-        if content.commands.len() >= 512 || used + drawing.storage() > MAX_RETAINED_BYTES
+        if content.commands.len() >= 512 || used + drawing.storage() > limit
         {
             return Err(NO_MEMORY);
         }
@@ -1721,10 +1781,10 @@ impl Desktop
             drawing.port = world.port.clone();
             return drawing.paint(&mut Canvas::new(&mut world.pixels, world.width, world.height));
         }
-        let used = self.retained_bytes();
+        let (used, limit) = self.retained_admission(SceneTarget::decode(call.target)?);
         let content = self.content_mut(SceneTarget::decode(call.target)?)?;
         drawing.port = content.port.clone();
-        if content.commands.len() >= 512 || used + drawing.storage() > MAX_RETAINED_BYTES
+        if content.commands.len() >= 512 || used + drawing.storage() > limit
         {
             return Err(NO_MEMORY);
         }
@@ -1792,6 +1852,7 @@ impl Desktop
                 self.controls.remove_window(id.0);
                 self.content.retain(|content| content.id != id);
                 self.content_damage.retain(|(target, _)| *target != id);
+                self.ordinary_underlay.forget(SceneTarget::from(id));
                 self.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);
                 self.events.post_system_for(closed_owner,
@@ -2254,278 +2315,102 @@ impl Desktop
     {
         crate::trace::record(crate::trace::PRESENT, self.owner, 0, 0, 0, 0);
         self.tick_cursor();
+        let available =
+            if self.redraw || !self.content_damage.is_empty() || self.ordinary_underlay.pending()
+            {
+                crate::kernel::heap_available()
+            }
+            else
+            {
+                0
+            };
+        let retry_ordinary = self.ordinary_underlay.retry_due(available);
         if !self.redraw
            && !self.cursor_dirty
            && self.content_damage.is_empty()
            && !self.feedback_dirty
            && self.presentation_damage.is_empty()
+           && !self.presentation_copy_full
+           && !retry_ordinary
         {
             self.publish_observation();
             return;
         }
         let caller = self.owner;
-        self.enter(self.foreground);
-        // A tracked popup/outline is above content. Its backing scene must be
-        // recomposed if an application changes pixels beneath that overlay.
-        self.redraw |= !self.content_damage.is_empty()
-                       && (self.menus.is_tracking()
-                           || self.app_menu.is_tracking()
-                           || self.windows.tracking_repaints_scene());
-        let full = self.redraw;
-        if full || !self.content_damage.is_empty()
+        if self.processes.ledger(self.foreground).is_ok_and(|owner| owner.accepting())
         {
-            let cache_budget =
-                super::quickdraw::content_cache::PIXEL_BUDGET.saturating_sub(self.scroll_boxes
-                                                                                 .raster_storage())
-                    .saturating_sub(super::quickdraw::menu_cache::BYTES);
-            self.content_cache
-                .preserve_headroom(crate::kernel::heap_available(), 2 * 1024 * 1024, cache_budget);
+            self.enter(self.foreground);
+        }
+        let full = self.redraw;
+        let mut damage = core::mem::take(&mut self.content_damage);
+        let mut damaged = core::mem::take(&mut self.presentation_damage);
+        let mut copy_full = core::mem::take(&mut self.presentation_copy_full);
+        let ordinary_damage = damage.iter().any(|(id, _)| !self.system_scene(*id));
+        let compose = full || !damage.is_empty() || retry_ordinary;
+        if compose
+        {
+            let started = crate::trace::clock();
             self.revision = self.revision.wrapping_add(1);
             self.compositions = self.compositions.wrapping_add(1);
-        }
-        let mut damaged = core::mem::take(&mut self.presentation_damage);
-        if self.redraw
-        {
-            let started = crate::trace::clock();
-            let updating = self.windows.back_to_front().filter(|w| w.updating).count();
-            let back = platform::back_buffer();
-            let mut canvas = Canvas::new(back, crate::display::WIDTH, crate::display::HEIGHT);
-            background(&mut canvas);
-            let cdef = self.cdef;
-            let fonts = crate::kernel::fonts();
-            let desktop_visible = self.processes
-                                      .get(crate::context::finder_app().0)
-                                      .is_ok_and(|p| p.info.hidden == 0);
-            self.content_cache.begin_frame();
-            self.content_cache.retain(|id| {
-                                  if id == SceneTarget::Desktop
-                                  {
-                                      desktop_visible
-                                  }
-                                  else
-                                  {
-                                      id.window()
-                                        .ok()
-                                        .and_then(|window| self.windows.window(window))
-                                        .is_some()
-                                      && !self.content
-                                              .iter()
-                                              .find(|content| content.id == id)
-                                              .is_some_and(|content| {
-                                                  content.iter_commands().any(|command| {
-                                                  matches!(command, RenderCommand::ScrollBox(_))
-                                              })
-                                              })
-                                  }
-                              });
-            if desktop_visible
+            let cache_budget = super::quickdraw::content_cache::PIXEL_BUDGET
+                .saturating_sub(self.scroll_boxes.raster_storage())
+                .saturating_sub(super::quickdraw::menu_cache::BYTES);
+            self.content_cache.preserve_headroom(available, 2 * 1024 * 1024, cache_budget);
+            if full || ordinary_damage || retry_ordinary
             {
-                let result = self.content_cache.try_paint(SceneTarget::Desktop,
-                                         self.desktop.bounds(),
-                                         &mut canvas,
-                                         |canvas| {
-                                             crate::kernel::with_resource_owner(crate::context::finder_app().0, || {
-                                                 self.desktop.paint(canvas,
-                                                                    fonts,
-                                                                    |canvas, command| {
-                                                                        paint(canvas, command, cdef)
-                                                                    })
-                                             }).and_then(core::convert::identity)
-                                         });
-                if result.is_err()
-                {
-                    self.frame_incomplete = true;
-                    self.enter(caller);
-                    return;
-                }
+                // Refusal retains the exact owned ordinary regions. The
+                // committed base stays available for genuine System rendering.
+                let _ = self.update_ordinary_underlay(&mut damage, full, available, &mut damaged,
+                                                      &mut copy_full);
             }
-            let content = &self.content;
-            let cache = &mut self.content_cache;
-            let cdef = self.cdef;
-            let mut paint_failed = false;
-            platform::with_tracking_mask(|scratch| {
-                self.windows.draw_with_scratch(&mut canvas, scratch, |window, canvas| {
-                                if paint_failed
-                                {
-                                    return;
-                                }
-                                let content =
-                                    content.iter().find(|content| content.id == window.id);
-                                let replay = |canvas: &mut Canvas<'_>| {
-                                    crate::kernel::with_resource_owner(window.owner, || {
-                                        canvas.paint_rect(window.local_bounds(), WHITE);
-                                        if let Some(content) = content
-                                        {
-                                            content.paint(canvas, fonts, |canvas, command| {
-                                                       paint(canvas, command, cdef)
-                                                   })?;
-                                        }
-                                        Ok(())
-                                    }).and_then(core::convert::identity)
-                                };
-                                // Managed scroll boxes already retain their viewport rasters.
-                                // A second whole-window raster wastes heap and copies every frame.
-                                let has_viewports = content.is_some_and(|content| {
-                                                        content.iter_commands().any(|command| {
-                                    matches!(command, RenderCommand::ScrollBox(_))
-                                })
-                                                    });
-                                if has_viewports
-                                {
-                                    paint_failed = replay(canvas).is_err();
-                                }
-                                else
-                                {
-                                    paint_failed = cache.try_paint(window.id.0, window.bounds,
-                                                                   canvas, replay)
-                                                        .is_err();
-                                }
-                            })
-            });
-            if paint_failed
+            let rendered = if full || self.frame_incomplete
             {
-                self.frame_incomplete = true;
-                self.enter(caller);
-                return;
+                self.paint_system_layer(&mut damaged, &mut copy_full)
             }
-            self.menu_cache.paint(&mut canvas,
-                                  (self.foreground,
-                                   self.menus.selected_menu(),
-                                   self.app_menu.is_tracking()),
-                                  |canvas| {
-                                      self.menus.draw_bar(canvas);
-                                      self.app_menu.draw_bar(canvas);
-                                  });
-            self.menus.draw_popup(&mut canvas);
-            self.app_menu.draw_popup(&mut canvas);
-            self.redraw = false;
-            self.content_damage.clear();
-            crate::trace::record(crate::trace::RENDER,
-                                 caller,
-                                 started,
-                                 crate::trace::clock().wrapping_sub(started),
-                                 updating as u64,
-                                 self.revision as u64);
-        }
-        else if !self.content_damage.is_empty()
-        {
-            let started = crate::trace::clock();
-            let damage = core::mem::take(&mut self.content_damage);
-            let fonts = crate::kernel::fonts();
-            let cdef = self.cdef;
-            let cache = &mut self.content_cache;
-            let mut canvas =
-                Canvas::new(platform::back_buffer(), crate::display::WIDTH, crate::display::HEIGHT);
-            let mut paint_failed = false;
-            for (id, region) in &damage
+            else
             {
-                if paint_failed
-                {
-                    break;
-                }
-                let id = *id;
-                if id == SceneTarget::Desktop
-                {
-                    if self.processes
-                           .get(crate::context::finder_app().0)
-                           .is_ok_and(|p| p.info.hidden == 0)
-                    {
-                        self.windows.for_each_desktop_rect(self.desktop.bounds(), |visible| {
-                            for band in region.bands() { for span in &band.spans {
-                                let mut clip = Rect::ZERO;
-                                if !super::quickdraw::geometry::sect_rect(Rect::new(span.left, band.top, span.right, band.bottom), visible, &mut clip) { continue; }
-                                canvas.reset_port(); canvas.set_clip(clip);
-                                background(&mut canvas);
-                                if paint_failed { continue; }
-                                paint_failed = cache.try_paint(id, self.desktop.bounds(), &mut canvas, |canvas| {
-                                    crate::kernel::with_resource_owner(crate::context::finder_app().0, || self.desktop.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef))).and_then(core::convert::identity)
-                                }).is_err();
-                                if damaged.len() == damaged.capacity() {
-    InvocationGate::with_system_allocation(|| damaged.reserve(1));
-}
-damaged.push(clip);
-                            }}
-                        });
-                    }
-                    continue;
-                }
-                let Ok(id) = id.window()
-                else
-                {
-                    continue;
-                };
-                let Some(window) = self.windows.window(id)
-                else
-                {
-                    continue;
-                };
-                let Some(content) = self.content.iter().find(|content| content.id == id)
-                else
-                {
-                    continue;
-                };
-                let has_viewports =
-                    content.iter_commands()
-                           .any(|command| matches!(command, RenderCommand::ScrollBox(_)));
-                self.windows.for_each_visible_rect(id, |visible| {
-                                for band in region.bands()
-                                {
-                                    for span in &band.spans
-                                    {
-                                        let mut bounds =
-                                            Rect::new(span.left, band.top, span.right, band.bottom);
-                                        bounds.offset(window.bounds.left, window.bounds.top);
-                                        let mut clip = Rect::ZERO;
-                                        if !super::quickdraw::geometry::sect_rect(bounds, visible,
-                                                                                  &mut clip)
-                                        {
-                                            continue;
-                                        }
-                                        canvas.reset_port();
-                                        canvas.set_clip(clip);
-                                        canvas.set_origin(window.bounds.left, window.bounds.top);
-                                        if paint_failed
-                                        {
-                                            continue;
-                                        }
-                                        let replay = |canvas: &mut Canvas<'_>| {
-                                            crate::kernel::with_resource_owner(window.owner, || {
-                                                canvas.paint_rect(window.local_bounds(), WHITE);
-                                                content.paint(canvas, fonts, |canvas, command| {
-                                                           paint(canvas, command, cdef)
-                                                       })
-                                            }).and_then(core::convert::identity)
-                                        };
-                                        paint_failed = if has_viewports
-                                                       {
-                                                           replay(&mut canvas)
-                                                       }
-                                                       else
-                                                       {
-                                                           cache.try_paint(id.0, window.bounds,
-                                                                           &mut canvas, replay)
-                                                       }.is_err();
-                                        window.paint_content_overlay(&mut canvas);
-                                        if damaged.len() == damaged.capacity()
-                                        {
-                                            InvocationGate::with_system_allocation(|| {
-                                                damaged.reserve(1)
-                                            });
-                                        }
-                                        damaged.push(clip);
-                                    }
-                                }
-                            });
-            }
-            if paint_failed
+                self.paint_system_damage(&damage, &mut damaged, &mut copy_full)
+            };
+            if rendered.is_err()
             {
-                // Nothing was presented. Preserve the exact pending damage and
-                // retry it when a resource context is available again.
                 self.content_damage = damage;
                 self.frame_incomplete = true;
-                self.enter(caller);
+                self.restore_presentation_damage(damaged, copy_full);
+                if self.processes.ledger(caller).is_ok_and(|owner| owner.accepting())
+                {
+                    self.enter(caller);
+                }
                 return;
             }
+            // A metadata refusal may leave an exact ordinary entry active.
+            damage.retain(|(id, _)| !self.system_scene(*id));
+            self.content_damage = damage;
+            self.redraw = false;
+            self.frame_incomplete = false;
+            if full || self.menus.is_tracking() || self.app_menu.is_tracking()
+            {
+                crate::context::without_recovery(|| {
+                    let mut canvas = Canvas::new(platform::back_buffer(),
+                                                 crate::display::WIDTH,
+                                                 crate::display::HEIGHT);
+                    self.menu_cache.paint(&mut canvas,
+                                          (self.foreground,
+                                           self.menus.selected_menu(),
+                                           self.app_menu.is_tracking()),
+                                          |canvas| {
+                                              self.menus.draw_bar(canvas);
+                                              self.app_menu.draw_bar(canvas);
+                                          });
+                    self.menus.draw_popup(&mut canvas);
+                    self.app_menu.draw_popup(&mut canvas);
+                });
+            }
+            crate::platform::with_tracking_mask(|scratch| {
+                let mut canvas = Canvas::new(platform::back_buffer(),
+                                             crate::display::WIDTH,
+                                             crate::display::HEIGHT);
+                self.windows.draw_tracking(&mut canvas, scratch);
+            });
             crate::trace::record(crate::trace::RENDER,
                                  caller,
                                  started,
@@ -2533,13 +2418,19 @@ damaged.push(clip);
                                  0,
                                  self.revision as u64);
         }
-        self.frame_incomplete = false;
-        if full || self.cursor_dirty || self.feedback_dirty || !damaged.is_empty()
+        if full || copy_full || self.cursor_dirty || self.feedback_dirty || !damaged.is_empty()
         {
-            self.compose_cursor(full, damaged);
+            self.compose_cursor(full, damaged, copy_full);
+        }
+        else
+        {
+            self.restore_presentation_damage(damaged, false);
         }
         self.publish_observation();
-        self.enter(caller);
+        if self.processes.ledger(caller).is_ok_and(|owner| owner.accepting())
+        {
+            self.enter(caller);
+        }
     }
 
     /// Timer-owned presentation never enters application drawing or replays a
@@ -2549,16 +2440,37 @@ damaged.push(clip);
         // A refused scene replay may have touched only the private back buffer.
         // Never leak those uncommitted pixels through a later cursor-only copy.
         if self.frame_incomplete
-           || !self.cursor_dirty && !self.feedback_dirty && self.presentation_damage.is_empty()
+           || !self.cursor_dirty
+              && !self.feedback_dirty
+              && self.presentation_damage.is_empty()
+              && !self.presentation_copy_full
         {
             return;
         }
         let caller = self.owner;
         self.enter(self.foreground);
         let damage = core::mem::take(&mut self.presentation_damage);
-        self.compose_cursor(false, damage);
+        let copy_full = core::mem::take(&mut self.presentation_copy_full);
+        self.compose_cursor(false, damage, copy_full);
         self.publish_observation();
         self.enter(caller);
+    }
+
+    fn restore_presentation_damage(&mut self, mut damaged: Vec<Rect>, copy_full: bool)
+    {
+        self.presentation_copy_full |= copy_full;
+        if self.presentation_damage.is_empty()
+        {
+            core::mem::swap(&mut self.presentation_damage, &mut damaged);
+        }
+        else
+        {
+            for rect in damaged
+            {
+                accumulate_presentation_damage(&mut self.presentation_damage,
+                                               &mut self.presentation_copy_full, rect);
+            }
+        }
     }
 
     fn prepare_feedback(&mut self, full: bool) -> super::quickdraw::feedback::Feedback
@@ -2629,7 +2541,7 @@ damaged.push(clip);
         feedback
     }
 
-    fn compose_cursor(&mut self, full: bool, mut damaged: Vec<Rect>)
+    fn compose_cursor(&mut self, full: bool, mut damaged: Vec<Rect>, copy_full: bool)
     {
         let feedback = self.prepare_feedback(full);
         let cursor_changed = self.cursor_dirty;
@@ -2646,7 +2558,7 @@ damaged.push(clip);
                                                        previous_feedback: Some(&self.feedback),
                                                        feedback: Some(&feedback) };
         let back = platform::back_buffer();
-        if full
+        if full || copy_full
         {
             platform::present_rects(back,
                                     [Rect::new(0,
@@ -2661,7 +2573,8 @@ damaged.push(clip);
         }
         self.feedback = feedback;
         self.feedback_dirty = !full && self.redraw;
-        if self.presentation_damage.capacity() < damaged.capacity()
+        if self.presentation_damage.is_empty()
+           && self.presentation_damage.capacity() < damaged.capacity()
         {
             damaged.clear();
             self.presentation_damage = damaged;
@@ -2860,6 +2773,7 @@ impl super::windows::lifetime::WindowHost for Desktop
             self.controls.remove_window(id.0);
             self.content.retain(|content| content.id != id);
             self.content_damage.retain(|(target, _)| *target != id);
+            self.ordinary_underlay.forget(SceneTarget::from(id));
             self.pending_content.retain(|content| content.id != id);
             self.forget_cursor_window(id);
             self.redraw = true;
@@ -2872,4 +2786,54 @@ impl super::windows::lifetime::WindowHost for Desktop
     {
         self.windows.release_storage(ticket)
     }
+}
+
+/// Damage accounting must remain available after ordinary allocation refuses.
+/// A full copy is the last resort for exhausted bookkeeping; the compositor's
+/// successful backbuffer and the normal cursor/feedback overlays stay in use.
+fn accumulate_presentation_damage(damage: &mut Vec<Rect>, copy_full: &mut bool, rect: Rect)
+{
+    if rect.is_empty() || *copy_full
+    {
+        return;
+    }
+    if damage.len() == damage.capacity()
+       && shared_scene_allocation(|| damage.try_reserve(1)).is_err()
+    {
+        *copy_full = true;
+        return;
+    }
+    damage.push(rect);
+}
+
+/// Retiring a control must not make allocation failure fatal. Preserve exact
+/// old bounds normally; if their metadata cannot grow, coalesce only this
+/// object's removed bounds and keep its cleanup independent of heap headroom.
+fn accumulate_removed_damage(damage: &mut Vec<Rect>, coalesced: &mut Option<Rect>, rect: Rect)
+{
+    if rect.is_empty()
+    {
+        return;
+    }
+    if let Some(previous) = coalesced.as_mut()
+    {
+        *previous = super::quickdraw::geometry::union_rect(*previous, rect);
+        return;
+    }
+    if damage.len() == damage.capacity()
+       && shared_scene_allocation(|| damage.try_reserve(1)).is_err()
+    {
+        let bounds = damage.iter().copied().fold(rect, super::quickdraw::geometry::union_rect);
+        damage.clear();
+        *coalesced = Some(bounds);
+        return;
+    }
+    damage.push(rect);
+}
+
+/// Shared scene/damage indices retain ordinary System backing. The service
+/// consumes its boot-admitted headroom; refused growth stays fallible.
+fn shared_scene_allocation<R>(operation: impl FnOnce() -> R) -> R
+{
+    crate::context::without_recovery(|| InvocationGate::with_system_allocation(operation))
 }

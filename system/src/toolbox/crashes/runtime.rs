@@ -253,6 +253,7 @@ impl super::Desktop
     pub(crate) fn measure_crash_report_layout() -> Result<ReportLayout, Status>
     {
         let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
+        fonts.require_direct_bitmap(fonts_service::selection(MONACO))?;
         let metrics = fonts.metrics(fonts_service::selection(MONACO))?;
         let advance =
             metrics.ascent.saturating_add(metrics.descent).saturating_add(metrics.leading).max(1);
