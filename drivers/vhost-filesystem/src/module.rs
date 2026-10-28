@@ -69,7 +69,7 @@ impl<C: Channel + 'static> Service<C>
         {
             return Err(Error(mac_abi::SERVICE_BUSY));
         }
-        let cancellation = Cancellation::default();
+        let cancellation = Cancellation::try_new()?;
         state.idle = Some(Filesystem::new(DirectoryRpc::new(channel, cancellation.clone())));
         state.cancellation = Some(cancellation);
         Ok(())
@@ -211,10 +211,17 @@ impl<C: Channel + 'static> Service<C>
            || state.active.is_some()
            || state.idle
                    .as_mut()
-                   .is_none_or(|client| !client.quiescent() || client.transport().is_pending())
+                   .is_some_and(|client| !client.quiescent() || client.transport().is_pending())
         {
             return Err(Error(mac_abi::SERVICE_BUSY));
         }
+        // External forwarded storage outlives image BSS unless explicitly
+        // released. No live capability or lower ticket remains at this point.
+        let idle = state.idle.take();
+        let cancellation = state.cancellation.take();
+        drop(state);
+        drop(idle);
+        drop(cancellation);
         Ok(())
     }
 }

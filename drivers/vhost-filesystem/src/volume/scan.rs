@@ -164,10 +164,19 @@ impl<R: Rpc> Filesystem<R>
         {
             self.candidate(volume, handle, name).await?
         };
-        node.host_name = buffer(name.len())?;
-        node.host_name.copy_from_slice(name);
-        node.metadata.name = mac_hfs_b::names::normalize(core::str::from_utf8(name).map_err(|_| Cause::Invalid)?).map_err(|_| Cause::Invalid)?;
-        node.key = mac_hfs_b::names::comparison(&node.metadata.name).map_err(|_| Cause::Invalid)?;
+        crate::module_allocation(|| {
+            node.host_name = buffer(name.len())?;
+            node.host_name.copy_from_slice(name);
+            node.metadata.name =
+                mac_hfs_b::names::normalize(core::str::from_utf8(name).map_err(|_| {
+                                                                          Cause::Invalid
+                                                                      })?).map_err(|_| {
+                                                                              Cause::Invalid
+                                                                          })?;
+            node.key =
+                mac_hfs_b::names::comparison(&node.metadata.name).map_err(|_| Cause::Invalid)?;
+            Ok(())
+        })?;
         node.parent = parent;
         let result = (|| {
             let mount = self.mounts.get_mut(volume).ok_or(Cause::NotFound)?;
@@ -187,18 +196,8 @@ impl<R: Rpc> Filesystem<R>
                      .by_name
                      .binary_search_by(|id| mount.nodes.get(*id).unwrap().key.cmp(&node.key))
                      .map_or_else(Ok, |_| Err(Cause::Conflict))?;
-            mount.directories
-                 .get_mut(parent)
-                 .unwrap()
-                 .by_name
-                 .try_reserve(1)
-                 .map_err(|_| Cause::NoMemory)?;
-            mount.directories
-                 .get_mut(parent)
-                 .unwrap()
-                 .children
-                 .try_reserve(1)
-                 .map_err(|_| Cause::NoMemory)?;
+            crate::module_reserve(&mut mount.directories.get_mut(parent).unwrap().by_name, 1)?;
+            crate::module_reserve(&mut mount.directories.get_mut(parent).unwrap().children, 1)?;
             if let Some(directory) = directory
             {
                 mount.directories.insert(id, Directory::new(directory))?;

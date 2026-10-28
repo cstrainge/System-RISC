@@ -194,6 +194,7 @@ pub struct ThreadContext
     allocation_scope: selection::ScopedSelection<crate::allocator::Target>,
     resources:        selection::ScopedSelection<crate::kernel::ResourceSelection>,
     io_subject:       selection::ScopedSelection<crate::drivers::jobs::subjects::Subject>,
+    module:           selection::ScopedSelection<crate::images::ModuleFrame>,
     pub traps:        ThreadTrapState,
     pub definitions:  DefinitionInvocations
 }
@@ -209,6 +210,7 @@ impl ThreadContext
                allocation_scope: selection::ScopedSelection::new(BOOT_THREAD),
                resources:        selection::ScopedSelection::new(BOOT_THREAD),
                io_subject:       selection::ScopedSelection::new(BOOT_THREAD),
+               module:           selection::ScopedSelection::new(BOOT_THREAD),
                traps:            ThreadTrapState::new(),
                definitions:      DefinitionInvocations::new() }
     }
@@ -256,6 +258,7 @@ impl ThreadContext
             {
                 return Err(mac_abi::SERVICE_BUSY);
             }
+            self.module.reset(ThreadId(thread));
             self.resources.reset(ThreadId(thread));
             self.io_subject.reset(ThreadId(thread));
             self.allocation_scope.reset(ThreadId(thread));
@@ -274,6 +277,7 @@ impl ThreadContext
         crate::toolbox::handles::InvocationGate::run(|| {
             let owner = self.owner.lock().take();
             let allocation = self.allocation.lock().take();
+            self.module.reset(ThreadId(0));
             self.resources.reset(ThreadId(0));
             self.io_subject.reset(ThreadId(0));
             self.allocation_scope.reset(ThreadId(0));
@@ -341,6 +345,18 @@ impl ThreadContext
                 None => AllocationSelection::Unavailable
             }
                              })
+    }
+
+    pub(crate) fn authenticate_module(&self, module: u64) -> Result<(), mac_abi::Status>
+    {
+        self.module.borrow(|frame| frame.ok_or(mac_abi::ACCESS_DENIED)?.authenticate(module))
+    }
+
+    pub(crate) fn module_callback_allowed(&self, module: u64, address: usize)
+                                          -> Result<(), mac_abi::Status>
+    {
+        self.module
+            .borrow(|frame| frame.ok_or(mac_abi::ACCESS_DENIED)?.callback_allowed(module, address))
     }
 
     pub(crate) fn owner(&self) -> Result<crate::toolbox::handles::OwnerRef, mac_abi::Status>
@@ -531,6 +547,51 @@ pub(crate) fn with_bootstrap_allocation<R>(selection: AllocationSelection,
     BOOT_ALLOCATION.with(Some(selection), operation)
 }
 
+
+#[cfg(target_arch = "riscv64")]
+static BOOT_MODULE: selection::PermanentSelection<crate::images::ModuleFrame> =
+    selection::PermanentSelection::new(BOOT_THREAD);
+
+/// Authenticate the installed executor without deriving authority from its label.
+/// Stopping admission does not invalidate an already admitted cleanup invocation.
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn authenticate_module(module: u64) -> Result<(), mac_abi::Status>
+{
+    crate::machine::scheduler::authenticate_module(module)
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn module_callback_allowed(module: u64, address: usize) -> Result<(), mac_abi::Status>
+{
+    crate::machine::scheduler::module_callback_allowed(module, address)
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn authenticate_bootstrap_module(module: u64) -> Result<(), mac_abi::Status>
+{
+    BOOT_MODULE.borrow(|frame| frame.ok_or(mac_abi::ACCESS_DENIED)?.authenticate(module))
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn bootstrap_module_callback_allowed(module: u64, address: usize)
+                                                -> Result<(), mac_abi::Status>
+{
+    BOOT_MODULE.borrow(|frame| {
+                   frame.ok_or(mac_abi::ACCESS_DENIED)?.callback_allowed(module, address)
+               })
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_module_execution<R>(execution: &crate::images::ModuleExecution,
+                                       call: impl FnOnce() -> R)
+                                       -> Result<R, mac_abi::Status>
+{
+    let context = current_thread_context();
+    if context.is_bootstrap()
+    {
+        Ok(BOOT_MODULE.with(Some(execution.frame()), call))
+    }
+    else
+    {
+        context.module.with(execution.frame(), call).map_err(|_| mac_abi::WRONG_THREAD)
+    }
+}
 
 #[cfg(target_arch = "riscv64")]
 pub(crate) fn io_subject() -> Option<crate::drivers::jobs::subjects::Subject>

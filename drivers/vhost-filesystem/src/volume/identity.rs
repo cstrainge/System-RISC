@@ -59,7 +59,7 @@ impl<R: Rpc> Filesystem<R>
         {
             return Err(Cause::Stale.into());
         }
-        mount.bindings.try_reserve(1).map_err(|_| Cause::NoMemory)?;
+        crate::module_reserve(&mut mount.bindings, 1)?;
         mount.bindings.retain(|b| b.id != id || b.key == key);
         match mount.bindings.binary_search_by_key(&key, |b| b.key)
         {
@@ -116,7 +116,7 @@ impl<R: Rpc> Filesystem<R>
         {
             return Err(Cause::NoMemory.into());
         }
-        mount.bindings.try_reserve(1).map_err(|_| Cause::NoMemory)?;
+        crate::module_reserve(&mut mount.bindings, 1)?;
         let id = if let Some(stored) = stored
         {
             if stored <= ROOT || stored >= 0x8000_0000

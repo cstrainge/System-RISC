@@ -556,12 +556,16 @@ mod native
     pub(super) fn client(caller: u64, key: u64) -> mac_driver::Client
     {
         let entry = Entry(Mutex::new(None));
-        let host = abi::Host { header:   abi::Header::of::<abi::Host>(),
-                               module:   caller,
-                               reserved: 0,
-                               context:  key,
-                               call:     Some(broker),
-                               resolve:  Some(resolve) };
+        let host = abi::Host { header:                 abi::Header::of::<abi::Host>(),
+                               module:                 caller,
+                               reserved:               0,
+                               context:                key,
+                               call:                   Some(broker),
+                               resolve:                Some(resolve),
+                               allocate:               None,
+                               deallocate:             None,
+                               reallocate:             None,
+                               with_module_allocation: None };
         let mut instance = abi::Instance::default();
         // SAFETY: exact resident buffers and process-long static callbacks.
         // Context is a nonce, never a dereferenced fixture pointer; expired

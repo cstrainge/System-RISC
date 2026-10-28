@@ -61,3 +61,17 @@ fn format_error(error: mac_sit::Error) -> Error
               _ => ArchiveError::Malformed.status()
           })
 }
+
+/// Synchronous retained-state construction only; request buffers and lower
+/// source invocations keep their original admitted allocation target.
+fn module_allocation<T>(operation: impl FnOnce() -> mac_driver::Result<T>)
+                        -> mac_driver::Result<T>
+{
+    mac_driver::runtime::allocation::with_module_allocation(operation)?
+}
+fn module_reserve<T>(values: &mut alloc::vec::Vec<T>, additional: usize) -> mac_driver::Result<()>
+{
+    module_allocation(|| {
+        values.try_reserve(additional).map_err(|_| mac_driver::Error(mac_abi::NO_MEMORY))
+    })
+}

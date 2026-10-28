@@ -12,6 +12,8 @@ use alloc::{alloc::{alloc, dealloc},
             boxed::Box};
 use core::{alloc::Layout, ptr::NonNull};
 
+/// Original-account resident allocator for independently loaded native modules.
+pub use mac_driver::runtime::allocation::ForwardingAllocator;
 use mac_driver::{Error, Result};
 /// Uninitialized storage only. It cannot be read or dereferenced as T until
 /// `write` consumes the reservation and transfers ownership to a normal Box.

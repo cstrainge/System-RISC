@@ -67,7 +67,7 @@ pub(crate) fn load_application(owner: &crate::toolbox::handles::OwnerRef, creato
 {
     let authority = application_authority(&resources)?;
     admit_image(owner,
-                AppImage { authority,
+                AppImage { role: crate::images::Role::Application { authority },
                            resources,
                            creator,
                            file_type })
@@ -96,6 +96,10 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
                       source: alloc::sync::Arc<AppImage>)
                       -> Result<LoadedImage, Status>
 {
+    if !matches!(source.role, crate::images::Role::Application { .. })
+    {
+        return Err(ACCESS_DENIED);
+    }
     let (preferred, _) =
         crate::loader::reservation(&source.resources).map_err(crate::loader::status)?;
     let extent =
@@ -107,6 +111,7 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
                           extent,
                           crate::machine::memory::APPLICATION_RELOCATION_BASE,
                           crate::machine::memory::IMAGE_LIMIT,
+                          alloc::vec::Vec::new(),
                           |resources, base| {
                               crate::loader::application_at(resources, base).map_err(|error| {
                                   serial!("APPLICATION_IMAGE_REFUSED: {error}");
@@ -115,6 +120,50 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
                           })
           })
           .map_err(AccessError::status)?
+}
+/// Module packages use the same immutable source and owner-alias registry as
+/// applications, with their own role and the exact permanent module RAM range.
+pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,
+                          source: alloc::sync::Arc<AppImage>, base: u64, extent: u64,
+                          executable: alloc::vec::Vec<core::ops::Range<u64>>,
+                          write: impl FnOnce(&[mac_formats::resource::Resource],
+                                 u64)
+                                 -> Result<usize, Status>)
+                          -> Result<LoadedImage, Status>
+{
+    if source.role != crate::images::Role::Module
+       || owner.owner().kind() != mac_object_table::domain::DomainKind::Module
+    {
+        return Err(ACCESS_DENIED);
+    }
+    IMAGES.with(|images| {
+              images.load(owner,
+                          source,
+                          base,
+                          extent,
+                          base,
+                          base.checked_add(extent).ok_or(NO_MEMORY)?,
+                          executable,
+                          write)
+          })
+          .map_err(AccessError::status)?
+}
+pub(crate) fn module_execution(binding: crate::images::Binding)
+                               -> Result<crate::images::ModuleExecution, Status>
+{
+    IMAGES.with(|images| images.execute_module(binding)).map_err(AccessError::status)?
+}
+pub(crate) fn finish_module_images()
+{
+    let _ = IMAGES.with(|images| images.finish_module_retiring());
+}
+pub(crate) fn with_module_resources<R>(execution: &crate::images::ModuleExecution,
+                                       call: impl FnOnce() -> R)
+                                       -> Result<R, Status>
+{
+    crate::context::with_selected_resources(ResourceSelection { owner: execution.module(),
+                                                                image: Some(execution.binding()) },
+                                            call).map_err(|_| WRONG_THREAD)
 }
 pub(crate) fn release_image(ticket: mac_object_table::domain::ReleasedResource,
                             registration: crate::images::Registration)
@@ -490,7 +539,7 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
         account: finder_allocation, class: mac_kernel_model::policy::MemoryClass::Kernel
     }, || admit_image(&finder_owner,
                        AppImage { resources: finder,
-                                  authority,
+                                  role: crate::images::Role::Application { authority },
                                   creator: *b"MACS",
                                   file_type: *b"FNDR" })).map_err(|status| {
                             serial!("FINDER_IMAGE_REFUSED status={status}");

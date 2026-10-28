@@ -91,7 +91,9 @@ impl crate::toolbox::inspection::Subject for Process
     fn authority(&self) -> u64
     {
         self.image
-            .and_then(|image| crate::kernel::with_image(image, |image| image.authority))
+            .and_then(|image| {
+                crate::kernel::with_image(image, |image| image.application_authority()).flatten()
+            })
             .unwrap_or(0)
     }
 

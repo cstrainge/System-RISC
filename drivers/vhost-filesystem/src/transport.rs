@@ -31,6 +31,11 @@ impl Channel for Provider
 pub struct Cancellation(Arc<AtomicU8>);
 impl Cancellation
 {
+    pub fn try_new() -> mac_driver::Result<Self>
+    {
+        Arc::try_new(AtomicU8::new(0)).map(Self).map_err(|_| mac_driver::Error(mac_abi::NO_MEMORY))
+    }
+
     pub fn cancel(&self)
     {
         // Cleanup is irrevocable once entered. Repeated CANCEL callbacks must
@@ -105,13 +110,15 @@ impl<C: Channel> DirectoryRpc<C>
         }
         if length > self.input.len()
         {
-            self.input.try_reserve_exact(length - self.input.len()).map_err(|_| Cause::NoMemory)?;
+            let additional = length - self.input.len();
+            crate::module_reserve(&mut self.input, additional)?;
         }
         self.input.resize(length, 0);
         args.encode(&mut self.input).map_err(|_| Cause::Invalid)?;
         if self.output.is_empty()
         {
-            self.output = buffer(wire::HEADER_BYTES + wire::MAX_PAYLOAD)?;
+            self.output =
+                crate::module_allocation(|| buffer(wire::HEADER_BYTES + wire::MAX_PAYLOAD))?;
         }
         self.flight = Some(Flight { ticket:    0,
                                     operation: op,
@@ -189,7 +196,16 @@ impl<C: Channel> DirectoryRpc<C>
                     {
                         return Err(Cause::Invalid.into());
                     }
-                    let mut body = buffer(header.payload as usize)?;
+                    // ListNext bytes become a retained PendingChild until catalog
+                    // publication. Other replies remain request-owned.
+                    let mut body = if operation == Operation::ListNext
+                    {
+                        crate::module_allocation(|| buffer(header.payload as usize))?
+                    }
+                    else
+                    {
+                        buffer(header.payload as usize)?
+                    };
                     body.copy_from_slice(&bytes[wire::HEADER_BYTES..]);
                     Ok(Reply { header,
                                body })

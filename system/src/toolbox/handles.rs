@@ -206,7 +206,7 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                        crate::machine::scheduler::ReleaseThreads(storage)).map_err(KindAccessError::Registry)?;
                                }
                                for kind in crate::images::Registration::ALL {
-                                   registry.register(&owner, kind.specification(), cleanup::context::Desktop(kind))
+                                   registry.register(&owner, kind.specification(), kind)
                                        .map_err(KindAccessError::Registry)?;
                                }
                                Ok::<_, KindAccessError>(spinning_top::Spinlock::new(registry))

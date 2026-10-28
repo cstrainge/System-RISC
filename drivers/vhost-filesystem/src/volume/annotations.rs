@@ -134,12 +134,19 @@ impl<R: Rpc> Filesystem<R>
             }
             Err(error) => return Err(error)
         };
-        node.metadata.name = mac_hfs_b::names::normalize(
-            core::str::from_utf8(name).map_err(|_| Cause::Invalid)?
-        ).map_err(|_| Cause::Invalid)?;
-        node.key = mac_hfs_b::names::comparison(&node.metadata.name).map_err(|_| Cause::Invalid)?;
-        node.host_name = buffer(name.len())?;
-        node.host_name.copy_from_slice(name);
+        crate::module_allocation(|| {
+            node.metadata.name =
+                mac_hfs_b::names::normalize(core::str::from_utf8(name).map_err(|_| {
+                                                                          Cause::Invalid
+                                                                      })?).map_err(|_| {
+                                                                              Cause::Invalid
+                                                                          })?;
+            node.key =
+                mac_hfs_b::names::comparison(&node.metadata.name).map_err(|_| Cause::Invalid)?;
+            node.host_name = buffer(name.len())?;
+            node.host_name.copy_from_slice(name);
+            Ok(())
+        })?;
         Ok(node)
     }
 
@@ -189,7 +196,7 @@ impl<R: Rpc> Filesystem<R>
                                          -> Result<(u32, Node)>
     {
         let (handle, mut node) = self.open_record(parent, name).await?;
-        let prepared: Result<()> = (|| {
+        let prepared: Result<()> = crate::module_allocation(|| {
             node.metadata.name =
                 mac_hfs_b::names::normalize(core::str::from_utf8(name).map_err(|_| {
                                                                           Cause::Invalid
@@ -199,7 +206,7 @@ impl<R: Rpc> Filesystem<R>
             node.key =
                 mac_hfs_b::names::comparison(&node.metadata.name).map_err(|_| Cause::Invalid)?;
             Ok(())
-        })();
+        });
         if let Err(error) = prepared
         {
             return self.cleanup(handle, Err(error)).await;
@@ -284,5 +291,5 @@ impl<R: Rpc> Filesystem<R>
 
 pub(super) fn apply(metadata: &mut Metadata, record: Annotation<'_>) -> Result<()>
 {
-    record.apply(metadata).map_err(Into::into)
+    crate::module_allocation(|| record.apply(metadata).map_err(Into::into))
 }

@@ -139,6 +139,37 @@ pub fn current_context() -> crate::context::ContextRef
               .unwrap_or(crate::context::ContextRef::Bootstrap)
     })
 }
+/// The forwarded allocator authenticates a pinned module executor with no
+/// retained-reader or account clones and no registry lookup per callback.
+pub(crate) fn authenticate_module(module: u64) -> Result<(), mac_abi::Status>
+{
+    super::interrupts::with_masked(|| {
+        if IO.load(Ordering::Relaxed)
+        {
+            return crate::context::authenticate_bootstrap_module(module);
+        }
+        match ACTIVE.lock().as_ref()
+        {
+            Some(context) => context.authenticate_module(module),
+            None => crate::context::authenticate_bootstrap_module(module)
+        }
+    })
+}
+pub(crate) fn module_callback_allowed(module: u64, address: usize) -> Result<(), mac_abi::Status>
+{
+    super::interrupts::with_masked(|| {
+        if IO.load(Ordering::Relaxed)
+        {
+            return crate::context::bootstrap_module_callback_allowed(module, address);
+        }
+        match ACTIVE.lock().as_ref()
+        {
+            Some(context) => context.module_callback_allowed(module, address),
+            None => crate::context::bootstrap_module_callback_allowed(module, address)
+        }
+    })
+}
+
 /// Reserve from the actual active executor without a ContextRef/retained-reader
 /// clone. The callback path is allocation-free and cannot escape borrowed state.
 /// Release ACTIVE, selection and account locks before the allocator uses backing.

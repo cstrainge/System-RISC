@@ -1016,10 +1016,10 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 name = "stuffit-filesystem"
 version = "0.1.0"
 dependencies = [
- "linked_list_allocator",
  "mac-abi",
  "mac-build",
  "mac-driver",
+ "mac-driver-alloc",
  "mac-filesystem-interface",
  "mac-hfs-b",
  "mac-object-table",
@@ -1254,7 +1254,6 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vhost-filesystem"
 version = "0.1.0"
 dependencies = [
- "linked_list_allocator",
  "mac-abi",
  "mac-build",
  "mac-driver",

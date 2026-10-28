@@ -21,22 +21,39 @@ impl Header
         self.version == BROKER_ABI && self.size as usize == core::mem::size_of::<T>()
     }
 }
-/// Module entry receives a borrowed host descriptor, valid until reboot.
-/// A successful entry initializes Instance; no service is public before commit.
+/// Module entry receives a borrowed host descriptor, valid for the module and all of its
+/// outstanding allocations. A successful entry initializes Instance; no service is public before
+/// commit.
 pub type Entry = unsafe extern "C" fn(*const Host, *mut Instance) -> i32;
 pub type Dispatch = unsafe extern "C" fn(u64, *mut Call) -> i32;
 pub type Resolve = unsafe extern "C" fn(u64, u32, u32, *mut u64) -> i32;
 pub type Broker = unsafe extern "C" fn(u64, u64, *mut Call) -> i32;
+/// Allocations use the current admitted subject. Failure leaves `out` null.
+pub type Allocate = unsafe extern "C" fn(u64, usize, usize, *mut *mut u8) -> i32;
+/// Disposal validates the original allocation receipt and exact caller layout.
+pub type Deallocate = unsafe extern "C" fn(u64, *mut u8, usize, usize) -> i32;
+/// Failure preserves the original allocation and leaves `out` null.
+pub type Reallocate = unsafe extern "C" fn(u64, *mut u8, usize, usize, usize, *mut *mut u8) -> i32;
+pub type AllocationOperation = unsafe extern "C" fn(*mut core::ffi::c_void) -> i32;
+/// Invoke exactly once, synchronously on this thread, under this genuine module's
+/// Kernel account. Neither callback nor state may be retained. No deferred result
+/// is permitted; return the callback's nonpositive status unchanged.
+pub type WithModuleAllocation =
+    unsafe extern "C" fn(u64, AllocationOperation, *mut core::ffi::c_void) -> i32;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Host
 {
-    pub header:   Header,
-    pub module:   u64,
-    pub reserved: u64,
-    pub context:  u64,
-    pub call:     Option<Broker>,
-    pub resolve:  Option<Resolve>
+    pub header:                 Header,
+    pub module:                 u64,
+    pub reserved:               u64,
+    pub context:                u64,
+    pub call:                   Option<Broker>,
+    pub resolve:                Option<Resolve>,
+    pub allocate:               Option<Allocate>,
+    pub deallocate:             Option<Deallocate>,
+    pub reallocate:             Option<Reallocate>,
+    pub with_module_allocation: Option<WithModuleAllocation>
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -90,20 +107,22 @@ pub const PENDING: i32 = 1;
 /// Exact contract fingerprint includes boundary sizes, pointer width and the
 /// full-width provider-reference signature (bit 56) request tickets (bit 57), and device/DMA
 /// references (bit 58), backing-source references (bit 59), and ticket-free
-/// synchronous resident calls (bit 60). ABI remains unreleased v1. Generated
+/// synchronous resident calls (bit 60), and original-account allocator forwarding
+/// with synchronous module allocation selection (bit 61). ABI remains unreleased v1. Generated
 /// metadata and the resident reject a mismatch before entry.
 pub const LAYOUT_ID: u64 = 64
-                           | (48 << 8)
+                           | (80 << 8)
                            | (24 << 24)
                            | (64 << 40)
                            | (1 << 56)
                            | (1 << 57)
                            | (1 << 58)
                            | (1 << 59)
-                           | (1 << 60);
+                           | (1 << 60)
+                           | (1 << 61);
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(core::mem::size_of::<Host>() == 48);
+    assert!(core::mem::size_of::<Host>() == 80);
     assert!(core::mem::size_of::<Instance>() == 24);
     assert!(core::mem::size_of::<Call>() == 64);
 };

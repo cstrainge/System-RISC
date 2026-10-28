@@ -6,7 +6,9 @@ native scheduler records are resident. Original-account allocation headers and
 scoped resident metadata routing now extend stack/CPU charges. Selected optimized
 native lifecycle/storage/recovery observations and their limits are recorded below. A fixed512 MiB page-backed System heap
 is split into480 MiB ordinary and32 MiB protected storage. Independent application
-and module heaps, image-page charges and private process mappings remain pending.
+heaps, image-page charges and private process mappings remain pending. Module
+allocation forwarding and genuine invocation/resource scopes are implemented;
+bounded native observations are recorded below. Module workers remain unready.
 Kernel self-virtualization uses owned Sv39 roots and a guarded
 System stack. Graphical boot now pins an independent terminal panic/OOM kit;
 complete Save/Alert/Finder recovery kits and module/privilege gates remain open.
@@ -2970,9 +2972,10 @@ available while final receipts drain.
 
 Public domain inspection labels this partial coverage **execution and resident
 heap**. Usage records are atomic observations, not authority. Independent private
-application/module allocators, executable-image physical pages, module runtime
-binding storage and complete recovery-service accounting remain outside this
-coverage. The mapping summary continues to report complete per-domain accounting
+application allocators, executable-image physical pages, module runtime binding
+storage and complete recovery-service accounting remain outside this coverage.
+The bundled filesystem modules now forward heap requests as described below;
+bounded native observations and remaining gaps are recorded below. The mapping summary continues to report complete per-domain accounting
 as unavailable. Genuine module workers and the full Save/Alert/Finder emergency
 kit remain gated; neither a canonical module account nor reserved capacity makes
 them ready.
@@ -3166,3 +3169,61 @@ optimized native scenarios described above exercise actual per-allocation
 charges during real manager growth and cleanup; they do not establish every
 recursion or concurrency path. Explicit allocation-refusal retry of authority
 construction and concurrent issuer/stop races remain unverified.
+
+
+### Module execution sources and forwarded allocation
+
+Module code now uses the existing registered image source/alias facility. A
+module source has an explicit module role, never application ACAP authority.
+Source role and genuine owner domain kind must match before publication. The
+immutable package resource bytes are System owned; instance metadata and the
+validated executable-range list use the module's kernel account. Each entry and
+request invocation retains a real source read and execution pin. Its executor
+and primary resources belong to the module, while the original admitted request
+Subject and allocation target remain separate. Runtime binding metadata retains
+no permanent read/account pin that could prevent its own retirement.
+
+Direct Host callbacks authenticate the installed executor before using any copied
+context number. Allocation authentication borrows the active context without
+cloning retained readers or account authority. Shared image cleanup works from
+both process and module owner walks. Stopped module image aliases finish only
+after non-image cleanup and real invocation readers have drained, before final
+account retirement. Physical module RAM remains reserved until reset; this slice
+does not reclaim those image pages.
+
+The checked Host layout installs allocation/free/reallocation callbacks before
+author initialization. The bundled Host Filesystem and StuffIt Filesystem no
+longer contain private BSS heaps. Their persistent caches and shared capacities
+use explicit module allocation scopes; transient request futures, buffers and
+lower calls retain their original request target. Successfully quiescent service
+state releases its retained capacities outside module locks; refusal preserves
+live operations. The zero private-workspace declarations do not create a new
+quota or waive the selected 16 MiB module kernel account. Image-only DMA admission
+is unchanged: forwarding is not authority to submit arbitrary heap buffers to a
+device.
+
+The combined optimized RV64 image exercised real module entry, nested declared
+services, package refusal, failed-entry cancellation and final account drainage;
+all six existing normal host-filesystem scenarios and Finder recovery passed.
+After the final protocol-status diagnostic refinement, the optimized image and
+public-SDK host-volume and StuffIt scenarios passed again. These include actual
+forwarded allocations during both forks, writes, recursive transfers, nested
+archives, decoder/malformed-data cases, stale handles and owner-stop rollback.
+The first StuffIt attempt failed before guest execution because of the host Unix
+socket path limit; only the private evidence path changed for its retry.
+
+These scenarios do not directly assert module-primary Resource Manager lookups,
+forged Host context rejection, all quiesce paths, concurrent stop/pin races, or
+execution of the new fatal OOM/protocol diagnostics. Those remain unverified.
+Ordinary refusal returns through the service; an infallible module allocation
+failure reports its requested layout without inventing its cause. A returned
+non-allocation error is preserved as a protocol failure, rather than relabelled
+as OOM. The native diagnostic formatter is bounded and allocation-free by design;
+its new failure branches still need target execution evidence.
+
+Actual module-owned workers, safe shared-state preemption, full protected
+Save/Alert/Finder recovery services and arbitrary privileged-fault recovery
+remain separate gates. In particular, timer maintenance can invoke module code
+while a future worker is suspended: ordinary spinning mutexes shared with that
+worker would deadlock on one hart. Worker activation must include the native
+IRQ/preemption-safe shared-state contract rather than masking its whole run.

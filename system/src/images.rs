@@ -15,12 +15,34 @@ use crate::toolbox::handles::{CapacityPolicy, InvocationGate, KindCode, KindLeas
 pub(crate) const ROOT_KINDS: [KindCode; 2] = [KindCode(*b"IMAG"), KindCode(*b"IMST")];
 
 #[derive(PartialEq)]
+pub(crate) enum Role
+{
+    Application
+    {
+        authority: u64
+    },
+    Module
+}
+
+#[derive(PartialEq)]
 pub(crate) struct Source
 {
-    pub authority: u64,
+    pub role:      Role,
     pub resources: Vec<mac_formats::resource::Resource>,
     pub creator:   [u8; 4],
     pub file_type: [u8; 4]
+}
+
+impl Source
+{
+    pub(crate) fn application_authority(&self) -> Option<u64>
+    {
+        match self.role
+        {
+            Role::Application { authority } => Some(authority),
+            Role::Module => None
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -62,17 +84,20 @@ impl Drop for Use
            && self.0.retiring.load(Ordering::SeqCst)
         {
             crate::toolbox::processes::retirement::resources_released();
+            crate::drivers::recovery_changed();
         }
     }
 }
 struct Instance
 {
-    owner:     OwnerRef,
-    base:      u64,
-    limit:     u64,
-    execution: mac_kernel_model::image::ExecutionGate,
-    activity:  Arc<Activity>,
-    binding:   spin::Once<Binding>
+    owner:      OwnerRef,
+    module:     bool,
+    executable: Vec<core::ops::Range<u64>>,
+    base:       u64,
+    limit:      u64,
+    execution:  mac_kernel_model::image::ExecutionGate,
+    activity:   Arc<Activity>,
+    binding:    spin::Once<Binding>
 }
 
 /// Fields destroy source/instance payload references before the final use signal.
@@ -119,6 +144,50 @@ pub(crate) struct Execution
     _execution: mac_kernel_model::image::ExecutionPin,
     _source:    Read
 }
+/// A real initialized module alias and its execution gate remain pinned together.
+pub(crate) struct ModuleExecution(Execution);
+impl ModuleExecution
+{
+    pub(crate) fn binding(&self) -> Binding
+    {
+        self.0._source.binding()
+    }
+
+    pub(crate) fn module(&self) -> u64
+    {
+        self.0._source.instance.owner.owner().incarnation()
+    }
+
+    pub(crate) fn frame(&self) -> ModuleFrame
+    {
+        ModuleFrame(self.0._source.instance.clone())
+    }
+}
+/// Only a retained module execution can install this executor metadata.
+/// Its enclosing invocation keeps the actual execution pin until restoration.
+#[derive(Clone)]
+pub(crate) struct ModuleFrame(Arc<Instance>);
+impl ModuleFrame
+{
+    pub(crate) fn authenticate(&self, module: u64) -> Result<(), Status>
+    {
+        if self.0.owner.owner().incarnation() == module { Ok(()) } else { Err(ACCESS_DENIED) }
+    }
+
+    pub(crate) fn callback_allowed(&self, module: u64, address: usize) -> Result<(), Status>
+    {
+        self.authenticate(module)?;
+        if address & 1 == 0
+           && self.0.executable.iter().any(|range| range.contains(&(address as u64)))
+        {
+            Ok(())
+        }
+        else
+        {
+            Err(ACCESS_DENIED)
+        }
+    }
+}
 pub(crate) struct Loaded
 {
     binding:    Binding,
@@ -127,6 +196,17 @@ pub(crate) struct Loaded
 }
 impl Loaded
 {
+    pub(crate) fn into_module(self) -> Result<ModuleExecution, Status>
+    {
+        if !self._execution._source.instance.module
+           || self._execution._source.instance.owner.owner().kind()
+              != mac_object_table::domain::DomainKind::Module
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(ModuleExecution(self._execution))
+    }
+
     pub(crate) fn binding(&self) -> Binding
     {
         self.binding
@@ -154,10 +234,19 @@ impl Manager
     /// fallible metadata allocation precedes executable-memory writes.
     pub(crate) fn load(&mut self, owner: &OwnerRef, source: Arc<Source>, preferred: u64,
                        extent: u64, relocation_base: u64, limit: u64,
+                       executable: Vec<core::ops::Range<u64>>,
                        write: impl FnOnce(&[mac_formats::resource::Resource],
                               u64) -> Result<usize, Status>)
                        -> Result<Loaded, Status>
     {
+        let role_matches_owner =
+            matches!((&source.role, owner.owner().kind()),
+                     (Role::Application { .. }, mac_object_table::domain::DomainKind::Process)
+                     | (Role::Module, mac_object_table::domain::DomainKind::Module));
+        if !role_matches_owner
+        {
+            return Err(ACCESS_DENIED);
+        }
         if !owner.accepting()
         {
             return Err(SERVICE_BUSY);
@@ -198,7 +287,7 @@ impl Manager
         let activity =
             Arc::try_new(Activity { readers:  AtomicUsize::new(0),
                                     retiring: AtomicBool::new(false) }).map_err(|_| NO_MEMORY)?;
-        let instance = Arc::try_new(Instance { owner: owner.clone(), base,
+        let instance = Arc::try_new(Instance { owner: owner.clone(), module: source.role == Role::Module, executable, base,
             limit: base.checked_add(extent).ok_or(NO_MEMORY)?,
             execution: mac_kernel_model::image::ExecutionGate::try_new().map_err(|_| NO_MEMORY)?, activity,
             binding: spin::Once::new() }).map_err(|_| NO_MEMORY)?;
@@ -255,14 +344,39 @@ impl Manager
         !owner.has_resources_outside(&ROOT_KINDS)
     }
 
+    pub(crate) fn execute_module(&self, binding: Binding) -> Result<ModuleExecution, Status>
+    {
+        let read = self.read(binding)?;
+        if !read.instance.module
+           || read.instance.owner.owner().kind() != mac_object_table::domain::DomainKind::Module
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let pin = read.instance.execution.pin().map_err(|_| SERVICE_BUSY)?;
+        Ok(ModuleExecution(Execution { _execution: pin,
+                                       _source:    read }))
+    }
+
+    pub(crate) fn finish_module_retiring(&mut self) -> usize
+    {
+        self.sources.finish_deferred(|instance| {
+                        instance.module
+                        && !instance.owner.accepting()
+                        && Self::root_only(&instance.owner)
+                        && instance.activity.readers.load(Ordering::SeqCst) == 0
+                    })
+    }
+
     pub(crate) fn next_retiring(&self, after: u64) -> Option<(u64, u64)>
     {
         self.sources
             .deferred_tags()
             .filter_map(|instance| {
                 let owner = instance.owner.owner().incarnation();
-                (owner > after && !instance.owner.accepting() && Self::root_only(&instance.owner))
-                .then_some(owner)
+                (!instance.module
+                 && owner > after
+                 && !instance.owner.accepting()
+                 && Self::root_only(&instance.owner)).then_some(owner)
             })
             .min()
             .and_then(|owner| {
@@ -276,7 +390,8 @@ impl Manager
     pub(crate) fn finish_retiring(&mut self) -> usize
     {
         self.sources.finish_deferred(|instance| {
-                        !instance.owner.accepting()
+                        !instance.module
+                        && !instance.owner.accepting()
                         && Self::root_only(&instance.owner)
                         && instance.activity.readers.load(Ordering::SeqCst) == 0
                     })
@@ -329,7 +444,7 @@ impl Registration
     {
         let (kind, label) = match self
         {
-            Self::Alias => (*b"IMAG", "Application image aliases"),
+            Self::Alias => (*b"IMAG", "Execution image aliases"),
             Self::Backing => (*b"IMST", "Image alias backing"),
             Self::Object => (*b"IMOB", "Shared immutable image sources"),
             Self::ObjectBacking => (*b"IMOS", "Image source backing")
@@ -341,9 +456,10 @@ impl Registration
                         source: RegistrationSource::Resident }
     }
 }
-impl Release<crate::toolbox::runtime::Desktop, Failure> for Registration
+impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> for Registration
 {
-    fn release(&self, _: &mut crate::toolbox::runtime::Desktop, ticket: ReleasedResource)
+    fn release(&self, _: &mut (dyn crate::toolbox::handles::cleanup::context::Context + 'static),
+               ticket: ReleasedResource)
                -> Result<(), Failure>
     {
         crate::kernel::release_image(ticket, *self)

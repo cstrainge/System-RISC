@@ -204,7 +204,7 @@ pub(crate) fn discover(boot: &mut crate::boot_screen::BootScreen) -> Result<(), 
                                        None,
                                        || {
                                            resources.and_then(|resources| {
-                                                        load(&resources, candidate.file_type,
+                                                        load(resources, candidate.file_type,
                                                              candidate.directory)
                                                     })
                                        })
@@ -212,7 +212,7 @@ pub(crate) fn discover(boot: &mut crate::boot_screen::BootScreen) -> Result<(), 
             else
             {
                 resources.and_then(|resources| {
-                             load(&resources, candidate.file_type, candidate.directory)
+                             load(resources, candidate.file_type, candidate.directory)
                          })
             };
             if let Err(status) = result

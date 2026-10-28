@@ -879,7 +879,7 @@ resource fork remains big-endian):
 | 66 | 2 | required resident service count |
 | 68 | 2 | device match count |
 | 70 | 2 | zero |
-| 72 | 4 | declared heap budget in bytes |
+| 72 | 4 | declared private heap workspace in bytes (zero for forwarding modules) |
 | 76 | 4 | declared callback stack budget in bytes |
 | 80 | 2 | UTF-8 name length |
 | 82 | 2 | UTF-8 Cargo version length |
@@ -889,10 +889,11 @@ resource fork remains big-endian):
 | 120 | 8 | exact C boundary layout fingerprint |
 
 The fingerprint encodes pointer width (bits 0..7), Host size (bits 8..23), Instance
-size (bits 24..39), and Call size (bits 40..55). Bits 56, 57, 58, 59 and 60 identify
-full-width provider references, request tickets, device/DMA references and
-backing-source references and ticket-free synchronous resident calls, respectively; the remaining high bits are zero. Current RV64
-sizes are 64,48,24,64 respectively. Compile-time SDK assertions and the resident
+size (bits 24..39), and Call size (bits 40..55). Bits 56 through 61 identify
+full-width provider references, request tickets, device/DMA references,
+backing-source references, ticket-free synchronous resident calls, and resident
+allocation forwarding, respectively; the remaining high bits are zero. Current
+RV64 values are 64-bit pointers and structure sizes 80, 24 and 64 bytes. Compile-time SDK assertions and the resident
 reject a mismatch. Changing these layouts requires rebuilding all modules; there
 is no alternate old layout decoder.
 
@@ -964,8 +965,37 @@ pointer width and structure sizes; a Host with the same size but the obsolete
 32-bit provider signature is rejected through contract admission. The development
 ABI remains1; rebuild System and every module together. Instance carries an opaque u64 state and a
 module-local executable dispatch address, validated before publication. Rust
-traits, String/Vec, allocator ownership and private struct layouts never cross
+traits, String/Vec, allocator objects and private struct layouts never cross
 this boundary. The SDK exposes borrowed slices to ordinary driver bodies.
+
+Host also provides allocation, deallocation, replacement and a synchronous
+module-allocation scope. Each callback authenticates the currently installed
+module executor; the copied context number cannot select an executor or account.
+The forwarding allocator is installed before driver initialization. Ordinary
+allocation uses the genuine original request Subject, while explicit retained
+module storage uses that module's canonical kernel account. Headers and refund
+receipts stay resident; no allocator trait object or Rust allocation crosses the
+wire. Free and replacement retain the original account/class regardless of the
+current caller. A refused replacement preserves its old block. A module-scope
+thunk is validated against the pinned module's executable segments; it cannot
+return Pending or retain its opaque stack pointer.
+
+The bundled Host Filesystem and StuffIt Filesystem use this forwarder and declare
+zero private heap workspace. Their former image-local heaps are removed. The
+checked module kernel account limits actual resident backing, including headers;
+a zero private-workspace declaration does not disable accounting or promise
+physical memory. Callback stack declarations remain separate from the selected
+OS-worker stack policy. Module-private image/DMA storage still obeys its explicit
+load-range contract; forwarding does not grant arbitrary heap memory for DMA.
+
+Module packages retain their own immutable resource source through the same
+registered image facility as applications, with an explicit module role and no
+application ACAP authority. Each invocation pins its real source and execution
+use, selects that module's resources, and separately retains the original I/O
+Subject and allocation target. Teardown waits for actual invocation readers and
+non-image cleanup before releasing image aliases and final account metadata.
+Physical module RAM remains reserved until reset; alias retirement alone does
+not claim physical code reclamation or arbitrary privileged-fault containment.
 
 Call is 64 bytes and carries a full-width u64 native resident ticket, phase, class, class operation,
 borrowed input and exclusive output bytes. START allocates a ticket; POLL and

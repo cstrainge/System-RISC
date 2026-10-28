@@ -72,7 +72,7 @@ impl<R: Rpc> Filesystem<R>
                  })
         };
         let mut desired = cached.try_clone()?;
-        if !changed(&mut desired.metadata, patch)?
+        if !crate::module_allocation(|| changed(&mut desired.metadata, patch))?
         {
             return Ok(false);
         }
@@ -233,8 +233,16 @@ impl<R: Rpc> Filesystem<R>
                     (directory, physical, bytes)
                 };
                 // All cache/publication storage exists before the atomic host commit.
-                let root_metadata =
-                    if node == ROOT { Some(desired.metadata.try_clone()?) } else { None };
+                let root_metadata = if node == ROOT
+                {
+                    Some(crate::module_allocation(|| {
+                             desired.metadata.try_clone().map_err(Into::into)
+                         })?)
+                }
+                else
+                {
+                    None
+                };
                 let stage =
                     self.call(Op::BeginWrite, parent_handle, 0, 0, &[]).await?.header.object;
                 acquired[2] = stage;

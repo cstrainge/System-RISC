@@ -227,6 +227,8 @@ impl Registry
                   })
                   .map_err(Error::Cleanup)?;
         checkpoint.ensure_settled().map_err(Error::Cleanup)?;
+        #[cfg(target_arch = "riscv64")]
+        crate::kernel::finish_module_images();
         Self::module_drained(owner)
     }
 

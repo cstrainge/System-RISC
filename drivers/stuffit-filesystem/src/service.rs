@@ -46,13 +46,13 @@ impl<S: Sources> Backend<S>
             {
                 return Err(Error(mac_abi::NO_MEMORY));
             }
-            self.volumes.try_reserve(1).map_err(|_| Error(mac_abi::NO_MEMORY))?;
+            crate::module_reserve(&mut self.volumes, 1)?;
             let source = a.auxiliary;
             if source <= u32::MAX as u64
             {
                 return Err(Error(mac_abi::BAD_ARGUMENT));
             }
-            let root = Root::decode(a.payload)?;
+            let root = crate::module_allocation(|| Root::decode(a.payload))?;
             return Ok(Task::Mount(Mounting { volume: a.volume,
                                              source,
                                              root: Some(root),
@@ -111,7 +111,7 @@ impl<S: Sources> Backend<S>
                 let mut bytes = buffer(16)?;
                 bytes[..8].copy_from_slice(&file.data.length.to_le_bytes());
                 bytes[8..].copy_from_slice(&file.resource.length.to_le_bytes());
-                self.opens.try_reserve(1).map_err(|_| Error(mac_abi::NO_MEMORY))?;
+                crate::module_reserve(&mut self.opens, 1)?;
                 self.opens.push(Open { volume: a.volume,
                                        token:  a.token,
                                        node:   a.node,
@@ -146,7 +146,7 @@ impl<S: Sources> Backend<S>
                 }
                 else
                 {
-                    Stream::new(fork)?
+                    crate::module_allocation(|| Stream::new(fork))?
                 };
                 return Ok(Task::Read(Reading { volume: a.volume,
                                                token: a.token,
@@ -226,11 +226,13 @@ impl Task
                     {
                         return Ok(None);
                     }
-                    m.builder
-                     .as_mut()
-                     .ok_or(Error(mac_abi::BAD_ABI))?
-                     .feed(&fetch.bytes)
-                     .map_err(format_error)?;
+                    crate::module_allocation(|| {
+                        m.builder
+                         .as_mut()
+                         .ok_or(Error(mac_abi::BAD_ABI))?
+                         .feed(&fetch.bytes)
+                         .map_err(format_error)
+                    })?;
                     m.fetch = None;
                     return Ok(None);
                 }
@@ -240,8 +242,11 @@ impl Task
                 }
                 if m.builder.is_none()
                 {
-                    m.builder = Some(IndexBuilder::new(backend.sources.length(m.source)?,
-                                                       Limits::default()).map_err(format_error)?);
+                    let length = backend.sources.length(m.source)?;
+                    m.builder = Some(crate::module_allocation(|| {
+                                         IndexBuilder::new(length,
+                                                       Limits::default()).map_err(format_error)
+                                     })?);
                     return Ok(None);
                 }
                 let builder = m.builder.as_ref().ok_or(Error(mac_abi::BAD_ABI))?;
@@ -250,15 +255,11 @@ impl Task
                     m.fetch = Some(Fetch::new(request.offset, request.length)?);
                     return Ok(None);
                 }
-                let index = m.builder
-                             .take()
-                             .ok_or(Error(mac_abi::BAD_ABI))?
-                             .finish()
-                             .map_err(format_error)?;
-                let volume = Volume::new(m.volume,
-                                         m.source,
-                                         index,
-                                         m.root.take().ok_or(Error(mac_abi::BAD_ABI))?)?;
+                let builder = m.builder.take().ok_or(Error(mac_abi::BAD_ABI))?;
+                let index = crate::module_allocation(|| builder.finish().map_err(format_error))?;
+                let root = m.root.take().ok_or(Error(mac_abi::BAD_ABI))?;
+                let volume =
+                    crate::module_allocation(|| Volume::new(m.volume, m.source, index, root))?;
                 let output = volume.descriptor()?;
                 backend.volumes.push(volume); // Capacity reserved before any I/O.
                 Ok(Some(output))
@@ -373,7 +374,7 @@ impl<S: Sources> Service<S>
             {
                 return Err(Error(mac_abi::BAD_ARGUMENT));
             }
-            state.active.try_reserve(1).map_err(|_| Error(mac_abi::NO_MEMORY))?;
+            crate::module_reserve(&mut state.active, 1)?;
             let op =
                 Operation::try_from(call.operation).map_err(|_| Error(mac_abi::NOT_SUPPORTED))?;
             let args = Arguments::decode(call.input).map_err(|_| Error(mac_abi::BAD_ARGUMENT))?;
@@ -411,7 +412,7 @@ impl<S: Sources> Service<S>
                     return Err(Error(mac_abi::NO_MEMORY));
                 }
                 // Reserve for every admitted but not yet published mount.
-                backend.volumes.try_reserve(mounting + 1).map_err(|_| Error(mac_abi::NO_MEMORY))?;
+                crate::module_reserve(&mut backend.volumes, mounting + 1)?;
             }
             // No lower invocation during planning. Owned root/catalog/read
             // buffers are prepared before the first callback can pend.
@@ -481,10 +482,17 @@ impl<S: Sources> Service<S>
         }
         if state.running
            || !state.active.is_empty()
-           || state.backend.as_ref().is_none_or(|b| !b.volumes.is_empty() || !b.opens.is_empty())
+           || state.backend.as_ref().is_some_and(|b| !b.volumes.is_empty() || !b.opens.is_empty())
         {
             return Err(Error(mac_abi::SERVICE_BUSY));
         }
+        // No open decoder, mount or operation remains. Return retained global
+        // capacities before the resident attempts the module account barrier.
+        let backend = state.backend.take();
+        let active = core::mem::take(&mut state.active);
+        drop(state);
+        drop(backend);
+        drop(active);
         Ok(())
     }
 }
