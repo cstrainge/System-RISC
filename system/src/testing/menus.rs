@@ -32,7 +32,7 @@ pub(super) unsafe fn dispatch(pointer: *mut (), size: usize) -> i64
                           Err(_) => return SERVICE_BUSY as i64
                       };
                       let at = match menus.iter()
-                                          .position(|(id, _)| *id == owner.owner().incarnation())
+                                          .position(|(id, ..)| *id == owner.owner().incarnation())
                       {
                           Some(at) => at,
                           None =>
@@ -63,7 +63,14 @@ pub(super) unsafe fn dispatch(pointer: *mut (), size: usize) -> i64
                                       Err(status) => return status as i64
                                   };
                               let at = menus.len();
-                              menus.push((owner.owner().incarnation(), manager));
+                              let system_bar =
+                                  match crate::toolbox::menus::SystemBar::new(definition,
+                                                                              super::host_gate)
+                                  {
+                                      Ok(bar) => bar,
+                                      Err(status) => return status as i64
+                                  };
+                              menus.push((owner.owner().incarnation(), manager, system_bar));
                               at
                           }
                       };
@@ -72,9 +79,14 @@ pub(super) unsafe fn dispatch(pointer: *mut (), size: usize) -> i64
                                                                            &session.application,
                                                                            session.fonts
                                                                                   .resources());
-                      menus[at].1
-                               .request(&owner, call, resources)
-                               .map_or_else(|status| status as i64, |_| OK as i64)
+                      let (_, manager, system_bar) = &mut menus[at];
+                      manager.request(&owner, call, resources, system_bar).map_or_else(|status| {
+                                                                                           status
+                                                                                           as i64
+                                                                                       },
+                                                                                       |_| {
+                                                                                           OK as i64
+                                                                                       })
                   })
 }
 
@@ -84,8 +96,8 @@ impl crate::toolbox::menus::lifetime::MenuHost for super::Session
                     -> Result<(), mac_object_table::domain::CompletionError>
     {
         let owner = ticket.key().owner().incarnation();
-        match self.menus.get_mut().iter_mut().find(|(id, _)| *id == owner) {
-            Some((_, manager)) => manager.release(ticket),
+        match self.menus.get_mut().iter_mut().find(|(id, ..)| *id == owner) {
+            Some((_, manager, _)) => manager.release(ticket),
             None => Err(<mac_object_table::domain::CompletionError as mac_object_table::registry::CleanupFailure>::registration_mismatch(ticket))
         }
     }
@@ -94,8 +106,8 @@ impl crate::toolbox::menus::lifetime::MenuHost for super::Session
                             -> Result<(), mac_object_table::domain::CompletionError>
     {
         let owner = ticket.key().owner().incarnation();
-        match self.menus.get_mut().iter_mut().find(|(id, _)| *id == owner) {
-            Some((_, manager)) => manager.release_storage(ticket),
+        match self.menus.get_mut().iter_mut().find(|(id, ..)| *id == owner) {
+            Some((_, manager, _)) => manager.release_storage(ticket),
             None => Err(<mac_object_table::domain::CompletionError as mac_object_table::registry::CleanupFailure>::registration_mismatch(ticket))
         }
     }

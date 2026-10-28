@@ -39,11 +39,24 @@ application dimming; selection does not invert icon pixels. The private native
 `DRAW_ITEM` definition message repaints the one-based row supplied in `param`,
 using the same row renderer as a full popup. Rebuild System and MDEF together.
 
-## Planned System-owned Apple menu
+## Persistent Apple title and remaining System-menu work
 
-Status: backlog; drawing an installed Apple-title MENU resource does not yet
-guarantee a persistent System-owned Apple menu. Track delivery in
-[roadmap P5](../../../../docs/CORE-TOOLBOX-ROADMAP.md#p5--system-owned-apple-menu).
+System owns a single cached Apple title and reserves its leftmost slot even when
+an application installs no menus, clears its list, exits or crashes. App menus
+start after that slot. An installed resource whose title is the one-byte Apple
+contract (`0x14`) supplies the foreground app's items at the same slot, regardless
+of resource ID or installation order. A second Apple contribution is refused.
+Disposal removes only that app's items; the System title remains. The existing
+menu owner, ID, item indices, enabled/check state and command routing are retained.
+The shared title is measured once through the loaded MDEF during desktop creation;
+normal rendering uses the menu-bar cache, without allocation or measurement on
+input polls.
+
+This change guarantees title presence. A foreground app with no Apple contribution
+has no Apple popup or commands. Global System entries, About services and desk
+accessories are not supplied by this slice; app-supplied About items still run in
+their own app. The remaining composition/dispatch work is tracked in
+[roadmap P5](../../../../docs/CORE-TOOLBOX-ROADMAP.md#p5--system-owned-apple-menu):
 
 - System always supplies exactly one leftmost Apple menu, just as it owns the
   right-hand application menu. It remains present when an app has no menus,
@@ -101,6 +114,6 @@ scrolling menus, tear-off/pop-up placement, arbitrary custom MDEFs, complete
 MacRoman mark/key handling, dynamic insertion/deletion and original menu-flash timing parity
 are not established by the current oracle. Original classic MenuSelect/MenuKey
 trap adaptation is a separate gate; native `MenuCommand` is not claimed as a
-classic Event Manager event. Current runtime ownership is the foreground
-application; multi-application menu bars require the scheduled application
-contexts described in `THREADING.md`.
+classic Event Manager event. Application menu state follows the foreground saved
+context. The persistent System title and right-hand application menu are
+desktop-owned.

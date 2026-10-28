@@ -50,6 +50,7 @@ pub struct Desktop
     core_dialogs_active:              bool,
     desktop:                          DesktopLayer,
     menus:                            super::menus::Manager,
+    system_bar:                       super::menus::SystemBar,
     cursors:                          super::quickdraw::cursors::Cursors,
     busy_cursor:                      super::quickdraw::cursors::Cursors,
     responsiveness:                   super::quickdraw::responsiveness::Responsiveness,
@@ -422,6 +423,7 @@ impl Desktop
                   core_dialogs: super::dialogs::Alerts::new(super::handles::alert_kinds()?, super::handles::system_owner()?)?,
                   core_dialogs_active: false,
                   menus: super::menus::Manager::new(super::handles::menu_kinds()?, mdef, crate::machine::traps::gateway)?,
+                  system_bar: super::menus::SystemBar::new(mdef, crate::machine::traps::gateway)?,
                   desktop: DesktopLayer::new(Rect::new(0,
                                                         21,
                                                         crate::display::WIDTH as i16,
@@ -490,7 +492,7 @@ impl Desktop
             Err(status) => return status
         };
         let result = crate::kernel::with_resources_in(call.scope, |resources| {
-                         self.menus.request(&owner, call, resources)
+                         self.menus.request(&owner, call, resources, &self.system_bar)
                      }).unwrap_or_else(Err);
         if matches!(result, Ok(true)) && self.owner == self.foreground
         {
@@ -2413,7 +2415,7 @@ impl Desktop
                                    self.menus.selected_menu(),
                                    self.app_menu.is_tracking()),
                                   |canvas| {
-                                      self.menus.draw_bar(canvas);
+                                      self.menus.draw_bar(canvas, &mut self.system_bar);
                                       self.app_menu.draw_bar(canvas);
                                   });
             self.menus.draw_popup(&mut canvas);

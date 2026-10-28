@@ -27,7 +27,9 @@ use mac_abi::{traps::*, *};
 struct Session
 {
     registry:      crate::toolbox::handles::Registry<Session>,
-    menus:         RefCell<std::vec::Vec<(u64, crate::toolbox::menus::Manager)>>,
+    menus: RefCell<std::vec::Vec<(u64,
+                                  crate::toolbox::menus::Manager,
+                                  crate::toolbox::menus::SystemBar)>>,
     inspection:    inspection::Domains,
     modules:       crate::drivers::Registry,
     scopes:        files::scopes::Scopes,
