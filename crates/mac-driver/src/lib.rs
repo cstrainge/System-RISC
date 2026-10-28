@@ -2,6 +2,7 @@
 //! this module is the narrow, audited C/pointer boundary. This is not an app SDK.
 #![no_std]
 pub mod devices;
+pub mod sync;
 #[doc(hidden)]
 pub mod runtime;
 pub mod file_sources;
@@ -218,6 +219,8 @@ pub unsafe fn entry(driver: &impl Driver, host: *const abi::Host, output: *mut a
        || host.deallocate.is_none()
        || host.reallocate.is_none()
        || host.with_module_allocation.is_none()
+       || host.workers.is_none()
+       || host.critical_section.is_none()
     {
         return BAD_ABI;
     }
@@ -441,7 +444,9 @@ mod entry_tests
                                    allocate: None,
                                    deallocate: None,
                                    reallocate: None,
-                                   with_module_allocation: None };
+                                   with_module_allocation: None,
+                                   workers: None,
+                                   critical_section: None };
         let mut instance = abi::Instance::default();
         assert_eq!(unsafe { entry(&probe, &host, &mut instance, dispatch) }, OK);
         assert_eq!(probe.module.load(Ordering::Relaxed), module);
@@ -480,7 +485,9 @@ mod entry_tests
                                                 allocate:               None,
                                                 deallocate:             None,
                                                 reallocate:             None,
-                                                with_module_allocation: None } };
+                                                with_module_allocation: None,
+                                                workers:                None,
+                                                critical_section:       None } };
         let provider = client.resolve(ClassId(*b"TEST"), 1).unwrap();
         assert_eq!(provider.handle, PROVIDER);
         assert_eq!(provider.invoke(&mut 0, Phase::Start, 1, &[], &mut []).unwrap(),
@@ -533,7 +540,9 @@ mod synchronous_tests
                                                                     allocate:               None,
                                                                     deallocate:             None,
                                                                     reallocate:             None,
-                                                                    with_module_allocation: None } },
+                                                                    with_module_allocation: None,
+                                                                    workers:                None,
+                                                                    critical_section:       None } },
                                  handle: 1 << 41,
                                  class:  wire::CLASS };
         let mut output = [0; 4];
@@ -596,7 +605,9 @@ mod source_information_tests
                                                 allocate:               None,
                                                 deallocate:             None,
                                                 reallocate:             None,
-                                                with_module_allocation: None } };
+                                                with_module_allocation: None,
+                                                workers:                None,
+                                                critical_section:       None } };
         let service = file_sources::FileSources::new(client).unwrap();
         assert_eq!(service.info(SOURCE), Err(Error(mac_abi::SERVICE_BUSY)));
         assert_eq!(service.info(SOURCE), Ok(Info { length: 1 << 40 }));

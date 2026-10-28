@@ -565,7 +565,9 @@ mod native
                                allocate:               None,
                                deallocate:             None,
                                reallocate:             None,
-                               with_module_allocation: None };
+                               with_module_allocation: None,
+                               workers:                None,
+                               critical_section:       None };
         let mut instance = abi::Instance::default();
         // SAFETY: exact resident buffers and process-long static callbacks.
         // Context is a nonce, never a dereferenced fixture pointer; expired

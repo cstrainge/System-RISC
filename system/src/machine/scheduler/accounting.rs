@@ -70,9 +70,10 @@ pub(crate) use crate::allocation::account_status;
 /// A failed preparation drops these and refunds without publishing a thread.
 pub(crate) struct ThreadCharges
 {
-    stack:      Reserved<NativeInvocationGate>,
-    cpu:        Reserved<NativeInvocationGate>,
-    allocation: AllocationAuthority
+    stack_bytes: usize,
+    stack:       Reserved<NativeInvocationGate>,
+    cpu:         Reserved<NativeInvocationGate>,
+    allocation:  AllocationAuthority
 }
 impl ThreadCharges
 {
@@ -94,9 +95,30 @@ impl ThreadCharges
         let allocation = account.admit_use().map_err(Error::Account)?;
         let stack = allocation.reserve_application(stack_bytes).map_err(Error::Account)?;
         let cpu = allocation.reserve_kernel(cpu_bytes).map_err(Error::Account)?;
-        Ok(Self { stack,
+        Ok(Self { stack_bytes: super::STACK_BYTES,
+                  stack,
                   cpu,
                   allocation })
+    }
+
+    pub(crate) fn admit_module(owner: &OwnerRef, allocation: &AllocationAuthority)
+                               -> Result<Self, Error>
+    {
+        if owner.owner() != allocation.owner()
+           || owner.owner().kind() != mac_object_table::domain::DomainKind::Module
+        {
+            return Err(Error::Foreign);
+        }
+        let stack_bytes = crate::machine::memory::MODULE_WORKER_STACK_BYTES as usize;
+        let backing = pages::Backing::planned_bytes(stack_bytes).map_err(Error::Pages)?;
+        let stack = allocation.reserve_kernel(backing).map_err(Error::Account)?;
+        let cpu =
+            allocation.reserve_kernel(SavedState::planned_backing_bytes().map_err(Error::Pages)?)
+                      .map_err(Error::Account)?;
+        Ok(Self { stack_bytes,
+                  stack,
+                  cpu,
+                  allocation: allocation.clone() })
     }
 
     pub(super) fn allocate(
@@ -109,7 +131,7 @@ impl ThreadCharges
         {
             return Err(Error::Foreign);
         }
-        let stack = pages::Stack::allocate(super::STACK_BYTES).map_err(Error::Pages)?;
+        let stack = pages::Stack::allocate(self.stack_bytes).map_err(Error::Pages)?;
         let cpu = SavedState::new(initial(stack.top())).map_err(Error::Pages)?;
         if stack.backing_bytes() != self.stack.bytes() || cpu.backing_bytes() != self.cpu.bytes()
         {

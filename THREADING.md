@@ -9,16 +9,18 @@ Classic Thread Manager contexts are cooperative execution contexts **inside one
 application**, hosted by its OS thread. `YieldToThread` selects only contexts of
 that application; it cannot schedule another application or suppress kernel
 preemption. Classic callback and A5/low-memory conventions are compatibility
-state attached to the application/context, not global scheduler state. A later
-native worker-thread API can expose additional OS threads explicitly.
+state attached to the application/context, not global scheduler state. Native
+module workers use the separate contract below. General native application-thread
+creation remains open.
 
 The first native implementation now schedules Finder and separately loaded APPLs
-on one RV64 hart. Supervisor timer interrupts preempt application code independently
-of Toolbox calls. Registered, fallibly grown application thread records own independent page-backed stacks (4 MiB by default, selected by the checked
-platform policy within 64 KiB–8 MiB),
+on one RV64 hart. Supervisor timer interrupts preempt application and admitted
+module-worker code independently of Toolbox calls. Registered, fallibly grown
+application thread records own independent page-backed stacks (4 MiB by default,
+selected by the checked platform policy within 64 KiB–8 MiB),
 separately page-backed saved integer/FP/vector state (storage scales with hardware
 VLEN) and
-trusted AppId/ThreadId contexts. Native entry uses a separate4MiB System stack
+trusted AppId/ThreadId contexts. Native entry uses a separate 4 MiB System stack
 before saving CPU state; the same stack serves bootstrap and synchronous I/O
 under scoped executor/subject identity. Sv39 maps that System stack between
 unmapped guard pages; application stacks still use trusted physmap aliases.
@@ -28,9 +30,9 @@ cannot be preempted by another application on this hart. Native event waits now
 block the actual application thread, with a separate idle WFI context and 250 us
 timer sampling. Readiness is inspected before taking the scheduler lock; a fresh
 foreground input wake takes priority over background and timeout wakes. No manager
-guard or borrowed request crosses the context switch. Worker thread APIs, general
-blocking primitives, migration and multiple harts remain future work. The dynamic
-capacity SDK gate now runs ten apps together, delivers physical keys to all nine
+guard or borrowed request crosses the context switch. General application-worker
+APIs, blocking primitives, migration and multiple harts remain future work. The
+privileged module-worker backend is described below. The dynamic capacity SDK gate now runs ten apps together, delivers physical keys to all nine
 workers and repeats with fresh identities after actual exits and slot reuse. A private
 RV64 SDK gate has demonstrated another app progressing during a
 no-trap/no-yield interval, plus launch, relaunch, ownership, input, hide and exit.
@@ -108,6 +110,7 @@ The scheduler must supply a trusted execution context at trap entry:
 | --- | --- |
 | `AppId` | Resource chain/current resource file, Memory Manager partition and errors, open-file ownership, events, windows/controls, ports/fonts/text state, callbacks and cleanup |
 | `ThreadId` | OS stack/register state, blocking/wakeup/cancellation, trap depth and callback stack, error state explicitly specified per thread |
+| Module owner | Authentic module ledger, immutable module resources/code and canonical Kernel account; a module worker has its own ThreadId and is not an application or bootstrap executor |
 | Legacy cooperative context (planned) | Optional Thread Manager register/stack/A5 state inside one application; never substitutes for ThreadId |
 | `HartId` | Hardware trap/interrupt stack and current ThreadId pointer; not the identity of an application |
 
@@ -119,20 +122,131 @@ reject cross-application access. If a classic API specifies application-global
 rather than thread-local state, concurrent calls still synchronize that state;
 its historical implicit global is selected through AppId.
 
+## Native module workers
+
+`mac-driver-alloc::Workers` prepares privileged module workers with a safe owned
+`FnOnce(WorkerContext) -> Result<()> + Send + 'static` body. They use the same
+registered THRD/THST store, native timer scheduler and complete integer/FP/vector
+save path as application threads. A worker's execution is typed as Module; it
+does not receive a fabricated AppId. Its canonical module owner/account and
+immutable module image establish its default allocation, resources and executor
+identity. An actual `ModuleExecution` retains the source read and execution gate
+through code-dependent destruction and stack quiescence. Native Host callbacks
+authenticate the installed module frame or worker baseline; a copied numeric
+module label cannot construct that authority. Application-only traps reject
+module-worker execution, while the diagnostic LOG operation remains available.
+
+The QemuRISC-V policy defaults to a 4 MiB stack and 16 MiB Kernel budget per
+module, with zero Application-class allowance. Page-rounded stack backing,
+complete saved CPU backing, Context/Core metadata and forwarded captured closure
+storage consume that original module Kernel account. Shared scheduler capacity
+belongs to System. These are shared per-module limits, not a separate 16 MiB
+allowance for each worker. The module's flat code arena remains reserved until
+reset; execution pins do not establish physical code-page reclamation.
+
+Preparation preflights fallible backing before publication. Failed CREATE leaves
+the SDK owning its original body; successful THRD publication is the single
+capture-ownership handoff, with no later CREATE failure. A prepared worker is
+inert. START during initialization only arms it; successful module commit
+activates armed workers without allocation. Failed initialization cannot make
+those workers runnable. Bootstrap selects the actual runnable Finder process,
+independently of which module preparations occupied earlier scheduler slots.
+
+Wakeups coalesce into one pending wake. PARK consumes wake/cancel state under
+the scheduler lock before sleeping, and cancellation is sticky. The non-Send,
+non-Clone WorkerContext belongs to the actual running worker. Its copied waker
+retains a stale-checked token rather than an account or resident core. PARK and
+EXIT use the real private native trap/switch boundary; direct Host callbacks
+cannot switch an arbitrary borrowed stack. Parking requires an outermost worker
+body, interrupts enabled before trap entry and no native critical section. A
+nested module callback cannot borrow an interrupted worker's CURRENT/PARK
+identity. Native EXIT follows body and capture destruction; it is not a safe API
+for abandoning live captures.
+
+`mac-driver::sync::Mutex` acquires its data lock inside an authenticated native
+critical-section thunk. Interrupt exclusion begins before bounded try-lock;
+contention returns SERVICE_BUSY (`try_with` returns None) without spinning behind
+a preempted peer. No guard or borrowed mutable state escapes the closure.
+Critical nesting belongs to the actual ThreadContext and is restored through
+RAII, including nested entries. Foreign broker entry and parking are refused
+inside that scope. Allocator callbacks and bounded worker wake, cancel, status
+and disposal intent remain permitted, with their independent authority checks.
+This is not a blocking mutex or a reason to mask interrupts across worker
+computation or I/O.
+
+Each preparation admits its own original module-owned DIOP Subject. Worker
+Start/Poll/Cancel calls and queued work retain that durable I/O root, independently
+of the initializer's request and of the worker's THRD allocation root. Nested
+invocations restore their previous selections. Ordinary owner stop does not
+revoke an already admitted open-root continuation; closed roots and closed
+accounts still refuse. Deferred capture destruction restores the worker's actual
+DIOP Subject, original THRD allocation target and pinned module resources/code.
+Queued Subject clones may retain the DIOP after the worker's CPU/stack is freed.
+Moving an already-pending raw broker ticket from an initializer or another thread
+into a worker does not transfer its original Subject: continuation is rejected
+as foreign. A genuine retained context-transfer API for that case remains open;
+there is no fresh-root or System fallback.
+
+Cancellation and DISPOSE record intent without invoking capture destructors,
+including inside a native critical section. A running worker must return
+cooperatively; an owner walk retains its unique THRD ticket and wakes cancellation.
+It does not force-unwind privileged code. Inert captures are destroyed later under
+their pinned invocation. Worker destructors run only from the scheduler's
+manager-guard-free maintenance boundary, outside registry/scheduler/owner locks.
+A refused scope or destructor retains the payload, code pin and exact cleanup
+ticket for retry. Persistent uncooperative execution or refusal prevents module
+retirement.
+
+Physical reap requires returned plus FINISHED at actual EXIT (or inert
+cancellation), not runnable, noncurrent and no outstanding Core/Context readers.
+Returning from the body alone is insufficient: a timer may interrupt before EXIT.
+CPU/stack backing is released before its original refund and before the final
+code pin. A controller can retain a small named result row without retaining a
+4 MiB stack; final disposal and the owner walk still use that row's exact THRD
+identity/ticket. Existing readers must leave before heavy reap, and current
+getters can no longer acquire a finished context afterward. A future by-ID
+Core/Context reader or enumeration API must preserve a result-disposal wake
+obligation after heavy backing is gone; a heavy-reap-only pending count would
+then be insufficient. No such reader producer exists in the current backend.
+
+Bounded native observations on 2026-10-28 used the optimized RV64 QEMU image on
+one hart with 8 GiB RAM, RVA23 CPU profile and 128-bit VLEN. The packaged System
+resource SHA-256 was
+`13d5fd0c8f9a9116afe6d6be3f93c425914ba9bb1deabdfc39195f77e12c8cc7`.
+Real ModuleWorkers/ModuleEcho packages exercised two initially armed workers,
+a later parked worker, timer progress with Finder and physical input, coalesced
+wake, running/parked cancellation, bounded mutex refusal, broker Start/Poll/Cancel,
+stale/foreign tokens, capture ownership and the fourth 4 MiB preparation's module
+budget refusal. A separate failed-initializer package observed zero worker entries,
+four capture drops and actual module rollback completion. Native lifecycle,
+mapping inventory, Finder recovery and process scenarios also exercised the
+surrounding application paths. These observations qualify those scenarios only;
+host-linked services and compilation do not establish target execution.
+
+The normal coordinator PASS marker is emitted by its capture Drop before native
+EXIT. It does not directly assert that coordinator's final post-EXIT physical
+reap or result-row removal. Peer, inert-spare and parked-worker reuse/stale checks,
+and the separate complete rollback scenario, provide narrower quiescence
+observations. Sustained pressure/physical OOM, all cleanup failures, arbitrary
+privileged faults, full recovery-kit guarantees, SMP and application std-thread
+services remain unqualified. CPU-time introspection is unavailable; scheduler
+switch counts are not CPU time. This backend does not establish a complete
+extension service or production clipboard readiness.
+
 ## State audit
 
 | Current state | Present assumption and required boundary |
 | --- | --- |
-| `kernel.rs` guarded managers and immutable images | One-shot startup and bounded guards remain. Eight immutable image-cache slots include Finder; app code/resources remain resident after exit. Checked RV64 RLOC metadata permits independent copies with separate physical code/data/BSS spans. General dynamic linking, hot replacement and unloading remain unsupported. |
+| `kernel.rs` guarded managers and immutable images | One-shot startup and bounded guards remain. Shared IMAG sources/aliases distinguish application and module roles; execution instances retain actual source/code pins. Checked RV64 RLOC metadata permits independent copies with separate code/data/BSS spans. Module arena backing remains reserved until reset. General dynamic linking, hot replacement and physical code-page unloading remain unsupported. |
 | `ThreadContext::traps` | The RV64 scheduler selects the running thread context; nested accounting belongs to that OS thread. A separate bootstrap context is used for synchronous firmware service execution. |
 | `Desktop` | The global compositor, physical input and window registry remain shared. Trusted app context selects saved events, menus, dialogs, cursors, worlds, font/legacy state and TextEdit managers at the masked service boundary. Windows carry an owner; background retained scenes are composed centrally. |
 | Application resources | Read-only application-to-System/font search selects the caller's immutable image. Retained content replay selects the owning image, so a background window does not resolve against whichever application invoked the compositor. General mutable Resource Manager chains remain open. |
 | Scrap Manager | One shared guarded System clipboard. Native edits stage fallible changes before publication. Original private scraps and process suspend/resume transfer remain unimplemented. |
 | Memory Manager | One synchronized resident store owns registered MMBL blocks and MMST per-domain arena/projection/MemErr state. The scheduler binds the authentic OwnerRef; traps never select memory by scheduler slot. Shared boot-wide projection generations reject stale/foreign 32-bit IDs, including after zone destruction. The generic walk owns block and backing release. |
 | File Manager | One mounted catalog/device service with owner-tagged fork marks. The native trap captures AppId before I/O handoff; handle read/seek/tell/close checks that identity. Exit closes only its owner's marks. Internal loader requests use reserved owner zero. |
-| Framebuffer, input and allocator | One-hart interrupt-masked kernel work serializes device and heap access. App-only code is preemptible. This is not a multi-hart synchronization or blocking-mutex design. Secondary harts remain parked. |
-| Firmware `BootVolume` and disk callbacks | The original boot call remains live. `machine/io.rs` masks interrupts and switches to a dedicated synchronous execution stack with fixed bootstrap ownership. It is not an independently runnable I/O thread or an asynchronous queue, and the opaque firmware context is not given a Send implementation. |
-| Host test-support | Scoped TLS fixtures supply real resident gates. Shared service fixtures separately test guarded concurrency. Neither replaces actual RV64 timer, launch, switching and cleanup acceptance. |
+| Framebuffer, input and allocator | One-hart interrupt-masked kernel work serializes device and heap access. Application and module-worker bodies are preemptible. This is not a multi-hart synchronization or blocking-mutex design. Secondary harts remain parked. |
+| Firmware `BootVolume` and disk callbacks | The original boot call remains live. `machine/io.rs` masks interrupts and selects the permanent bootstrap executor on the shared per-hart System stack, carrying the original resource/allocation/I/O selections across the handoff. It is not an independently runnable I/O thread or an asynchronous queue, and the opaque firmware context is not given a Send implementation. |
+| Host test-support | Host TLS, allocation/synchronization and substituted gates do not establish native RV64 trap, preemption, allocator or cleanup behavior. They provide no OS acceptance evidence. |
 
 ## Legacy globals and native contexts
 
@@ -192,8 +306,8 @@ address-space/object translation rather than access to resident Rust addresses.
 
 | Gate | Current implementation and required evidence |
 | --- | --- |
-| Boundary hardening | One-shot publication, bounded guards, owner-tagged file marks and trusted context routing exist. Shared real-service host tests establish the captured exclusion/cleanup contracts, not hardware scheduling. |
-| Scheduler foundation | One-hart supervisor timer preemption, growable registered thread records, independently owned stacks/register frames, trusted identities and deferred retired-stack reclamation exist. A private RV64 observer progresses during a child's no-trap/no-yield loop on one hart; the canonical process acceptance passes. Native event wait deadlines, readiness wakes and a separate idle stack now exist; the SDK latency fixture verifies physical input during contention and that blocked apps leave the runnable rotation. General blocking primitives, worker APIs and cancellation remain open. |
+| Boundary hardening | One-shot publication, bounded guards, owner-tagged file marks and trusted context routing exist. Host-linked fixtures do not establish native exclusion/cleanup contracts; scenario-specific target-runtime evidence is required. |
+| Scheduler foundation | One-hart supervisor timer preemption, growable registered thread records, independently owned stacks/register frames, trusted identities and deferred retired-stack reclamation exist. A private RV64 observer progresses during a child's no-trap/no-yield loop on one hart; the canonical process acceptance passes. Native event wait deadlines, readiness wakes and a separate idle stack now exist; the SDK latency fixture verifies physical input during contention and that blocked apps leave the runnable rotation. General application blocking/thread APIs remain open; privileged module workers have the narrower implementation and native evidence described above. |
 | Application launch | Finder and disk-loaded native APPLs have independent application threads, app-local UI/resource/memory state and exit cleanup. Host SDK ownership tests cover file denial/cleanup and memory generation retention; the real RV64 launch/quit/relaunch, partition/ownership, Pascal and private synthetic-event gates pass. |
 | Application switching | Resident right-hand menu and Process Manager activation/hide/restore paths exist. Private SDK and actual Finder/two-app activation/hide/input/exit tests pass, including first-click activation and background dragging. The original popup comparison passes with explicit icon/cursor masks; this establishes the captured profile, not all application behavior. |
 | Interactive latency | Window/file drag and selection feedback use bounded frontbuffer-only XOR without scene replays or a tracking-mask scan. Canonical captures retain every decoded move, including the first; strict all-samples sub-millisecond qualification remains open on fresh Windows and Linux guests. Shared instruction paths and perimeter-intersection early-outs reduce work but do not establish a hard latency guarantee. Interrupt-masked resident calls and cold execution still need their own bounds. |
@@ -202,8 +316,8 @@ address-space/object translation rather than access to resident Rust addresses.
 | Multi-hart and devices | Planned as [platform workstream P1](docs/CORE-TOOLBOX-ROADMAP.md#p1--multi-hart-execution-smp); not implemented. Per-hart entry/context state, concurrent scheduling and inter-hart wakeups, migration, blocking/wakeup ordering, allocator/device synchronization and concurrent callback publication need independent evidence. |
 
 Canonical tests belong under `crates/mac-toolbox/tests` and use the public SDK.
-Host tests are useful for shared-manager safety and race detection; real RV64
-scheduler/interrupt/application tests are separately required. Distinguish native
+Host-linked test outcomes are not OS acceptance. Real RV64 scheduler, interrupt,
+allocator and application paths require their own scenario-specific evidence. Distinguish native
 threading extensions from classic 68k ABI behavior and never report a spinlock,
 atomic counter or successful single-app boot as a complete multithreaded OS.
 
@@ -223,7 +337,7 @@ through `try_lock`. Memory and desktop callers receive
 condition, not a missing manager. No kernel retry loop spins behind a preempted
 owner. `OwnerState` keeps the non-Send firmware storage context in its fixed-owner
 synchronous I/O service context; its unsafe construction is confined to the
-bootstrap boundary. This context uses a dedicated stack but is not an independently
+bootstrap boundary. This context uses the shared per-hart System stack and is not an independently
 runnable service thread.
 `spin::Once` publishes immutable font/resource catalogs and logging callbacks.
 A one-shot entry guard prevents live manager replacement and races in heap setup.
@@ -346,7 +460,7 @@ A leased tracking event can expire during a target probe. The response trap
 reports Applied or Expired atomically with validation; Finder retains its last
 applied target and document pins until a replacement is applied.
 
-EXIT stops admission and retires its thread before registered cleanup. Saved
+Application EXIT stops admission and retires its thread before registered cleanup. Saved
 manager state stays owned by the process until another stack has reclaimed that
 thread's stack/context and the authoritative ledger permits retirement. Actual
 stack release schedules a bounded retry/reap checkpoint; ordinary input and
@@ -354,17 +468,16 @@ unchanged timer ticks do not scan or retry dying domains. A persistent refusal
 retains the process, its saved managers and image identity, and prevents writable
 image reload for that file. Cleanup resolves resources from that retained image
 even after the subject has no scheduler thread; an unknown owner is refused
-instead of resolving Finder's resources. The full module invocation context,
-file/provider lifetime migration, controlled teardown retry and I/O death barrier
-remain open; this checkpoint does not establish all of stage 3 or paging.
+instead of resolving Finder's resources. Module worker stop follows the distinct cooperative contract above. Broader
+file/provider teardown, failure-path coverage and paging remain separate gates.
 
 The current native ThreadContext receives the directory's actual OwnerRef when
 its thread is spawned; its scalar AppId is derived from that authority. Traps can
 borrow that binding without taking the Desktop lock, including nested definition
 service calls. The reference is released only when a different stack reclaims the
-retired thread. Bootstrap/headless storage calls use the one System owner. This
-is an ownership bridge, not the later module executor/subject/allocation/resource
-scope protocol, dynamic thread capacity, multi-hart admission or privilege gate.
+retired thread. Bootstrap/headless storage calls use the one System owner. Module workers bind the canonical module owner plus their independent original
+allocation/I/O roots and pinned resource image as described above. This does not
+establish multi-hart admission or a privilege-isolation gate.
 
 ## Deferred driver I/O integration
 
@@ -416,8 +529,9 @@ I/O, disconnect and interactive latency still need their own gates.
 This supplies the integration boundary for filesystem drivers; it does not by
 itself establish live host filesystem behavior. Public mount/read/write tests must
 exercise parking, cancellation/disconnect, other-app progress and single delivery
-of mutations before the host mount milestone is complete. SMP, general worker
-threads and unresponsive-provider timeout recovery remain separate work.
+of mutations before the host mount milestone is complete. SMP, general application worker threads and unresponsive-provider timeout
+recovery remain separate work. Privileged module workers can use the checked
+broker with their original durable I/O Subject.
 
 ## Native async/await runtimes
 
@@ -463,7 +577,8 @@ The [base SDK async contract](docs/ASYNC-SDK.md) supports a std-compatible,
 event-driven executor and optional Tokio over the same resident completion
 notifications. Futures never retain manager guards across await. UI task polling
 stays on the owning OS thread; Send/Sync object mobility does not waive
-WrongThread checks. Worker-safe I/O can later use native worker threads.
+WrongThread checks. Privileged module workers can use the checked broker under their durable I/O
+Subject; general application-thread APIs remain open.
 Cancellation must distinguish confirmed cleanup from a racing committed mutation.
 
 

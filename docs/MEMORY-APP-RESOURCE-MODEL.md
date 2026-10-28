@@ -7,8 +7,9 @@ scoped resident metadata routing now extend stack/CPU charges. Selected optimize
 native lifecycle/storage/recovery observations and their limits are recorded below. A fixed512 MiB page-backed System heap
 is split into480 MiB ordinary and32 MiB protected storage. Independent application
 heaps, image-page charges and private process mappings remain pending. Module
-allocation forwarding and genuine invocation/resource scopes are implemented;
-bounded native observations are recorded below. Module workers remain unready.
+allocation forwarding, genuine invocation/resource scopes and module-owned
+workers are implemented; bounded native observations are recorded below. The
+complete extension-backend handoff remains gated on protected recovery services.
 Kernel self-virtualization uses owned Sv39 roots and a guarded
 System stack. Graphical boot now pins an independent terminal panic/OOM kit;
 complete Save/Alert/Finder recovery kits and module/privilege gates remain open.
@@ -2976,9 +2977,9 @@ application allocators, executable-image physical pages, module runtime binding
 storage and complete recovery-service accounting remain outside this coverage.
 The bundled filesystem modules now forward heap requests as described below;
 bounded native observations and remaining gaps are recorded below. The mapping summary continues to report complete per-domain accounting
-as unavailable. Genuine module workers and the full Save/Alert/Finder emergency
-kit remain gated; neither a canonical module account nor reserved capacity makes
-them ready.
+as unavailable. Module workers are now implemented as described below. The full
+Save/Alert/Finder emergency kit remains gated; a canonical module account or
+reserved capacity alone does not make that service kit ready.
 
 Optimized native guest scenarios have exercised process preemption, malformed
 launch rollback, Finder account retirement, mapping/resident allocation reads,
@@ -3079,8 +3080,8 @@ It does not complete the emergency-service kit or provide a general recovery
 allocator to ordinary callers.
 Save/Save As, core alerts, ledger teardown and Finder restart still require their
 own measured protected backing and refusal/concurrency qualification. Module
-workers still require original-account allocation authority and real stack, CPU
-and metadata charges before activation. Arbitrary privileged-fault containment is
+workers now have original-account allocation authority and real stack, CPU and
+metadata charges, described below. Arbitrary privileged-fault containment is
 **unproven** and is a **required future gate** (M-D04); displaying a terminal
 diagnostic and restarting does not satisfy that gate.
 
@@ -3130,7 +3131,8 @@ capabilities are unique, initialized before use and permanently reserved until
 reset. The mapping inventory covers all 512 MiB while allocator capacity excludes
 the protected portion. Partitioning alone does not install original-account
 charges. Resident allocation charging is described above; complete metadata
-attribution, module workers and private application roots remain unfinished.
+attribution and private application roots remain unfinished. Module workers now
+use original-account backing as described below.
 Full recovery-service census and Finder allowances remain open; reserved capacity
 alone does not qualify those services.
 
@@ -3221,9 +3223,85 @@ non-allocation error is preserved as a protocol failure, rather than relabelled
 as OOM. The native diagnostic formatter is bounded and allocation-free by design;
 its new failure branches still need target execution evidence.
 
-Actual module-owned workers, safe shared-state preemption, full protected
-Save/Alert/Finder recovery services and arbitrary privileged-fault recovery
-remain separate gates. In particular, timer maintenance can invoke module code
-while a future worker is suspended: ordinary spinning mutexes shared with that
-worker would deadlock on one hart. Worker activation must include the native
-IRQ/preemption-safe shared-state contract rather than masking its whole run.
+Module workers and their native critical-section contract are described next.
+Full protected Save/Alert/Finder recovery services remain an extension-backend
+readiness gate. Arbitrary privileged-fault containment remains unproven (M-D04).
+
+### Native module workers and shared-state exclusion
+
+The driver SDK now prepares a captured `Send + 'static` closure as an actual
+module-owned scheduler thread. Preparation admits the closure through the
+resident forwarding allocator, its configured 4 MiB stack, complete CPU save
+storage, context and lifecycle metadata against the module's 16 MiB kernel
+account. Shared scheduler capacity remains System foundation. A preparation
+refusal returns the original closure to its caller. The shared THRD/THST
+facilities issue and validate thread identities; there is no second worker-ID
+table or application identity invented for a module.
+
+Preparation is inert. Starting during module initialization only arms the
+thread; successful registry publication activates armed threads in the same
+excluded transition. Failed initialization cannot run their bodies. Preparing
+and starting after publication uses the same checked lifecycle. Captured-state
+ownership transfers at the single irreversible THRD publication point, with no
+later fallible CREATE step that could falsely return ownership to the caller.
+
+Each worker retains a genuine module image read and execution pin. Its executor,
+resource source and kernel allocation account come from the module authority.
+A separate admitted DIOP Subject belongs to that worker, independently of its
+initializer. Requests started in the worker retain this Subject through Start,
+Poll, Cancel and queued completion; queued subjects may outlive exited stack
+backing. Deferred capture destruction restores the actual worker Subject and
+THRD allocation target before entering the pinned module. Merely moving an
+already-pending request from an initializer or another thread does not transfer
+its original context: such a continuation is rejected as foreign. A future
+context-transfer capability is required to support that operation.
+
+Copied wakers retain only a generation-tagged token. Wake is coalesced;
+cancellation is sticky. Park checks wake/cancel atomically with the scheduler
+transition and uses the actual native trap/switch boundary. A worker controller
+queries a small result record without blocking. Dropping a preparation or
+controller requests disposal; it neither waits nor executes a foreign destructor
+under the caller's manager locks. Owner teardown wakes cooperative cancellation
+and retains its unique cleanup ticket until execution and destruction finish.
+Uncooperative privileged code remains retained; forced safe unwinding is not
+claimed.
+
+Heavy backing may be detached only after the real FINISHED/EXIT transition,
+when non-runnable, noncurrent and free of execution readers. A returned body is
+insufficient before EXIT. Stack, CPU storage and image pins need not remain
+attached to a finished result handle. Foreign destruction runs only at the
+scheduler's guard-free maintenance boundary. A refused cleanup keeps its payload,
+pin, ticket and typed cause for retry; it does not panic or silently discard
+ownership. Bootstrap selects the actual Finder thread rather than assuming the
+first scheduler slot belongs to a process. A future API exposing new readers of
+finished rows must also arrange a final-reader disposal wake; today's control
+queries return copied snapshots and acquire no such reader.
+
+The safe module `Mutex` runs a bounded synchronous closure inside authenticated
+native IRQ/preemption exclusion, tracked on the actual thread. Both acquisition
+forms try the lock: contention returns `SERVICE_BUSY` or `None`, never spins
+with interrupts disabled. A borrow cannot escape the closure. Park, start/create
+and foreign provider entry reject the critical context; bounded wake, cancel,
+disposal and allocation remain available. Worker computation and I/O run outside
+these short scopes. A plain spinlock shared with a preempted worker is not made
+safe by the existence of this API. Multi-hart qualification remains outstanding.
+
+The optimized QemuRISC-V/RVA23 single-hart artifact exercised two real armed
+workers alongside Finder, a later parked worker, wake-before-park/coalescing,
+running and parked cancellation, actual broker Start/Poll/Cancel continuity,
+stale and foreign tokens, nested critical-section refusals, capture destruction,
+and stack-budget refusal with the original closure returned. Peer/spare/parked
+backing reuse was observed. The normal coordinator's final marker is emitted
+during capture destruction before EXIT; it does not directly assert that
+coordinator's final physical reap or result-row removal. A separate intentional
+initialization-failure run observed zero worker-body entries, four expected
+capture drops and the real module retirement/account barrier. Its first attempt
+stalled; correcting the bootstrap slot assumption allowed both scenarios to
+pass on a rebuilt frozen artifact. One physical Finder input observation during
+worker computation establishes functional progress, not a latency bound.
+
+Actual backing bytes are charged; cumulative CPU-time attribution is still
+unavailable. These bounded observations do not establish SMP safety, exhaustive
+stop/pin races, stress behavior, arbitrary privileged-fault recovery or the full
+protected recovery kit. They do not by themselves authorize the complete
+extension-backend handoff.

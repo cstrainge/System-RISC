@@ -7,7 +7,10 @@ static ACTIVE: AtomicU64 = AtomicU64::new(0);
 static CANCELS: AtomicU32 = AtomicU32::new(0);
 struct Device;
 static DEVICE: Device = Device;
+#[cfg(not(feature = "workers"))]
 mac_driver::export_driver!(DEVICE);
+#[cfg(feature = "workers")]
+mod worker_probe;
 mac_driver::driver_panic_handler!();
 impl Driver for Device
 {
@@ -39,6 +42,17 @@ impl Driver for Device
 
     fn request(&self, call: Request<'_>, output: &mut [u8]) -> Result<Completion>
     {
+        #[cfg(feature = "workers")]
+        if call.class == ClassId(*b"TEST") && call.operation == 11 && call.phase == Phase::Start
+        {
+            let bytes: [u8; 8] = call.input.try_into().map_err(|_| Error(-2))?;
+            let status = worker_probe::foreign_status(u64::from_le_bytes(bytes));
+            assert_eq!(status,
+                       mac_abi::ACCESS_DENIED,
+                       "foreign worker token reached provider ownership");
+            output.get_mut(..4).ok_or(Error(-2))?.copy_from_slice(&status.to_le_bytes());
+            return Ok(Completion::Complete(4));
+        }
         if call.class == ClassId(*b"TEST") && matches!(call.operation, 8..=10)
         {
             if call.phase == Phase::Start

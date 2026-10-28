@@ -14,6 +14,11 @@ use super::traps::TrapFrame;
 use crate::{context::{EventWaiter, ThreadContext},
             toolbox::handles::{OwnerRef, Store}};
 mod lifetime;
+mod worker;
+use worker::{ReapState, ThreadName, WorkerState, cancel_worker, reclaim_workers};
+pub(crate) use worker::{activate_workers, prepare_worker, publish_worker, worker_cancel,
+                        worker_current, worker_dispose, worker_exit, worker_park, worker_start,
+                        worker_status, worker_wake};
 pub(crate) mod accounting;
 pub(crate) use lifetime::{ReleaseThreads, specification};
 const IDLE: usize = usize::MAX;
@@ -29,13 +34,16 @@ static CURRENT: AtomicUsize = AtomicUsize::new(IDLE);
 static IO: AtomicBool = AtomicBool::new(false);
 static RECLAIM_PENDING: AtomicBool = AtomicBool::new(false);
 static RETIRED_COUNT: AtomicUsize = AtomicUsize::new(0);
+static WORKER_REAP_COUNT: AtomicUsize = AtomicUsize::new(0);
 static INPUT_PRIORITY: crate::toolbox::events::priority::InputPriority =
     crate::toolbox::events::priority::InputPriority::new();
 struct Thread
 {
-    id:    u64,
-    core:  Arc<ThreadCore>,
-    state: Cell<RunState>
+    id:     u64,
+    core:   Arc<ThreadCore>,
+    state:  Cell<RunState>,
+    worker: Option<Cell<WorkerState>>,
+    scope:  Option<mac_object_table::scope::Lease<crate::toolbox::handles::InvocationGate>>
 }
 #[derive(Clone, Copy)]
 struct RunState
@@ -63,9 +71,11 @@ struct Idle
 #[derive(Clone, Copy)]
 enum Wait
 {
+    Worker,
     Events
     {
-        mask: u16, deadline: u64
+        mask:     u16,
+        deadline: u64
     },
     Io
     {
@@ -155,6 +165,20 @@ pub(crate) fn authenticate_module(module: u64) -> Result<(), mac_abi::Status>
         }
     })
 }
+pub(crate) fn module_owner(module: u64) -> Result<OwnerRef, mac_abi::Status>
+{
+    super::interrupts::with_masked(|| {
+        if IO.load(Ordering::Relaxed)
+        {
+            return crate::context::bootstrap_module_owner(module);
+        }
+        match ACTIVE.lock().as_ref()
+        {
+            Some(context) => context.module_owner(module),
+            None => crate::context::bootstrap_module_owner(module)
+        }
+    })
+}
 pub(crate) fn module_callback_allowed(module: u64, address: usize) -> Result<(), mac_abi::Status>
 {
     super::interrupts::with_masked(|| {
@@ -167,6 +191,19 @@ pub(crate) fn module_callback_allowed(module: u64, address: usize) -> Result<(),
             Some(context) => context.module_callback_allowed(module, address),
             None => crate::context::bootstrap_module_callback_allowed(module, address)
         }
+    })
+}
+
+pub(crate) fn critical_active() -> bool
+{
+    super::interrupts::with_masked(|| {
+        if IO.load(Ordering::Relaxed)
+        {
+            return crate::context::bootstrap_critical_active();
+        }
+        ACTIVE.lock().as_ref().map_or_else(crate::context::bootstrap_critical_active, |context| {
+                                  context.critical_active()
+                              })
     })
 }
 
@@ -233,6 +270,7 @@ pub(crate) fn context_released()
     {
         RECLAIM_PENDING.store(true, Ordering::Release);
     }
+    worker::context_released();
 }
 pub fn io_enter() -> bool
 {
@@ -262,16 +300,33 @@ pub(crate) fn has_threads(app: u64) -> bool
 }
 /// Own every fallible stack/image preparation before publishing a thread.
 /// The plan can wait for a retiring slot without consuming its image use.
+struct ThreadBacking
+{
+    // CPU/stack disappear before code-dependent launch/image pins.
+    cpu:    accounting::Charged<super::traps::SavedState>,
+    stack:  accounting::Charged<super::pages::Stack>,
+    loaded: Option<crate::kernel::LoadedImage>
+}
 struct ThreadCore
 {
-    // CPU state and stack disposal precede the image execution/source pin.
-    cpu:     Mutex<accounting::Charged<super::traps::SavedState>>,
-    _stack:  accounting::Charged<super::pages::Stack>,
-    _loaded: Option<crate::kernel::LoadedImage>,
-    context: Arc<ThreadContext>,
-    release: Mutex<Option<ReleasedResource>>,
-    binding: crate::images::Binding,
-    top:     usize
+    backing:         Mutex<Option<ThreadBacking>>,
+    launch:          Mutex<Option<crate::drivers::WorkerLaunch>>,
+    context:         Arc<ThreadContext>,
+    release:         Mutex<Option<ReleasedResource>>,
+    binding:         crate::images::Binding,
+    top:             usize,
+    cleanup_refusal: Mutex<Option<ReapState>>,
+    name:            Option<ThreadName>
+}
+impl ThreadCore
+{
+    fn cpu_frame(&self) -> Option<*mut TrapFrame>
+    {
+        let backing = self.backing.lock();
+        let backing = backing.as_ref()?;
+        super::traps::publish_cpu(&backing.cpu);
+        Some(backing.cpu.frame())
+    }
 }
 pub(crate) struct PreparedThread
 {
@@ -320,13 +375,17 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                                   error.status()
                                               })?;
         let top = stack.top();
-        let core = Arc::try_new(ThreadCore { cpu: Mutex::new(cpu),
-                                             _stack: stack,
-                                             _loaded: None,
+        let core = Arc::try_new(ThreadCore { backing:
+                                                 Mutex::new(Some(ThreadBacking { cpu,
+                                                                                 stack,
+                                                                                 loaded: None })),
+                                             launch: Mutex::new(None),
                                              context,
                                              release: Mutex::new(None),
                                              binding: loaded.binding(),
-                                             top }).map_err(|_| mac_abi::NO_MEMORY)?;
+                                             top,
+                                             cleanup_refusal: Mutex::new(None),
+                                             name: None }).map_err(|_| mac_abi::NO_MEMORY)?;
         Ok((core, allocation))
     });
     match prepared
@@ -340,7 +399,15 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                 return Err(PrepareFailure { status: mac_abi::BAD_ABI,
                                             loaded });
             };
-            storage._loaded = Some(loaded);
+            match storage.backing.get_mut().as_mut()
+            {
+                Some(backing) => backing.loaded = Some(loaded),
+                None =>
+                {
+                    return Err(PrepareFailure { status: mac_abi::BAD_ABI,
+                                                loaded });
+                }
+            }
             Ok(PreparedThread { owner,
                                 core: mac_object_table::retained::Read::new(core,
                                                                             context_released),
@@ -374,6 +441,7 @@ pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
             }, || store.insert_with_receipt(&prepared.owner, |id| {
                 Thread { id,
                          core: prepared.core.share(),
+                         worker: None, scope: None,
                          state: Cell::new(RunState { live: false,
                                                     retired: false,
                                                     switches: 0,
@@ -421,28 +489,25 @@ pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
     {
         Ok(id) =>
         {
-            let (cpu_frame, cpu_bytes, cpu_base, cpu_backing, cpu_physical) = {
-                let state = prepared.core.cpu.lock();
-                (state.frame() as usize,
-                 state.bytes(),
-                 state.base(),
-                 state.backing_bytes(),
-                 state.physical())
-            };
-            serial!("PROCESS_THREAD app={} thread={} stack=0x{:x} stack_bytes={} \
-                     stack_backing_bytes={} cpu_state=0x{:x} cpu_state_bytes={} cpu_base=0x{:x} \
-                     cpu_backing_bytes={} stack_physical={:#x} cpu_physical={:#x}",
-                    prepared.owner.owner().incarnation(),
-                    id,
-                    prepared.core.top,
-                    prepared.core._stack.bytes(),
-                    prepared.core._stack.backing_bytes(),
-                    cpu_frame,
-                    cpu_bytes,
-                    cpu_base,
-                    cpu_backing,
-                    prepared.core._stack.physical().0,
-                    cpu_physical);
+            let backing = prepared.core.backing.lock();
+            if let Some(backing) = backing.as_ref()
+            {
+                serial!("PROCESS_THREAD app={} thread={} stack=0x{:x} stack_bytes={} \
+                         stack_backing_bytes={} cpu_state=0x{:x} cpu_state_bytes={} \
+                         cpu_base=0x{:x} cpu_backing_bytes={} stack_physical={:#x} \
+                         cpu_physical={:#x}",
+                        prepared.owner.owner().incarnation(),
+                        id,
+                        prepared.core.top,
+                        backing.stack.bytes(),
+                        backing.stack.backing_bytes(),
+                        backing.cpu.frame() as usize,
+                        backing.cpu.bytes(),
+                        backing.cpu.base(),
+                        backing.cpu.backing_bytes(),
+                        backing.stack.physical().0,
+                        backing.cpu.physical());
+            }
             Ok(id)
         }
         Err(status) =>
@@ -521,16 +586,27 @@ pub fn start() -> mac_formats::Result<()>
               })?;
     scheduler.idle = Some(Idle { _stack: stack,
                                  cpu:    Mutex::new(cpu) });
-    let t = scheduler.thread(0)
-                     .expect("scheduler bootstrap publishes Finder before starting CPU frames");
-    let frame = {
-        let cpu = t.core.cpu.lock();
-        super::traps::publish_cpu(&cpu);
-        cpu.frame()
-    };
+    // Module preparations can precede Finder in the shared THRD store. Start
+    // the genuine runnable Finder process, never an inert/armed module slot.
+    let finder = crate::context::finder_app().0;
+    let (slot, t) =
+        scheduler.iter()
+                 .find(|(_, thread)| {
+                     let state = thread.state.get();
+                     thread.worker.is_none()
+                     && thread.core.context.identity().app.0 == finder
+                     && state.live
+                     && !state.retired
+                 })
+                 .ok_or(mac_formats::Error::Malformed("scheduler bootstrap has no runnable \
+                                                       Finder process"))?;
+    let frame =
+        t.core
+         .cpu_frame()
+         .ok_or(mac_formats::Error::Malformed("scheduler bootstrap Finder has no CPU backing"))?;
     t.update(|state| state.switches += 1);
     activate_context(Some(&t.core.context));
-    CURRENT.store(0, Ordering::Relaxed);
+    CURRENT.store(slot, Ordering::Relaxed);
     drop(scheduler);
     arm();
     unsafe {
@@ -754,6 +830,10 @@ pub(crate) fn retire_owner(owner: u64)
 /// outside the scheduler lock before acknowledging that unique ticket.
 pub(crate) fn reclaim_retired()
 {
+    if critical_active()
+    {
+        return;
+    }
     if !RECLAIM_PENDING.swap(false, Ordering::AcqRel)
     {
         return;
@@ -862,6 +942,7 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
         let fresh_input = crate::kernel::poll_waiting_events();
         if INPUT_PRIORITY.background_allowed(fresh_input)
         {
+            reclaim_workers();
             reclaim_retired();
             crate::drivers::pump_jobs();
             crate::toolbox::files::pump_provider_operations();
@@ -910,11 +991,19 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
                           state.woken = 0;
                           state.switches += 1;
                       });
-                let next = if index == current { frame } else { thread.core.cpu.lock().frame() };
-                if index != current
+                let next = if index == current
                 {
-                    super::traps::publish_cpu(&thread.core.cpu.lock());
+                    frame
                 }
+                else
+                {
+                    let Some(next) = thread.core.cpu_frame()
+                    else
+                    {
+                        continue;
+                    };
+                    next
+                };
                 activate_context(Some(&thread.core.context));
                 CURRENT.store(index, Ordering::Relaxed);
                 arm();

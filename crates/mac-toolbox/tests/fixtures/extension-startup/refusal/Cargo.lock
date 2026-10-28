@@ -132,6 +132,7 @@ dependencies = [
  "mac-device-interface",
  "mac-file-source-interface",
  "mac-module",
+ "spinning_top",
 ]
 
 [[package]]

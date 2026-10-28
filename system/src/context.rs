@@ -178,41 +178,83 @@ impl Drop for TrapScope<'_>
     }
 }
 #[cfg(target_arch = "riscv64")]
-struct ThreadOwner
+enum ThreadOwner
 {
-    owner: crate::toolbox::handles::OwnerRef,
-    image: crate::images::Binding
+    Process
+    {
+        owner: crate::toolbox::handles::OwnerRef, image: crate::images::Binding
+    },
+    Module
+    {
+        owner:     crate::toolbox::handles::OwnerRef,
+        image:     crate::images::Binding,
+        frame:     crate::images::ModuleFrame,
+        resources: crate::kernel::ResourceSelection
+    }
+}
+#[cfg(target_arch = "riscv64")]
+impl ThreadOwner
+{
+    fn owner(&self) -> &crate::toolbox::handles::OwnerRef
+    {
+        match self
+        {
+            Self::Process { owner,
+                            .. }
+            | Self::Module { owner,
+                           .. } => owner
+        }
+    }
+
+    fn image(&self) -> crate::images::Binding
+    {
+        match self
+        {
+            Self::Process { image,
+                            .. }
+            | Self::Module { image,
+                           .. } => *image
+        }
+    }
 }
 #[cfg(target_arch = "riscv64")]
 pub struct ThreadContext
 {
-    app:              core::sync::atomic::AtomicU64,
-    thread:           core::sync::atomic::AtomicU64,
-    owner:            spinning_top::Spinlock<Option<ThreadOwner>>,
+    app:               core::sync::atomic::AtomicU64,
+    module_worker:     core::sync::atomic::AtomicBool,
+    critical_depth:    core::sync::atomic::AtomicUsize,
+    thread:            core::sync::atomic::AtomicU64,
+    owner:             spinning_top::Spinlock<Option<ThreadOwner>>,
     allocation:
         spinning_top::Spinlock<Option<crate::machine::scheduler::accounting::AllocationAuthority>>,
-    allocation_scope: selection::ScopedSelection<crate::allocator::Target>,
-    resources:        selection::ScopedSelection<crate::kernel::ResourceSelection>,
-    io_subject:       selection::ScopedSelection<crate::drivers::jobs::subjects::Subject>,
-    module:           selection::ScopedSelection<crate::images::ModuleFrame>,
-    pub traps:        ThreadTrapState,
-    pub definitions:  DefinitionInvocations
+    allocation_scope:  selection::ScopedSelection<crate::allocator::Target>,
+    worker_allocation: spinning_top::Spinlock<Option<crate::allocator::Target>>,
+    worker_subject:    spinning_top::Spinlock<Option<crate::drivers::jobs::subjects::Subject>>,
+    resources:         selection::ScopedSelection<crate::kernel::ResourceSelection>,
+    io_subject:        selection::ScopedSelection<crate::drivers::jobs::subjects::Subject>,
+    module:            selection::ScopedSelection<crate::images::ModuleFrame>,
+    pub traps:         ThreadTrapState,
+    pub definitions:   DefinitionInvocations
 }
 #[cfg(target_arch = "riscv64")]
 impl ThreadContext
 {
     pub const fn new() -> Self
     {
-        Self { app:              core::sync::atomic::AtomicU64::new(0),
-               thread:           core::sync::atomic::AtomicU64::new(1),
-               owner:            spinning_top::Spinlock::new(None),
-               allocation:       spinning_top::Spinlock::new(None),
-               allocation_scope: selection::ScopedSelection::new(BOOT_THREAD),
-               resources:        selection::ScopedSelection::new(BOOT_THREAD),
-               io_subject:       selection::ScopedSelection::new(BOOT_THREAD),
-               module:           selection::ScopedSelection::new(BOOT_THREAD),
-               traps:            ThreadTrapState::new(),
-               definitions:      DefinitionInvocations::new() }
+        Self { app:               core::sync::atomic::AtomicU64::new(0),
+               module_worker:     core::sync::atomic::AtomicBool::new(false),
+               critical_depth:    core::sync::atomic::AtomicUsize::new(0),
+               thread:            core::sync::atomic::AtomicU64::new(1),
+               owner:             spinning_top::Spinlock::new(None),
+               allocation:        spinning_top::Spinlock::new(None),
+               allocation_scope:  selection::ScopedSelection::new(BOOT_THREAD),
+               worker_allocation: spinning_top::Spinlock::new(None),
+               worker_subject:    spinning_top::Spinlock::new(None),
+               resources:         selection::ScopedSelection::new(BOOT_THREAD),
+               io_subject:        selection::ScopedSelection::new(BOOT_THREAD),
+               module:            selection::ScopedSelection::new(BOOT_THREAD),
+               traps:             ThreadTrapState::new(),
+               definitions:       DefinitionInvocations::new() }
     }
 
     pub fn identity(&self) -> ExecutionContext
@@ -229,7 +271,7 @@ impl ThreadContext
     {
         use mac_object_table::shared::InvocationGate as _;
         crate::toolbox::handles::InvocationGate::run(|| {
-            self.owner.lock().as_ref().map(|binding| binding.image)
+            self.owner.lock().as_ref().map(ThreadOwner::image)
         })
     }
 
@@ -265,9 +307,92 @@ impl ThreadContext
             *self.allocation.lock() = Some(allocation.clone());
             self.app.store(owner.owner().incarnation(), Relaxed);
             self.thread.store(thread, Relaxed);
-            *binding = Some(ThreadOwner { owner,
-                                          image });
+            *binding = Some(ThreadOwner::Process { owner,
+                                                   image });
             Ok(())
+        })
+    }
+
+    pub(crate) fn assign_module(&self, owner: crate::toolbox::handles::OwnerRef, thread: u64,
+                                execution: &crate::images::ModuleExecution,
+                                allocation: &crate::machine::scheduler::accounting::AllocationAuthority,
+                                subject: crate::drivers::jobs::subjects::Subject)
+    {
+        // The sealed worker preparation checked owner/account/execution before
+        // publication; assigning its issued THRD identity cannot fail.
+        self.module.reset(ThreadId(thread));
+        self.resources.reset(ThreadId(thread));
+        self.io_subject.reset(ThreadId(thread));
+        self.allocation_scope.reset(ThreadId(thread));
+        *self.allocation.lock() = Some(allocation.clone());
+        *self.owner.lock() =
+            Some(ThreadOwner::Module { owner,
+                                       image: execution.binding(),
+                                       frame: execution.frame(),
+                                       resources:
+                                           crate::kernel::module_resource_selection(execution) });
+        *self.worker_subject.lock() = Some(subject);
+        self.module_worker.store(true, core::sync::atomic::Ordering::Relaxed);
+        self.thread.store(thread, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn is_module_worker(&self) -> bool
+    {
+        self.module_worker.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn install_worker_allocation(&self, target: crate::allocator::Target)
+                                            -> Result<(), mac_abi::Status>
+    {
+        use mac_object_table::shared::InvocationGate as _;
+        let operation_target = matches!(target, crate::allocator::Target::Operation(
+            crate::allocation::OperationTarget::Owner { .. }
+        ));
+        if !self.is_module_worker() || !operation_target
+        {
+            return Err(mac_abi::ACCESS_DENIED);
+        }
+        crate::toolbox::handles::InvocationGate::run(|| {
+            if self.owner
+                   .lock()
+                   .as_ref()
+                   .is_none_or(|owner| owner.owner().owner() != target.owner())
+            {
+                return Err(mac_abi::ACCESS_DENIED);
+            }
+            *self.worker_allocation.lock() = Some(target);
+            Ok(())
+        })
+    }
+
+    /// A callback installed over an interrupted worker is a module invocation,
+    /// not permission to park or borrow that worker's execution identity.
+    pub(crate) fn is_worker_body(&self) -> bool
+    {
+        self.is_module_worker() && self.module.borrow(|frame| frame.is_none())
+    }
+
+    pub(crate) fn critical_active(&self) -> bool
+    {
+        self.critical_depth.load(core::sync::atomic::Ordering::Relaxed) != 0
+    }
+
+    pub(crate) fn worker_io_subject(&self) -> Option<crate::drivers::jobs::subjects::Subject>
+    {
+        use mac_object_table::shared::InvocationGate as _;
+        crate::toolbox::handles::InvocationGate::run(|| self.worker_subject.lock().clone())
+    }
+
+    fn default_resources(&self) -> Option<crate::kernel::ResourceSelection>
+    {
+        use mac_object_table::shared::InvocationGate as _;
+        crate::toolbox::handles::InvocationGate::run(|| {
+            match self.owner.lock().as_ref()
+            {
+                Some(ThreadOwner::Module { resources,
+                                           .. }) => Some(*resources),
+                _ => None
+            }
         })
     }
 
@@ -277,15 +402,20 @@ impl ThreadContext
         crate::toolbox::handles::InvocationGate::run(|| {
             let owner = self.owner.lock().take();
             let allocation = self.allocation.lock().take();
+            let worker_allocation = self.worker_allocation.lock().take();
+            let worker_subject = self.worker_subject.lock().take();
             self.module.reset(ThreadId(0));
             self.resources.reset(ThreadId(0));
             self.io_subject.reset(ThreadId(0));
             self.allocation_scope.reset(ThreadId(0));
+            self.module_worker.store(false, core::sync::atomic::Ordering::Relaxed);
             self.app.store(0, core::sync::atomic::Ordering::Relaxed);
             self.thread.store(0, core::sync::atomic::Ordering::Relaxed);
             // The allocation pin leaves with the quiescent context before
             // process account readiness is checked. No owner lock is held
             // over its original-account retirement notification.
+            drop(worker_subject);
+            drop(worker_allocation);
             drop(allocation);
             drop(owner);
         });
@@ -321,6 +451,10 @@ impl ThreadContext
             {
                 return operation(selected.selection());
             }
+            let worker_allocation = self.worker_allocation.lock();
+            if let Some(target) = worker_allocation.as_ref() {
+                return operation(target.selection());
+            }
             let allocation = self.allocation.lock();
             let account = allocation.as_ref().ok_or(crate::allocator::Error::ContextUnavailable)?;
             operation(crate::allocator::Selection::Owner {
@@ -336,6 +470,10 @@ impl ThreadContext
                                  {
                                      return AllocationSelection::Selected(selected.clone());
                                  }
+                                 if let Some(target) = self.worker_allocation.lock().as_ref()
+                                 {
+                                     return AllocationSelection::Selected(target.clone());
+                                 }
                                  match self.allocation.lock().as_ref()
             {
                 Some(account) => AllocationSelection::Selected(crate::allocator::Target::Owner {
@@ -349,14 +487,64 @@ impl ThreadContext
 
     pub(crate) fn authenticate_module(&self, module: u64) -> Result<(), mac_abi::Status>
     {
-        self.module.borrow(|frame| frame.ok_or(mac_abi::ACCESS_DENIED)?.authenticate(module))
+        self.module.borrow(|frame| {
+                       match frame
+                       {
+                           Some(frame) => frame.authenticate(module),
+                           None =>
+                           {
+                               match self.owner.lock().as_ref()
+                               {
+                                   Some(ThreadOwner::Module { frame,
+                                                              .. }) => frame.authenticate(module),
+                                   _ => Err(mac_abi::ACCESS_DENIED)
+                               }
+                           }
+                       }
+                   })
+    }
+
+    pub(crate) fn module_owner(&self, module: u64)
+                               -> Result<crate::toolbox::handles::OwnerRef, mac_abi::Status>
+    {
+        self.module.borrow(|frame| {
+                       match frame
+                       {
+                           Some(frame) => frame.owner(module),
+                           None =>
+                           {
+                               match self.owner.lock().as_ref()
+                               {
+                                   Some(ThreadOwner::Module { frame,
+                                                              .. }) => frame.owner(module),
+                                   _ => Err(mac_abi::ACCESS_DENIED)
+                               }
+                           }
+                       }
+                   })
     }
 
     pub(crate) fn module_callback_allowed(&self, module: u64, address: usize)
                                           -> Result<(), mac_abi::Status>
     {
-        self.module
-            .borrow(|frame| frame.ok_or(mac_abi::ACCESS_DENIED)?.callback_allowed(module, address))
+        self.module.borrow(|frame| {
+                       match frame
+                       {
+                           Some(frame) => frame.callback_allowed(module, address),
+                           None =>
+                           {
+                               match self.owner.lock().as_ref()
+                               {
+                                   Some(ThreadOwner::Module { frame,
+                                                              .. }) =>
+                                   {
+                                       frame.callback_allowed(module, address)
+                                   }
+                                   _ => Err(mac_abi::ACCESS_DENIED)
+                               }
+                           }
+                       }
+                   })
     }
 
     pub(crate) fn owner(&self) -> Result<crate::toolbox::handles::OwnerRef, mac_abi::Status>
@@ -366,7 +554,7 @@ impl ThreadContext
             self.owner
                 .lock()
                 .as_ref()
-                .map(|binding| binding.owner.clone())
+                .map(|binding| binding.owner().clone())
                 .ok_or(mac_abi::WRONG_THREAD)
         })
     }
@@ -560,6 +748,19 @@ pub(crate) fn authenticate_module(module: u64) -> Result<(), mac_abi::Status>
     crate::machine::scheduler::authenticate_module(module)
 }
 #[cfg(target_arch = "riscv64")]
+pub(crate) fn module_owner(module: u64)
+                           -> Result<crate::toolbox::handles::OwnerRef, mac_abi::Status>
+{
+    crate::machine::scheduler::module_owner(module)
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn bootstrap_module_owner(
+    module: u64)
+    -> Result<crate::toolbox::handles::OwnerRef, mac_abi::Status>
+{
+    BOOT_MODULE.borrow(|frame| frame.ok_or(mac_abi::ACCESS_DENIED)?.owner(module))
+}
+#[cfg(target_arch = "riscv64")]
 pub(crate) fn module_callback_allowed(module: u64, address: usize) -> Result<(), mac_abi::Status>
 {
     crate::machine::scheduler::module_callback_allowed(module, address)
@@ -594,10 +795,51 @@ pub(crate) fn with_module_execution<R>(execution: &crate::images::ModuleExecutio
 }
 
 #[cfg(target_arch = "riscv64")]
+pub(crate) fn critical_active() -> bool
+{
+    crate::machine::scheduler::critical_active()
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn bootstrap_critical_active() -> bool
+{
+    BOOTSTRAP_CONTEXT.critical_active()
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_critical_section<R>(operation: impl FnOnce() -> R)
+                                       -> Result<R, mac_abi::Status>
+{
+    crate::machine::interrupts::with_masked(|| {
+        let context = current_thread_context();
+        context.critical_depth
+               .try_update(core::sync::atomic::Ordering::Relaxed,
+                           core::sync::atomic::Ordering::Relaxed,
+                           |depth| depth.checked_add(1))
+               .map_err(|_| mac_abi::SERVICE_BUSY)?;
+        struct Restore<'a>(&'a core::sync::atomic::AtomicUsize);
+        impl Drop for Restore<'_>
+        {
+            fn drop(&mut self)
+            {
+                self.0.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let _restore = Restore(&context.critical_depth);
+        Ok(operation())
+    })
+}
+
+#[cfg(target_arch = "riscv64")]
 pub(crate) fn io_subject() -> Option<crate::drivers::jobs::subjects::Subject>
 {
     let context = current_thread_context();
-    if context.is_bootstrap() { BOOT_IO_SUBJECT.current() } else { context.io_subject.current() }
+    if context.is_bootstrap()
+    {
+        BOOT_IO_SUBJECT.current()
+    }
+    else
+    {
+        context.io_subject.current().or_else(|| context.worker_io_subject())
+    }
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -631,7 +873,14 @@ pub(crate) fn with_bootstrap_io_subject<R>(subject: Option<crate::drivers::jobs:
 pub(crate) fn selected_resources() -> Option<crate::kernel::ResourceSelection>
 {
     let context = current_thread_context();
-    if context.is_bootstrap() { BOOT_RESOURCES.current() } else { context.resources.current() }
+    if context.is_bootstrap()
+    {
+        BOOT_RESOURCES.current()
+    }
+    else
+    {
+        context.resources.current().or_else(|| context.default_resources())
+    }
 }
 #[cfg(target_arch = "riscv64")]
 pub(crate) fn with_selected_resources<R>(selection: crate::kernel::ResourceSelection,

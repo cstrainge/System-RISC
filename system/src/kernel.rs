@@ -157,6 +157,12 @@ pub(crate) fn finish_module_images()
 {
     let _ = IMAGES.with(|images| images.finish_module_retiring());
 }
+pub(crate) fn module_resource_selection(execution: &crate::images::ModuleExecution)
+                                        -> ResourceSelection
+{
+    ResourceSelection { owner: execution.module(),
+                        image: Some(execution.binding()) }
+}
 pub(crate) fn with_module_resources<R>(execution: &crate::images::ModuleExecution,
                                        call: impl FnOnce() -> R)
                                        -> Result<R, Status>

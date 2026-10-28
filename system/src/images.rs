@@ -174,6 +174,12 @@ impl ModuleFrame
         if self.0.owner.owner().incarnation() == module { Ok(()) } else { Err(ACCESS_DENIED) }
     }
 
+    pub(crate) fn owner(&self, module: u64) -> Result<OwnerRef, Status>
+    {
+        self.authenticate(module)?;
+        Ok(self.0.owner.clone())
+    }
+
     pub(crate) fn callback_allowed(&self, module: u64, address: usize) -> Result<(), Status>
     {
         self.authenticate(module)?;

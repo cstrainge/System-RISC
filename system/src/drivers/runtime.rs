@@ -11,7 +11,10 @@ use super::{Error, Registry, status};
 use crate::state::TryState;
 mod admission;
 mod allocation;
+mod critical;
 mod invocation;
+mod workers;
+pub(crate) use workers::Launch as WorkerLaunch;
 mod discovery;
 mod file_handlers;
 mod recovery;
@@ -288,7 +291,9 @@ pub(crate) fn load(resources: Vec<Resource>, file_type: [u8; 4], directory: Pack
                                                        allocate: Some(allocation::allocate),
                                                        deallocate: Some(allocation::deallocate),
                                                        reallocate: Some(allocation::reallocate),
-                                                       with_module_allocation: Some(allocation::with_module_allocation) });
+                                                       with_module_allocation: Some(allocation::with_module_allocation),
+                                                       workers: Some(workers::control),
+                                                       critical_section: Some(critical::enter) });
                    let host = match host
                    {
                        Ok(host) => host,
@@ -375,50 +380,61 @@ pub(crate) fn load(resources: Vec<Resource>, file_type: [u8; 4], directory: Pack
             image.segments.iter().any(|s|s.flags & image::EXECUTE!=0 && address>=base+s.offset && address<base+s.offset+s.length as u64))
     });
     drop(execution);
-    RUNTIME.with(|runtime| {
-               if result != OK || !valid
-               {
-                   if let Err(cleanup) = runtime.registry.rollback(module)
+    crate::machine::interrupts::with_masked(|| {
+        RUNTIME.with(|runtime| {
+                   if result != OK || !valid
                    {
-                       serial!("MODULE_INIT_CLEANUP_RETAINED module={} original={} reason={}",
-                               module,
-                               if result < 0 { result } else { BAD_ABI },
-                               cleanup);
-                       return Err(status(cleanup));
+                       if let Err(cleanup) = runtime.registry.rollback(module)
+                       {
+                           serial!("MODULE_INIT_CLEANUP_RETAINED module={} original={} reason={}",
+                                   module,
+                                   if result < 0 { result } else { BAD_ABI },
+                                   cleanup);
+                           return Err(status(cleanup));
+                       }
+                       return Err(if result < 0 { result } else { BAD_ABI });
                    }
-                   return Err(if result < 0 { result } else { BAD_ABI });
-               }
-               let binding =
-                   runtime.bindings
-                          .iter_mut()
-                          .find(|b| b.module == module && b.base == base && b.limit == limit)
-                          .ok_or(NOT_FOUND)?;
-               binding.instance = Some(instance);
-               if let Err(error) = runtime.registry.commit(module)
-               {
-                   if let Err(cleanup) = runtime.registry.rollback(module)
+                   let binding =
+                       runtime.bindings
+                              .iter_mut()
+                              .find(|b| b.module == module && b.base == base && b.limit == limit)
+                              .ok_or(NOT_FOUND)?;
+                   binding.instance = Some(instance);
+                   let owner = runtime.registry.module_ledger(module).map_err(status)?;
+                   if let Err(error) = runtime.registry.commit(module)
                    {
-                       serial!("MODULE_INIT_CLEANUP_RETAINED module={} original={} cleanup={}",
-                               module, error, cleanup);
-                       return Err(status(cleanup));
+                       if let Err(cleanup) = runtime.registry.rollback(module)
+                       {
+                           serial!("MODULE_INIT_CLEANUP_RETAINED module={} original={} cleanup={}",
+                                   module, error, cleanup);
+                           return Err(status(cleanup));
+                       }
+                       return Err(status(error));
                    }
-                   return Err(status(error));
-               }
-               serial!("MODULE_READY id={} kind={} entry=0x{:x} base=0x{:x}",
-                       module,
-                       core::str::from_utf8(&file_type).unwrap_or("????"),
-                       entry as usize,
-                       base);
-               serial!("MODULE_PUBLISHED name={} id={}", package.contract.name, module);
-               Ok(module)
-           })
-           .map_err(crate::state::AccessError::status)?
+                   // All backing was admitted while workers were dormant. Keep
+                   // registry publication and the armed-to-runnable transition in
+                   // this same resident admission turn; activation allocates nothing.
+                   crate::machine::scheduler::activate_workers(&owner);
+                   serial!("MODULE_READY id={} kind={} entry=0x{:x} base=0x{:x}",
+                           module,
+                           core::str::from_utf8(&file_type).unwrap_or("????"),
+                           entry as usize,
+                           base);
+                   serial!("MODULE_PUBLISHED name={} id={}", package.contract.name, module);
+                   Ok(module)
+               })
+               .map_err(crate::state::AccessError::status)?
+    })
 }
 unsafe extern "C" fn broker(caller: u64, provider: u64, pointer: *mut abi::Call) -> Status
 {
     if let Err(error) = crate::context::authenticate_module(caller)
     {
         return error;
+    }
+    if crate::context::critical_active()
+    {
+        return WRONG_THREAD;
     }
     // The C callback never owns or retains the caller's buffers.
     match unsafe { invoke(caller, provider, pointer) }

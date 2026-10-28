@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 [workspace]
+[features]
+workers = []
 [[bin]]
 name = "ModuleEcho"
 path = "src/main.rs"
@@ -16,6 +18,7 @@ test = false
 bench = false
 [dependencies]
 mac-driver = { path = "../../../../mac-driver" }
+mac-abi = { path = "../../../../mac-abi" }
 [target.'cfg(not(target_arch = "riscv64"))'.dependencies]
 mac-build = { path = "../../../../../tools/mac-build" }
 [build-dependencies]

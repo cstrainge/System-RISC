@@ -417,3 +417,83 @@ fn module_workspace_is_separate_from_stored_code_and_budget_failures_explain_the
     assert_eq!(error.to_string(),
                "module stored code exceeds the 2 MiB loading budget; rebuild the package");
 }
+
+/// One bounded actual-worker gate. Rust host code packages/collects; SDK
+/// assertions and capture destructors execute inside the independently linked
+/// RV64 modules. No host service substitution or per-operation acknowledgments.
+#[test]
+#[ignore = "requires current private optimized image, actual module-worker backend and QEMU"]
+fn native_module_workers_run_cancel_and_retire_through_the_production_scheduler()
+{
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap();
+    // Keep the UNIX QMP socket below the native path limit, including in the
+    // isolated memory-accounting checkout. Parent may choose a shorter owned path.
+    let output = std::env::var_os("SYSTEM7_MODULE_WORKER_OUTPUT").map(PathBuf::from)
+        .unwrap_or_else(|| root.join("results/system7").join(format!("mw-{}", std::process::id())));
+    let script = root.join("System7/scripts/capture_driver_modules.py");
+    python(&script, &["--output".as_ref(), output.as_os_str(), "--prepare-workers".as_ref()]);
+    let provider = output.join("packages/workers/ModuleEcho.bin");
+    let cases = json!([
+        {"name":"run", "until":"MODULE_WORKERS_PASS ", "timeout":30, "input_during":true,
+         "files":[{"source":provider, "directory":"/System Folder/Drivers"},
+                  {"source":output.join("packages/workers/ModuleWorkers.bin"), "directory":"/System Folder/Drivers"}]},
+        {"name":"rollback", "until":"MODULE_ROLLBACK_COMPLETE module=", "timeout":30, "input":true,
+         "files":[{"source":provider, "directory":"/System Folder/Drivers"},
+                  {"source":output.join("packages/workers-rollback/ModuleWorkers.bin"), "directory":"/System Folder/Drivers"}]}
+    ]);
+    let path = output.join("cases.json");
+    fs::write(&path, serde_json::to_vec_pretty(&cases).unwrap()).unwrap();
+    python(&script,
+           &["--output".as_ref(), output.as_os_str(), "--cases".as_ref(), path.as_os_str()]);
+    let capture: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("capture.json")).unwrap()).unwrap();
+    assert_eq!(capture["original_before"], capture["original_after"]);
+    for case in capture["cases"].as_array().unwrap()
+    {
+        let name = case["name"].as_str().unwrap();
+        let serial = fs::read_to_string(output.join(name).join("vm/serial.log")).unwrap();
+        assert_eq!(case["termination"], "requested-marker", "{name}: {serial}");
+        assert_eq!(case["mouse"], "115,96", "Finder did not service physical input: {serial}");
+        assert!(serial.contains("MODULE_PUBLISHED name=ModuleEcho")
+                && serial.contains("DESKTOP_READY"),
+                "{serial}");
+        for failure in ["DRIVER_PANIC_FATAL", "DRIVER_WORKER_PROTOCOL_FATAL",
+                        "DRIVER_ALLOCATOR_PROTOCOL_FATAL", "DRIVER_ALLOCATION_FAILED_FATAL",
+                        "SYSTEM_PANIC:", "SYSTEM_TRAP:", "SYSTEM_ALLOCATION_FAILED:",
+                        "DRIVER_WORKER_DISPOSE_RETAINED"]
+        {
+            assert!(!serial.contains(failure), "{name}: {serial}");
+        }
+        if name == "run"
+        {
+            assert!(serial.contains("MODULE_PUBLISHED name=ModuleWorkers"), "{serial}");
+            assert!(serial.contains("MODULE_WORKERS_PASS actors=3 armed=2 io=start-poll-cancel \
+                                     wake=coalesced cancel=running-parked tokens=stale-foreign \
+                                     captures=5 budget=refused mutex=bounded\n"),
+                    "{serial}");
+            assert!(serial.find("MODULE_PUBLISHED name=ModuleWorkers").unwrap()
+                    < serial.find("MODULE_WORKER_ACTIVE").unwrap(),
+                    "worker ran before publication: {serial}");
+            assert_eq!(case["input_completed_before_marker"], true,
+                       "physical input was observed only after worker workload: {serial}");
+            assert!(!serial.contains("MODULE_REJECTED"), "{serial}");
+        }
+        else
+        {
+            assert!(serial.contains("MODULE_WORKER_ROLLBACK_CAPTURES_PASS entered=0 dropped=4\n"),
+                    "{serial}");
+            assert!(serial.contains("MODULE_ROLLBACK_COMPLETE module="), "{serial}");
+            assert!(!serial.contains("MODULE_PUBLISHED name=ModuleWorkers")
+                    && !serial.contains("MODULE_WORKER_ACTIVE")
+                    && !serial.contains("MODULE_WORKERS_PASS"),
+                    "failed initialization ran an armed body: {serial}");
+        }
+    }
+    let report = json!({"status":"passed", "guest_assertion_owner":"fixtures/driver-client/src/workers.rs",
+        "coverage":"two armed workers before successful commit; actual preemptible worker CPU interval with Finder input progress; a third sequential worker; own-worker pending broker START/POLL/cancellation ACK; wake-before-park/coalescing with actual PARKED observation; running/parked sticky cancellation; copied stale waker and genuine foreign token refusal; capture ownership on real 16 MiB budget refusal; inert/returned capture destruction; token retirement and backing reuse; nested mutex contention, critical park/foreign broker refusal; failed initialization destroys all four captures without entry and reaches production rollback/account barrier",
+        "unverified":"SMP; sustained stress; physical backing exhaustion distinct from module budget; all worker failure positions; timer callback contending on the module mutex; successful module unload/full account retirement; privileged fault recovery/M-D04; full extension worker readiness",
+        "fixtures":serde_json::from_slice::<serde_json::Value>(&fs::read(output.join("worker-fixtures.json")).unwrap()).unwrap(), "capture":capture});
+    fs::write(output.join("rust-acceptance.json"), serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    fs::write(root.join("results/system7/module-worker-checks.json"),
+              serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+}

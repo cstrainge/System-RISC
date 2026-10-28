@@ -2,7 +2,6 @@
 //! entry. There is no private heap or allocation before admission. The resident
 //! retains the original account and backend layout across free/reallocation.
 use core::{alloc::{GlobalAlloc, Layout},
-           ffi::c_void,
            ptr,
            sync::atomic::{AtomicPtr, Ordering}};
 
@@ -28,7 +27,7 @@ pub(crate) unsafe fn install(host: *const abi::Host) -> Result<()>
     }
 }
 
-fn host() -> Option<&'static abi::Host>
+pub(super) fn host() -> Option<&'static abi::Host>
 {
     // SAFETY: install accepts only an immutable resident lifetime descriptor.
     unsafe { HOST.load(Ordering::Acquire).as_ref() }
@@ -45,40 +44,8 @@ pub fn with_module_allocation<R>(operation: impl FnOnce() -> R) -> Result<R>
 
 pub(crate) fn with_host<R, F: FnOnce() -> R>(host: &abi::Host, operation: F) -> Result<R>
 {
-    struct State<F, R>
-    {
-        operation: Option<F>,
-        result:    Option<R>
-    }
-    unsafe extern "C" fn invoke<F: FnOnce() -> R, R>(pointer: *mut c_void) -> i32
-    {
-        // SAFETY: the synchronous host contract borrows this exact stack state
-        // exclusively and retains neither it nor the monomorphized callback.
-        let state = unsafe { &mut *pointer.cast::<State<F, R>>() };
-        let Some(operation) = state.operation.take()
-        else
-        {
-            return BAD_ABI;
-        };
-        state.result = Some(operation());
-        OK
-    }
     let callback = host.with_module_allocation.ok_or(Error(NOT_SUPPORTED))?;
-    let mut state = State { operation: Some(operation),
-                            result:    None };
-    // SAFETY: callback is validated at entry. All Rust values remain on our
-    // stack; only an opaque pointer and C function pointer cross the ABI.
-    let status =
-        unsafe { callback(host.context, invoke::<F, R>, ptr::from_mut(&mut state).cast()) };
-    if status != OK
-    {
-        return Err(Error(if status < 0 { status } else { BAD_ABI }));
-    }
-    if state.operation.is_some()
-    {
-        return Err(Error(BAD_ABI));
-    }
-    state.result.take().ok_or(Error(BAD_ABI))
+    super::scope::invoke(host.context, callback, operation)
 }
 
 /// Module global allocator. Allocation errors return null; a failed realloc

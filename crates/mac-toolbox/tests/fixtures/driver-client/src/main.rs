@@ -1,5 +1,19 @@
 #![no_std]
 #![no_main]
+#![cfg_attr(feature = "workers", feature(alloc_error_handler))]
+#[cfg(feature = "workers")]
+mod machine;
+#[cfg(feature = "workers")]
+mod workers;
+#[cfg(feature = "workers")]
+#[global_allocator]
+static ALLOCATOR: mac_driver_alloc::ForwardingAllocator = mac_driver_alloc::ForwardingAllocator;
+#[cfg(feature = "workers")]
+#[alloc_error_handler]
+fn allocation_failed(layout: core::alloc::Layout) -> !
+{
+    mac_driver::runtime::allocation_failed(layout)
+}
 use mac_driver::{ClassId, Client, Completion, Driver, Error, Phase, Request, Result};
 struct Device;
 static DEVICE: Device = Device;
@@ -19,6 +33,10 @@ unsafe extern "C" fn _start(host: *const mac_driver::abi::Host,
     // Loader-owned Host is valid and pinned for this invocation. None of the
     // deliberately bad result pointers is dereferenced by this fixture.
     let descriptor = unsafe { *host };
+    #[cfg(feature = "workers")]
+    unsafe {
+        machine::install(host);
+    }
     let Some(resolve) = descriptor.resolve
     else
     {
@@ -60,6 +78,9 @@ impl Driver for Device
         {
             return Err(Error(-1));
         }
+        #[cfg(feature = "workers")]
+        return workers::initialize(host, provider);
+        #[cfg(not(feature = "workers"))]
         Ok(())
     }
 

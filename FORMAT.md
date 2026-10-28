@@ -889,12 +889,12 @@ resource fork remains big-endian):
 | 120 | 8 | exact C boundary layout fingerprint |
 
 The fingerprint encodes pointer width (bits 0..7), Host size (bits 8..23), Instance
-size (bits 24..39), and Call size (bits 40..55). Bits 56 through 61 identify
+size (bits 24..39), and Call size (bits 40..55). Bits 56 through 63 identify
 full-width provider references, request tickets, device/DMA references,
-backing-source references, ticket-free synchronous resident calls, and resident
-allocation forwarding, respectively; the remaining high bits are zero. Current
-RV64 values are 64-bit pointers and structure sizes 80, 24 and 64 bytes. Compile-time SDK assertions and the resident
-reject a mismatch. Changing these layouts requires rebuilding all modules; there
+backing-source references, ticket-free synchronous resident calls, resident
+allocation forwarding, native module workers, and native critical sections,
+respectively. Current RV64 values are 64-bit pointers and structure sizes 96, 24
+and 64 bytes. Compile-time SDK assertions and the resident reject a mismatch. Changing these layouts requires rebuilding all modules; there
 is no alternate old layout decoder.
 
 After the header come the interface, dependency, service and device-match tables,
@@ -956,8 +956,10 @@ The EABI/code pair remains inspectable as a package after refusal; its presence
 alone is not evidence of an active hook or service.
 
 The generic resident C entry receives a borrowed Host descriptor and initializes Instance.
-Host exposes the full u64 boot-unique module incarnation, dependency resolution
-and broker invocation; it and the code stay pinned until reboot. Resolve writes a
+Host is 96 bytes on RV64. It exposes the full u64 boot-unique module incarnation,
+dependency resolution, broker invocation and the callbacks below. Its descriptor
+and callbacks remain immutable and live through module calls, workers,
+destruction and outstanding allocations. Resolve writes a
 u64 provider identity and Broker accepts that complete u64 value. The contract
 fingerprint includes a provider-reference signature flag in bit56 and a native
 64-bit request-ticket flag in bit57, in addition to
@@ -974,8 +976,8 @@ module executor; the copied context number cannot select an executor or account.
 The forwarding allocator is installed before driver initialization. Ordinary
 allocation uses the genuine original request Subject, while explicit retained
 module storage uses that module's canonical kernel account. Headers and refund
-receipts stay resident; no allocator trait object or Rust allocation crosses the
-wire. Free and replacement retain the original account/class regardless of the
+receipts stay resident; no allocator trait object, receipt or Rust container
+layout crosses these allocator callbacks. Free and replacement retain the original account/class regardless of the
 current caller. A refused replacement preserves its old block. A module-scope
 thunk is validated against the pinned module's executable segments; it cannot
 return Pending or retain its opaque stack pointer.
@@ -996,6 +998,156 @@ Subject and allocation target. Teardown waits for actual invocation readers and
 non-image cleanup before releasing image aliases and final account metadata.
 Physical module RAM remains reserved until reset; alias retirement alone does
 not claim physical code reclamation or arbitrary privileged-fault containment.
+
+### Native module worker and critical-section boundary
+
+`Host`, `WorkerSpecification` and `WorkerCall` use 8-byte RV64 alignment.
+`Header` is two u32 fields:
+development ABI version 1 followed by the exact structure size. Every Host
+callback is mandatory; entry validates the header, nonzero module incarnation,
+zero reserved field and all callbacks before installing the immutable forwarding
+descriptor or invoking the author's initializer. A copied context value does not
+manufacture module, account or worker authority.
+
+| Host offset | Size | Field |
+| --- | --- | --- |
+| 0 | 8 | Header, size 96 |
+| 8 | 8 | Nonzero module incarnation, u64 |
+| 16 | 8 | Reserved, zero |
+| 24 | 8 | Resident callback context, u64 |
+| 32 | 8 | Broker callback |
+| 40 | 8 | Resolve callback |
+| 48 | 8 | Allocate callback |
+| 56 | 8 | Deallocate callback |
+| 64 | 8 | Reallocate callback |
+| 72 | 8 | Synchronous module-allocation callback |
+| 80 | 8 | Workers callback |
+| 88 | 8 | Critical-section callback |
+
+The additional callback signatures are:
+
+```rust
+type Workers = unsafe extern "C" fn(context: u64, call: *mut WorkerCall) -> Status;
+type CriticalSection = unsafe extern "C" fn(context: u64,
+    operation: AllocationOperation, state: *mut core::ffi::c_void) -> Status;
+type AllocationOperation = unsafe extern "C" fn(*mut core::ffi::c_void) -> Status;
+type WorkerEntry = unsafe extern "C" fn(*mut core::ffi::c_void) -> Status;
+type WorkerDestroy = unsafe extern "C" fn(*mut core::ffi::c_void);
+```
+
+`CriticalSection` authenticates the actual executing module and checks that the
+thunk lies in its pinned executable segments. Native exclusion starts before
+calling the thunk; nesting belongs to the actual thread context and is restored
+on return. The callback is synchronous, invokes the borrowed operation exactly
+once, retains neither operation nor state, and returns its nonpositive status.
+Positive/deferred statuses are `BAD_ABI`.
+
+`mac-driver::sync::Mutex<T>` uses this scope before attempting its existing
+spinlock storage. `with` returns `SERVICE_BUSY` on contention without invoking
+the closure; `try_with` returns `Ok(None)`. Neither spins waiting for an owner or
+lends an escaping guard. Authors must keep the closure bounded. Parking and
+foreign broker entry are refused while the native critical depth is nonzero;
+allocation and bounded worker wake/cancel/disposal remain available. The current
+native exclusion contract does not establish SMP correctness.
+
+`WorkerSpecification` is 64 bytes:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 8 | Header, size 64 |
+| 8 | 8 | Non-null WorkerEntry function pointer |
+| 16 | 8 | Non-null WorkerDestroy function pointer |
+| 24 | 8 | Exclusive captured-state pointer |
+| 32 | 8 | Captured-state size, usize |
+| 40 | 8 | Captured-state alignment, usize |
+| 48 | 8 | Borrowed UTF-8 name pointer |
+| 56 | 8 | Name byte length, usize |
+
+The name is nonempty, at most 128 bytes, and contains no control characters.
+Entry and destroy thunks must lie in this module's pinned executable ranges.
+The unsafe native contract requires exclusive `Send + 'static` captured state
+with the exact declared layout, allocated by the resident forwarder. A
+zero-sized state uses a non-null, correctly aligned dangling pointer. Dimension,
+alignment and callback-range checks do not establish arbitrary pointer safety
+or privileged-code isolation.
+
+The safe `mac-driver-alloc::Workers` extension trait provides
+`Client::prepare_worker(name, body)` for a
+`FnOnce(WorkerContext) -> mac_driver::Result<()> + Send + 'static` body. Capture
+storage uses `ForwardingAllocator` explicitly under the module's canonical
+Kernel allocation scope, even if the author selected another global allocator.
+The SDK reserves before moving the body. Failed preparation returns its typed
+cause and the original body; all fallible resident admission precedes the
+single publication handoff. Successful CREATE transfers ownership irrevocably
+and returns the published token. It cannot later report a preparation failure
+and let the SDK destroy a capture already owned by the resident.
+
+The specification and name are borrowed only through CREATE return. After
+publication the resident retains the real module execution/source pin and
+registered thread cleanup. Exactly one path consumes the captured allocation:
+entry runs the body and its destructors, or destroy disposes an unstarted body.
+Both use the matching resident allocator. Callbacks and destructors run outside
+registry/scheduler/owner locks; refused cleanup retains the payload, code pin and
+unique ticket for retry. Uncooperative privileged code is not force-unwound.
+
+`WorkerCall` is 48 bytes:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 8 | Header, size 48 |
+| 8 | 4 | Operation, u32 |
+| 12 | 4 | Flags, u32; zero on input |
+| 16 | 8 | Generation-tagged THRD worker token, u64 |
+| 24 | 8 | Borrowed WorkerSpecification pointer for CREATE; null otherwise |
+| 32 | 4 | Worker state, u32; STATUS result |
+| 36 | 4 | Exit status, i32; actual result when FINISHED |
+| 40 | 8 | Reserved, zero |
+
+STATUS and CURRENT report sticky cancellation with output flag
+`CANCEL_REQUESTED=1`; no other flag bits are defined. Cancellation is independent
+of a finished body's actual exit status. States are PREPARED=0, ARMED=1,
+RUNNING=2, PARKED=3 and FINISHED=4.
+
+| Operation | Value | Boundary and behavior |
+| --- | --- | --- |
+| CREATE | 0 | Host; worker input zero, specification present; returns the published token |
+| START | 1 | Host; arms during initialization, or starts after Ready |
+| WAKE | 2 | Host; coalesces a wake for this worker |
+| CANCEL | 3 | Host; sticky cooperative cancellation, waking a parked worker |
+| STATUS | 4 | Host; returns current state, cancellation flag and finished result |
+| DISPOSE | 5 | Host; records cancellation and eventual token disposal without waiting |
+| CURRENT | 6 | Host; worker input zero; returns the actual worker token and cancellation flag |
+| PARK | 7 | Private native trap; consumes a pending wake or sleeps atomically |
+| EXIT | 8 | Private native trap; scheduler trampoline exits after entry returned |
+
+Host controls authenticate the actual module and retain separate THRD ownership
+and generation checks. Starting an initializing module only arms the worker;
+allocation-free activation follows successful registry publication. Failed
+initialization cannot start an armed body. STATUS/CURRENT do not grant authority
+to a foreign module. DISPOSE of a valid token retains the cancellation/disposal
+intent; actual destruction and removal happen through registered cleanup.
+
+The private RV64 trap number is `0x4d57524b` (`MWRK`): `a7` carries the number,
+`a0` the WorkerCall pointer and `a1` its exact 48-byte extent; Status returns in
+`a0`. Only PARK/EXIT use this switch boundary. The trap requires the actual
+module-worker body at the outermost trap depth, pre-trap interrupts enabled and
+no active critical section. A nonzero token must be that current worker's token;
+zero selects the actual current worker. A wake recorded before PARK is consumed
+without sleeping, and wakes coalesce. Sticky cancellation returns
+`OPERATION_CANCELLED` (-17). EXIT is accepted only after the resident has recorded
+entry return; author code cannot use it to skip capture destruction. Process-only
+Toolbox traps reject worker contexts; diagnostic LOG remains available.
+
+The SDK's unique `PreparedWorker::start` returns a Worker or a typed failure
+retaining its preparation. Worker cancellation and `try_join` do not wait;
+`try_join` distinguishes pending execution from a finished body's result. Drop
+requests DISPOSE and diagnoses unexpected refusals while the resident retains
+cleanup ownership. A copied WorkerWaker retains only a stale-checked token, with
+no account/code/stack reference after retirement. WorkerContext is constructed
+only by the entry shim and is neither Clone nor Send. Exited stack/CPU backing
+can be reclaimed independently of the small retained result token. These
+contracts do not claim physical module-image reclamation, arbitrary privileged
+fault recovery or full extension-service readiness.
 
 Call is 64 bytes and carries a full-width u64 native resident ticket, phase, class, class operation,
 borrowed input and exclusive output bytes. START allocates a ticket; POLL and
