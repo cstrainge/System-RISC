@@ -868,6 +868,51 @@ impl super::jobs::Broker for NativeBroker
 // No lock survives a foreign callback; empty pumps are one atomic flag read.
 static JOBS: super::jobs::Queue = super::jobs::Queue::new();
 
+pub(crate) fn prepare_recovery_job(owner: &crate::toolbox::handles::OwnerRef)
+    -> Result<mac_object_table::store::PublicationReservation<crate::toolbox::handles::InvocationGate>, Status>
+{
+    JOBS.reserve_publication(owner)
+}
+
+pub(crate) fn prepare_recovery_requests(owner: &crate::toolbox::handles::OwnerRef)
+    -> Result<[mac_object_table::store::PublicationReservation<crate::toolbox::handles::InvocationGate>; 2], Status>
+{
+    RUNTIME.with(|runtime| runtime.registry.reserve_recovery_requests(owner).map_err(status))
+           .map_err(crate::state::AccessError::status)?
+}
+
+fn recovery_subject(subject: &super::jobs::subjects::Subject, interface: u64)
+                    -> Result<super::jobs::subjects::Subject, Status>
+{
+    if !subject.uses_protected_publication()
+    {
+        return Ok(subject.clone());
+    }
+    let validated = RUNTIME.with(|runtime| runtime.registry.validate_recovery_graph(interface))
+                           .map_err(crate::state::AccessError::status)?;
+    match validated
+    {
+        Ok(()) => Ok(subject.clone()),
+        // Select capacity policy before publishing or entering a provider.
+        // The dispatcher and canonical identities are the same. The lifetime
+        // Activity remains pinned even when the graph needs ordinary memory.
+        Err(Error::RecoveryUnsupported) => Ok(subject.with_ordinary_publication()),
+        Err(error) => Err(status(error))
+    }
+}
+
+fn with_job_storage<R>(subject: &super::jobs::subjects::Subject, call: impl FnOnce() -> R) -> R
+{
+    if subject.uses_protected_publication()
+    {
+        if let Some(activity) = subject.recovery_activity()
+        {
+            return activity.with_storage(call);
+        }
+    }
+    crate::context::without_recovery(call)
+}
+
 /// Resident adapters enqueue only owned bytes. The owner comes from trusted
 /// execution context, never from the application's request payload.
 fn enqueue_job(subject: super::jobs::subjects::Subject, owner: super::jobs::Owner, class: ClassId,
@@ -889,14 +934,16 @@ fn enqueue_job(subject: super::jobs::subjects::Subject, owner: super::jobs::Owne
             }
             _ => resolve_kernel(class, version)?
         };
-        let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
-        let queue = &JOBS;
-        let (id, receipt) =
-            queue.submit(&subject, owner, work).map_err(|error| error.status)?.into_parts();
-        Ok(OwnedJob { owner,
-                      id,
-                      receipt,
-                      subject })
+        let subject = recovery_subject(&subject, provider)?;
+        with_job_storage(&subject, || {
+            let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
+            let (id, receipt) =
+                JOBS.submit(&subject, owner, work).map_err(|error| error.status)?.into_parts();
+            Ok(OwnedJob { owner,
+                          id,
+                          receipt,
+                          subject: subject.clone() })
+        })
     })
 }
 
@@ -1147,15 +1194,17 @@ pub(crate) fn submit_background_to(subject: &super::jobs::subjects::Subject, pro
                    Ok(())
                })
                .map_err(crate::state::AccessError::status)??;
-        let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
-        let queue = &JOBS;
-        let (id, receipt) = queue.submit(subject, super::jobs::Owner::Kernel, work)
-                                 .map_err(|error| error.status)?
-                                 .into_parts();
-        Ok(OwnedJob { owner: super::jobs::Owner::Kernel,
-                      id,
-                      receipt,
-                      subject: subject.clone() })
+        let subject = recovery_subject(subject, provider)?;
+        with_job_storage(&subject, || {
+            let work = super::jobs::Work::new(provider, class, operation, input, output_bytes)?;
+            let (id, receipt) = JOBS.submit(&subject, super::jobs::Owner::Kernel, work)
+                                    .map_err(|error| error.status)?
+                                    .into_parts();
+            Ok(OwnedJob { owner: super::jobs::Owner::Kernel,
+                          id,
+                          receipt,
+                          subject: subject.clone() })
+        })
     })
 }
 

@@ -336,10 +336,12 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                 else
                 {
                     // A contract probe reads map + declarations, never CODE.
-                    let loaded = application::read_selected(owner,
-                                                            call.application_volume,
-                                                            call.application_cnid,
-                                                            application::Selection::OpenTypes)?;
+                    let loaded = crate::context::without_recovery(|| {
+                        application::read_selected(owner,
+                                                   call.application_volume,
+                                                   call.application_cnid,
+                                                   application::Selection::OpenTypes)
+                    })?;
                     declarations(loaded.catalog.creator, &loaded.resources)?
                 };
                 desktop(|d| {
@@ -451,7 +453,9 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                 };
                 if !existing
                 {
-                    let loaded = match application::read(owner, volume, cnid)
+                    let loaded = match crate::context::without_recovery(|| {
+                              application::read(owner, volume, cnid)
+                          })
                     {
                         Ok(loaded) => loaded,
                         Err(error) =>

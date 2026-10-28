@@ -40,8 +40,71 @@ impl Drop for InitializingAlert<'_>
         }
     }
 }
+/// Temporarily select the one System Alert store while preserving the normal
+/// renderer and tracking implementation. Nested entries already see that store;
+/// restoration is scoped and cannot escape to application code.
+struct CoreDialogs<'a>
+{
+    desktop: &'a mut super::Desktop
+}
+impl Drop for CoreDialogs<'_>
+{
+    fn drop(&mut self)
+    {
+        core::mem::swap(&mut self.desktop.dialogs, &mut self.desktop.core_dialogs);
+        self.desktop.core_dialogs_active = false;
+    }
+}
+
 impl super::Desktop
 {
+    pub(crate) fn with_core_dialogs<R>(&mut self, operation: impl FnOnce(&mut Self) -> R) -> R
+    {
+        if self.core_dialogs_active
+        {
+            return operation(self);
+        }
+        core::mem::swap(&mut self.dialogs, &mut self.core_dialogs);
+        self.core_dialogs_active = true;
+        let restore = CoreDialogs { desktop: self };
+        operation(&mut *restore.desktop)
+    }
+
+    /// Cancel the actual core protocol for this retained session, without
+    /// selecting or foregrounding its dead recipient. Window Manager owns any
+    /// refused child-disposal ticket and retains the Activity through real ACK.
+    pub(crate) fn cancel_core_alert_for_recovery(&mut self, activity: &crate::recovery::Activity)
+                                                 -> Result<(), Status>
+    {
+        activity.run(|| {
+                    self.with_core_dialogs(|desktop| {
+                            let Some(record) = desktop.dialogs.take_recovery(activity)?
+                            else
+                            {
+                                // Protocol cancellation already completed. This does not
+                                // declare its independently retained Window children ACKed.
+                                return Ok(());
+                            };
+                            let result = if record.window == 0
+                            {
+                                Ok(())
+                            }
+                            else
+                            {
+                                checked(desktop.window(CLOSE_WINDOW,
+                                                       &mut request(record.window, Rect::ZERO)))
+                            };
+                            drop(record);
+                            result
+                        })
+                })?
+    }
+
+    pub(crate) fn prepare_core_dialogs(&mut self) -> Result<(), Status>
+    {
+        self.with_core_dialogs(|desktop| desktop.dialogs.prepare_recovery())
+    }
+
     pub(super) fn dialog_input(&mut self, input: crate::toolbox::events::input::Input, when: u32)
     {
         use crate::toolbox::events::{BTN_STATE, input::Input};
@@ -127,9 +190,16 @@ impl super::Desktop
         {
             OPEN_ALERT | VALIDATE_ALERT =>
             {
-                let mut alert = crate::kernel::with_resources_in(call.scope, |resources| {
-                    dialogs::load(resources, call)
-                })??;
+                let mut alert = if dialogs::core_alerts::supported(call.scope, call.resource)
+                {
+                    dialogs::core_alerts::instantiate(call)?
+                }
+                else
+                {
+                    crate::kernel::with_resources_in(call.scope, |resources| {
+                        dialogs::load(resources, call)
+                    })??
+                };
                 call.item = alert.items.len() as u16;
                 if call.operation == VALIDATE_ALERT
                 {
@@ -342,6 +412,11 @@ impl super::Desktop
     pub(super) fn close_dialog(&mut self) -> Result<(), Status>
     {
         let record = self.dialogs.take().ok_or(NOT_FOUND)?;
+        if self.core_dialogs_active
+           && let Some(activity) = crate::context::recovery_activity()
+        {
+            activity.close();
+        }
         let result = self.finish_alert_window(record.window, record.previous);
         drop(record);
         result

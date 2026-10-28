@@ -5,6 +5,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 mod metadata;
+mod prepare_name;
+pub use prepare_name::{MAX_PREPARED_NAME_BYTES, PREPARED_NAME_BYTES, PrepareName, PreparedName};
 mod properties;
 mod receipt;
 mod patch;
@@ -94,7 +96,10 @@ pub enum Operation
     ReadWrite      = 22,
     BeginIconMoves = 23,
     StepIconMoves  = 24,
-    AbortIconMoves = 25
+    AbortIconMoves = 25,
+    /// Validate/normalize a new display name using this mounted provider's
+    /// actual naming rules. Reply is PreparedName; read-only mounts refuse it.
+    PrepareName    = 26
 }
 impl TryFrom<u32> for Operation
 {
@@ -128,6 +133,7 @@ impl TryFrom<u32> for Operation
             23 => Self::BeginIconMoves,
             24 => Self::StepIconMoves,
             25 => Self::AbortIconMoves,
+            26 => Self::PrepareName,
             _ => return Err(Error::Invalid)
         })
     }

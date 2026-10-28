@@ -31,6 +31,7 @@ pub(crate) fn status(error: Error) -> mac_abi::Status
         Error::Account(error) => crate::allocation::account_status(&error),
         Error::AllocationScope(status) => status,
         Error::Contract(_) => BAD_ABI,
+        Error::RecoveryUnsupported => NOT_SUPPORTED,
         Error::Duplicate | Error::Exclusive => BAD_ARGUMENT
     }
 }

@@ -127,6 +127,24 @@ impl HeapPartition
         Ok(range)
     }
 
+    pub(super) fn recovery_storage(&'static self) -> Result<ProtectedRange, Error>
+    {
+        let offset = self.used
+                         .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                             (used>0 && used<SYSTEM_RECOVERY_BYTES).then_some(SYSTEM_RECOVERY_BYTES)
+                         })
+                         .map_err(|used| {
+                             Error::Exhausted { requested:
+                                                    SYSTEM_RECOVERY_BYTES.saturating_sub(used),
+                                                remaining: 0 }
+                         })?;
+        // The terminal's disjoint prefix remains permanently owned. The tail
+        // is transferred once to the reusable recovery allocator, never buddy.
+        Ok(ProtectedRange { owner: self,
+                            offset,
+                            bytes: SYSTEM_RECOVERY_BYTES - offset })
+    }
+
     pub(super) fn terminal_storage(&'static self, frame: usize, stack: usize)
                                    -> Result<(ProtectedRange, ProtectedRange), Error>
     {
@@ -145,7 +163,9 @@ impl HeapPartition
     }
 }
 
-/// A unique initialized subrange borrowed from the reset-lifetime heap owner.
+/// A unique reserved subrange borrowed from the reset-lifetime heap owner.
+/// Terminal reservation zeroes its prefix; the recovery allocator initializes
+/// its tail and zeroes each unique backing before a typed consumer receives it.
 /// Numeric accessors do not confer additional physical ownership. No Clone,
 /// mutable slice, reference rebasing, independent free or buddy token exists.
 pub(crate) struct ProtectedRange

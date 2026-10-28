@@ -45,6 +45,7 @@ pub enum Error
     Access,
     RequestSubject,
     RequestParent,
+    RecoveryUnsupported,
     Busy,
     BackingInUse
     {
@@ -111,6 +112,11 @@ impl core::fmt::Display for Error
             {
                 f.write_str("nested broker call has no matching active parent invocation; use the \
                              original scoped callback or its owned queue")
+            }
+            Self::RecoveryUnsupported =>
+            {
+                f.write_str("this provider graph has no preadmitted protected request endpoints; \
+                             it requires ordinary memory admission")
             }
             Self::AccountPending { owner,
                                    kernel_committed,

@@ -43,6 +43,8 @@ pub struct Desktop
     controls:                         super::controls::objects::Manager,
     crash:                            super::crashes::Manager,
     dialogs:                          super::dialogs::Alerts,
+    core_dialogs:                     super::dialogs::Alerts,
+    core_dialogs_active:              bool,
     desktop:                          DesktopLayer,
     menus:                            super::menus::Manager,
     cursors:                          super::quickdraw::cursors::Cursors,
@@ -112,6 +114,68 @@ impl super::standard_file::FileDialogHost for Desktop
 
 impl Desktop
 {
+    /// Separate the actual System storage owner from the app receiving a modal
+    /// service. Only a genuine private Activity supplies that authority.
+    pub(super) fn service_owners(
+        &self)
+        -> Result<(super::handles::OwnerRef, super::handles::OwnerRef), Status>
+    {
+        if let Some(activity) = crate::context::recovery_activity()
+        {
+            return Ok((activity.recipient(), activity.storage_owner()));
+        }
+        let owner = self.processes.ledger(self.owner)?;
+        Ok((owner.clone(), owner))
+    }
+
+    pub(crate) fn boot_progress(&mut self, screen: &mut crate::boot_screen::BootScreen, stage: u8)
+                                -> mac_formats::Result<()>
+    {
+        screen.completed(stage, &mut self.controls)
+    }
+
+    pub(crate) fn finish_boot_progress(&mut self, screen: &mut crate::boot_screen::BootScreen)
+                                       -> mac_formats::Result<()>
+    {
+        screen.finish(&mut self.controls)
+    }
+
+    pub(crate) fn prepare_recovery_storage(&mut self) -> Result<(), Status>
+    {
+        let storage = super::handles::system_owner()?;
+        let controls = super::standard_file::templates::required_control_count()?
+            .max(super::dialogs::core_alerts::required_control_count()?)
+            .max(Self::crash_control_count());
+        // These are real occupied/reserved bootstrap allocations, not free
+        // capacity that normal publishers may consume later. Global arrays
+        // stay ordinary-backed; protected data is never an implicit upgrade.
+        crate::context::without_recovery(|| {
+            crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                self.windows.prepare_recovery(&storage).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Window Manager status={status}"); status })?;
+                self.controls.prepare_recovery(&storage, controls).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Control Manager status={status}"); status })?;
+                self.prepare_core_dialogs().map_err(|status| {
+                                                serial!("RECOVERY_SERVICE_ADMISSION_REFUSED \
+                                                         service=Core Alert Manager \
+                                                         status={status}");
+                                                status
+                                            })?;
+                self.prepare_standard_file_storage(&storage).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Standard File Manager status={status}"); status })?;
+                self.content.try_reserve_exact(2).map_err(|_| NO_MEMORY)?;
+                self.pending_content.try_reserve_exact(2).map_err(|_| NO_MEMORY)?;
+                self.content_damage.try_reserve_exact(3).map_err(|_| NO_MEMORY)?;
+                self.presentation_damage.try_reserve_exact(4).map_err(|_| NO_MEMORY)?;
+                Ok(())
+            })
+        })
+    }
+
+    fn scene_spare(&self) -> usize
+    {
+        // Ordinary publishers preserve the two modal slots even while another
+        // app owns the service. The actual service may consume its reservation.
+        if crate::context::recovery_activity().is_some() { 0 } else { 2 }
+    }
+
     fn retained_bytes(&self) -> usize
     {
         self.desktop.storage()
@@ -253,9 +317,16 @@ impl Desktop
         }
         else
         {
-            if self.content_damage.len() == self.content_damage.capacity()
+            if self.content_damage.capacity().saturating_sub(self.content_damage.len())
+               <= self.scene_spare()
+               && InvocationGate::with_system_allocation(|| {
+                      self.content_damage.try_reserve(1 + self.scene_spare())
+                  }).is_err()
             {
-                InvocationGate::with_system_allocation(|| self.content_damage.reserve(1));
+                // Full composition is an explicit last resort when bounded
+                // damage bookkeeping cannot be admitted; painting never panics.
+                self.redraw = true;
+                return;
             }
             self.content_damage.push((id, region));
         }
@@ -277,9 +348,10 @@ impl Desktop
         Ok(())
     }
 
-    pub fn new(mut definitions: Definitions, processes: super::processes::Manager,
-               finder_owner: super::handles::OwnerRef)
-               -> Result<Self, Status>
+    pub(crate) fn new(mut definitions: Definitions, processes: super::processes::Manager,
+                      finder_owner: super::handles::OwnerRef,
+                      controls: super::controls::objects::Manager)
+                      -> Result<Self, Status>
     {
         let finder = finder_owner.owner().incarnation();
         if processes.ledger(finder)?.owner() != finder_owner.owner()
@@ -339,8 +411,10 @@ impl Desktop
                   crash: Default::default(),
                   standard_file: super::standard_file::Manager::new(super::handles::file_dialog_kinds()?)?,
                   scroll_boxes: super::controls::scrollbox::Manager::new(super::handles::scroll_box_kinds()?)?,
-                  controls: super::controls::objects::Manager::new(super::handles::controls_kinds()?)?,
+                  controls,
                   dialogs: super::dialogs::Alerts::new(super::handles::alert_kinds()?, processes.ledger(finder)?)?,
+                  core_dialogs: super::dialogs::Alerts::new(super::handles::alert_kinds()?, super::handles::system_owner()?)?,
+                  core_dialogs_active: false,
                   menus: super::menus::Manager::new(super::handles::menu_kinds()?, mdef, crate::machine::traps::gateway)?,
                   desktop: DesktopLayer::new(Rect::new(0,
                                                         21,
@@ -447,7 +521,7 @@ impl Desktop
         let when = Self::when();
         if request.id == 0 && operation == GET_WINDOW
         {
-            let Some(id) = self.front_owned()
+            let Some(id) = self.windows.front_readable(self.owner)
             else
             {
                 return NOT_FOUND;
@@ -456,7 +530,14 @@ impl Desktop
         }
         if !matches!(operation, NEW_WINDOW | SELECT_DESKTOP)
            && request.id != 0
-           && !self.owns(WindowId(request.id))
+           && !(if operation == GET_WINDOW
+           {
+               self.windows.readable_by(WindowId(request.id), self.owner)
+           }
+           else
+           {
+               self.owns(WindowId(request.id))
+           })
         {
             return if self.windows.window(WindowId(request.id)).is_some()
             {
@@ -490,32 +571,31 @@ impl Desktop
                     Err(error) => return crate::loader::status(error)
                 };
                 if InvocationGate::with_system_allocation(|| {
-                       self.content.try_reserve(1)?;
+                       self.content.try_reserve(1 + self.scene_spare())?;
                        self.content_damage.try_reserve(self.content
                                                            .len()
-                                                           .saturating_add(2)
+                                                           .saturating_add(2 + self.scene_spare())
                                                            .saturating_sub(self.content_damage
                                                                                .len()))
                    }).is_err()
                 {
                     return NO_MEMORY;
                 }
-                let id = match self.windows
-                                   .new_window_with_activation(request.bounds,
-                                                               title,
-                                                               &match self.processes
-                                                                          .ledger(self.owner)
-                                                               {
-                                                                   Ok(owner) => owner,
-                                                                   Err(status) => return status
-                                                               },
-                                                               (request.minimum_width,
-                                                                request.minimum_height),
-                                                               request.procedure,
-                                                               entry,
-                                                               &mut self.events,
-                                                               when,
-                                                               false)
+                let (recipient, storage) = match self.service_owners()
+                {
+                    Ok(owners) => owners,
+                    Err(status) => return status
+                };
+                let id = match self.windows.new_window_with_activation(request.bounds,
+                                                                       title,
+                                                                       &storage,
+                                                                       (request.minimum_width,
+                                                                        request.minimum_height),
+                                                                       request.procedure,
+                                                                       entry,
+                                                                       &mut self.events,
+                                                                       when,
+                                                                       false)
                 {
                     Ok(id) => id,
                     Err(error) =>
@@ -525,22 +605,21 @@ impl Desktop
                         return match error {
                             CreationError::NoMemory => NO_MEMORY,
                             CreationError::Facility(error) => super::handles::registry_status(&mac_object_table::registry::Error::Pool(error)),
-                            CreationError::Stopping => SERVICE_BUSY,
+                            CreationError::Stopping | CreationError::RecoveryBusy => SERVICE_BUSY,
+                            CreationError::RecoveryAuthority => ACCESS_DENIED,
                             CreationError::Definition { reply, .. } => i32::try_from(reply).unwrap_or(BAD_ABI),
                             CreationError::InvalidRequest | CreationError::Geometry { .. } => BAD_ARGUMENT
                         };
                     }
                 };
-                if let Err(status) =
-                    self.drag.ensure_receiver(&match self.processes.ledger(self.owner)
-                                              {
-                                                  Ok(owner) => owner,
-                                                  Err(status) => return status
-                                              },
-                                              crate::context::current_thread_context().identity()
-                                                                                      .thread
-                                                                                      .0,
-                                              id.0)
+                if crate::context::recovery_activity().is_none()
+                   && let Err(status) =
+                       self.drag
+                           .ensure_receiver(&recipient,
+                                            crate::context::current_thread_context().identity()
+                                                                                    .thread
+                                                                                    .0,
+                                            id.0)
                 {
                     if let Err(error) = self.windows.dispose_window(id, &mut self.events, when)
                     {
@@ -746,7 +825,7 @@ impl Desktop
             }
             BEGIN_UPDATE =>
             {
-                let Some(window) = self.windows.window(id)
+                let Some(window) = self.windows.window(id).copied()
                 else
                 {
                     return NOT_FOUND;
@@ -755,7 +834,9 @@ impl Desktop
                 {
                     return BAD_ARGUMENT;
                 }
-                if InvocationGate::with_system_allocation(|| self.pending_content.try_reserve(1)).is_err()
+                if InvocationGate::with_system_allocation(|| {
+                       self.pending_content.try_reserve(1 + self.scene_spare())
+                   }).is_err()
                 {
                     return NO_MEMORY;
                 }
@@ -867,13 +948,15 @@ impl Desktop
                       -> Result<Option<super::controls::scrollbox::Drawing>, Status>
     {
         use mac_abi::scrollbox::*;
+        let (recipient, storage) = self.service_owners()?;
+        let owner = recipient.owner().incarnation();
         let window = if call.operation == CREATE
         {
             call.window
         }
         else
         {
-            self.scroll_boxes.window(call.id, self.owner)?
+            self.scroll_boxes.window(call.id, owner)?
         };
         if window != 0 && !self.owns(WindowId(window))
         {
@@ -909,7 +992,8 @@ impl Desktop
             return Err(BAD_ARGUMENT);
         }
         let entry = self.definitions.resolve(*b"CDEF", 1).map_err(crate::loader::status)?;
-        let drawing = self.scroll_boxes.request(&self.processes.ledger(self.owner)?,
+        let drawing = self.scroll_boxes.request(&recipient,
+                                                 &storage,
                                                  call,
                                                  crate::kernel::fonts().ok_or(NOT_SUPPORTED)?,
                                                  entry,
@@ -972,12 +1056,12 @@ impl Desktop
                 }
                 content.record(RenderCommand::ScrollBox(drawing))?;
             }
-            for rect in old_bounds.into_iter().flatten().chain(bounds)
-            {
-                self.content_changed_rect(window, rect);
-            }
             if !self.pending_content.iter().any(|content| content.id == SceneTarget::from(window))
             {
+                for rect in old_bounds.into_iter().flatten().chain(bounds)
+                {
+                    self.content_changed_rect(window, rect);
+                }
                 self.present();
             }
         }
@@ -987,13 +1071,15 @@ impl Desktop
     fn managed_control(&mut self, call: &mut mac_abi::controls::ControlCall) -> Result<(), Status>
     {
         use mac_abi::controls::*;
+        let (recipient, storage) = self.service_owners()?;
+        let owner = recipient.owner().incarnation();
         let window = if matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
         {
             call.window
         }
         else
         {
-            self.controls.window(call.id, self.owner)?
+            self.controls.window(call.id, owner)?
         };
         if window != 0 && !self.owns(WindowId(window))
         {
@@ -1006,7 +1092,7 @@ impl Desktop
                            NOT_FOUND
                        });
         }
-        let definition = self.controls.definition(call, self.owner)?;
+        let definition = self.controls.definition(call, owner)?;
         let entry = self.control_definition(definition)?;
         // A deactivated/hidden owner cannot continue a capture after app switching.
         if matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
@@ -1016,7 +1102,8 @@ impl Desktop
         {
             call.operation = CANCEL_TRACKING;
         }
-        let drawing = self.controls.request(&self.processes.ledger(self.owner)?,
+        let drawing = self.controls.request(&recipient,
+                                             &storage,
                                              call,
                                              entry,
                                              crate::machine::traps::gateway)?;
@@ -1252,7 +1339,9 @@ impl Desktop
             {
                 return Err(BAD_ARGUMENT);
             }
-            InvocationGate::with_system_allocation(|| self.pending_content.try_reserve(1)).map_err(|_| NO_MEMORY)?;
+            InvocationGate::with_system_allocation(|| {
+                self.pending_content.try_reserve(1 + self.scene_spare())
+            }).map_err(|_| NO_MEMORY)?;
             let content = self.content.iter().find(|c| c.id == id).ok_or(NOT_FOUND)?;
             let pending = Content::pending_patch(id, content.port.clone(), mask);
             if self.retained_bytes().saturating_add(pending.storage()) > MAX_RETAINED_BYTES
@@ -1515,7 +1604,7 @@ impl Desktop
                self.textedit.cursor_hit(id, local)
                || self.standard_file
                       .active(self.owner)
-                      .and_then(|key| self.standard_file.get(key).ok())
+                      .and_then(|key| self.standard_file.get(self.owner, key).ok())
                       .is_some_and(|d| {
                           d.window == id
                           && d.mode == mac_abi::standard_file::PUT
@@ -1720,6 +1809,40 @@ impl Desktop
     }
 
     fn input(&mut self, input: Input, when: u32)
+    {
+        if let Some(activity) = crate::recovery::for_input(self.owner)
+        {
+            let kind =
+                crate::recovery::active(self.owner, crate::recovery::Kind::CoreAlert).is_some();
+            if let Err(status) =
+                activity.run(|| {
+                            if kind
+                            {
+                                self.with_core_dialogs(|desktop| desktop.input_impl(input, when));
+                            }
+                            else
+                            {
+                                self.input_impl(input, when);
+                            }
+                        })
+            {
+                use core::sync::atomic::{AtomicI32, Ordering};
+                static LAST_REFUSAL: AtomicI32 = AtomicI32::new(OK);
+                if LAST_REFUSAL.swap(status, Ordering::AcqRel) != status
+                {
+                    serial!("RECOVERY_INPUT_CONTEXT_REFUSED app={} status={status}; modal \
+                             authority retained",
+                            activity.owner());
+                }
+            }
+        }
+        else
+        {
+            self.input_impl(input, when);
+        }
+    }
+
+    fn input_impl(&mut self, input: Input, when: u32)
     {
         let (kind, a, b, c) = match input
         {

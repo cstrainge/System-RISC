@@ -46,7 +46,15 @@ impl Layout
             let data = list.get(at + 14..at + 14 + len).ok_or(BAD_ARGUMENT)?;
             let label = if matches!(kind & 0x7f, 4 | 8 | 16)
             {
-                mac_formats::text::decode(data)
+                let length =
+                    data.iter().map(|byte| mac_formats::text::character(*byte).len_utf8()).sum();
+                let mut text = String::new();
+                text.try_reserve_exact(length).map_err(|_| NO_MEMORY)?;
+                for byte in data
+                {
+                    text.push(mac_formats::text::character(*byte));
+                }
+                text
             }
             else
             {

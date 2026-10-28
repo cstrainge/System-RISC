@@ -1,8 +1,8 @@
 //! Client for System-owned, scrollable native panic diagnostics.
 #![no_std]
 #![forbid(unsafe_code)]
-pub use mac_abi::crashes::MAX_REPORT_BYTES;
 use mac_abi::crashes::*;
+pub use mac_abi::crashes::{MAX_APPEND_BYTES, MAX_REPORT_BYTES};
 pub use mac_traps::types::{ProcessId, ThreadId};
 mac_traps::native_flags!(ReportFlags, u32; TRUNCATED = mac_abi::crashes::TRUNCATED, FORMAT_FAILED = mac_abi::crashes::FORMAT_FAILED);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -51,12 +51,31 @@ impl<'a> Crashes<'a>
         self.command(BEGIN, 0, 0)
     }
 
-    pub fn append(self, text: &str) -> Result<CrashInfo>
+    /// Stream UTF-8 in bounded resident calls without allocating. An argument
+    /// larger than the report retention limit is refused before any effect.
+    /// If a later chunk refuses, previously accepted chunks remain retained.
+    pub fn append(self, mut text: &str) -> Result<CrashInfo>
     {
-        let mut call = CrashCall { operation: APPEND,
-                                   ..Default::default() };
-        self.client.crash(&mut call, text, &mut [])?;
-        Ok(call.info.into())
+        if text.len() > MAX_REPORT_BYTES
+        {
+            return Err(Error::BadArgument);
+        }
+        loop
+        {
+            let mut count = text.len().min(MAX_APPEND_BYTES);
+            while !text.is_char_boundary(count)
+            {
+                count -= 1;
+            }
+            let mut call = CrashCall { operation: APPEND,
+                                       ..Default::default() };
+            self.client.crash(&mut call, &text[..count], &mut [])?;
+            if count == text.len()
+            {
+                return Ok(call.info.into());
+            }
+            text = &text[count..];
+        }
     }
 
     pub fn show(self, flags: ReportFlags) -> Result<CrashInfo>

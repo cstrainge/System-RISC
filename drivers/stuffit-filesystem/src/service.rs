@@ -62,6 +62,7 @@ impl<S: Sources> Backend<S>
         let volume = self.volume(a.volume)?;
         let bytes = match op
         {
+            Operation::PrepareName => return Err(Error(mac_abi::READ_ONLY)),
             Operation::Catalog => volume.encode(a.node)?,
             Operation::Lookup =>
             {
@@ -501,6 +502,7 @@ fn capacity(op: Operation, a: Arguments<'_>) -> usize
     match op
     {
         Operation::Mount => fs::MAX_MOUNT_BYTES,
+        Operation::PrepareName => fs::MAX_PREPARED_NAME_BYTES,
         Operation::Catalog | Operation::Lookup => fs::MAX_METADATA_BYTES,
         Operation::Scan => 4 + fs::MAX_METADATA_BYTES,
         Operation::Open => 16,
@@ -521,6 +523,12 @@ fn validate(op: Operation, a: Arguments<'_>) -> Result<()>
                         ..v }
         }
         Operation::Unmount | Operation::Refresh => v,
+        Operation::PrepareName =>
+        {
+            fs::PrepareName::from_arguments(a).map_err(|_| Error(mac_abi::BAD_ARGUMENT))?;
+            Arguments { payload: a.payload,
+                        ..v }
+        }
         Operation::Catalog =>
         {
             Arguments { node: a.node,

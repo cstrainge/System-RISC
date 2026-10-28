@@ -26,9 +26,9 @@ fn main() -> mac_build::Result<()>
                                  .get(..2)
                                  .ok_or_else(|| mac_build::error("truncated panic STR# count"))?
                                  .try_into()?);
-    if count != 20
+    if count != 22
     {
-        return Err(mac_build::error("panic label contract changed: expected exactly 20 entries"));
+        return Err(mac_build::error("panic label contract changed: expected exactly 22 entries"));
     }
     let mut offset = 2;
     let mut replacement = None;

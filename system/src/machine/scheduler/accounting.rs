@@ -121,6 +121,38 @@ impl ThreadCharges
                   allocation: allocation.clone() })
     }
 
+    pub(super) fn allocate_recovery(
+        self, owner: &OwnerRef, loan: super::FinderBackingLoan,
+        initial: impl FnOnce(usize) -> TrapFrame)
+        -> Result<(Charged<pages::Stack>, Charged<SavedState>, AllocationAuthority),
+                  (Error, super::FinderBackingLoan)>
+    {
+        if owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+           || self.stack_bytes != super::STACK_BYTES
+           || self.allocation.owner() != owner.owner()
+           || self.stack.owner() != owner.owner()
+           || self.cpu.owner() != owner.owner()
+        {
+            return Err((Error::Foreign, loan));
+        }
+        if self.stack.bytes() != loan.stack_bytes() || self.cpu.bytes() != loan.cpu_bytes()
+        {
+            let error = Error::BackingMismatch { stack_expected: self.stack.bytes(),
+                                                 stack_actual:   loan.stack_bytes(),
+                                                 cpu_expected:   self.cpu.bytes(),
+                                                 cpu_actual:     loan.cpu_bytes() };
+            return Err((error, loan));
+        }
+        let (stack, cpu) = loan.into_parts();
+        let stack = pages::Stack::from_recovery(stack);
+        let cpu = SavedState::from_recovery(cpu, initial(stack.top()));
+        Ok((Charged { value:   stack,
+                      _charge: self.stack.commit() },
+            Charged { value:   cpu,
+                      _charge: self.cpu.commit() },
+            self.allocation))
+    }
+
     pub(super) fn allocate(
         self, owner: &OwnerRef, initial: impl FnOnce(usize) -> TrapFrame)
         -> Result<(Charged<pages::Stack>, Charged<SavedState>, AllocationAuthority), Error>

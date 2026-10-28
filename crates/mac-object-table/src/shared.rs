@@ -47,6 +47,13 @@ pub trait InvocationGate
     {
     }
 
+    /// A real resource cleanup ACK completed, with payload/pins destroyed and
+    /// all metadata/recycling locks released. The resident adapter may post one
+    /// coalesced service wake; never allocate, scan or run cleanup here.
+    fn resource_released(_owner: DomainId)
+    {
+    }
+
     /// A published operation's unique owner has closed its admission. Called
     /// after metadata unlock; post only a coalesced notification, never cleanup.
     fn scope_closed(_owner: DomainId)
@@ -235,6 +242,7 @@ impl<G: InvocationGate> OwnerRef<G>
 
     pub(crate) fn notify_retirement(&self)
     {
+        G::resource_released(self.owner());
         if !self.accepting()
         {
             G::released(self.owner());

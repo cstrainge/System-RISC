@@ -54,7 +54,7 @@ def capture(output):
                 wait('CRASH_PAINT_ACK ' + stage + '\n')
             finally:
                 space(False)
-        wait('CRASH_PAINT_USERSPACE_PASS full_cancel=passed masked_retry=passed reset_retry=passed\n')
+        wait('CRASH_PAINT_USERSPACE_PASS full_cancel=passed ownership=passed reset_retry=passed\n')
         report = {'transport': 'private mutated System label -> native public SDK Finder -> ECALL',
                   'assertion_owner': 'mac-toolbox/tests/crash_paint_refusal{,_cases}.rs',
                   'original_before': before,

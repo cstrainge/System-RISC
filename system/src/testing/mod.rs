@@ -508,7 +508,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                                let mut session = slot.borrow_mut();
                                let session = session.as_mut().unwrap();
                                session.standard_file
-                                      .request(&ledger, call, &mut session.files)
+                                      .request(&ledger, &ledger, call)
                                       .err()
                                       .unwrap_or(OK) as i64
                            })
@@ -1065,6 +1065,7 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                                }
                                session.scroll_boxes
                                       .request(&ledger,
+                                               &ledger,
                                                call,
                                                &session.fonts,
                                                crate::test_scrollbar::scrollbar_definition,
@@ -1115,7 +1116,8 @@ unsafe extern "C" fn host_gate(number: u32, pointer: *mut (), size: usize) -> i6
                                           }
                                           _ => return Err(NOT_FOUND)
                                       };
-                                      manager.request(&ledger, call, entry, host_gate).map(|_| ())
+                                      manager.request(&ledger, &ledger, call, entry, host_gate)
+                                             .map(|_| ())
                                   })();
                                   result.map_or_else(|e| e as i64, |_| 0)
                               });
@@ -1441,7 +1443,7 @@ pub fn standard_file_action(action: crate::toolbox::standard_file::Action, when:
                let mut s = slot.borrow_mut();
                let s = s.as_mut().unwrap();
                let id = s.standard_file.active(owner).ok_or(NOT_FOUND)?;
-               s.standard_file.action(id, &mut s.files, action, when)
+               s.standard_file.action(owner, id, action, when)
            })
 }
 pub fn standard_file_entries() -> std::vec::Vec<mac_abi::files::CatalogInfo>
@@ -1451,7 +1453,7 @@ pub fn standard_file_entries() -> std::vec::Vec<mac_abi::files::CatalogInfo>
                let s = slot.borrow();
                let s = s.as_ref().unwrap();
                let id = s.standard_file.active(owner).unwrap();
-               s.standard_file.get(id).unwrap().entries.clone()
+               s.standard_file.get(owner, id).unwrap().visible_entries().to_vec()
            })
 }
 

@@ -9,6 +9,8 @@ pub const SCROLL: u32 = 5;
 pub const DISMISS: u32 = 6;
 /// Resident retention limit; excess diagnostics remain available in the serial log.
 pub const MAX_REPORT_BYTES: usize = 1024 * 1024;
+/// Maximum UTF-8 input per APPEND trap. Clients stream larger reports in chunks.
+pub const MAX_APPEND_BYTES: usize = 512;
 pub const TRUNCATED: u32 = 1;
 pub const FORMAT_FAILED: u32 = 2;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

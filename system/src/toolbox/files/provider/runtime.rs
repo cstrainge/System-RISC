@@ -28,6 +28,8 @@ mod metadata;
 mod streams;
 mod groups;
 mod background;
+mod resident;
+pub(crate) use resident::{Reply as ResidentReply, Request as ResidentRequest};
 pub(in crate::toolbox::files) mod transfer;
 pub(crate) use application::{pending as application_pending, request as request_application};
 pub(crate) use groups::request as request_group;
@@ -52,7 +54,7 @@ static FORK_CLEANUP: AtomicBool = AtomicBool::new(false);
 static WRITE_CLEANUP: AtomicBool = AtomicBool::new(false);
 pub(crate) fn power_ready() -> bool
 {
-    FLIGHTS.lock().is_empty()
+    FLIGHTS.lock().is_empty() && !resident::cleanup_pending()
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Record
@@ -102,6 +104,10 @@ enum Step
     Stream(streams::State),
     Group(groups::State),
     Scan(DirectoryScanCursor),
+    PrepareName
+    {
+        volume: u32
+    },
     Allocation
     {
         volume: u32,
@@ -304,6 +310,7 @@ pub(in crate::toolbox::files) fn submit_args(subject: &IoSubject, provider: u64,
         let size = match op
         {
             Operation::Exports => 4,
+            Operation::PrepareName => fs::MAX_PREPARED_NAME_BYTES,
             Operation::Mount => fs::MAX_MOUNT_BYTES,
             Operation::Catalog
             | Operation::Lookup
@@ -482,6 +489,11 @@ fn advance(mut flight: Flight) -> Progress
             {
                 let result = result.and_then(|bytes| super::scan::reply(cursor, &bytes));
                 Progress::Done(files(|manager| manager.end_provider_read(cursor.volume)).and(result).map(Reply::Scan))
+            }
+            Step::PrepareName { volume } =>
+            {
+                Progress::Done(files(|manager| manager.end_provider_read(volume)).and(result)
+                                                                                 .map(Reply::Bytes))
             }
             Step::Allocation { volume,
                                node } =>
@@ -1065,6 +1077,7 @@ pub(crate) fn abandon_thread(thread: u64)
 }
 pub(crate) fn pump()
 {
+    resident::pump_cleanup();
     crate::drivers::file_sources::runtime::pump();
     transfer::pump();
     if super::super::groups::needs_cleanup()

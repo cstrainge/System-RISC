@@ -97,18 +97,79 @@ impl Records
         Ok(())
     }
 
+    pub(super) fn reserved_capacity(&self) -> usize
+    {
+        self.store.as_ref().map_or(0, store::Store::reserved_capacity)
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(super) fn reserve_publication(
+        &mut self, owner: &crate::toolbox::handles::OwnerRef)
+        -> Result<store::PublicationReservation<InvocationGate>, Status>
+    {
+        let reservation = self.store
+                              .as_mut()
+                              .ok_or(mac_abi::NOT_SUPPORTED)?
+                              .reserve_publication(owner)
+                              .map_err(pool_status)?;
+        let reserved = self.reserved_capacity();
+        InvocationGate::with_system_allocation(|| {
+            self.receipts.try_reserve(reserved)?;
+            self.retiring
+                .try_reserve((self.receipts.len() + reserved).saturating_sub(self.retiring.len()))
+        }).map_err(|_| NO_MEMORY)?;
+        Ok(reservation)
+    }
+
     pub(super) fn insert(&mut self, subject: &subjects::Subject, value: Value)
                          -> Result<store::Publication, Status>
     {
-        InvocationGate::with_system_allocation(|| {
-            self.receipts.try_reserve(1)?;
-            self.retiring.try_reserve(self.receipts.len() + 1 - self.retiring.len())
-        }).map_err(|_| NO_MEMORY)?;
-        let publication = self.store
-                              .as_mut()
-                              .ok_or(mac_abi::NOT_SUPPORTED)?
-                              .insert_in_scope_with_receipt(subject.scope(), |_| value)
-                              .map_err(pool_status)?;
+        let reserved = self.reserved_capacity();
+        #[cfg(target_arch = "riscv64")]
+        let activity = subject.recovery_activity();
+        #[cfg(target_arch = "riscv64")]
+        let recovery = subject.uses_protected_publication();
+        #[cfg(not(target_arch = "riscv64"))]
+        let recovery = false;
+        if recovery
+        {
+            if self.receipts.len() == self.receipts.capacity()
+               || self.retiring.capacity() < self.receipts.len() + 1
+            {
+                return Err(NO_MEMORY);
+            }
+        }
+        else
+        {
+            InvocationGate::with_system_allocation(|| {
+                self.receipts.try_reserve(1 + reserved)?;
+                self.retiring
+                    .try_reserve((self.receipts.len() + 1 + reserved).saturating_sub(self.retiring
+                                                                                         .len()))
+            }).map_err(|_| NO_MEMORY)?;
+        }
+        #[cfg(target_arch = "riscv64")]
+        let pin = activity.map(crate::recovery::Activity::acknowledgement_pin);
+        #[cfg(not(target_arch = "riscv64"))]
+        let pin = None;
+        let store = self.store.as_mut().ok_or(mac_abi::NOT_SUPPORTED)?;
+        #[cfg(target_arch = "riscv64")]
+        let publication = if let Some(activity) = activity.filter(|_| recovery)
+        {
+            activity.publication().with_job(subject, |reservation| {
+                                       store.insert_reserved_in_scope_with_acknowledgement(reservation, subject.scope(), pin, |_| value)
+                                            .map_err(super::recovery::publication_status)
+                                   })?
+        }
+        else
+        {
+            store.insert_in_scope_with_acknowledgement(subject.scope(), pin, |_| value)
+                 .map_err(pool_status)?
+        };
+        #[cfg(not(target_arch = "riscv64"))]
+        let publication =
+            store.insert_in_scope_with_acknowledgement(subject.scope(), pin, |_| value)
+                 .map_err(pool_status)?;
         self.receipts.push(publication.into_parts());
         Ok(publication)
     }
@@ -329,7 +390,7 @@ impl
 #[cfg(test)]
 mod tests;
 
-fn pool_status(error: mac_object_table::domain::PoolError) -> Status
+pub(super) fn pool_status(error: mac_object_table::domain::PoolError) -> Status
 {
     crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error))
 }

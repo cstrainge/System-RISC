@@ -444,23 +444,25 @@ pub(crate) fn request(call: &mut ProcessCall) -> Status
         {
             return crate::kernel::with_desktop(|d| d.process(call)).map_err(|e| e.status());
         }
-        // An app can quit and another launch it before the next timer tick.
-        // This trap is already on the other app's stack: finish that real
-        // checkpoint before deciding whether reloading the old image is safe.
-        crate::machine::scheduler::reclaim_retired();
-        retirement::pump();
-        if !crate::toolbox::files::application::pending()
+        crate::context::without_recovery(|| {
+            // An app can quit and another launch it before the next timer tick.
+            // This trap is already on the other app's stack: finish that real
+            // checkpoint before deciding whether reloading the old image is safe.
+            crate::machine::scheduler::reclaim_retired();
+            retirement::pump();
+            if !crate::toolbox::files::application::pending()
            && crate::kernel::with_desktop(|d| d.activate_existing_application(call))
                 .map_err(|e| e.status())??
         {
             return Ok(OK);
         }
-        let owner = crate::context::current_thread_context().identity().app.0;
-        let loaded = crate::toolbox::files::application::read(owner, call.volume, call.cnid)?;
-        crate::kernel::with_desktop(|d| d.launch_application(call, *loaded)).map_err(|e| {
-                                                                                e.status()
-                                                                            })?
-                                                                            .map(|()| OK)
+            let owner = crate::context::current_thread_context().identity().app.0;
+            let loaded = crate::toolbox::files::application::read(owner, call.volume, call.cnid)?;
+            crate::kernel::with_desktop(|d| d.launch_application(call, *loaded)).map_err(|e| {
+                                                                                    e.status()
+                                                                                })?
+                                                                                .map(|()| OK)
+        })
     })();
     result.unwrap_or_else(|error| error)
 }

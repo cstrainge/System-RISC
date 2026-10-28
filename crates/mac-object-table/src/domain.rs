@@ -404,6 +404,7 @@ pub struct DomainSlots
     kind:                  KindCode,
     policy:                CapacityPolicy,
     occupied:              Vec<u64>,
+    reserved:              Vec<u64>,
     retired:               Vec<u64>,
     pending:               Vec<u64>,
     quarantined:           Vec<u64>,
@@ -440,6 +441,7 @@ impl DomainSlots
                   kind,
                   policy,
                   occupied: Vec::new(),
+                  reserved: Vec::new(),
                   retired: Vec::new(),
                   pending: Vec::new(),
                   quarantined: Vec::new(),
@@ -492,12 +494,14 @@ impl DomainSlots
                                          requested_slots: slots,
                                          limit:           self.policy.limit() };
         self.occupied.try_reserve(words - self.occupied.len()).map_err(|_| error)?;
+        self.reserved.try_reserve(words - self.reserved.len()).map_err(|_| error)?;
         self.retired.try_reserve(words - self.retired.len()).map_err(|_| error)?;
         self.pending.try_reserve(words - self.pending.len()).map_err(|_| error)?;
         self.quarantined.try_reserve(words - self.quarantined.len()).map_err(|_| error)?;
         self.generations.try_reserve(slots - self.generations.len()).map_err(|_| error)?;
         self.parents.try_reserve(slots - self.parents.len()).map_err(|_| error)?;
         self.occupied.resize(words, 0);
+        self.reserved.resize(words, 0);
         self.retired.resize(words, 0);
         self.pending.resize(words, 0);
         self.quarantined.resize(words, 0);
@@ -553,25 +557,15 @@ impl DomainSlots
                 let first = at % 64;
                 let take = (end - at).min(64 - first);
                 let span = if take == 64 { u64::MAX } else { ((1u64 << take) - 1) << first };
-                let free = !(self.occupied[word] | self.retired[word] | self.pending[word]) & span;
+                let free = !(self.occupied[word]
+                             | self.retired[word]
+                             | self.pending[word]
+                             | self.reserved[word])
+                           & span;
                 if free != 0
                 {
                     let slot = word * 64 + free.trailing_zeros() as usize;
-                    let generation = NonZeroU64::new(self.generations[slot].max(1)).unwrap();
-                    self.generations[slot] = generation.get();
-                    self.generation_high_water = self.generation_high_water.max(generation.get());
-                    self.occupied[word] |= 1 << (slot % 64);
-                    self.parents[slot] = parent;
-                    self.scoped_count += usize::from(parent.is_some());
-                    self.live += 1;
-                    self.births = self.births.saturating_add(1);
-                    self.drain_word = self.drain_word.min(word);
-                    self.cursor = if slot + 1 == len { 0 } else { slot + 1 };
-                    return Ok(ResourceKey { owner,
-                                            kind: self.kind,
-                                            slot,
-                                            generation,
-                                            registration: self.registration });
+                    return Ok(self.occupy(slot, parent));
                 }
                 at += take;
             }
@@ -590,6 +584,76 @@ impl DomainSlots
         {
             Err(self.exhausted())
         }
+    }
+
+    fn occupy(&mut self, slot: usize, parent: Option<ResourceKey>) -> ResourceKey
+    {
+        let generation = NonZeroU64::new(self.generations[slot].max(1)).unwrap();
+        self.generations[slot] = generation.get();
+        self.generation_high_water = self.generation_high_water.max(generation.get());
+        self.occupied[slot / 64] |= 1 << (slot % 64);
+        self.parents[slot] = parent;
+        self.scoped_count += usize::from(parent.is_some());
+        self.live += 1;
+        self.births = self.births.saturating_add(1);
+        self.drain_word = self.drain_word.min(slot / 64);
+        self.cursor = if slot + 1 == self.generations.len() { 0 } else { slot + 1 };
+        ResourceKey { owner: self.owner,
+                      kind: self.kind,
+                      slot,
+                      generation,
+                      registration: self.registration }
+    }
+
+    // A reservation owns physical publication capacity, not a live object or
+    // identity. Normal allocation excludes this bit until its capability dies.
+    fn reserve_slot(&mut self) -> Result<usize, PoolError>
+    {
+        if !self.accepting
+        {
+            return Err(PoolError::Stopping { owner: self.owner });
+        }
+        for slot in 0..self.generations.len()
+        {
+            let word = slot / 64;
+            let bit = 1 << (slot % 64);
+            if (self.occupied[word] | self.pending[word] | self.retired[word] | self.reserved[word])
+               & bit
+               == 0
+            {
+                self.reserved[word] |= bit;
+                return Ok(slot);
+            }
+        }
+        let len = self.generations.len();
+        if self.policy.limit().is_some_and(|limit| len >= limit)
+        {
+            return Err(self.exhausted());
+        }
+        Err(PoolError::GrowthRequired { owner:         self.owner,
+                                        kind:          self.kind,
+                                        used:          self.live,
+                                        retired:       self.retired_count,
+                                        pending:       self.pending_count,
+                                        storage_slots: len,
+                                        policy_limit:  self.policy.limit() })
+    }
+
+    fn allocate_reserved(&mut self, slot: usize, parent: Option<ResourceKey>)
+                         -> Result<ResourceKey, PoolError>
+    {
+        if slot >= self.generations.len()
+        {
+            return Err(PoolError::InvalidGrowth);
+        }
+        let word = slot / 64;
+        let bit = 1 << (slot % 64);
+        if self.reserved[word] & bit == 0
+           || (self.occupied[word] | self.pending[word] | self.retired[word]) & bit != 0
+        {
+            return Err(self.exhausted());
+        }
+        Ok(self.occupy(slot, parent))
     }
 
     pub fn contains(&self, key: ResourceKey) -> bool
@@ -1656,6 +1720,44 @@ impl OwnerIndex
                       .ok_or(PoolError::UnregisteredKind { owner,
                                                            kind })?
                       .allocate_child(owner, parent)?;
+        self.revision = self.revision.saturating_add(1);
+        Ok(key)
+    }
+
+    pub(crate) fn reserve_value_slot(&mut self, kind: KindCode) -> Result<usize, PoolError>
+    {
+        self.authorize(kind, None)?;
+        let owner = self.owner;
+        let slot = self.pool_mut(kind)
+                       .ok_or(PoolError::UnregisteredKind { owner,
+                                                            kind })?
+                       .reserve_slot()?;
+        self.revision = self.revision.saturating_add(1);
+        Ok(slot)
+    }
+
+    pub(crate) fn unreserve_value_slot(&mut self, kind: KindCode, slot: usize)
+    {
+        if let Some(pool) = self.pool_mut(kind)
+        {
+            if let Some(word) = pool.reserved.get_mut(slot / 64)
+            {
+                *word &= !(1 << (slot % 64));
+                self.revision = self.revision.saturating_add(1);
+            }
+        }
+    }
+
+    pub(crate) fn allocate_reserved_value(&mut self, kind: KindCode, slot: usize,
+                                          scope: Option<&crate::scope::State>)
+                                          -> Result<ResourceKey, PoolError>
+    {
+        let parent = self.authorize(kind, scope)?;
+        let owner = self.owner;
+        let key = self.pool_mut(kind)
+                      .ok_or(PoolError::UnregisteredKind { owner,
+                                                           kind })?
+                      .allocate_reserved(slot, parent)?;
         self.revision = self.revision.saturating_add(1);
         Ok(key)
     }

@@ -581,6 +581,18 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     crate::machine::scheduler::start()
 }
 
+fn recovery_boot_error(service: &'static str, status: Status) -> mac_formats::Error
+{
+    serial!("RECOVERY_BOOT_REFUSED service={service} status={status}");
+    match status
+    {
+        NO_MEMORY => mac_formats::Error::AllocationFailed(service),
+        NOT_FOUND => mac_formats::Error::Missing(service),
+        TRANSLATION_REQUIRED => mac_formats::Error::TranslationRequired(service),
+        _ => mac_formats::Error::Malformed(service)
+    }
+}
+
 fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resource>,
                       processes: crate::toolbox::processes::Manager, finder_loaded: LoadedImage)
                       -> mac_formats::Result<()>
@@ -607,9 +619,30 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     // Progress uses the real loaded CDEF before any application loop exists.
     let fonts = FONTS.call_once(|| fonts);
     let files = RESOURCE_FILES.call_once(|| crate::toolbox::resources::manager::Files { system });
+    crate::toolbox::standard_file::prepare_templates().map_err(|status| {
+                                                          recovery_boot_error("Standard File \
+                                                                               template admission \
+                                                                               failed",
+                                                                              status)
+                                                      })?;
+    crate::toolbox::dialogs::core_alerts::prepare().map_err(|status| {
+                                                       recovery_boot_error("System core alert \
+                                                                            admission failed",
+                                                                           status)
+                                                   })?;
+    crate::toolbox::crashes::initialize_protected_report(crate::recovery::permit()
+        .map_err(|status| recovery_boot_error("protected report storage unavailable", status))?)
+        .map_err(|status| recovery_boot_error("full report storage admission failed", status))?;
+    crate::recovery::prepare_modal().map_err(|status| {
+                                        recovery_boot_error("System modal service admission failed",
+                                                            status)
+                                    })?;
     let mut definitions = crate::loader::Definitions::new(files);
-    let mut boot_screen =
-        crate::boot_screen::BootScreen::begin(&files.system, fonts, &mut definitions)?;
+    let mut controls = crate::toolbox::controls::objects::Manager::new(
+        crate::toolbox::handles::controls_kinds().map_err(|status| recovery_boot_error("Control Manager kind admission failed", status))?)
+        .map_err(|status| recovery_boot_error("Control Manager admission failed", status))?;
+    let mut boot_screen = crate::boot_screen::BootScreen::begin(&files.system, fonts,
+                                                                &mut definitions, &mut controls)?;
     if !crate::platform::setup_framebuffer()
     {
         return Err(mac_formats::Error::Malformed("RAM framebuffer is unavailable"));
@@ -617,8 +650,8 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     serial!("BOOT_PANEL_READY stages=7");
     // Immutable publication is acquire/release synchronized by Once. Runtime
     // readers never spin or take a mutable catalog guard.
-    boot_screen.completed(1)?;
-    boot_screen.completed(2)?;
+    boot_screen.completed(1, &mut controls)?;
+    boot_screen.completed(2, &mut controls)?;
     crate::toolbox::files::types::initialize().map_err(|status| {
                                                   serial!("FILE_TYPES_ERROR status={}", status);
                                                   mac_formats::Error::Malformed("File Types is \
@@ -636,15 +669,32 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     {
         serial!("HOST_VOLUME_DISCOVERY_FAILED status={}", status);
     }
-    boot_screen.completed(3)?;
-    let runtime =
-        crate::toolbox::runtime::Desktop::new(definitions, processes, finder_owner).map_err(|_| {
+    boot_screen.completed(3, &mut controls)?;
+    let mut runtime =
+        crate::toolbox::runtime::Desktop::new(definitions, processes, finder_owner, controls).map_err(|_| {
                                               mac_formats::Error::Malformed("Toolbox initialization failed")
                                           })?;
-    boot_screen.completed(4)?;
+    runtime.prepare_recovery_storage().map_err(|status| {
+                                           recovery_boot_error("System UI publication storage \
+                                                                admission failed",
+                                                               status)
+                                       })?;
+    if let Some(storage) = crate::allocator::recovery::statistics()
+    {
+        serial!("RECOVERY_STORAGE_READY capacity={} admitted={} foundation={} system={} \
+                 domains={} raw_backing={} full_recovery_kit=false",
+                storage.capacity,
+                storage.admitted,
+                storage.foundation,
+                storage.system,
+                storage.domains,
+                storage.raw_backing);
+    }
+    runtime.boot_progress(&mut boot_screen, 4)?;
     DESKTOP.publish(runtime)
            .map_err(|_| mac_formats::Error::Malformed("desktop already published"))?;
-    boot_screen.completed(5)?;
+    with_desktop(|desktop| desktop.boot_progress(&mut boot_screen, 5))
+        .map_err(|error| recovery_boot_error("boot progress manager unavailable", error.status()))??;
     serial!("BOOT_SYSTEM_READY: services=0x{:x}", &SERVICES as *const SystemServices as usize);
     serial!("SYSTEM_FINDER_LAUNCH entry=0x{:x}", finder_entry);
     let thread =
@@ -655,13 +705,17 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
               serial!("FINDER_THREAD_CREATION_FAILED status={status}");
               mac_formats::Error::Malformed("Finder thread creation failed")
           })?;
-    boot_screen.completed(6)?;
+    with_desktop(|desktop| desktop.boot_progress(&mut boot_screen, 6))
+        .map_err(|error| recovery_boot_error("boot progress manager unavailable", error.status()))??;
     with_desktop(|desktop| desktop.started(crate::context::finder_app().0, thread)).map_err(|_| {
                                                           mac_formats::Error::Malformed("Finder context \
                                                                               initialization \
                                                                               failed")
                                                       })?;
-    boot_screen.completed(7)?;
+    with_desktop(|desktop| desktop.boot_progress(&mut boot_screen, 7))
+        .map_err(|error| recovery_boot_error("boot progress manager unavailable", error.status()))??;
+    with_desktop(|desktop| desktop.finish_boot_progress(&mut boot_screen))
+        .map_err(|error| recovery_boot_error("boot progress cleanup unavailable", error.status()))??;
     drop(boot_screen);
     let allocations = crate::allocator::statistics();
     serial!("RESIDENT_ALLOCATION_READY capacity={} admitted={} foundation={} system={} \
@@ -779,6 +833,21 @@ unsafe fn start_services(info: &BootInfo) -> *const SystemServices
     // This is the first heap initialization and no ordinary allocation has run.
     unsafe {
         HEAP.initialize(heap_base as *mut u8, heap_bytes);
+    }
+    if info.flags & mac_abi::BOOT_GRAPHICAL != 0
+    {
+        if let Err(status) = crate::recovery::initialize()
+        {
+            serial!("BOOT_RECOVERY_STORAGE_REFUSED status={status}");
+            return ptr::null();
+        }
+        let prepared = crate::recovery::permit()
+            .and_then(crate::machine::scheduler::initialize_finder_recovery);
+        if let Err(status) = prepared
+        {
+            serial!("BOOT_FINDER_RECOVERY_BACKING_REFUSED status={status}");
+            return ptr::null();
+        }
     }
     crate::machine::traps::install();
     let files = match unsafe { crate::toolbox::files::BootStorage::from_boot_info(info) }

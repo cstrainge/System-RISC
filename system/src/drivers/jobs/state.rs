@@ -36,20 +36,40 @@ impl Core
             return Err(SubmissionError { status: NO_MEMORY,
                                          work });
         };
-        let Some(needed) = self.records.len().checked_add(1)
+        #[cfg(target_arch = "riscv64")]
+        let recovery = subject.uses_protected_publication();
+        #[cfg(not(target_arch = "riscv64"))]
+        let recovery = false;
+        let Some(needed) = self.records.len().checked_add(1).and_then(|n| {
+                                                                n.checked_add(if recovery
+                                                               {
+                                                                   0
+                                                               }
+                                                               else
+                                                               {
+                                                                   self.records.reserved_capacity()
+                                                               })
+                                                            })
         else
         {
             return Err(SubmissionError { status: NO_MEMORY,
                                          work });
         };
-        // A detached callback may return Ready or complete after later jobs
-        // enter. Reserve for every retained record before publication, so
-        // callback return, cancellation and cleanup never allocate.
-        let capacity = InvocationGate::with_system_allocation(|| {
-            self.ready.try_reserve(needed.saturating_sub(self.ready.len()))?;
-            self.notices.try_reserve(needed.saturating_sub(self.notices.len()))
-        });
-        if capacity.is_err()
+        // Ordinary publishers preserve all dedicated endpoint headroom. A
+        // protected publication consumes its admitted bucket without growing
+        // these ordinary-origin global vectors.
+        let capacity = if recovery
+        {
+            self.ready.capacity() >= needed && self.notices.capacity() >= needed
+        }
+        else
+        {
+            InvocationGate::with_system_allocation(|| {
+                self.ready.try_reserve(needed.saturating_sub(self.ready.len()))?;
+                self.notices.try_reserve(needed.saturating_sub(self.notices.len()))
+            }).is_ok()
+        };
+        if !capacity
         {
             return Err(SubmissionError { status: NO_MEMORY,
                                          work });

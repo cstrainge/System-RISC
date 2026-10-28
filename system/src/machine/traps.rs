@@ -392,7 +392,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         CRASH =>
         {
             let call = read_request!(mac_abi::crashes::CrashCall);
-            if call.length > mac_abi::crashes::MAX_REPORT_BYTES
+            if call.length > mac_abi::crashes::MAX_APPEND_BYTES
                || call.capacity > mac_abi::crashes::MAX_REPORT_BYTES
                || (call.length != 0 && call.data.is_null())
                || (call.capacity != 0 && call.output.is_null())
@@ -420,9 +420,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             {
                 unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
             };
-            crate::kernel::with_desktop(|runtime| {
-                runtime.crash_request(call, input, output).map_or_else(|status| status, |()| OK)
-            }).unwrap_or_else(|error| error.status()) as i64
+            crate::recovery::crash_request(call, input, output) as i64
         }
         CLOCK =>
         {
@@ -470,16 +468,12 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         STANDARD_FILE =>
         {
             let call = read_request!(mac_abi::standard_file::StandardFileCall);
-            crate::kernel::with_desktop(|runtime| {
-                runtime.standard_file_request(call).err().unwrap_or(OK)
-            }).unwrap_or_else(|e| e.status()) as i64
+            crate::recovery::standard_file_request(call) as i64
         }
         DIALOG =>
         {
             let call = read_request!(mac_abi::dialogs::DialogCall);
-            crate::kernel::with_desktop(|runtime| runtime.dialog(call)).unwrap_or_else(|error| {
-                                                                           error.status()
-                                                                       }) as i64
+            crate::recovery::dialog_request(call) as i64
         }
         MENU =>
         {

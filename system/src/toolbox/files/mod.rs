@@ -39,6 +39,8 @@ use mac_filesystem::{BlockDevice, CatalogEntry, Fork, MutationError, Partition, 
                      WritableBlockDevice};
 pub use mac_formats::macbinary::MacFile;
 #[cfg(target_arch = "riscv64")]
+pub(in crate::toolbox) use provider::runtime::{ResidentReply, ResidentRequest};
+#[cfg(target_arch = "riscv64")]
 pub(crate) use provider::runtime::{abandon_thread as abandon_provider_thread,
                                    mount_startup_exports, pump as pump_provider_operations,
                                    request_resource};

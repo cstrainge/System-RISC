@@ -2,7 +2,7 @@
 //! tracking policy. No caller memory or callback survives a request.
 #![forbid(unsafe_code)]
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use mac_abi::{controls::*, *};
 
@@ -51,11 +51,16 @@ impl<C: ControlHost> mac_object_table::registry::Release<C> for ReleaseControls
 
 struct Object
 {
-    window:    u64,
-    spec:      Spec,
-    scrollbar: bool,
-    title:     Option<Arc<super::snapshot::Title>>,
-    tracking:  Option<Tracking>
+    window:             u64,
+    recipient:          u64,
+    spec:               Spec,
+    scrollbar:          bool,
+    title:              Option<Arc<super::snapshot::Title>>,
+    tracking:           Option<Tracking>,
+    // Last: registered removal must finish payload destruction before the
+    // protected modal service can become available to another recipient.
+    #[cfg(target_arch = "riscv64")]
+    _recovery_activity: Option<crate::recovery::Activity>
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Spec
@@ -100,13 +105,15 @@ struct Tracking
 }
 pub struct Manager
 {
-    objects: Store<Object>
+    objects: Store<Object>,
+    publications: Vec<mac_object_table::store::PublicationReservation<crate::toolbox::handles::InvocationGate>>
 }
 impl Manager
 {
     pub(crate) fn new((kind, storage): (KindLease, KindLease)) -> Result<Self, Status>
     {
-        Ok(Self { objects: Store::owned(kind, storage).map_err(|_| BAD_ARGUMENT)? })
+        Ok(Self { objects:      Store::owned(kind, storage).map_err(|_| BAD_ARGUMENT)?,
+                  publications: Vec::new() })
     }
 }
 impl Manager
@@ -114,11 +121,45 @@ impl Manager
     fn get(&self, id: u64, owner: u64) -> Result<&Object, Status>
     {
         let o = self.objects.get(id).ok_or(NOT_FOUND)?;
-        if self.objects.owner(id).map(|domain| domain.incarnation()) != Some(owner)
+        if o.recipient != owner
         {
             return Err(ACCESS_DENIED);
         }
+        let storage = self.objects.owner(id).ok_or(NOT_FOUND)?;
+        if storage.incarnation() != owner
+        {
+            #[cfg(target_arch = "riscv64")]
+            {
+                let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                if activity.owner() != owner || activity.storage_owner().owner() != storage
+                {
+                    return Err(ACCESS_DENIED);
+                }
+            }
+            #[cfg(not(target_arch = "riscv64"))]
+            return Err(ACCESS_DENIED);
+        }
         Ok(o)
+    }
+
+    /// Held canonical slots and cleanup records cannot be consumed by ordinary
+    /// callers. The required count is computed from the guaranteed UI resources.
+    pub(crate) fn prepare_recovery(&mut self, storage: &OwnerRef, count: usize)
+                                   -> Result<(), Status>
+    {
+        if storage.owner().kind() != mac_object_table::domain::DomainKind::System || count == 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        self.publications
+            .try_reserve_exact(count.saturating_sub(self.publications.len()))
+            .map_err(|_| NO_MEMORY)?;
+        while self.publications.len() < count
+        {
+            self.publications
+                .push(self.objects.reserve_publication(storage).map_err(pool_status)?);
+        }
+        Ok(())
     }
 
     pub fn window(&self, id: u64, owner: u64) -> Result<u64, Status>
@@ -160,11 +201,33 @@ impl Manager
            })
     }
 
-    pub(crate) fn request(&mut self, ledger: &OwnerRef, call: &mut ControlCall,
-                          entry: DefinitionEntry, gate: TrapGate)
+    pub(crate) fn request(&mut self, recipient: &OwnerRef, storage: &OwnerRef,
+                          call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
                           -> Result<Option<super::Drawing>, Status>
     {
-        let owner = ledger.owner().incarnation();
+        let owner = recipient.owner().incarnation();
+        let recovery = storage.owner() != recipient.owner();
+        if recovery
+        {
+            #[cfg(target_arch = "riscv64")]
+            {
+                let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                if activity.owner() != owner
+                   || activity.storage_owner().owner() != storage.owner()
+                   || !crate::context::io_subject().is_some_and(|subject| {
+                                                       subject.scope()
+                                                              .same_scope(activity.root_subject()
+                                                                                  .scope())
+                                                   })
+                   || (matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
+                       && !recipient.accepting())
+                {
+                    return Err(ACCESS_DENIED);
+                }
+            }
+            #[cfg(not(target_arch = "riscv64"))]
+            return Err(ACCESS_DENIED);
+        }
         let operation = call.operation;
         if !call.surface.is_null() || call.reserved != 0
         {
@@ -215,22 +278,45 @@ impl Manager
             }
             if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
             {
-                call.id = self.objects
-                              .insert(ledger,
-                                      Object { window: call.window,
-                                               spec: Spec::from_call(&spec),
-                                               scrollbar,
-                                               title:admitted_title.clone(),
-                                               tracking: None })
-                              .map_err(|error| {
-                                  #[cfg(target_arch = "riscv64")]
-                                  serial!("CONTROL_ADMISSION_REFUSED: {error}");
-                                  match error {
-                                      mac_object_table::domain::PoolError::RegistrationUnavailable { .. }
-                                      | mac_object_table::domain::PoolError::Stopping { .. } => SERVICE_BUSY,
-                                      _ => NO_MEMORY
-                                  }
-                              })?;
+                let object = Object { window: call.window,
+                                      recipient: owner,
+                                      spec: Spec::from_call(&spec),
+                                      scrollbar,
+                                      title: admitted_title.clone(),
+                                      tracking: None,
+                                      #[cfg(target_arch = "riscv64")]
+                                      _recovery_activity: if recovery
+                                      {
+                                          crate::context::recovery_activity()
+                                      }
+                                      else
+                                      {
+                                          None
+                                      } };
+                call.id = if recovery
+                {
+                    let reservation = self.publications
+                                          .iter_mut()
+                                          .find(|reservation| reservation.ready())
+                                          .ok_or(SERVICE_BUSY)?;
+                    #[cfg(target_arch = "riscv64")]
+                    {
+                        let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                        let subject = activity.root_subject();
+                        self.objects.insert_reserved_in_scope_with_acknowledgement(
+                            reservation, subject.scope(), Some(activity.acknowledgement_pin()),
+                            |_| object).map_err(publication_status)?.id()
+                    }
+                    #[cfg(not(target_arch = "riscv64"))]
+                    {
+                        let _ = (reservation, object);
+                        return Err(NOT_SUPPORTED);
+                    }
+                }
+                else
+                {
+                    self.objects.insert(storage, object).map_err(pool_status)?
+                };
             }
         }
         let object = self.get(call.id, owner)?;
@@ -244,13 +330,9 @@ impl Manager
             return Ok(None);
         }
         if operation == BEGIN_TRACKING
-           && self.objects.iter().any(|(id, o)| {
-                                     id != call.id
-                                     && self.objects
-                                            .owner(id)
-                                            .is_some_and(|domain| domain.incarnation() == owner)
-                                     && o.tracking.is_some()
-                                 })
+           && self.objects
+                  .iter()
+                  .any(|(id, o)| id != call.id && o.recipient == owner && o.tracking.is_some())
         {
             return Err(SERVICE_BUSY);
         }
@@ -453,5 +535,20 @@ impl Object
         self.spec.scrollbar.value =
             (i32::from(old) + amount).clamp(0, i32::from(self.spec.scrollbar.maximum)) as i16;
         old != self.spec.scrollbar.value
+    }
+}
+
+fn pool_status(error: mac_object_table::domain::PoolError) -> Status
+{
+    crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error))
+}
+
+#[cfg(target_arch = "riscv64")]
+fn publication_status(error: mac_object_table::store::PublicationError) -> Status
+{
+    match error
+    {
+        mac_object_table::store::PublicationError::Busy => SERVICE_BUSY,
+        mac_object_table::store::PublicationError::Pool(error) => pool_status(error)
     }
 }

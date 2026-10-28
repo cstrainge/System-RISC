@@ -97,7 +97,7 @@ impl<R: Rpc> Filesystem<R>
         pending.node.as_ref().ok_or(Cause::Busy.into())
     }
 
-    pub(super) fn writable(&self, volume: u32) -> Result<()>
+    pub(crate) fn writable(&self, volume: u32) -> Result<()>
     {
         let mount = self.mounts.get(volume).ok_or(Cause::NotFound)?;
         if mount.info.read_only

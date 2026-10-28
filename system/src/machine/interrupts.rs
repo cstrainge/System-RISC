@@ -29,6 +29,11 @@ impl mac_object_table::shared::InvocationGate for NativeInvocationGate
         }
     }
 
+    fn resource_released(_: mac_object_table::domain::DomainId)
+    {
+        crate::recovery::acknowledgement_changed();
+    }
+
     fn released(owner: mac_object_table::domain::DomainId)
     {
         if owner.kind() == mac_object_table::domain::DomainKind::Process

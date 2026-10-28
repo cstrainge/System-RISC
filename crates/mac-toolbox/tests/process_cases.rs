@@ -872,10 +872,15 @@ fn standard_file_lifecycle(system: &System<'_>) -> Result<()>
                                             ..Default::default() };
     system.client().standard_file(&mut call)?;
     let window = system.windows().front()?.ok_or(Failure::Contract("Open window missing"))?;
+    require(system.windows().close(window) == Err(mac_toolbox::Error::AccessDenied),
+            "application directly closed its System-owned Open window")?;
     call.operation = wire::DISPOSE;
     call.reserved[0] = 1;
     require(system.client().standard_file(&mut call) == Err(mac_toolbox::Error::BadArgument),
             "malformed Dispose was accepted")?;
+    // The rejected request must survive real scheduler/cleanup progress, not
+    // merely a second trap before cancellation has had a chance to run.
+    system.wait_event(mac_toolbox::events::EventMask::from_bits_retain(0), 1)?;
     system.windows().info(window)?;
     call.reserved = [0; 2];
     call.operation = wire::POLL;
@@ -883,7 +888,36 @@ fn standard_file_lifecycle(system: &System<'_>) -> Result<()>
     require(call.state == wire::PENDING, "rejected Dispose changed dialog state")?;
     call.operation = wire::DISPOSE;
     system.client().standard_file(&mut call)?;
+    let stale = call.handle;
+    let mut fresh = wire::StandardFileCall { volume: location.volume.0,
+                                             directory: location.directory.0,
+                                             ..Default::default() };
+    let start = system.events().uptime_ticks()?;
+    loop
+    {
+        match system.client().standard_file(&mut fresh)
+        {
+            Ok(()) => break,
+            Err(mac_toolbox::Error::ServiceBusy) =>
+            {
+                require(system.events().uptime_ticks()?.wrapping_sub(start) < 120,
+                        "System dialog did not rearm after actual cleanup acknowledgement")?;
+                system.wait_event(mac_toolbox::events::EventMask::from_bits_retain(0), 1)?;
+            }
+            Err(error) => return Err(error.into())
+        }
+    }
+    require(fresh.handle != stale, "System dialog reused a stale public ID")?;
+    call.operation = wire::POLL;
+    require(system.client().standard_file(&mut call) == Err(mac_toolbox::Error::NotFound),
+            "stale System dialog ID aliased its reused reserved slot")?;
+    require(system.windows().info(window) == Err(mac_toolbox::Error::NotFound),
+            "disposed System dialog window remained readable after reuse")?;
+    fresh.operation = wire::DISPOSE;
+    system.client().standard_file(&mut fresh)?;
     system.log("PROCESS_STANDARD_FILE_RAII_PASS mode=normal reserved=passed\n")?;
+    system.log("PROCESS_STANDARD_FILE_SYSTEM_OWNERSHIP_PASS readonly=passed mutation=denied \
+                reuse=passed stale=passed\n")?;
     Ok(())
 }
 
@@ -1035,8 +1069,6 @@ pub fn worker(system: &System<'_>) -> Result<()>
                             (*b"CSTA", 1),
                             (*b"SBOX", 1),
                             (*b"SBST", 1),
-                            (*b"SFDL", 0),
-                            (*b"SFST", 1),
                             (*b"GWLD", 1),
                             (*b"GWST", 1),
                             (*b"MENU", 1),
@@ -1061,8 +1093,6 @@ pub fn worker(system: &System<'_>) -> Result<()>
                             (*b"FIGS", 1),
                             (*b"FPIN", 1),
                             (*b"FPST", 1)];
-            require(ledger.len() == expected.len() as u64,
-                    "worker exit pool census missing a registered kind")?;
             for index in 0..ledger.len()
             {
                 let pool = ledger.at(index).map_err(|e| Failure::Service(e.cause.status()))?;
@@ -1081,6 +1111,11 @@ pub fn worker(system: &System<'_>) -> Result<()>
                         "worker exit pool has unexpected live or pending objects; see \
                          PROCESS_WORKER_POOL")?;
             }
+            // SFDL/SFST are absent from this app's ledger: both protocol and
+            // backing now belong to System. The exact list above rejects an
+            // accidental app-owned pool, even one with zero live objects.
+            require(ledger.len() == expected.len() as u64,
+                    "worker exit pool census missing a registered kind; see PROCESS_WORKER_POOL")?;
             system.log("PROCESS_WORKER_INPUT_PASS\n")?;
             let mut cleanup = crate::LogBuffer::new();
             let _ = writeln!(cleanup,

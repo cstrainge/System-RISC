@@ -90,6 +90,10 @@ impl Operations
                     Ok(Subject { scope: scope.clone(),
                                  _retention: None,
                                  request: None,
+                                 #[cfg(target_arch = "riscv64")]
+                                 recovery_activity: None,
+                                 #[cfg(target_arch = "riscv64")]
+                                 protected_publication: false,
                                  allocation })
                 }
                 Authority::Client(owner) =>
@@ -113,6 +117,10 @@ impl Operations
                     Ok(Subject { scope,
                                  _retention: Some(retention),
                                  request: None,
+                                 #[cfg(target_arch = "riscv64")]
+                                 recovery_activity: None,
+                                 #[cfg(target_arch = "riscv64")]
+                                 protected_publication: false,
                                  allocation })
                 }
             }
@@ -126,7 +134,22 @@ impl Operations
                                 -> Result<Subject, Status>
     {
         let allocation = crate::allocation::capture_target()?;
-        self.admit(authority, allocation)
+        let subject = self.admit(authority, allocation)?;
+        #[cfg(target_arch = "riscv64")]
+        {
+            let mut subject = subject;
+            if let Some(parent) = crate::context::io_subject()
+               && parent.scope.same_scope(&subject.scope)
+            {
+                subject.recovery_activity = parent.recovery_activity.clone();
+                subject.protected_publication = parent.protected_publication;
+            }
+            Ok(subject)
+        }
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            Ok(subject)
+        }
     }
 
     pub(crate) fn release(&self, ticket: ReleasedResource, storage: bool) -> Result<(), Failure>
@@ -171,15 +194,65 @@ impl Drop for Retention
 #[derive(Clone)]
 pub(crate) struct Subject
 {
-    scope:      Lease,
-    _retention: Option<Arc<Retention>>,
-    request:    Option<mac_object_table::store::CompletionKey>,
+    scope:                 Lease,
+    _retention:            Option<Arc<Retention>>,
+    request:               Option<mac_object_table::store::CompletionKey>,
+    #[cfg(target_arch = "riscv64")]
+    recovery_activity:     Option<crate::recovery::Activity>,
+    #[cfg(target_arch = "riscv64")]
+    protected_publication: bool,
     // Last: the account-use pin outlives scope/Retention destruction and the
     // operation's actual cleanup acknowledgement, including delayed callbacks.
-    allocation: crate::allocation::Target
+    allocation:            crate::allocation::Target
 }
 impl Subject
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn recovery_activity(&self) -> Option<&crate::recovery::Activity>
+    {
+        self.recovery_activity.as_ref()
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn uses_protected_publication(&self) -> bool
+    {
+        self.protected_publication && self.recovery_activity.is_some()
+    }
+
+    /// The trusted registry selects ordinary admission for provider graphs not
+    /// covered by its reserved endpoints. The lifetime/root pin is preserved;
+    /// callbacks and child allocations gain no protected storage by this flag.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn with_ordinary_publication(&self) -> Self
+    {
+        let mut subject = self.clone();
+        subject.protected_publication = false;
+        subject
+    }
+
+    /// Only the resident modal coordinator annotates its own boot-held root.
+    /// Metadata retains this pin across nested calls even though foreign module
+    /// code receives no protected allocation/activity selection.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn for_recovery(activity: crate::recovery::Activity) -> Self
+    {
+        // The constructor derives its root from the genuine Activity; callers
+        // cannot pair that pin with an unrelated operation by supplying a root.
+        let mut subject = activity.root_subject();
+        subject.recovery_activity = Some(activity);
+        subject.protected_publication = true;
+        subject
+    }
+
+    /// A resident coordinator can finish its unique service session only after
+    /// all owned continuation copies are gone. Borrowed/derived operation views
+    /// cannot establish this fact or stand in for the original root owner.
+    pub(crate) fn exclusive(&self) -> bool
+    {
+        self.request.is_none()
+        && self._retention.as_ref().is_some_and(|retention| Arc::strong_count(retention) == 1)
+    }
+
     pub(crate) fn allocation(&self) -> &crate::allocation::Target
     {
         &self.allocation

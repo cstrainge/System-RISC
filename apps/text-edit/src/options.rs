@@ -406,10 +406,8 @@ impl<'a> Options<'a>
                 system.log("TEXT_EDIT_OPTIONS_INVALID_LIMIT\n")?;
                 // Keep the original dialog and draft intact while the System
                 // presents an informative validation alert.
-                let mut alert = system.dialogs()
-                                      .alert_owned(resources::APPLICATION,
-                                                   2001,
-                                                   crate::text(system, 10, &mut [0; 256])?)?;
+                let mut alert =
+                    system.dialogs().error_owned(crate::text(system, 10, &mut [0; 256])?)?;
                 loop
                 {
                     let event = system.wait_event(events::EventMask::ALL, 30)?;

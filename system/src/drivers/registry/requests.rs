@@ -118,6 +118,21 @@ impl Requests
                   cancel_ready: VecDeque::new() })
     }
 
+    #[cfg(target_arch = "riscv64")]
+    fn reserve_recovery(
+        &mut self, owner: &crate::toolbox::handles::OwnerRef)
+        -> Result<[mac_object_table::store::PublicationReservation<InvocationGate>; 2]>
+    {
+        let first = self.store.reserve_publication(owner).map_err(Error::Owner)?;
+        let second = self.store.reserve_publication(owner).map_err(Error::Owner)?;
+        let reserved = self.store.reserved_capacity();
+        InvocationGate::with_system_allocation(|| {
+            self.slots.try_reserve(reserved)?;
+            self.active.try_reserve(reserved)
+        }).map_err(|_| Error::Exhausted)?;
+        Ok([first, second])
+    }
+
     fn at(&self, id: u64) -> Option<usize>
     {
         self.slots.binary_search_by_key(&id, |slot| slot.receipt.id()).ok()
@@ -146,10 +161,49 @@ impl Requests
 
     pub(super) fn insert(&mut self, subject: &Subject, value: Request) -> Result<u64>
     {
+        #[cfg(target_arch = "riscv64")]
+        if let Some(activity) = subject.recovery_activity()
+        {
+            if subject.uses_protected_publication()
+               && !(value.origin == Origin::Direct && subject.current_request().is_none())
+            {
+                return activity.with_storage(|| self.insert_prepared(subject, value));
+            }
+            let ordinary = subject.with_ordinary_publication();
+            return crate::context::without_recovery(|| self.insert_prepared(&ordinary, value));
+        }
+        self.insert_prepared(subject, value)
+    }
+
+    fn insert_prepared(&mut self, subject: &Subject, value: Request) -> Result<u64>
+    {
         let parent = self.validate_parent(subject, value.caller, value.origin)?;
-        InvocationGate::with_system_allocation(|| self.slots.try_reserve(1)).map_err(|_| {
-                                                                                Error::Exhausted
-                                                                            })?;
+        let reserved = self.store.reserved_capacity();
+        #[cfg(target_arch = "riscv64")]
+        let activity = subject.recovery_activity();
+        #[cfg(target_arch = "riscv64")]
+        let recovery = subject.uses_protected_publication();
+        #[cfg(not(target_arch = "riscv64"))]
+        let recovery = false;
+        if recovery
+        {
+            // Direct roots require a separate cancellation coordinator/control
+            // buffer. This kit admits the owned queued root and its nested
+            // direct leaf only; do not silently allocate an ordinary reserve.
+            if value.origin == Origin::Direct && parent.is_none()
+            {
+                return Err(Error::RecoveryUnsupported);
+            }
+            if self.slots.len() == self.slots.capacity()
+            {
+                return Err(Error::Exhausted);
+            }
+        }
+        else
+        {
+            InvocationGate::with_system_allocation(|| self.slots.try_reserve(1 + reserved))
+                .map_err(|_| Error::Exhausted)?;
+        }
         let cancellation = if value.origin == Origin::Direct && parent.is_none()
         {
             let needed = self.slots.len().checked_add(1).ok_or(Error::Exhausted)?;
@@ -171,8 +225,16 @@ impl Requests
                 {
                     self.active[at].1.checked_add(1).ok_or(Error::Exhausted)?;
                 }
-                Err(_) => InvocationGate::with_system_allocation(|| self.active.try_reserve(1))
-                    .map_err(|_| Error::Exhausted)?
+                Err(_) if recovery =>
+                {
+                    if self.active.len() == self.active.capacity()
+                    {
+                        return Err(Error::Exhausted);
+                    }
+                }
+                Err(_) => InvocationGate::with_system_allocation(|| {
+                              self.active.try_reserve(1 + reserved)
+                          }).map_err(|_| Error::Exhausted)?
             }
             Some(at)
         }
@@ -180,13 +242,36 @@ impl Requests
         {
             None
         };
+        #[cfg(target_arch = "riscv64")]
+        let pin = activity.map(crate::recovery::Activity::acknowledgement_pin);
+        #[cfg(not(target_arch = "riscv64"))]
+        let pin = None;
+        let make = |id| {
+            Record { id,
+                     value: Cell::new(value),
+                     subject: subject.clone(),
+                     parent }
+        };
+        #[cfg(target_arch = "riscv64")]
+        let publication = if let Some(activity) = activity.filter(|_| recovery)
+        {
+            activity.publication().with_request(subject, |reservation| {
+                self.store.insert_reserved_in_scope_with_acknowledgement(reservation, subject.scope(), pin, make)
+                    .map_err(|error| match error {
+                        mac_object_table::store::PublicationError::Busy => Error::Busy,
+                        mac_object_table::store::PublicationError::Pool(error) => Error::Owner(error)
+                    })
+            })?
+        }
+        else
+        {
+            self.store
+                .insert_in_scope_with_acknowledgement(subject.scope(), pin, make)
+                .map_err(Error::Owner)?
+        };
+        #[cfg(not(target_arch = "riscv64"))]
         let publication = self.store
-                              .insert_in_scope_with_receipt(subject.scope(), |id| {
-                                  Record { id,
-                                           value: Cell::new(value),
-                                           subject: subject.clone(),
-                                           parent }
-                              })
+                              .insert_in_scope_with_acknowledgement(subject.scope(), pin, make)
                               .map_err(Error::Owner)?;
         let (id, receipt) = publication.into_parts();
         if let Some(at) = counter
@@ -672,3 +757,64 @@ impl<C: Context + ?Sized> Release<C, Failure> for ReleaseRequests
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(target_arch = "riscv64")]
+impl super::Registry
+{
+    pub(crate) fn reserve_recovery_requests(
+        &mut self, owner: &crate::toolbox::handles::OwnerRef)
+        -> Result<[mac_object_table::store::PublicationReservation<InvocationGate>; 2]>
+    {
+        self.requests.reserve_recovery(owner)
+    }
+
+    /// The first kit covers only the admitted shallow FSYS -> HDIR graph.
+    /// Dynamic FORK/backing graphs need their own admitted endpoint bound.
+    /// No driver identity/name substitutes for the real registry bindings.
+    pub(crate) fn validate_recovery_graph(&self, interface: u64) -> Result<()>
+    {
+        let root = self.interface(interface)?;
+        if root.offer.class != mac_module::ClassId(*b"FSYS") || root.module == 0
+        {
+            return Err(Error::RecoveryUnsupported);
+        }
+        let module = self.modules.get(root.module).ok_or(Error::Stale)?;
+        if module.dependencies.len() != 1
+           || !module.services.is_empty()
+           || module.dependencies[0].class != mac_module::ClassId(*b"HDIR")
+           || module.dependency_ids.len() != 1
+        {
+            return Err(Error::RecoveryUnsupported);
+        }
+        let binding = self.dependencies.get(module.dependency_ids[0]).ok_or(Error::Stale)?;
+        if binding.dependent != root.module
+           || binding.class != mac_module::ClassId(*b"HDIR")
+           || binding.scope.is_some()
+        {
+            return Err(Error::RecoveryUnsupported);
+        }
+        let leaf = self.interface(binding.interface)?;
+        if self.interfaces.key(binding.interface) != Some(binding.interface_key)
+           || leaf.module != binding.provider
+           || leaf.offer.class != binding.class
+        {
+            return Err(Error::Stale);
+        }
+        let leaf_module = self.modules.get(leaf.module).ok_or(Error::Stale)?;
+        if !leaf_module.dependencies.is_empty()
+           || !leaf_module.dependency_ids.is_empty()
+           || leaf_module.services.iter().any(|service| {
+                                             service.service != mac_module::ClassId(*b"VDEV")
+                                             || service.version != 1
+                                         })
+           || self.dependencies.retained_values().any(|binding| {
+                                                     (binding.dependent == root.module
+                                                      || binding.dependent == leaf.module)
+                                                     && binding.scope.is_some()
+                                                 })
+        {
+            return Err(Error::RecoveryUnsupported);
+        }
+        Ok(())
+    }
+}

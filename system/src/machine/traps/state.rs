@@ -1,11 +1,11 @@
 //! Owned CPU state, independent of the application's execution stack.
 //! Only the native entry/restore boundary consumes these raw frame pointers.
 use super::TrapFrame;
-use crate::machine::pages::{Backing, Error};
+use crate::machine::pages::{Backing, Error, Storage};
 
 pub(crate) struct SavedState
 {
-    backing: Backing,
+    backing: Storage,
     frame:   usize,
     bytes:   usize,
     stride:  usize
@@ -40,10 +40,44 @@ impl SavedState
         unsafe {
             (frame as *mut TrapFrame).write(initial);
         }
-        Ok(Self { backing,
+        Ok(Self { backing: Storage::Ordinary(backing),
                   frame,
                   bytes,
                   stride })
+    }
+
+    pub(crate) fn from_recovery(mut piece: crate::machine::scheduler::recovery::FinderPiece,
+                                initial: TrapFrame)
+                                -> Self
+    {
+        let (stride, bytes) = match Self::layout()
+        {
+            Ok(layout) => layout,
+            Err(_) =>
+            {
+                crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                                 format_args!("Finder CPU layout unavailable \
+                                                               after boot admission."))
+            }
+        };
+        let vector_bytes = stride - size_of::<TrapFrame>();
+        let frame = piece.cpu_base() + vector_bytes;
+        if bytes > piece.bytes() as usize || !frame.is_multiple_of(align_of::<TrapFrame>())
+        {
+            crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                             format_args!("Finder CPU backing violates \
+                                                           boot-admitted layout."));
+        }
+        piece.activate();
+        // SAFETY: unique, fully scrubbed protected piece; layout was admitted at
+        // boot and cannot change during this one-hart boot. No frame is published.
+        unsafe {
+            (frame as *mut TrapFrame).write(initial);
+        }
+        Self { backing: Storage::Recovery(piece),
+               frame,
+               bytes,
+               stride }
     }
 
     pub(crate) fn frame(&self) -> *mut TrapFrame

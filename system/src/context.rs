@@ -228,6 +228,9 @@ pub struct ThreadContext
     allocation:
         spinning_top::Spinlock<Option<crate::machine::scheduler::accounting::AllocationAuthority>>,
     allocation_scope:  selection::ScopedSelection<crate::allocator::Target>,
+    recovery_scope:    selection::ScopedSelection<Option<crate::allocator::recovery::Permit>>,
+    recovery_default:  spinning_top::Spinlock<Option<crate::allocator::recovery::Permit>>,
+    recovery_activity: selection::ScopedSelection<Option<crate::recovery::Activity>>,
     worker_allocation: spinning_top::Spinlock<Option<crate::allocator::Target>>,
     worker_subject:    spinning_top::Spinlock<Option<crate::drivers::jobs::subjects::Subject>>,
     resources:         selection::ScopedSelection<crate::kernel::ResourceSelection>,
@@ -248,6 +251,9 @@ impl ThreadContext
                owner:             spinning_top::Spinlock::new(None),
                allocation:        spinning_top::Spinlock::new(None),
                allocation_scope:  selection::ScopedSelection::new(BOOT_THREAD),
+               recovery_scope:    selection::ScopedSelection::new(BOOT_THREAD),
+               recovery_default:  spinning_top::Spinlock::new(None),
+               recovery_activity: selection::ScopedSelection::new(BOOT_THREAD),
                worker_allocation: spinning_top::Spinlock::new(None),
                worker_subject:    spinning_top::Spinlock::new(None),
                resources:         selection::ScopedSelection::new(BOOT_THREAD),
@@ -300,6 +306,8 @@ impl ThreadContext
             {
                 return Err(mac_abi::SERVICE_BUSY);
             }
+            self.recovery_scope.reset(ThreadId(thread));
+            self.recovery_activity.reset(ThreadId(thread));
             self.module.reset(ThreadId(thread));
             self.resources.reset(ThreadId(thread));
             self.io_subject.reset(ThreadId(thread));
@@ -320,6 +328,8 @@ impl ThreadContext
     {
         // The sealed worker preparation checked owner/account/execution before
         // publication; assigning its issued THRD identity cannot fail.
+        self.recovery_scope.reset(ThreadId(thread));
+        self.recovery_activity.reset(ThreadId(thread));
         self.module.reset(ThreadId(thread));
         self.resources.reset(ThreadId(thread));
         self.io_subject.reset(ThreadId(thread));
@@ -339,6 +349,22 @@ impl ThreadContext
     pub(crate) fn is_module_worker(&self) -> bool
     {
         self.module_worker.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn install_recovery_default(&self, permit: crate::allocator::recovery::Permit)
+    {
+        *self.recovery_default.lock() = Some(permit);
+    }
+
+    fn selected_recovery(&self) -> Option<crate::allocator::recovery::Permit>
+    {
+        self.recovery_scope.borrow(|selected| {
+                               match selected
+                               {
+                                   Some(selection) => selection.clone(),
+                                   None => self.recovery_default.lock().clone()
+                               }
+                           })
     }
 
     pub(crate) fn install_worker_allocation(&self, target: crate::allocator::Target)
@@ -401,9 +427,12 @@ impl ThreadContext
         use mac_object_table::shared::InvocationGate as _;
         crate::toolbox::handles::InvocationGate::run(|| {
             let owner = self.owner.lock().take();
+            let recovery = self.recovery_default.lock().take();
             let allocation = self.allocation.lock().take();
             let worker_allocation = self.worker_allocation.lock().take();
             let worker_subject = self.worker_subject.lock().take();
+            self.recovery_scope.reset(ThreadId(0));
+            self.recovery_activity.reset(ThreadId(0));
             self.module.reset(ThreadId(0));
             self.resources.reset(ThreadId(0));
             self.io_subject.reset(ThreadId(0));
@@ -414,6 +443,7 @@ impl ThreadContext
             // The allocation pin leaves with the quiescent context before
             // process account readiness is checked. No owner lock is held
             // over its original-account retirement notification.
+            drop(recovery);
             drop(worker_subject);
             drop(worker_allocation);
             drop(allocation);
@@ -428,7 +458,16 @@ impl ThreadContext
         &self, bytes: u64)
         -> Result<crate::allocator::Reservation, crate::allocator::Error>
     {
-        self.with_allocation_selection(|selection| selection.reserve(bytes))
+        self.recovery_scope.borrow(|selected| {
+                               let default = self.recovery_default.lock();
+                               self.with_allocation_selection(|selection| {
+                                       selection.reserve(bytes, match selected
+                                                {
+                                                    Some(selection) => selection.as_ref(),
+                                                    None => default.as_ref()
+                                                })
+                                   })
+                           })
     }
 
     /// Offer only the borrowed current capability. The allocation's original
@@ -627,6 +666,100 @@ static BOOT_ALLOCATION: selection::PermanentSelection<AllocationSelection> =
     selection::PermanentSelection::new(BOOT_THREAD);
 
 #[cfg(target_arch = "riscv64")]
+static BOOT_RECOVERY: selection::PermanentSelection<Option<crate::allocator::recovery::Permit>> =
+    selection::PermanentSelection::new(BOOT_THREAD);
+#[cfg(target_arch = "riscv64")]
+static BOOT_RECOVERY_ACTIVITY: selection::PermanentSelection<Option<crate::recovery::Activity>> =
+    selection::PermanentSelection::new(BOOT_THREAD);
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_recovery_allocation<R>(permit: crate::allocator::recovery::Permit,
+                                          operation: impl FnOnce() -> R)
+                                          -> R
+{
+    let context = current_thread_context();
+    if context.is_bootstrap()
+    {
+        BOOT_RECOVERY.with(Some(Some(permit)), operation)
+    }
+    else
+    {
+        context.recovery_scope.with_pinned(Some(permit), operation)
+    }
+}
+/// Foreign code and ordinary child launch cannot borrow the recovery pool or
+/// keep a modal session alive. Suppression overrides even a Finder baseline.
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn without_recovery<R>(operation: impl FnOnce() -> R) -> R
+{
+    let context = current_thread_context();
+    if context.is_bootstrap()
+    {
+        BOOT_RECOVERY.with(Some(None), || BOOT_RECOVERY_ACTIVITY.with(Some(None), operation))
+    }
+    else
+    {
+        context.recovery_scope
+               .with_pinned(None, || context.recovery_activity.with_pinned(None, operation))
+    }
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn recovery_allocation() -> Option<crate::allocator::recovery::Permit>
+{
+    let context = current_thread_context();
+    if context.is_bootstrap()
+    {
+        BOOT_RECOVERY.current().flatten()
+    }
+    else
+    {
+        context.selected_recovery()
+    }
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_bootstrap_recovery_allocation<R>(permit:Option<crate::allocator::recovery::Permit>,
+                                                    operation: impl FnOnce() -> R)
+                                                    -> R
+{
+    BOOT_RECOVERY.with(Some(permit), operation)
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_recovery_activity<R>(activity: crate::recovery::Activity,
+                                        operation: impl FnOnce() -> R)
+                                        -> R
+{
+    let context = current_thread_context();
+    if context.is_bootstrap()
+    {
+        BOOT_RECOVERY_ACTIVITY.with(Some(Some(activity)), operation)
+    }
+    else
+    {
+        context.recovery_activity.with_pinned(Some(activity), operation)
+    }
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn recovery_activity() -> Option<crate::recovery::Activity>
+{
+    let context = current_thread_context();
+    if context.is_bootstrap()
+    {
+        BOOT_RECOVERY_ACTIVITY.current().flatten()
+    }
+    else
+    {
+        context.recovery_activity.current().flatten()
+    }
+}
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_bootstrap_recovery_activity<R>(activity: Option<crate::recovery::Activity>,
+                                                  operation: impl FnOnce() -> R)
+                                                  -> R
+{
+    BOOT_RECOVERY_ACTIVITY.with(Some(activity), operation)
+}
+
+#[cfg(target_arch = "riscv64")]
 pub(crate) fn reserve_allocation(
     bytes: u64)
     -> Result<crate::allocator::Reservation, crate::allocator::Error>
@@ -647,7 +780,11 @@ pub(crate) fn reserve_bootstrap_allocation(
     bytes: u64)
     -> Result<crate::allocator::Reservation, crate::allocator::Error>
 {
-    with_bootstrap_allocation_selection(|selection| selection.reserve(bytes))
+    BOOT_RECOVERY.borrow(|recovery| {
+                     with_bootstrap_allocation_selection(|selection| {
+                         selection.reserve(bytes, recovery.and_then(Option::as_ref))
+                     })
+                 })
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -784,14 +921,16 @@ pub(crate) fn with_module_execution<R>(execution: &crate::images::ModuleExecutio
                                        -> Result<R, mac_abi::Status>
 {
     let context = current_thread_context();
-    if context.is_bootstrap()
-    {
-        Ok(BOOT_MODULE.with(Some(execution.frame()), call))
-    }
-    else
-    {
-        context.module.with(execution.frame(), call).map_err(|_| mac_abi::WRONG_THREAD)
-    }
+    without_recovery(|| {
+        if context.is_bootstrap()
+        {
+            Ok(BOOT_MODULE.with(Some(execution.frame()), call))
+        }
+        else
+        {
+            context.module.with(execution.frame(), call).map_err(|_| mac_abi::WRONG_THREAD)
+        }
+    })
 }
 
 #[cfg(target_arch = "riscv64")]

@@ -18,6 +18,8 @@ pub(crate) mod images;
 #[cfg(target_arch = "riscv64")]
 mod allocator;
 #[cfg(target_arch = "riscv64")]
+pub(crate) mod recovery;
+#[cfg(target_arch = "riscv64")]
 mod machine;
 #[cfg(target_arch = "riscv64")]
 mod trace;

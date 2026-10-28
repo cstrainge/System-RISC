@@ -80,6 +80,8 @@ pub(crate) struct FinderAdmission
     owner:      crate::toolbox::handles::OwnerRef,
     original:   crate::images::Binding,
     allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+    permit:     crate::allocator::recovery::Permit,
+    activity:   crate::recovery::Activity,
     active:     bool
 }
 impl FinderAdmission
@@ -102,6 +104,16 @@ impl FinderAdmission
     pub(crate) fn allocation(&self) -> crate::machine::scheduler::accounting::AllocationAuthority
     {
         self.allocation.clone()
+    }
+
+    pub(crate) fn permit(&self) -> crate::allocator::recovery::Permit
+    {
+        self.permit.clone()
+    }
+
+    pub(crate) fn activity(&self) -> crate::recovery::Activity
+    {
+        self.activity.clone()
     }
 
     pub(crate) fn original(&self) -> crate::images::Binding
@@ -127,8 +139,18 @@ impl Drop for FinderAdmission
 }
 impl Desktop
 {
-    pub(crate) fn reserve_finder(&mut self, old: u64) -> Result<FinderAdmission, Status>
+    pub(crate) fn reserve_finder(&mut self, old: u64, permit: crate::allocator::recovery::Permit)
+                                 -> Result<FinderAdmission, Status>
     {
+        crate::context::with_recovery_allocation(permit.clone(), || {
+            self.reserve_finder_inner(old, permit)
+        })
+    }
+
+    fn reserve_finder_inner(&mut self, old: u64, permit: crate::allocator::recovery::Permit)
+                            -> Result<FinderAdmission, Status>
+    {
+        let activity = crate::context::recovery_activity().ok_or(NOT_SUPPORTED)?;
         if old != crate::context::finder_app().0
         {
             return Err(ACCESS_DENIED);
@@ -143,19 +165,19 @@ impl Desktop
         }
         self.enter(old);
         let id = self.processes.provision("Finder", 0, 0)?;
-        let owner = self.processes.ledger(id)?;
         let prepared = (|| {
+            let owner = self.processes.ledger(id)?;
             let allocation = self.processes.allocation(id)?;
             let snapshot = crate::allocator::with_target(crate::allocator::Target::Owner {
                 account: allocation.clone(), class: mac_kernel_model::policy::MemoryClass::Kernel
             }, || self.crash.snapshot())?;
-            let mut local = Saved::try_new(owner.clone(), self.mdef, allocation)?;
+            let mut local = Saved::try_new(owner.clone(), self.mdef, allocation.clone())?;
             local.crash = crate::toolbox::crashes::Manager::from_snapshot(snapshot);
-            Ok::<_, Status>(local)
+            Ok::<_, Status>((local, owner, allocation))
         })();
-        let local = match prepared
+        let (local, owner, allocation) = match prepared
         {
-            Ok(local) => local,
+            Ok(prepared) => prepared,
             Err(status) =>
             {
                 self.retire_unstarted(id)?;
@@ -166,7 +188,9 @@ impl Desktop
         Ok(FinderAdmission { old,
                              owner,
                              original,
-                             allocation: self.processes.allocation(id)?,
+                             allocation,
+                             permit,
+                             activity,
                              active: true })
     }
 
@@ -196,7 +220,26 @@ impl Desktop
         let ledger = self.processes.ledger(old)?;
         let checkpoint = self.processes.cleanup_checkpoint(old)?;
         let binding = self.processes.resource_binding(old)?;
-        crate::context::replace_finder_app(old, &admission.owner)?;
+        if let Err(status) = self.close_crash_report(&admission.activity)
+        {
+            if status == SERVICE_BUSY && self.windows.window(self.crash.info().window).is_none()
+            {
+                crate::toolbox::processes::finder::report_cleanup_wait();
+            }
+            return Err(status);
+        }
+        self.crash.release_payload();
+        {
+            use mac_object_table::shared::InvocationGate as _;
+            crate::toolbox::handles::InvocationGate::run(|| {
+                if crate::context::finder_app().0 != old || !admission.owner.accepting()
+                {
+                    return Err(SERVICE_BUSY);
+                }
+                admission.activity.handoff_recipient(&ledger, &admission.owner)?;
+                crate::context::replace_finder_app(old, &admission.owner)
+            })?;
+        }
         self.stop_process(file, ledger, checkpoint, binding, Some(next));
         serial!("FINDER_HANDOFF old={old} new={next} state=waiting-for-old-stack");
         Ok(())
@@ -208,20 +251,16 @@ impl Desktop
         let id = admission.id();
         self.processes.get_mut(id)?.info.thread = thread;
         self.enter(id);
-        // A temporary System recovery report never leaves the healthy Finder's
-        // zero-mask waits permanently ready after it starts.
-        let window = self.crash.info().window;
-        if window.0 != 0
-        {
-            let status = self.window(CLOSE_WINDOW, &mut window_request(window));
-            if status != OK && status != NOT_FOUND
-            {
-                return Err(status);
-            }
-        }
-        self.crash = Default::default();
+        // The complete System-owned diagnostic remains available across the
+        // handoff. Its original app/thread metadata does not keep old authority.
         self.activate_process(id)?;
         self.refresh_app_menu();
+        self.crash.finder_recovered();
+        if self.crash.info().report_bytes != 0
+        {
+            let window = self.resume_crash_report()?;
+            admission.activity.set_object(window.0);
+        }
         serial!("PROCESS_REGISTERED app={id} name=Finder");
         serial!("FINDER_RECOVERED old={} new={id} thread={thread}", admission.old);
         Ok(())
@@ -230,13 +269,64 @@ impl Desktop
     pub(super) fn alerts_for_owner(&mut self, owner: u64)
                                    -> Option<&mut crate::toolbox::dialogs::Alerts>
     {
+        // The System ALRT kind is attached exactly once, to the permanent core
+        // store. The RAII selection may currently place it in `dialogs`.
+        if self.core_dialogs_active
+        {
+            if self.dialogs.owner().owner().incarnation() == owner
+            {
+                return Some(&mut self.dialogs);
+            }
+        }
+        else if self.core_dialogs.owner().owner().incarnation() == owner
+        {
+            return Some(&mut self.core_dialogs);
+        }
         if owner == self.owner
         {
-            Some(&mut self.dialogs)
+            if self.core_dialogs_active
+            {
+                Some(&mut self.core_dialogs)
+            }
+            else
+            {
+                Some(&mut self.dialogs)
+            }
         }
         else
         {
             self.locals.iter_mut().find(|local| local.id == owner).map(|local| &mut local.dialogs)
+        }
+    }
+
+    pub(crate) fn finish_saved_crash_dismissal(&mut self,
+                                               binding: &crate::toolbox::processes::ResourceBinding,
+                                               snapshot: &crate::toolbox::crashes::Snapshot)
+                                               -> Result<bool, Status>
+    {
+        if self.owner == binding.owner()
+        {
+            let ordinary =
+                if self.core_dialogs_active { &self.core_dialogs } else { &self.dialogs };
+            if ordinary.owner().owner() != binding.ledger().owner()
+            {
+                return Err(ACCESS_DENIED);
+            }
+            self.crash.finish_dismissal(snapshot)
+        }
+        else if let Some(saved) = self.locals.iter_mut().find(|saved| saved.id == binding.owner())
+        {
+            if saved.dialogs.owner().owner() != binding.ledger().owner()
+            {
+                return Err(ACCESS_DENIED);
+            }
+            saved.crash.finish_dismissal(snapshot)
+        }
+        else
+        {
+            // The real recipient already exited. Its complete report remains
+            // held by the dismissal snapshot through actual Window ACK.
+            Ok(false)
         }
     }
 
@@ -403,7 +493,7 @@ impl Desktop
                 };
                 // A dismissed System-owned report wakes the parked application
                 // even though its handler deliberately waits with an empty event mask.
-                if crash.info().dismissed != 0
+                if crash.info().dismissed != 0 && crash.info().app == app
                 {
                     return true;
                 }
@@ -466,7 +556,17 @@ impl Desktop
             };
         }
         swap!(crash);
-        swap!(dialogs);
+        if self.core_dialogs_active
+        {
+            // A nested resident context switch must leave the one System
+            // protocol selected; only its parked ordinary app slot travels.
+            core::mem::swap(&mut self.core_dialogs, &mut self.locals[old].dialogs);
+            core::mem::swap(&mut self.core_dialogs, &mut self.locals[next].dialogs);
+        }
+        else
+        {
+            swap!(dialogs);
+        }
         swap!(menus);
         swap!(cursors);
         swap!(classic_font);
@@ -490,12 +590,7 @@ impl Desktop
 
     pub fn owns(&self, id: WindowId) -> bool
     {
-        self.window_owner(id) == Some(self.owner)
-    }
-
-    pub fn front_owned(&self) -> Option<WindowId>
-    {
-        self.windows.front_for_owner(self.owner)
+        self.windows.owned_by(id, self.owner)
     }
 
     pub fn route_events(&mut self)
@@ -806,6 +901,13 @@ impl Desktop
                                      loaded: crate::toolbox::files::application::Loaded)
                                      -> Result<(), Status>
     {
+        crate::context::without_recovery(|| self.launch_application_inner(call, loaded))
+    }
+
+    fn launch_application_inner(&mut self, call: &mut ProcessCall,
+                                loaded: crate::toolbox::files::application::Loaded)
+                                -> Result<(), Status>
+    {
         // Another caller may have launched this file while its fork was read.
         if self.activate_existing_application(call)?
         {
@@ -988,7 +1090,13 @@ impl Desktop
         crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
             let caller = file.id;
             self.enter(caller);
-            ledger.stop_admission();
+            {
+                use mac_object_table::shared::InvocationGate as _;
+                crate::toolbox::handles::InvocationGate::run(|| {
+                    ledger.stop_admission();
+                    crate::recovery::owner_stopped(&ledger);
+                });
+            }
             crate::machine::scheduler::retire_owner(caller);
             serial!("PROCESS_STOPPED app={caller} thread={}", file.thread);
             let before = ledger.summary();
@@ -1417,16 +1525,4 @@ impl crate::toolbox::files::pins::PinHost for Desktop
             }
         }
     }
-}
-
-fn window_request(id: WindowId) -> WindowRequest
-{
-    WindowRequest { id:             id.0,
-                    bounds:         Rect::ZERO,
-                    title:          [0; WINDOW_TITLE_BYTES],
-                    title_length:   0,
-                    procedure:      0,
-                    minimum_width:  0,
-                    minimum_height: 0,
-                    reserved:       0 }
 }

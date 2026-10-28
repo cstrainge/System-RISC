@@ -236,6 +236,8 @@ pub(crate) enum CreationError
 {
     InvalidRequest,
     NoMemory,
+    RecoveryBusy,
+    RecoveryAuthority,
     Facility(mac_object_table::domain::PoolError),
     Stopping,
     Definition
@@ -259,6 +261,16 @@ impl core::fmt::Display for CreationError
             Self::NoMemory =>
             {
                 f.write_str("not enough memory to prepare window metadata or visibility storage")
+            }
+            Self::RecoveryBusy =>
+            {
+                f.write_str("the recovery dialog already retains its main window and auxiliary \
+                             sheet; finish their cleanup before opening another")
+            }
+            Self::RecoveryAuthority =>
+            {
+                f.write_str("System modal window creation requires its genuine storage owner, \
+                             recipient and admitted I/O root")
             }
             Self::Facility(error) => error.fmt(f),
             Self::Stopping =>
@@ -350,29 +362,47 @@ impl core::fmt::Display for CloseError
     }
 }
 
+#[cfg(target_arch = "riscv64")]
+struct RecoveryWindow
+{
+    id:       WindowId,
+    activity: crate::recovery::Activity,
+    retry: Option<(mac_object_table::domain::ReleasedResource,
+                   crate::toolbox::handles::cleanup::Cause)>,
+    disposed: bool
+}
+
 pub struct WindowManager
 {
     // Desktop admission already excludes reentrant/mutating WM requests while
     // drawing. Reborrow cached sweep storage without adding an interrupt lock
     // around definition drawing callbacks. The manager remains Send behind the
     // resident service lock; callers never share it without that admission.
-    visibility:        RefCell<super::visibility::Scratch>,
+    visibility:            RefCell<super::visibility::Scratch>,
     // A single bounded memo, never an authority or a payload pin. Successful
     // window-list changes invalidate it; cached IDs still validate on lookup.
-    front_cache:       Cell<Option<(u64, Option<WindowId>)>>,
-    windows:           Store<Window>,
-    retained_failures: VecDeque<mac_object_table::domain::CompletionError>,
-    order:             Vec<WindowId>,
-    len:               usize,
-    active:            Option<WindowId>,
-    order_scratch:     Vec<WindowId>,
-    geometry_order:    Vec<WindowId>,
+    front_cache:           Cell<Option<(u64, Option<WindowId>)>>,
+    windows:               Store<Window>,
+    retained_failures:     VecDeque<mac_object_table::domain::CompletionError>,
+    // One guaranteed modal service has one main window and one auxiliary
+    // sheet. Keep their guards outside the Copy geometry payload, keyed by
+    // their canonical full window IDs, including while invalidated/quarantined.
+    #[cfg(target_arch = "riscv64")]
+    recovery_windows:      [Option<RecoveryWindow>; 2],
+    #[cfg(target_arch = "riscv64")]
+    recovery_publications:
+        Option<[mac_object_table::store::PublicationReservation<InvocationGate>; 2]>,
+    order:                 Vec<WindowId>,
+    len:                   usize,
+    active:                Option<WindowId>,
+    order_scratch:         Vec<WindowId>,
+    geometry_order:        Vec<WindowId>,
     #[cfg(test)]
-    test_registry:     Option<alloc::boxed::Box<crate::toolbox::handles::Registry<WindowManager>>>,
+    test_registry: Option<alloc::boxed::Box<crate::toolbox::handles::Registry<WindowManager>>>,
     #[cfg(test)]
-    test_owners:       Vec<(u64, OwnerRef)>,
-    gate:              mac_abi::TrapGate,
-    tracking:          Option<Tracking>
+    test_owners:           Vec<(u64, OwnerRef)>,
+    gate:                  mac_abi::TrapGate,
+    tracking:              Option<Tracking>
 }
 #[cfg(test)]
 impl Default for WindowManager
@@ -391,6 +421,10 @@ impl WindowManager
                   front_cache: Cell::new(None),
                   windows: Store::owned(kinds.0, kinds.1).map_err(|_| BAD_ARGUMENT)?,
                   retained_failures: VecDeque::new(),
+                  #[cfg(target_arch = "riscv64")]
+                  recovery_windows: core::array::from_fn(|_| None),
+                  #[cfg(target_arch = "riscv64")]
+                  recovery_publications: None,
                   order: Vec::new(),
                   len: 0,
                   active: None,
@@ -439,7 +473,222 @@ impl WindowManager
 
     pub(crate) fn owner(&self, id: WindowId) -> Option<u64>
     {
-        self.windows.owner(id.0).map(|owner| owner.incarnation())
+        self.windows.get(id.0).map(|window| window.owner)
+    }
+
+    /// Read-only metadata follows the authenticated logical recipient. Mutating
+    /// a System service window still requires its private Activity capability.
+    pub(crate) fn readable_by(&self, id: WindowId, recipient: u64) -> bool
+    {
+        let Some((storage, window)) = self.windows.get_with_owner(id.0)
+        else
+        {
+            return false;
+        };
+        if !window.initialized || window.owner != recipient
+        {
+            return false;
+        }
+        if storage.kind() != mac_object_table::domain::DomainKind::System
+        {
+            return storage.incarnation() == recipient;
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            return self.recovery_windows
+                       .iter()
+                       .flatten()
+                       .any(|held| held.id == id && held.activity.owner() == recipient);
+        }
+        #[cfg(not(target_arch = "riscv64"))]
+        false
+    }
+
+    pub(crate) fn front_readable(&self, recipient: u64) -> Option<WindowId>
+    {
+        #[cfg(target_arch = "riscv64")]
+        let service_window =
+            self.recovery_windows.iter().flatten().any(|held| held.activity.owner() == recipient);
+        #[cfg(not(target_arch = "riscv64"))]
+        let service_window = false;
+        if !service_window
+        {
+            return self.front_for_owner(recipient);
+        }
+        self.order[..self.len].iter().rev().copied().find(|id| {
+                                                        self.readable_by(*id, recipient)
+                                                        && self.window(*id)
+                                                               .is_some_and(|window| !window.hidden)
+                                                    })
+    }
+
+    pub(crate) fn owned_by(&self, id: WindowId, recipient: u64) -> bool
+    {
+        let Some((storage, window)) = self.windows.get_with_owner(id.0)
+        else
+        {
+            return false;
+        };
+        if storage.kind() != mac_object_table::domain::DomainKind::System
+        {
+            return storage.incarnation() == recipient && window.owner == recipient;
+        }
+        #[cfg(target_arch = "riscv64")]
+        if let Some(activity) = crate::context::recovery_activity()
+        {
+            return window.owner == activity.owner()
+                   && self.recovery_windows.iter().flatten().any(|held| {
+                                                                held.id == id
+                                                                && held.activity
+                                                                       .same_session(&activity)
+                                                            });
+        }
+        false
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn prepare_recovery(&mut self, storage: &OwnerRef) -> Result<(), Status>
+    {
+        if storage.owner().kind() != mac_object_table::domain::DomainKind::System
+           || self.recovery_publications.is_some()
+        {
+            return Err(mac_abi::BAD_ARGUMENT);
+        }
+        let tokens = [self.windows.reserve_publication(storage).map_err(|_| mac_abi::NO_MEMORY)?,
+                      self.windows.reserve_publication(storage).map_err(|_| mac_abi::NO_MEMORY)?];
+        let required = self.len.checked_add(tokens.len()).ok_or(mac_abi::NO_MEMORY)?;
+        self.visibility.get_mut().prepare(required).map_err(|_| mac_abi::NO_MEMORY)?;
+        self.order.try_reserve(tokens.len()).map_err(|_| mac_abi::NO_MEMORY)?;
+        self.order_scratch.try_reserve(required).map_err(|_| mac_abi::NO_MEMORY)?;
+        self.geometry_order.try_reserve(required).map_err(|_| mac_abi::NO_MEMORY)?;
+        self.retained_failures.try_reserve(required).map_err(|_| mac_abi::NO_MEMORY)?;
+        self.recovery_publications = Some(tokens);
+        Ok(())
+    }
+
+    pub(crate) fn recovery_spare(&self) -> usize
+    {
+        #[cfg(target_arch = "riscv64")]
+        if let Some(tokens) = &self.recovery_publications
+        {
+            // A releasing endpoint has already left geometry/order, but its
+            // reserved capacity must survive until ACK and subsequent reuse.
+            return tokens.len();
+        }
+        0
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn finish_recovery_acknowledgements(&mut self)
+    {
+        let Some(tokens) = &self.recovery_publications
+        else
+        {
+            return;
+        };
+        for index in 0..self.recovery_windows.len()
+        {
+            if self.recovery_windows[index].as_ref().is_some_and(|held| held.disposed)
+               && tokens[index].ready()
+            {
+                if let Some(held) = self.recovery_windows[index].take()
+                {
+                    held.activity.window_closed(held.id);
+                    // This checkpoint follows actual payload destruction and
+                    // canonical ACK, not an absent ordinary-ID lookup.
+                    crate::toolbox::processes::finder::report_cleanup_progress();
+                    drop(held);
+                }
+            }
+        }
+    }
+
+    /// Run at a real cleanup/progress checkpoint, never as a pointer-motion
+    /// retry loop. The unique ticket stays here if its WDEF still refuses.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn retry_recovery_cleanup(&mut self)
+    {
+        use mac_object_table::registry::CleanupFailure;
+        for index in 0..self.recovery_windows.len()
+        {
+            let pending = self.recovery_windows[index].as_mut().and_then(|held| {
+                                                                   held.retry.take().map(|retry| {
+                                                                              (held.activity
+                                                                                   .clone(),
+                                                                               retry)
+                                                                          })
+                                                               });
+            let Some((activity, (ticket, previous))) = pending
+            else
+            {
+                continue;
+            };
+            // Scope entry is fallible. Keep the unique ticket outside the
+            // callback until entry actually succeeds; refusing the scope must
+            // not drop a captured-but-never-invoked cleanup capability.
+            let mut offered = Some(ticket);
+            match activity.run(|| offered.take().map(|ticket| self.release(ticket)))
+            {
+                Ok(Some(Ok(_))) => (),
+                Ok(Some(Err(failure))) =>
+                {
+                    let (ticket, cause) = failure.into_parts();
+                    if cause != previous
+                    {
+                        serial!("RECOVERY_WINDOW_CLEANUP_RETAINED: {cause}");
+                    }
+                    if let Some(held) = &mut self.recovery_windows[index]
+                    {
+                        held.retry = Some((ticket, cause));
+                    }
+                    else
+                    {
+                        // The manager cannot lose the actual capability even
+                        // if its bookkeeping is unexpectedly unavailable.
+                        self.quarantine_or_retain(ticket);
+                    }
+                }
+                Err(status) =>
+                {
+                    if let Some(ticket) = offered.take()
+                    {
+                        if let Some(held) = &mut self.recovery_windows[index]
+                        {
+                            held.retry = Some((ticket, previous));
+                        }
+                        else
+                        {
+                            self.quarantine_or_retain(ticket);
+                        }
+                    }
+                    serial!("RECOVERY_WINDOW_CONTEXT_RETAINED status={status}");
+                }
+                Ok(None) =>
+                {
+                    // No success/ACK is manufactured when the staged offer is
+                    // absent. Keep the actual window/activity barrier retained.
+                    serial!("RECOVERY_WINDOW_CLEANUP_RETAINED: no staged offer");
+                }
+            }
+        }
+        self.finish_recovery_acknowledgements();
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn recovery_close_pending(&mut self, id: WindowId,
+                                         activity: &crate::recovery::Activity)
+                                         -> Result<bool, Status>
+    {
+        self.retry_recovery_cleanup();
+        if let Some(held) = self.recovery_windows.iter().flatten().find(|held| held.id == id)
+        {
+            if !held.activity.same_session(activity)
+            {
+                return Err(mac_abi::ACCESS_DENIED);
+            }
+            return Ok(true);
+        }
+        if activity.window_close_acknowledged(id) { Ok(false) } else { Err(NOT_FOUND) }
     }
 
     pub(crate) fn releasing_id(&self, ticket: &mac_object_table::domain::ReleasedResource)
@@ -521,6 +770,15 @@ impl WindowManager
             return Err(Failure::window_definition(ticket, id.0, window.procedure, reply));
         }
         drop(self.windows.release(ticket).map_err(Failure::from)?);
+        #[cfg(target_arch = "riscv64")]
+        {
+            if let Some(held) =
+                self.recovery_windows.iter_mut().flatten().find(|held| held.id == id)
+            {
+                held.disposed = true;
+            }
+            self.finish_recovery_acknowledgements();
+        }
         Ok(id)
     }
 
@@ -531,8 +789,8 @@ impl WindowManager
 
     pub(crate) fn window_for_owner(&self, id: WindowId, owner: u64) -> Option<&Window>
     {
-        let (bound, window) = self.windows.get_with_owner(id.0)?;
-        (window.initialized && bound.incarnation() == owner).then_some(window)
+        let window = self.windows.get(id.0)?;
+        (window.initialized && self.owned_by(id, owner)).then_some(window)
     }
 
     pub(crate) fn front_record_for_owner(&self, owner: u64) -> Option<&Window>
@@ -632,6 +890,37 @@ impl WindowManager
                                              -> Result<WindowId, CreationError>
     {
         let (min_width, min_height) = minimum;
+        #[cfg(target_arch = "riscv64")]
+        let recovery = crate::context::recovery_activity();
+        #[cfg(target_arch = "riscv64")]
+        let recovery_slot = if let Some(activity) = &recovery
+        {
+            if owner.owner() != activity.storage_owner().owner()
+               || !activity.recipient().accepting()
+               || !crate::context::io_subject().is_some_and(|subject| {
+                                                   subject.scope()
+                                                          .same_scope(activity.root_subject()
+                                                                              .scope())
+                                               })
+            {
+                return Err(CreationError::RecoveryAuthority);
+            }
+            Some(self.recovery_publications
+                     .as_ref()
+                     .and_then(|tokens| {
+                         tokens.iter()
+                               .enumerate()
+                               .find(|(index, token)| {
+                                   token.ready() && self.recovery_windows[*index].is_none()
+                               })
+                               .map(|(index, _)| index)
+                     })
+                     .ok_or(CreationError::RecoveryBusy)?)
+        }
+        else
+        {
+            None
+        };
         if min_width < 1 || min_height < 1
         {
             return Err(CreationError::InvalidRequest);
@@ -649,23 +938,33 @@ impl WindowManager
         // These arrays index all owners. Only their capacity is System-owned;
         // the subsequent Window and owner Store backing retain caller charges.
         InvocationGate::with_system_allocation(|| {
-            self.visibility
-                .get_mut()
-                .prepare(self.len.checked_add(1).ok_or(CreationError::NoMemory)?)
-                .map_err(|_| CreationError::NoMemory)?;
-            self.order.try_reserve(1).map_err(|_| CreationError::NoMemory)?;
+            let padding = self.recovery_spare();
+            #[cfg(target_arch = "riscv64")]
+            let padding = if recovery.is_some() { 0 } else { padding };
+            let required = self.len
+                               .checked_add(1)
+                               .and_then(|n| n.checked_add(padding))
+                               .ok_or(CreationError::NoMemory)?;
+            self.visibility.get_mut().prepare(required).map_err(|_| CreationError::NoMemory)?;
+            self.order.try_reserve(1 + padding).map_err(|_| CreationError::NoMemory)?;
             self.order_scratch
-                .try_reserve((self.len + 1).saturating_sub(self.order_scratch.len()))
+                .try_reserve(required.saturating_sub(self.order_scratch.len()))
                 .map_err(|_| CreationError::NoMemory)?;
             self.geometry_order
-                .try_reserve((self.len + 1).saturating_sub(self.geometry_order.len()))
+                .try_reserve(required.saturating_sub(self.geometry_order.len()))
                 .map_err(|_| CreationError::NoMemory)
         })?;
         let previous = self.active;
+        let mut logical_owner = owner.owner().incarnation();
+        #[cfg(target_arch = "riscv64")]
+        if let Some(activity) = &recovery
+        {
+            logical_owner = activity.owner();
+        }
         let mut window = Window { id: WindowId(0),
                                   initialized: false,
                                   bounds,
-                                  owner: owner.owner().incarnation(),
+                                  owner: logical_owner,
                                   min_width,
                                   min_height,
                                   state: WindowDefinitionState::new(bounds, title),
@@ -684,17 +983,56 @@ impl WindowManager
                                   hidden: false,
                                   updating: false };
         self.retry_retained_quarantines();
-        InvocationGate::with_system_allocation(|| self.retained_failures.try_reserve(self.len + 1))
-            .map_err(|_| CreationError::NoMemory)?;
-        let id = WindowId(self.windows
-                              .insert_with(owner, |id| {
-                                  window.id = WindowId(id);
-                                  window
-                              })
-                              .map_err(CreationError::Facility)?);
+        InvocationGate::with_system_allocation(|| {
+            let padding = self.recovery_spare();
+            #[cfg(target_arch = "riscv64")]
+            let padding = if recovery.is_some() { 0 } else { padding };
+            self.retained_failures.try_reserve(self.len + 1 + padding)
+        }).map_err(|_| CreationError::NoMemory)?;
+        #[cfg(target_arch = "riscv64")]
+        let reserved = if let (Some(slot), Some(activity)) = (recovery_slot, &recovery)
+        {
+            let subject = activity.root_subject();
+            let tokens = self.recovery_publications.as_mut().ok_or(CreationError::RecoveryBusy)?;
+            Some(WindowId(self.windows.insert_reserved_in_scope_with_acknowledgement(
+                &mut tokens[slot], subject.scope(), Some(activity.acknowledgement_pin()), |id| {
+                    window.id = WindowId(id); window
+                }).map_err(|error| match error {
+                    mac_object_table::store::PublicationError::Busy => CreationError::RecoveryBusy,
+                    mac_object_table::store::PublicationError::Pool(error) => CreationError::Facility(error)
+                })?.id()))
+        }
+        else
+        {
+            None
+        };
+        #[cfg(not(target_arch = "riscv64"))]
+        let reserved = None;
+        let id = match reserved
+        {
+            Some(id) => id,
+            None =>
+            {
+                WindowId(self.windows
+                             .insert_with(owner, |id| {
+                                 window.id = WindowId(id);
+                                 window
+                             })
+                             .map_err(CreationError::Facility)?)
+            }
+        };
         let mut guard = InitializingWindow { manager: self,
                                              id,
                                              committed: false };
+        #[cfg(target_arch = "riscv64")]
+        if let (Some(activity), Some(slot)) = (recovery, recovery_slot)
+        {
+            activity.window_created(id).map_err(|_| CreationError::RecoveryBusy)?;
+            guard.manager.recovery_windows[slot] = Some(RecoveryWindow { id,
+                                                                         activity,
+                                                                         retry: None,
+                                                                         disposed: false });
+        }
         for operation in [definition::NEW, definition::CALCULATE]
         {
             let reply = guard.value()?.call(operation, 0, core::ptr::null_mut());
@@ -915,7 +1253,17 @@ impl WindowManager
             Err(failure) =>
             {
                 let (ticket, cause) = failure.into_parts();
-                self.quarantine_or_retain(ticket);
+                let mut pending = Some(ticket);
+                #[cfg(target_arch = "riscv64")]
+                if let Some(held) =
+                    self.recovery_windows.iter_mut().flatten().find(|held| held.id == id)
+                {
+                    held.retry = pending.take().map(|ticket| (ticket, cause));
+                }
+                if let Some(ticket) = pending
+                {
+                    self.quarantine_or_retain(ticket);
+                }
                 Err(CloseError::Cleanup(cause))
             }
         };

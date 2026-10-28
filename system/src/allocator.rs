@@ -13,6 +13,7 @@ use crate::machine::{interrupts::{NativeInvocationGate, with_masked},
                      scheduler::accounting::AllocationAuthority};
 
 mod budget;
+pub(crate) mod recovery;
 
 pub(crate) fn statistics() -> budget::Snapshot
 {
@@ -66,7 +67,8 @@ pub(crate) enum Error
         limit:     u64,
         requested: u64
     },
-    ContextUnavailable
+    ContextUnavailable,
+    Recovery(recovery::Error)
 }
 impl fmt::Display for Error
 {
@@ -85,6 +87,7 @@ impl fmt::Display for Error
                        "ordinary System heap refused {requested} bytes: {used} bytes admitted, \
                         {limit} byte capacity; protected recovery storage is excluded")
             }
+            Self::Recovery(error) => error.fmt(out),
             Self::ContextUnavailable =>
             {
                 out.write_str("scheduled execution has no retained allocation authority")
@@ -102,7 +105,68 @@ pub(crate) fn with_target<R>(target: Target, operation: impl FnOnce() -> R) -> R
     crate::context::with_allocation(target, operation)
 }
 
-/// The static parent receipt counts actual ordinary-heap occupancy once.
+/// Backing origin and its occupancy receipt are one value. Account attribution
+/// remains independent: protected storage never augments ordinary capacity or
+/// retargets a block when a different execution scope later disposes it.
+enum ParentReceipt
+{
+    Ordinary(budget::Receipt),
+    Protected(recovery::Receipt)
+}
+impl ParentReceipt
+{
+    fn reserve(category: budget::Category, bytes: u64, recovery: Option<&recovery::Permit>)
+               -> Result<Self, Error>
+    {
+        match recovery
+        {
+            Some(permit) =>
+            {
+                permit.reserve(category, bytes).map(Self::Protected).map_err(Error::Recovery)
+            }
+            None => budget::reserve(category, bytes).map(Self::Ordinary)
+        }
+    }
+
+    fn reserve_replacement(&self, bytes: u64) -> Result<Self, Error>
+    {
+        match self
+        {
+            Self::Ordinary(receipt) =>
+            {
+                budget::reserve(receipt.category(), bytes).map(Self::Ordinary)
+            }
+            Self::Protected(receipt) =>
+            {
+                receipt.reserve_replacement(bytes).map(Self::Protected).map_err(Error::Recovery)
+            }
+        }
+    }
+
+    fn allocate(&self, ordinary: &LockedHeap, layout: Layout) -> Result<NonNull<u8>, ()>
+    {
+        match self
+        {
+            Self::Ordinary(_) => ordinary.lock().allocate_first_fit(layout).map_err(|_| ()),
+            Self::Protected(receipt) => receipt.allocate(layout).map_err(|_| ())
+        }
+    }
+
+    /// # Safety
+    /// Live unique allocation and exact backend Layout from this origin.
+    unsafe fn deallocate(&self, ordinary: &LockedHeap, base: NonNull<u8>, layout: Layout)
+    {
+        match self
+        {
+            Self::Ordinary(_) =>
+            unsafe { ordinary.lock().deallocate(base, layout) },
+            Self::Protected(receipt) =>
+            unsafe { receipt.deallocate(base, layout) }
+        }
+    }
+}
+
+/// The static parent receipt counts actual selected-heap occupancy once.
 /// An optional child receipt attributes that same backing to its owner; the
 /// child counter is not additional physical capacity or a second allocation.
 enum Attribution<R>
@@ -112,17 +176,18 @@ enum Attribution<R>
 }
 pub(crate) struct Reservation
 {
-    parent:      budget::Receipt,
+    parent:      ParentReceipt,
     attribution: Attribution<Reserved<NativeInvocationGate>>
 }
 pub(crate) struct Receipt
 {
-    parent:      budget::Receipt,
+    parent:      ParentReceipt,
     attribution: Attribution<Committed<NativeInvocationGate>>
 }
 impl Selection<'_>
 {
-    pub(crate) fn reserve(self, bytes: u64) -> Result<Reservation, Error>
+    pub(crate) fn reserve(self, bytes: u64, recovery: Option<&recovery::Permit>)
+                          -> Result<Reservation, Error>
     {
         let (category, attribution) = match self
         {
@@ -132,7 +197,9 @@ impl Selection<'_>
             {
                 return admission.with_admission(|| {
                                     let parent =
-                                        budget::reserve(budget::Category::System(*class), bytes)?;
+                                        ParentReceipt::reserve(budget::Category::System(*class),
+                                                               bytes,
+                                                               recovery)?;
                                     Ok(Reservation { parent,
                                             attribution:
                                                 Attribution::System(Some(admission.clone())) })
@@ -162,7 +229,7 @@ impl Selection<'_>
                 (budget::Category::Domain, Attribution::Domain(reserved))
             }
         };
-        let parent = budget::reserve(category, bytes)?;
+        let parent = ParentReceipt::reserve(category, bytes, recovery)?;
         Ok(Reservation { parent,
                          attribution })
     }
@@ -189,7 +256,7 @@ impl Receipt
         {
             Attribution::System(Some(admission)) =>
             {
-                match admission.with_admission(|| budget::reserve(self.parent.category(), bytes))
+                match admission.with_admission(|| self.parent.reserve_replacement(bytes))
                 {
                     Ok(parent) =>
                     {
@@ -226,7 +293,7 @@ impl Receipt
                 Attribution::Domain(reservation)
             }
         };
-        let parent = budget::reserve(self.parent.category(), bytes)?;
+        let parent = self.parent.reserve_replacement(bytes)?;
         Ok(Reservation { parent,
                          attribution })
     }
@@ -306,7 +373,7 @@ impl ResidentHeap
 
     fn allocate(&self, block: BlockLayout, reservation: Reservation) -> *mut u8
     {
-        let allocated = self.heap.lock().allocate_first_fit(block.backing);
+        let allocated = reservation.parent.allocate(&self.heap, block.backing);
         let Ok(base) = allocated
         else
         {
@@ -366,7 +433,9 @@ unsafe impl GlobalAlloc for ResidentHeap
             unsafe {
                 let base = pointer.sub(payload);
                 let header = base.cast::<Header>().read();
-                self.heap.lock().deallocate(NonNull::new_unchecked(base), header.backing);
+                header.receipt
+                      .parent
+                      .deallocate(&self.heap, NonNull::new_unchecked(base), header.backing);
                 // Backing is free and no heap guard is held before either the
                 // static parent or original account receives its exact refund.
                 drop(header);

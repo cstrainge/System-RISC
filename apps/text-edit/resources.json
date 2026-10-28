@@ -188,46 +188,6 @@
       }
     },
     {
-      "type": "ALRT",
-      "id": 2001,
-      "symbol": "ERROR_ALRT",
-      "name": "Document error ALRT",
-      "payload": {
-        "format": "hex",
-        "hex": "0000000000b401b007d14444300a"
-      }
-    },
-    {
-      "type": "DITL",
-      "id": 2001,
-      "symbol": "ERROR_DITL",
-      "name": "Document error DITL",
-      "payload": {
-        "format": "hex",
-        "hex": "0002000000000094016000a801a004024f4b00000000000c0014002c0034a002000200000000000c004a008801a088025e30"
-      }
-    },
-    {
-      "type": "DITL",
-      "id": 2002,
-      "symbol": "SAVE_CHANGES_ITEMS",
-      "name": "Save Changes items",
-      "payload": {
-        "format": "hex",
-        "hex": "0003000000000060010e0076015a04045361766500000000006000b600760102040643616e63656c00000000006000140076007c040a446f6ed57420536176650000000000120014004e015a882453617665206368616e67657320746f20d25e30d3206265666f726520636c6f73696e673f"
-      }
-    },
-    {
-      "type": "ALRT",
-      "id": 2002,
-      "symbol": "SAVE_CHANGES_ALERT",
-      "name": "Save Changes",
-      "payload": {
-        "format": "hex",
-        "hex": "000000000088016e07d24444300a"
-      }
-    },
-    {
       "type": "MENU",
       "id": 132,
       "symbol": "VIEW_MENU",

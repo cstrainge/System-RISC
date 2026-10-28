@@ -106,17 +106,13 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     system.log(text.as_str())?;
     checkpoint(system, "CRASH_PAINT_STAGE refused\n", "CRASH_PAINT_ACK refused\n")?;
 
-    // A leaked full BeginUpdate would reject this independent transaction on
-    // the same window. Drop must discard these vivid uncommitted pixels too.
+    // Read-only metadata is public to the recipient. The service owns its
+    // scene: an app cannot mutate it or manufacture a pending paint transaction.
     let graphics = system.quickdraw().graphics(info.window);
-    {
-        let _pending = graphics.masked_rectangles(&[Rect::new(8, 8, 40, 40)])?;
-        graphics.colors(0xff00ff, 0)?;
-        graphics.paint_rect(Rect::new(0,
-                                      0,
-                                      content.right - content.left,
-                                      content.bottom - content.top))?;
-    }
+    assert!(matches!(graphics.masked_rectangles(&[Rect::new(8, 8, 40, 40)]),
+                     Err(Error::AccessDenied)),
+            "an app admitted a paint transaction into the System-owned report");
+    assert_eq!(system.windows().close(info.window), Err(Error::AccessDenied));
     assert_eq!(system.windows().info(info.window)?.bounds, content);
     checkpoint(system, "CRASH_PAINT_STAGE after-mask\n", "CRASH_PAINT_ACK after-mask\n")?;
 
@@ -133,7 +129,7 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     assert_eq!(reports.read(0, &mut bytes)?, REPORT.len());
     assert_eq!(&bytes, REPORT.as_bytes());
     checkpoint(system, "CRASH_PAINT_STAGE retry\n", "CRASH_PAINT_ACK retry\n")?;
-    system.log("CRASH_PAINT_USERSPACE_PASS full_cancel=passed masked_retry=passed \
+    system.log("CRASH_PAINT_USERSPACE_PASS full_cancel=passed ownership=passed \
                 reset_retry=passed\n")?;
     loop
     {

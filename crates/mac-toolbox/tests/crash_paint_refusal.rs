@@ -38,7 +38,7 @@ fn failed_full_crash_paint_preserves_pixels_and_releases_the_update_for_retry()
     {
         assert!(!serial.contains(error), "{serial}");
     }
-    assert!(serial.contains("CRASH_PAINT_USERSPACE_PASS full_cancel=passed masked_retry=passed \
+    assert!(serial.contains("CRASH_PAINT_USERSPACE_PASS full_cancel=passed ownership=passed \
                              reset_retry=passed\n"),
             "{serial}");
     assert!(serial.contains(&format!("CRASH_PAINT_REFUSED status={} report=retained \

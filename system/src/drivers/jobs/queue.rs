@@ -5,6 +5,7 @@ use mac_object_table::shared::InvocationGate as _;
 use spinning_top::Spinlock;
 
 use super::*;
+use crate::toolbox::handles::InvocationGate;
 const READY: u8 = 1;
 const NOTICE: u8 = 2;
 const FAILURE: u8 = 4;
@@ -50,38 +51,65 @@ impl Queue
     }
 
     #[cfg(target_arch = "riscv64")]
+    fn prepare_records(core: &mut Core) -> Result<(), Status>
+    {
+        if core.records.prepared()
+        {
+            return Ok(());
+        }
+        let kinds = crate::toolbox::handles::registry(|registry| {
+                        Ok((registry.get(crate::toolbox::handles::KindCode(*b"DJOB"))?,
+                            registry.get(crate::toolbox::handles::KindCode(*b"DJST"))?))
+                    }).map_err(|error| error.status())?
+                      .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
+        core.records.prepare(kinds)
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn reserve_publication(&self, owner: &crate::toolbox::handles::OwnerRef)
+        -> Result<mac_object_table::store::PublicationReservation<crate::toolbox::handles::InvocationGate>, Status>
+{
+        self.access(|core| {
+                Self::prepare_records(core)?;
+                let reservation = core.records.reserve_publication(owner)?;
+                let needed = core.records.len() + core.records.reserved_capacity();
+                InvocationGate::with_system_allocation(|| {
+                    core.ready.try_reserve(needed.saturating_sub(core.ready.len()))?;
+                    core.notices.try_reserve(needed.saturating_sub(core.notices.len()))
+                }).map_err(|_| NO_MEMORY)?;
+                Ok(reservation)
+            })
+    }
+
+    #[cfg(target_arch = "riscv64")]
     pub(crate) fn submit(&self, subject: &subjects::Subject, owner: Owner, work: Work)
                          -> Result<mac_object_table::store::Publication, SubmissionError>
     {
-        self.access(|core| {
-                if !core.records.prepared()
-                {
-                    let kinds = crate::toolbox::handles::registry(|registry| {
-                                    Ok((registry.get(crate::toolbox::handles::KindCode(*b"DJOB"))?,
-                                        registry.get(crate::toolbox::handles::KindCode(*b"DJST"))?))
-                                }).map_err(|error| error.status())
-                                  .and_then(|result| {
-                                      result.map_err(|error| {
-                                                crate::toolbox::handles::registry_status(&error)
-                                            })
-                                  });
-                    let kinds = match kinds
-                    {
-                        Ok(kinds) => kinds,
-                        Err(status) =>
-                        {
-                            return Err(SubmissionError { status,
-                                                         work });
-                        }
-                    };
-                    if let Err(status) = core.records.prepare(kinds)
+        let submit = || {
+            self.access(|core| {
+                    if let Err(status) = Self::prepare_records(core)
                     {
                         return Err(SubmissionError { status,
                                                      work });
                     }
-                }
-                core.submit(subject, owner, work)
-            })
+                    core.submit(subject, owner, work)
+                })
+        };
+        if let Some(activity) = subject.recovery_activity()
+        {
+            if subject.uses_protected_publication()
+            {
+                activity.with_storage(submit)
+            }
+            else
+            {
+                crate::context::without_recovery(submit)
+            }
+        }
+        else
+        {
+            submit()
+        }
     }
 
     #[cfg(test)]

@@ -15,6 +15,9 @@ use crate::{context::{EventWaiter, ThreadContext},
             toolbox::handles::{OwnerRef, Store}};
 mod lifetime;
 mod worker;
+pub(crate) mod recovery;
+pub(crate) use recovery::{FinderBackingLoan, initialize_finder_recovery, pump_recovery_backing,
+                          take_finder_recovery};
 use worker::{ReapState, ThreadName, WorkerState, cancel_worker, reclaim_workers};
 pub(crate) use worker::{activate_workers, prepare_worker, publish_worker, worker_cancel,
                         worker_current, worker_dispose, worker_exit, worker_park, worker_start,
@@ -332,7 +335,8 @@ pub(crate) struct PreparedThread
 {
     owner:      crate::toolbox::handles::OwnerRef,
     core:       mac_object_table::retained::Read<ThreadCore>,
-    allocation: accounting::AllocationAuthority
+    allocation: accounting::AllocationAuthority,
+    recovery:   Option<crate::allocator::recovery::Permit>
 }
 pub(crate) struct PrepareFailure
 {
@@ -411,7 +415,8 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
             Ok(PreparedThread { owner,
                                 core: mac_object_table::retained::Read::new(core,
                                                                             context_released),
-                                allocation })
+                                allocation,
+                                recovery: None })
         }
         Err(status) =>
         {
@@ -420,8 +425,104 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
         }
     }
 }
+pub(crate) struct RecoveryPrepareFailure
+{
+    pub(crate) status: mac_abi::Status,
+    pub(crate) loaded: crate::kernel::LoadedImage,
+    pub(crate) loan:   FinderBackingLoan
+}
+/// The same process entry, CPU frame and THRD publication use boot-held native
+/// backing. All fallible control-block work precedes consumption of the loan.
+pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
+                               charges: accounting::ThreadCharges, loan: FinderBackingLoan)
+                               -> Result<PreparedThread, RecoveryPrepareFailure>
+{
+    let permit = loan.permit();
+    let target = crate::allocator::Target::Owner { account: charges.allocation().clone(),
+                                                   class:
+                                                       mac_kernel_model::policy::MemoryClass::Kernel };
+    let metadata = crate::context::with_recovery_allocation(permit.clone(), || {
+        crate::context::with_allocation(target, || {
+            if !owner.accepting()
+               || owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+               || owner.owner().incarnation() != crate::context::finder_app().0
+               || loaded.binding().owner() != owner.owner().incarnation()
+            {
+                return Err(mac_abi::ACCESS_DENIED);
+            }
+            let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
+            context.install_recovery_default(permit.clone());
+            let core = ThreadCore { backing: Mutex::new(None),
+                                    launch: Mutex::new(None),
+                                    context,
+                                    release: Mutex::new(None),
+                                    binding: loaded.binding(),
+                                    top: 0,
+                                    cleanup_refusal: Mutex::new(None),
+                                    name: None };
+            Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)
+        })
+    });
+    let mut core = match metadata
+    {
+        Ok(core) => core,
+        Err(status) =>
+        {
+            return Err(RecoveryPrepareFailure { status,
+                                                loaded,
+                                                loan });
+        }
+    };
+    let Some(storage) = Arc::get_mut(&mut core)
+    else
+    {
+        return Err(RecoveryPrepareFailure { status: mac_abi::BAD_ABI,
+                                            loaded,
+                                            loan });
+    };
+    let backing = charges.allocate_recovery(&owner, loan, |top| {
+                             let mut frame = TrapFrame::default();
+                             frame.pc = app_start as *const () as usize;
+                             frame.status = super::traps::INITIAL_STATUS;
+                             frame.registers[8] = loaded.entry();
+                             frame.stack_pointer = top;
+                             frame
+                         });
+    let (stack, cpu, allocation) = match backing
+    {
+        Ok(backing) => backing,
+        Err((error, loan)) =>
+        {
+            return Err(RecoveryPrepareFailure { status: error.status(),
+                                                loaded,
+                                                loan });
+        }
+    };
+    storage.top = stack.top();
+    *storage.backing.get_mut() = Some(ThreadBacking { cpu,
+                                                      stack,
+                                                      loaded: Some(loaded) });
+    Ok(PreparedThread { owner,
+                        core: mac_object_table::retained::Read::new(core, context_released),
+                        allocation,
+                        recovery: Some(permit) })
+}
+
 pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
                              -> Result<u64, SpawnFailure>
+{
+    match prepared.recovery.clone()
+    {
+        Some(permit) =>
+        {
+            crate::context::with_recovery_allocation(permit, || {
+                spawn_prepared_inner(prepared, runnable)
+            })
+        }
+        None => spawn_prepared_inner(prepared, runnable)
+    }
+}
+fn spawn_prepared_inner(prepared: PreparedThread, runnable: bool) -> Result<u64, SpawnFailure>
 {
     let published =
         (|| {
@@ -537,7 +638,16 @@ pub(crate) fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
                     charges: accounting::ThreadCharges)
                     -> Result<u64, mac_abi::Status>
 {
-    let prepared = prepare(owner, loaded, charges).map_err(|failure| failure.status)?;
+    let prepared = prepare(owner, loaded, charges).map_err(|failure| {
+                                                      let PrepareFailure { status,
+                                                                           loaded } = failure;
+                                                      // Failed preparation retains the unique image
+                                                      // until its caller accepts
+                                                      // the refusal; dispose that lease through its
+                                                      // ordinary owned path.
+                                                      drop(loaded);
+                                                      status
+                                                  })?;
     spawn_prepared(prepared, true).map_err(|failure| failure.status)
 }
 
@@ -946,6 +1056,11 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
             reclaim_retired();
             crate::drivers::pump_jobs();
             crate::toolbox::files::pump_provider_operations();
+            crate::toolbox::runtime::Desktop::pump_standard_file();
+            pump_recovery_backing();
+            crate::recovery::pump();
+            crate::toolbox::crashes::pump_dismissals();
+            crate::toolbox::crashes::pump_reports();
             crate::toolbox::processes::documents::pump();
             crate::toolbox::processes::retirement::pump();
             crate::toolbox::processes::finder::pump();

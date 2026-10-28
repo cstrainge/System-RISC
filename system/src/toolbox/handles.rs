@@ -4,7 +4,7 @@
 pub(crate) mod cleanup;
 pub(crate) mod subject;
 #[cfg(target_arch = "riscv64")]
-pub(crate) use mac_object_table::domain::{DirectoryError, DomainKind, OwnerIndex};
+pub(crate) use mac_object_table::domain::{DirectoryError, DomainKind};
 #[cfg(target_arch = "riscv64")]
 pub(crate) type Directory<T> =
     mac_object_table::domain::Directory<T, crate::machine::interrupts::NativeInvocationGate>;

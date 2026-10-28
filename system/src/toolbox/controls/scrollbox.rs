@@ -32,12 +32,16 @@ impl Raster
 }
 struct Object
 {
-    window:    u64,
-    spec:      Spec,
-    top:       u32,
-    raster:    Arc<Raster>,
-    tracking:  Option<Tracking>,
-    highlight: i16
+    window:             u64,
+    recipient:          u64,
+    recovery:           bool,
+    spec:               Spec,
+    top:                u32,
+    raster:             Arc<Raster>,
+    tracking:           Option<Tracking>,
+    highlight:          i16,
+    #[cfg(target_arch = "riscv64")]
+    _recovery_activity: Option<crate::recovery::Activity>
 }
 struct Tracking
 {
@@ -49,7 +53,10 @@ struct Tracking
 pub struct Manager
 {
     objects:      Store<Object>,
-    raster_bytes: usize
+    raster_bytes: usize,
+    recovery_raster_bytes: usize,
+    reserved_raster_bytes: usize,
+    publication: Option<mac_object_table::store::PublicationReservation<crate::toolbox::handles::InvocationGate>>
 }
 pub(crate) fn specification(state: bool) -> mac_object_table::registry::Specification<'static>
 {
@@ -100,6 +107,10 @@ impl<C: ScrollBoxHost> mac_object_table::registry::Release<C> for ReleaseScrollB
         let manager = context.managed_scroll_boxes();
         let object = manager.objects.release(ticket)?;
         manager.raster_bytes -= object.raster.pixels() * 8;
+        if object.recovery
+        {
+            manager.recovery_raster_bytes -= object.raster.pixels() * 8;
+        }
         drop(object);
         Ok(())
     }
@@ -116,8 +127,11 @@ impl Manager
 {
     pub(crate) fn new((objects, storage): (KindLease, KindLease)) -> Result<Self, Status>
     {
-        Ok(Self { objects:      Store::owned(objects, storage).map_err(|_| BAD_ARGUMENT)?,
-                  raster_bytes: 0 })
+        Ok(Self { objects:               Store::owned(objects, storage).map_err(|_| BAD_ARGUMENT)?,
+                  raster_bytes:          0,
+                  recovery_raster_bytes: 0,
+                  reserved_raster_bytes: 0,
+                  publication:           None })
     }
 }
 pub struct Drawing
@@ -244,8 +258,34 @@ fn row_pixels(raster: &mut Raster, index: usize) -> Result<&mut [u32], Status>
         pixels.resize(size, raster.background);
         *slot = Some(Arc::try_new(Row { pixels }).map_err(|_| NO_MEMORY)?);
     }
-    Ok(&mut Arc::get_mut(slot.as_mut().unwrap()).unwrap().pixels)
+    let row = slot.as_mut().ok_or(BAD_ABI)?;
+    let row = Arc::get_mut(row).ok_or(SERVICE_BUSY)?;
+    Ok(&mut row.pixels)
 }
+/// Prepare an immutable-row replacement before publishing a new scroll-box
+/// snapshot. Resident compound views use this same primitive for icons + text;
+/// the borrowed drawing closure cannot retain the canvas or call an app.
+fn paint_row(object: &mut Object, row: u32,
+             draw: impl FnOnce(&mut Canvas<'_>) -> Result<(), Status>)
+             -> Result<(), Status>
+{
+    let index = row.checked_sub(object.top).ok_or(BAD_ARGUMENT)? as usize;
+    if index >= object.raster.valid.len() || row >= object.spec.count
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    let spec = object.spec;
+    let (width, _, _) = dimensions(spec)?;
+    let data = writable(object)?;
+    data.valid[index] = false;
+    let pixels = row_pixels(data, index)?;
+    let mut canvas = Canvas::new(pixels, width, spec.row_height as usize);
+    canvas.paint_rect(Rect::new(0, 0, width as i16, spec.row_height), spec.background);
+    draw(&mut canvas)?;
+    data.valid[index] = true;
+    Ok(())
+}
+
 impl Object
 {
     fn rows(&self) -> u32
@@ -325,8 +365,22 @@ impl Manager
     fn get(&self, id: u64, owner: u64) -> Result<&Object, Status>
     {
         let object = self.objects.get(id).ok_or(NOT_FOUND)?;
-        if self.objects.owner(id).map(|domain| domain.incarnation()) != Some(owner)
+        if object.recipient != owner
         {
+            return Err(ACCESS_DENIED);
+        }
+        let storage = self.objects.owner(id).ok_or(NOT_FOUND)?;
+        if storage.incarnation() != owner
+        {
+            #[cfg(target_arch = "riscv64")]
+            {
+                let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                if activity.owner() != owner || activity.storage_owner().owner() != storage
+                {
+                    return Err(ACCESS_DENIED);
+                }
+            }
+            #[cfg(not(target_arch = "riscv64"))]
             return Err(ACCESS_DENIED);
         }
         Ok(object)
@@ -343,8 +397,39 @@ impl Manager
         Ok(self.get(id, owner)?.window)
     }
 
+    /// Render one already-prepared resident row through the managed viewport.
+    /// No provider, application callback or trap may run inside `draw`.
+    pub(crate) fn set_row_with(&mut self, id: u64, owner: u64, row: u32,
+                               draw: impl FnOnce(&mut Canvas<'_>) -> Result<(), Status>)
+                               -> Result<(), Status>
+    {
+        paint_row(self.get_mut(id, owner)?, row, draw)
+    }
+
     /// Reserve both committed and staging rasters against the compositor's
     /// shared cache budget, so viewport acceleration cannot starve file I/O.
+    pub(crate) fn prepare_recovery(&mut self, storage: &OwnerRef, bytes: usize)
+                                   -> Result<(), Status>
+    {
+        if storage.owner().kind() != mac_object_table::domain::DomainKind::System
+           || bytes == 0
+           || bytes > PIXEL_BUDGET
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        if self.raster_bytes - self.recovery_raster_bytes > PIXEL_BUDGET - bytes
+        {
+            return Err(NO_MEMORY);
+        }
+        if self.publication.is_none()
+        {
+            self.publication =
+                Some(self.objects.reserve_publication(storage).map_err(pool_status)?);
+        }
+        self.reserved_raster_bytes = bytes;
+        Ok(())
+    }
+
     pub fn raster_storage(&self) -> usize
     {
         self.raster_bytes
@@ -353,18 +438,43 @@ impl Manager
     pub fn remove_window(&mut self, window: u64)
     {
         let bytes = &mut self.raster_bytes;
+        let recovery_bytes = &mut self.recovery_raster_bytes;
         self.objects.remove_where_with(|_, object| object.window == window,
                                        |object| {
                                            *bytes -= object.raster.pixels() * 8;
+                                           if object.recovery
+                                           {
+                                               *recovery_bytes -= object.raster.pixels() * 8;
+                                           }
                                            drop(object);
                                        });
     }
 
-    pub(crate) fn request(&mut self, ledger: &OwnerRef, call: &mut Call, fonts: &FontManager,
-                          entry: DefinitionEntry, gate: TrapGate)
+    pub(crate) fn request(&mut self, recipient: &OwnerRef, storage: &OwnerRef, call: &mut Call,
+                          fonts: &FontManager, entry: DefinitionEntry, gate: TrapGate)
                           -> Result<Option<Drawing>, Status>
     {
-        let owner = ledger.owner().incarnation();
+        let owner = recipient.owner().incarnation();
+        if storage.owner() != recipient.owner()
+        {
+            #[cfg(target_arch = "riscv64")]
+            {
+                let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                if activity.owner() != owner
+                   || activity.storage_owner().owner() != storage.owner()
+                   || !crate::context::io_subject().is_some_and(|subject| {
+                                                       subject.scope()
+                                                              .same_scope(activity.root_subject()
+                                                                                  .scope())
+                                                   })
+                   || (call.operation == CREATE && !recipient.accepting())
+                {
+                    return Err(ACCESS_DENIED);
+                }
+            }
+            #[cfg(not(target_arch = "riscv64"))]
+            return Err(ACCESS_DENIED);
+        }
         if call.reserved != [0; 3] || call.text_length as usize > call.text.len()
         {
             return Err(BAD_ARGUMENT);
@@ -385,38 +495,112 @@ impl Manager
                 0
             };
             let used = self.raster_bytes;
-            if used - previous + w * h * 8 > PIXEL_BUDGET
+            let recovery = if call.operation == CREATE
+            {
+                storage.owner() != recipient.owner()
+            }
+            else
+            {
+                self.get(call.id, owner)?.recovery
+            };
+            if recovery
+            {
+                if w * h * 8 > self.reserved_raster_bytes
+                {
+                    return Err(NO_MEMORY);
+                }
+            }
+            else if used - self.recovery_raster_bytes - previous + w * h * 8
+                      > PIXEL_BUDGET - self.reserved_raster_bytes
             {
                 return Err(NO_MEMORY);
             }
             if call.operation == CREATE
             {
                 let data = raster(call.spec)?;
-                call.id = self.objects
-                              .insert(ledger, Object { window: call.window,
-                                               spec: call.spec,
-                                               top: 0,
-                                               raster: data,
-                                               tracking: None,
-                                               highlight: 0 })
-                              .map_err(|error| match error {
-                                  mac_object_table::domain::PoolError::RegistrationUnavailable { .. }
-                                  | mac_object_table::domain::PoolError::Stopping { .. } => SERVICE_BUSY,
-                                  _ => NO_MEMORY })?;
+                let object = Object { window: call.window,
+                                      recipient: owner,
+                                      recovery,
+                                      spec: call.spec,
+                                      top: 0,
+                                      raster: data,
+                                      tracking: None,
+                                      highlight: 0,
+                                      #[cfg(target_arch = "riscv64")]
+                                      _recovery_activity: if recovery
+                                      {
+                                          crate::context::recovery_activity()
+                                      }
+                                      else
+                                      {
+                                          None
+                                      } };
+                call.id = if recovery
+                {
+                    #[cfg(target_arch = "riscv64")]
+                    {
+                        let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                        let subject = activity.root_subject();
+                        self.objects.insert_reserved_in_scope_with_acknowledgement(
+                            self.publication.as_mut().ok_or(NOT_SUPPORTED)?, subject.scope(),
+                            Some(activity.acknowledgement_pin()), |_| object)
+                            .map_err(publication_status)?.id()
+                    }
+                    #[cfg(not(target_arch = "riscv64"))]
+                    {
+                        drop(object);
+                        return Err(NOT_SUPPORTED);
+                    }
+                }
+                else
+                {
+                    self.objects.insert(storage, object).map_err(pool_status)?
+                };
                 self.raster_bytes = used + w * h * 8;
+                if recovery
+                {
+                    self.recovery_raster_bytes += w * h * 8;
+                }
             }
             else
             {
                 let object = self.get_mut(call.id, owner)?;
                 if object.spec != call.spec
                 {
-                    let data = raster(call.spec)?;
+                    let mut same_layout = object.spec;
+                    same_layout.count = call.spec.count;
+                    if same_layout != call.spec
+                    {
+                        object.raster = raster(call.spec)?;
+                    }
+                    else
+                    {
+                        // Admit the row-table COW before publishing count/top.
+                        // A refusal leaves the previous scroll range intact.
+                        writable(object)?;
+                    }
                     object.spec = call.spec;
-                    object.raster = data;
-                    object.top = object.top.min(object.maximum());
+                    object.scroll(object.top.min(object.maximum()))?;
+                    let top = object.top;
+                    let count = object.spec.count;
+                    let data = writable(object)?;
+                    for (index, (row, valid)) in
+                        data.rows.iter_mut().zip(&mut data.valid).enumerate()
+                    {
+                        if top.saturating_add(index as u32) >= count
+                        {
+                            *row = None;
+                            *valid = false;
+                        }
+                    }
                     object.tracking = None;
                     object.highlight = 0;
                     self.raster_bytes = used - previous + w * h * 8;
+                    if recovery
+                    {
+                        self.recovery_raster_bytes =
+                            self.recovery_raster_bytes - previous + w * h * 8;
+                    }
                 }
             }
         }
@@ -426,6 +610,10 @@ impl Manager
             if let Some(object) = self.objects.remove(call.id)
             {
                 self.raster_bytes -= object.raster.pixels() * 8;
+                if object.recovery
+                {
+                    self.recovery_raster_bytes -= object.raster.pixels() * 8;
+                }
             }
             return Ok(None);
         }
@@ -458,32 +646,29 @@ impl Manager
             SCROLL_TO => object.scroll(call.top)?,
             SET_ROW =>
             {
-                let index = call.row.checked_sub(object.top).ok_or(BAD_ARGUMENT)? as usize;
-                if index >= object.raster.valid.len()
-                   || call.row >= object.spec.count
-                   || call.flags & !SELECTED != 0
+                if call.flags & !SELECTED != 0
                 {
                     return Err(BAD_ARGUMENT);
                 }
                 let spec = object.spec;
-                let (w, _, _) = dimensions(spec)?;
-                let data = writable(object)?;
-                let pixels = row_pixels(data, index)?;
-                let mut canvas = Canvas::new(pixels, w, spec.row_height as usize);
-                canvas.paint_rect(Rect::new(0, 0, w as i16, spec.row_height), spec.background);
                 let selected = call.flags & SELECTED != 0;
-                if selected
-                {
-                    canvas.paint_rect(Rect::new(1, 0, w as i16, spec.row_height - 1),
-                                      spec.selected_background);
-                }
-                fonts.draw(fonts_service::selection(spec.font),
-                           &mut canvas,
-                           Point { h: spec.padding.h,
-                                   v: spec.padding.v },
-                           text,
-                           if selected { spec.selected_foreground } else { spec.foreground })?;
-                data.valid[index] = true;
+                paint_row(object, call.row, |canvas| {
+                    if selected
+                    {
+                        canvas.paint_rect(Rect::new(1,
+                                                    0,
+                                                    spec.viewport.right - spec.viewport.left,
+                                                    spec.row_height - 1),
+                                          spec.selected_background);
+                    }
+                    fonts.draw(fonts_service::selection(spec.font),
+                               canvas,
+                               Point { h: spec.padding.h,
+                                       v: spec.padding.v },
+                               text,
+                               if selected { spec.selected_foreground } else { spec.foreground })?;
+                    Ok(())
+                })?;
             }
             TRACK_BEGIN =>
             {
@@ -616,4 +801,19 @@ fn step(object: &mut Object, part: i16) -> Result<(), Status>
         _ => 0
     };
     object.scroll((i64::from(object.top) + delta).clamp(0, i64::from(object.maximum())) as u32)
+}
+
+fn pool_status(error: mac_object_table::domain::PoolError) -> Status
+{
+    crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error))
+}
+
+#[cfg(target_arch = "riscv64")]
+fn publication_status(error: mac_object_table::store::PublicationError) -> Status
+{
+    match error
+    {
+        mac_object_table::store::PublicationError::Busy => SERVICE_BUSY,
+        mac_object_table::store::PublicationError::Pool(error) => pool_status(error)
+    }
 }

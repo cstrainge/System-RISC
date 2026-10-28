@@ -5,6 +5,11 @@ pub const HANDLE_EVENT: u32 = 1;
 pub const CLOSE: u32 = 2;
 pub const VALIDATE_ALERT: u32 = 4;
 pub const DRAW: u32 = 3;
+/// System-owned resource contracts; item order is stable across their callers.
+pub const CORE_ERROR_ALERT: i16 = -16460;
+pub const CORE_OUT_OF_MEMORY_ALERT: i16 = -16461;
+/// Save=1, Cancel=2, Don't Save=3. The supplied text is the document name.
+pub const CORE_SAVE_CHANGES_ALERT: i16 = -16462;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct DialogCall

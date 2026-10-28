@@ -577,6 +577,11 @@ pub(crate) fn reserve_terminal_storage(frame_bytes: usize, stack_bytes: usize)
           .terminal_storage(frame_bytes, stack_bytes)
           .map_err(Error::HeapPartition)
 }
+pub(crate) fn reserve_recovery_storage() -> Result<ProtectedRange, Error>
+{
+    SPACES.get().ok_or(Error::Missing)?.heap.recovery_storage().map_err(Error::HeapPartition)
+}
+
 struct RootScope
 {
     previous: usize,
