@@ -1,8 +1,12 @@
 # Scheduler policy and control, v1
 
-This is an allocation-free wire contract for the Multi-Scheduler extension.
-The resident SCTL consumer and final dispatch wiring are pending. Parsing bytes
-or advertising a feature does not establish safe SMP execution.
+This allocation-free wire contract is consumed by the resident primary-only
+SCHD/SCTL implementation and the optional Multi-Scheduler extension. Current
+limits expose TAKEOVER and one active scheduling hart; MULTI_HART and PARK are
+not exposed. The package is not installed by default. Source integration,
+parsing bytes or advertising a feature does not establish native acceptance or
+safe SMP execution. See [scheduling](../../SCHEDULING.md) for current mechanisms,
+clock/configuration and exact qualification limits.
 
 SCHD is an exclusive, kernel-only policy offer. The module has only irreducible
 resident services, including SCTL and MLIF, and no module dependency. Its pure
@@ -15,8 +19,16 @@ The core retains the genuine RuntimeBinding, ModuleExecution/source, Instance,
 owner and policy generation. It builds the complete eligible set from canonical
 records. No scheduler/registry guard, mutable frame or service borrow crosses
 foreign entry. The callback cannot allocate, park, reenter services or do I/O.
-Core enforces that scope and measures native elapsed time. A late return can be
-refused; that does not establish recovery from non-return or privileged faults.
+Core enforces that scope and measures elapsed time around the restricted native
+entry/return using the checked boot monitor timebase. The separately checked
+platform quantum and callback allowance are exposed in LIMITS; they are not
+interchangeable or latency guarantees. An otherwise valid late result is
+discarded as an expired sample: bootstrap selection uses refreshed input/deadlines
+for that round and retains the registration for a fresh sample. Malformed or
+forbidden calls remain protocol failures; lateness cannot hide them. This does
+not establish recovery from non-return or privileged faults. Attempted forbidden
+native operations remain latched even if the author ignores their immediate
+refusal. A per-call lease retains the actual code/Instance/plan through return.
 
 ## SCHD layouts
 
@@ -38,8 +50,12 @@ Flags: interactive wake1, last-hart-present2. Absent last hart stores0. Hardware
 IDs can be sparse/full-width. Candidates have nonzero canonical thread IDs,
 not application IDs. Core owns uniqueness, complete-set construction, affinity,
 actual readiness and running-claim exclusion. No truncation is allowed;
-registration refuses unsupported capacity. Maximum4096 candidates bounds bytes
-and scans; it is not a measured call-time guarantee.
+selection refuses an eligible set larger than its prepaid capacity instead of
+truncating it. Maximum 4096 candidates bounds bytes and scans; it is not an OS
+thread limit, CPU-time measurement or measured call-time guarantee. Current
+runnable-since facts come from actual readiness transitions and last hart from
+actual resume commitment. The current producer labels rounds Handoff; the Cause
+enum does not imply that every listed cause is already produced.
 
 Decision is48 bytes: `SCD1`, u32 version1, then u64 generation, round, hardware
 hart, chosen thread (0=idle), and quantum microseconds. Idle requires an empty
@@ -79,8 +95,11 @@ real RuntimeBinding afterward, before any shadow call. Retain the real provider
 image/Instance with a central shared-facility registration owned by the actual
 module. Failure cannot hide a published grant; uncertain effects remain retained
 for owner cleanup. ARM records a takeover request; it does not acknowledge an
-active policy or release a hart. HARTS is an intent while prepared/armed; actual
-admission occurs only behind core gates at the defined handover boundary.
+active policy or release a hart. HARTS is an intent while prepared/armed. The
+current resident path accepts only
+a count of 1 and refuses a count of 2 without partial activation. Other CPUs may already be
+admitted to System idle; that is separate from permission to dispatch authored
+code. Additional dispatch admission remains behind the core gates.
 
 After initializer return, core runs one shadow decision from a genuine core
 boundary, validates it, atomically changes active policy and confirms MLIF
@@ -93,9 +112,13 @@ and cause; it cannot report the requested count as active or silently substitute
 fewer CPUs.
 
 RETIRE first revokes further policy decisions and restores bootstrap policy.
-Retired requires real callback quiescence and a primary-only dispatch floor;
-only then may original image/source/Instance pins and registration backing be
-released. Busy retains the original grant and ticket. Quiescing-owner status/
+Maintenance withdraws the actual offered interface and waits for its matching
+canonical completion acknowledgment. Retired also requires real callback
+quiescence, no remaining code-dependent plan/Instance readers and a primary-only
+dispatch floor; only then may those pins and registration backing be released.
+Clean withdrawal reports MLIF Refused/OPERATION_CANCELLED while SCTL preserves a
+clean last status. Fault withdrawal retains its cause; no new MLIF wire phase
+is implied. Busy retains the original grant and ticket. Quiescing-owner status/
 retirement uses the original retained cleanup authority, never new admission or
 a fabricated owner. A dropping SDK controller must report retained state rather
 than claim disposal. Fault containment and arbitrary callback non-return remain

@@ -9,6 +9,7 @@ use crate::{Result, error};
 pub mod memory;
 mod devices;
 pub mod virtual_memory;
+pub mod scheduling;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +23,7 @@ pub struct Platform
     pub qemu_harts:     core::num::NonZeroUsize,
     pub fatal_shutdown: FatalShutdown,
     pub mmio_devices:   Vec<devices::Definition>,
+    scheduling:         scheduling::Definition,
     memory:             memory::Definition,
     virtual_memory:     virtual_memory::Definition
 }
@@ -51,6 +53,7 @@ pub fn load(name: &str) -> Result<Platform>
     }
     platform.device_artifacts()?;
     platform.virtual_memory()?;
+    platform.scheduling()?;
     Ok(platform)
 }
 static PLATFORM: LazyLock<Platform> = LazyLock::new(|| {
@@ -177,6 +180,11 @@ pub fn guest_artifacts() -> Result<(String, String)>
 }
 impl Platform
 {
+    pub fn scheduling(&self) -> Result<scheduling::Checked>
+    {
+        self.scheduling.check()
+    }
+
     fn device_artifacts(&self) -> Result<(String, String)>
     {
         let devices = devices::check(&self.mmio_devices, &self.memory()?)?;

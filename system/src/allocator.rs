@@ -10,7 +10,8 @@ use mac_kernel_model::{account::{Committed, Reserved},
                        policy::MemoryClass};
 
 use crate::machine::{interrupts::{NativeInvocationGate, with_masked},
-                     scheduler::accounting::AllocationAuthority};
+                     scheduler::accounting::AllocationAuthority,
+                     traps::execution::policy};
 
 mod budget;
 pub(crate) mod foundation;
@@ -400,7 +401,7 @@ unsafe impl GlobalAlloc for ResidentHeap
 {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8
     {
-        with_masked(|| {
+        policy::permitted(policy::Operation::Allocate, || {
             let Ok(block) = BlockLayout::new(layout)
             else
             {
@@ -412,12 +413,13 @@ unsafe impl GlobalAlloc for ResidentHeap
                 return ptr::null_mut();
             };
             self.allocate(block, reservation)
-        })
+        }).unwrap_or(ptr::null_mut())
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout)
     {
-        with_masked(|| {
+        // Denial leaves backing and original charge retained for quarantine.
+        policy::permitted(policy::Operation::Deallocate, || {
             // SAFETY: GlobalAlloc requires the original live pointer and its
             // current layout. Size changes retain alignment/prefix position.
             let payload = match BlockLayout::new(layout)
@@ -446,7 +448,7 @@ unsafe impl GlobalAlloc for ResidentHeap
 
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8
     {
-        with_masked(|| {
+        policy::permitted(policy::Operation::Reallocate, || {
             let Ok(old) = BlockLayout::new(layout)
             else
             {
@@ -487,6 +489,6 @@ unsafe impl GlobalAlloc for ResidentHeap
                 }
             }
             replacement
-        })
+        }).unwrap_or(ptr::null_mut())
     }
 }

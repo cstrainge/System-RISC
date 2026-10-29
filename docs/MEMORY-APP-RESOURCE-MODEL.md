@@ -231,12 +231,19 @@ private process mappings remain a separate paging gate.
 | Finder restart portion of that floor | 8 MiB / 16 MiB / 64 MiB | Subset of floor, never added twice; final value measured from restart peak |
 | Process kernel account | 4 MiB / 16 MiB / 128 MiB | Controls, tables, zones, TCBs and frames; admission also checks global remainder |
 | Process app committed heap budget | 4 MiB / 64 MiB / 2 GiB | Grow on demand; a 200 MB file uses file-backed views, not a forced whole-file copy |
-| Application heap growth minimum | 16 KiB / 64 KiB / 2 MiB | Rounded up to target geometry; bounded by selected process budget |
+| Application heap growth minimum (approved 2026-10-29) | 16 KiB / **64 KiB** / 2 MiB | Rounded up to target geometry; bounded by selected process budget |
 | Per-thread fixed stack (approved 2026-10-26) | 64 KiB / **4 MiB** / 8 MiB | Static per thread, charged app account, freed after switch-away |
 | Per-hart System stack (approved 2026-10-26) | 256 KiB / **4 MiB** / 8 MiB | Guarded resident stack is active; per-domain charges remain a heap-stage gate |
 | Designated per-control space | 1 MiB / 16 MiB / 128 MiB | A sub-budget of process kernel account, never independently guaranteed physical memory |
 | TE2 owned threshold | Tunable 0–100%, default 40%, bounded by a tunable **~3.2 MiB default ceiling** | Ratified 2026-10-23 calibration: owns strictly below both limits; at either limit uses view. The ceiling is 3,355,443 bytes (3.2 MiB rounded down), even if control space grows |
 | Process/thread/handle counts | Grow until account or memory refusal | No fixed-eight or guessed high replacement constant |
+
+Application-heap growth policy was selected on **2026-10-29**: the initial
+minimum extent is **64 KiB**, configurable within **16 KiB–2 MiB**. Larger
+requests may acquire larger extents. Each whole buddy-rounded extent is charged
+once to the canonical Application account and stays charged until its actual
+backing is released. This selects policy; it does not claim that the application
+allocator or private process roots are already implemented.
 
 Separate module-worker defaults were selected on **2026-10-27**: a configurable
 **4 MiB worker stack** and **16 MiB kernel budget per module**. They are distinct

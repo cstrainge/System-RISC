@@ -14,6 +14,11 @@ pub(super) unsafe extern "C" fn enter(module: u64, callback: AllocationOperation
                                       state: *mut c_void)
                                       -> Status
 {
+    if crate::machine::traps::execution::policy::deny(
+        crate::machine::traps::execution::policy::Operation::Critical)
+    {
+        return mac_abi::ACCESS_DENIED;
+    }
     let operation = || -> Result<Status, Status> {
         crate::context::authenticate_module(module)?;
         super::invocation::callback_allowed(module, callback as usize)?;

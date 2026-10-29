@@ -27,6 +27,11 @@ pub(super) unsafe extern "C" fn allocate(module: u64, size: usize, alignment: us
                                          result: *mut *mut u8)
                                          -> Status
 {
+    if crate::machine::traps::execution::policy::deny(
+        crate::machine::traps::execution::policy::Operation::Allocate)
+    {
+        return mac_abi::ACCESS_DENIED;
+    }
     let operation = || -> Result<(), Status> {
         crate::context::authenticate_module(module)?;
         output(result)?;
@@ -55,6 +60,11 @@ pub(super) unsafe extern "C" fn deallocate(module: u64, pointer: *mut u8, size: 
                                            alignment: usize)
                                            -> Status
 {
+    if crate::machine::traps::execution::policy::deny(
+        crate::machine::traps::execution::policy::Operation::Deallocate)
+    {
+        return mac_abi::ACCESS_DENIED;
+    }
     let operation = || -> Result<(), Status> {
         crate::context::authenticate_module(module)?;
         let requested = layout(size, alignment)?;
@@ -79,6 +89,11 @@ pub(super) unsafe extern "C" fn reallocate(module: u64, pointer: *mut u8, size: 
                                            result: *mut *mut u8)
                                            -> Status
 {
+    if crate::machine::traps::execution::policy::deny(
+        crate::machine::traps::execution::policy::Operation::Reallocate)
+    {
+        return mac_abi::ACCESS_DENIED;
+    }
     let operation = || -> Result<(), Status> {
         crate::context::authenticate_module(module)?;
         output(result)?;
@@ -114,6 +129,11 @@ pub(super) unsafe extern "C" fn with_module_allocation(module: u64,
                                                        state: *mut c_void)
                                                        -> Status
 {
+    if crate::machine::traps::execution::policy::deny(
+        crate::machine::traps::execution::policy::Operation::AllocationScope)
+    {
+        return mac_abi::ACCESS_DENIED;
+    }
     let operation = || -> Result<Status, Status> {
         crate::context::authenticate_module(module)?;
         super::invocation::callback_allowed(module, callback as usize)?;

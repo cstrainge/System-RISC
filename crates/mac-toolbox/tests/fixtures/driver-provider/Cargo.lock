@@ -133,7 +133,17 @@ dependencies = [
  "mac-device-interface",
  "mac-file-source-interface",
  "mac-module",
+ "mac-scheduler-interface",
  "spinning_top",
+]
+
+[[package]]
+name = "mac-driver-alloc"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-driver",
+ "mac-scrap-extension-interface",
 ]
 
 [[package]]
@@ -184,6 +194,27 @@ name = "mac-riscv-pages"
 version = "0.1.0"
 dependencies = [
  "mac-kernel-model",
+]
+
+[[package]]
+name = "mac-scheduler-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
+]
+
+[[package]]
+name = "mac-scheduler-policy"
+version = "0.1.0"
+dependencies = [
+ "mac-scheduler-interface",
+]
+
+[[package]]
+name = "mac-scrap-extension-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
 ]
 
 [[package]]
@@ -275,6 +306,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0134f9043ed38b087ac4f7d4af44c79e2c9e5094421fe3164f435ce585953b10"
+
+[[package]]
 name = "spinning_top"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -301,8 +338,13 @@ dependencies = [
  "mac-abi",
  "mac-build",
  "mac-driver",
+ "mac-driver-alloc",
  "mac-filesystem-interface",
  "mac-formats",
+ "mac-module",
+ "mac-scheduler-interface",
+ "mac-scheduler-policy",
+ "spin",
 ]
 
 [[package]]

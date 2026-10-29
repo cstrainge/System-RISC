@@ -27,13 +27,16 @@ unmapped guard pages; application stacks still use trusted physmap aliases.
 Kernel traps mask
 interrupts, including nested definition calls, so allocator and manager guards
 cannot be preempted by another application on this hart. Native event waits now
-block the actual application thread, with a separate idle WFI context and 250 us
-timer sampling. Readiness is inspected before taking the scheduler lock; a fresh
-foreground input wake takes priority over background and timeout wakes. No manager
+block the actual application thread, with a separate idle WFI context. The checked
+platform currently selects a 250-microsecond quantum. Bootstrap selection gives a
+fresh foreground input wake priority over background and timeout wakes. An
+optional SCHD provider may supply a decision through the primary-only resident
+policy path; final readiness/claim/frame authority remains in the core. No manager
 guard or borrowed request crosses the context switch. General application-worker
-APIs, blocking primitives, migration and multiple harts remain future work. The
-privileged module-worker backend is described below. The dynamic capacity SDK gate now runs ten apps together, delivers physical keys to all nine
-workers and repeats with fresh identities after actual exits and slot reuse. A private
+APIs, blocking primitives, migration and concurrent execution of authored code
+across multiple harts remain future work. The privileged module-worker backend
+is described below; discovered peers can separately complete System-idle startup. The dynamic capacity SDK gate now runs ten apps together,
+delivers physical keys to all nine workers and repeats with fresh identities after actual exits and slot reuse. A private
 RV64 SDK gate has demonstrated another app progressing during a
 no-trap/no-yield interval, plus launch, relaunch, ownership, input, hide and exit.
 
@@ -787,14 +790,31 @@ provide safe owned requests, completions, cancellation and wakeups; extension
 policy and runtime adapters use ordinary versioned registrations. This does not
 move a Tokio dependency or a fixed async-provider list into the kernel.
 
-Scheduling policy is also replaceable. The loadable **Multi-Scheduler Extension**
-takes over from the resident single-hart boot scheduler and decides when to
-activate additional harts. Core owns the architecture mechanisms for hart
-startup/parking, interrupts/IPIs, context switches and safe synchronization.
-Takeover is checked and atomic: rejection leaves boot scheduling usable, and no
-additional hart is released before per-hart context, memory and interrupt/lock
-safety gates pass. This remains the model's isolated scheduler capstone, not an
-SMP claim for the current kernel.
+The resident SCHD/SCTL path now supports primary-only scheduling-policy
+preparation, shadow handover and retirement. The optional **Multi-Scheduler
+Extension** is not installed by default. It cannot authorize additional author
+execution: current limits expose one active scheduling hart and no MULTI_HART or
+PARK feature. Core retains the actual source/Instance/plan lease, canonical THRD
+facts, final live claim/frame commitment and primary-owned maintenance. Policy
+callbacks run without scheduler/registry/frame borrows and cannot allocate,
+perform I/O, call services or park through native gateways. Withdrawal retains
+its original owners until actual interface ACK and callback/reader quiescence.
+
+The platform independently configures the current 250-microsecond quantum and
+1000-microsecond callback allowance, generated from its checked JSON record.
+Conversions use the admitted boot monitor DT timebase. The allowance detects a
+late returned sample, which is discarded before refreshed bootstrap selection;
+it does not by itself quarantine the policy. Invalid replies/forbidden operations
+remain protocol failures. This is not a non-return watchdog or UI-latency promise.
+Private optimized native one- and four-CPU runs observed primary-only takeover,
+valid-sample expiry, early-confirm/service/envelope refusals, canonical retirement,
+stale-status rejection and two actual post-retirement worker reclaims. The
+optional shipping package also completed startup with real Reactor launch,
+mouse input and own-process exit. All author execution remained primary-only;
+these scenarios do not establish every schedule decision or latency/fairness.
+See [SCHEDULING.md](SCHEDULING.md) for the exact current contract and remaining
+qualification gates. Concurrent author scheduling, service/firmware affinity,
+retirement and wake/progress across harts still require their full native gate.
 
 Application identities use the shared facility's full u64 process-domain
 incarnation, separate from scheduled thread IDs. The owner directory retains
@@ -808,9 +828,10 @@ these same resident lookups; this does not add a 68k Process Manager adapter.
 The application menu retains full-width identities in its resident actions;
 MDEF's u32 command is a row selector, not a truncated process ID. Window-owned
 resource resolution also retains the full process identity. The directory has
-no fixed-eight limit; scheduler stacks/contexts and other remaining fixed-eight
-storage still await their staged migration, so this alone does not admit more
-than eight running apps.
+no fixed-eight limit; scheduled application/worker records and backing grow
+fallibly under their actual ownership/accounting limits. The policy snapshot's
+4096-candidate capacity is a separate complete-set refusal threshold, not a
+hard-coded application/thread count.
 
 Opt-in event tracing uses private snapshot format 2. Its six-word header is
 followed by 16 full application identities, then the existing service counters,

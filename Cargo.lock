@@ -602,6 +602,7 @@ dependencies = [
  "mac-object-table",
  "mac-power-interface",
  "mac-riscv-pages",
+ "mac-scheduler-interface",
  "mac-scrap-extension-interface",
  "mac-toolbox",
  "mac-traps",

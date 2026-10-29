@@ -205,6 +205,12 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                    registry.register(&owner, crate::machine::scheduler::specification(storage),
                                        crate::machine::scheduler::ReleaseThreads(storage)).map_err(KindAccessError::Registry)?;
                                }
+                               for storage in [false, true] {
+                                   registry.register(&owner,
+                                       crate::drivers::scheduler::specification(storage),
+                                       crate::drivers::scheduler::ReleaseRegistration(storage))
+                                       .map_err(KindAccessError::Registry)?;
+                               }
                                for kind in crate::images::Registration::ALL {
                                    registry.register(&owner, kind.specification(), kind)
                                        .map_err(KindAccessError::Registry)?;

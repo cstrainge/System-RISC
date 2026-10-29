@@ -243,6 +243,14 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
                                              frame.cause, frame.pc, frame.value));
     }
     let number = frame.registers[15] as u32;
+    if execution::policy::deny(execution::policy::Operation::Service)
+    {
+        // Refuse before a request pointer or an executor-owned trap scope is
+        // borrowed. A policy may neither park nor enter ordinary services.
+        frame.registers[8] = ACCESS_DENIED as usize;
+        frame.pc = frame.pc.wrapping_add(4);
+        return Dispatch::Resume;
+    }
     if number == mac_module::abi::worker::TRAP
     {
         return worker_trap(frame);
