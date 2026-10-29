@@ -208,15 +208,18 @@ pub struct BootInfo
     /// Sorted enabled hardware IDs in reserved firmware RAM, borrowed until
     /// reset. Discovery metadata never authenticates the currently executing CPU.
     pub cpus:                    *const boot::topology::Cpu,
-    pub cpu_count:               usize
+    pub cpu_count:               usize,
+    /// Mandatory physical custom-ROM monitor directory, pinned until reset.
+    pub monitor:                 *const boot::monitor::Directory
 }
 
 // The size gate must reject an earlier ROM before System forms a BootInfo
 // reference. These are production wire-layout invariants, independent of tests.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<BootInfo>() == 160
+const _: () = assert!(core::mem::size_of::<BootInfo>() == 168
                       && core::mem::offset_of!(BootInfo, cpus) == 144
                       && core::mem::offset_of!(BootInfo, cpu_count) == 152
+                      && core::mem::offset_of!(BootInfo, monitor) == 160
                       && core::mem::size_of::<boot::topology::Cpu>() == 8);
 
 /// Resident in System memory for the entire application lifetime.
@@ -347,7 +350,7 @@ mod tests
         assert_eq!(core::mem::offset_of!(inspection::memory::Call, detail), 624);
         assert_eq!(core::mem::offset_of!(BootInfo, ram_base), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, log), 24);
-        assert_eq!(core::mem::size_of::<BootInfo>(), 160);
+        assert_eq!(core::mem::size_of::<BootInfo>(), 168);
         assert_eq!(core::mem::offset_of!(BootInfo, execution), 136);
         assert_eq!(core::mem::offset_of!(BootInfo, display_scratch), 120);
         assert_eq!(core::mem::offset_of!(BootInfo, storage_context), 32);

@@ -42,7 +42,6 @@ members = [
     "tools/risc-forks",
     "tools/risc-host",
     "tools/xtask",
-    "tests/abi-smoke",
     "bootrom",
     "definitions/*",
     "drivers/*",

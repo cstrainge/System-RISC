@@ -2,6 +2,7 @@
 use crate::BootMemoryRange;
 pub mod execution;
 pub mod topology;
+pub mod monitor;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryError

@@ -19,6 +19,29 @@ use crate::{loader::Definitions,
                       windows::{Action, WindowId, WindowManager, WindowPart}},
             virtio_input};
 
+/// Bootstrap must preserve a definition-publication transport refusal rather
+/// than recasting it as a malformed resource or unrelated service failure.
+#[derive(Debug)]
+pub(crate) enum AdmissionError
+{
+    Service(Status),
+    Definition(crate::loader::LoadError)
+}
+impl From<Status> for AdmissionError
+{
+    fn from(cause: Status) -> Self
+    {
+        Self::Service(cause)
+    }
+}
+impl From<crate::loader::LoadError> for AdmissionError
+{
+    fn from(cause: crate::loader::LoadError) -> Self
+    {
+        Self::Definition(cause)
+    }
+}
+
 #[path = "crashes/runtime.rs"]
 mod crash_runtime;
 #[path = "standard_file/runtime.rs"]
@@ -146,7 +169,7 @@ impl Desktop
         screen.finish(&mut self.controls)
     }
 
-    pub(crate) fn prepare_recovery_storage(&mut self) -> Result<(), Status>
+    pub(crate) fn prepare_recovery_storage(&mut self) -> Result<(), AdmissionError>
     {
         crate::kernel::fonts().ok_or(NOT_SUPPORTED)?
             .require_direct_bitmap(fonts_service::selection(mac_abi::quickdraw::FontSelection::default()))
@@ -168,18 +191,14 @@ impl Desktop
                 // code now: later protected heap backing cannot admit missing
                 // definition images or page metadata on their behalf.
                 let source = crate::kernel::system_resources(&storage)?;
-                self.definitions
-                    .resolve_system(source, *b"WDEF", 0)
-                    .map_err(crate::loader::status)?;
+                self.definitions.resolve_system(source, *b"WDEF", 0)?;
                 for operation in
                     [mac_abi::controls::DRAW_STANDARD, mac_abi::controls::DRAW_SCROLLBAR]
                 {
                     let id = super::controls::definition_id(&mac_abi::controls::ControlCall {
                         operation, ..Default::default()
                     })?;
-                    self.definitions
-                        .resolve_system(source, *b"CDEF", id)
-                        .map_err(crate::loader::status)?;
+                    self.definitions.resolve_system(source, *b"CDEF", id)?;
                 }
                 self.windows.prepare_recovery(&storage).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Window Manager status={status}"); status })?;
                 self.controls.prepare_recovery(&storage, controls).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Control Manager status={status}"); status })?;
@@ -404,20 +423,19 @@ impl Desktop
     pub(crate) fn new(mut definitions: Definitions, processes: super::processes::Manager,
                       finder_owner: super::handles::OwnerRef,
                       controls: super::controls::objects::Manager)
-                      -> Result<Self, Status>
+                      -> Result<Self, AdmissionError>
     {
         let finder = finder_owner.owner().incarnation();
         if processes.ledger(finder)?.owner() != finder_owner.owner()
            || processes.get(finder)?.image.is_none()
         {
-            return Err(BAD_ABI);
+            return Err(AdmissionError::Service(BAD_ABI));
         }
-        definitions.resolve(*b"WDEF", 0).map_err(crate::loader::status)?;
-        let cdef = definitions.resolve(*b"CDEF", 0).map_err(crate::loader::status)?;
-        let system_cdef = definitions.resolve_system(
-            crate::kernel::system_resources(&super::handles::system_owner()?)?, *b"CDEF", 0)
-            .map_err(crate::loader::status)?;
-        let mdef = definitions.resolve(*b"MDEF", 0).map_err(crate::loader::status)?;
+        definitions.resolve(*b"WDEF", 0)?;
+        let cdef = definitions.resolve(*b"CDEF", 0)?;
+        let system_source = crate::kernel::system_resources(&super::handles::system_owner()?)?;
+        let system_cdef = definitions.resolve_system(system_source, *b"CDEF", 0)?;
+        let mdef = definitions.resolve(*b"MDEF", 0)?;
         let text_cursor =
             crate::kernel::with_resources(|resources| {
                 super::quickdraw::cursors::decode_mono(&resources.get(mac_abi::resources::SYSTEM,

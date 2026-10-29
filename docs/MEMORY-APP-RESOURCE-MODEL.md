@@ -513,9 +513,11 @@ Physical-map qualification includes 21 parser/ABI/build host tests, 219 public
 SDK host cases, optimized whole-world packaging, seventeen ROM boot/rejection/
 fallback cases, actual 128 MiB/512 MiB/8 GiB boots and a pre-heap 64 MiB refusal.
 Native/classic ECALL smoke, boot pixels, aggregate userspace and Reactor Room on
-Linux/Windows also pass. A standalone `cargo xtask abi-check` runs the same Rust
-smoke harness used by the canonical gate. Bootstrap library tests and the RAM
-campaign now join that gate.
+Linux/Windows observations were recorded at that stage. These historical host
+results are not current OS qualification. The raw-memory ABI bootstrap and its
+standalone command were subsequently retired when the real ROM machine-monitor
+handoff became mandatory. Current native evidence must boot that production ROM;
+a fabricated monitor or alternate bootstrap does not establish the contract.
 
 **Open performance qualification:** the strict 1-ms physical-delivery campaign is
 not consistently met for the cold first key: a fixed three-run set measured

@@ -25,6 +25,7 @@
     "bootstrap_io": {
       "uart": { "base": "0x10000000", "bytes": "0x1000" },
       "rtc": { "base": "0x101000", "bytes": "0x1000" },
+      "clint": { "base": "0x2000000", "bytes": "0x10000" },
       "virtio_mmio": {
         "base": "0x10001000",
         "stride": "0x1000",
@@ -51,6 +52,12 @@
     "application_relocation_base": "0x83000000",
     "fdt_tail_bytes": "0x200000",
     "boot_stack_bytes": "0x40000",
+    "monitor_stack_bytes": "0x1000",
+    "machine_monitor": {
+      "reset": "whole-machine",
+      "binding": "legacy-clint",
+      "compatible": ["sifive,clint0", "riscv,clint0"]
+    },
     "system_heap_bytes": "0x20000000",
     "system_recovery_bytes": "0x2000000",
     "application_primary_base": "0x81000000",

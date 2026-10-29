@@ -22,6 +22,7 @@ pub(super) struct Definition
 {
     uart:        Region,
     rtc:         Region,
+    clint:       Region,
     virtio_mmio: Virtio
 }
 #[derive(Debug)]
@@ -29,6 +30,7 @@ pub(super) struct Checked
 {
     uart:           Range<u64>,
     rtc:            Range<u64>,
+    clint:          Range<u64>,
     virtio:         Range<u64>,
     stride:         u64,
     slots:          u32,
@@ -42,6 +44,12 @@ impl Definition
     {
         let uart = region("bootstrap_io.uart", &self.uart, page)?;
         let rtc = region("bootstrap_io.rtc", &self.rtc, page)?;
+        let clint = region("bootstrap_io.clint", &self.clint, page)?;
+        if clint.end - clint.start != 0x10000
+        {
+            return Err(error("selected legacy CLINT window must cover exactly its 64 KiB \
+                              binding"));
+        }
         let stride = address("bootstrap_io.virtio_mmio.stride", &self.virtio_mmio.stride)?;
         let slots = self.virtio_mmio.slots;
         let bytes = stride.checked_mul(u64::from(slots))
@@ -60,7 +68,7 @@ impl Definition
                               covering the register window and interrupt routes must not \
                               overflow"));
         }
-        let windows = [fw_cfg, &uart, &rtc, &virtio];
+        let windows = [fw_cfg, &uart, &rtc, &virtio, &clint];
         for (index, range) in windows.iter().enumerate()
         {
             if range.end > 1 << 56 || overlaps(range, ram) || overlaps(range, flash)
@@ -79,6 +87,7 @@ impl Definition
         }
         Ok(Checked { uart,
                      rtc,
+                     clint,
                      virtio,
                      stride,
                      slots,
@@ -91,6 +100,8 @@ impl Checked
     {
         [("UART_BASE", self.uart.start),
          ("RTC_BASE", self.rtc.start),
+         ("CLINT_BASE", self.clint.start),
+         ("CLINT_BYTES", self.clint.end - self.clint.start),
          ("VIRTIO_MMIO_BASE", self.virtio.start),
          ("VIRTIO_MMIO_STRIDE", self.stride),
          ("VIRTIO_MMIO_SLOTS", u64::from(self.slots)),
@@ -100,7 +111,7 @@ impl Checked
     pub(super) fn ranges_source(&self, fw_cfg: &Range<u64>) -> String
     {
         let mut output = String::from("pub const BOOT_MMIO_REGIONS: &[(u64,u64)] = &[\n");
-        for range in [fw_cfg, &self.uart, &self.rtc, &self.virtio]
+        for range in [fw_cfg, &self.uart, &self.rtc, &self.virtio, &self.clint]
         {
             writeln!(output, "({:#x},{:#x}),", range.start, range.end).unwrap();
         }

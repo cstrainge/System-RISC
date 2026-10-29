@@ -46,6 +46,7 @@ pub(crate) enum Error
     Memory(MemoryError),
     Execution(execution::Error),
     Topology(topology::Error),
+    Monitor(super::monitor::Error),
     Physical(PhysicalError),
     Policy(ModelError),
     Pages(super::pages::Error),
@@ -80,6 +81,7 @@ impl fmt::Display for Error
             Self::Memory(e) => e.fmt(f),
             Self::Execution(e) => e.fmt(f),
             Self::Topology(e) => e.fmt(f),
+            Self::Monitor(e) => e.fmt(f),
             Self::Physical(e) => e.fmt(f),
             Self::Policy(e) => e.fmt(f),
             Self::Pages(e) => e.fmt(f),
@@ -180,6 +182,11 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
                                       mask: record.hardware_tag_mask });
     }
     let ram=DirectMap::new::<Sv39>(memory,AddressRange::new(VM_PHYSMAP_START,VM_PHYSMAP_END).map_err(Error::Policy)?,PhysicalAddress(VM_PHYSMAP_PHYSICAL_BASE)).map_err(Error::Physical)?;
+    // ROM already installed the admitted permanent RAM physmap; DirectMap is
+    // its checked software view, not a hardware mapping operation. Monitor
+    // admission checks every isolated control extent against that view before
+    // borrowing atomic cells; BOOT/global allocator publication happens later.
+    unsafe { super::monitor::admit(info, memory, cpus, record.hart as usize, &ram) }.map_err(Error::Monitor)?;
     let boot = BOOT.call_once(|| {
                        Bootstrap { ram,
                                    memory,

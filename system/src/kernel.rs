@@ -60,6 +60,17 @@ impl crate::toolbox::resources::manager::ImageCatalog for ImageCatalog<'_>
             .map(|read| &read.source().resources[..])
     }
 }
+type ApplicationImageError = crate::images::LoadError<crate::loader::LoadError>;
+
+fn application_image_status(error: ApplicationImageError) -> Status
+{
+    match error
+    {
+        crate::images::LoadError::Admission(status) => status,
+        crate::images::LoadError::Write(cause) => crate::loader::status(cause)
+    }
+}
+
 pub(crate) fn load_application(owner: &crate::toolbox::handles::OwnerRef, creator: [u8; 4],
                                file_type: [u8; 4],
                                resources: alloc::vec::Vec<mac_formats::resource::Resource>)
@@ -70,10 +81,10 @@ pub(crate) fn load_application(owner: &crate::toolbox::handles::OwnerRef, creato
                 AppImage { role: crate::images::Role::Application { authority },
                            resources,
                            creator,
-                           file_type })
+                           file_type }).map_err(application_image_status)
 }
 fn admit_image(owner: &crate::toolbox::handles::OwnerRef, source: AppImage)
-               -> Result<LoadedImage, Status>
+               -> Result<LoadedImage, ApplicationImageError>
 {
     // Immutable package sources are interned by the System image registry.
     // Their resource backing is attributed at the storage read, before this move.
@@ -89,21 +100,23 @@ pub(crate) fn copy_application(owner: &crate::toolbox::handles::OwnerRef,
 {
     let source = IMAGES.with(|images| images.read(original).map(|read| read.shared_source()))
                        .map_err(AccessError::status)??;
-    admit_shared_image(owner, source)
+    admit_shared_image(owner, source).map_err(application_image_status)
 }
 
 fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
                       source: alloc::sync::Arc<AppImage>)
-                      -> Result<LoadedImage, Status>
+                      -> Result<LoadedImage, ApplicationImageError>
 {
     if !matches!(source.role, crate::images::Role::Application { .. })
     {
-        return Err(ACCESS_DENIED);
+        return Err(crate::images::LoadError::Admission(ACCESS_DENIED));
     }
     let (preferred, _) =
-        crate::loader::reservation(&source.resources).map_err(crate::loader::status)?;
+        crate::loader::reservation(&source.resources)
+            .map_err(|cause| crate::images::LoadError::Write(cause.into()))?;
     let extent =
-        crate::loader::application_extent(&source.resources).map_err(crate::loader::status)?;
+        crate::loader::application_extent(&source.resources)
+            .map_err(|cause| crate::images::LoadError::Write(cause.into()))?;
     IMAGES.with(|images| {
               images.load(owner,
                           source,
@@ -115,11 +128,11 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
                           |resources, base| {
                               crate::loader::application_at(resources, base).map_err(|error| {
                                   serial!("APPLICATION_IMAGE_REFUSED: {error}");
-                                  crate::loader::status(error)
+                                  error
                               })
                           })
           })
-          .map_err(AccessError::status)?
+          .map_err(|cause| crate::images::LoadError::Admission(cause.status()))?
 }
 /// Module packages use the same immutable source and owner-alias registry as
 /// applications, with their own role and the exact permanent module RAM range.
@@ -147,6 +160,13 @@ pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,
                           write)
           })
           .map_err(AccessError::status)?
+          .map_err(|cause| {
+              match cause
+              {
+                  crate::images::LoadError::Admission(status)
+                  | crate::images::LoadError::Write(status) => status
+              }
+          })
 }
 pub(crate) fn module_execution(binding: crate::images::Binding)
                                -> Result<crate::images::ModuleExecution, Status>
@@ -577,7 +597,7 @@ pub(crate) fn with_resources_in<R>(scope: mac_abi::resources::Scope,
         fonts().ok_or(NOT_SUPPORTED)?.resources()).with_images(&catalog, origin, primary.as_ref())))
 }
 
-fn launch(info: &BootInfo) -> mac_formats::Result<()>
+fn launch(info: &BootInfo) -> crate::loader::LoadResult<()>
 {
     let ram_end = info.ram_base
                       .checked_add(info.ram_size)
@@ -624,9 +644,15 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
                        AppImage { resources: finder,
                                   role: crate::images::Role::Application { authority },
                                   creator: *b"MACS",
-                                  file_type: *b"FNDR" })).map_err(|status| {
-                            serial!("FINDER_IMAGE_REFUSED status={status}");
-                            mac_formats::Error::Malformed("Finder image admission failed")
+                                  file_type: *b"FNDR" })).map_err(|cause| {
+                            serial!("FINDER_IMAGE_REFUSED: {cause}");
+                            match cause
+                            {
+                                crate::images::LoadError::Admission(_) =>
+                                    crate::loader::LoadError::from(mac_formats::Error::Malformed(
+                                        "Finder image admission failed")),
+                                crate::images::LoadError::Write(cause) => cause
+                            }
                         })?;
     processes.bind_image(finder_id, finder_loaded.binding())
              .map_err(|_| mac_formats::Error::Malformed("Finder image binding failed"))?;
@@ -651,12 +677,12 @@ fn launch(info: &BootInfo) -> mac_formats::Result<()>
     if released.owner != 0 || released.image.is_some()
     {
         return Err(mac_formats::Error::Malformed("bootstrap resource scope survived desktop \
-                                                  initialization"));
+                                                  initialization").into());
     }
     serial!("BOOT_RESOURCE_SCOPE_RELEASED");
     // End the bootstrap resource scope and drop all admission guards before
     // leaving this stack permanently. Scheduled threads own their actual pins.
-    crate::machine::scheduler::start()
+    crate::machine::scheduler::start().map_err(Into::into)
 }
 
 fn recovery_boot_error(service: &'static str, status: Status) -> mac_formats::Error
@@ -673,7 +699,7 @@ fn recovery_boot_error(service: &'static str, status: Status) -> mac_formats::Er
 
 fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resource>,
                       processes: crate::toolbox::processes::Manager, finder_loaded: LoadedImage)
-                      -> mac_formats::Result<()>
+                      -> crate::loader::LoadResult<()>
 {
     let finder_entry = finder_loaded.entry();
     let finder_owner = processes.ledger(crate::context::finder_app().0).map_err(|_| {
@@ -723,7 +749,7 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
                                                                 &mut definitions, &mut controls)?;
     if !crate::platform::setup_framebuffer()
     {
-        return Err(mac_formats::Error::Malformed("RAM framebuffer is unavailable"));
+        return Err(mac_formats::Error::Malformed("RAM framebuffer is unavailable").into());
     }
     serial!("BOOT_PANEL_READY stages=7");
     // Immutable publication is acquire/release synchronized by Once. Runtime
@@ -741,13 +767,21 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     // BootScreen retains its Control identity without borrowing the manager;
     // move that manager once and keep the welcome panel until publication.
     let mut runtime = crate::toolbox::runtime::Desktop::new(definitions, processes, finder_owner,
-                                                            controls).map_err(|status| {
-                          recovery_boot_error("resident Desktop admission failed", status)
+                                                            controls).map_err(|cause| {
+                          match cause
+                          {
+                              crate::toolbox::runtime::AdmissionError::Service(status) =>
+                                  recovery_boot_error("resident Desktop admission failed", status).into(),
+                              crate::toolbox::runtime::AdmissionError::Definition(cause) => cause
+                          }
                       })?;
-    runtime.prepare_recovery_storage().map_err(|status| {
-                                           recovery_boot_error("System UI publication storage \
-                                                                admission failed",
-                                                               status)
+    runtime.prepare_recovery_storage().map_err(|cause| {
+                                           match cause
+                                           {
+                                               crate::toolbox::runtime::AdmissionError::Service(status) =>
+                                                   recovery_boot_error("System UI publication storage admission failed", status).into(),
+                                               crate::toolbox::runtime::AdmissionError::Definition(cause) => cause
+                                           }
                                        })?;
     runtime.prepare_ordinary_baseline().map_err(|status| {
                                             recovery_boot_error("initial ordinary desktop \
@@ -795,7 +829,7 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     if devices != 2
     {
         serial!("INPUT_UNAVAILABLE devices={}", devices);
-        return Err(recovery_boot_error("native input initialization refused", NOT_SUPPORTED));
+        return Err(recovery_boot_error("native input initialization refused", NOT_SUPPORTED).into());
     }
     serial!("VIRTIO_INPUT=READY devices={}", devices);
     serial!("UI_OBSERVER address={} bytes=128 version=1",

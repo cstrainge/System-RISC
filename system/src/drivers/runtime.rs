@@ -336,7 +336,11 @@ pub(crate) fn load(resources: Vec<Resource>, file_type: [u8; 4], directory: Pack
                                // Exact disjoint RAM remains reserved until reset. No reclamation is claimed.
                                let output = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, plan.length()) };
                                plan.write(output).map_err(|_| BAD_ABI)?;
-                               unsafe { core::arch::asm!("fence.i", options(nostack)); }
+                               crate::machine::monitor::publish_instructions().map_err(|cause| {
+                                   serial!("MODULE_INSTRUCTION_PUBLICATION_REFUSED module={} base={:#x} cause={}",
+                                           module, base, cause);
+                                   cause.status()
+                               })?;
                                Ok(plan.entry() as usize)
                            })
                        })
