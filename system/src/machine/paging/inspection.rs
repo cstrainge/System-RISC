@@ -96,7 +96,7 @@ fn push(rows: &mut Vec<wire::Region>, row: wire::Region) -> Result<(), Error>
 fn kind(base: u64, span: Span, heap: (u64, u64)) -> u32
 {
     if base >= heap.0 && base < heap.1 { wire::SYSTEM_HEAP }
-    else if (VM_SYSTEM_STACKS_START + PAGE_BYTES..VM_SYSTEM_STACKS_START + PAGE_BYTES + SYSTEM_STACK_BYTES).contains(&base) { wire::SYSTEM_STACK }
+    else if super::system_stack_containing(base).is_some() { wire::SYSTEM_STACK }
     else if (VM_PHYSMAP_START..VM_PHYSMAP_END).contains(&base) { wire::DIRECT_MAP }
     else if (VM_SYSTEM_IMAGE_BASE..VM_SYSTEM_IMAGE_LIMIT).contains(&base) {
         if span.permissions.execute { wire::SYSTEM_CODE }
@@ -115,81 +115,110 @@ fn inventory() -> Result<&'static [wire::Region], Error>
     // only. Failure leaves Once empty, so exhaustion is retryable.
     super::interrupts::with_masked(|| {
         REGIONS.try_call_once(|| {
-                   let spaces = SPACES.get().ok_or(Error::NotReady)?;
-                   let space = &spaces.kernel;
-                   // Mapping identity comes from the owned root/backing, not
-                   // the allocator's mutable counters or a former BSS symbol.
-                   // PTE inventory describes the whole mapped heap, including
-                   // protected storage. Summary capacity describes only the
-                   // ordinary allocator; aliases do not add physical owners.
-                   let (base, bytes) = super::mapped_heap_range().ok_or(Error::NotReady)?;
-                   let heap =
-                       (base as u64, (base as u64).checked_add(bytes as u64).ok_or(Error::Layout)?);
-                   let heap_bytes = heap.1.checked_sub(heap.0).ok_or(Error::Layout)?;
-                   if spaces.heap.bytes() < heap_bytes
-                   {
-                       return Err(Error::Layout);
-                   }
-                   let reader = Reader(space);
-                   let mut walker =
+            crate::context::without_recovery(|| {
+                // This reset-lifetime System cache belongs to System, regardless
+                // of which application first asks for it. It must neither retain
+                // that reader's account nor consume a borrowed recovery permit.
+                crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                    let spaces = SPACES.get().ok_or(Error::NotReady)?;
+                    let space = &spaces.kernel;
+                    // Mapping identity comes from the owned root/backing, not
+                    // the allocator's mutable counters or a former BSS symbol.
+                    // PTE inventory describes the whole mapped heap, including
+                    // protected storage. Summary capacity describes only the
+                    // ordinary allocator; aliases do not add physical owners.
+                    let (base, bytes) = super::mapped_heap_range().ok_or(Error::NotReady)?;
+                    let heap = (base as u64,
+                                (base as u64).checked_add(bytes as u64).ok_or(Error::Layout)?);
+                    let heap_bytes = heap.1.checked_sub(heap.0).ok_or(Error::Layout)?;
+                    if spaces.heap.bytes() < heap_bytes
+                    {
+                        return Err(Error::Layout);
+                    }
+                    let reader = Reader(space);
+                    let mut walker =
                        Walker::new(&reader, space.owner.root_physical(), 0).map_err(Error::Tables)?;
-                   let mut rows = Vec::new();
-                   while let Some(span) = walker.next_span().map_err(Error::Tables)?
-                   {
-                       let end = span.virtual_base.checked_add(span.bytes).ok_or(Error::Layout)?;
-                       let mut base = span.virtual_base;
-                       while base < end
-                       {
-                           let stop = [heap.0, heap.1].into_iter()
-                                                      .filter(|&v| v > base && v < end)
-                                                      .min()
-                                                      .unwrap_or(end);
-                           let p = span.permissions;
-                           if base >= heap.0
-                              && base < heap.1
-                              && (span.physical_base.0 + base - span.virtual_base
-                                  != spaces.heap.physical().0 + base - heap.0
-                                  || !p.read
-                                  || !p.write
-                                  || p.execute
-                                  || !p.global
-                                  || p.access != Access::Supervisor)
-                           {
-                               return Err(Error::Layout);
-                           }
-                           let protection = u32::from(p.read) * wire::READABLE
-                                            | u32::from(p.write) * wire::WRITABLE
-                                            | u32::from(p.execute) * wire::EXECUTABLE
-                                            | u32::from(p.global) * wire::GLOBAL
-                                            | u32::from(p.access == Access::User) * wire::USER;
-                           push(&mut rows,
-                                wire::Region { virtual_base: base,
-                                               physical_base: span.physical_base.0 + base
-                                                              - span.virtual_base,
-                                               bytes: stop - base,
-                                               protection,
-                                               kind: kind(base, span, heap) })?;
-                           base = stop;
-                       }
-                   }
-                   for base in [VM_SYSTEM_STACKS_START,
-                                VM_SYSTEM_STACKS_START + PAGE_BYTES + SYSTEM_STACK_BYTES]
-                   {
-                       let end = base.checked_add(PAGE_BYTES).ok_or(Error::Layout)?;
-                       if rows.iter()
-                              .any(|r| r.virtual_base < end && r.virtual_base + r.bytes > base)
-                       {
-                           return Err(Error::Layout);
-                       }
-                       push(&mut rows,
-                            wire::Region { virtual_base: base,
-                                           bytes: PAGE_BYTES,
-                                           kind: wire::GUARD,
-                                           ..Default::default() })?;
-                   }
-                   rows.sort_unstable_by_key(|r| r.virtual_base);
-                   Ok(rows)
-               })
+                    let mut rows = Vec::new();
+                    while let Some(span) = walker.next_span().map_err(Error::Tables)?
+                    {
+                        let end = span.virtual_base.checked_add(span.bytes).ok_or(Error::Layout)?;
+                        let mut base = span.virtual_base;
+                        while base < end
+                        {
+                            let stop = [heap.0, heap.1].into_iter()
+                                                       .filter(|&v| v > base && v < end)
+                                                       .min()
+                                                       .unwrap_or(end);
+                            let p = span.permissions;
+                            if base >= heap.0
+                               && base < heap.1
+                               && (span.physical_base.0 + base - span.virtual_base
+                                   != spaces.heap.physical().0 + base - heap.0
+                                   || !p.read
+                                   || !p.write
+                                   || p.execute
+                                   || !p.global
+                                   || p.access != Access::Supervisor)
+                            {
+                                return Err(Error::Layout);
+                            }
+                            if let Some(stack) = super::system_stack_containing(base)
+                            {
+                                let top = stack.top() as u64;
+                                let bottom = top.checked_sub(stack.bytes()).ok_or(Error::Layout)?;
+                                if stop > top
+                                   || span.physical_base.0 + base - span.virtual_base
+                                      != stack.physical().0 + base - bottom
+                                   || !p.read
+                                   || !p.write
+                                   || p.execute
+                                   || !p.global
+                                   || p.access != Access::Supervisor
+                                {
+                                    return Err(Error::Layout);
+                                }
+                            }
+                            let protection = u32::from(p.read) * wire::READABLE
+                                             | u32::from(p.write) * wire::WRITABLE
+                                             | u32::from(p.execute) * wire::EXECUTABLE
+                                             | u32::from(p.global) * wire::GLOBAL
+                                             | u32::from(p.access == Access::User) * wire::USER;
+                            push(&mut rows,
+                                 wire::Region { virtual_base: base,
+                                                physical_base: span.physical_base.0 + base
+                                                               - span.virtual_base,
+                                                bytes: stop - base,
+                                                protection,
+                                                kind: kind(base, span, heap) })?;
+                            base = stop;
+                        }
+                    }
+                    for stack in spaces.stacks.as_slice()
+                    {
+                        let top = stack.top() as u64;
+                        let lower = top.checked_sub(stack.bytes())
+                                       .and_then(|bottom| bottom.checked_sub(PAGE_BYTES))
+                                       .ok_or(Error::Layout)?;
+                        for base in [lower, top]
+                        {
+                            let end = base.checked_add(PAGE_BYTES).ok_or(Error::Layout)?;
+                            if rows.iter()
+                                   .any(|r| r.virtual_base < end && r.virtual_base + r.bytes > base)
+                            {
+                                return Err(Error::Layout);
+                            }
+                            push(&mut rows,
+                                 wire::Region { virtual_base: base,
+                                                bytes: PAGE_BYTES,
+                                                kind: wire::GUARD,
+                                                ..Default::default() })?;
+                        }
+                    }
+                    rows.sort_unstable_by_key(|r| r.virtual_base);
+                    Ok(rows)
+                })
+            })
+        })
     }).map(Vec::as_slice)
 }
 impl crate::toolbox::inspection::memory::Source for Native
@@ -228,6 +257,7 @@ impl crate::toolbox::inspection::memory::Source for Native
                             .try_fold(0u64, |n, b| n.checked_add(b.length))
                             .ok_or(Error::Layout)?;
         let (_, used, capacity) = crate::kernel::heap_statistics();
+        let attribution = crate::allocator::statistics();
         Ok(wire::Summary { revision: self.revision()?,
                            page_bytes: PAGE_BYTES,
                            ram_bytes,
@@ -236,6 +266,8 @@ impl crate::toolbox::inspection::memory::Source for Native
                            heap_capacity: capacity,
                            root_physical: root,
                            region_count: regions.len() as u64,
+                           ordinary_foundation_heap_bytes: attribution.foundation,
+                           tracked_foundation_physical_bytes: attribution.foundation_physical,
                            flags: wire::SHARED_SUPERVISOR | wire::ACCOUNTING_UNAVAILABLE,
                            reserved: 0 })
     }

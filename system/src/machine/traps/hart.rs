@@ -1,16 +1,19 @@
-//! Primary-only native entry ownership and sscratch-selected hart state. Every raw control access
-//! stays here or in traps.S; ordinary resident callers receive scoped stack/CPU services.
+//! Reset-lifetime native entry registry. Only the primary is Online; discovered
+//! peers own prepared backing but gain no S execution/context authority.
+//! Raw Control storage is authenticated before dereference and never borrowed
+//! as &Control or a slice after assembly publication.
 use core::{arch::{asm, global_asm},
            fmt,
            mem::MaybeUninit,
-           ptr};
+           ptr,
+           sync::atomic::{AtomicBool, Ordering}};
 
 pub(crate) mod execution;
 use execution::HartLocal;
 
 use super::{SavedState, TrapFrame};
-use crate::machine::{memory,
-                     pages::{Backing, Stack}};
+use crate::{allocator::foundation::{self, Foundation},
+            machine::pages::{ArrayError, Backing, OwnedArray, Stack}};
 
 #[derive(Clone, Copy)]
 #[repr(C, align(16))]
@@ -32,14 +35,114 @@ pub(super) struct Control
     #[cfg(feature = "event-trace")]
     observed:           usize
 }
-static HART: spin::Once<Hart> = spin::Once::new();
+
+impl Control
+{
+    const fn poison() -> Self
+    {
+        Self { entering:                                 1,
+               depth:                                    0,
+               base_depth:                               0,
+               frames:                                   0,
+               stride:                                   0,
+               floor:                                    0,
+               top:                                      0,
+               temporary0:                               0,
+               temporary1:                               0,
+               temporary2:                               0,
+               interrupted_sp:                           0,
+               defer_allowed:                            0,
+               local:                                    0,
+               #[cfg(feature = "event-trace")]
+               observed:                                 0 }
+    }
+}
+const CONTROL_STRIDE: usize = size_of::<Control>();
+const _: () = assert!(CONTROL_STRIDE != 0 && CONTROL_STRIDE % align_of::<Control>() == 0);
+
+/// Cold primary metadata is explicit and allocation-free. It is never a
+/// fallback once REGISTRY exists, and cannot mint a runtime HartKey.
+struct Cold
+{
+    control: spinning_top::Spinlock<Control>,
+    local:   HartLocal
+}
+static COLD: spin::Once<Cold> = spin::Once::new();
+static REGISTRY: spin::Once<Registry> = spin::Once::new();
+
 pub(super) struct Hart
 {
-    _stack:     &'static Stack,
-    _control:   Backing,
-    _bootstrap: SavedState,
-    control:    usize,
-    local:      &'static HartLocal
+    _stack:   &'static Stack,
+    baseline: Foundation<SavedState>,
+    control:  usize,
+    local:    HartLocal,
+    online:   AtomicBool
+}
+/// Control has plain assembly-mutated words. Owning only raw Backing avoids
+/// freezing those words through an accidental immutable typed slice.
+struct ControlArena
+{
+    backing: Foundation<Backing>,
+    bytes:   usize
+}
+impl ControlArena
+{
+    fn new(count: usize) -> Result<Self, Error>
+    {
+        let bytes = count.checked_mul(CONTROL_STRIDE)
+                         .filter(|bytes| *bytes != 0)
+                         .ok_or(Error::RegistryLayout)?;
+        let backing = Foundation::<Backing>::allocate(bytes).map_err(|cause| {
+                          Error::Foundation { resource: "entry control arena",
+                                              cause }
+                      })?;
+        if backing.cpu_base() % align_of::<Control>() != 0
+           || backing.cpu_base().checked_add(bytes).is_none()
+           || backing.bytes() < bytes as u64
+        {
+            return Err(Error::RegistryLayout);
+        }
+        Ok(Self { backing,
+                  bytes })
+    }
+
+    fn at(&self, index: usize) -> usize
+    {
+        // Only preparation's index<len initializer calls this. new checked
+        // the complete product and address span before any row is created.
+        self.backing.cpu_base() + index * CONTROL_STRIDE
+    }
+}
+struct Registry
+{
+    // Before publication, failure drops every constructed row/CPU owner before
+    // the raw control lease. After publication the registry lives until reset.
+    rows:     OwnedArray<Hart>,
+    controls: ControlArena
+}
+impl Registry
+{
+    fn selected(&'static self, control: usize) -> Option<&'static Hart>
+    {
+        let offset = control.checked_sub(self.controls.backing.cpu_base())?;
+        // Prove logical arena membership/alignment BEFORE any Control load;
+        // the rounded buddy tail is not an admitted row.
+        if offset >= self.controls.bytes
+           || offset % CONTROL_STRIDE != 0
+           || control % align_of::<Control>() != 0
+        {
+            return None;
+        }
+        let row = self.rows.as_slice().get(offset / CONTROL_STRIDE)?;
+        if row.control != control || !row.online.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        // SAFETY: the immutable row and logical arena authenticated this exact
+        // permanently owned address. Borrow only one scalar, never &Control.
+        let bound = unsafe { ptr::addr_of!((*(control as *const Control)).local).read_volatile() };
+        (bound == ptr::from_ref(&row.local) as usize).then_some(row)
+    }
 }
 #[derive(Debug)]
 pub(crate) enum Error
@@ -50,14 +153,26 @@ pub(crate) enum Error
         admitted: usize
     },
     MissingColdAdmission,
+    ColdSelectionInUse,
+    MissingRegistryInputs,
+    RegistryLayout,
+    StackBinding
+    {
+        hart: usize
+    },
     InterruptsEnabled
     {
         status: usize
     },
-    Pages
+    Foundation
     {
         resource: &'static str,
-        cause:    crate::machine::pages::Error
+        cause:    foundation::Error
+    },
+    Cpu
+    {
+        hart:  u64,
+        cause: foundation::Error
     }
 }
 impl fmt::Display for Error
@@ -72,11 +187,33 @@ impl fmt::Display for Error
             }
             Self::MissingColdAdmission =>
             {
-                f.write_str("native entry requires this CPU's admitted cold sscratch control")
+                f.write_str("System registry requires the actual admitted cold primary sscratch \
+                             control")
+            }
+            Self::ColdSelectionInUse =>
+            {
+                f.write_str("cold primary selection still owns active/current/IO/idle state; \
+                             registry transition refused")
             }
             Self::AlreadyInitialized =>
             {
-                f.write_str("System hart entry is already initialized; reset before retrying")
+                f.write_str("System hart entry registry is already initialized; reset before \
+                             retrying")
+            }
+            Self::MissingRegistryInputs =>
+            {
+                f.write_str("System hart registry requires matching checked CPU topology and \
+                             permanent service-stack arrays")
+            }
+            Self::RegistryLayout =>
+            {
+                f.write_str("System hart registry control extent is empty, misaligned or overflows")
+            }
+            Self::StackBinding { hart } =>
+            {
+                write!(f,
+                       "System entry stack does not match the permanent service-stack slot for \
+                        primary hart {hart}")
             }
             Self::InterruptsEnabled { status } =>
             {
@@ -84,48 +221,35 @@ impl fmt::Display for Error
                        "System stack bootstrap requires local interrupts masked; \
                         sstatus={status:#x}; fix firmware admission and rebuild")
             }
-            Self::Pages { resource,
-                          cause } => write!(f, "System {resource} reservation refused: {cause}")
+            Self::Foundation { resource,
+                               cause } =>
+            {
+                write!(f, "System {resource} reservation refused: {cause}")
+            }
+            Self::Cpu { hart,
+                        cause } =>
+            {
+                write!(f, "System hart {hart} baseline CPU reservation refused: {cause}")
+            }
         }
     }
 }
-// This static control is allocation-free cold admission, not a usable trap
-// frame. entering=1 poisons accidental System trap entry before stack/CPU
-// backing exists. Firmware's vector remains installed until prepare completes.
-static COLD_CONTROL: spinning_top::Spinlock<Control> =
-    spinning_top::Spinlock::new(Control { entering:                                 1,
-                                          depth:                                    0,
-                                          base_depth:                               0,
-                                          frames:                                   0,
-                                          stride:                                   0,
-                                          floor:                                    0,
-                                          top:                                      0,
-                                          temporary0:                               0,
-                                          temporary1:                               0,
-                                          temporary2:                               0,
-                                          interrupted_sp:                           0,
-                                          defer_allowed:                            0,
-                                          local:                                    0,
-                                          #[cfg(feature = "event-trace")]
-                                          observed:                                 0 });
-static LOCAL: spin::Once<HartLocal> = spin::Once::new();
-
 fn scratch() -> usize
 {
     let control;
-    // SAFETY: the local supervisor CSR identifies this CPU's entry control.
+    // SAFETY: only this audited native binding reads the local selection CSR.
     unsafe {
-        asm!("csrr {},sscratch", out(reg)control, options(nostack));
+        asm!("csrr {},sscratch",out(reg)control,options(nomem,nostack));
     }
     control
 }
-/// Called once after checked BootInfo and the primary STARTED claim, before
-/// allocator-dependent bootstrap. It grants no secondary-hart admission.
+/// Actual checked primary cold admission, before pool/heap initialization.
+/// Poisoned Control cannot serve trap frames and confers no secondary authority.
 pub(crate) fn admit_bootstrap(admitted: usize) -> Result<(), Error>
 {
     let status: usize;
     unsafe {
-        asm!("csrr {},sstatus", out(reg)status, options(nostack));
+        asm!("csrr {},sstatus",out(reg)status,options(nomem,nostack));
     }
     if status & 2 != 0
     {
@@ -135,51 +259,44 @@ pub(crate) fn admit_bootstrap(admitted: usize) -> Result<(), Error>
     {
         return Err(Error::ForeignHart { admitted });
     }
-    if LOCAL.get().is_some() || HART.get().is_some()
+    if COLD.get().is_some() || REGISTRY.get().is_some()
     {
         return Err(Error::AlreadyInitialized);
     }
-    let local = LOCAL.call_once(|| HartLocal::new(admitted));
-    let control = {
-        let mut control = COLD_CONTROL.lock();
-        control.local = local as *const HartLocal as usize;
-        (&*control as *const Control) as usize
+    let cold = COLD.call_once(|| {
+                       Cold { control: spinning_top::Spinlock::new(Control::poison()),
+                              local:   HartLocal::new(admitted) }
+                   });
+    let pointer = {
+        let mut control = cold.control.lock();
+        control.local = ptr::from_ref(&cold.local) as usize;
+        ptr::from_ref(&*control) as usize
     };
-    // SAFETY: the first admitted primary bootstrap owns this CPU, masked; the
-    // control and selection have permanent BSS storage before publication.
+    // SAFETY: this masked primary owns cold admission; stable BSS metadata was
+    // initialized before the actual CSR can name it. No System vector is active.
     unsafe {
-        asm!("csrw sscratch,{}", in(reg)control, options(nostack));
+        asm!("csrw sscratch,{}",in(reg)pointer,options(nostack));
     }
     Ok(())
 }
-// Private lookups return immutable permanent metadata only. Each consumer
-// masks its complete short access; no mutable HartLocal reference is formed.
+// Private bounded lookup; every caller masks its complete scalar/pin access.
 fn selected_local() -> Option<&'static HartLocal>
 {
-    let selected = scratch();
-    if let Some(hart) = HART.get()
+    let control = scratch();
+    if let Some(registry) = REGISTRY.get()
     {
-        if selected != hart.control
-        {
-            return None;
-        }
-        // SAFETY: pointer equality authenticates permanently owned Control
-        // before reading its scalar selection address. Never dereference a
-        // foreign sscratch pointer or fall back to cold/global identity.
-        let local = unsafe { ptr::addr_of!((*(selected as *const Control)).local).read_volatile() };
-        return (local == hart.local as *const HartLocal as usize).then_some(hart.local);
+        return registry.selected(control).map(|row| &row.local);
     }
-    let local = LOCAL.get()?;
+    let cold = COLD.get()?;
     let (expected, bound) = {
-        let control = COLD_CONTROL.lock();
-        ((&*control as *const Control) as usize, control.local)
+        let selected = cold.control.lock();
+        (ptr::from_ref(&*selected) as usize, selected.local)
     };
-    (selected == expected && bound == local as *const HartLocal as usize).then_some(local)
+    (control == expected && bound == ptr::from_ref(&cold.local) as usize).then_some(&cold.local)
 }
 fn selected_hart() -> Option<&'static Hart>
 {
-    let hart = HART.get()?;
-    selected_local().filter(|local| ptr::eq(*local, hart.local)).map(|_| hart)
+    REGISTRY.get()?.selected(scratch())
 }
 fn unadmitted() -> !
 {
@@ -207,67 +324,97 @@ pub(crate) fn prepare(stack: &'static Stack) -> Result<PreparedEntry, Error>
 {
     let status: usize;
     unsafe {
-        asm!("csrr {value},sstatus",value=out(reg)status,options(nomem,nostack));
+        asm!("csrr {},sstatus",out(reg)status,options(nomem,nostack));
     }
     if status & 2 != 0
     {
         return Err(Error::InterruptsEnabled { status });
     }
-    if HART.get().is_some()
+    if REGISTRY.get().is_some()
     {
         return Err(Error::AlreadyInitialized);
     }
-    let local = selected_local().ok_or(Error::MissingColdAdmission)?;
-    let control = Backing::allocate(size_of::<Control>()).map_err(|cause| {
-                                                             Error::Pages { resource:
-                                                                                "entry control",
-                                                                            cause }
-                                                         })?;
-    let bootstrap =
-        SavedState::new(TrapFrame::default()).map_err(|cause| {
-                                                 Error::Pages { resource: "bootstrap CPU state",
-                                                                cause }
-                                             })?;
-    let pointer = control.cpu_base();
-    let state =
-        Control { entering:                                 0,
-                  depth:                                    0,
-                  base_depth:                               0,
-                  frames:                                   bootstrap.frame() as usize,
-                  stride:                                   bootstrap.stride(),
-                  floor:                                    stack.top() - stack.bytes() as usize,
-                  top:                                      stack.top(),
-                  temporary0:                               0,
-                  temporary1:                               0,
-                  temporary2:                               0,
-                  interrupted_sp:                           0,
-                  defer_allowed:                            0,
-                  local:                                    local as *const HartLocal as usize,
-                  #[cfg(feature = "event-trace")]
-                  observed:                                 0 };
-    // SAFETY: exclusive zeroed backing, aligned for Control; only this native
-    // binding and the serialized assembly boundary access its scalar fields.
-    unsafe {
-        (pointer as *mut Control).write(state);
+    let cold = selected_local().ok_or(Error::MissingColdAdmission)?;
+    if !cold.is_cold()
+    {
+        return Err(Error::ColdSelectionInUse);
     }
-    let hart = HART.call_once(|| {
-                       Hart { _stack: stack,
-                              _control: control,
-                              _bootstrap: bootstrap,
-                              control: pointer,
-                              local }
-                   });
-    // SAFETY: bootstrap owns this hart with interrupts masked. All backing is
-    // permanent before the control pointer can become an entry authority.
-    unsafe {
-        asm!("csrw sscratch,{control}",control=in(reg)hart.control,options(nostack));
+    let primary = cold.id;
+    let cpus = crate::machine::paging::enabled_cpus().ok_or(Error::MissingRegistryInputs)?;
+    let stacks = crate::machine::paging::system_stacks().ok_or(Error::MissingRegistryInputs)?;
+    if cpus.is_empty() || cpus.len() != stacks.len()
+    {
+        return Err(Error::MissingRegistryInputs);
     }
-    serial!("SYSTEM_STACK_READY base={:#x} bytes={} control={:#x} cpu_slots={} cpu_stride={}",
-            state.floor,
-            memory::SYSTEM_STACK_BYTES,
-            pointer,
+    let primary_index = cpus.binary_search_by_key(&(primary as u64), |cpu| cpu.hart)
+                            .map_err(|_| Error::MissingRegistryInputs)?;
+    let expected: &'static Stack = &stacks[primary_index];
+    if !ptr::eq(stack, expected)
+    {
+        return Err(Error::StackBinding { hart: primary });
+    }
+    let controls = ControlArena::new(cpus.len())?;
+    let rows = OwnedArray::try_new(cpus.len(), |index| -> Result<Hart, foundation::Error> {
+                   let baseline = Foundation::<SavedState>::new(TrapFrame::default())?;
+                   let mapped: &'static Stack = &stacks[index];
+                   // Native execution is RV64. The numeric value is a label only; the
+                   // immutable row/control binding, not this cast, authenticates selection.
+                   Ok(Hart { _stack: mapped,
+                             baseline,
+                             control: controls.at(index),
+                             local: HartLocal::new(cpus[index].hart as usize),
+                             online: AtomicBool::new(index == primary_index) })
+               }).map_err(|error| {
+                     match error
+                     {
+                         ArrayError::Storage(cause) =>
+                         {
+                             Error::Foundation { resource: "hart registry metadata",
+                                                 cause }
+                         }
+                         ArrayError::Element { index,
+                                               cause } =>
+                         {
+                             Error::Cpu { hart: cpus[index].hart,
+                                          cause }
+                         }
+                     }
+                 })?;
+    for row in rows.as_slice()
+    {
+        let state = Control { entering: usize::from(!row.online.load(Ordering::Relaxed)),
+                              frames: row.baseline.frame() as usize,
+                              stride: row.baseline.stride(),
+                              floor: row._stack.top() - row._stack.bytes() as usize,
+                              top: row._stack.top(),
+                              local: ptr::from_ref(&row.local) as usize,
+                              ..Control::poison() };
+        // SAFETY: exclusive unpublished raw Control slots, with stable row/
+        // CPU/stack ownership. No &Control or slice can freeze runtime words.
+        unsafe {
+            (row.control as *mut Control).write(state);
+        }
+    }
+    let registry = REGISTRY.call_once(|| {
+                               Registry { rows,
+                                          controls }
+                           });
+    // Publication -> sscratch transition is deliberately allocation/drop/
+    // callback-free with SIE clear. Once REGISTRY exists the old cold pointer
+    // is invalid; only the pure M monitor may interrupt this tiny transition.
+    let hart = &registry.rows.as_slice()[primary_index];
+    unsafe {
+        asm!("csrw sscratch,{}",in(reg)hart.control,options(nostack));
+    }
+    serial!("SYSTEM_STACK_READY base={:#x} bytes={} control={:#x} cpu_slots={} cpu_stride={} \
+             prepared_harts={} control_bytes={}",
+            stack.top() - stack.bytes() as usize,
+            stack.bytes(),
+            hart.control,
             super::CPU_SLOTS,
-            state.stride);
+            hart.baseline.stride(),
+            registry.rows.as_slice().len(),
+            registry.controls.backing.bytes());
     Ok(PreparedEntry { hart,
                        _local: core::marker::PhantomData })
 }

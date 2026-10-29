@@ -13,6 +13,7 @@ use crate::machine::{interrupts::{NativeInvocationGate, with_masked},
                      scheduler::accounting::AllocationAuthority};
 
 mod budget;
+pub(crate) mod foundation;
 pub(crate) mod recovery;
 
 pub(crate) fn statistics() -> budget::Snapshot

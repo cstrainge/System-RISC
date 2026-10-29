@@ -38,7 +38,13 @@ impl HartKey
 }
 pub(crate) fn selected_hart() -> HartKey
 {
-    with_masked(|| HartKey(required()))
+    with_masked(|| {
+        match super::selected_hart()
+        {
+            Some(hart) => HartKey(&hart.local),
+            None => super::unadmitted()
+        }
+    })
 }
 pub(super) struct HartLocal
 {
@@ -55,6 +61,16 @@ struct Idle
 }
 impl HartLocal
 {
+    /// Primary cold -> registry transition cannot silently discard state.
+    /// This runs once, masked, before any runtime HartKey/THRD is published.
+    pub(super) fn is_cold(&self) -> bool
+    {
+        self.current.load(Ordering::Relaxed) == IDLE
+        && !self.io.load(Ordering::Relaxed)
+        && self.active.lock().is_none()
+        && self.idle.lock().is_none()
+    }
+
     pub(super) const fn new(id: usize) -> Self
     {
         Self { id,

@@ -42,19 +42,26 @@ pub struct Region
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MemorySummary
 {
-    pub revision:               u64,
-    pub page_bytes:             u64,
-    pub ram_bytes:              u64,
-    pub free_pages:             u64,
-    pub heap_used:              u64,
-    pub heap_capacity:          u64,
-    pub root_physical:          u64,
-    pub region_count:           u64,
+    pub revision:                          u64,
+    pub page_bytes:                        u64,
+    pub ram_bytes:                         u64,
+    pub free_pages:                        u64,
+    pub heap_used:                         u64,
+    pub heap_capacity:                     u64,
+    pub root_physical:                     u64,
+    pub region_count:                      u64,
+    /// Foundation occupancy within the ordinary heap, not additional memory.
+    pub ordinary_foundation_heap_bytes:    u64,
+    /// Rounded physical leases for the covered CPU/service storage only.
+    /// Excludes old page tables, pool metadata, ROM reservations and protected
+    /// backing; mapping aliases are not charges. Whole-System accounting is
+    /// still unavailable when accounting_unavailable is true.
+    pub tracked_foundation_physical_bytes: u64,
     /// Applications still share this supervisor address space. Full per-domain
     /// heap/accounting, recovery reserves and private-app gauges are unavailable;
     /// domain rows separately expose their explicitly covered execution backing.
-    pub shared_supervisor:      bool,
-    pub accounting_unavailable: bool
+    pub shared_supervisor:                 bool,
+    pub accounting_unavailable:            bool
 }
 fn failure(error: Error, call: &wire::Call) -> Failure
 {
@@ -97,17 +104,23 @@ impl<'a> Inspection<'a>
                                 System and application together"));
         }
         Ok(SystemMemory { client:  self.client,
-                          summary: MemorySummary { revision:               s.revision,
-                                                   page_bytes:             s.page_bytes,
-                                                   ram_bytes:              s.ram_bytes,
-                                                   free_pages:             s.free_pages,
-                                                   heap_used:              s.heap_used,
-                                                   heap_capacity:          s.heap_capacity,
-                                                   root_physical:          s.root_physical,
-                                                   region_count:           s.region_count,
-                                                   shared_supervisor:      s.flags
-                                                                           & wire::SHARED_SUPERVISOR
-                                                                           != 0,
+                          summary: MemorySummary { revision:                          s.revision,
+                                                   page_bytes:                        s.page_bytes,
+                                                   ram_bytes:                         s.ram_bytes,
+                                                   free_pages:                        s.free_pages,
+                                                   heap_used:                         s.heap_used,
+                                                   heap_capacity:
+                                                       s.heap_capacity,
+                                                   root_physical:
+                                                       s.root_physical,
+                                                   region_count:
+                                                       s.region_count,
+                                                   ordinary_foundation_heap_bytes:
+                                                       s.ordinary_foundation_heap_bytes,
+                                                   tracked_foundation_physical_bytes:
+                                                       s.tracked_foundation_physical_bytes,
+                                                   shared_supervisor:
+                                                       s.flags & wire::SHARED_SUPERVISOR != 0,
                                                    accounting_unavailable:
                                                        s.flags & wire::ACCOUNTING_UNAVAILABLE != 0 } })
     }

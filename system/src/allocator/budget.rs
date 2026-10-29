@@ -1,5 +1,6 @@
-//! Allocation-free, permanent parent authority for the ordinary heap. Root
-//! control blocks carry only this static receipt, avoiding self-account cycles.
+//! Permanent allocation-free System authority. Heap receipts describe ordinary
+//! heap occupancy; physical Foundation receipts attribute separate page leases.
+//! Neither origin creates a synthetic domain account or augments the other.
 #![forbid(unsafe_code)]
 use spinning_top::Spinlock;
 
@@ -14,11 +15,13 @@ pub(super) enum Category
 }
 struct State
 {
-    capacity:   u64,
-    admitted:   u64,
-    foundation: u64,
-    ordinary:   u64,
-    domains:    u64
+    capacity:            u64,
+    admitted:            u64,
+    foundation:          u64,
+    ordinary:            u64,
+    domains:             u64,
+    // Attribution of separate page-pool leases, never heap occupancy/capacity.
+    foundation_physical: u64
 }
 impl State
 {
@@ -32,35 +35,40 @@ impl State
         }
     }
 }
-static STATE: Spinlock<State> = Spinlock::new(State { capacity:   0,
-                                                      admitted:   0,
-                                                      foundation: 0,
-                                                      ordinary:   0,
-                                                      domains:    0 });
+static STATE: Spinlock<State> = Spinlock::new(State { capacity:            0,
+                                                      admitted:            0,
+                                                      foundation:          0,
+                                                      ordinary:            0,
+                                                      domains:             0,
+                                                      foundation_physical: 0 });
 
 #[derive(Clone, Copy)]
 pub(crate) struct Snapshot
 {
-    pub(crate) capacity:   u64,
-    pub(crate) admitted:   u64,
-    pub(crate) foundation: u64,
-    pub(crate) ordinary:   u64,
-    pub(crate) domains:    u64
+    pub(crate) capacity:            u64,
+    pub(crate) admitted:            u64,
+    pub(crate) foundation:          u64,
+    pub(crate) ordinary:            u64,
+    pub(crate) domains:             u64,
+    pub(crate) foundation_physical: u64
 }
 pub(super) fn snapshot() -> Snapshot
 {
     with_masked(|| {
         let state = STATE.lock();
-        Snapshot { capacity:   state.capacity,
-                   admitted:   state.admitted,
-                   foundation: state.foundation,
-                   ordinary:   state.ordinary,
-                   domains:    state.domains }
+        Snapshot { capacity:            state.capacity,
+                   admitted:            state.admitted,
+                   foundation:          state.foundation,
+                   ordinary:            state.ordinary,
+                   domains:             state.domains,
+                   foundation_physical: state.foundation_physical }
     })
 }
 
 pub(super) fn initialize(capacity: u64)
 {
+    // CPU storage is admitted before the heap. Its existing physical receipts
+    // remain live; heap initialization changes only the heap capacity.
     with_masked(|| STATE.lock().capacity = capacity);
 }
 pub(super) fn reserve(category: Category, bytes: u64) -> Result<Receipt, Error>
@@ -121,6 +129,52 @@ impl Drop for Receipt
             crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
                                              format_args!("Resident allocation receipt exceeds \
                                                            its original admission"));
+        }
+    }
+}
+
+/// Unique attribution of an actual rounded page-pool lease. Only the sealed
+/// Foundation owner issues this; it is not a heap reservation or a page token.
+pub(super) struct FoundationPhysicalReceipt
+{
+    bytes: u64
+}
+pub(super) fn reserve_foundation_physical(
+    bytes: u64)
+    -> Result<FoundationPhysicalReceipt, super::foundation::Error>
+{
+    with_masked(|| {
+        let mut state = STATE.lock();
+        let next =
+            state.foundation_physical
+                 .checked_add(bytes)
+                 .ok_or(super::foundation::Error::CounterOverflow { used:
+                                                                        state.foundation_physical,
+                                                                    requested: bytes })?;
+        state.foundation_physical = next;
+        Ok(FoundationPhysicalReceipt { bytes })
+    })
+}
+impl Drop for FoundationPhysicalReceipt
+{
+    fn drop(&mut self)
+    {
+        let valid = with_masked(|| {
+            let mut state = STATE.lock();
+            let Some(next) = state.foundation_physical.checked_sub(self.bytes)
+            else
+            {
+                return false;
+            };
+            state.foundation_physical = next;
+            true
+        });
+        if !valid
+        {
+            // No allocator/counter lock is held across the terminal path.
+            crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                             format_args!("System Foundation physical refund \
+                                                           exceeds its original attribution"));
         }
     }
 }

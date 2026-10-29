@@ -358,8 +358,30 @@ with fresh joined receivers, successful fence ACKs and clear stop cells. These
 are bounded parked-peer observations, not timing, after-boot lost-ACK retention,
 concurrent S execution or arbitrary-fault recovery qualification.
 
-Before releasing a secondary, the core still needs independent S entry storage,
-genuine secondary System-context admission, compatible per-CPU ISA/vector frame
+Every checked discovered CPU now has its own 4 MiB System service stack, two
+unmapped guards, baseline saved CPU storage and entry-control row. Both permanent
+roots map all service slots before first activation. Placement uses topology
+ordinal and the generated platform stride, never a sparse hardware ID as an
+array index. The complete span must fit the configured window; allocation and
+geometry refusals do not install a smaller table. Published mapping/backing
+owners stay pinned until reset, including for CPUs that never execute S code.
+
+Runtime selection authenticates `sscratch` against the logical raw control
+arena before loading its local binding, then checks the permanent row and
+online phase in constant time. No typed shared borrow covers assembly-mutated
+control words. The primary alone is online; peer controls remain poisoned.
+Cold primary admission is explicit and cannot become a runtime fallback.
+
+Unique Foundation receipts attribute rounded physical service/CPU/control
+backing separately from heap occupancy. Inspection reports this partial scope,
+not all System memory. Its lazily built immutable mapping cache is ordinary
+System-owned storage regardless of the first querying application; it cannot
+retain that application's allocation account or borrow its recovery permit.
+The existing primary idle executor remains outside this physical attribution
+until canonical System-idle ownership is adopted.
+
+Before releasing a secondary, the core still needs genuine canonical idle
+threads and secondary System-context admission, compatible per-CPU ISA/vector frame
 validation, primary-owned physical-device maintenance and qualified cross-hart
 scheduling/reclamation. Returning monitor preservation and terminal takeover
 must also be qualified with actual S-mode peers. Mapping mutation, ASID reuse and frame reclamation

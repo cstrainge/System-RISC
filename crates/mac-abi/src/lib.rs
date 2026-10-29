@@ -343,11 +343,11 @@ mod tests
         assert_eq!(core::mem::size_of::<inspection::Account>(), 56);
         assert_eq!(core::mem::offset_of!(inspection::Account, kernel), 8);
         assert_eq!(core::mem::offset_of!(inspection::Account, application), 32);
-        assert_eq!(core::mem::size_of::<inspection::memory::Call>(), 824);
+        assert_eq!(core::mem::size_of::<inspection::memory::Call>(), 840);
         assert_eq!(core::mem::offset_of!(inspection::memory::Call, operation), 0);
         assert_eq!(core::mem::offset_of!(inspection::memory::Call, summary), 40);
-        assert_eq!(core::mem::offset_of!(inspection::memory::Call, regions), 112);
-        assert_eq!(core::mem::offset_of!(inspection::memory::Call, detail), 624);
+        assert_eq!(core::mem::offset_of!(inspection::memory::Call, regions), 128);
+        assert_eq!(core::mem::offset_of!(inspection::memory::Call, detail), 640);
         assert_eq!(core::mem::offset_of!(BootInfo, ram_base), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, log), 24);
         assert_eq!(core::mem::size_of::<BootInfo>(), 168);
