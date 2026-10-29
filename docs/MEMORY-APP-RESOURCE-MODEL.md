@@ -90,7 +90,9 @@ existing mutation points. Reads allocate nothing and never scan object values.
 Cross-domain detail is authorized by a generated System ACAP policy bound to
 canonical application resource digests; ordinary callers retain own-domain reads.
 The policy is not a gate on public chain/claim/mapping registry existence.
-Reactor Room explicitly reports process/module domains with partial-ledger coverage. See
+Reactor Room explicitly reports the canonical System owner and process/module
+domains with partial-ledger coverage. The System ledger uses its existing
+OwnerRef; its account and CPU time remain unavailable. See
 [Reactor Room staging](REACTOR.md) and [the policy wire format](../FORMAT.md#application-authority-policy-acap-0-development-abi-1).
 
 The following sections record successive §13.2 migrations and their remaining

@@ -270,12 +270,12 @@ impl<'a> Panes<'a>
     {
         let mut text = Line::new();
         write!(text,
-               "{} {}  #{}   {} tracked",
+               "{}{}  #{}   {} tracked",
                match row.kind
                {
-                   OwnerKind::System => "System",
-                   OwnerKind::Process => "App",
-                   OwnerKind::Module => "Module"
+                   OwnerKind::System => "",
+                   OwnerKind::Process => "App ",
+                   OwnerKind::Module => "Module "
                },
                row.name.as_str(),
                row.incarnation,
@@ -345,7 +345,9 @@ impl<'a> Panes<'a>
                     9 | 10 =>
                     {
                         let mut bytes = [0; 128];
-                        line.write_str(label(system, index - 7, &mut bytes)?)
+                        let text =
+                            if row.kind == OwnerKind::System { index - 1 } else { index - 7 };
+                        line.write_str(label(system, text, &mut bytes)?)
                     }
                     _ if u64::from(index - 11) >= row.kinds * u64::from(POOL_DETAIL_ROWS) =>
                     {
@@ -678,11 +680,11 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
     {
         panes.draw(system, window, palette)?;
     }
-    if !current.includes_module_domains()
+    if !current.includes_module_domains() || !current.includes_system_domain()
     {
         return Err(Error::NotSupported);
     }
-    system.log("REACTOR_READY coverage=process-and-module-domains,partial-ledgers \
+    system.log("REACTOR_READY coverage=system-process-and-module-domains,partial-ledgers \
                 authority=system-policy\n")?;
     let mut memory = None::<memory::Memory<'_>>;
     let mut front = true;

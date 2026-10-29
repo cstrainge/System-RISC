@@ -86,14 +86,18 @@ pub(crate) fn inspect<T: crate::toolbox::inspection::Subject>(processes:&mac_obj
 {
     if call.scope == mac_abi::inspection::SELF
     {
-        return crate::toolbox::inspection::request(processes, caller, call);
+        // Own-domain reads neither enumerate nor touch the System root.
+        return crate::toolbox::inspection::request(processes, None, caller, call);
     }
     match RUNTIME.with(|runtime| runtime.registry.inspect(processes, caller, call))
     {
         Ok(status) => status,
         Err(crate::state::AccessError::Unavailable) =>
         {
-            crate::toolbox::inspection::request(processes, caller, call)
+            crate::toolbox::inspection::request(processes,
+                                                crate::toolbox::handles::system_owner_if_ready(),
+                                                caller,
+                                                call)
         }
         Err(error) =>
         {

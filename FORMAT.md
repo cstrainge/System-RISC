@@ -2106,8 +2106,22 @@ Invalidation revokes an ID immediately; its slot remains unavailable until the
 unique cleanup ticket completes. A domain cannot retire while either count is
 nonzero. Refused completion retains the ticket for retry against its proper
 owner; it never acknowledges cleanup implicitly. Counters and
-revisions never wrap; saturated revisions refuse snapshots. Coverage includes process and module domains with partial ledgers; System
-and bootstrap domains and unmigrated objects remain outside this census.
+revisions never wrap; saturated revisions refuse snapshots. All-domain coverage
+includes process, module and the actual canonical System owner with partial
+ledgers. Coverage bits are process=1, partial ledgers=2, modules=4 and System=8.
+The System row is appended after the process/module directory rows, has kind0
+and incarnation0, and reads the same once-issued System OwnerRef used by
+resident registrations and objects. It is not a synthetic directory entry or
+an independently issued ledger. Its membership is fixed until reset; its
+ledger retains its own ordinary revision and stale-read checks. Own-domain
+scope still describes only the authenticated application. System ledger detail
+requires the same cross-domain policy grant as other foreign domains.
+
+System's domain account is unavailable: the all-zero Account payload has
+ACCOUNT_UNAVAILABLE coverage, not a fabricated zero-usage account. Separate
+memory-summary Foundation observations do not supply a DomainAccount or CPU
+time. Bootstrap executors, individual named-thread/owned-stack queries and
+unmigrated objects remain outside this census.
 Snapshot values allocate no resident session object and convey no authority to a
 foreign caller. Coalesced OsEvent 0x11000000 advises process/module membership changes. This tag is
 distinct from the Window Manager geometry notification.
