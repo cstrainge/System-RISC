@@ -310,6 +310,7 @@ impl Refusal
 pub enum Outcome
 {
     Loaded,
+    Pending,
     Refused(Refusal)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -470,6 +471,15 @@ impl Strip
         Ok(result)
     }
 
+    pub(super) fn defer(&mut self, index: usize)
+    {
+        if let Some(entry) = self.entries.get_mut(index)
+        {
+            entry.outcome = Outcome::Pending;
+            self.pending = Some(index);
+        }
+    }
+
     /// A failed framebuffer validation retains the exact pending outcome for
     /// retry. Repeated presentation without a change returns None immediately.
     pub fn paint_pending(&mut self, pixels: &mut [u32]) -> Result<Option<Rect>, Error>
@@ -508,6 +518,12 @@ impl Strip
                     {
                         *pixel = if distance <= 1 { 0 } else { 0xffffff };
                     }
+                }
+                if entry.outcome == Outcome::Pending && (22..32).contains(&x) && y >= 22
+                {
+                    // A small hollow badge distinguishes admitted/pending from
+                    // an active package without inventing a refusal X.
+                    *pixel = if x == 22 || x == 31 || y == 22 || y == 31 { 0 } else { 0xffffff };
                 }
             }
         }

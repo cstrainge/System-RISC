@@ -264,6 +264,23 @@ impl WorkerContext
     {
         self.handle.park()
     }
+
+    /// Checked platform monotonic time, available only to this actual worker.
+    pub fn monotonic_microseconds(&self) -> Result<u64>
+    {
+        self.handle.monotonic_microseconds()
+    }
+
+    /// Sleep until the duration expires, a retained wake arrives, or sticky
+    /// cancellation is observed. Wake and timeout both return Ok; consult the
+    /// monotonic schedule for deadlines. Zero returns immediately after checking
+    /// cancellation/coalesced wake; it is not a yield guarantee. Positive
+    /// fractions round up to microseconds; conversion/deadline overflow refuses.
+    /// Timer expiry never patches a remote frame.
+    pub fn park_for(&self, duration: core::time::Duration) -> Result<()>
+    {
+        self.handle.park_for(duration)
+    }
 }
 
 unsafe extern "C" fn entry<F>(state: *mut c_void) -> i32

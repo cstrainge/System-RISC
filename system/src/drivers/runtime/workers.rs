@@ -130,7 +130,7 @@ pub(super) unsafe extern "C" fn control(module: u64, pointer: *mut abi::WorkerCa
         }
         // SAFETY: the audited SDK supplies an exclusive call of this exact type.
         let call = unsafe { &mut *pointer };
-        if !call.header.valid::<abi::WorkerCall>() || call.flags != 0 || call.reserved1 != 0
+        if !call.header.valid::<abi::WorkerCall>() || call.flags != 0 || call.microseconds != 0
         {
             return Err(BAD_ABI);
         }
@@ -206,7 +206,10 @@ pub(super) unsafe extern "C" fn control(module: u64, pointer: *mut abi::WorkerCa
                 call.exit_status = snapshot.exit_status;
                 call.flags = if snapshot.cancelled { worker::CANCEL_REQUESTED } else { 0 };
             }
-            worker::PARK | worker::EXIT => return Err(WRONG_THREAD),
+            worker::PARK | worker::EXIT | worker::MONOTONIC | worker::PARK_FOR =>
+            {
+                return Err(WRONG_THREAD);
+            }
             _ => return Err(BAD_ARGUMENT)
         }
         Ok(())

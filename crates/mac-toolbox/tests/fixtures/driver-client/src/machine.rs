@@ -35,7 +35,7 @@ pub fn current_token() -> Result<u64>
                                      specification: ptr::null(),
                                      state:         0,
                                      exit_status:   0,
-                                     reserved1:     0 };
+                                     microseconds:  0 };
     let status = unsafe { callback(host.context, &mut call) };
     if status != 0
     {
@@ -90,7 +90,7 @@ pub fn state(token: u64) -> Result<u32>
                                      specification: ptr::null(),
                                      state:         0,
                                      exit_status:   0,
-                                     reserved1:     0 };
+                                     microseconds:  0 };
     let status = unsafe { callback(host.context, &mut call) };
     if status != 0
     {

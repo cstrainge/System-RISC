@@ -274,6 +274,13 @@ impl<S: Snapshot> Engine<S>
         self.local.as_ref().map(Snapshot::revision)
     }
 
+    /// Borrow the retained immutable pin to authorize an actual compare/import.
+    /// The caller cannot replace engine state or manufacture a write grant.
+    pub fn local_snapshot(&self) -> Option<&S>
+    {
+        self.local.as_ref()
+    }
+
     pub fn pending_fetch(&self) -> Option<FetchToken>
     {
         self.fetch.as_ref().map(|fetch| fetch.token.fetch)

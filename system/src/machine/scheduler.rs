@@ -184,11 +184,13 @@ impl Thread
 #[derive(Clone, Copy)]
 enum Wait
 {
-    Worker,
+    Worker
+    {
+        deadline: Option<u64>
+    },
     Events
     {
-        mask:     u16,
-        deadline: u64
+        mask: u16, deadline: u64
     },
     Io
     {
@@ -1190,9 +1192,16 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
     let now = crate::platform::ticks();
     for (_, thread) in scheduler.iter()
     {
-        if matches!(thread.state.get().waiting, Some(Wait::Events { deadline, .. }) if now >= deadline)
+        if matches!(thread.state.get().waiting,
+            Some(Wait::Events { deadline, .. } | Wait::Worker { deadline: Some(deadline) }) if now >= deadline)
         {
             thread.update(|state| state.waiting = None);
+            if let Some(worker) = &thread.worker
+            {
+                let mut state = worker.get();
+                state.phase = mac_module::abi::worker::RUNNING;
+                worker.set(state);
+            }
         }
     }
     let priority = scheduler.iter()

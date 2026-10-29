@@ -163,6 +163,25 @@ nested module callback cannot borrow an interrupted worker's CURRENT/PARK
 identity. Native EXIT follows body and capture destruction; it is not a safe API
 for abandoning live captures.
 
+The authenticated native worker context also provides
+`monotonic_microseconds() -> Result<u64>` and
+`park_for(core::time::Duration) -> Result<()>`. Positive fractional microseconds
+round up, while conversion or native deadline overflow refuses. A zero duration
+validates context and consumes cancellation/coalesced wake without promising a
+yield. Wake and timeout both return success; callers check their own monotonic
+schedule. Cancellation remains sticky. Clock and park refuse inside a native
+critical section. Deadline expiration only marks the canonical worker row
+runnable under SCHEDULER; existing `commit_resume` alone patches its return frame.
+The native QEMU adapter uses its actual 10 MHz timer policy; this is not a
+portable frequency guarantee.
+
+A bounded optimized one-hart native diagnostic run observed a 30 ms deadline
+(32,180 guest microseconds), zero, overflow refusal, coalesced wake, early timed
+wake and running/parked cancellation. Publication/ACK correlation observed all
+four normal and all three rollback worker reclamations. These are scenario
+observations, not SMP, latency, pressure or complete extension-shutdown acceptance.
+
+
 `mac-driver::sync::Mutex` acquires its data lock inside an authenticated native
 critical-section thunk. Interrupt exclusion begins before bounded try-lock;
 contention returns SERVICE_BUSY (`try_with` returns None) without spinning behind

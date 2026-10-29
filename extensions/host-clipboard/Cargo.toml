@@ -1,0 +1,22 @@
+[package]
+name = "host-clipboard-extension"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+[features]
+guest = []
+[[bin]]
+name = "HostClipboard"
+path = "src/main.rs"
+required-features = ["guest"]
+test = false
+bench = false
+[dependencies]
+mac-abi.workspace = true
+mac-driver = { path = "../../crates/mac-driver" }
+mac-driver-alloc = { path = "../../crates/mac-driver-alloc" }
+mac-byte-channel.workspace = true
+mac-host-clipboard.workspace = true
+mac-vdagent-protocol.workspace = true
+[build-dependencies]
+mac-build.workspace = true

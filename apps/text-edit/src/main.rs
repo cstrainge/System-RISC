@@ -3,6 +3,8 @@
 #![no_main]
 
 
+use core::fmt::Write;
+
 use mac_toolbox::*;
 
 mod editor;
@@ -21,10 +23,23 @@ mod menus;
 mod ui;
 use ui::{Text, text};
 
+fn diagnostic(system: &System<'_>, stage: &str, error: Error) -> Error
+{
+    let mut message = Text::<256>::default();
+    let _ = writeln!(&mut message,
+                     "TEXT_EDIT_ERROR stage={stage} status={} cause={error}",
+                     error.status());
+    let _ = system.log(message.as_str());
+    error
+}
+
 fn run(system: &System<'_>) -> Result<(), Error>
 {
-    let _menus = menus::install(system)?;
-    let mut application = documents::Application::new(system)?;
+    let _menus = menus::install(system).map_err(|error| diagnostic(system, "menus", error))?;
+    let mut application = documents::Application::new(system).map_err(|error| {
+                                                                 diagnostic(system, "documents",
+                                                                            error)
+                                                             })?;
     system.log("TEXT_EDIT_READY\n")?;
     loop
     {
@@ -60,11 +75,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
     match run(&system)
     {
         Ok(()) => mac_toolbox::abi::OK,
-        Err(status) =>
-        {
-            let _ = system.log("TEXT_EDIT_ERROR\n");
-            status.status()
-        }
+        Err(status) => diagnostic(&system, "run", status).status()
     }
 }
 

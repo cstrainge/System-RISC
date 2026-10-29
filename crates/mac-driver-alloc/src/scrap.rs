@@ -9,19 +9,21 @@
 //! Dropping the entire client with outstanding records is last-resort
 //! quarantine: their admitted backing and original provider are retained. An
 //! owner walk does not free this forgotten SDK allocation. Use `shutdown` to
-//! retain a recoverable client on refusal instead. Automatic production worker
-//! lifecycle and immutable text capture are separate, unqualified integration
-//! gates.
+//! retain a recoverable client on refusal instead. Immutable text capture and
+//! pinned import completion are supported. Full production lifecycle shutdown
+//! and failure recovery remain separate native qualification gates.
 #![forbid(unsafe_code)]
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
 use core::{fmt,
            sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 
-use mac_abi::{ACCESS_DENIED, BAD_ABI, NO_MEMORY, SERVICE_BUSY};
+use mac_abi::{ACCESS_DENIED, BAD_ABI, BAD_ARGUMENT, NO_MEMORY, SERVICE_BUSY};
 use mac_driver::{Client, Provider};
 use mac_scrap_extension_interface as wire;
 pub use mac_scrap_extension_interface::{Content, Metadata};
+/// Reusable reply storage for one bounded immutable text read.
+pub const READ_BUFFER_BYTES: usize = wire::MAX_REPLY;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -33,6 +35,9 @@ pub enum Operation
     Notice,
     Snapshot,
     Info,
+    Read,
+    Import,
+    ImportSnapshot,
     CloseSnapshot,
     Disconnect
 }
@@ -47,6 +52,9 @@ impl Operation
             Self::Notice => wire::NOTICE,
             Self::Snapshot => wire::SNAPSHOT,
             Self::Info => wire::INFO,
+            Self::Read => wire::READ,
+            Self::Import => wire::IMPORT,
+            Self::ImportSnapshot => wire::IMPORT_SNAPSHOT,
             Self::CloseSnapshot => wire::CLOSE_PIN,
             Self::Disconnect => wire::DISCONNECT
         }
@@ -63,6 +71,9 @@ impl fmt::Display for Operation
                              Self::Notice => "NOTICE",
                              Self::Snapshot => "SNAPSHOT",
                              Self::Info => "INFO",
+                             Self::Read => "READ",
+                             Self::Import => "IMPORT",
+                             Self::ImportSnapshot => "IMPORT_SNAPSHOT",
                              Self::CloseSnapshot => "CLOSE_PIN",
                              Self::Disconnect => "DISCONNECT"
                          })
@@ -80,9 +91,14 @@ impl Diagnostic
 {
     fn new(text: &str) -> Self
     {
-        let mut diagnostic = Self { bytes:  [0; wire::MIN_REPLY - wire::REPLY_HEADER],
-                                    length: text.len() };
-        diagnostic.bytes[..text.len()].copy_from_slice(text.as_bytes());
+        let mut length = text.len().min(wire::MIN_REPLY - wire::REPLY_HEADER);
+        while !text.is_char_boundary(length)
+        {
+            length -= 1;
+        }
+        let mut diagnostic = Self { bytes: [0; wire::MIN_REPLY - wire::REPLY_HEADER],
+                                    length };
+        diagnostic.bytes[..length].copy_from_slice(&text.as_bytes()[..length]);
         diagnostic
     }
 
@@ -110,6 +126,7 @@ pub enum Error
     NoMemory(Operation),
     ForeignGuard,
     Retiring,
+    Argument(&'static str),
     Broker
     {
         operation: Operation,
@@ -137,6 +154,7 @@ impl Error
             Self::NoMemory(_) => NO_MEMORY,
             Self::ForeignGuard => ACCESS_DENIED,
             Self::Retiring => SERVICE_BUSY,
+            Self::Argument(_) => BAD_ARGUMENT,
             Self::Broker { status,
                            .. }
             | Self::Resident { status,
@@ -166,8 +184,8 @@ impl fmt::Display for Error
             Self::NoMemory(operation) =>
             {
                 write!(output,
-                       "SCEX {operation} cleanup allocation was refused because memory is \
-                        exhausted; no session or snapshot request ran")
+                       "SCEX {operation} preparation allocation was refused; the request did not \
+                        run, retain the original grants and retry after releasing memory")
             }
             Self::ForeignGuard =>
             {
@@ -179,6 +197,7 @@ impl fmt::Display for Error
                 output.write_str("SCEX client or guard is retiring; retain the original cleanup \
                                   backlog and drain it before releasing module storage")
             }
+            Self::Argument(detail) => write!(output, "SCEX request refused: {detail}"),
             Self::Broker { operation,
                            status: SERVICE_BUSY } =>
             {
@@ -186,7 +205,7 @@ impl fmt::Display for Error
                        "SCEX {operation} broker is busy (status {SERVICE_BUSY}) before effects; ")?;
                 match operation
                 {
-                    Operation::Open | Operation::Snapshot =>
+                    Operation::Open | Operation::Snapshot | Operation::ImportSnapshot =>
                     {
                         output.write_str("no grant was created, retry with the original client \
                                           after contention clears")
@@ -277,6 +296,57 @@ impl Drop for Snapshot
     fn drop(&mut self)
     {
         self.record.retired.store(true, Ordering::Release);
+    }
+}
+
+/// One immutable text capture retains the real resident pin for compare/import.
+/// Its byte storage is allocated once per admitted snapshot, outside resident
+/// Scrap locks. Empty Scrap and zero-byte Text remain distinct in metadata.
+pub struct Captured
+{
+    pin:      Snapshot,
+    metadata: Metadata,
+    data:     CapturedData
+}
+enum CapturedData
+{
+    Empty,
+    Text(String),
+    Unsupported
+}
+pub enum CapturedContent<'a>
+{
+    Empty,
+    Text(&'a str),
+    Unsupported
+}
+/// A failed text capture returns the original pin for an actual retry. In
+/// particular, never repeat an already acknowledged import to obtain its text.
+pub struct CaptureFailure
+{
+    pub cause: Error,
+    pub pin:   Snapshot
+}
+impl Captured
+{
+    pub fn pin(&self) -> &Snapshot
+    {
+        &self.pin
+    }
+
+    pub fn metadata(&self) -> Metadata
+    {
+        self.metadata
+    }
+
+    pub fn content(&self) -> CapturedContent<'_>
+    {
+        match &self.data
+        {
+            CapturedData::Empty => CapturedContent::Empty,
+            CapturedData::Text(text) => CapturedContent::Text(text),
+            CapturedData::Unsupported => CapturedContent::Unsupported
+        }
     }
 }
 
@@ -485,6 +555,131 @@ impl Scrap
                                                                     snapshot metadata" })
     }
 
+    /// Read one bounded chunk of this exact immutable snapshot. Byte offsets
+    /// may split a UTF-8 character; decode only after all bytes are assembled.
+    /// The returned slice borrows reusable caller storage, never resident memory.
+    pub fn read<'a>(&self, snapshot: &Snapshot, offset: usize,
+                    reply: &'a mut [u8; READ_BUFFER_BYTES])
+                    -> Result<&'a [u8]>
+    {
+        self.check(&snapshot.record)?;
+        let mut input = [0; 24];
+        input[..16].copy_from_slice(&pair(&snapshot.record));
+        input[16..].copy_from_slice(&(offset as u64).to_le_bytes());
+        request(*snapshot.record.provider, Operation::Read, &input, reply)
+    }
+
+    /// Atomically replace text only if this live pin still names the current
+    /// Scrap revision. The resident authenticates its own session/write grant;
+    /// a protocol label or an invented revision never authorizes an import.
+    /// A later snapshot is a separate admission: failure to acquire it does not
+    /// undo an acknowledged import, whose actual committed revision is returned.
+    pub fn import_text(&self, snapshot: &Snapshot, text: &str) -> Result<u64>
+    {
+        self.check(&snapshot.record)?;
+        if text.len() > wire::MAX_TEXT
+        {
+            return Err(Error::Argument("IMPORT exceeds the resident text byte limit; current \
+                                        Scrap was retained"));
+        }
+        let mut input = Vec::new();
+        input.try_reserve_exact(16 + text.len()).map_err(|_| Error::NoMemory(Operation::Import))?;
+        input.extend_from_slice(&pair(&snapshot.record));
+        input.extend_from_slice(text.as_bytes());
+        let mut reply = [0; wire::MIN_REPLY];
+        let body = request(*snapshot.record.provider, Operation::Import, &input, &mut reply)?;
+        word(body).filter(|revision| *revision != 0)
+                  .ok_or(Error::Malformed { operation: Operation::Import,
+                                            detail:    "IMPORT requires one nonzero committed \
+                                                        revision; do not assume no effect" })
+    }
+
+    /// Capture from one pin; no revision may be mixed into another snapshot.
+    /// Every refusal retires the new pin through this controller's existing
+    /// admitted backlog. The caller must keep draining that backlog.
+    pub fn capture(&mut self, session: &Session) -> Result<Captured>
+    {
+        let pin = self.snapshot(session)?;
+        self.capture_pin(pin).map_err(|failure| failure.cause)
+    }
+
+    pub fn capture_pin(&self, pin: Snapshot) -> core::result::Result<Captured, CaptureFailure>
+    {
+        let result = (|| {
+            let metadata = self.info(&pin)?;
+            let mut bytes = Vec::new();
+            if metadata.content == Content::Text
+            {
+                let length = metadata.bytes as usize;
+                if length > wire::MAX_TEXT
+                {
+                    return Err(Error::Argument("snapshot exceeds the bounded text capture limit"));
+                }
+                bytes.try_reserve_exact(length).map_err(|_| Error::NoMemory(Operation::Read))?;
+                let mut reply = [0; READ_BUFFER_BYTES];
+                while bytes.len() < length
+                {
+                    let chunk = self.read(&pin, bytes.len(), &mut reply)?;
+                    if chunk.is_empty() || chunk.len() > length - bytes.len()
+                    {
+                        return Err(Error::Malformed { operation: Operation::Read,
+                                                      detail:    "READ length disagrees with its \
+                                                                  immutable snapshot metadata" });
+                    }
+                    bytes.extend_from_slice(chunk);
+                }
+            }
+            let data = match metadata.content
+            {
+                Content::Empty => CapturedData::Empty,
+                Content::Unsupported => CapturedData::Unsupported,
+                Content::Text =>
+                {
+                    CapturedData::Text(String::from_utf8(bytes).map_err(|_| {
+                                           Error::Malformed { operation: Operation::Read,
+                                                              detail:    "immutable text is not \
+                                                                          valid UTF-8; current \
+                                                                          Scrap was retained" }
+                                       })?)
+                }
+            };
+            Ok((metadata, data))
+        })();
+        match result
+        {
+            Ok((metadata, data)) =>
+            {
+                Ok(Captured { pin,
+                              metadata,
+                              data })
+            }
+            Err(cause) =>
+            {
+                Err(CaptureFailure { cause,
+                                     pin })
+            }
+        }
+    }
+
+    /// Replace using the expected pin and acquire the exact committed pin as
+    /// one resident effect. SDK retirement storage is admitted before the call.
+    pub fn import_snapshot(&mut self, expected: &Snapshot, text: &str) -> Result<Snapshot>
+    {
+        self.check(&expected.record)?;
+        if text.len() > wire::MAX_TEXT
+        {
+            return Err(Error::Argument("IMPORT_SNAPSHOT exceeds the resident text limit"));
+        }
+        let mut input = Vec::new();
+        input.try_reserve_exact(16 + text.len())
+             .map_err(|_| Error::NoMemory(Operation::ImportSnapshot))?;
+        input.extend_from_slice(&pair(&expected.record));
+        input.extend_from_slice(text.as_bytes());
+        let parent = expected.record.parent.as_ref().ok_or(Error::ForeignGuard)?.clone();
+        self.acquire(Some(parent), Operation::ImportSnapshot, &input)
+            .map(|record| Snapshot { record })
+    }
+
     /// Inspect at most `budget` records and attempt at most one release per
     /// visited record. Busy retains the exact record/provider for a later call.
     /// Child pins retain their session until acknowledged, without a lock or
@@ -634,8 +829,7 @@ fn pair(record: &Record) -> [u8; 16]
     }
     input
 }
-fn request<'a>(provider: Provider, operation: Operation, input: &[u8],
-               output: &'a mut [u8; wire::MIN_REPLY])
+fn request<'a>(provider: Provider, operation: Operation, input: &[u8], output: &'a mut [u8])
                -> Result<&'a [u8]>
 {
     let length =
