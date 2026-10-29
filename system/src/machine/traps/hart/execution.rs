@@ -13,6 +13,8 @@ use crate::{allocator,
             machine::{interrupts::with_masked, scheduler::SystemIdle, traps::TrapFrame},
             toolbox::handles::OwnerRef};
 
+pub(crate) mod policy;
+
 pub(crate) const IDLE: usize = usize::MAX;
 /// Reset-lifetime hardware identity, minted only by checked sscratch selection.
 /// The numeric label is diagnostic metadata, never authority to select a hart.
@@ -53,6 +55,33 @@ pub(crate) fn selected_hart() -> HartKey
             Some(hart) => HartKey(hart),
             None => super::unadmitted()
         }
+    })
+}
+/// The initial replaceable-policy gate admits only the real primary. A peer
+/// being awake in System idle is deliberately different from permission to
+/// run an application or a module there.
+pub(crate) fn primary_dispatch_only() -> bool
+{
+    with_masked(|| {
+        let Some(registry) = super::REGISTRY.get()
+        else
+        {
+            return false;
+        };
+        registry.rows.as_slice().iter().enumerate().all(|(index, row)| {
+                                                       let phase =
+                                                           row.phase.load(Ordering::Acquire);
+                                                       if index == registry.primary
+                                                       {
+                                                           phase == super::DISPATCH_ELIGIBLE
+                                                       }
+                                                       else
+                                                       {
+                                                           matches!(phase,
+                                                                    super::PREPARED
+                                                                    | super::ADMITTED_IDLE)
+                                                       }
+                                                   })
     })
 }
 /// Reset-lifetime terminal ownership tied to the actual sealed selection.
@@ -133,7 +162,8 @@ pub(super) struct HartLocal
     current:       AtomicUsize,
     io:            AtomicBool,
     idle_claimed:  AtomicBool,
-    idle:          Spinlock<Option<SystemIdle>>
+    idle:          Spinlock<Option<SystemIdle>>,
+    policy:        policy::State
 }
 /// Unique preparation lease for an actual permanent registry row. It is not
 /// execution or current-CPU authority and exposes no numeric-ID constructor.
@@ -280,6 +310,7 @@ impl HartLocal
         self.current.load(Ordering::Relaxed) == IDLE
         && !self.io.load(Ordering::Relaxed)
         && !self.idle_claimed.load(Ordering::Acquire)
+        && !self.policy.active()
         && active_empty
         && idle_empty
     }
@@ -291,7 +322,8 @@ impl HartLocal
                current: AtomicUsize::new(IDLE),
                io: AtomicBool::new(false),
                idle_claimed: AtomicBool::new(false),
-               idle: Spinlock::new(None) }
+               idle: Spinlock::new(None),
+               policy: policy::State::new() }
     }
 }
 

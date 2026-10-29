@@ -337,6 +337,34 @@ fn now() -> u64
     }
     value
 }
+/// Convert actual counter intervals/instants using the admitted DT frequency.
+/// Instant/interval conversion floors fractional microseconds; deadline
+/// conversion below rounds up. There is no second bootstrap clock record.
+pub(crate) fn ticks_to_microseconds(ticks: u64) -> Result<u64, Error>
+{
+    let transport = MONITOR.get().ok_or(Error::Missing)?;
+    let micros = (u128::from(ticks) * 1_000_000) / u128::from(transport.timebase_hz);
+    u64::try_from(micros).map_err(|_| Error::ClockOverflow)
+}
+
+/// A measured callback duration rounds upward for its strict time budget; a
+/// fractional microsecond beyond that budget cannot disappear by flooring.
+pub(crate) fn ticks_to_microseconds_ceil(ticks: u64) -> Result<u64, Error>
+{
+    let transport = MONITOR.get().ok_or(Error::Missing)?;
+    let micros = (u128::from(ticks) * 1_000_000).div_ceil(u128::from(transport.timebase_hz));
+    u64::try_from(micros).map_err(|_| Error::ClockOverflow)
+}
+
+/// Deadline/quantum conversion rounds up, never silently arms a shorter
+/// interval. This uses the same admitted counter as execution observations.
+pub(crate) fn microseconds_to_ticks_ceil(microseconds: u64) -> Result<u64, Error>
+{
+    let transport = MONITOR.get().ok_or(Error::Missing)?;
+    let ticks = (u128::from(microseconds) * u128::from(transport.timebase_hz)).div_ceil(1_000_000);
+    u64::try_from(ticks).map_err(|_| Error::ClockOverflow)
+}
+
 fn notify(entry: &Entry)
 {
     // Release alone does not order MMIO. Neither operation calls foreign code.

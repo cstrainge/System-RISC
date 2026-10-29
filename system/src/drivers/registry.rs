@@ -182,24 +182,63 @@ pub enum State
     Quiescing,
     Failed
 }
+struct SchedulerPublication
+{
+    registration: mac_object_table::store::CompletionKey,
+    interface:    mac_object_table::store::CompletionKey,
+    reserved:     mac_object_table::store::PublicationReservation<InvocationGate>
+}
+/// Constructed only by the registry's real publication-completion checks.
+pub(crate) struct SchedulerWithdrawalAck
+{
+    registration: mac_object_table::store::CompletionKey
+}
+impl SchedulerWithdrawalAck
+{
+    pub(crate) fn matches(&self, registration: mac_object_table::store::CompletionKey) -> bool
+    {
+        self.registration.id() == registration.id()
+        && self.registration.owner() == registration.owner()
+    }
+}
+pub(crate) struct SchedulerWithdrawalCompletion
+{
+    acknowledgement: SchedulerWithdrawalAck,
+    reserved:        Option<mac_object_table::store::PublicationReservation<InvocationGate>>
+}
+impl SchedulerWithdrawalCompletion
+{
+    /// Call only after leaving Runtime: final reservation/metadata refunds
+    /// happen before the adapter observes this authentic acknowledgement.
+    pub(crate) fn into_ack(self) -> SchedulerWithdrawalAck
+    {
+        let Self { acknowledgement,
+                   reserved } = self;
+        drop(reserved);
+        acknowledgement
+    }
+}
 struct Module
 {
-    name:             modules::Name,
-    identity:         [u8; 16],
-    kind:             PackageKind,
-    state:            State,
-    offers:           Vec<Offer>,
-    dependencies:     Vec<mac_module::Dependency>,
-    dependency_ids:   Vec<u64>,
-    services:         Vec<Service>,
-    devices:          Vec<mac_module::DeviceMatch>,
-    requests:         usize,
-    file_handlers:    Vec<mac_module::file_handlers::Rule>,
-    cleanup:          Option<crate::toolbox::handles::cleanup::Checkpoint>,
-    account:          ModuleAccount,
-    rollback_pending: bool,
-    recovery_refusal: Option<Error>,
-    startup:          Startup
+    name:                  modules::Name,
+    identity:              [u8; 16],
+    kind:                  PackageKind,
+    state:                 State,
+    offers:                Vec<Offer>,
+    dependencies:          Vec<mac_module::Dependency>,
+    dependency_ids:        Vec<u64>,
+    services:              Vec<Service>,
+    devices:               Vec<mac_module::DeviceMatch>,
+    requests:              usize,
+    file_handlers:         Vec<mac_module::file_handlers::Rule>,
+    cleanup:               Option<crate::toolbox::handles::cleanup::Checkpoint>,
+    account:               ModuleAccount,
+    rollback_pending:      bool,
+    recovery_refusal:      Option<Error>,
+    published_scheduler:   Option<SchedulerPublication>,
+    withdrawn_scheduler:   Option<mac_object_table::store::CompletionKey>,
+    scheduler_publication: Option<mac_object_table::store::PublicationReservation<InvocationGate>>,
+    startup:               Startup
 }
 struct Startup
 {
@@ -469,6 +508,10 @@ impl Registry
                 }))
             }))
         })?;
+        if contract.dependencies().any(|dependency| dependency.is_ok_and(|d| d.class.0 == *b"SCHD"))
+        {
+            return Err(Error::Access);
+        }
         Policy { directory,
                  file_type,
                  kernel_abi: mac_abi::ABI_VERSION,
@@ -552,6 +595,9 @@ impl Registry
                                                  account,
                                                  rollback_pending: false,
                                                  recovery_refusal: None,
+                                                 published_scheduler: None,
+                                                 withdrawn_scheduler: None,
+                                                 scheduler_publication: None,
                                                  startup: Startup::default() })
                      }).map_err(Error::AllocationScope)??;
         let module = self.modules.insert(ledger, record)?;
@@ -594,6 +640,11 @@ impl Registry
         {
             return Err(Error::Busy);
         }
+        if record.offers.iter().any(|o| o.class.0 == *b"SCHD")
+           && record.startup.phase != mac_module::lifecycle::PENDING
+        {
+            return Err(Error::State);
+        }
         if record.startup.phase == mac_module::lifecycle::PENDING
         {
             // This commits execution/admission only. No provisional interface
@@ -606,6 +657,18 @@ impl Registry
 
     fn publish_interfaces(&mut self, module: u64) -> Result<()>
     {
+        if self.modules
+               .get(module)
+               .ok_or(Error::Stale)?
+               .offers
+               .iter()
+               .any(|o| o.class.0 == *b"SCHD")
+        {
+            #[cfg(target_arch = "riscv64")]
+            return self.publish_scheduler_interface(module);
+            #[cfg(not(target_arch = "riscv64"))]
+            return Err(Error::State);
+        }
         let record = self.modules.get(module).ok_or(Error::Stale)?;
         if self.requests.iter().any(|(_, r)| r.caller == u64::from(module))
         {
@@ -637,6 +700,258 @@ impl Registry
         record.startup.status = 0;
         record.startup.length = 0;
         Ok(())
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn scheduler_preparation(&mut self, module: u64)
+                                        -> Result<(OwnerRef, ModuleAllocation, Offer)>
+    {
+        let record = self.modules.get(module).ok_or(Error::Access)?;
+        if record.state != State::Initializing
+           || record.startup.phase != mac_module::lifecycle::PENDING
+           || record.offers.len() != 1
+           || !record.dependencies.is_empty()
+           || record.services.iter().any(|s| !matches!(&s.service.0, b"SCTL" | b"MLIF"))
+        {
+            return Err(Error::Access);
+        }
+        let offer = record.offers[0];
+        if offer.class != mac_scheduler_interface::POLICY_CLASS
+           || offer.version != 1
+           || offer.request_schema != 1
+           || offer.reply_schema != 1
+           || offer.max_request < mac_scheduler_interface::MAX_ROUND_BYTES as u32
+           || offer.max_reply < mac_scheduler_interface::DECISION_BYTES as u32
+           || offer.flags & (Offer::EXCLUSIVE | Offer::KERNEL_ONLY)
+              != (Offer::EXCLUSIVE | Offer::KERNEL_ONLY)
+        {
+            return Err(Error::Access);
+        }
+        let owner = self.module_ledger(module)?;
+        let allocation = self.module_allocation(module)?;
+        if self.modules.get(module).ok_or(Error::Stale)?.scheduler_publication.is_none()
+        {
+            let reserved = crate::allocation::with_kernel_allocation(allocation.clone(), || {
+                               self.interfaces.reserve_publication(&owner)
+                           }).map_err(Error::AllocationScope)?
+                             .map_err(Error::Owner)?;
+            self.modules.get_mut(module).ok_or(Error::Stale)?.scheduler_publication =
+                Some(reserved);
+        }
+        Ok((owner, allocation, offer))
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn publish_scheduler_interface(&mut self, module: u64) -> Result<()>
+    {
+        let owner = self.module_ledger(module)?;
+        let registration =
+            crate::drivers::scheduler::publication_receipt(&owner).map_err(Error::AllocationScope)?
+                                                                  .ok_or(Error::State)?;
+        let record = self.modules.get_mut(module).ok_or(Error::Stale)?;
+        if record.offers.len() != 1 || record.state != State::Ready
+        {
+            return Err(Error::State);
+        }
+        let offer = record.offers[0];
+        if record.published_scheduler.is_some() || record.withdrawn_scheduler.is_some()
+        {
+            return Err(Error::State);
+        }
+        let mut reserved = record.scheduler_publication.take().ok_or(Error::State)?;
+        let publication = match self.interfaces.insert_reserved_with_receipt(&mut reserved, |_| {
+                                                   Interface { module,
+                                                               offer }
+                                               })
+        {
+            Ok(publication) => publication,
+            Err(cause) =>
+            {
+                record.scheduler_publication = Some(reserved);
+                return Err(match cause
+                {
+                    mac_object_table::store::PublicationError::Busy => Error::Busy,
+                    mac_object_table::store::PublicationError::Pool(cause) => Error::Owner(cause)
+                });
+            }
+        };
+        let (_, interface) = publication.into_parts();
+        record.published_scheduler = Some(SchedulerPublication { registration,
+                                                                 interface,
+                                                                 reserved });
+        // Reserved publication allocates nothing; no fallible step follows it.
+        record.startup.phase = mac_module::lifecycle::ACTIVE;
+        record.startup.status = 0;
+        record.startup.length = 0;
+        Ok(())
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn withdraw_scheduler(
+        &mut self, intent: &crate::drivers::scheduler::Withdrawal)
+        -> Result<Option<mac_object_table::store::Removed<Interface, InvocationGate>>>
+    {
+        let module = intent.owner().owner().incarnation();
+        let owner = self.module_ledger(module)?;
+        if owner.owner() != intent.owner().owner()
+        {
+            return Err(Error::Access);
+        }
+        let record = self.modules.get_mut(module).ok_or(Error::Stale)?;
+        if !matches!(record.state, State::Initializing | State::Ready | State::Quiescing)
+           || record.offers.len() != 1
+           || record.offers[0].class != mac_scheduler_interface::POLICY_CLASS
+        {
+            return Err(Error::State);
+        }
+        if record.withdrawn_scheduler.is_some_and(|r| r.id() != intent.registration().id())
+        {
+            return Err(Error::Access);
+        }
+        if let Some(published) = &record.published_scheduler
+        {
+            if published.registration.id() != intent.registration().id()
+               || published.registration.owner() != intent.registration().owner()
+            {
+                return Err(Error::Access);
+            }
+        }
+        let cause = intent.cause().as_bytes();
+        if cause.len() > mac_module::lifecycle::MAX_CAUSE
+           || intent.cause().chars().any(char::is_control)
+        {
+            return Err(Error::Access);
+        }
+        // MLIF describes service availability, not module authority. A clean
+        // explicit retirement is cancellation, never a fabricated callback fault.
+        record.startup.phase = mac_module::lifecycle::REFUSED;
+        record.startup.status =
+            if intent.status() < 0 { intent.status() } else { mac_abi::OPERATION_CANCELLED };
+        record.startup.cause[..cause.len()].copy_from_slice(cause);
+        record.startup.length = cause.len();
+        let Some(published) = &record.published_scheduler
+        else
+        {
+            return Ok(None);
+        };
+        let Some(interface) = self.interfaces.completing(&published.interface)
+        else
+        {
+            return Ok(None);
+        };
+        if interface.module != module
+           || interface.offer.class != mac_scheduler_interface::POLICY_CLASS
+        {
+            return Err(Error::Access);
+        }
+        // These references are forbidden by SCHD admission, but retain an
+        // unexpected original holder instead of bypassing semantic cleanup.
+        let key = self.interfaces.key(published.interface.id());
+        if key.is_some_and(|key| {
+                  self.requests.iter().any(|(_, r)| r.interface_key == key)
+                  || self.dependencies.retained_values().any(|r| r.interface_key == key)
+              })
+        {
+            return Err(Error::Busy);
+        }
+        Ok(self.interfaces.remove(published.interface.id()))
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn scheduler_withdrawal_ack(&mut self,
+                                           intent: &crate::drivers::scheduler::Withdrawal)
+                                           -> Result<Option<SchedulerWithdrawalCompletion>>
+    {
+        let module = intent.owner().owner().incarnation();
+        let record = self.modules.get_mut(module).ok_or(Error::Stale)?;
+        if record.startup.phase != mac_module::lifecycle::REFUSED
+        {
+            return Err(Error::State);
+        }
+        if let Some(published) = &record.published_scheduler
+        {
+            if published.registration.id() != intent.registration().id()
+               || published.registration.owner() != intent.registration().owner()
+            {
+                return Err(Error::Access);
+            }
+            if !published.reserved.ready()
+            {
+                return Ok(None);
+            }
+        }
+        else if self.interfaces.retained_values().any(|i| {
+                                                       i.module == module
+                                                       && i.offer.class
+                                                          == mac_scheduler_interface::POLICY_CLASS
+                                                   })
+        {
+            return Ok(None);
+        }
+        if record.scheduler_publication.as_ref().is_some_and(|r| !r.ready())
+        {
+            return Ok(None);
+        }
+        if record.withdrawn_scheduler.is_some_and(|r| {
+                                         r.id() != intent.registration().id()
+                                         || r.owner() != intent.registration().owner()
+                                     })
+        {
+            return Err(Error::Access);
+        }
+        let reserved = match record.published_scheduler.take()
+        {
+            Some(published) => Some(published.reserved),
+            None => record.scheduler_publication.take()
+        };
+        record.withdrawn_scheduler = Some(intent.registration());
+        Ok(Some(SchedulerWithdrawalCompletion {
+            acknowledgement: SchedulerWithdrawalAck { registration: intent.registration() }, reserved
+        }))
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn authorize_scheduler_cleanup(&self,
+                                              subject: &crate::drivers::jobs::subjects::Subject,
+                                              caller: u64, provider: u64, operation: u32,
+                                              input: usize, output: usize)
+                                              -> Result<Interface>
+    {
+        if !matches!(operation,
+                     mac_scheduler_interface::control::STATUS
+                     | mac_scheduler_interface::control::RETIRE)
+        {
+            return Err(Error::Access);
+        }
+        let record = self.modules.get(caller).ok_or(Error::Access)?;
+        let interface = self.interface(provider)?;
+        if record.state != State::Quiescing
+           || interface.module != 0
+           || interface.offer.class != mac_scheduler_interface::CONTROL_CLASS
+           || !record.services
+                     .iter()
+                     .any(|s| {
+                         s.service == interface.offer.class && s.version == interface.offer.version
+                     })
+           || input != 8
+           || output < mac_scheduler_interface::control::MIN_REPLY
+           || output > mac_scheduler_interface::control::MAX_REPLY
+        {
+            return Err(Error::Access);
+        }
+        subject.scope().admitting().map_err(|cause| {
+                                        Error::Owner(mac_object_table::domain::PoolError::Scope {
+            owner: subject.scope().subject(), kind: subject.scope().kind(), cause
+        })
+                                    })?;
+        self.requests.validate_parent(subject, caller, requests::Origin::Direct)?;
+        Ok(interface)
+    }
+
+    pub(crate) fn startup_status(&self, module: u64) -> Result<(u32, mac_abi::Status)>
+    {
+        let startup = &self.modules.get(module).ok_or(Error::Stale)?.startup;
+        Ok((startup.phase, startup.status))
     }
 
     pub(crate) fn startup_phase(&self, module: u64) -> Result<u32>
@@ -753,6 +1068,7 @@ impl Registry
         }
         let record = self.modules.get_mut(module).ok_or(Error::Stale)?;
         let first = !record.rollback_pending;
+        drop(record.scheduler_publication.take());
         record.rollback_pending = true;
         record.state = State::Quiescing;
         self.modules.stop(module)?;
@@ -862,7 +1178,12 @@ impl Registry
                 i.offer.class == class
                 && i.offer.version == version
                 && (i.module == 0
-                    || self.modules.get(i.module).is_some_and(|m| m.state == State::Ready))
+                    || self.modules.get(i.module).is_some_and(|m| {
+                                                     m.state == State::Ready
+                                                     && (i.offer.class.0 != *b"SCHD"
+                                                         || m.startup.phase
+                                                            == mac_module::lifecycle::ACTIVE)
+                                                 }))
             })
             .map(|(id, i)| (id, *i))
     }
@@ -877,9 +1198,12 @@ impl Registry
             if interface.offer.class != class
                || interface.offer.capabilities & capabilities != capabilities
                || interface.module != 0
-                  && !self.modules
-                          .get(interface.module)
-                          .is_some_and(|module| module.state == State::Ready)
+                  && !self.modules.get(interface.module).is_some_and(|module| {
+                                                            module.state == State::Ready
+                                                            && (interface.offer.class.0 != *b"SCHD"
+                                                                || module.startup.phase
+                                                                   == mac_module::lifecycle::ACTIVE)
+                                                        })
             {
                 continue;
             }
@@ -894,6 +1218,10 @@ impl Registry
 
     pub fn resolve(&self, caller: u64, class: ClassId, version: u32) -> Result<u64>
     {
+        if class.0 == *b"SCHD"
+        {
+            return Err(Error::Access);
+        }
         if caller == 0
         {
             return self.find(class, version).next().map(|(id, _)| id).ok_or(Error::Stale);
@@ -932,7 +1260,12 @@ impl Registry
     {
         let interface = *self.interfaces.get(id).ok_or(Error::Stale)?;
         if interface.module != 0
-           && self.modules.get(interface.module).is_none_or(|m| m.state != State::Ready)
+           && self.modules.get(interface.module).is_none_or(|m| {
+                                                    m.state != State::Ready
+                                                    || (interface.offer.class.0 == *b"SCHD"
+                                                        && m.startup.phase
+                                                           != mac_module::lifecycle::ACTIVE)
+                                                })
         {
             return Err(Error::State);
         }
@@ -970,6 +1303,10 @@ impl Registry
                                  -> Result<Interface>
     {
         let provider = self.interface(interface)?;
+        if provider.offer.class.0 == *b"SCHD"
+        {
+            return Err(Error::Access);
+        }
         if input_len > provider.offer.max_request as usize
            || output_len > provider.offer.max_reply as usize
         {
@@ -1252,6 +1589,7 @@ impl Registry
         {
             return Err(Error::State);
         }
+        drop(record.scheduler_publication.take());
         record.state = State::Quiescing;
         self.modules.stop(module)?;
         Ok(())

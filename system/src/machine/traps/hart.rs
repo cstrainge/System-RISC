@@ -474,10 +474,11 @@ pub(crate) fn prepare(stack: &'static Stack) -> Result<PreparedEntry, Error>
 /// There is deliberately no Drop action: execution ownership spans sret.
 pub(crate) struct OuterCapture
 {
-    frame:   *mut TrapFrame,
-    hart:    execution::HartKey,
-    current: usize,
-    _local:  core::marker::PhantomData<*mut ()>
+    frame:          *mut TrapFrame,
+    hart:           execution::HartKey,
+    current:        usize,
+    captured_ticks: u64,
+    _local:         core::marker::PhantomData<*mut ()>
 }
 impl OuterCapture
 {
@@ -494,6 +495,13 @@ impl OuterCapture
     pub(crate) fn current(&self) -> usize
     {
         self.current
+    }
+
+    /// Actual local rdtime observation after complete owned-frame validation,
+    /// before startup ACK or scheduler maintenance. Not a policy estimate.
+    pub(crate) fn captured_ticks(&self) -> u64
+    {
+        self.captured_ticks
     }
 }
 /// # Safety
@@ -532,7 +540,9 @@ pub(super) unsafe fn captured_outer(frame: *mut TrapFrame) -> OuterCapture
         super::entry_lost("scheduling requires complete outer capture on the selected System \
                            stack");
     }
+    let captured_ticks = crate::platform::ticks();
     OuterCapture { frame,
+                   captured_ticks,
                    hart: execution::selected_hart(),
                    current: execution::current(),
                    _local: core::marker::PhantomData }

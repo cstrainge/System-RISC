@@ -5,6 +5,10 @@
   "qemu_cpu": "rva23s64,mmu=on,pmp=on,sv39=on",
   "qemu_ram": "8G",
   "qemu_harts": 4,
+  "scheduling": {
+    "quantum_microseconds": 250,
+    "callback_budget_microseconds": 1000
+  },
   "fatal_shutdown": {
     "failure_value": 78643,
     "restart_value": 30583,

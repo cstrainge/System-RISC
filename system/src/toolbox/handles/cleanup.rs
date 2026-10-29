@@ -14,6 +14,13 @@ pub(crate) enum Cause
     {
         required: &'static str
     },
+    #[cfg(target_arch = "riscv64")]
+    SchedulerPending
+    {
+        generation: u64
+    },
+    #[cfg(target_arch = "riscv64")]
+    SchedulerUnavailable(crate::state::AccessError),
     DriverInterfaceBusy
     {
         module:  u64,
@@ -107,6 +114,20 @@ impl core::fmt::Display for Cause
                 write!(f,
                        "registered cleanup requires the {required} context; payload and unique \
                         ticket remain retained for retry")
+            }
+            #[cfg(target_arch = "riscv64")]
+            Self::SchedulerPending { generation } =>
+            {
+                write!(f,
+                       "scheduler registration {generation} awaits actual callback and \
+                        primary-only quiescence; original payload and cleanup ticket retained")
+            }
+            #[cfg(target_arch = "riscv64")]
+            Self::SchedulerUnavailable(cause) =>
+            {
+                write!(f,
+                       "scheduler registration cleanup catalog unavailable ({cause:?}); original \
+                        ticket retained")
             }
             Self::DriverInterfaceBusy { module,
                                         pending } =>
@@ -235,6 +256,21 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn scheduler_pending(ticket: ReleasedResource, generation: u64) -> Self
+    {
+        Self { ticket,
+               cause: Cause::SchedulerPending { generation } }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn scheduler_unavailable(ticket: ReleasedResource, cause: crate::state::AccessError)
+                                        -> Self
+    {
+        Self { ticket,
+               cause: Cause::SchedulerUnavailable(cause) }
+    }
+
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn request_registry_unavailable(ticket: ReleasedResource,
                                                cause: crate::state::AccessError)

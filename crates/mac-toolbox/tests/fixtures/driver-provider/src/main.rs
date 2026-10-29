@@ -1,24 +1,39 @@
 #![no_std]
 #![no_main]
-#[cfg(not(feature = "pressure"))]
+#![cfg_attr(feature = "scheduler", feature(alloc_error_handler))]
+#[cfg(feature = "scheduler")]
+mod scheduler;
+#[cfg(feature = "scheduler")]
+#[path = "../../scheduler_support.rs"]
+mod scheduler_support;
+#[cfg(feature = "scheduler")]
+#[global_allocator]
+static ALLOCATOR: mac_driver_alloc::ForwardingAllocator = mac_driver_alloc::ForwardingAllocator;
+#[cfg(feature = "scheduler")]
+#[alloc_error_handler]
+fn allocation_failed(layout: core::alloc::Layout) -> !
+{
+    mac_driver::runtime::allocation_failed(layout)
+}
+#[cfg(not(any(feature = "pressure", feature = "scheduler")))]
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-#[cfg(not(feature = "pressure"))]
+#[cfg(not(any(feature = "pressure", feature = "scheduler")))]
 use mac_driver::{ClassId, Client, Completion, Driver, Error, Phase, Request, Result};
-#[cfg(not(feature = "pressure"))]
+#[cfg(not(any(feature = "pressure", feature = "scheduler")))]
 static ACTIVE: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(feature = "pressure"))]
+#[cfg(not(any(feature = "pressure", feature = "scheduler")))]
 static CANCELS: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "pressure")]
 mod pressure;
 struct Device;
 static DEVICE: Device = Device;
-#[cfg(not(feature = "workers"))]
+#[cfg(not(any(feature = "workers", feature = "scheduler-malformed")))]
 mac_driver::export_driver!(DEVICE);
-#[cfg(feature = "workers")]
+#[cfg(any(feature = "workers", feature = "scheduler-malformed"))]
 mod worker_probe;
 mac_driver::driver_panic_handler!();
-#[cfg(not(feature = "pressure"))]
+#[cfg(not(any(feature = "pressure", feature = "scheduler")))]
 impl Driver for Device
 {
     fn initialize(&self, host: Client) -> Result<()>

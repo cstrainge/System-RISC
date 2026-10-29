@@ -1,3 +1,5 @@
+#[path = "../scheduler_manifest.rs"]
+mod scheduler_manifest;
 #[path = "../pressure_manifest.rs"]
 mod pressure_manifest;
 fn main()
@@ -5,7 +7,11 @@ fn main()
     let args: Vec<_> = std::env::args_os().collect();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let output = std::path::Path::new(&args[2]);
-    let manifest = if cfg!(feature = "pressure")
+    let manifest = if cfg!(feature = "scheduler")
+    {
+        scheduler_manifest::prepare(root, &output.join("scheduler-declaration"))
+    }
+    else if cfg!(feature = "pressure")
     {
         pressure_manifest::prepare(root, &output.join("declaration"))
     }

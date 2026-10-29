@@ -747,6 +747,7 @@ impl Desktop
                             | super::handles::cleanup::Cause::DriverDependencyScopeActive { .. }
                             | super::handles::cleanup::Cause::DriverReplyPending { .. }
                             | super::handles::cleanup::Cause::DriverCancellationUncertain { .. }
+                            | super::handles::cleanup::Cause::SchedulerPending { .. }
                             | super::handles::cleanup::Cause::DeviceStop { .. }
                             | super::handles::cleanup::Cause::DevicePending { .. } => SERVICE_BUSY,
                             super::handles::cleanup::Cause::DragEffectStorage { .. }
@@ -755,6 +756,7 @@ impl Desktop
                             | super::handles::cleanup::Cause::FileManagerUnavailable(error)
                             | super::handles::cleanup::Cause::RequestRegistryUnavailable(error)
                             | super::handles::cleanup::Cause::DeviceManagerUnavailable(error)
+                            | super::handles::cleanup::Cause::SchedulerUnavailable(error)
                             | super::handles::cleanup::Cause::ScrapManagerUnavailable(error) =>
                             {
                                 error.status()

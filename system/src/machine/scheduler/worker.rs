@@ -205,12 +205,7 @@ pub(crate) fn publish_worker(prepared: PreparedWorker) -> Result<u64, WorkerPubl
                                            returned:         false,
                                            park_return:      false,
                                            exit_status:      mac_abi::OK };
-                let state = RunState { claimed_by: None,
-                                       live:       false,
-                                       retired:    false,
-                                       switches:   0,
-                                       waiting:    None,
-                                       woken:      0 };
+                let state = RunState::new();
                 Record::Scheduled(Thread { id,
                                            core: prepared.core.share(),
                                            scope: Some(scope),

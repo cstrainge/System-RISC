@@ -5,6 +5,10 @@ edition = "2024"
 publish = false
 [workspace]
 [features]
+scheduler-deny = ["scheduler", "dep:spin"]
+scheduler-malformed = ["scheduler"]
+scheduler-no-defer = ["scheduler"]
+scheduler = ["dep:mac-driver-alloc", "dep:mac-scheduler-interface", "dep:mac-module", "dep:mac-scheduler-policy"]
 workers = []
 pressure = ["dep:mac-filesystem-interface"]
 [[bin]]
@@ -18,6 +22,11 @@ path = "src/package.rs"
 test = false
 bench = false
 [dependencies]
+spin = { version = "=0.12.3", default-features = false, features = ["once"], optional = true }
+mac-module = { path = "../../../../mac-module", optional = true }
+mac-scheduler-interface = { path = "../../../../mac-scheduler-interface", optional = true }
+mac-scheduler-policy = { path = "../../../../mac-scheduler-policy", optional = true }
+mac-driver-alloc = { path = "../../../../mac-driver-alloc", optional = true }
 mac-driver = { path = "../../../../mac-driver" }
 mac-abi = { path = "../../../../mac-abi" }
 mac-filesystem-interface = { path = "../../../../mac-filesystem-interface", optional = true }
