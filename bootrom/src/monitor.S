@@ -185,9 +185,15 @@ __monitor_vector:
     j 10b
 9:  # A wake is a durable independent intent, never an ordinary command result.
     # S clears SSIP before reading/acknowledging the latest requested epoch.
+    # Primary JOIN is real ROM admission, not a fabricated secondary START.
+    # Other harts still require their actual completed warm-start transition.
+    ld t1,{joined}(t0)
+    li t2,{join_primary}
+    beq t1,t2,.Lmonitor_wake_ready
     ld t1,{start}+{start_phase}(t0)
     li t2,{start_idle}
     bne t1,t2,.Lmonitor_restore
+.Lmonitor_wake_ready:
     ld t1,{wake_requested}(t0)
     fence r,rw
     ld t2,{wake_acknowledged}(t0)

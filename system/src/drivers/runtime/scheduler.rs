@@ -178,6 +178,7 @@ impl Drop for Released
         if RETIRING.load(Ordering::Acquire)
         {
             changed();
+            crate::machine::scheduler::wake::request();
         }
     }
 }
@@ -231,6 +232,7 @@ impl Drop for CallLease
                 state.retiring = true;
                 RETIRING.store(true, Ordering::Release);
                 changed();
+                crate::machine::scheduler::wake::request();
                 return;
             };
             state.callbacks = remaining;
@@ -262,6 +264,7 @@ pub(crate) fn cleanup_progress()
     if RETIRING.load(Ordering::Acquire)
     {
         WORK.store(true, Ordering::Release);
+        crate::machine::scheduler::wake::request();
     }
 }
 fn advance(state: &mut Phase) -> Result<(), Status>
@@ -276,6 +279,7 @@ fn advance(state: &mut Phase) -> Result<(), Status>
         state.retiring = true;
         RETIRING.store(true, Ordering::Release);
         changed();
+        crate::machine::scheduler::wake::request();
         return Err(NOT_SUPPORTED);
     };
     state.transition = next;
@@ -335,6 +339,7 @@ pub(crate) fn candidate() -> Result<Option<Candidate>, Status>
             state.kind = State::Retiring;
             RETIRING.store(true, Ordering::Release);
             changed();
+            crate::machine::scheduler::wake::request();
         }
         if state.retiring || !row.owner.accepting()
         {
@@ -457,6 +462,7 @@ pub(crate) fn refuse(pin: &PolicyPin, cause: Status) -> Result<(), Status>
         state.retiring = true;
         RETIRING.store(true, Ordering::Release);
         changed();
+        crate::machine::scheduler::wake::request();
         Ok(())
     })
 }
@@ -519,6 +525,7 @@ pub(crate) fn bind_returned(module: u64, image: crate::images::Binding, instance
         if state.kind == State::Armed
         {
             INSTALLED.store(true, Ordering::Release);
+            crate::machine::scheduler::wake::request();
         }
         Ok(())
     })
@@ -603,6 +610,7 @@ fn stop(row: &Registration) -> Result<(), Status>
             advance(&mut state)?;
             state.retiring = true;
             state.kind = State::Retiring;
+            crate::machine::scheduler::wake::request();
         }
         INSTALLED.store(false, Ordering::Release);
         RETIRING.store(true, Ordering::Release);
@@ -657,8 +665,12 @@ fn control_operation(owner: &OwnerRef, operation: u32, input: &[u8]) -> Result<R
             {
                 advance(&mut state)?;
                 state.kind = State::Armed;
-                INSTALLED.store(state.binding.as_ref().and_then(|b| b.instance.get()).is_some(),
-                                Ordering::Release);
+                let callable = state.binding.as_ref().and_then(|b| b.instance.get()).is_some();
+                INSTALLED.store(callable, Ordering::Release);
+                if callable
+                {
+                    crate::machine::scheduler::wake::request();
+                }
             }
             control::HARTS
                 if owner.accepting()

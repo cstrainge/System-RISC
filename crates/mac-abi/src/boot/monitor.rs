@@ -8,6 +8,11 @@ use super::{CheckedMemory, topology::Cpu};
 use crate::BootMemoryRange;
 pub const JOIN_PARKED: u64 = 1;
 pub const JOIN_PRIMARY: u64 = 2;
+/// Wake protocol semantics are part of the ROM/System artifact contract even
+/// when the raw structure sizes stay unchanged. The receiver accepts primary
+/// JOIN or admitted secondary START, and epochs are monotonic per target with
+/// multiple possible senders. This is not an object ID or a restart counter.
+const WAKE_PRIMARY_JOIN_AND_TARGET_EPOCHS: usize = 1;
 pub const FENCE_I: u64 = 1;
 /// One-shot secondary transition; acknowledgment is M acceptance, not S readiness.
 pub const START: u64 = 2;
@@ -329,7 +334,7 @@ const _: () = assert!(core::mem::size_of::<SecondaryStart>() == 96
                       && core::mem::offset_of!(Control, start) == 80
                       && core::mem::offset_of!(Control, wake_requested) == 176
                       && core::mem::offset_of!(Control, wake_acknowledged) == 184);
-/// Exact shared structural identity, checked before any expanded monitor view.
+/// Exact shared layout/protocol identity, checked before any expanded monitor view.
 /// This is an artifact-layout gate, not a security hash or restart epoch.
 pub const LAYOUT_FINGERPRINT: u64 = layout_fingerprint();
 const fn layout_fingerprint() -> u64
@@ -393,6 +398,9 @@ const fn layout_fingerprint() -> u64
                  core::mem::offset_of!(Entry, hart),
                  core::mem::offset_of!(Entry, msip),
                  core::mem::offset_of!(Entry, storage),
+                 JOIN_PARKED as usize,
+                 JOIN_PRIMARY as usize,
+                 WAKE_PRIMARY_JOIN_AND_TARGET_EPOCHS,
                  FENCE_I as usize,
                  START as usize,
                  ENTRY_PRIMARY as usize,

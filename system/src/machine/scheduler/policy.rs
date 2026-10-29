@@ -154,6 +154,7 @@ impl Selection
 fn eligible(slot: usize, state: super::RunState, capture: &OuterCapture) -> bool
 {
     state.live
+    && state.affinity.allows(capture.hart())
     && !state.retired
     && state.waiting.is_none()
     && (state.claimed_by.is_none()
@@ -269,6 +270,13 @@ fn select_from(pin: &crate::drivers::scheduler::PolicyPin, capture: &OuterCaptur
                                                        })?;
             // Capacity for the entire supported set was admitted by PREPARE.
             scratch.records.push(record);
+        }
+        if capture.hart().is_primary()
+        {
+            // The complete immutable Round now contains these runnable edges.
+            // A new edge after this guard drops must retain its own hint even
+            // if the older returned choice still passes live revalidation.
+            super::wake::observed_runnable();
         }
     }
     scratch.sequence =

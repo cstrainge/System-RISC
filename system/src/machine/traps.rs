@@ -132,8 +132,11 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
               super::paging::with_kernel(|| {
                   // SAFETY: assembly saved the complete live frame. This borrow ends,
                   // including service/context readers, before any ownership handoff.
-                  let action = dispatch_frame(&mut *frame);
-                  match action
+                  let (action, outer) = {
+                      let borrowed = &mut *frame;
+                      (dispatch_frame(borrowed), borrowed.prior_depth == 0)
+                  };
+                  let next = match action
                   {
                       Dispatch::Resume => frame,
                       Dispatch::Schedule =>
@@ -159,7 +162,8 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                           let key = capture.hart();
                           match super::monitor::acknowledge_wake(key)
                           {
-                              Ok(_) => (), // Empty/already-ACKed SSIP advances nothing.
+                              Ok(true) => super::scheduler::wake::acknowledged(key),
+                              Ok(false) => (), // Empty/already-ACKed SSIP advances nothing.
                               Err(super::monitor::Error::Stopping) =>
                               {
                                   // This retains the pinned capture, posts no
@@ -191,7 +195,15 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                               capture.frame()
                           }
                       }
+                  };
+                  if outer
+                  {
+                      // Every service/frame borrow and scheduler guard ended.
+                      // A nested ECALL can still interrupt an outer guard, so
+                      // only the genuine outer return posts deferred intent.
+                      super::scheduler::wake::flush();
                   }
+                  next
               })
           }
     {
