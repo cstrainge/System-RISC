@@ -395,6 +395,7 @@ dependencies = [
  "mac-abi",
  "mac-definition-macros",
  "mac-traps",
+ "sr-control-reflow-handling",
  "toolbox-controls",
  "toolbox-quickdraw",
 ]
@@ -1044,6 +1045,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b9eb1a2f4c41445a3a0ff9abc5221c5fcd28e1f13cd7c0397706f9ac938ddb0"
 dependencies = [
  "lock_api",
+]
+
+[[package]]
+name = "sr-control-reflow-handling"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
 ]
 
 [[package]]

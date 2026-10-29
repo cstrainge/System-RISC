@@ -6,6 +6,7 @@ publish.workspace = true
 [dependencies]
 mac-definition-macros = { path = "../mac-definition-macros" }
 mac-abi.workspace = true
+sr-control-reflow-handling.workspace = true
 mac-traps.workspace = true
 toolbox-quickdraw = { path = "../../toolbox/quickdraw" }
 toolbox-controls = { path = "../../toolbox/controls" }

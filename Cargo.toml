@@ -4,6 +4,7 @@ exclude = ["vendor/skrifa", "vendor/ab_glyph_rasterizer"]
 members = [
     "crates/mac-abi",
     "crates/mac-definition",
+    "crates/sr-control-reflow-handling",
     "crates/mac-definition-macros",
     "crates/mac-module",
     "crates/mac-scheduler-interface",
@@ -66,6 +67,7 @@ mac-scrap-extension-interface = { path = "crates/mac-scrap-extension-interface" 
 mac-riscv-pages = { path = "crates/mac-riscv-pages" }
 mac-kernel-model = { path = "crates/mac-kernel-model" }
 mac-definition = { path = "crates/mac-definition" }
+sr-control-reflow-handling = { path = "crates/sr-control-reflow-handling" }
 mac-file-types = { path = "crates/mac-file-types" }
 mac-module = { path = "crates/mac-module" }
 mac-scheduler-interface = { path = "crates/mac-scheduler-interface" }

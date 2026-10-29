@@ -1,6 +1,23 @@
 //! QuickDraw rectangle subset. Coordinates remain signed 16-bit values.
 //! Host layout is native endian; explicit codecs define the 68k memory boundary.
 
+/// Pixel dimensions on the native wire, width first. Negative values are
+/// invalid for layout and must be checked before entering control author code.
+/// This is a finite local size, not a scrollable document extent or an
+/// unbounded measurement constraint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct Dimensions
+{
+    pub width:  i16,
+    pub height: i16
+}
+impl Dimensions
+{
+    pub const ZERO: Self = Self { width:  0,
+                                  height: 0 };
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct Point

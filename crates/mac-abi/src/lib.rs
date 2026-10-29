@@ -97,7 +97,7 @@ pub mod menus;
 pub mod memory;
 pub mod images;
 pub use events::*;
-pub use geometry::{Point, Rect};
+pub use geometry::{Dimensions, Point, Rect};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]

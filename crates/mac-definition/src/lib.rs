@@ -1,6 +1,8 @@
 //! Native definition author API. Pointer decoding and the entry/panic scaffold
 //! belong here; definition bodies receive safe Rust values and borrowed ports.
 #![no_std]
+/// Shared layout message/state types for the staged control reflow migration.
+pub use sr_control_reflow_handling as reflow;
 #[doc(hidden)]
 pub use mac_abi as __abi;
 mod binding;
