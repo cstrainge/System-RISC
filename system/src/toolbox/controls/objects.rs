@@ -53,14 +53,20 @@ struct Object
 {
     window:             u64,
     recipient:          u64,
-    spec:               Spec,
-    scrollbar:          bool,
-    title:              Option<Arc<super::snapshot::Title>>,
-    tracking:           Option<Tracking>,
+    state:              State,
     // Last: registered removal must finish payload destruction before the
     // protected modal service can become available to another recipient.
     #[cfg(target_arch = "riscv64")]
     _recovery_activity: Option<crate::recovery::Activity>
+}
+// Only mutable control state is staged; ownership and recovery pins stay live.
+#[derive(Clone)]
+struct State
+{
+    spec:      Spec,
+    scrollbar: bool,
+    title:     Option<Arc<super::snapshot::Title>>,
+    tracking:  Option<Tracking>
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Spec
@@ -167,6 +173,33 @@ impl Manager
         Ok(self.get(id, owner)?.window)
     }
 
+    /// Cancellation cannot depend on loading/validating or allocating a drawing.
+    pub(crate) fn cancel(&mut self, call: &mut ControlCall, owner: u64) -> Result<(), Status>
+    {
+        if !call.surface.is_null() || call.reserved != 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        self.get(call.id, owner)?;
+        let object = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
+        let state = &mut object.state;
+        let handled = state.tracking.take().is_some();
+        let old = (state.spec.standard.highlighted, state.spec.scrollbar.highlighted);
+        state.highlight(0);
+        call.window = object.window;
+        call.standard = state.spec.standard;
+        call.scrollbar = state.spec.scrollbar;
+        call.procedure = state.spec.procedure;
+        call.step = state.spec.step;
+        call.page = state.spec.page;
+        call.result = 0;
+        call.flags =
+            u32::from(handled) * HANDLED
+            | u32::from(old != (state.spec.standard.highlighted, state.spec.scrollbar.highlighted))
+              * CHANGED;
+        Ok(())
+    }
+
     pub fn remove_window(&mut self, window: u64)
     {
         self.objects.remove_where(|_, object| object.window == window);
@@ -190,20 +223,30 @@ impl Manager
            else
            {
                let o = self.get(call.id, owner)?;
-               super::definition_id(&o.spec.call(if o.scrollbar
-                                                 {
-                                                     DRAW_SCROLLBAR
-                                                 }
-                                                 else
-                                                 {
-                                                     DRAW_STANDARD
-                                                 }))?
+               super::definition_id(&o.state.spec.call(if o.state.scrollbar
+                                                       {
+                                                           DRAW_SCROLLBAR
+                                                       }
+                                                       else
+                                                       {
+                                                           DRAW_STANDARD
+                                                       }))?
            })
     }
 
     pub(crate) fn request(&mut self, recipient: &OwnerRef, storage: &OwnerRef,
                           call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
                           -> Result<Option<super::Drawing>, Status>
+    {
+        self.request_with(recipient, storage, call, entry, gate, Ok)
+    }
+
+    /// The publisher admits and installs retained drawing before state commits.
+    /// It must return errors before replacing the old drawing and cannot call apps.
+    pub(crate) fn request_with<R>(&mut self, recipient: &OwnerRef, storage: &OwnerRef,
+                                  call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate,
+                                  publish: impl FnOnce(super::Drawing) -> Result<R, Status>)
+                                  -> Result<Option<R>, Status>
     {
         let owner = recipient.owner().incarnation();
         let recovery = storage.owner() != recipient.owner();
@@ -238,7 +281,7 @@ impl Manager
         {
             let scrollbar = if operation == CONFIGURE_OBJECT
             {
-                self.get(call.id, owner)?.scrollbar
+                self.get(call.id, owner)?.state.scrollbar
             }
             else
             {
@@ -253,11 +296,11 @@ impl Manager
             if operation == CONFIGURE_OBJECT
             {
                 let old = self.get(call.id, owner)?;
-                spec.standard.highlighted = old.spec.standard.highlighted;
-                spec.scrollbar.highlighted = old.spec.scrollbar.highlighted;
+                spec.standard.highlighted = old.state.spec.standard.highlighted;
+                spec.scrollbar.highlighted = old.state.spec.scrollbar.highlighted;
             }
             if operation != CONFIGURE_OBJECT
-               || self.get(call.id, owner)?.spec != Spec::from_call(&spec)
+               || self.get(call.id, owner)?.state.spec != Spec::from_call(&spec)
             {
                 // Validate through the real resource before publishing or mutating.
                 super::validate(&mut spec, entry, gate)?;
@@ -268,7 +311,7 @@ impl Manager
             {
                 let previous = if operation == CONFIGURE_OBJECT
                 {
-                    self.get(call.id, owner)?.title.as_ref()
+                    self.get(call.id, owner)?.state.title.as_ref()
                 }
                 else
                 {
@@ -278,21 +321,23 @@ impl Manager
             }
             if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
             {
-                let object = Object { window: call.window,
-                                      recipient: owner,
-                                      spec: Spec::from_call(&spec),
-                                      scrollbar,
-                                      title: admitted_title.clone(),
-                                      tracking: None,
-                                      #[cfg(target_arch = "riscv64")]
-                                      _recovery_activity: if recovery
-                                      {
-                                          crate::context::recovery_activity()
-                                      }
-                                      else
-                                      {
-                                          None
-                                      } };
+                let object =
+                    Object { window:                                             call.window,
+                             recipient:                                          owner,
+                             state:
+                                 State { spec: Spec::from_call(&spec),
+                                         scrollbar,
+                                         title: admitted_title.clone(),
+                                         tracking: None },
+                             #[cfg(target_arch = "riscv64")]
+                             _recovery_activity:                                 if recovery
+                             {
+                                 crate::context::recovery_activity()
+                             }
+                             else
+                             {
+                                 None
+                             } };
                 call.id = if recovery
                 {
                     let reservation = self.publications
@@ -330,13 +375,17 @@ impl Manager
             return Ok(None);
         }
         if operation == BEGIN_TRACKING
-           && self.objects
-                  .iter()
-                  .any(|(id, o)| id != call.id && o.recipient == owner && o.tracking.is_some())
+           && self.objects.iter().any(|(id, o)| {
+                                     id != call.id
+                                     && o.recipient == owner
+                                     && o.state.tracking.is_some()
+                                 })
         {
             return Err(SERVICE_BUSY);
         }
-        let o = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
+        let object = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
+        let mut next = object.state.clone();
+        let o = &mut next;
         let previous = (o.spec.standard, o.spec.scrollbar, o.spec.procedure);
         let mut action = false;
         let mut handled = false;
@@ -352,6 +401,9 @@ impl Manager
                              || o.spec.standard.enabled != call.standard.enabled
                              || o.spec.scrollbar.bounds != call.scrollbar.bounds
                              || o.spec.scrollbar.active != call.scrollbar.active
+                             || (o.scrollbar && o.spec.scrollbar.maximum != call.scrollbar.maximum)
+                             || (o.tracking.is_some_and(|t| t.part == SCROLL_THUMB)
+                                 && o.spec.scrollbar.value != call.scrollbar.value)
                              || o.spec.procedure != call.procedure;
                 let highlight = if cancel
                 {
@@ -430,7 +482,10 @@ impl Manager
                     }
                     else
                     {
+                        // Page steps move the thumb beneath a stationary pointer.
+                        // Only cache hits whose geometry cannot change while held.
                         let inside = if call.point == t.point
+                                        && !matches!(t.part, SCROLL_PAGE_UP | SCROLL_PAGE_DOWN)
                         {
                             t.hot
                         }
@@ -468,7 +523,7 @@ impl Manager
             _ => return Err(NOT_SUPPORTED)
         }
         let changed = previous != (o.spec.standard, o.spec.scrollbar, o.spec.procedure);
-        call.window = o.window;
+        call.window = object.window;
         call.standard = o.spec.standard;
         call.scrollbar = o.spec.scrollbar;
         call.procedure = o.spec.procedure;
@@ -479,7 +534,7 @@ impl Manager
                      | (u32::from(handled) * HANDLED)
                      | (u32::from(action) * ACTION)
                      | (u32::from(changed) * CHANGED);
-        if changed || operation == DRAW_OBJECT
+        let drawing = if changed || operation == DRAW_OBJECT
         {
             let mut state = o.spec.call(if o.scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD });
             let mut drawing = super::prepare_with_title(&mut state, entry, gate, o.title.as_ref())?.ok_or(BAD_ARGUMENT)?;
@@ -491,15 +546,18 @@ impl Manager
             {
                 drawing.change_from(previous.0)?;
             }
-            Ok(Some(drawing))
+            Some(publish(drawing)?)
         }
         else
         {
-            Ok(None)
-        }
+            None
+        };
+        // No fallible work after publication. A refusal above drops only staging.
+        object.state = next;
+        Ok(drawing)
     }
 }
-impl Object
+impl State
 {
     fn highlight(&mut self, part: i16)
     {

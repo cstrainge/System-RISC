@@ -70,6 +70,11 @@ impl Standard
                   progress: state.progress })
     }
 
+    pub(super) fn clear_highlight(&mut self) -> bool
+    {
+        core::mem::replace(&mut self.highlighted, 0) != 0
+    }
+
     pub(super) fn wire(&self) -> ControlDefinitionState
     {
         ControlDefinitionState { title:        self.title.bytes,

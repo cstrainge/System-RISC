@@ -1097,6 +1097,19 @@ impl Desktop
         {
             return Err(BAD_ARGUMENT);
         }
+        if matches!(call.operation, TRACK_BEGIN | TRACK_POLL)
+           && window != 0
+           && (self.owner != self.foreground
+               || self.windows.active_window() != Some(WindowId(window)))
+        {
+            call.operation = TRACK_CANCEL;
+        }
+        if call.operation == TRACK_CANCEL
+        {
+            self.scroll_boxes.cancel(call, owner)?;
+            self.clear_control_highlight(window, call.id, true);
+            return Ok(None);
+        }
         let entry = self.definitions.resolve(*b"CDEF", 1).map_err(crate::loader::status)?;
         let drawing = self.scroll_boxes.request(&recipient,
                                                  &storage,
@@ -1178,6 +1191,40 @@ impl Desktop
         Ok(None)
     }
 
+    fn clear_control_highlight(&mut self, window: u64, id: u64, scroll_box: bool)
+    {
+        let mut removed = Vec::new();
+        let mut coalesced = None;
+        for content in self.content.iter_mut().chain(&mut self.pending_content)
+            .filter(|content| content.id == SceneTarget::from(window))
+        {
+            for command in content.iter_commands_mut()
+            {
+                let bounds = match command
+                {
+                    RenderCommand::Control(drawing) if !scroll_box && drawing.id == id =>
+                        drawing.cancel_tracking().then(|| drawing.bounds()),
+                    RenderCommand::ScrollBox(drawing) if scroll_box && drawing.id == id =>
+                        drawing.cancel_tracking(),
+                    _ => None
+                };
+                if let Some(bounds) = bounds
+                {
+                    accumulate_removed_damage(&mut removed, &mut coalesced, bounds);
+                }
+            }
+        }
+        let changed = !removed.is_empty() || coalesced.is_some();
+        for bounds in removed.into_iter().chain(coalesced)
+        {
+            self.content_changed_rect(window, bounds);
+        }
+        if changed && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        {
+            self.present();
+        }
+    }
+
     fn managed_control(&mut self, call: &mut mac_abi::controls::ControlCall) -> Result<(), Status>
     {
         use mac_abi::controls::*;
@@ -1202,8 +1249,6 @@ impl Desktop
                            NOT_FOUND
                        });
         }
-        let definition = self.controls.definition(call, owner)?;
-        let entry = self.control_definition(definition)?;
         // A deactivated/hidden owner cannot continue a capture after app switching.
         if matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
            && window != 0
@@ -1212,11 +1257,55 @@ impl Desktop
         {
             call.operation = CANCEL_TRACKING;
         }
-        let drawing = self.controls.request(&recipient,
-                                             &storage,
-                                             call,
-                                             entry,
-                                             crate::machine::traps::gateway)?;
+        if call.operation == CANCEL_TRACKING
+        {
+            self.controls.cancel(call, owner)?;
+            self.clear_control_highlight(window, call.id, false);
+            return Ok(());
+        }
+        let definition = self.controls.definition(call, owner)?;
+        let entry = self.control_definition(definition)?;
+        let (used, limit) = self.retained_admission(SceneTarget::from(window));
+        let content = self.pending_content.iter_mut().chain(&mut self.content)
+            .find(|content| content.id == SceneTarget::from(window));
+        let drawing = self.controls.request_with(&recipient,
+                                                  &storage,
+                                                  call,
+                                                  entry,
+                                                  crate::machine::traps::gateway,
+                                                  |drawing| {
+            if window == 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let content = content.ok_or(NOT_FOUND)?;
+            let bounds = drawing.bounds();
+            let damage = drawing.damage();
+            let size = drawing.storage();
+            let old = content.iter_commands_mut()
+                .find(|command| matches!(command, RenderCommand::Control(old) if old.id == drawing.id));
+            let old_bounds = if let Some(command) = old
+            {
+                if used - command.storage() + size > limit
+                {
+                    return Err(NO_MEMORY);
+                }
+                let RenderCommand::Control(previous) = command else { return Err(BAD_ABI) };
+                let bounds = previous.bounds();
+                *command = RenderCommand::Control(drawing);
+                Some(bounds)
+            }
+            else
+            {
+                if used + size > limit || content.commands.len() >= 512
+                {
+                    return Err(NO_MEMORY);
+                }
+                content.record(RenderCommand::Control(drawing))?;
+                None
+            };
+            Ok((bounds, damage, old_bounds))
+        })?;
         if call.operation == DISPOSE_OBJECT
         {
             let mut removed = Vec::new();
@@ -1241,45 +1330,8 @@ impl Desktop
                 self.content_changed_rect(window, bounds);
             }
         }
-        if let Some(drawing) = drawing
+        if let Some((bounds, damage, old_bounds)) = drawing
         {
-            if window == 0
-            {
-                return Err(BAD_ARGUMENT);
-            }
-            let bounds = drawing.bounds();
-            let damage = drawing.damage();
-            let (used, limit) = self.retained_admission(SceneTarget::from(window));
-            let size = drawing.storage();
-            let content = self.content_mut(window)?;
-            let old = content.iter_commands_mut()
-                             .find(|c| matches!(c, RenderCommand::Control(d) if d.id == call.id));
-            let old_bounds = if let Some(command) = old
-            {
-                if used - command.storage() + size > limit
-                {
-                    return Err(NO_MEMORY);
-                }
-                let old_bounds = if let RenderCommand::Control(d) = command
-                {
-                    d.bounds()
-                }
-                else
-                {
-                    unreachable!()
-                };
-                *command = RenderCommand::Control(drawing);
-                Some(old_bounds)
-            }
-            else
-            {
-                if used + size > limit || content.commands.len() >= 512
-                {
-                    return Err(NO_MEMORY);
-                }
-                content.record(RenderCommand::Control(drawing))?;
-                None
-            };
             if let Some(old) = old_bounds
                && old != bounds
             {

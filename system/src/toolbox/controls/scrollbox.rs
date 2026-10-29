@@ -43,6 +43,7 @@ struct Object
     #[cfg(target_arch = "riscv64")]
     _recovery_activity: Option<crate::recovery::Activity>
 }
+#[derive(Clone, Copy)]
 struct Tracking
 {
     part:   i16,
@@ -143,6 +144,11 @@ pub struct Drawing
 }
 impl Drawing
 {
+    pub fn cancel_tracking(&mut self) -> Option<Rect>
+    {
+        self.bar.cancel_tracking().then(|| self.bar.bounds())
+    }
+
     pub fn bounds(&self) -> [Rect; 2]
     {
         [self.bounds, self.bar.bounds()]
@@ -430,6 +436,26 @@ impl Manager
         Ok(())
     }
 
+    pub(crate) fn cancel(&mut self, call: &mut Call, owner: u64) -> Result<(), Status>
+    {
+        if !call.surface.is_null() || call.reserved != [0; 3]
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let object = self.get_mut(call.id, owner)?;
+        object.tracking = None;
+        let changed = core::mem::replace(&mut object.highlight, 0) != 0;
+        call.window = object.window;
+        call.spec = object.spec;
+        call.top = object.top;
+        let missing = object.missing();
+        call.first = missing.start;
+        call.end = missing.end;
+        call.part = 0;
+        call.flags = u32::from(changed) * CHANGED;
+        Ok(())
+    }
+
     pub fn raster_storage(&self) -> usize
     {
         self.raster_bytes
@@ -672,6 +698,10 @@ impl Manager
             }
             TRACK_BEGIN =>
             {
+                if object.tracking.is_some()
+                {
+                    return Err(SERVICE_BUSY);
+                }
                 let mut c = ControlCall { operation: HIT_SCROLLBAR,
                                           scrollbar: object.state(),
                                           point: call.point,
@@ -686,20 +716,20 @@ impl Manager
                             | SCROLL_PAGE_DOWN
                             | SCROLL_THUMB)
                 {
+                    if part != SCROLL_THUMB
+                    {
+                        step(object, part)?;
+                    }
                     object.tracking = Some(Tracking { part,
                                                       anchor: call.point,
                                                       value: c.scrollbar.value,
                                                       next: call.ticks.saturating_add(20) });
                     object.highlight = part;
-                    if part != SCROLL_THUMB
-                    {
-                        step(object, part)?;
-                    }
                 }
             }
             TRACK_POLL =>
             {
-                if let Some(tracking) = object.tracking.take()
+                if let Some(tracking) = object.tracking
                 {
                     let down = call.flags & BUTTON_DOWN != 0;
                     let mut c = ControlCall { operation: if tracking.part == SCROLL_THUMB
@@ -739,11 +769,11 @@ impl Manager
                     else
                     {
                         let hot = c.result == i32::from(tracking.part);
-                        object.highlight = if down && hot { tracking.part } else { 0 };
                         if down && hot && call.ticks >= tracking.next
                         {
                             step(object, tracking.part)?;
                         }
+                        object.highlight = if down && hot { tracking.part } else { 0 };
                     }
                     if down
                     {
@@ -757,6 +787,10 @@ impl Manager
                         };
                         object.tracking = Some(Tracking { next,
                                                           ..tracking });
+                    }
+                    else
+                    {
+                        object.tracking = None;
                     }
                 }
             }

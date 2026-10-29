@@ -48,6 +48,7 @@ impl Write for LogBuffer
               feature = "textedit-clipboard")))]
 fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
 {
+    conformance::managed_controls::regressions(system, gate)?;
     conformance::controls::author_families(system, gate)?;
     conformance::run_all(system)?;
     conformance::dates::filesystem(system)?;

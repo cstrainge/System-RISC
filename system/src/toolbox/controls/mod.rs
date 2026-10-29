@@ -46,6 +46,17 @@ pub struct Drawing
 }
 impl Drawing
 {
+    /// Clear a retained capture highlight without executing a definition.
+    pub fn cancel_tracking(&mut self) -> bool
+    {
+        match &mut self.state
+        {
+            State::Standard(state) => state.clear_highlight(),
+            State::Scrollbar(state) => core::mem::replace(&mut state.highlighted, 0) != 0,
+            State::Progress { .. } => false
+        }
+    }
+
     pub fn damage(&self) -> [Rect; 2]
     {
         self.damage

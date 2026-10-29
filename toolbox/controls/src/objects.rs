@@ -239,43 +239,59 @@ impl ControlRef<'_>
         {
             return Ok(false);
         }
-        struct Capture<'a>(ControlRef<'a>);
+        struct Capture<'a>(Option<ControlRef<'a>>);
         impl Drop for Capture<'_>
         {
             fn drop(&mut self)
             {
-                let _ = self.0.cancel();
+                if let Some(control) = self.0
+                {
+                    let _ = control.cancel();
+                }
             }
         }
-        let _capture = Capture(self);
-        loop
-        {
-            if state.action
+        let mut capture = Capture(Some(self));
+        let result = (|| {
+            loop
             {
-                action(state)?;
-            }
-            if !state.tracking
-            {
-                return Ok(handled);
-            }
-            // Present only changed control bounds, then sleep until motion/tick.
-            self.client.wait_event(0, 1)?;
-            self.client.event(&mut input)?;
-            let origin = self.client
-                             .window(GET_WINDOW,
-                                     WindowRequest { id:             state.window.0,
-                                                     bounds:         Rect::ZERO,
-                                                     title:          [0; WINDOW_TITLE_BYTES],
-                                                     title_length:   0,
-                                                     procedure:      0,
-                                                     minimum_width:  1,
-                                                     minimum_height: 1,
-                                                     reserved:       0 })?
-                             .bounds;
-            state = self.poll_tracking(Point { h: input.event.where_.h.saturating_sub(origin.left),
+                if state.action
+                {
+                    action(state)?;
+                }
+                if !state.tracking
+                {
+                    return Ok(handled);
+                }
+                // Present only changed control bounds, then sleep until motion/tick.
+                self.client.wait_event(0, 1)?;
+                self.client.event(&mut input)?;
+                let origin = self.client
+                                 .window(GET_WINDOW,
+                                         WindowRequest { id:             state.window.0,
+                                                         bounds:         Rect::ZERO,
+                                                         title:          [0; WINDOW_TITLE_BYTES],
+                                                         title_length:   0,
+                                                         procedure:      0,
+                                                         minimum_width:  1,
+                                                         minimum_height: 1,
+                                                         reserved:       0 })?
+                                 .bounds;
+                state =
+                    self.poll_tracking(Point { h: input.event.where_.h.saturating_sub(origin.left),
                                                v: input.event.where_.v.saturating_sub(origin.top) },
                                        input.event.modifiers & BTN_STATE == 0,
                                        input.uptime_ticks)?;
+            }
+        })();
+        let cancelled = match self.cancel()
+        {
+            Err(super::Error::NotFound) => Ok(()), // Callback may dispose the control.
+            result => result
+        };
+        if cancelled.is_ok()
+        {
+            capture.0 = None;
         }
+        result.and_then(|handled| cancelled.map(|()| handled))
     }
 }
