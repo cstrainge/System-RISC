@@ -24,7 +24,13 @@ pub(crate) use worker::{activate_workers, prepare_worker, publish_worker, worker
                         worker_status, worker_wake};
 pub(crate) mod accounting;
 pub(crate) use lifetime::{ReleaseThreads, specification};
-const IDLE: usize = usize::MAX;
+
+use super::traps::execution::{HartKey, IDLE, current, idle_frame, in_io, install_idle,
+                              select_current, selected_hart};
+pub(crate) use super::traps::execution::{activate_context, authenticate_module, critical_active,
+                                         current_context, io_enter, io_leave,
+                                         module_callback_allowed, module_owner,
+                                         reserve_allocation, reserve_replacement};
 // Generated from the same checked platform policy as the linker artifacts.
 const STACK_BYTES: usize = super::memory::APPLICATION_STACK_BYTES as usize;
 // The current platform time counter runs at 10 MHz. At 500 us, two runnable peers can consume the
@@ -32,9 +38,6 @@ const STACK_BYTES: usize = super::memory::APPLICATION_STACK_BYTES as usize;
 // for this resident round-robin policy; a freshly woken input consumer still
 // takes priority. This is not a hard real-time or future scheduler contract.
 const TIMER_INTERVAL: u64 = 2_500;
-static ACTIVE: Mutex<Option<Arc<ThreadContext>>> = Mutex::new(None);
-static CURRENT: AtomicUsize = AtomicUsize::new(IDLE);
-static IO: AtomicBool = AtomicBool::new(false);
 static RECLAIM_PENDING: AtomicBool = AtomicBool::new(false);
 static RETIRED_COUNT: AtomicUsize = AtomicUsize::new(0);
 static WORKER_REAP_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -51,11 +54,14 @@ struct Thread
 #[derive(Clone, Copy)]
 struct RunState
 {
-    live:     bool,
-    retired:  bool,
-    switches: u64,
-    waiting:  Option<Wait>,
-    woken:    u8
+    // Scheduler-owned execution claim, retained across frame restore and body
+    // execution. Only a complete outer-capture handoff may clear it.
+    claimed_by: Option<HartKey>,
+    live:       bool,
+    retired:    bool,
+    switches:   u64,
+    waiting:    Option<Wait>,
+    woken:      u8
 }
 impl Thread
 {
@@ -65,11 +71,6 @@ impl Thread
         change(&mut state);
         self.state.set(state);
     }
-}
-struct Idle
-{
-    _stack: super::pages::Stack,
-    cpu:    Mutex<super::traps::SavedState>
 }
 #[derive(Clone, Copy)]
 enum Wait
@@ -93,7 +94,6 @@ struct Scheduler
     records:        Option<Store<Thread>>,
     waiters:        Vec<EventWaiter>,
     waiters_leased: bool,
-    idle:           Option<Idle>,
     ticks:          u64
 }
 impl Scheduler
@@ -133,139 +133,9 @@ static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler { records:        None
                                                             threads:        Vec::new(),
                                                             waiters:        Vec::new(),
                                                             waiters_leased: false,
-                                                            idle:           None,
                                                             ticks:          0 });
 unsafe extern "C" {
     fn __system_start_frame(frame: *mut TrapFrame) -> !;
-}
-pub fn current_context() -> crate::context::ContextRef
-{
-    if IO.load(Ordering::Relaxed)
-    {
-        return crate::context::ContextRef::Bootstrap;
-    }
-    super::interrupts::with_masked(|| {
-        ACTIVE.lock()
-              .as_ref()
-              .cloned()
-              .map(crate::context::ContextRef::thread)
-              .unwrap_or(crate::context::ContextRef::Bootstrap)
-    })
-}
-/// The forwarded allocator authenticates a pinned module executor with no
-/// retained-reader or account clones and no registry lookup per callback.
-pub(crate) fn authenticate_module(module: u64) -> Result<(), mac_abi::Status>
-{
-    super::interrupts::with_masked(|| {
-        if IO.load(Ordering::Relaxed)
-        {
-            return crate::context::authenticate_bootstrap_module(module);
-        }
-        match ACTIVE.lock().as_ref()
-        {
-            Some(context) => context.authenticate_module(module),
-            None => crate::context::authenticate_bootstrap_module(module)
-        }
-    })
-}
-pub(crate) fn module_owner(module: u64) -> Result<OwnerRef, mac_abi::Status>
-{
-    super::interrupts::with_masked(|| {
-        if IO.load(Ordering::Relaxed)
-        {
-            return crate::context::bootstrap_module_owner(module);
-        }
-        match ACTIVE.lock().as_ref()
-        {
-            Some(context) => context.module_owner(module),
-            None => crate::context::bootstrap_module_owner(module)
-        }
-    })
-}
-pub(crate) fn module_callback_allowed(module: u64, address: usize) -> Result<(), mac_abi::Status>
-{
-    super::interrupts::with_masked(|| {
-        if IO.load(Ordering::Relaxed)
-        {
-            return crate::context::bootstrap_module_callback_allowed(module, address);
-        }
-        match ACTIVE.lock().as_ref()
-        {
-            Some(context) => context.module_callback_allowed(module, address),
-            None => crate::context::bootstrap_module_callback_allowed(module, address)
-        }
-    })
-}
-
-pub(crate) fn critical_active() -> bool
-{
-    super::interrupts::with_masked(|| {
-        if IO.load(Ordering::Relaxed)
-        {
-            return crate::context::bootstrap_critical_active();
-        }
-        ACTIVE.lock().as_ref().map_or_else(crate::context::bootstrap_critical_active, |context| {
-                                  context.critical_active()
-                              })
-    })
-}
-
-/// Reserve from the actual active executor without a ContextRef/retained-reader
-/// clone. The callback path is allocation-free and cannot escape borrowed state.
-/// Release ACTIVE, selection and account locks before the allocator uses backing.
-pub(crate) fn reserve_allocation(
-    bytes: u64)
-    -> Result<crate::allocator::Reservation, crate::allocator::Error>
-{
-    super::interrupts::with_masked(|| {
-        if IO.load(Ordering::Relaxed)
-        {
-            return crate::context::reserve_bootstrap_allocation(bytes);
-        }
-        let active = ACTIVE.lock();
-        match active.as_ref()
-        {
-            Some(context) => context.reserve_allocation(bytes),
-            None => crate::context::reserve_bootstrap_allocation(bytes)
-        }
-    })
-}
-
-/// Reallocation retains the original receipt. Borrow the current operation only
-/// as a possible same-account continuation, without cloning readers or authority.
-pub(crate) fn reserve_replacement(
-    receipt: &crate::allocator::Receipt, bytes: u64)
-    -> Result<crate::allocator::Reservation, crate::allocator::Error>
-{
-    super::interrupts::with_masked(|| {
-        if IO.load(Ordering::Relaxed)
-        {
-            return crate::context::reserve_bootstrap_replacement(receipt, bytes);
-        }
-        let active = ACTIVE.lock();
-        match active.as_ref()
-        {
-            Some(context) => context.reserve_replacement(receipt, bytes),
-            None => crate::context::reserve_bootstrap_replacement(receipt, bytes)
-        }
-    })
-}
-
-// Scheduler -> ACTIVE is the only held-lock ordering. Lookup releases ACTIVE
-// before any caller runs, including completion-before-park under scheduler lock.
-fn activate_context(context: Option<&Arc<ThreadContext>>)
-{
-    let mut active = ACTIVE.lock();
-    let unchanged = match (active.as_ref(), context)
-    {
-        (Some(current), Some(next)) => Arc::ptr_eq(current, next),
-        (None, None) => true,
-        _ => false
-    };
-    if !unchanged
-    {
-        *active = context.cloned();
-    }
 }
 pub(crate) fn context_released()
 {
@@ -274,14 +144,6 @@ pub(crate) fn context_released()
         RECLAIM_PENDING.store(true, Ordering::Release);
     }
     worker::context_released();
-}
-pub fn io_enter() -> bool
-{
-    IO.swap(true, Ordering::Relaxed)
-}
-pub fn io_leave(previous: bool)
-{
-    IO.store(previous, Ordering::Relaxed);
 }
 pub fn switches(app: u64) -> u64
 {
@@ -327,8 +189,23 @@ impl ThreadCore
     {
         let backing = self.backing.lock();
         let backing = backing.as_ref()?;
-        super::traps::publish_cpu(&backing.cpu);
         Some(backing.cpu.frame())
+    }
+
+    // Only a claimed row is published into this hart's restore/entry control.
+    // Preflight obtained its frame under SCHEDULER; disappearance here is
+    // structural corruption, never permission to restore unowned storage.
+    fn publish_cpu(&self)
+    {
+        let backing = self.backing.lock();
+        let Some(backing) = backing.as_ref()
+        else
+        {
+            super::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                    format_args!("Claimed thread lost CPU backing before frame \
+                                                  publication."));
+        };
+        super::traps::publish_cpu(&backing.cpu);
     }
 }
 pub(crate) struct PreparedThread
@@ -543,7 +420,7 @@ fn spawn_prepared_inner(prepared: PreparedThread, runnable: bool) -> Result<u64,
                 Thread { id,
                          core: prepared.core.share(),
                          worker: None, scope: None,
-                         state: Cell::new(RunState { live: false,
+                         state: Cell::new(RunState { claimed_by: None, live: false,
                                                     retired: false,
                                                     switches: 0,
                                                     waiting: None,
@@ -678,7 +555,7 @@ fn arm()
 
 pub fn start() -> mac_formats::Result<()>
 {
-    let mut scheduler = SCHEDULER.lock();
+    let scheduler = SCHEDULER.lock();
     let stack = super::pages::Stack::allocate(STACK_BYTES).map_err(|error| {
                     serial!("IDLE_STACK_REFUSED: {error}");
                     mac_formats::Error::AllocationFailed("physical page allocation refused for \
@@ -694,8 +571,11 @@ pub fn start() -> mac_formats::Result<()>
                   mac_formats::Error::AllocationFailed("physical page allocation refused for idle \
                                                         CPU state")
               })?;
-    scheduler.idle = Some(Idle { _stack: stack,
-                                 cpu:    Mutex::new(cpu) });
+    install_idle(stack, cpu).map_err(|status| {
+                                serial!("IDLE_INSTALL_REFUSED status={status}");
+                                mac_formats::Error::Malformed("scheduler idle backing does not \
+                                                               match its admitted hart")
+                            })?;
     // Module preparations can precede Finder in the shared THRD store. Start
     // the genuine runnable Finder process, never an inert/armed module slot.
     let finder = crate::context::finder_app().0;
@@ -714,9 +594,18 @@ pub fn start() -> mac_formats::Result<()>
         t.core
          .cpu_frame()
          .ok_or(mac_formats::Error::Malformed("scheduler bootstrap Finder has no CPU backing"))?;
-    t.update(|state| state.switches += 1);
+    let hart = selected_hart();
+    if t.state.get().claimed_by.is_some()
+    {
+        return Err(mac_formats::Error::Malformed("scheduler bootstrap Finder is already claimed"));
+    }
+    t.update(|state| {
+         state.claimed_by = Some(hart);
+         state.switches += 1;
+     });
+    t.core.publish_cpu();
     activate_context(Some(&t.core.context));
-    CURRENT.store(slot, Ordering::Relaxed);
+    select_current(slot);
     drop(scheduler);
     arm();
     unsafe {
@@ -745,7 +634,7 @@ pub fn wait_current(mask: u16, timeout_ticks: u32)
     }
     let deadline = crate::platform::ticks()
         .saturating_add((u64::from(timeout_ticks) * 10_000_000).div_ceil(60));
-    let index = CURRENT.load(Ordering::Relaxed);
+    let index = current();
     if let Some(thread) = SCHEDULER.lock().thread(index)
     {
         thread.update(|state| {
@@ -757,9 +646,7 @@ pub fn wait_current(mask: u16, timeout_ticks: u32)
 }
 pub fn blocked() -> bool
 {
-    SCHEDULER.lock()
-             .thread(CURRENT.load(Ordering::Relaxed))
-             .is_some_and(|thread| thread.state.get().waiting.is_some())
+    SCHEDULER.lock().thread(current()).is_some_and(|thread| thread.state.get().waiting.is_some())
 }
 /// Own a preallocated snapshot while Desktop routes input without the scheduler
 /// lock. Drop returns scratch even when the Desktop guard refuses this pass.
@@ -855,7 +742,7 @@ fn wake_with_priority(app: u64, priority: u8)
 /// before-park races; the job pump releases its queue guard before waking us.
 pub fn wait_io(job: crate::context::DeferredIo) -> Result<bool, mac_abi::Status>
 {
-    let index = CURRENT.load(Ordering::Relaxed);
+    let index = current();
     let scheduler = SCHEDULER.lock();
     let thread = scheduler.thread(index)
                           .filter(|thread| thread.state.get().live)
@@ -948,7 +835,6 @@ pub(crate) fn reclaim_retired()
     {
         return;
     }
-    let current = CURRENT.load(Ordering::Relaxed);
     let mut after = 0;
     loop
     {
@@ -960,9 +846,10 @@ pub(crate) fn reclaim_retired()
                                                 return None;
                                             }
                                             after = slot + 1;
-                                            if slot == current
+                                            if thread.state.get().claimed_by.is_some()
                                             {
-                                                RECLAIM_PENDING.store(true, Ordering::Release);
+                                                // The actual handoff rearms reap after releasing
+                                                // this claim, independent of this reaper's hart.
                                                 return None;
                                             }
                                             if Arc::strong_count(&thread.core) != 1
@@ -1041,10 +928,76 @@ pub(crate) fn reclaim_retired()
     }
 }
 
-pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
+fn claim_lost(hart: HartKey, slot: usize, reason: &str) -> !
 {
-    // ACTIVE still names the interrupted app until a new CPU frame is selected.
-    // Generic scheduler maintenance uses permanent System authority; provider
+    super::emergency::enter(crate::emergency::Kind::SystemPanic,
+                            format_args!("Scheduler execution claim invariant: hart {}, slot \
+                                          {}, {}.",
+                                         hart.number(),
+                                         slot,
+                                         reason));
+}
+fn validate_capture(scheduler: &Scheduler, capture: &super::traps::OuterCapture)
+{
+    let hart = capture.hart();
+    let slot = capture.current();
+    if selected_hart() != hart || current() != slot
+    {
+        claim_lost(hart, slot, "selected execution changed during outer capture");
+    }
+    if slot == IDLE
+    {
+        return;
+    }
+    let Some(thread) = scheduler.thread(slot)
+    else
+    {
+        claim_lost(hart, slot, "captured THRD row is absent");
+    };
+    if thread.state.get().claimed_by != Some(hart)
+    {
+        claim_lost(hart, slot, "captured THRD belongs to another execution");
+    }
+    if thread.core
+             .backing
+             .lock()
+             .as_ref()
+             .is_none_or(|backing| backing.cpu.frame() != capture.frame())
+    {
+        claim_lost(hart, slot, "captured frame does not belong to the claimed THRD");
+    }
+}
+fn release_claim(scheduler: &Scheduler, slot: usize, hart: HartKey)
+{
+    if slot == IDLE
+    {
+        return;
+    }
+    let Some(thread) = scheduler.thread(slot)
+    else
+    {
+        claim_lost(hart, slot, "handoff lost its retained THRD row");
+    };
+    if thread.state.get().claimed_by != Some(hart)
+    {
+        claim_lost(hart, slot, "handoff does not own the old THRD");
+    }
+    thread.update(|state| state.claimed_by = None);
+    if thread.state.get().retired
+    {
+        RECLAIM_PENDING.store(true, Ordering::Release);
+    }
+    worker::execution_released(thread);
+}
+
+pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
+{
+    let frame = capture.frame();
+    let hart = capture.hart();
+    let current = capture.current();
+    validate_capture(&SCHEDULER.lock(), &capture);
+    // The admitted hart selection still names the interrupted app until a new CPU frame is
+    // selected. Generic scheduler maintenance uses permanent System authority; provider
     // callbacks must explicitly restore their own retained subject selection.
     crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
         // Device input and cursor publication precede all ordinary maintenance.
@@ -1066,8 +1019,8 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
             crate::toolbox::processes::finder::pump();
         }
     });
-    let current = CURRENT.load(Ordering::Relaxed);
     let mut scheduler = SCHEDULER.lock();
+    validate_capture(&scheduler, &capture);
     scheduler.ticks += 1;
     let now = crate::platform::ticks();
     for (_, thread) in scheduler.iter()
@@ -1078,7 +1031,12 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
         }
     }
     let priority = scheduler.iter()
-                            .filter(|(_, t)| t.state.get().live)
+                            .filter(|(slot, t)| {
+                                let state = t.state.get();
+                                state.live
+                                && (state.claimed_by.is_none()
+                                    || (*slot == current && state.claimed_by == Some(hart)))
+                            })
                             .map(|(_, t)| t.state.get().woken)
                             .max()
                             .unwrap_or(0);
@@ -1100,12 +1058,12 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
                 continue;
             };
             let state = thread.state.get();
-            if state.live && if boosted { state.woken == priority } else { state.waiting.is_none() }
+            if state.live
+               && !state.retired
+               && (state.claimed_by.is_none()
+                   || (index == current && state.claimed_by == Some(hart)))
+               && if boosted { state.woken == priority } else { state.waiting.is_none() }
             {
-                thread.update(|state| {
-                          state.woken = 0;
-                          state.switches += 1;
-                      });
                 let next = if index == current
                 {
                     frame
@@ -1119,41 +1077,37 @@ pub fn schedule(frame: *mut TrapFrame) -> *mut TrapFrame
                     };
                     next
                 };
+                // No fallible step follows this commit. Park-return writes
+                // occur only with a captured/unclaimed frame, never during sret.
+                worker::commit_resume(thread);
+                thread.update(|state| {
+                          state.claimed_by = Some(hart);
+                          state.woken = 0;
+                          state.switches += 1;
+                      });
+                thread.core.publish_cpu();
                 activate_context(Some(&thread.core.context));
-                CURRENT.store(index, Ordering::Relaxed);
+                select_current(index);
+                if index != current
+                {
+                    release_claim(&scheduler, current, hart);
+                }
                 arm();
                 return next;
             }
         }
     }
-    let next = if current == IDLE
-    {
-        frame
-    }
-    else
-    {
-        let next = scheduler.idle
-                            .as_ref()
-                            .expect("scheduler bootstrap installs idle before scheduling")
-                            .cpu
-                            .lock()
-                            .frame();
-        super::traps::publish_cpu(&scheduler.idle
-                                            .as_ref()
-                                            .expect("scheduler bootstrap owns idle CPU backing")
-                                            .cpu
-                                            .lock());
-        next
-    };
+    let next = if current == IDLE { frame } else { idle_frame() };
     activate_context(None);
-    CURRENT.store(IDLE, Ordering::Relaxed);
+    select_current(IDLE);
+    release_claim(&scheduler, current, hart);
     arm();
     next
 }
 
 pub fn retired() -> bool
 {
-    SCHEDULER.lock().thread(CURRENT.load(Ordering::Relaxed)).is_some_and(|t| t.state.get().retired)
+    SCHEDULER.lock().thread(current()).is_some_and(|t| t.state.get().retired)
 }
 pub fn image_for(app: u64) -> Option<crate::images::Binding>
 {

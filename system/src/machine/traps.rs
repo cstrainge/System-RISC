@@ -6,7 +6,7 @@ use mac_abi::{traps::*, *};
 use crate::toolbox;
 mod state;
 mod hart;
-pub(crate) use hart::{Error as EntryError, PreparedEntry};
+pub(crate) use hart::{Error as EntryError, OuterCapture, PreparedEntry, admit_bootstrap, execution};
 pub(crate) const MAX_TRAP_DEPTH: usize = 8;
 // One bootstrap baseline, eight admitted service levels, and one typed-refusal
 // frame. The bound follows the existing native service recursion contract.
@@ -117,11 +117,22 @@ pub(crate) fn install()
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
+extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
 {
     // SAFETY: traps.S saved the complete frame on owned storage and hardware
     // cleared SIE before entering this sole native trap boundary.
-    match unsafe { super::paging::with_kernel(|| dispatch_frame(frame)) }
+    match unsafe {
+              super::paging::with_kernel(|| {
+                  // SAFETY: assembly saved the complete live frame. This borrow ends,
+                  // including service/context readers, before any ownership handoff.
+                  let action = dispatch_frame(&mut *frame);
+                  match action
+                  {
+                      Dispatch::Resume => frame,
+                      Dispatch::Schedule => super::scheduler::schedule(hart::captured_outer(frame))
+                  }
+              })
+          }
     {
         Ok(frame) => frame,
         Err(error) =>
@@ -133,13 +144,18 @@ extern "C" fn __system_trap_dispatch(frame: &mut TrapFrame) -> *mut TrapFrame
         }
     }
 }
-fn dispatch_frame(frame: &mut TrapFrame) -> *mut TrapFrame
+enum Dispatch
+{
+    Resume,
+    Schedule
+}
+fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
 {
     #[cfg(feature = "event-trace")]
     hart::observe_entry(frame as *mut TrapFrame as usize);
     if frame.cause == (1usize << 63) | 5
     {
-        return super::scheduler::schedule(frame);
+        return Dispatch::Schedule;
     }
 
     if frame.cause != 9
@@ -183,7 +199,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> *mut TrapFrame
         }
         frame.registers[8] = SERVICE_BUSY as usize;
         frame.pc = frame.pc.wrapping_add(4);
-        return frame;
+        return Dispatch::Resume;
     }
     let number = frame.registers[15] as u32;
     let request = frame.registers[8] as *mut ();
@@ -241,20 +257,20 @@ fn dispatch_frame(frame: &mut TrapFrame) -> *mut TrapFrame
             }
             frame.registers[8] = BAD_ABI as usize;
             frame.pc = frame.pc.wrapping_add(4);
-            return frame;
+            return Dispatch::Resume;
         }
         // All request slices, legacy conversion temporaries and manager guards
         // are gone. Preserve original request registers/PC for a fresh borrow
         // when the completion wakes the same generation-tagged OS thread.
         match super::scheduler::wait_io(job)
         {
-            Ok(true) => return super::scheduler::schedule(frame),
-            Ok(false) => return frame, // completion won the race; replay now
+            Ok(true) => return Dispatch::Schedule,
+            Ok(false) => return Dispatch::Resume, // completion won the race; replay now
             Err(error) =>
             {
                 frame.registers[8] = error as usize;
                 frame.pc = frame.pc.wrapping_add(4);
-                return frame;
+                return Dispatch::Resume;
             }
         }
     }
@@ -262,20 +278,20 @@ fn dispatch_frame(frame: &mut TrapFrame) -> *mut TrapFrame
     frame.pc = frame.pc.wrapping_add(4);
     if physical_depth == 1 && super::scheduler::retired()
     {
-        return super::scheduler::schedule(frame);
+        return Dispatch::Schedule;
     }
     if matches!(number, WAIT_EVENT | POSITIONED_EVENT)
        && result == OK as i64
        && super::scheduler::blocked()
     {
-        return super::scheduler::schedule(frame);
+        return Dispatch::Schedule;
     }
-    frame
+    Dispatch::Resume
 }
 
 /// Private worker suspension uses the actual CPU trap/switch path. A direct C
 /// Host callback can never abandon a foreign frame or resident manager guard.
-fn worker_trap(frame: &mut TrapFrame) -> *mut TrapFrame
+fn worker_trap(frame: &mut TrapFrame) -> Dispatch
 {
     use mac_module::abi::{WorkerCall, worker};
     let operation = || -> Result<bool, Status> {
@@ -328,7 +344,7 @@ fn worker_trap(frame: &mut TrapFrame) -> *mut TrapFrame
     let result = operation();
     frame.pc = frame.pc.wrapping_add(4);
     frame.registers[8] = result.as_ref().map_or_else(|e| *e, |_| OK) as usize;
-    if matches!(result, Ok(true)) { super::scheduler::schedule(frame) } else { frame }
+    if matches!(result, Ok(true)) { Dispatch::Schedule } else { Dispatch::Resume }
 }
 
 unsafe fn request<'a, T>(pointer: *mut (), size: usize) -> Option<&'a mut T>
@@ -788,12 +804,13 @@ pub(crate) fn prepare_entry(stack: &'static super::pages::Stack)
 {
     hart::prepare(stack)
 }
-/// The scheduler owns this nonexecuting parked CPU frame under its lock.
-/// Update only the native return register before a cancellation wake restores it.
+/// The scheduler owns a completely captured or unclaimed CPU frame under its
+/// lock. No other hart may restore it until this return-register write ends.
 pub(crate) fn worker_resume_status(state: &SavedState, status: Status)
 {
-    // SAFETY: caller holds the actual parked thread's scheduler/backing locks;
-    // its complete outermost frame remains pinned and cannot execute concurrently.
+    // SAFETY: caller holds the actual thread's scheduler/backing locks, and
+    // its execution claim is absent or backed by this hart's complete outer
+    // capture. The mutable dispatch borrow has ended; no restore is concurrent.
     unsafe {
         (*state.frame()).registers[8] = status as usize;
     }

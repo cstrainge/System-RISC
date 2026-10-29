@@ -244,6 +244,82 @@ switch counts are not CPU time. These prerequisites support external extension
 development; they do not establish production clipboard sharing or a complete
 extension service.
 
+## Hart execution and SMP admission
+
+The architecture selects execution state from this CPU's actual admitted
+`sscratch` control. Active context, current scheduler position, synchronous I/O
+selection and idle stack/CPU backing belong to that hart record. Runtime lookup
+never falls back to a frozen boot hart number. Only the primary record is
+admitted today; ROM secondaries remain parked.
+
+Cold bootstrap publishes an allocation-free control after checked BootInfo and
+the one-shot System-entry claim. It cannot serve traps: its entering flag is
+poisoned until real stack/CPU backing and the prepared control exist. This trusts
+the ROM's primary-only entry contract; it is not independent authentication of
+arbitrary secondary calls to System entry. Raw CSR/control access stays in the
+architecture binding, and safe concrete selection operations expose no mutable
+hart borrow across callbacks or nested ECALLs. Unchanged active contexts avoid
+Arc operations; allocator reservations still borrow their genuine selection.
+
+Opaque firmware retains its checked fixed owner. A foreign/unadmitted hart
+cannot borrow BOOT_THREAD or its default System allocation authority. Fallible
+authentication, allocation and firmware operations refuse; owned file cleanup
+returns its original argument through both handoff and manager refusal. Invalid
+infallible execution selection reports through the independent UART path and
+requests terminal shutdown rather than silently spinning.
+
+Each canonical THRD row carries a persistent claim by a sealed hart identity.
+The scheduler preflights backing and commits the incoming claim before publishing
+its CPU frame and local selection. Ownership spans frame restoration, the body
+and synchronous/nested services. Only a checked complete outer trap capture may
+hand it off: the native ABI receives a raw frame pointer, all safe mutable frame
+and service borrows end, the replacement selection/frame is published, then the
+old claim releases under the scheduler lock. Returning from a Rust scope does
+not release execution ownership. Both reapers exclude every claimed row,
+independently of their caller's hart, retaining the existing reader/ticket checks
+and signaling pending disposal on actual claim release.
+
+Cancellation records intent instead of patching another execution's restore
+storage. Park return status settles at the scheduler's restore commitment while
+it owns the captured or unclaimed frame. A persistent resume-committed bit
+distinguishes never-resumed preparations from a selected trampoline preempted
+before its body starts. The latter skips a cancelled body, retains the accepted
+capture for deferred destruction, and remains runnable through real private EXIT.
+It cannot be marked inert merely because its current claim was released by an
+earlier preemption.
+
+The shared heap, budgets, accounts, ledgers and buddy pools already have atomic
+locks; local interrupt masking is not their cross-hart exclusion. Do not add a
+non-reentrant global lock to the invocation gate: owner-ledger growth can allocate
+and enter that gate again. Concurrent scheduling and reclamation still require
+target qualification, not inference from source locks or a host suite.
+
+Bounded native observations used optimized no_std RV64 QEMU, one hart, 8 GiB,
+800×600 and no event/text-input trace. System resource SHA-256:
+`32152e1b394176d060a41899522ec389c709bd60c02c5c6265b16a0b0171b3e9`.
+Existing native worker assertions completed wake/park/cancel, original-Subject
+I/O, stale/foreign tokens, budget refusal and all four normal/all three rollback
+canonical reclamations. The strict broker workload completed all 44 clients;
+Finder ServiceBusy under that greedy load remains unresolved. Independent SDK
+processes completed preemption, launch/refusal, ownership, resource/window/event
+and document-lifetime assertions. A real Finder/Cursor Test capture recorded 39
+graphic states; 200 paced moves left compositions at 16 and pointer-only motion
+left base pixels identical with compositions at 17. These are bounded functional
+and repaint observations, not event-latency or multi-hart evidence. Exact remote
+cancellation interleavings and full OOM recovery remain unqualified. **M-D04:**
+the walk provides resource containment. Arbitrary privileged-fault containment
+is **unproven** and is a **required future gate**.
+
+Before releasing a secondary, the core still needs discovered CPU/interrupt
+topology checked against platform policy, independent M/S entry storage, a
+returning IPI transport, genuine secondary System-context admission, compatible
+ISA/vector frame validation, remote instruction-publication fences and terminal
+peer-stop acknowledgements. Mapping mutation, ASID reuse and frame reclamation
+also require their remote TLB/lifetime contract. The current immutable boot roots
+do not imply that such a dynamic protocol exists. No SBI service is assumed.
+Multi-Scheduler may later supply placement and activation policy; it cannot
+bypass these core safety gates.
+
 ## State audit
 
 | Current state | Present assumption and required boundary |

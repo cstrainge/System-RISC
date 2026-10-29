@@ -331,14 +331,14 @@ pub(crate) fn poll_waiting_events() -> bool
 pub(crate) fn with_files<R>(call: impl FnOnce(&mut crate::toolbox::files::Manager) -> R)
                             -> Result<R, AccessError>
 {
-    crate::machine::io::run(|| FILES.with(call))
+    crate::machine::io::run(|| FILES.with(call))?
 }
 /// A refused firmware handoff returns its unconsumed cleanup capability.
 pub(crate) fn with_files_owned<A, R>(argument: A,
                                      call: impl FnOnce(A, &mut crate::toolbox::files::Manager) -> R)
                                      -> Result<R, (AccessError, A)>
 {
-    crate::machine::io::run(|| FILES.with_owned(argument, call))
+    crate::machine::io::run_owned(argument, |argument| FILES.with_owned(argument, call))?
 }
 pub(crate) fn with_memory<R>(call: impl FnOnce(&mut crate::toolbox::memory::Manager) -> R)
                              -> Result<R, AccessError>
@@ -871,8 +871,21 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
         crate::machine::paging::report_refusal(&error);
         return ptr::null();
     }
+    if STARTED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err()
+    {
+        return ptr::null();
+    }
+    let Some(boot_hart) = crate::machine::paging::firmware_owner_hart()
+    else
+    {
+        return ptr::null();
+    };
+    if let Err(error) = crate::machine::traps::admit_bootstrap(boot_hart)
+    {
+        crate::machine::paging::report_refusal(&error);
+        return ptr::null();
+    }
     if crate::context::bootstrap_thread() != crate::context::BOOT_THREAD
-       || STARTED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err()
     {
         return ptr::null();
     }
