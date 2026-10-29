@@ -12,7 +12,7 @@ pub const VERSION: u32 = 1;
 pub const CHOOSE: u32 = 1;
 pub const MAX_CANDIDATES: usize = 4096;
 pub const ROUND_HEADER: usize = 64;
-pub const CANDIDATE_BYTES: usize = 40;
+pub const CANDIDATE_BYTES: usize = 32;
 pub const MAX_ROUND_BYTES: usize = ROUND_HEADER + MAX_CANDIDATES * CANDIDATE_BYTES;
 pub const DECISION_BYTES: usize = 48;
 pub mod control;
@@ -83,7 +83,6 @@ pub struct Record
     /// Actual transition into this runnable interval; resets after dispatch.
     pub ready_since_microseconds: u64,
     pub last_hart:                Option<u64>,
-    pub running_microseconds:     u64,
     pub interactive_wake:         bool,
     pub kind:                     Kind
 }
@@ -153,8 +152,8 @@ impl<'a> Round<'a>
     {
         let at = index.checked_mul(CANDIDATE_BYTES).ok_or(Error::Limit)?;
         let bytes = self.records.get(at..at + CANDIDATE_BYTES).ok_or(Error::Truncated)?;
-        let flags = u32_at(bytes, 32)?;
-        let kind = match u32_at(bytes, 36)?
+        let flags = u32_at(bytes, 24)?;
+        let kind = match u32_at(bytes, 28)?
         {
             0 => Kind::System,
             1 => Kind::Application,
@@ -174,7 +173,6 @@ impl<'a> Round<'a>
         Ok(Record { thread,
                     ready_since_microseconds,
                     last_hart: (flags & 2 != 0).then_some(hart),
-                    running_microseconds: u64_at(bytes, 24)?,
                     interactive_wake: flags & 1 != 0,
                     kind })
     }
@@ -360,7 +358,6 @@ pub fn encode_round<'a>(c: Context, records: &[Record], output: &'a mut [u8]) ->
     }
     let length = ROUND_HEADER + records.len() * CANDIDATE_BYTES;
     let b = output.get_mut(..length).ok_or(Error::Truncated)?;
-    b.fill(0);
     b[..4].copy_from_slice(b"SCH1");
     b[4..8].copy_from_slice(&(CANDIDATE_BYTES as u32).to_le_bytes());
     for (at, value) in [(8, c.generation),
@@ -382,16 +379,14 @@ pub fn encode_round<'a>(c: Context, records: &[Record], output: &'a mut [u8]) ->
             return Err(Error::Invalid);
         }
         let at = ROUND_HEADER + index * CANDIDATE_BYTES;
-        for (offset, value) in [(0, r.thread),
-                                (8, r.ready_since_microseconds),
-                                (16, r.last_hart.unwrap_or(0)),
-                                (24, r.running_microseconds)]
+        for (offset, value) in
+            [(0, r.thread), (8, r.ready_since_microseconds), (16, r.last_hart.unwrap_or(0))]
         {
             b[at + offset..at + offset + 8].copy_from_slice(&value.to_le_bytes());
         }
         let flags = u32::from(r.interactive_wake) | if r.last_hart.is_some() { 2 } else { 0 };
-        b[at + 32..at + 36].copy_from_slice(&flags.to_le_bytes());
-        b[at + 36..at + 40].copy_from_slice(&(r.kind as u32).to_le_bytes());
+        b[at + 24..at + 28].copy_from_slice(&flags.to_le_bytes());
+        b[at + 28..at + 32].copy_from_slice(&(r.kind as u32).to_le_bytes());
     }
     Ok(b)
 }
