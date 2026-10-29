@@ -413,6 +413,7 @@ dependencies = [
  "mac-device-interface",
  "mac-file-source-interface",
  "mac-module",
+ "mac-scheduler-interface",
  "spinning_top",
 ]
 
@@ -546,6 +547,20 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-kernel-model",
+]
+
+[[package]]
+name = "mac-scheduler-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
+]
+
+[[package]]
+name = "mac-scheduler-policy"
+version = "0.1.0"
+dependencies = [
+ "mac-scheduler-interface",
 ]
 
 [[package]]
@@ -699,6 +714,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
+]
+
+[[package]]
+name = "multi-scheduler-extension"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-driver",
+ "mac-driver-alloc",
+ "mac-scheduler-interface",
+ "mac-scheduler-policy",
 ]
 
 [[package]]
