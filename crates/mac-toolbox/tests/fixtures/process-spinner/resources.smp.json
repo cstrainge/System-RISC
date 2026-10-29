@@ -1,0 +1,19 @@
+{
+  "name": "SMP App A",
+  "binary_name": "ProcessSpinner",
+  "file_type": "APPL",
+  "creator": "SMPA",
+  "role": "application",
+  "abi_version": 1,
+  "load_base": "0x86000000",
+  "load_limit": "0x86a81000",
+  "description": "Native overlapping SMP application workload; import a second copy as SMP App B",
+  "resources": [
+    {
+      "type": "STR ",
+      "id": 2000,
+      "symbol": "APPLICATION_SCOPE",
+      "payload": { "format": "pstring", "text": "process-spinner" }
+    }
+  ]
+}

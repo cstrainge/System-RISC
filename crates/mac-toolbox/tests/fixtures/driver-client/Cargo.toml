@@ -6,6 +6,7 @@ publish = false
 [workspace]
 [features]
 scheduler = ["dep:mac-driver-alloc", "dep:mac-scheduler-interface", "dep:mac-module"]
+smp = ["dep:mac-driver-alloc"]
 workers = ["dep:mac-driver-alloc"]
 workers-rollback = ["workers"]
 pressure = ["workers"]
