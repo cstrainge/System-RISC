@@ -8,6 +8,8 @@ use core::{fmt::{self, Write},
 use mac_toolbox::{System, SystemServices};
 #[path = "../../../process_cases.rs"]
 mod process_cases;
+#[cfg(feature = "smp")]
+mod smp;
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 pub struct LogBuffer
 {
@@ -70,7 +72,11 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
         Ok(s) => s,
         Err(e) => return e.status()
     };
-    match process_cases::spinner(&system, clock)
+    #[cfg(feature = "smp")]
+    let outcome = smp::run(&system);
+    #[cfg(not(feature = "smp"))]
+    let outcome = process_cases::spinner(&system, clock);
+    match outcome
     {
         Ok(()) => 0,
         Err(error) =>
