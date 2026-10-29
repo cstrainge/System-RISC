@@ -1,14 +1,15 @@
 //! Terminal failure boundary. This never resumes the suspended execution or
 //! unwinds its locks. Bootstrap pins independent display, stack and input
-//! backing; only the one-hart terminal claim may borrow it mutably afterwards.
+//! backing; only the sole terminal winner may borrow it mutably afterwards.
 use core::{cell::UnsafeCell,
            fmt::{self, Write},
-           marker::PhantomData,
-           sync::atomic::{AtomicBool, Ordering}};
+           marker::PhantomData};
 
 use mac_kernel_model::emergency::{EmergencyManifest, EmergencyService, Requirement};
 
-use super::{input, paging::ProtectedRange};
+use super::{input,
+            paging::ProtectedRange,
+            traps::execution::{TerminalClaim, TerminalOwnership}};
 use crate::emergency::{Action, Cursor, Kind, Record, Screen};
 
 struct State
@@ -25,15 +26,16 @@ struct Kit
     state:   UnsafeCell<State>
 }
 // SAFETY: bootstrap constructs the cell before publication. The only subsequent
-// mutable access follows CLAIMED's successful atomic transition, with SIE clear
-// and actual M-monitor stop ACK from every other discovered CPU. This execution
-// never returns or releases the claim. Secondary S-mode release remains absent;
-// parked hardware monitors are stopped before mutable terminal-kit access.
+// mutable access follows the actual sealed cold/hot selection's unique terminal
+// claim, with SIE clear and M-monitor stop ACK from every other discovered CPU.
+// A distinct peer loser waits for the physical stop; same-hart recursion never
+// reenters the kit. The winner never returns or releases the claim. Kit/frame,
+// device and DMA storage are globally mapped and pinned until machine reset.
 unsafe impl Sync for Kit
 {
 }
 static KIT: spin::Once<Kit> = spin::Once::new();
-static CLAIMED: AtomicBool = AtomicBool::new(false);
+static CLAIMED: TerminalOwnership = TerminalOwnership::new();
 
 #[derive(Debug)]
 pub(crate) enum Error
@@ -90,7 +92,7 @@ pub(crate) fn prepare() -> Result<(), Error>
         // Record is created on the protected stack, so neither is added twice.
         let image_storage = (input.bytes as u64)
             .checked_add(size_of::<spin::Once<Kit>>() as u64)
-            .and_then(|n| n.checked_add(size_of::<AtomicBool>() as u64))
+            .and_then(|n| n.checked_add(size_of::<TerminalOwnership>() as u64))
             .and_then(|n| n.checked_add(mac_boot_screen::ramfb::PreparedTerminal::storage_layout().size() as u64))
             .ok_or(Error::Size)?;
         // Exact immutable payloads used by this terminal. Shared code, string
@@ -116,7 +118,7 @@ pub(crate) fn prepare() -> Result<(), Error>
             image_asset_payload_bytes={} protected_cpu={:#x} protected_physical={:#x} \
             heap_backing_bytes={} full_recovery_kit=false",
             bytes, frame.bytes(), stack.bytes(), input.bytes, input.alignment,
-            input.devices, size_of::<spin::Once<Kit>>() + size_of::<AtomicBool>(),
+            input.devices, size_of::<spin::Once<Kit>>() + size_of::<TerminalOwnership>(),
             mac_boot_screen::ramfb::PreparedTerminal::storage_layout().size(),
             size_of::<Record>(), size_of::<Screen>(),
             size_of::<Cursor>(), manifest.bytes(), manifest.alignment(),
@@ -195,16 +197,21 @@ unsafe extern "C" {
 
 pub(crate) fn enter(kind: Kind, arguments: fmt::Arguments<'_>) -> !
 {
-    // The currently admitted machine has one running hart. Do not restore SIE,
-    // schedule, unwind, or resume any suspended Rust/firmware borrow afterwards.
+    // Never restore SIE, schedule, unwind or resume a suspended Rust/firmware
+    // borrow. The current authenticated row, not a hardware label, owns entry.
     unsafe {
         core::arch::asm!("csrci sstatus, 2", options(nostack));
     }
-    if CLAIMED.swap(true, Ordering::AcqRel)
+    let winner = match CLAIMED.claim()
     {
-        stop(format_args!("SYSTEM_EMERGENCY_RECURSIVE: terminal path failed"));
-    }
-    if let Err(error) = super::monitor::stop_peers()
+        TerminalClaim::Winner(winner) => winner,
+        TerminalClaim::Recursive =>
+        {
+            stop(format_args!("SYSTEM_EMERGENCY_RECURSIVE: terminal path failed"))
+        }
+        TerminalClaim::Peer(current) => super::monitor::wait_for_terminal_stop(current)
+    };
+    if let Err(error) = super::monitor::stop_peers(&winner)
     {
         stop(format_args!("SYSTEM_EMERGENCY_PEER_STOP_REFUSED: {error}"));
     }
@@ -241,7 +248,8 @@ unsafe extern "C" fn run(pointer: *const ()) -> !
         Kind::PrivilegedFault => "SYSTEM_TRAP:"
     };
     serial(format_args!("{marker} {}", record.text()));
-    // SAFETY: CLAIMED has one winner, SIE is clear and every peer acknowledged stop,
+    // SAFETY: the authenticated terminal claim has one winner, SIE is clear,
+    // and every other discovered CPU actually acknowledged irreversible stop,
     // and ordinary code never resumes. Neither region aliases normal scanout,
     // compositor/tracking storage or normal input queues.
     let state = unsafe { &mut *kit.state.get() };

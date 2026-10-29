@@ -321,7 +321,7 @@ definition resources through its resident filesystem service. Normal disk-boot c
 for `DESKTOP_READY`. Rebuild the complete unreleased system on format changes.
 See [CODE-RESOURCES.md](CODE-RESOURCES.md) for executable resource families.
 
-The current BootInfo is 168 bytes on RV64; SystemServices remains24bytes. BootInfo
+The current BootInfo is 176 bytes on RV64; SystemServices remains24bytes. BootInfo
 contains RAM/log information, firmware disk-info/read/write/flush callbacks,
 startup disk/partition identity and flags. Device ordinals remain stable while
 System runs; NOT_FOUND ends enumeration. Each read/write transfers exactly512
@@ -343,34 +343,49 @@ primary-membership preflight, then sorted and checked before publication. System
 checks the mapped extent, reservation and shared topology contract at admission.
 CPU records describe discovery only: they neither authenticate the current hart
 nor release any secondary from the ROM park. BootInfo's ABI version remains1;
-its Header size must equal168bytes before the enlarged structure is read.
+its Header size must equal176bytes before the enlarged structure is read.
 Rebuild ROM and System together; previous layouts are rejected.
 
-At byte160, BootInfo carries a mandatory physical pointer to the custom-ROM
-machine-monitor directory. Its32byte record is `{ entries: physical pointer,
-count: usize, stack_bytes: u64, timebase_hz: u64 }`. Each32byte entry is
-`{ hart: u64, msip: u64, storage: BootMemoryRange }`, in the same sorted order as
-the enabled CPU array. Directory and entries remain in reserved firmware RAM;
-per-CPU control/stack storage is disjoint, page-aligned firmware backing pinned
-until whole-machine reset. The platform defines its stack size (currently4KiB),
-legacy CLINT window and required whole-machine-reset contract. `/cpus` supplies
-the checked timebase; CPU interrupt-controller phandles and ordered software/
-timer interrupt pairs determine MSIP routes, including disabled CPUs' ordinals.
-Numeric hart IDs never serve as MMIO offsets. Unsupported bindings or translated
-buses refuse boot rather than infer a physical route.
+At byte160, BootInfo carries a mandatory physical machine-monitor directory
+pointer; byte168 holds its mandatory layout fingerprint. The fingerprint covers
+all shared sizes, alignments, offsets and protocol constants. The40byte directory
+is `{ entries: physical pointer, count: usize, stack_bytes: u64, timebase_hz: u64,
+image: physical pointer }`. Each32byte entry is `{ hart: u64, msip: u64,
+storage: BootMemoryRange }`, in checked topology order. All arrays, the80byte
+BootImage and disjoint page-aligned control backing remain reserved until reset.
+The checked DT timebase and CPU interrupt-controller/CLINT route pairs determine
+clock and MSIP addresses; numeric hart IDs are not MMIO offsets. Unsupported
+bindings or translated buses refuse boot.
 
-Each control has ten64bit words: hart, MSIP address, requested sequence,
-acknowledged sequence, sticky stop request, stop acknowledgement, joined state,
-command, signed result, and entry guard. Its integer frame follows at byte80:
-32register words, saved PC, saved status. The aligned control is352bytes. Layout
-offsets come from the shared Rust record; the assembly handler never borrows
-an ordinary Rust reference to mutable frame storage. Joined1means an enabled
-parked secondary receiver; joined2identifies the installed primary receiver.
-The only normal command is FenceI=1. A matching successful acknowledgement
-follows the receiving instruction fence. Stop uses separate irreversible cells
-and acknowledges only after interrupted execution will never resume. There is
-no secondary S-mode release command. No earlier/fake monitor or raw-memory boot
-fallback is accepted; native checks must boot the production ROM.
+BootImage contains ten atomic u64s: sealed, entry, image base, image bytes,
+required physical limit, required ISA, vector bytes, hardware tag mask, fault
+entry and returned entry. The ROM seals the actual validated NABI load plan once
+before the primary's nonreturning handoff. Input cells become immutable before
+sealed=1 is release-published. System entry uses a0=payload, a1=exact payload
+bytes and a2=nonzero role: BOOT=0x424f4f54 or HART=0x48415254. Unknown/zero roles
+are rejected before cold initialization. Secondary entry is this same sealed
+System entry, never a caller-supplied callback.
+
+Each464byte Control begins with ten64bit words: hart, MSIP, requested,
+acknowledged, stop, stopped, joined, command, signed result and entry guard.
+Its96byte SecondaryStart begins at80: sequence, firmware-root SATP, control
+virtual address, service top, phase, admission step, observed, expected, vector
+bytes, hardware tag mask, PMP address and configuration. Wake request/ACK epochs
+follow at176/184. The272byte integer frame starts at192 (32registers, PC, status).
+Bindings borrow only individual atomic cells or raw scalars, never a shared
+Control/frame reference across assembly mutation.
+
+Joined1 denotes a peer receiver joined from M park; joined2 denotes the
+primary receiver. The joined field is not the current privilege/entry phase. FenceI=1
+ACKs actual remote fence.i. START=2 is a one-shot transition from the real M park:
+M independently validates the selected CPU profile/root/physical permissions and
+reports Starting=1 or Refused=3. Real warm System initialization reports
+AdmittedIdle=2; the initial phase is Prepared=0. A separate nonzero wake epoch
+must receive an actual S interrupt ACK before the core mints its unique readiness
+owner. M injection alone grants no readiness or scheduling authority. Stop is
+sticky and irreversible; only the M receiver ACKs after abandonment. No old
+monitor layout or raw-memory boot fallback is accepted. Rebuild the entire world
+when this unreleased ABI1 contract changes.
 
 At byte88, BootInfo appends a pointer/count pair for RAM banks, followed at
 byte104 by a pointer/count pair for reservations. Counts are native usize

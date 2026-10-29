@@ -59,6 +59,11 @@ pub(crate) enum Error
     Tables(MapError<FrameError>),
     Missing,
     AlreadyActive,
+    StartingRoot
+    {
+        expected: usize,
+        observed: usize
+    },
     ForeignHart,
     Admission
     {
@@ -83,6 +88,13 @@ impl fmt::Display for Error
     {
         match self
         {
+            Self::StartingRoot { expected,
+                                 observed } =>
+            {
+                write!(f,
+                       "warm root transition refused: expected SATP {expected:#x}, observed \
+                        {observed:#x}")
+            }
             Self::Memory(e) => e.fmt(f),
             Self::Execution(e) => e.fmt(f),
             Self::Topology(e) => e.fmt(f),
@@ -151,6 +163,12 @@ fn root_register() -> usize
 /// firmware root's permanent RAM map. No allocator or mutable pool exists yet.
 pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
 {
+    // Entry already checked the exact BootInfo size. Authenticate the expanded
+    // monitor layout before validate_boot forms any Directory/Entry view.
+    if info.monitor_layout != mac_abi::boot::monitor::LAYOUT_FINGERPRINT
+    {
+        return Err(Error::Monitor(super::monitor::Error::Layout));
+    }
     if BOOT.get().is_some()
     {
         return Err(Error::AlreadyActive);
@@ -473,6 +491,64 @@ fn stack_slot_base(ordinal: usize) -> Result<u64, Error>
 pub(crate) fn system_stacks() -> Option<&'static [Foundation<Stack>]>
 {
     Some(SPACES.get()?.stacks.as_slice())
+}
+/// Actual permanent roots and one canonical service-stack slot. Construction
+/// borrows the owning Spaces, never caller-supplied SATP values. The proof
+/// neither selects a hart nor grants execution; the native row binding does.
+pub(in crate::machine) struct PreparedRoots
+{
+    spaces: &'static Spaces,
+    boot:   &'static Bootstrap,
+    stack:  &'static Stack
+}
+impl PreparedRoots
+{
+    pub(in crate::machine) fn firmware_register(&self) -> usize
+    {
+        self.spaces.firmware.register
+    }
+
+    pub(in crate::machine) fn hardware_tag_mask(&self) -> u16
+    {
+        self.boot.tag_mask
+    }
+
+    pub(in crate::machine) fn service_stack(&self) -> &'static Stack
+    {
+        self.stack
+    }
+
+    /// # Safety
+    /// Authenticated Starting entry owns this actual slot, executes masked on
+    /// it in the permanent firmware root, and has installed the poisoned local
+    /// System vector. Both roots map this same stack and all live Rust views.
+    /// This is a permanent local transition: no guard restores firmware root.
+    pub(in crate::machine) unsafe fn activate_kernel(&self) -> Result<(), Error>
+    {
+        if root_register() != self.spaces.firmware.register
+        {
+            return Err(Error::StartingRoot { expected: self.spaces.firmware.register,
+                                             observed: root_register() });
+        }
+        unsafe {
+            asm!("csrw satp,{}", "sfence.vma zero,zero",
+                 in(reg)self.spaces.kernel.register, options(nostack));
+        }
+        if root_register() != self.spaces.kernel.register
+        {
+            return Err(Error::StartingRoot { expected: self.spaces.kernel.register,
+                                             observed: root_register() });
+        }
+        Ok(())
+    }
+}
+pub(in crate::machine) fn prepared_roots(ordinal: usize) -> Option<PreparedRoots>
+{
+    let spaces = SPACES.get()?;
+    let stack: &'static Stack = spaces.stacks.as_slice().get(ordinal)?;
+    Some(PreparedRoots { spaces,
+                         boot: BOOT.get()?,
+                         stack })
 }
 fn system_stack_containing(base: u64) -> Option<&'static Stack>
 {

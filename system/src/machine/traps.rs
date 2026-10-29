@@ -6,7 +6,8 @@ use mac_abi::{traps::*, *};
 use crate::toolbox;
 mod state;
 mod hart;
-pub(crate) use hart::{Error as EntryError, OuterCapture, PreparedEntry, admit_bootstrap, execution};
+pub(crate) use hart::{Error as EntryError, OuterCapture, PreparedEntry, PreparedHart,
+                      StartingHart, admit_bootstrap, execution, prepare_secondary};
 pub(crate) const MAX_TRAP_DEPTH: usize = 8;
 // One bootstrap baseline, eight admitted service levels, and one typed-refusal
 // frame. The bound follows the existing native service recursion contract.
@@ -107,11 +108,17 @@ pub(crate) fn validate_stack_configuration(
     Ok(())
 }
 
-pub(crate) fn install()
+/// Local CSR installation only. Warm entry uses this while its Control stays
+/// poisoned; it must not initialize global tracing or use firmware logging.
+fn install_local()
 {
     unsafe {
         asm!("csrw stvec, {}",in(reg)__system_trap_vector as *const() as usize);
     }
+}
+pub(crate) fn install()
+{
+    install_local();
     serial!("TRAPS_READY: resident ecall dispatcher ABI={}", ABI_VERSION);
     crate::trace::initialize();
 }
@@ -129,7 +136,61 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                   match action
                   {
                       Dispatch::Resume => frame,
-                      Dispatch::Schedule => super::scheduler::schedule(hart::captured_outer(frame))
+                      Dispatch::Schedule =>
+                      {
+                          let capture = hart::captured_outer(frame);
+                          if capture.hart().dispatch_eligible()
+                          {
+                              super::scheduler::schedule(capture)
+                          }
+                          else
+                          {
+                              // Warm admitted idle has genuine affine backing,
+                              // but no permission to select any author thread.
+                              capture.frame()
+                          }
+                      }
+                      Dispatch::Wake =>
+                      {
+                          // The mutable dispatch borrow and every service scope
+                          // ended above. Only the authenticated complete capture
+                          // can identify the actual row whose wake we acknowledge.
+                          let capture = hart::captured_outer(frame);
+                          let key = capture.hart();
+                          match super::monitor::acknowledge_wake(key)
+                          {
+                              Ok(_) => (), // Empty/already-ACKed SSIP advances nothing.
+                              Err(super::monitor::Error::Stopping) =>
+                              {
+                                  // This retains the pinned capture, posts no
+                                  // ACK and cannot resume an author. The monitor
+                                  // owns its bounded higher-privilege stop wait
+                                  // and independent terminal failure reporting.
+                                  super::monitor::wait_for_terminal_stop(key)
+                              }
+                              Err(error) =>
+                              {
+                                  // ACK has no allocation/contention refusal. An
+                                  // invalid mandatory directory/key/epoch binding
+                                  // is structural corruption, not lost work to retry.
+                                  super::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                                          format_args!("Supervisor wake binding \
+                                                                        lost on hart {}: {}.",
+                                                                       key.number(),
+                                                                       error));
+                              }
+                          }
+                          if key.dispatch_eligible()
+                          {
+                              super::scheduler::schedule(capture)
+                          }
+                          else
+                          {
+                              // Startup ACK does not itself authorize policy or
+                              // author-body execution on an admitted idle hart.
+                              capture.frame()
+                          }
+                      }
                   }
               })
           }
@@ -147,10 +208,21 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
 enum Dispatch
 {
     Resume,
-    Schedule
+    Schedule,
+    Wake
 }
 fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
 {
+    if frame.cause == (1usize << 63) | 1
+    {
+        // Clear the local hardware source before any ACK observation. No
+        // frame reference or trace/context guard may survive into that ACK.
+        // No nomem: keep publication of the later atomic ACK after this CSR.
+        unsafe {
+            asm!("csrci sip, 2", options(nostack));
+        }
+        return Dispatch::Wake;
+    }
     #[cfg(feature = "event-trace")]
     hart::observe_entry(frame as *mut TrapFrame as usize);
     if frame.cause == (1usize << 63) | 5
@@ -836,11 +908,21 @@ pub(crate) fn publish_cpu(state: &SavedState)
 }
 pub(super) fn entry_lost(reason: &str) -> !
 {
-    serial!("SYSTEM_ENTRY_LOST: {reason}");
+    // Entry failures can occur on admitted peers. The fixed-owner ROM logger
+    // is not a secondary service; terminal diagnostics bypass it entirely.
+    super::emergency::serial(format_args!("SYSTEM_ENTRY_LOST: {reason}\n"));
     crate::machine::power::fatal_shutdown()
 }
 
 pub(crate) fn can_defer_io() -> bool
 {
     hart::can_defer_io()
+}
+
+/// # Safety
+/// Only the explicit HART entry role may call this. The native binding proves
+/// its actual prepared row before interpreting the supplied monitor payload.
+pub(crate) unsafe fn start_secondary(payload: *const (), bytes: usize) -> !
+{
+    hart::start_secondary(payload, bytes)
 }

@@ -4,33 +4,14 @@ use core::{arch::{asm, global_asm},
            fmt,
            marker::PhantomData};
 
+use mac_abi::boot::monitor::{self, BootImage, SecondaryStart};
 use mac_kernel_model::pages::PhysicalAddress;
 
 const MIE: u64 = 1 << 3;
 const MPRV: u64 = 1 << 17;
 const MPP: u64 = 3 << 11;
 const SUPERVISOR: u64 = 1 << 11;
-const SXL: u64 = 3 << 34;
-const SXL64: u64 = 2 << 34;
-const STCE: u64 = 1 << 63;
-const CACHE_PERMISSIONS: u64 = (3 << 4) | (1 << 6) | (1 << 7);
-const TIMER: u64 = 1 << 5;
-// Breakpoint deliberately remains machine-owned for the allocation-free fatal
-// escape. S-mode ECALL is delegated horizontally for the native trap gateway.
-const EXCEPTIONS: u64 = (1 << 0)
-                        | (1 << 1)
-                        | (1 << 2)
-                        | (1 << 4)
-                        | (1 << 5)
-                        | (1 << 6)
-                        | (1 << 7)
-                        | (1 << 8)
-                        | (1 << 9)
-                        | (1 << 12)
-                        | (1 << 13)
-                        | (1 << 15);
 const SV39: u64 = 8 << 60;
-const PPN: u64 = (1 << 44) - 1;
 macro_rules! csr
 {
     ($read:ident, $write:ident, $name:literal) => {
@@ -55,7 +36,13 @@ csr!(interrupts, set_interrupts, "mideleg");
 csr!(permissions, set_permissions, "pmpcfg0");
 csr!(physical_limit, set_physical_limit, "pmpaddr0");
 csr!(root, set_root, "satp");
-csr!(timer, set_timer, "0x14d");
+unsafe fn set_timer(value: u64)
+{
+    // SAFETY: Previous records this CSR only after the shared STCE probe.
+    unsafe {
+        asm!("csrw 0x14d,{}",in(reg)value,options(nostack));
+    }
+}
 
 #[derive(Debug)]
 pub enum Error
@@ -68,9 +55,9 @@ pub enum Error
     {
         physical: u64
     },
-    Feature
+    Probe
     {
-        name: &'static str, required: u64, observed: u64
+        step: u64, required: u64, observed: u64
     }
 }
 impl fmt::Display for Error
@@ -92,13 +79,14 @@ impl fmt::Display for Error
                        "firmware root {physical:#x} must be 4096-byte aligned and fit the Sv39 \
                         physical address field")
             }
-            Self::Feature { name,
-                            required,
-                            observed } =>
+            Self::Probe { step,
+                          required,
+                          observed } =>
             {
                 write!(f,
-                       "platform cannot provide {name}: required bits {required:#x}, observed \
-                        {observed:#x}; select a compatible platform/CPU")
+                       "platform admission step {step} ({}): requirement {required:#x}, observed \
+                        {observed:#x}; select a compatible platform/CPU",
+                       step_name(*step))
             }
         }
     }
@@ -141,22 +129,43 @@ impl Drop for Previous
 /// Not Send/Sync: the CSR state and its restoration belong to this hart only.
 pub struct Admitted
 {
-    previous:  Option<Previous>,
-    root:      u64,
-    asid_mask: u16,
-    _hart:     PhantomData<*mut ()>
+    previous:     Option<Previous>,
+    root:         u64,
+    asid_mask:    u16,
+    vector_bytes: u64,
+    _hart:        PhantomData<*mut ()>
 }
-fn require(name: &'static str, required: u64, observed: u64) -> Result<(), Error>
+#[repr(C)]
+struct PrimaryReport
 {
-    if observed & required != required
+    report:         SecondaryStart,
+    previous_timer: u64,
+    timer_valid:    u64
+}
+const _: () = assert!(core::mem::offset_of!(PrimaryReport, previous_timer) == 96
+                      && core::mem::offset_of!(PrimaryReport, timer_valid) == 104);
+pub(crate) const PRIMARY_TIMER_OFFSET: usize = core::mem::offset_of!(PrimaryReport, previous_timer);
+pub(crate) const PRIMARY_TIMER_VALID_OFFSET: usize =
+    core::mem::offset_of!(PrimaryReport, timer_valid);
+unsafe extern "C" {
+    fn __monitor_primary_admission(report: *mut PrimaryReport, requirements: *const BootImage,
+                                   root: u64)
+                                   -> u64;
+}
+fn step_name(step: u64) -> &'static str
+{
+    match step
     {
-        Err(Error::Feature { name,
-                             required,
-                             observed })
-    }
-    else
-    {
-        Ok(())
+        monitor::step::ISA => "RV64 major ISA profile",
+        monitor::step::WIDTH => "64-bit supervisor register width",
+        monitor::step::ENVIRONMENT => "Sstc/cache-management permissions",
+        monitor::step::COUNTERS => "supervisor time counter",
+        monitor::step::DELEGATION => "supervisor delegation and machine fatal ownership",
+        monitor::step::PMP => "unlocked NAPOT physical coverage",
+        monitor::step::ROOT => "Sv39 root physical frame",
+        monitor::step::ASID => "contiguous compatible hardware tags",
+        monitor::step::VECTOR => "compatible vector register length",
+        _ => "native supervisor admission state"
     }
 }
 impl Admitted
@@ -165,7 +174,8 @@ impl Admitted
     /// Called on the bootstrap hart in M mode after ISA admission, with MIE
     /// and MPRV clear. Root points at a fully owned initialized firmware tree;
     /// its owner stays pinned through admission and all subsequent hardware use.
-    pub unsafe fn prepare(root_page: PhysicalAddress) -> Result<Self, Error>
+    pub unsafe fn prepare(root_page: PhysicalAddress, required_physical_limit: u64)
+                          -> Result<Self, Error>
     {
         if !root_page.0.is_multiple_of(4096) || root_page.0 >= 1 << 56
         {
@@ -188,97 +198,45 @@ impl Admitted
                        physical_limit: physical_limit(),
                        timer: None }
         };
-        unsafe {
-            set_status((previous.status & !SXL) | SXL64);
-        }
-        let configured_width = unsafe { self::status() } & SXL;
-        if configured_width != SXL64
-        {
-            return Err(Error::Feature { name:     "64-bit supervisor address/register width",
-                                        required: SXL64,
-                                        observed: configured_width });
-        }
-        // All probes are WARL fields. Unsupported timer CSRs are never touched
-        // before STCE readback confirms their existence and access contract.
-        unsafe {
-            set_environment(previous.environment | STCE | CACHE_PERMISSIONS);
-        }
-        let configured = unsafe { environment() };
-        require("supervisor timer compare (Sstc)", STCE, configured)?;
-        require("supervisor cache-management permissions", CACHE_PERMISSIONS, configured)?;
-        unsafe {
-            set_counters(previous.counters | 7);
-        }
-        require("supervisor time counter", 2, unsafe { counters() })?;
-        previous.timer = Some(unsafe { timer() });
-        unsafe {
-            set_timer(u64::MAX);
-            set_exceptions(EXCEPTIONS);
-        }
-        require("supervisor fault and native ECALL delegation", EXCEPTIONS, unsafe {
-            exceptions()
-        })?;
-        let delegated = unsafe { exceptions() };
-        if delegated & (1 << 3) != 0
-        {
-            return Err(Error::Feature { name:     "machine-owned fatal breakpoint",
-                                        required: 0,
-                                        observed: delegated & (1 << 3) });
-        }
-        unsafe {
-            set_interrupts(TIMER);
-        }
-        require("supervisor timer interrupt delegation", TIMER, unsafe { interrupts() })?;
-        unsafe {
-            set_physical_limit(u64::MAX);
-            set_permissions((previous.permissions & !255) | 0x1f);
-        }
-        let access = unsafe { permissions() } & 255;
-        if access != 0x1f
-        {
-            return Err(Error::Feature { name:     "unlocked supervisor PMP read/write/execute",
-                                        required: 0x1f,
-                                        observed: access });
-        }
+        let requirements = BootImage::new();
+        use core::sync::atomic::Ordering;
+        requirements.required_isa.store(monitor::REQUIRED_ISA_BITS, Ordering::Relaxed);
+        requirements.physical_limit.store(required_physical_limit, Ordering::Relaxed);
+        let mut report = PrimaryReport { report:         SecondaryStart::new(),
+                                         previous_timer: 0,
+                                         timer_valid:    0 };
         let root = SV39 | (root_page.0 >> 12);
-        unsafe {
-            set_root(root | (0xffff << 44));
-        }
-        let observed = unsafe { self::root() };
-        if observed >> 60 != 8
+        // SAFETY: the shared integer/CSR leaf runs on this actual primary's
+        // full boot stack. It never calls Rust and writes only this unique
+        // report. Previous retains restoration for every admitted CSR.
+        let step = unsafe { __monitor_primary_admission(&mut report, &requirements, root) };
+        if report.timer_valid != 0
         {
-            return Err(Error::Feature { name: "Sv39 page translation",
-                                        required: SV39,
-                                        observed });
+            previous.timer = Some(report.previous_timer);
         }
-        if observed & PPN != root_page.0 >> 12
+        if step != 0
         {
-            return Err(Error::Feature { name:     "Sv39 root physical frame",
-                                        required: root_page.0 >> 12,
-                                        observed: observed & PPN });
-        }
-        let asid_mask = ((observed >> 44) & 0xffff) as u16;
-        if !(u32::from(asid_mask) + 1).is_power_of_two()
-        {
-            return Err(Error::Feature { name:     "contiguous low ASID field",
-                                        required: 0,
-                                        observed: u64::from(asid_mask) });
-        }
-        // ASID zero is reserved for the boot firmware root. The resident
-        // allocates and validates process tag lifetimes through its facility.
-        unsafe {
-            set_root(root);
-            asm!("sfence.vma zero,zero", options(nostack));
+            return Err(Error::Probe { step,
+                                      required: report.report
+                                                      .observed_aux
+                                                      .load(Ordering::Relaxed),
+                                      observed: report.report.observed.load(Ordering::Relaxed) });
         }
         Ok(Self { previous: Some(previous),
                   root,
-                  asid_mask,
+                  asid_mask: report.report.hardware_tag_mask.load(Ordering::Relaxed) as u16,
+                  vector_bytes: report.report.vector_bytes.load(Ordering::Relaxed),
                   _hart: PhantomData })
     }
 
     pub fn asid_mask(&self) -> u16
     {
         self.asid_mask
+    }
+
+    pub fn vector_bytes(&self) -> u64
+    {
+        self.vector_bytes
     }
 
     /// # Safety
@@ -310,14 +268,16 @@ impl Admitted
         let _previous = core::mem::ManuallyDrop::new(self.previous.take());
         unsafe {
             asm!(
-                "csrw satp,a3", "sfence.vma zero,zero", "fence.i",
-                "csrw sie,zero", "csrw sscratch,zero",
-                "csrw stvec,a5", "csrw mepc,a1", "csrw mstatus,a4",
-                "mv ra,a6", "mv sp,a2", "mret",
-                in("a0")info, in("a1")entry, in("a2")stack,
-                in("a3")self.root, in("a4")status,
-                in("a5")__bootstrap_supervisor_fault as *const () as usize,
-                in("a6")__bootstrap_supervisor_returned as *const () as usize,
+                "csrw satp,a4", "sfence.vma zero,zero", "fence.i",
+                "csrw sie,zero", "csrw sscratch,zero", "csrw stvec,t0",
+                "csrw mepc,a3", "csrw mstatus,a6", "mv ra,a7", "mv sp,a5", "mret",
+                in("a0")info,
+                in("a1")core::mem::size_of::<mac_abi::BootInfo>(),
+                in("a2")monitor::ENTRY_PRIMARY,
+                in("a3")entry, in("a4")self.root, in("a5")stack,
+                in("a6")status,
+                in("a7")__bootstrap_supervisor_returned as *const () as usize,
+                in("t0")__bootstrap_supervisor_fault as *const () as usize,
                 options(noreturn)
             );
         }
@@ -341,3 +301,12 @@ ebreak
 j __bootstrap_supervisor_returned
 "#
 );
+
+pub(crate) fn fault_entry() -> u64
+{
+    __bootstrap_supervisor_fault as *const () as u64
+}
+pub(crate) fn returned_entry() -> u64
+{
+    __bootstrap_supervisor_returned as *const () as u64
+}

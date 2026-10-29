@@ -4,7 +4,7 @@
 #![forbid(unsafe_code)]
 use alloc::sync::Arc;
 use core::{fmt,
-           sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
+           sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering}};
 
 use spinning_top::Spinlock;
 
@@ -17,7 +17,7 @@ pub(crate) const IDLE: usize = usize::MAX;
 /// Reset-lifetime hardware identity, minted only by checked sscratch selection.
 /// The numeric label is diagnostic metadata, never authority to select a hart.
 #[derive(Clone, Copy)]
-pub(crate) struct HartKey(&'static HartLocal);
+pub(crate) struct HartKey(&'static super::Hart);
 impl PartialEq for HartKey
 {
     fn eq(&self, other: &Self) -> bool
@@ -32,7 +32,17 @@ impl HartKey
 {
     pub(crate) fn number(self) -> usize
     {
-        self.0.id
+        self.0.local.id
+    }
+
+    pub(crate) fn ordinal(self) -> usize
+    {
+        self.0.ordinal
+    }
+
+    pub(crate) fn dispatch_eligible(self) -> bool
+    {
+        self.0.phase.load(Ordering::Acquire) == super::DISPATCH_ELIGIBLE
     }
 }
 pub(crate) fn selected_hart() -> HartKey
@@ -40,11 +50,82 @@ pub(crate) fn selected_hart() -> HartKey
     with_masked(|| {
         match super::selected_hart()
         {
-            Some(hart) => HartKey(&hart.local),
+            Some(hart) => HartKey(hart),
             None => super::unadmitted()
         }
     })
 }
+/// Reset-lifetime terminal ownership tied to the actual sealed selection.
+/// Genuine COLD may claim before the registry, without becoming a runtime key.
+/// Its pointer stays private: labels and caller-chosen numbers cannot create a
+/// winner, and no factory can reconstruct execution authority from this cell.
+pub(in crate::machine) struct TerminalOwnership(AtomicPtr<HartLocal>);
+pub(in crate::machine) enum TerminalClaim
+{
+    Winner(TerminalWinner),
+    Recursive,
+    Peer(HartKey)
+}
+/// Winner affinity is valid for the actual current hot or cold selection.
+/// It grants terminal stop only, never runtime/firmware execution authority.
+/// A boot owner cannot transfer this native claim to another CPU.
+pub(in crate::machine) struct TerminalWinner
+{
+    local: &'static HartLocal,
+    _cpu:  core::marker::PhantomData<*mut ()>
+}
+impl TerminalWinner
+{
+    pub(in crate::machine) fn number(&self) -> usize
+    {
+        self.local.id
+    }
+
+    pub(in crate::machine) fn is_current(&self) -> bool
+    {
+        with_masked(|| {
+            super::terminal_local().is_some_and(|local| core::ptr::eq(local, self.local))
+        })
+    }
+}
+impl TerminalOwnership
+{
+    pub(in crate::machine) const fn new() -> Self
+    {
+        Self(AtomicPtr::new(core::ptr::null_mut()))
+    }
+
+    /// Claims only for the genuine current CPU. Never reset/release this owner:
+    /// terminal execution abandons all contexts and backing until machine reset.
+    pub(in crate::machine) fn claim(&self) -> TerminalClaim
+    {
+        with_masked(|| {
+            let local = match super::terminal_local()
+            {
+                Some(local) => local,
+                None => super::unadmitted()
+            };
+            let identity = core::ptr::from_ref(local).cast_mut();
+            match self.0.compare_exchange(core::ptr::null_mut(),
+                                          identity,
+                                          Ordering::AcqRel,
+                                          Ordering::Acquire)
+            {
+                Ok(_) =>
+                {
+                    TerminalClaim::Winner(TerminalWinner { local,
+                                                           _cpu: core::marker::PhantomData })
+                }
+                Err(owner) if owner == identity => TerminalClaim::Recursive,
+                // A cold winner never returns and no peer may enter S before
+                // registry publication. Thus a distinct legitimate loser has
+                // an actual runtime key; this never invents a cold HartKey.
+                Err(_) => TerminalClaim::Peer(selected_hart())
+            }
+        })
+    }
+}
+
 pub(super) struct HartLocal
 {
     pub(super) id: usize,
@@ -502,4 +583,78 @@ pub(crate) fn idle_frame() -> *mut TrapFrame
         super::publish(idle.cpu());
         idle.cpu().frame()
     })
+}
+
+/// Preparation examines the same canonical affine idle that the starting CPU
+/// will select. No numeric thread/hart label substitutes for its owned target.
+pub(super) fn idle_prepared(local: &'static HartLocal) -> bool
+{
+    if !local.idle_claimed.load(Ordering::Acquire)
+    {
+        return false;
+    }
+    let idle = local.idle.lock();
+    idle.as_ref().is_some_and(|idle| core::ptr::eq(idle.target().local, local))
+}
+pub(super) fn idle_matches_profile(local: &'static HartLocal, vector_bytes: usize) -> bool
+{
+    let idle = local.idle.lock();
+    idle.as_ref().is_some_and(|idle| {
+                     core::ptr::eq(idle.target().local, local)
+                     && idle.cpu().matches_vector_profile(vector_bytes)
+                 })
+}
+/// Called only through authenticated private Starting entry with all local
+/// interrupts masked. It cannot fall back to Bootstrap/None and does not
+/// publish ordinary dispatch permission. The canonical Store/local core pins
+/// both the real context and CPU backing until reset.
+pub(super) fn initialize_starting_idle(local: &'static HartLocal)
+                                       -> Result<*mut TrapFrame, mac_abi::Status>
+{
+    if local.current.load(Ordering::Relaxed) != IDLE || local.io.load(Ordering::Relaxed)
+    {
+        return Err(mac_abi::BAD_ABI);
+    }
+    let (context, frame) = {
+        let idle = local.idle.lock();
+        let idle = idle.as_ref().ok_or(mac_abi::BAD_ABI)?;
+        if !core::ptr::eq(idle.target().local, local)
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        (idle.context().clone(), idle.cpu().frame())
+    };
+    let mut active = local.active.lock();
+    if active.is_some()
+    {
+        return Err(mac_abi::BAD_ABI);
+    }
+    *active = Some(context);
+    Ok(frame)
+}
+
+/// Startup SSIP acknowledgment must come from this installed affine idle,
+/// never merely a pointer copied into Control.frames. No lock is nested and
+/// the reset-lifetime canonical core pins the compared context/backing.
+pub(super) fn admitted_idle_capture(local: &'static HartLocal, frame: *mut TrapFrame) -> bool
+{
+    if local.current.load(Ordering::Relaxed) != IDLE || local.io.load(Ordering::Relaxed)
+    {
+        return false;
+    }
+    let expected = {
+        let idle = local.idle.lock();
+        let Some(idle) = idle.as_ref()
+        else
+        {
+            return false;
+        };
+        if !core::ptr::eq(idle.target().local, local) || idle.cpu().frame() != frame
+        {
+            return false;
+        }
+        Arc::as_ptr(idle.context())
+    };
+    let active = local.active.lock();
+    active.as_ref().is_some_and(|context| Arc::as_ptr(context) == expected)
 }

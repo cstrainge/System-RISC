@@ -16,7 +16,7 @@ __monitor_park:
     csrw mtvec,t0
     # Only integer/CSR state is touched before per-CPU profile admission.
     csrr t0,misa
-    li t1,((1<<8)|(1<<12)|(1<<0)|(1<<5)|(1<<3)|(1<<2)|(1<<21)|(1<<7)|(1<<18)|(1<<20))
+    li t1,{required_isa}
     and t0,t0,t1
     bne t0,t1,__monitor_fatal
     csrw satp,zero
@@ -158,8 +158,12 @@ __monitor_vector:
     beq t1,t2,9f
     ld t2,{command}(t0)
     li t3,{fence_i}
+    beq t2,t3,.Lmonitor_fence
+    li t3,{start_command}
+    beq t2,t3,.Lmonitor_start
     li t4,{unsupported}
-    bne t2,t3,7f
+    j 7f
+.Lmonitor_fence:
     fence.i
     li t4,0
 7:  ld t2,{stop}(t0)
@@ -179,7 +183,19 @@ __monitor_vector:
     fence iorw,iorw
 10: wfi
     j 10b
-9:  ld t1,{pc}(t0)
+9:  # A wake is a durable independent intent, never an ordinary command result.
+    # S clears SSIP before reading/acknowledging the latest requested epoch.
+    ld t1,{start}+{start_phase}(t0)
+    li t2,{start_idle}
+    bne t1,t2,.Lmonitor_restore
+    ld t1,{wake_requested}(t0)
+    fence r,rw
+    ld t2,{wake_acknowledged}(t0)
+    beq t1,t2,.Lmonitor_restore
+    li t1,2
+    csrs mip,t1
+.Lmonitor_restore:
+    ld t1,{pc}(t0)
     csrw mepc,t1
     ld t1,{status}(t0)
     csrw mstatus,t1
@@ -219,6 +235,150 @@ __monitor_vector:
     csrw mscratch,t0
     ld t0,M_FRAME+40(t0)
     mret
+
+# This branch is one-shot and only legal while this real CPU still owns its
+# original M park. It never calls a function or uses an S/foreign stack.
+.Lmonitor_start:
+    mv s0,t0
+    mv s1,t1
+    beqz s1,.Lmonitor_start_state
+    addi s2,s0,{start}
+    li a7,0
+    ld t1,{joined}(s0)
+    li t2,{join_parked}
+    bne t1,t2,.Lmonitor_start_state
+    ld t1,{start_phase}(s2)
+    li t2,{start_prepared}
+    bne t1,t2,.Lmonitor_start_state
+    ld t1,{status}(s0)
+    srli t1,t1,11
+    andi t1,t1,3
+    li t2,3
+    bne t1,t2,.Lmonitor_start_state
+    ld t1,{start_sequence}(s2)
+    bne t1,s1,.Lmonitor_start_state
+    la t1,__monitor_directory
+    ld s3,{anchor_image}(t1)
+    fence r,rw
+    li t1,{firmware_base}
+    bltu s3,t1,.Lmonitor_start_state
+    andi t1,s3,7
+    bnez t1,.Lmonitor_start_state
+    li t1,{firmware_end}-{image_bytes_total}
+    bltu t1,s3,.Lmonitor_start_state
+    ld t1,{image_sealed}(s3)
+    li t2,1
+    bne t1,t2,.Lmonitor_start_state
+    li t0,{step_entry}
+    sd t0,{start_step}(s2)
+    ld t0,{image_entry}(s3)
+    sd t0,{start_observed}(s2)
+    andi t1,t0,1
+    bnez t1,.Lmonitor_start_refused
+    ld t1,{image_base}(s3)
+    bltu t0,t1,.Lmonitor_start_refused
+    ld t2,{image_bytes}(s3)
+    add t2,t2,t1
+    bltu t2,t1,.Lmonitor_start_refused
+    bgeu t0,t2,.Lmonitor_start_refused
+    ld t0,{start_control}(s2)
+    sd t0,{start_observed}(s2)
+    andi t1,t0,15
+    bnez t1,.Lmonitor_start_refused
+    beqz t0,.Lmonitor_start_refused
+    ld t0,{start_top}(s2)
+    sd t0,{start_observed}(s2)
+    andi t1,t0,15
+    bnez t1,.Lmonitor_start_refused
+    beqz t0,.Lmonitor_start_refused
+    mv a0,s2
+    mv a1,s3
+    ld a2,{start_root}(s2)
+    __admit_supervisor 0,.Lmonitor_start_refused
+    # FS/VS permission has been admitted on this CPU; only CSR state is
+    # initialized. The ordinary returning monitor never changes F/V state.
+    csrw 0x003,zero # fcsr
+    csrw 0x008,zero # vstart
+    csrw 0x00f,zero # vcsr
+    csrw sie,zero
+    li t0,2
+    csrc sip,t0
+    ld t0,{start_control}(s2)
+    csrw sscratch,t0
+    ld t0,{image_fault}(s3)
+    csrw stvec,t0
+    ld t0,{image_entry}(s3)
+    csrw mepc,t0
+    fence.i
+    csrr t0,mstatus
+    li t1,((3<<11)|(1<<3)|(1<<17)|(1<<20)|(1<<21)|(1<<22)|(1<<36)|(1<<37)|(1<<39)|(1<<1)|(1<<5)|(1<<7))
+    not t1,t1
+    and t0,t0,t1
+    li t1,((1<<11)|0x6600)
+    or t0,t0,t1
+    csrw mstatus,t0
+    # A stop arriving after this last check remains a real pending MSIP and
+    # enters the restored monitor vector after mret, even with SIE masked.
+    ld t0,{stop}(s0)
+    fence r,rw
+    bnez t0,.Lmonitor_start_stop
+    sd zero,{result}(s0)
+    li t0,{start_starting}
+    fence rw,w
+    sd t0,{start_phase}(s2)
+    fence rw,w
+    sd s1,{acknowledged}(s0)
+    sd zero,{entered}(s0)
+    la t0,__monitor_vector
+    csrw mtvec,t0
+    csrw mscratch,s0
+    ld ra,{image_returned}(s3)
+    ld sp,{start_top}(s2)
+    li t0,{physmap}
+    add a0,s2,t0
+    li t0,{physical_base}
+    sub a0,a0,t0
+    li a1,{start_bytes}
+    li a2,{secondary_tag}
+    li gp,0
+    li tp,0
+    mret
+.Lmonitor_start_stop:
+    mv t0,s0
+    j 8b
+.Lmonitor_start_state:
+    # Wrong/nonparked target is rejected without changing any current S root,
+    # frame or immutable start record. The canonical command gets its refusal.
+    mv t0,s0
+    mv t1,s1
+    li t4,{bad_abi}
+    j 7b
+.Lmonitor_start_refused:
+    # No S instruction has run. Keep all real mapped owners until reset; there
+    # is no retry/reclaimed claim. Restore a concrete bare M park disposition.
+    csrw satp,zero
+    sfence.vma zero,zero
+    csrw sie,zero
+    csrw sscratch,zero
+    beqz a7,.Lmonitor_start_timer_off
+    li t0,-1
+    csrw 0x14d,t0
+.Lmonitor_start_timer_off:
+    li t0,{start_refused}
+    fence rw,w
+    sd t0,{start_phase}(s2)
+    mv t0,s0
+    mv t1,s1
+    li t4,{unsupported}
+    j 7b
+
+.balign 4
+.global __monitor_primary_admission
+__monitor_primary_admission:
+    __admit_supervisor 1,.Lprimary_admission_done
+.Lprimary_admission_done:
+    ld a0,{start_step}(a0)
+    ret
 .balign 4
 __monitor_fatal:
     # Best-effort bounded UART context, then board-owned direct shutdown. No

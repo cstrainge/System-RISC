@@ -139,12 +139,16 @@ impl PreparedTerminal
     /// translation, allocation, scheduler context or lock is consulted here.
     ///
     /// # Safety
-    /// All ordinary execution has been permanently abandoned. The caller runs
-    /// on the single boot hart with SIE clear; no other hart or interrupt can
-    /// access fw_cfg, its scratch, or the terminal framebuffer. The mappings
-    /// and exclusive framebuffer supplied to prepare_terminal remain pinned
-    /// and accessible until reset. Normal rendering never resumes, even when
-    /// activation fails. InFlight requires loud shutdown rather than bypassing
+    /// All ordinary execution has been permanently abandoned. The caller is
+    /// the sole terminal winner with SIE clear; all other CPUs have acknowledged
+    /// irreversible stop and cannot access fw_cfg, scratch or framebuffer. The
+    /// caller's permanent root maps the prepared register/static/framebuffer
+    /// spans at their original CPU addresses, with coherent device-visible DMA
+    /// backing pinned until reset. Activation polls direct MMIO and uses no
+    /// boot-hart interrupt route, translation callback or per-CPU storage, so an
+    /// admitted peer may execute the same exclusive takeover. Normal rendering
+    /// never resumes, even when activation fails. InFlight requires loud shutdown
+    /// rather than bypassing
     /// device ownership or retrying DMA. Completed activation retains the
     /// device and dedicated scanout; neither may be released before reset.
     pub unsafe fn activate(&self) -> Result<(), Error>

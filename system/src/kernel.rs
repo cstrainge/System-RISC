@@ -876,8 +876,29 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
 /// # Safety
 /// Bootstrap supplies a valid header and compatible BootInfo for this call.
 /// Startup callbacks/context remain valid while System or Finder is running.
-pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
+pub unsafe extern "C" fn start(payload: *const (), bytes: usize, role: u64)
+                               -> *const SystemServices
 {
+    // Dispatch before STARTED, BOOT/header/context access or any global service
+    // initialization. Warm entry never re-enters the cold primary path.
+    match role
+    {
+        mac_abi::boot::monitor::ENTRY_SECONDARY =>
+        {
+            // SAFETY: the entry contract supplies the actual monitor payload;
+            // private warm admission authenticates its row before reading it.
+            unsafe { crate::machine::traps::start_secondary(payload, bytes) }
+        }
+        mac_abi::boot::monitor::ENTRY_PRIMARY if bytes == size_of::<BootInfo>() => (),
+        _ =>
+        {
+            crate::machine::emergency::serial(format_args!("SYSTEM_ENTRY_REJECTED \
+                                                            role={role:#x} bytes={bytes}; \
+                                                            rebuild ROM and System together\n"));
+            return ptr::null();
+        }
+    }
+    let info = payload.cast::<BootInfo>();
     if info.is_null()
     {
         return ptr::null();

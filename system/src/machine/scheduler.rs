@@ -132,7 +132,8 @@ impl SystemThreadBinding
 pub(crate) enum StartError
 {
     Load(crate::loader::LoadError),
-    Idle(super::traps::execution::IdlePreparationFailure)
+    Idle(super::traps::execution::IdlePreparationFailure),
+    Cpus(super::smp::Error)
 }
 impl core::fmt::Display for StartError
 {
@@ -141,7 +142,8 @@ impl core::fmt::Display for StartError
         match self
         {
             Self::Load(cause) => cause.fmt(out),
-            Self::Idle(cause) => cause.fmt(out)
+            Self::Idle(cause) => cause.fmt(out),
+            Self::Cpus(cause) => cause.fmt(out)
         }
     }
 }
@@ -667,9 +669,20 @@ extern "C" fn app_start(entry: usize) -> !
 fn arm()
 {
     let deadline = crate::platform::ticks().wrapping_add(TIMER_INTERVAL);
-    // Sstc was admitted by firmware before supervisor entry.
+    // Sstc was admitted by firmware before supervisor entry. Enable STIE only
+    // with an actual deadline and only when hardware reports it clear. Warm
+    // admitted-idle entry enables SSIE alone; this preserves that separate bit.
     unsafe {
-        asm!("csrw 0x14d,{}",in(reg)deadline,options(nostack));
+        asm!("csrw 0x14d, {deadline}",
+             "csrr {enabled}, sie",
+             "and {enabled}, {enabled}, {timer}",
+             "bnez {enabled}, 2f",
+             "csrs sie, {timer}",
+             "2:",
+             deadline = in(reg) deadline,
+             timer = in(reg) 32usize,
+             enabled = out(reg) _,
+             options(nostack));
     }
 }
 
@@ -739,6 +752,10 @@ pub(crate) fn start() -> Result<(), StartError>
     // publishes each affine idle before we borrow the scheduled-position table.
     // A typed install refusal retains its actual SystemIdle through boot report.
     super::traps::execution::prepare_idles(prepare_system_idle).map_err(StartError::Idle)?;
+    // Normal CPU initialization completes real warm admission and a startup
+    // interrupt ACK before any scheduled-position lock or author execution.
+    // Peers remain AdmittedIdle; this grants no dispatch policy permission.
+    super::smp::initialize().map_err(StartError::Cpus)?;
     let scheduler = SCHEDULER.lock();
     // Module preparations can precede Finder in the shared THRD store. Start
     // the genuine runnable Finder process, never an inert/armed module slot.
@@ -772,10 +789,7 @@ pub(crate) fn start() -> Result<(), StartError>
     select_current(slot);
     drop(scheduler);
     arm();
-    unsafe {
-        asm!("csrs sie, {}",in(reg)32usize,options(nomem,nostack));
-        __system_start_frame(frame)
-    }
+    unsafe { __system_start_frame(frame) }
 }
 extern "C" fn idle() -> !
 {
@@ -1166,26 +1180,32 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
     // The admitted hart selection still names the interrupted app until a new CPU frame is
     // selected. Generic scheduler maintenance uses permanent System authority; provider
     // callbacks must explicitly restore their own retained subject selection.
-    crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-        // Device input and cursor publication precede all ordinary maintenance.
-        // Never enable nested preemption while a resident manager owns its guards.
-        let fresh_input = crate::kernel::poll_waiting_events();
-        if INPUT_PRIORITY.background_allowed(fresh_input)
-        {
-            reclaim_workers();
-            reclaim_retired();
-            crate::drivers::pump_jobs();
-            crate::toolbox::files::pump_provider_operations();
-            crate::toolbox::runtime::Desktop::pump_standard_file();
-            pump_recovery_backing();
-            crate::recovery::pump();
-            crate::toolbox::crashes::pump_dismissals();
-            crate::toolbox::crashes::pump_reports();
-            crate::toolbox::processes::documents::pump();
-            crate::toolbox::processes::retirement::pump();
-            crate::toolbox::processes::finder::pump();
-        }
-    });
+    // Maintenance may enter real owner-affine FILES/ROM/code-publication
+    // services. The complete capture carries the authenticated hardware key;
+    // allocation or logical app identities cannot impersonate this service hart.
+    if super::paging::firmware_owner_hart() == Some(hart.number())
+    {
+        crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+            // Device input and cursor publication precede all ordinary maintenance.
+            // Never enable nested preemption while a resident manager owns its guards.
+            let fresh_input = crate::kernel::poll_waiting_events();
+            if INPUT_PRIORITY.background_allowed(fresh_input)
+            {
+                reclaim_workers();
+                reclaim_retired();
+                crate::drivers::pump_jobs();
+                crate::toolbox::files::pump_provider_operations();
+                crate::toolbox::runtime::Desktop::pump_standard_file();
+                pump_recovery_backing();
+                crate::recovery::pump();
+                crate::toolbox::crashes::pump_dismissals();
+                crate::toolbox::crashes::pump_reports();
+                crate::toolbox::processes::documents::pump();
+                crate::toolbox::processes::retirement::pump();
+                crate::toolbox::processes::finder::pump();
+            }
+        });
+    }
     let mut scheduler = SCHEDULER.lock();
     validate_capture(&scheduler, &capture);
     scheduler.ticks += 1;

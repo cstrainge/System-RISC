@@ -2,14 +2,15 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
-use mac_abi::{BootInfo, SystemServices};
+use mac_abi::SystemServices;
 /// # Safety
-/// Firmware supplies a valid BootInfo and keeps its callbacks alive.
+/// Firmware supplies the exact payload/length and explicit BOOT or HART role.
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(info: *const BootInfo) -> *const SystemServices
+pub unsafe extern "C" fn _start(payload: *const (), bytes: usize, role: u64)
+                                -> *const SystemServices
 {
-    unsafe { mac_system::kernel::start(info) }
+    unsafe { mac_system::kernel::start(payload, bytes, role) }
 }
 #[alloc_error_handler]
 fn allocation_failed(layout: core::alloc::Layout) -> !

@@ -9,7 +9,8 @@ is split into480 MiB ordinary and32 MiB protected storage. Independent applicati
 heaps, image-page charges and private process mappings remain pending. Module
 allocation forwarding, genuine invocation/resource scopes and module-owned
 workers are implemented; bounded native observations are recorded below. The
-complete extension-backend handoff remains gated on protected recovery services.
+Host Clipboard development prerequisites are published; complete recovery-service
+and cross-CPU policy activation qualification remain separate gates.
 Kernel self-virtualization uses owned Sv39 roots and a guarded
 System stack. Graphical boot now pins an independent terminal panic/OOM kit;
 complete Save/Alert/Finder recovery kits and module/privilege gates remain open.
@@ -3050,8 +3051,12 @@ and retains failed endpoints' buffers. Restart uses the checked platform reset
 register directly, without the normal driver registry or callbacks. Recursive
 failure, unavailable terminal backing, or an unusable display/input handoff reports
 and requests a loud platform shutdown. These are terminal actions, not recovery
-of a privileged call. The current contract admits only one running hart; a proven
-stop-other-harts protocol is required before extending terminal takeover to SMP.
+of a privileged call. A native terminal winner is tied to its actual admitted
+execution owner. Before exclusive kit access it requires irreversible machine-stop
+acknowledgments from every other CPU. A distinct peer loser abandons execution
+and waits for actual stop; same-owner recursion reports and shuts down directly.
+This contract still requires native S-peer qualification and does not imply
+arbitrary privileged-fault containment.
 
 The platform's required `fatal_shutdown` record names its MMIO device and supplies
 distinct nonzero `failure_value` and `restart_value` commands. Build validation
@@ -3307,3 +3312,43 @@ unavailable. These bounded observations do not establish SMP safety, exhaustive
 stop/pin races, stress behavior, arbitrary privileged-fault recovery or the full
 protected recovery kit. They do not by themselves authorize the complete
 extension-backend handoff.
+
+
+### Native peer idle admission
+
+Normal graphical boot now consumes genuine per-CPU preparations into one-shot
+M acceptance, independent warm System initialization and actual startup SSIP ACK.
+The shared boot wire is176bytes with explicit BOOT/HART roles and a complete
+monitor layout fingerprint, keeping development ABI1. One shared integer/CSR
+probe checks each CPU's admitted profile. Warm entry uses its actual permanent
+firmware root and guarded service slot, installs the poisoned System vector,
+then permanently selects the owned kernel root and canonical idle context.
+No reference is rebased and no peer can initialize global services or select the
+bootstrap thread as a fallback.
+
+Ready-result metadata is System Foundation storage reserved before any release.
+Typed startup refusals retain the original preparation or pending publication,
+plus all already-completed owners, through the nonreturning boot refusal. No
+reduced-CPU fallback, synthetic ACK or retry over uncertain hardware exists.
+Only the primary is scheduling-eligible; admitted peers resume only their own
+full captured idle frame. Actual readiness ownership is retained until reset.
+A future scheduler-policy consumer must retain that authority and establish its
+real generation/shadow/affinity gate before promotion; no unused dispatch grant
+or standalone boolean promotion is exposed today.
+
+Terminal ownership uses the actual sealed cold/hot selection, not a hardware
+number or shared boolean. Cold panic entry uses no ordinary control lock;
+a runtime peer loser waits for its actual machine stop instead of killing the
+winner as apparent recursion. A sealed, hart-affine winner revalidates its
+selection before requesting irreversible stop. Only after real peer ACKs may it
+borrow the separate protected kit and polled input/display state. Same-owner
+recursion and failed takeover remain loud terminal failures. No privileged
+recovery claim beyond M-D04 is added.
+
+[Threading](../THREADING.md#hart-execution-and-smp-admission) records the exact
+native images and bounded admission/returning-publication/worker/account/UI/
+terminal-reset observations. These are not cross-CPU author/service safety,
+full register preservation, race/latency or arbitrary-fault qualification.
+Independent application heaps, private process roots, image-page accounting and
+remaining protected recovery services are still staged. Common-control/TE2
+migration remains separate.
