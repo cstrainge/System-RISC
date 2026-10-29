@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build and boot the System7 disk desktop through its read-only flash ROM and private working disk."""
-from system7_platform import RAM, cpu_model, display_size
+from system7_platform import HARTS, RAM, cpu_model, display_size
 import argparse
 import hashlib
 import json
@@ -216,7 +216,7 @@ def select_clipboard(frontend, preference):
 
 def launch(state, frontend='headless', extra_disks=(), *, writable=False, preserve=False,
            qmp_port=4447, host_bridge=None, expected_exports=None, vector_bits=None,
-           clipboard=None, boot_timeout=None, harts=1):
+           clipboard=None, boot_timeout=None, harts=HARTS):
     """Launch a private disk copy. Tests default to read-only and fresh copies.
 
     Persistent desktop starts retain their writable copy while the build is unchanged.
@@ -433,7 +433,7 @@ def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_
         process, endpoint = launch(STATE, frontend, writable=True, preserve=True,
                                    qmp_port=qmp_port, host_bridge=port,
                                    expected_exports=count or None, clipboard=clipboard,
-                                   harts=1 if harts is None else harts)
+                                   harts=HARTS if harts is None else harts)
     except BaseException:
         if companion is not None:
             system7_exports.stop(companion)
@@ -505,7 +505,7 @@ def main():
     launch_parser.add_argument('--frontend', choices=['auto', 'native', 'native-headless', 'cocoa', 'gtk', 'headless'], default='auto')
     launch_parser.add_argument('--no-build', action='store_true')
     launch_parser.add_argument('--harts', type=int, metavar='COUNT',
-                               help='QEMU CPU count (default: 1); secondary harts remain ROM-parked '
+                               help=f'QEMU CPU count (platform default: {HARTS}); secondary harts remain ROM-parked '
                                     'until separately admitted by the System')
     launch_parser.add_argument('--no-transfer', action='store_true',
                                help='Disable the default Transfer volume for this VM')

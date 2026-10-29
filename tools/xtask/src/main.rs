@@ -194,7 +194,7 @@ impl Workspace
         let module_bytes = modules::footprint(&reports, self.platform.memory()?.module_capacity())?;
         println!("Resident module code: {module_bytes} of {} reserved bytes",
                  self.platform.memory()?.module_capacity());
-        let report = json!({"platform": self.platform.name, "target": &self.platform.rust_target, "guest_profile": "release", "build_dir": self.build, "toolchain": {"cargo": output(self.cargo().arg("--version"))?, "rustc": output(Command::new("rustc").arg("--version"))?}, "packages": reports});
+        let report = json!({"platform": self.platform.name, "target": &self.platform.rust_target, "qemu_harts": self.platform.qemu_harts.get(), "guest_profile": "release", "build_dir": self.build, "toolchain": {"cargo": output(self.cargo().arg("--version"))?, "rustc": output(Command::new("rustc").arg("--version"))?}, "packages": reports});
         write_json(&self.build.join("dist/build.json"), &report)?;
         Ok(reports)
     }

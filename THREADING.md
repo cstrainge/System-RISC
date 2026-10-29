@@ -321,6 +321,12 @@ and their `satp` remained zero; current privilege was not directly observable.
 Malformed external DTBs and a stale ROM exercised production boot refusals.
 These observations do not qualify sparse hardware IDs or SMP execution.
 
+The QemuRISC-V platform defines four physical harts by default. The normal
+launcher reads that platform value; `start --harts COUNT` overrides it. Only
+the primary executes System code. The other three remain parked until the core
+admission gates pass, regardless of their presence in the discovered topology.
+Diagnostic scenarios may explicitly select a smaller physical CPU count.
+
 Before releasing a secondary, the core still needs interrupt-route discovery
 checked against platform policy, independent M/S entry storage, a
 returning IPI transport, genuine secondary System-context admission, compatible
