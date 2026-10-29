@@ -321,7 +321,7 @@ definition resources through its resident filesystem service. Normal disk-boot c
 for `DESKTOP_READY`. Rebuild the complete unreleased system on format changes.
 See [CODE-RESOURCES.md](CODE-RESOURCES.md) for executable resource families.
 
-The current BootInfo is 144 bytes on RV64; SystemServices remains24bytes. BootInfo
+The current BootInfo is 160 bytes on RV64; SystemServices remains24bytes. BootInfo
 contains RAM/log information, firmware disk-info/read/write/flush callbacks,
 startup disk/partition identity and flags. Device ordinals remain stable while
 System runs; NOT_FOUND ends enumeration. Each read/write transfers exactly512
@@ -330,6 +330,21 @@ remain firmware-owned and are serialized by the resident owner guard. DiskInfo
 is24bytes and carries sector count, read-only state and driver icon identity.
 Missing write/flush callbacks make storage read-only. Unknown native artifacts
 must be rebuilt together; no earlier BootInfo layout is decoded.
+
+At byte144, BootInfo carries a physical pointer to enabled CPU records, followed
+at byte152 by a native `usize` count. Each record is `{ hart: u64 }`, sorted by
+hardware ID with duplicates rejected; sparse IDs are preserved. The array lives
+in reserved firmware RAM until reset and includes the actual primary hart. The
+ROM checks `/cpus` address-cell width (one or two), zero size cells, one register
+ID per CPU, and recognized status strings. Missing status means enabled; `ok`
+and `okay` enable a node; `disabled`, `reserved`, `fail` and `fail-<code>` exclude
+it. The enabled list is fallibly allocated after allocation-free structural and
+primary-membership preflight, then sorted and checked before publication. System
+checks the mapped extent, reservation and shared topology contract at admission.
+CPU records describe discovery only: they neither authenticate the current hart
+nor release any secondary from the ROM park. BootInfo's ABI version remains1;
+its Header size must equal160bytes before the enlarged structure is read.
+Rebuild ROM and System together; the previous144byte layout is rejected.
 
 At byte88, BootInfo appends a pointer/count pair for RAM banks, followed at
 byte104 by a pointer/count pair for reservations. Counts are native usize

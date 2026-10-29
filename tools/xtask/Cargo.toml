@@ -9,6 +9,8 @@ bootrom = { path = "../../bootrom" }
 getrandom = "=0.3.4"
 mac-abi.workspace = true
 mac-file-types.workspace = true
+mac-host-clipboard.workspace = true
+mac-module.workspace = true
 mac-build.workspace = true
 mac-formats.workspace = true
 serde_json.workspace = true

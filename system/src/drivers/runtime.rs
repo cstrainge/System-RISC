@@ -14,6 +14,8 @@ mod allocation;
 mod critical;
 mod invocation;
 mod workers;
+mod lifecycle;
+mod preferences;
 pub(crate) use workers::Launch as WorkerLaunch;
 mod discovery;
 mod file_handlers;
@@ -116,7 +118,10 @@ pub(crate) fn register_synchronous_service(offer: mac_module::Offer,
 {
     RUNTIME.with(|runtime| {
                runtime.residents.try_reserve(1).map_err(|_| NO_MEMORY)?;
-               let interface = runtime.registry.register_service(offer).map_err(status)?;
+               let interface = runtime.registry.register_service(offer).map_err(|cause| {
+                   serial!("RESIDENT_SERVICE_REFUSED class={:?} cause={cause}; rebuild the declared resident service contract", offer.class);
+                   status(cause)
+               })?;
                runtime.residents.push(ResidentBinding { interface,
                                                         callback: asynchronous,
                                                         synchronous: callback });
@@ -220,7 +225,20 @@ pub(crate) fn initialize(arena: core::ops::Range<u64>, target: Target) -> Result
                               residents: Vec::new(),
                               next:      arena.start,
                               limit:     arena.end })
-           .map_err(crate::state::AccessError::status)
+           .map_err(crate::state::AccessError::status)?;
+    lifecycle::install()?;
+    preferences::install()
+}
+
+pub(crate) fn startup_pending(module: u64) -> Result<bool, Status>
+{
+    RUNTIME.with(|runtime| {
+               runtime.registry
+                      .startup_phase(module)
+                      .map(|phase| phase != mac_module::lifecycle::ACTIVE)
+                      .map_err(status)
+           })
+           .map_err(crate::state::AccessError::status)?
 }
 
 pub(crate) fn load(resources: Vec<Resource>, file_type: [u8; 4], directory: PackageKind)
@@ -415,12 +433,23 @@ pub(crate) fn load(resources: Vec<Resource>, file_type: [u8; 4], directory: Pack
                    // registry publication and the armed-to-runnable transition in
                    // this same resident admission turn; activation allocates nothing.
                    crate::machine::scheduler::activate_workers(&owner);
-                   serial!("MODULE_READY id={} kind={} entry=0x{:x} base=0x{:x}",
+                   let pending = runtime.registry.startup_phase(module).map_err(status)?
+                                 != mac_module::lifecycle::ACTIVE;
+                   serial!("MODULE_ADMITTED id={} kind={} entry=0x{:x} base=0x{:x} startup={}",
                            module,
                            core::str::from_utf8(&file_type).unwrap_or("????"),
                            entry as usize,
-                           base);
-                   serial!("MODULE_PUBLISHED name={} id={}", package.contract.name, module);
+                           base,
+                           if pending { "pending" } else { "active" });
+                   if !pending
+                   {
+                       serial!("MODULE_READY id={} kind={} entry=0x{:x} base=0x{:x}",
+                               module,
+                               core::str::from_utf8(&file_type).unwrap_or("????"),
+                               entry as usize,
+                               base);
+                       serial!("MODULE_PUBLISHED name={} id={}", package.contract.name, module);
+                   }
                    Ok(module)
                })
                .map_err(crate::state::AccessError::status)?

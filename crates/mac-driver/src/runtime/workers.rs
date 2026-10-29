@@ -41,13 +41,14 @@ fn request(operation: u32, token: u64) -> abi::WorkerCall
                       specification: ptr::null(),
                       state: 0,
                       exit_status: OK,
-                      reserved1: 0 }
+                      microseconds: 0 }
 }
 fn response(call: &abi::WorkerCall) -> Result<()>
 {
     if !call.header.valid::<abi::WorkerCall>()
        || call.flags & !worker::CANCEL_REQUESTED != 0
-       || call.reserved1 != 0
+       || (!matches!(call.operation, worker::MONOTONIC | worker::PARK_FOR)
+           && call.microseconds != 0)
     {
         return Err(Error(BAD_ABI));
     }
@@ -176,6 +177,33 @@ impl WorkerHandle
         let mut call = request(worker::PARK, self.token);
         native(&mut call)?;
         if call.worker != self.token
+        {
+            return Err(Error(BAD_ABI));
+        }
+        Ok(())
+    }
+
+    pub fn monotonic_microseconds(self) -> Result<u64>
+    {
+        let mut call = request(worker::MONOTONIC, self.token);
+        native(&mut call)?;
+        if call.worker != self.token
+        {
+            return Err(Error(BAD_ABI));
+        }
+        Ok(call.microseconds)
+    }
+
+    pub fn park_for(self, duration: core::time::Duration) -> Result<()>
+    {
+        // A positive sub-microsecond request rounds up rather than becoming
+        // an accidental zero-duration poll. Overflow has no scheduling effect.
+        let microseconds = duration.as_micros() + u128::from(duration.subsec_nanos() % 1_000 != 0);
+        let microseconds = u64::try_from(microseconds).map_err(|_| Error(mac_abi::BAD_ARGUMENT))?;
+        let mut call = request(worker::PARK_FOR, self.token);
+        call.microseconds = microseconds;
+        native(&mut call)?;
+        if call.worker != self.token || call.microseconds != microseconds
         {
             return Err(Error(BAD_ABI));
         }

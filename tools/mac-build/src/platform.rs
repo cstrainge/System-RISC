@@ -19,6 +19,7 @@ pub struct Platform
     pub llvm_profile:   String,
     pub qemu_cpu:       String,
     pub qemu_ram:       String,
+    pub qemu_harts:     core::num::NonZeroUsize,
     pub fatal_shutdown: FatalShutdown,
     pub mmio_devices:   Vec<devices::Definition>,
     memory:             memory::Definition,

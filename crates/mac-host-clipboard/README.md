@@ -4,7 +4,9 @@ This `no_std`, safe Rust crate implements the guest protocol state for the
 standard QEMU SPICE vdagent clipboard channel. It consumes borrowed frames from
 `mac-vdagent-protocol` and produces owned messages using that codec. It has no
 Scrap implementation, resident registration authority, worker, driver, host
-clipboard implementation or preferences store. These remain integration gates.
+clipboard implementation or preferences store. The external
+[Host Clipboard package](../../extensions/host-clipboard/README.md) owns that
+integration and its separate runtime qualification.
 It does provide validated immutable preference policy consumed by the engine.
 
 The caller provides an immutable `Snapshot` pin with a monotonically increasing
@@ -149,13 +151,10 @@ commit a transaction, claim writable storage, fabricate an application identity
 or report persistence success. Native preference service/storage integration
 must separately use the real authenticated writable transaction boundary.
 
-## Checks
+## Evidence boundaries
 
-`cargo test --locked -p mac-host-clipboard` exercises the real codec with fragmented
-input, crossed/coalesced capability announcements and partial write completion,
-demand exchange, empty/NONE distinctions, limits, malformed Unicode,
-stale offers/data/completions, serial ordering, queue bounds, partial writes,
-timeouts, reconnect, generic CAS causes, strict preference JSON and applied
-direction/enablement policy, and real allocation refusal/retry.
-No test claims authenticated resident integration, scheduling, or a real host
-clipboard round trip.
+Historical host Rust codec/engine checks do not establish resident integration,
+native interrupt/scheduler behavior or host editor interoperability. The external
+package's [native observations and remaining gates](../../docs/HOST-CLIPBOARD.md)
+identify the exact runtime profile. Pure codec behavior and OS acceptance remain
+distinct.

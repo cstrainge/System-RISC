@@ -1,0 +1,41 @@
+{
+  "name": "Host Clipboard",
+  "binary_name": "HostClipboard",
+  "file_type": "INIT",
+  "extension_target": "system",
+  "creator": "HCLP",
+  "role": "code_resource",
+  "abi_version": 1,
+  "load_base": "0x82b00000",
+  "load_limit": "0x82d00000",
+  "description": "Scheduled Unicode Scrap sharing through the standard QEMU SPICE vdagent channel",
+  "resources": [
+    {
+      "type": "BNDL",
+      "id": 128,
+      "symbol": "CLIPBOARD_BUNDLE",
+      "payload": {
+        "format": "hex",
+        "hex": "48434c500000000149434e2300000007008046524546000000020063"
+      }
+    },
+    {
+      "type": "FREF",
+      "id": 99,
+      "symbol": "CLIPBOARD_FILE_REFERENCE",
+      "payload": {
+        "format": "hex",
+        "hex": "494e4954000700"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": 128,
+      "symbol": "CLIPBOARD_ICON",
+      "payload": {
+        "format": "hex",
+        "hex": "000000000000000000000000001ff800001ff80007ffffe007ffffe0061ff860061ff860060000600600006006000c600600066006fffe6006fffe6006c0066006c00c6006cc006006d8006006fffe6006fffe6006180060060c0060060000600600006006000060060000600600006007ffffe007ffffe0000000000000000000000000000000000000000007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe00000000000000000"
+      }
+    }
+  ]
+}

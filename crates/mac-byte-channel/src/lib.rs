@@ -11,6 +11,9 @@ pub const STATUS: u32 = 1;
 pub const READ: u32 = 2;
 pub const WRITE: u32 = 3;
 pub const ERROR_TEXT: u32 = 4;
+/// Retire DMA/claims with actual reset acknowledgement before rediscovery.
+/// May return Pending; retain and Poll/Cancel its original broker ticket.
+pub const RESET: u32 = 5;
 pub const MAX_TRANSFER: usize = 4096;
 pub const STATUS_BYTES: usize = 16;
 pub const MAX_ERROR_TEXT: usize = 256;
@@ -90,7 +93,7 @@ impl ByteChannel
                   output: &mut [u8])
                   -> Result<Completion>
     {
-        if !matches!(operation, STATUS | READ | WRITE | ERROR_TEXT)
+        if !matches!(operation, STATUS | READ | WRITE | ERROR_TEXT | RESET)
            || input.len() > MAX_TRANSFER
            || output.len() > MAX_TRANSFER
         {

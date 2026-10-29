@@ -198,7 +198,25 @@ struct Module
     cleanup:          Option<crate::toolbox::handles::cleanup::Checkpoint>,
     account:          ModuleAccount,
     rollback_pending: bool,
-    recovery_refusal: Option<Error>
+    recovery_refusal: Option<Error>,
+    startup:          Startup
+}
+struct Startup
+{
+    phase:  u32,
+    status: i32,
+    cause:  [u8; mac_module::lifecycle::MAX_CAUSE],
+    length: usize
+}
+impl Default for Startup
+{
+    fn default() -> Self
+    {
+        Self { phase:  mac_module::lifecycle::SYNCHRONOUS,
+               status: 0,
+               cause:  [0; mac_module::lifecycle::MAX_CAUSE],
+               length: 0 }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Interface
@@ -532,7 +550,8 @@ impl Registry
                                                  cleanup: Some(cleanup),
                                                  account,
                                                  rollback_pending: false,
-                                                 recovery_refusal: None })
+                                                 recovery_refusal: None,
+                                                 startup: Startup::default() })
                      }).map_err(Error::AllocationScope)??;
         let module = self.modules.insert(ledger, record)?;
         let bound = match self.module_allocation(module)
@@ -570,6 +589,23 @@ impl Registry
         {
             return Err(Error::State);
         }
+        if self.requests.iter().any(|(_, r)| r.caller == module)
+        {
+            return Err(Error::Busy);
+        }
+        if record.startup.phase == mac_module::lifecycle::PENDING
+        {
+            // This commits execution/admission only. No provisional interface
+            // is minted or discoverable before scheduled confirmation.
+            self.modules.get_mut(module).ok_or(Error::Stale)?.state = State::Ready;
+            return Ok(());
+        }
+        self.publish_interfaces(module)
+    }
+
+    fn publish_interfaces(&mut self, module: u64) -> Result<()>
+    {
+        let record = self.modules.get(module).ok_or(Error::Stale)?;
         if self.requests.iter().any(|(_, r)| r.caller == u64::from(module))
         {
             return Err(Error::Busy);
@@ -596,7 +632,114 @@ impl Registry
         }
         let record = self.modules.get_mut(module).ok_or(Error::Stale)?;
         record.state = State::Ready;
+        record.startup.phase = mac_module::lifecycle::ACTIVE;
+        record.startup.status = 0;
+        record.startup.length = 0;
         Ok(())
+    }
+
+    pub(crate) fn startup_phase(&self, module: u64) -> Result<u32>
+    {
+        Ok(self.modules.get(module).ok_or(Error::Stale)?.startup.phase)
+    }
+
+    pub(crate) fn preference_subject(&self, module: u64) -> Result<(OwnerRef, [u8; 16])>
+    {
+        let record = self.modules.get(module).ok_or(Error::Access)?;
+        if !matches!(record.state, State::Initializing | State::Ready)
+        {
+            return Err(Error::State);
+        }
+        Ok((self.module_ledger(module)?, record.identity))
+    }
+
+    pub(crate) fn startup_call(&mut self, module: u64, operation: u32, input: &[u8],
+                               output: &mut [u8])
+                               -> Result<usize>
+    {
+        use mac_module::lifecycle as wire;
+        if output.len() < wire::REPLY_BYTES
+        {
+            return Err(Error::Contract(mac_module::Error::Limit));
+        }
+        let record = self.modules.get(module).ok_or(Error::Access)?;
+        if !matches!(record.state, State::Initializing | State::Ready)
+        {
+            return Err(Error::State);
+        }
+        match operation
+        {
+            wire::DEFER
+                if input.is_empty()
+                   && record.state == State::Initializing
+                   && record.startup.phase == wire::SYNCHRONOUS =>
+            {
+                self.modules.get_mut(module).ok_or(Error::Stale)?.startup.phase = wire::PENDING;
+            }
+            wire::CONFIRM
+                if input.is_empty()
+                   && record.state == State::Ready
+                   && record.startup.phase == wire::ACTIVE =>
+            {
+                ()
+            }
+            wire::CONFIRM
+                if input.is_empty()
+                   && record.state == State::Ready
+                   && matches!(record.startup.phase, wire::PENDING | wire::REFUSED) =>
+            {
+                let allocation = self.module_allocation(module)?;
+                crate::allocation::with_kernel_allocation(allocation, || {
+                    self.publish_interfaces(module)
+                }).map_err(Error::AllocationScope)??;
+                #[cfg(target_arch = "riscv64")]
+                serial!("MODULE_ASYNC_READY name={} id={}",
+                        self.modules.get(module).ok_or(Error::Stale)?.name.text(),
+                        module);
+            }
+            wire::STATUS if input.is_empty() =>
+            {
+                output[..4].copy_from_slice(&record.startup.phase.to_le_bytes());
+                output[4..8].copy_from_slice(&record.startup.status.to_le_bytes());
+                output[8..8 + record.startup.length].copy_from_slice(&record.startup.cause
+                                                                         [..record.startup.length]);
+                return Ok(8 + record.startup.length);
+            }
+            wire::REFUSE | wire::REPORT
+                if input.len() > 4 && input.len() <= 4 + wire::MAX_CAUSE =>
+            {
+                let status =
+                    i32::from_le_bytes(input[..4].try_into().map_err(|_| Error::Access)?);
+                let cause = core::str::from_utf8(&input[4..]).map_err(|_| Error::Access)?;
+                if status > 0 || cause.chars().any(char::is_control)
+                {
+                    return Err(Error::Access);
+                }
+                if operation == wire::REFUSE
+                {
+                    if status == 0
+                       || record.state != State::Ready
+                       || !matches!(record.startup.phase, wire::PENDING | wire::REFUSED)
+                    {
+                        return Err(Error::State);
+                    }
+                    let record = self.modules.get_mut(module).ok_or(Error::Stale)?;
+                    record.startup.phase = wire::REFUSED;
+                }
+                let record = self.modules.get_mut(module).ok_or(Error::Stale)?;
+                record.startup.status = status;
+                record.startup.length = cause.len();
+                record.startup.cause[..cause.len()].copy_from_slice(cause.as_bytes());
+                #[cfg(target_arch = "riscv64")]
+                serial!("MODULE_ASYNC_STATUS name={} id={} status={} cause={}",
+                        self.modules.get(module).ok_or(Error::Stale)?.name.text(),
+                        module,
+                        status,
+                        cause);
+            }
+            _ => return Err(Error::State)
+        }
+        Ok(0)
     }
 
     pub fn rollback(&mut self, module: u64) -> Result<()>
@@ -694,7 +837,12 @@ impl Registry
     pub fn file_handler(&self, file_type: [u8; 4])
                         -> Option<(u64, mac_module::file_handlers::Rule)>
     {
-        for (id, module) in self.modules.iter().filter(|(_, m)| m.state == State::Ready)
+        for (id, module) in
+            self.modules
+                .iter()
+                .filter(|(_, m)| {
+                    m.state == State::Ready && m.startup.phase == mac_module::lifecycle::ACTIVE
+                })
         {
             if let Some(rule) = module.file_handlers.iter().find(|r| r.file_type == file_type)
             {

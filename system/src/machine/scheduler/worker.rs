@@ -457,7 +457,7 @@ pub(crate) fn worker_current() -> Result<(u64, bool), mac_abi::Status>
         Ok((thread.id, state.cancelled))
     })
 }
-pub(crate) fn worker_park() -> Result<bool, mac_abi::Status>
+pub(crate) fn worker_park(deadline: Option<u64>) -> Result<bool, mac_abi::Status>
 {
     let scheduler = SCHEDULER.lock();
     let thread = scheduler.thread(current()).ok_or(mac_abi::WRONG_THREAD)?;
@@ -473,11 +473,15 @@ pub(crate) fn worker_park() -> Result<bool, mac_abi::Status>
         worker.set(state);
         return Ok(false);
     }
+    if deadline.is_some_and(|deadline| crate::platform::ticks() >= deadline)
+    {
+        return Ok(false);
+    }
     state.phase = mac_module::abi::worker::PARKED;
     state.park_return = true;
     worker.set(state);
     thread.update(|s| {
-              s.waiting = Some(Wait::Worker);
+              s.waiting = Some(Wait::Worker { deadline });
               s.woken = 0;
           });
     Ok(true)
@@ -644,7 +648,7 @@ extern "C" fn worker_entry() -> !
                                       specification: core::ptr::null(),
                                       state:         0,
                                       exit_status:   0,
-                                      reserved1:     0 };
+                                      microseconds:  0 };
     let status = unsafe {
         traps::gateway(mac_module::abi::worker::TRAP,
                        (&mut call as *mut mac_module::abi::WorkerCall).cast(),

@@ -71,6 +71,10 @@ pub(crate) unsafe fn validate_boot(
          (info.ram_regions as u64, info.ram_region_count * size_of::<mac_abi::BootMemoryRange>()),
          (info.reservations as u64, info.reservation_count * size_of::<mac_abi::BootMemoryRange>()),
          (info.execution as u64, size_of::<mac_abi::boot::execution::Execution>()),
+         (info.cpus as u64,
+          info.cpu_count
+              .checked_mul(size_of::<mac_abi::boot::topology::Cpu>())
+              .ok_or(mac_abi::boot::MemoryError::InvalidArray)?),
          (execution.regions as u64,
           execution.region_count
                    .checked_mul(size_of::<mac_abi::boot::execution::Region>())

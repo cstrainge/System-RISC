@@ -2,6 +2,8 @@
 //! this module is the narrow, audited C/pointer boundary. This is not an app SDK.
 #![no_std]
 pub mod devices;
+pub mod lifecycle;
+pub mod preferences;
 pub mod sync;
 #[doc(hidden)]
 pub mod runtime;

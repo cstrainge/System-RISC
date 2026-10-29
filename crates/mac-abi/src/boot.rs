@@ -1,6 +1,7 @@
 //! Safe validation of the bootstrap's one physical memory account.
 use crate::BootMemoryRange;
 pub mod execution;
+pub mod topology;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryError

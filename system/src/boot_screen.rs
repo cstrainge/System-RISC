@@ -92,10 +92,10 @@ impl BootScreen
     /// The loaded code's real result determines the icon. Artwork I/O and
     /// conversion finish first; no Files, registry, desktop or framebuffer borrow
     /// survives into the foreign initializer. A refusal does not publish hooks.
-    pub(crate) fn extension_attempt<T>(&mut self, name: &str, volume: u32, cnid: u32,
-                                       refusal: Option<ExtensionRefusal>,
-                                       call: impl FnOnce() -> core::result::Result<T, Status>)
-                                       -> core::result::Result<T, Status>
+    pub(crate) fn extension_attempt(&mut self, name: &str, volume: u32, cnid: u32,
+                                    refusal: Option<ExtensionRefusal>,
+                                    call: impl FnOnce() -> core::result::Result<u64, Status>)
+                                    -> core::result::Result<u64, Status>
     {
         if let Err(error) = self.present_extensions()
         {
@@ -143,6 +143,20 @@ impl BootScreen
                 return Err(NO_MEMORY);
             }
         };
+        if let Ok(module) = result.as_ref()
+        {
+            match crate::drivers::startup_pending(*module)
+            {
+                Ok(false) => (),
+                Ok(true) => self.extensions.defer(ordinal),
+                Err(status) =>
+                {
+                    self.extensions.defer(ordinal);
+                    serial!("EXTENSION_STARTUP_STATUS_RETAINED name={name:?} status={status}; \
+                             pending until authenticated scheduled confirmation");
+                }
+            }
+        }
         if let Some(view) = self.extensions.view(ordinal)
         {
             if let strip::Outcome::Refused(cause) = view.outcome
@@ -170,7 +184,7 @@ impl BootScreen
         // This is an outcome notification, not successful activation. The
         // initializer is never called and extension_attempt reports any display
         // refusal itself while preserving the named original refusal.
-        let _: core::result::Result<(), Status> =
+        let _: core::result::Result<u64, Status> =
             self.extension_attempt(name, volume, cnid, Some(cause), || Err(status));
     }
 
@@ -190,13 +204,11 @@ impl BootScreen
             serial!("EXTENSION_ICON name={:?} ordinal={} outcome={} artwork={} bounds={},{},{},{}",
                     view.name,
                     ordinal,
-                    if matches!(view.outcome, strip::Outcome::Loaded)
+                    match view.outcome
                     {
-                        "ready"
-                    }
-                    else
-                    {
-                        "refused"
+                        strip::Outcome::Loaded => "ready",
+                        strip::Outcome::Pending => "pending",
+                        strip::Outcome::Refused(_) => "refused"
                     },
                     if view.source == strip::Source::Package { "package" } else { "theme" },
                     view.bounds.left,

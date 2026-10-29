@@ -4,6 +4,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 pub mod abi;
+pub mod lifecycle;
+pub mod preferences;
 pub mod file_handlers;
 mod contract;
 pub use contract::*;

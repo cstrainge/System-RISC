@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build and boot the System7 disk desktop through its read-only flash ROM and private working disk."""
-from system7_platform import RAM, cpu_model, display_size
+from system7_platform import HARTS, RAM, cpu_model, display_size
 import argparse
 import hashlib
 import json
@@ -216,13 +216,15 @@ def select_clipboard(frontend, preference):
 
 def launch(state, frontend='headless', extra_disks=(), *, writable=False, preserve=False,
            qmp_port=4447, host_bridge=None, expected_exports=None, vector_bits=None,
-           clipboard=None, boot_timeout=None):
+           clipboard=None, boot_timeout=None, harts=HARTS):
     """Launch a private disk copy. Tests default to read-only and fresh copies.
 
     Persistent desktop starts retain their writable copy while the build is unchanged.
     A new OS build preserves Preferences/Documents into the replacement before
     retiring that copy; obsolete boot disks are not retained.
     """
+    if type(harts) is not int or harts < 1:
+        raise ValueError('harts must be a positive integer; additional harts remain ROM-parked until admitted')
     if boot_timeout is not None and (type(boot_timeout) not in (int, float)
                                      or not 0 < boot_timeout <= 600):
         raise ValueError('boot_timeout must be between zero and 600 seconds')
@@ -292,7 +294,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     serial.write_text('')
     identity = str(uuid.uuid4())
     args = [executable, '-uuid', identity, '-name', 'System RISC - Finder', '-machine', 'virt', '-cpu', cpu_model(vector_bits),
-            '-m', RAM, '-smp', '1', '-bios', 'none',
+            '-m', RAM, '-smp', str(harts), '-bios', 'none',
             '-drive', 'if=pflash,unit=0,format=raw,readonly=on,file=' + host_path(state / 'bootrom.bin'),
             '-drive', 'if=none,id=startup,format=qcow2,readonly=' + ('off' if writable else 'on') + ',file=' + host_path(disk),
             '-global', 'virtio-mmio.force-legacy=false',
@@ -332,14 +334,15 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     with (state / 'qemu.log').open('wb') as log:
         process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                    env=env, **process_options())
-    (state / 'pid').write_text(str(process.pid) + '\n')
-    # Native Windows QEMU reads WSL-hosted media through UNC paths. Its GTK
-    # profile cold-boots this image in ~33 seconds, beyond the Linux budget.
-    # Larger private installations can qualify startup with an explicit bound;
-    # waiting longer changes no guest configuration or shipping launch defaults.
-    deadline = time.monotonic() + (boot_timeout if boot_timeout is not None else
-                                 (60 if native else 25))
     try:
+        # Own teardown before publishing the child PID; a full disk must not
+        # leave a running QEMU outside this launcher's cleanup boundary.
+        (state / 'pid').write_text(str(process.pid) + '\n')
+        # Native Windows QEMU reads WSL-hosted media through UNC paths. Its GTK
+        # profile cold-boots this image in ~33 seconds, beyond the Linux budget.
+        # Diagnostic installations may select a bound without changing defaults.
+        deadline = time.monotonic() + (boot_timeout if boot_timeout is not None else
+                                     (60 if native else 25))
         while time.monotonic() < deadline:
             log = serial.read_text(encoding='utf-8', errors='replace')
             if process.poll() is not None:
@@ -353,7 +356,9 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
                 qmp('query-status', endpoint=endpoint)
                 return process, endpoint
             if any(marker in log for marker in ['BOOT_NO_SYSTEM:', 'BOOT_TRAP:', 'BOOT_PANIC:', 'BOOT_UNSUPPORTED_ISA:',
-                                               'BOOT_MEMORY_REJECTED:', 'SYSTEM_STARTUP_FAILED:', 'SYSTEM_PANIC:', 'SYSTEM_TRAP:', 'SYSTEM_ALLOCATION_FAILED:']):
+                                               'BOOT_MEMORY_REJECTED:', 'BOOT_CPU_TOPOLOGY_REJECTED:',
+                                               'BOOT_SUPERVISOR_REJECTED:', 'SYSTEM_STARTUP_FAILED:',
+                                               'SYSTEM_PANIC:', 'SYSTEM_TRAP:', 'SYSTEM_ALLOCATION_FAILED:']):
                 raise RuntimeError('System RISC startup failed:\n' + log)
             time.sleep(.05)
         raise TimeoutError('Desktop did not finish boot:\n' + serial.read_text(errors='replace')
@@ -368,12 +373,18 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
             pass
         if process.poll() is None:
             process.terminate()
-        process.wait(timeout=10)
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
         raise
 
 
 def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_exports=(), transfer=True,
-          clipboard=None):
+          clipboard=None, harts=None):
+    if harts is not None and (type(harts) is not int or harts < 1):
+        raise ValueError('harts must be a positive integer')
     if clipboard is not None and type(clipboard) is not bool:
         raise ValueError('clipboard must be automatic (None) or an explicit boolean')
     count = len(exports) + len(readonly_exports) + int(transfer)
@@ -384,6 +395,11 @@ def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_
     except (OSError, ValueError, RuntimeError):
         pass
     else:
+        if harts is not None:
+            current_harts = len(qmp('query-cpus-fast'))
+            if current_harts != harts:
+                raise RuntimeError(f'VM is already running with {current_harts} harts; stop it before '
+                                   f'requesting {harts}')
         if exports or readonly_exports or clipboard is not None:
             raise RuntimeError('VM is already running; stop it before changing host exports or clipboard sharing')
         print(json.dumps({'already_running': status}))
@@ -416,7 +432,8 @@ def start(frontend='auto', rebuild=True, qmp_port=4447, *, exports=(), readonly_
             'port': port}, indent=2) + '\n')
         process, endpoint = launch(STATE, frontend, writable=True, preserve=True,
                                    qmp_port=qmp_port, host_bridge=port,
-                                   expected_exports=count or None, clipboard=clipboard)
+                                   expected_exports=count or None, clipboard=clipboard,
+                                   harts=HARTS if harts is None else harts)
     except BaseException:
         if companion is not None:
             system7_exports.stop(companion)
@@ -487,6 +504,9 @@ def main():
     launch_parser = sub.add_parser('start')
     launch_parser.add_argument('--frontend', choices=['auto', 'native', 'native-headless', 'cocoa', 'gtk', 'headless'], default='auto')
     launch_parser.add_argument('--no-build', action='store_true')
+    launch_parser.add_argument('--harts', type=int, metavar='COUNT',
+                               help=f'QEMU CPU count (platform default: {HARTS}); secondary harts remain ROM-parked '
+                                    'until separately admitted by the System')
     launch_parser.add_argument('--no-transfer', action='store_true',
                                help='Disable the default Transfer volume for this VM')
     launch_parser.add_argument('--no-clipboard', action='store_true',
@@ -534,7 +554,8 @@ def main():
     elif args.action == 'start':
         start(args.frontend, not args.no_build, args.qmp_port,
               exports=args.export, readonly_exports=args.read_only_export,
-              transfer=not args.no_transfer, clipboard=False if args.no_clipboard else None)
+              transfer=not args.no_transfer, clipboard=False if args.no_clipboard else None,
+              harts=args.harts)
     elif args.action == 'check':
         check(not args.no_build, args.state_dir.resolve() if args.state_dir else None)
     elif args.action == 'status':

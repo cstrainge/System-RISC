@@ -16,6 +16,9 @@ if PLATFORM['name'] != NAME:
 TARGET = PLATFORM['rust_target']
 CPU = PLATFORM['qemu_cpu']
 RAM = PLATFORM['qemu_ram']
+HARTS = PLATFORM['qemu_harts']
+if type(HARTS) is not int or HARTS < 1:
+    raise ValueError('Platform qemu_harts must be a positive integer')
 
 def cpu_model(vector_bits=None):
     if vector_bits is None:

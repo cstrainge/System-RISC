@@ -47,6 +47,7 @@ members = [
     "bootrom",
     "definitions/*",
     "drivers/*",
+    "extensions/*",
 ]
 default-members = ["crates/mac-abi", "crates/mac-toolbox", "crates/mac-formats", "crates/mac-hfs", "tools/mac-build", "tools/xtask"]
 

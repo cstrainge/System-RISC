@@ -102,6 +102,8 @@ pub const MAX_VOLUMES: usize = crate::toolbox::handles::Kind::Volumes.capacity()
 pub const MAX_OPEN_FILES: usize = crate::toolbox::handles::Kind::Files.capacity();
 use crate::toolbox::handles::{Kind, KindLease, OwnerRef, Table};
 pub(crate) mod write;
+#[cfg(target_arch = "riscv64")]
+pub(crate) mod module_preferences;
 mod moves;
 const MAX_PATH: usize = 4096;
 

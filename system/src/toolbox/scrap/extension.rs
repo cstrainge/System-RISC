@@ -449,6 +449,45 @@ impl Manager
         Ok(committed)
     }
 
+    /// Admission and exact committed pin precede the infallible publication.
+    /// A racing application mutation after return cannot change this pin.
+    pub(crate) fn extension_import_snapshot(&mut self, authority: &Authority, session: Session,
+                                            pin: Pin, text: &str)
+                                            -> Result<Pin, Error>
+    {
+        let service = self.extension_service()?;
+        if !service.session(authority, session)?.writable
+        {
+            return Err(Error::ReadOnly);
+        }
+        let expected = service.pin(authority, session, pin)?.snapshot.revision();
+        if expected != self.revision
+        {
+            return Err(Error::Change(ChangeError::Conflict { expected,
+                                                             actual: self.revision }));
+        }
+        if text.len() > MAX_IMPORT
+        {
+            return Err(Error::TransferLimit { bytes:   text.len(),
+                                              maximum: MAX_IMPORT });
+        }
+        let replacement = self.prepare_text_replacement(text).map_err(Error::Change)?;
+        let result = self.extension_service_mut()?
+                         .snapshots
+                         .insert(&authority.owner,
+                                 Pinned { session,
+                                          snapshot: replacement.snapshot.clone() })
+                         .map(Pin)
+                         .map_err(Error::Storage)?;
+        let revision = self.commit_text_replacement(replacement);
+        if let Some(service) = self.extensions.as_mut()
+           && let Some(origin) = service.sessions.get_mut(session.0)
+        {
+            origin.acknowledged = Some(revision);
+        }
+        Ok(result)
+    }
+
     pub(crate) fn extension_close_pin(&mut self, authority: &Authority, session: Session, pin: Pin)
                                       -> Result<(), Error>
     {
