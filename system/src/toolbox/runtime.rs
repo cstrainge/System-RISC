@@ -414,6 +414,11 @@ impl Desktop
                 .map_err(|_| NO_MEMORY)?;
         }
         locals.push(local::Saved::try_placeholder(processes.ledger(finder)?, mdef)?);
+        let mut system_bar =
+            crate::kernel::with_resources(|resources| {
+                super::menus::SystemBar::new(mdef, crate::machine::traps::gateway, resources)
+            }).ok_or(NOT_SUPPORTED)??;
+        system_bar.reset(finder);
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
                   standard_file: super::standard_file::Manager::new(super::handles::file_dialog_kinds()?)?,
@@ -423,7 +428,7 @@ impl Desktop
                   core_dialogs: super::dialogs::Alerts::new(super::handles::alert_kinds()?, super::handles::system_owner()?)?,
                   core_dialogs_active: false,
                   menus: super::menus::Manager::new(super::handles::menu_kinds()?, mdef, crate::machine::traps::gateway)?,
-                  system_bar: super::menus::SystemBar::new(mdef, crate::machine::traps::gateway)?,
+                  system_bar,
                   desktop: DesktopLayer::new(Rect::new(0,
                                                         21,
                                                         crate::display::WIDTH as i16,
@@ -482,6 +487,22 @@ impl Desktop
 
     pub fn menu(&mut self, call: &mut mac_abi::menus::MenuCall) -> Status
     {
+        if call.reserved != 0
+        {
+            return BAD_ARGUMENT;
+        }
+        if call.operation == mac_abi::menus::SHOW_ABOUT_SYSTEM
+        {
+            if call.handle != 0
+            {
+                return BAD_ARGUMENT;
+            }
+            return self.show_about_system().map_or_else(|status| status, |_| OK);
+        }
+        if call.handle == 0 && call.menu_id == mac_abi::menus::SYSTEM_APPLE_MENU_ID
+        {
+            return self.system_bar.query(call).map_or_else(|status| status, |_| OK);
+        }
         if call.handle == 0 && call.menu_id == super::processes::menu::MENU_ID
         {
             return self.app_menu.query(call).map_or_else(|e| e, |_| OK);
@@ -496,6 +517,7 @@ impl Desktop
                      }).unwrap_or_else(Err);
         if matches!(result, Ok(true)) && self.owner == self.foreground
         {
+            self.refresh_system_menu();
             self.menu_cache.invalidate();
             self.redraw = true;
         }
@@ -1596,6 +1618,7 @@ impl Desktop
     {
         if !self.cursors.is_automatic()
            || self.menus.is_tracking()
+           || self.system_bar.is_tracking()
            || self.app_menu.is_tracking()
            || self.windows.is_tracking()
         {
@@ -1931,6 +1954,28 @@ impl Desktop
             Input::Move(point) =>
             {
                 self.events.mouse = point;
+                if self.system_bar.is_tracking()
+                {
+                    if (0..20).contains(&point.v) && !self.system_bar.title_bounds().contains(point)
+                    {
+                        if self.menus.begin(point)
+                        {
+                            self.system_bar.cancel();
+                            self.redraw = true;
+                        }
+                        else
+                        {
+                            // A menu-less app has no app bar to capture this
+                            // held gesture. Keep System tracking for re-entry.
+                            self.redraw |= self.system_bar.hover(point);
+                        }
+                    }
+                    else
+                    {
+                        self.redraw |= self.system_bar.hover(point);
+                    }
+                    return;
+                }
                 if self.app_menu.is_tracking()
                 {
                     self.redraw |= self.app_menu.hover(point);
@@ -1938,7 +1983,16 @@ impl Desktop
                 }
                 if self.menus.is_tracking()
                 {
-                    self.redraw |= self.menus.hover(point);
+                    if self.system_bar.title_bounds().contains(point)
+                    {
+                        self.menus.cancel_tracking();
+                        self.system_bar.begin(point);
+                        self.redraw = true;
+                    }
+                    else
+                    {
+                        self.redraw |= self.menus.hover(point);
+                    }
                     return;
                 }
                 if let Some(action) = self.windows.track(point, false, &mut self.events, when)
@@ -1960,6 +2014,12 @@ impl Desktop
                 }
                 if down
                 {
+                    if self.system_bar.begin(point)
+                    {
+                        self.menus.cancel_tracking();
+                        self.redraw = true;
+                        return;
+                    }
                     if self.app_menu.begin(point)
                     {
                         self.redraw = true;
@@ -2058,6 +2118,18 @@ impl Desktop
                 }
                 else
                 {
+                    if self.system_bar.is_tracking()
+                    {
+                        if let Some((item, action)) = self.system_bar.release(point)
+                        {
+                            self.start_apple_menu_feedback(item, action, false, when);
+                        }
+                        else
+                        {
+                            self.redraw = true;
+                        }
+                        return;
+                    }
                     if self.app_menu.is_tracking()
                     {
                         if let Some(action) = self.app_menu.release(point)
@@ -2103,6 +2175,15 @@ impl Desktop
                          modifiers,
                          .. } =>
             {
+                if down
+                   && character == 27
+                   && (self.system_bar.is_tracking() || self.menus.is_tracking())
+                {
+                    self.system_bar.cancel();
+                    self.menus.cancel_tracking();
+                    self.redraw = true;
+                    return;
+                }
                 if down
                    && modifiers & CMD_KEY != 0
                    && self.menus.has_key(character)
@@ -2224,19 +2305,33 @@ impl Desktop
                   };
                   event.map(|event| (event, if positioned { self.event_position(event, self.owner) } else { Default::default() }))
               });
-        let available = event.is_some();
-        let (event, mut position) = event.unwrap_or_else(|| {
-                                             let event = self.events.null_event(when);
-                                             (event,
-                                              if positioned
-                                              {
-                                                  self.event_position(event, self.owner)
-                                              }
-                                              else
-                                              {
-                                                  Default::default()
-                                              })
-                                         });
+        let mut available = event.is_some();
+        let (mut event, mut position) = event.unwrap_or_else(|| {
+                                                 let event = self.events.null_event(when);
+                                                 (event,
+                                                  if positioned
+                                                  {
+                                                      self.event_position(event, self.owner)
+                                                  }
+                                                  else
+                                                  {
+                                                      Default::default()
+                                                  })
+                                             });
+        if self.dialogs.system_menu && event.window == self.dialogs.window
+        {
+            if event.kind == EventKind::Update
+            {
+                if let Err(status) = self.service_system_menu_dialog(event)
+                {
+                    serial!("ABOUT_SYSTEM_PAINT_FAILED status={status}; protocol released or \
+                             owned cleanup retained");
+                }
+            }
+            event = self.events.null_event(when);
+            position = Default::default();
+            available = false;
+        }
         // Disposal/reuse never transfers a queued coordinate to another object.
         if position.window != 0
            && (!self.owns(WindowId(position.window))
@@ -2291,6 +2386,7 @@ impl Desktop
         // recomposed if an application changes pixels beneath that overlay.
         self.redraw |= !self.content_damage.is_empty()
                        && (self.menus.is_tracking()
+                           || self.system_bar.is_tracking()
                            || self.app_menu.is_tracking()
                            || self.windows.tracking_repaints_scene());
         let full = self.redraw;
@@ -2410,16 +2506,35 @@ impl Desktop
                 self.enter(caller);
                 return;
             }
-            self.menu_cache.paint(&mut canvas,
-                                  (self.foreground,
-                                   self.menus.selected_menu(),
-                                   self.app_menu.is_tracking()),
-                                  |canvas| {
-                                      self.menus.draw_bar(canvas, &mut self.system_bar);
-                                      self.app_menu.draw_bar(canvas);
-                                  });
-            self.menus.draw_popup(&mut canvas);
-            self.app_menu.draw_popup(&mut canvas);
+            let menu_paint = self.menu_cache
+                                 .paint(&mut canvas,
+                                        (self.foreground,
+                                         self.menus.selected_menu(),
+                                         self.app_menu.is_tracking(),
+                                         self.system_bar.bar_selected()),
+                                        |canvas| {
+                                            self.system_bar.draw_bar(canvas)?;
+                                            self.menus.draw_bar(canvas)?;
+                                            self.app_menu.draw_bar(canvas)
+                                        })
+                                 .and_then(|_| self.menus.draw_popup(&mut canvas))
+                                 .and_then(|_| self.system_bar.draw_popup(&mut canvas))
+                                 .and_then(|_| self.app_menu.draw_popup(&mut canvas));
+            if let Err(error) = menu_paint
+            {
+                if !self.frame_incomplete
+                {
+                    serial!("MENU_PAINT_FAILED menu={} status={}; incomplete frame deferred",
+                            error.menu, error.status);
+                }
+                self.frame_incomplete = true;
+                self.redraw = true;
+                // Retain pre-admitted damage storage and pending flash damage
+                // while retrying the refused frame.
+                self.presentation_damage = damaged;
+                self.enter(caller);
+                return;
+            }
             self.redraw = false;
             self.content_damage.clear();
             crate::trace::record(crate::trace::RENDER,
@@ -2602,7 +2717,10 @@ damaged.push(clip);
         {
             return Feedback::outline(shape, Clip::Screen);
         }
-        if self.menus.is_tracking() || self.app_menu.is_tracking() || self.windows.is_tracking()
+        if self.menus.is_tracking()
+           || self.system_bar.is_tracking()
+           || self.app_menu.is_tracking()
+           || self.windows.is_tracking()
         {
             return Feedback::default();
         }

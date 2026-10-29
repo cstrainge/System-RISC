@@ -65,7 +65,8 @@ pub(super) unsafe fn dispatch(pointer: *mut (), size: usize) -> i64
                               let at = menus.len();
                               let system_bar =
                                   match crate::toolbox::menus::SystemBar::new(definition,
-                                                                              super::host_gate)
+                                                                              super::host_gate,
+                                                                              crate::toolbox::resources::manager::Manager::new(&session.resources, &session.application, session.fonts.resources()))
                                   {
                                       Ok(bar) => bar,
                                       Err(status) => return status as i64

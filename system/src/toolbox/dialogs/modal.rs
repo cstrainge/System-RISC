@@ -18,6 +18,7 @@ pub(crate) struct DialogState
     pub alert:         Option<Arc<Alert>>,
     pub controls:      Vec<Option<u64>>,
     pub tracking:      Option<usize>,
+    pub system_menu:   bool,
     recovery_activity: Option<crate::recovery::Activity>
 }
 static EMPTY: DialogState = DialogState { previous:          None,
@@ -25,6 +26,7 @@ static EMPTY: DialogState = DialogState { previous:          None,
                                           alert:             None,
                                           controls:          Vec::new(),
                                           tracking:          None,
+                                          system_menu:       false,
                                           recovery_activity: None };
 impl DialogState
 {
@@ -131,6 +133,7 @@ impl Manager
                                   alert: Some(alert),
                                   controls,
                                   tracking: None,
+                                  system_menu: false,
                                   recovery_activity: activity.clone() };
         let id = if let Some(subject) = core_subject
         {

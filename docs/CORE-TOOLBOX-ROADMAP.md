@@ -258,19 +258,17 @@ separate from closing original System 7 font-fidelity differences in R4.
 
 ### P5 — System-owned Apple menu
 
-Status: persistent leftmost Apple title implemented, including empty/cleared app
-bars and resource-based app sections recognized by title rather than menu ID.
-System owns that title alongside its right-hand application menu. Shared System
-entries and their dispatch, plus the remaining contribution APIs and legacy
-projection, remain backlog. The remaining design adds contribution APIs and
-System entries, tracking and dispatch. Foreground changes and cleanup must
-preserve the title while restoring/removing the app section.
+Status: native core implemented. System supplies a persistent leftmost Apple
+popup with resource-backed About System RISC and resident dispatch in every app.
+Ordinary owned Apple-title resources contribute app rows without replacing the
+System section, regardless of resource ID or installation order. Native selection
+maps back to app menu IDs, logical item indices and captured command owners;
+foreground changes and cleanup retain the System popup.
 
-Compose legacy Apple-title MENU/MBAR content without duplication, preserving
-app-visible IDs, item indices, mutation and selection behavior through the legacy
-projection. Verify original behavior rather than hardcoding the conventional
-menu ID. Cover empty/cleared bars, app switching, crash cleanup, ownership and
-bounded menu-cache invalidation. See [the Menu Manager plan](../system/src/toolbox/menus/README.md#persistent-apple-title-and-remaining-system-menu-work).
+Remaining gates include Apple Menu Items folder launching, desk accessories,
+hierarchy/scrolling and original 68k MENU/MBAR mutation/selection semantics. The
+native implementation and its limits are described in
+[the Menu Manager contract](../system/src/toolbox/menus/README.md#system-owned-apple-popup).
 
 ### P6 — Control panels and kernel extensions
 

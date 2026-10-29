@@ -718,9 +718,25 @@ impl Desktop
         }
     }
 
+    pub(super) fn refresh_system_menu(&mut self)
+    {
+        let caller = self.owner;
+        self.enter(self.foreground);
+        if let Err(status) = self.menus.refresh_apple(&mut self.system_bar, self.foreground)
+        {
+            self.system_bar.reset(self.foreground);
+            serial!("APPLE_MENU_REFRESH_FAILED status={status}; app section removed, System \
+                     commands retained");
+        }
+        self.menu_cache.invalidate();
+        self.redraw = true;
+        self.enter(caller);
+    }
+
     fn refresh_app_menu(&mut self)
     {
         crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+            self.refresh_system_menu();
             self.menu_cache.invalidate();
             if self.processes.get(self.foreground).is_ok_and(|process| process.info.thread == 0)
             {
@@ -789,6 +805,8 @@ impl Desktop
             return Ok(());
         }
         self.cancel_menu_feedback();
+        self.system_bar.cancel();
+        self.menus.cancel_tracking();
         self.processes.activate(id)?;
         self.foreground = id;
         self.cursor_dirty |= self.responsiveness.foreground(id, Self::when());

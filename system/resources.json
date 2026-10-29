@@ -9,6 +9,43 @@
   "description": "System RISC native operating system",
   "resources": [
     {
+      "type": "MENU",
+      "id": -16488,
+      "symbol": "SYSTEM_APPLE_MENU",
+      "name": "System Apple menu",
+      "payload": {
+        "format": "menu",
+        "title": "\u0014",
+        "items": [
+          {
+            "text": "About System RISC\u2026",
+            "enabled": true,
+            "command": "asys"
+          }
+        ]
+      }
+    },
+    {
+      "type": "ALRT",
+      "id": -16463,
+      "symbol": "ABOUT_SYSTEM_ALERT",
+      "name": "About System RISC",
+      "payload": {
+        "format": "hex",
+        "hex": "0000000000a00168bfb14444300a"
+      }
+    },
+    {
+      "type": "DITL",
+      "id": -16463,
+      "symbol": "ABOUT_SYSTEM_ITEMS",
+      "name": "About System RISC items",
+      "payload": {
+        "format": "hex",
+        "hex": "00030000000000780118008c015004024f4b0000000000100014002a0154880b53797374656d205249534300000000000030001400480154880a56657273696f6e205e30000000000050001400680154882641204d6163696e746f73682d696e737069726564206f7065726174696e672073797374656d2e"
+      }
+    },
+    {
       "type": "ALRT",
       "id": -16460,
       "symbol": "CORE_ERROR_ALERT",

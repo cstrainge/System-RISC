@@ -10,6 +10,8 @@ pub struct Selection
     pub command: u32
 }
 use mac_abi::menus::*;
+/// The composed, read-only System Apple menu.
+pub const APPLE_MENU: MenuId = MenuId(SYSTEM_APPLE_MENU_ID);
 pub use mac_traps::{Client, Error, Result};
 use toolbox_events::{Event, Modifiers};
 #[derive(Clone, Copy)]
@@ -30,6 +32,12 @@ impl<'a> Menus<'a>
         self.client.menu(&mut MenuCall { operation: INSTALL,
                                          scope: scope.raw(),
                                          menu_id: id,
+                                         ..Default::default() })
+    }
+
+    pub fn about_system(self) -> Result<()>
+    {
+        self.client.menu(&mut MenuCall { operation: SHOW_ABOUT_SYSTEM,
                                          ..Default::default() })
     }
 

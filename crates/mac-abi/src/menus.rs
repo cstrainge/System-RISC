@@ -15,6 +15,10 @@ pub const FIND: u32 = 8;
 pub const SET_ITEM: u32 = 9;
 /// Truncate a dynamic menu; growing requires initialized SET_ITEM requests.
 pub const TRUNCATE: u32 = 10;
+/// Open the resident About System dialog for the foreground application.
+pub const SHOW_ABOUT_SYSTEM: u32 = 11;
+/// Read-only desktop Apple menu; app sections retain their own menu identities.
+pub const SYSTEM_APPLE_MENU_ID: i16 = -16488;
 pub const MAX_ITEMS: usize = 31;
 pub const MDEF: u32 = u32::from_be_bytes(*b"MDEF");
 pub const MEASURE: i16 = 0;

@@ -96,6 +96,7 @@ impl super::Desktop
         if self.redraw
            || !self.content_damage.is_empty()
            || self.menus.is_tracking()
+           || self.system_bar.is_tracking()
            || self.app_menu.is_tracking()
            || self.windows.is_tracking()
         {

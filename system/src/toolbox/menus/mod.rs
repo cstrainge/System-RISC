@@ -10,23 +10,25 @@ use crate::toolbox::{handles::{KindLease, OwnerRef, Store},
                      resources::manager::Manager as Resources};
 pub(crate) mod lifetime;
 
-/// One System-owned title/layout, independent of every application menu list.
-/// App resources with the Apple title contribute their own items at this slot.
-pub(crate) struct SystemBar
+mod apple;
+pub(crate) use apple::{Action as AppleAction, SystemBar};
+
+/// A definition refusal must never become a cached, partially painted menu bar.
+pub(crate) struct PaintError
 {
-    apple: Box<MenuDefinitionState>
+    pub menu:   i16,
+    pub status: Status
 }
-impl SystemBar
+pub(crate) fn painted(menu: i16, reply: i64) -> Result<(), PaintError>
 {
-    pub(crate) fn new(entry: DefinitionEntry, gate: TrapGate) -> Result<Self, Status>
+    if reply == 0
     {
-        use mac_object_table::shared::InvocationGate as _;
-        let mut apple = crate::toolbox::handles::InvocationGate::with_system_allocation(new_state)?;
-        apple.title[0] = 0x14;
-        apple.title_length = 1;
-        apple.title_bounds.left = 10;
-        Manager::measure_with(entry, gate, &mut apple)?;
-        Ok(Self { apple })
+        Ok(())
+    }
+    else
+    {
+        Err(PaintError { menu,
+                         status: i32::try_from(reply).unwrap_or(BAD_ABI) })
     }
 }
 
@@ -36,8 +38,9 @@ fn is_apple(state: &MenuDefinitionState) -> bool
 }
 struct Menu
 {
-    id:    u64,
-    state: Box<MenuDefinitionState>
+    id:       u64,
+    state:    Box<MenuDefinitionState>,
+    revision: u64
 }
 #[derive(Clone, Copy)]
 struct Layout
@@ -233,7 +236,7 @@ impl Manager
                     let removed = &values.get(id).ok_or(NOT_FOUND)?.state;
                     let mut left = if is_apple(removed)
                     {
-                        system_bar.apple.title_bounds.right
+                        system_bar.title_bounds().right
                     }
                     else
                     {
@@ -301,7 +304,16 @@ impl Manager
                     }
                     Err(error) => return Err(error)
                 }
+                if state.menu_id == SYSTEM_APPLE_MENU_ID
+                   || state.menu_id == crate::toolbox::processes::menu::MENU_ID
+                {
+                    return Err(ACCESS_DENIED);
+                }
                 let apple = is_apple(&state);
+                if apple && state.item_count as usize > apple::MAX_APP_ITEMS
+                {
+                    return Err(NO_MEMORY);
+                }
                 if self.menu_id(state.menu_id).is_some()
                    || (apple
                        && self.bar().is_some_and(|bar| {
@@ -332,14 +344,14 @@ impl Manager
                 }
                 state.title_bounds.left = if apple
                 {
-                    system_bar.apple.title_bounds.left
+                    system_bar.title_bounds().left
                 }
                 else
                 {
                     self.bar()
                         .and_then(|bar| bar.order.last())
                         .and_then(|id| self.objects.get(*id))
-                        .map_or(system_bar.apple.title_bounds.right, |menu| {
+                        .map_or(system_bar.title_bounds().right, |menu| {
                             menu.state.title_bounds.right
                         })
                 };
@@ -361,7 +373,8 @@ impl Manager
                 let id = self.objects
                              .insert_with(owner, |id| {
                                  Menu { id,
-                                        state }
+                                        state,
+                                        revision: 1 }
                              })
                              .map_err(pool_status)?;
                 let Some(bar) = self.bar_mut()
@@ -443,6 +456,12 @@ impl Manager
                         return Ok(false);
                     }
                 }
+                if is_apple(current)
+                   && call.operation == SET_ITEM
+                   && usize::from(call.item) > apple::MAX_APP_ITEMS
+                {
+                    return Err(NO_MEMORY);
+                }
                 // No-change exits precede both allocation and MDEF measurement.
                 let mut state = new_state()?;
                 state.as_mut().clone_from(current.as_ref());
@@ -457,7 +476,9 @@ impl Manager
                     state.item_count = state.item_count.max(u32::from(call.item));
                 }
                 self.measure(&mut state)?;
-                self.objects.get_mut(id).ok_or(NOT_FOUND)?.state = state;
+                let menu = self.objects.get_mut(id).ok_or(NOT_FOUND)?;
+                menu.state = state;
+                menu.revision = menu.revision.wrapping_add(1);
                 if let Some(bar) = self.bar_mut()
                 {
                     bar.cancel();
@@ -483,6 +504,10 @@ impl Manager
                     let enabled = u32::from(call.value != 0);
                     let changed = menu.state.enabled != enabled;
                     menu.state.enabled = enabled;
+                    if changed
+                    {
+                        menu.revision = menu.revision.wrapping_add(1);
+                    }
                     return Ok(changed);
                 }
                 let item = menu.state
@@ -514,6 +539,10 @@ impl Manager
                         false
                     }
                 };
+                if changed
+                {
+                    menu.revision = menu.revision.wrapping_add(1);
+                }
                 Ok(changed)
             }
             _ => Err(NOT_SUPPORTED)
@@ -597,7 +626,9 @@ impl Manager
                                                                     self.objects
                                                                         .get(*id)
                                                                         .is_some_and(|menu| {
-                                                                            menu.state.enabled != 0
+                                                                            !is_apple(&menu.state)
+                                                                            && menu.state.enabled
+                                                                               != 0
                                                                             && menu.state
                                                                                    .title_bounds
                                                                                    .contains(point)
@@ -764,19 +795,30 @@ impl Manager
         self.objects.get(self.bar()?.active?).map(|menu| menu.state.menu_id)
     }
 
-    pub(crate) fn draw_bar(&mut self, canvas: &mut Canvas, system_bar: &mut SystemBar)
+    pub(crate) fn refresh_apple(&mut self, system: &mut SystemBar, owner: u64)
+                                -> Result<(), Status>
+    {
+        let id = self.id_at(0)
+                     .filter(|id| self.objects.get(*id).is_some_and(|menu| is_apple(&menu.state)));
+        let changed = system.refresh(owner, id.and_then(|id| self.objects.get(id)))?;
+        if changed && let Some(menu) = id.and_then(|id| self.objects.get_mut(id))
+        {
+            // Public app layout reflects its displayed rows while logical
+            // item count and indices remain those of the app resource.
+            system.apply_layout(&mut menu.state);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn command_valid(&self, id: u64, selection: Selection) -> bool
+    {
+        self.selection(id, selection.item as i16) == Some(selection)
+    }
+
+    pub(crate) fn draw_bar(&mut self, canvas: &mut Canvas) -> Result<(), PaintError>
     {
         canvas.reset_port();
         let count = self.bar().map_or(0, |bar| bar.order.len());
-        let apple = self.id_at(0)
-                        .and_then(|id| self.objects.get(id))
-                        .is_some_and(|menu| is_apple(&menu.state));
-        if !apple
-        {
-            system_bar.apple.first = 1;
-            let mut surface = Surface::from_canvas(canvas);
-            invoke(self.entry, self.gate, &mut system_bar.apple, DRAW_BAR, 0, &mut surface);
-        }
         let active = self.bar().and_then(|bar| bar.active);
         let selected = self.bar().is_some_and(|bar| bar.popup || bar.highlighted != 0);
         for index in 0..count
@@ -791,32 +833,41 @@ impl Manager
             {
                 continue;
             };
-            menu.state.first = u32::from(index == 0 && apple);
+            if is_apple(&menu.state)
+            {
+                continue;
+            }
+            menu.state.first = 0;
             menu.state.bar_selected = u32::from(active == Some(id) && selected);
             let mut surface = Surface::from_canvas(canvas);
-            invoke(self.entry, self.gate, &mut menu.state, DRAW_BAR, 0, &mut surface);
+            painted(menu.state.menu_id,
+                    invoke(self.entry, self.gate, &mut menu.state, DRAW_BAR, 0, &mut surface))?;
         }
+        Ok(())
     }
 
-    pub fn draw_popup(&mut self, canvas: &mut Canvas)
+    pub(crate) fn draw_popup(&mut self, canvas: &mut Canvas) -> Result<(), PaintError>
     {
         canvas.reset_port();
         let Some(bar) = self.bar()
         else
         {
-            return;
+            return Ok(());
         };
         if !bar.popup
         {
-            return;
+            return Ok(());
         }
         let (active, highlighted) = (bar.active, bar.highlighted);
         if let Some(menu) = active.and_then(|id| self.objects.get_mut(id))
+           && !is_apple(&menu.state)
         {
             menu.state.highlighted = highlighted;
             let mut surface = Surface::from_canvas(canvas);
-            invoke(self.entry, self.gate, &mut menu.state, DRAW_POPUP, 0, &mut surface);
+            painted(menu.state.menu_id,
+                    invoke(self.entry, self.gate, &mut menu.state, DRAW_POPUP, 0, &mut surface))?;
         }
+        Ok(())
     }
 }
 fn copy_text(output: &mut [u8], length: &mut u32, raw: &[u8]) -> Result<(), Status>

@@ -1059,6 +1059,7 @@ impl super::Desktop
            || info.window.0 == 0
            || info.dismissed != 0
            || self.windows.window(info.window).is_none()
+           || self.system_bar.is_tracking()
            || self.app_menu.is_tracking()
            || self.menus.is_tracking()
            || self.windows.is_tracking()

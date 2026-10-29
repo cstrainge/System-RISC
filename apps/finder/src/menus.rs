@@ -2,7 +2,6 @@
 use mac_toolbox::{Error, *};
 
 use crate::browser::Browser;
-pub const ABOUT: u32 = u32::from_be_bytes(*b"abou");
 pub const NEW_FOLDER: u32 = u32::from_be_bytes(*b"new ");
 pub const OPEN: u32 = u32::from_be_bytes(*b"sope");
 pub const SELECT_ALL: u32 = u32::from_be_bytes(*b"sela");
@@ -14,12 +13,11 @@ pub const SHOW_CLIPBOARD: u32 = u32::from_be_bytes(*b"shcl");
 pub const EMPTY: u32 = u32::from_be_bytes(*b"empt");
 pub const RESTART: u32 = u32::from_be_bytes(*b"rest");
 pub const SHUTDOWN: u32 = u32::from_be_bytes(*b"shut");
-pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 6], Error>
+pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 5], Error>
 {
     let menus = system.menus();
     menus.clear()?;
-    let installed = [menus.install_owned(resources::APPLICATION, 1251)?,
-                     menus.install_owned(resources::APPLICATION, 1252)?,
+    let installed = [menus.install_owned(resources::APPLICATION, 1252)?,
                      menus.install_owned(resources::APPLICATION, 1253)?,
                      menus.install_owned(resources::APPLICATION, 1254)?,
                      menus.install_owned(resources::APPLICATION, 1256)?,

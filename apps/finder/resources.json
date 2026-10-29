@@ -77,24 +77,6 @@
     },
     {
       "type": "MENU",
-      "id": 1251,
-      "symbol": "APPLE_MENU",
-      "name": "Native Finder \u0014 menu",
-      "payload": {
-        "format": "menu",
-        "title": "\u0014",
-        "items": [
-          {
-            "text": "About System RISC…",
-            "enabled": true,
-            "command": "abou"
-          },
-          "-"
-        ]
-      }
-    },
-    {
-      "type": "MENU",
       "id": 1252,
       "symbol": "FILE_MENU",
       "name": "Native Finder File menu",

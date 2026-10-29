@@ -48,38 +48,6 @@ fn try_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, result: R
     }
 }
 
-fn about(system: &System<'_>, id: WindowId) -> Result<(), Error>
-{
-    system.begin_update(id)?;
-    let port = system.quickdraw().graphics(id);
-    port.reset()?;
-    port.colors(0xffffff, 0xffffff)?;
-    port.paint_rect(Rect::new(0, 0, 300, 210))?;
-    for (y, index) in [(20, 4), (45, 5), (70, 6), (100, 7), (120, 8), (140, 9), (160, 10)]
-    {
-        let mut bytes = [0; 768];
-        let text = ui::text(system, index, &mut bytes)?;
-        port.text(mac_toolbox::quickdraw::fonts::FontSelection { family: 3,
-                                                                 size:   9,
-                                                                 face:   0 },
-                  Point { h: 16,
-                          v: y },
-                  text,
-                  0)?;
-    }
-    system.end_update(id)
-}
-fn open_about(system: &System<'_>, id: &mut WindowId) -> Result<(), Error>
-{
-    if *id == WindowId(0) || system.window(*id).is_err()
-    {
-        let mut bytes = [0; 768];
-        let title = ui::text(system, 3, &mut bytes)?;
-        *id = system.new_window(Rect::new(250, 150, 550, 345), title, (260, 180), 0)?;
-    }
-    system.select_window(*id)?;
-    about(system, *id)
-}
 fn finder(system: &System<'_>) -> Result<(), Error>
 {
     let mut browser = browser::Browser::default();
@@ -94,7 +62,6 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     {
         update_menus(system, &browser, &info)?;
     }
-    let mut about_id = WindowId(0);
     let mut clipboard = clipboard::Viewer::default();
     let _ = try_action(system, &mut alerts, watches.poll(system, &mut browser))?;
     loop
@@ -388,7 +355,6 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 menus::PUT_AWAY => browser.put_away(system),
                 menus::CLEAR => browser.trash_selection(system),
                 menus::EMPTY => alerts.confirm_empty(system, &browser),
-                menus::ABOUT => open_about(system, &mut about_id),
                 menus::SHOW_CLIPBOARD => clipboard.open(system),
                 menus::RESTART | menus::SHUTDOWN =>
                 {
@@ -420,11 +386,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         {
             Event::Update { .. } =>
             {
-                if event.window().unwrap_or_default() == about_id && about_id != WindowId(0)
-                {
-                    about(system, about_id)?;
-                }
-                else if browser.contains(event.window().unwrap_or_default())
+                if browser.contains(event.window().unwrap_or_default())
                 {
                     let _ = try_action(system,
                                        &mut alerts,
@@ -459,7 +421,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                                    .modifiers
                                    .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
-                    let _ = try_action(system, &mut alerts, open_about(system, &mut about_id))?;
+                    let _ = try_action(system, &mut alerts, system.menus().about_system())?;
                 }
                 else if key == 'i'
                           && event.input()

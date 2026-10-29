@@ -333,25 +333,31 @@ impl ApplicationMenu
         self.highlighted = 0;
     }
 
-    pub fn draw_bar(&mut self, canvas: &mut Canvas<'_>)
+    pub(crate) fn draw_bar(&mut self, canvas: &mut Canvas<'_>)
+                           -> Result<(), crate::toolbox::menus::PaintError>
     {
         self.state.first = 0;
         self.state.bar_selected = u32::from(self.tracking);
         canvas.reset_port();
         let mut surface = Surface::from_canvas(canvas);
-        invoke(self.definition, self.gate, &mut self.state, DRAW_BAR, 0, &mut surface);
+        crate::toolbox::menus::painted(MENU_ID,
+                                       invoke(self.definition, self.gate, &mut self.state,
+                                              DRAW_BAR, 0, &mut surface))
     }
 
-    pub fn draw_popup(&mut self, canvas: &mut Canvas<'_>)
+    pub(crate) fn draw_popup(&mut self, canvas: &mut Canvas<'_>)
+                             -> Result<(), crate::toolbox::menus::PaintError>
     {
         if !self.tracking
         {
-            return;
+            return Ok(());
         }
         self.state.highlighted = self.highlighted;
         canvas.reset_port();
         let mut surface = Surface::from_canvas(canvas);
-        invoke(self.definition, self.gate, &mut self.state, DRAW_POPUP, 0, &mut surface);
+        crate::toolbox::menus::painted(MENU_ID,
+                                       invoke(self.definition, self.gate, &mut self.state,
+                                              DRAW_POPUP, 0, &mut surface))
     }
 }
 
