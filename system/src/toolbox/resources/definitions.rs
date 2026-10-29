@@ -7,7 +7,9 @@ pub(crate) fn invoke(entry: DefinitionEntry, call: &mut DefinitionCall) -> i64
     #[cfg(target_arch = "riscv64")]
     {
         crate::context::current_thread_context().definitions
-                                                .with(call.kind, call.id, || unsafe { entry(call) })
+                                                .with(call.kind, call.id, call.surface, || unsafe {
+                                                    entry(call)
+                                                })
     }
     #[cfg(not(target_arch = "riscv64"))]
     unsafe {

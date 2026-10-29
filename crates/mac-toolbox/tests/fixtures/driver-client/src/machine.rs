@@ -75,6 +75,30 @@ pub fn worker_descriptor_refusals()
     log(format_args!("MODULE_WORKER_DESCRIPTOR_REFUSALS_PASS size=72 old=bad-abi \
                       affinity=bad-argument reserved=bad-argument capture=retained\n"));
 }
+/// A direct worker has no resident definition scope. Refusal must precede
+/// request borrowing; these null/zero-size envelopes are deliberately invalid.
+#[cfg(all(feature = "workers", not(feature = "pressure")))]
+pub fn worker_toolbox_refusals()
+{
+    for number in [mac_abi::traps::THEME,
+                   mac_abi::traps::FONT,
+                   mac_abi::traps::SURFACE,
+                   mac_abi::traps::WAIT_EVENT]
+    {
+        let mut result = 0usize;
+        // SAFETY: the ordinary worker gate must reject before borrowing any
+        // request. No pointee is supplied or authorized by this negative probe.
+        unsafe {
+            core::arch::asm!("ecall", in("a7") number,
+                inlateout("a0") result, in("a1") 0usize, clobber_abi("C"));
+        }
+        assert_eq!(result as isize as i32,
+                   mac_abi::WRONG_THREAD,
+                   "direct worker Toolbox admission changed for trap {number:#x}");
+    }
+    log(format_args!("MODULE_WORKER_TOOLBOX_REFUSALS_PASS requests=4 status=wrong-thread \
+                      before-borrow=yes\n"));
+}
 #[cfg(not(feature = "pressure"))]
 pub fn current_token() -> Result<u64>
 {

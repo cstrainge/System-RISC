@@ -13,32 +13,36 @@ state attached to the application/context, not global scheduler state. Native
 module workers use the separate contract below. General native application-thread
 creation remains open.
 
-The first native implementation now schedules Finder and separately loaded APPLs
-on one RV64 hart. Supervisor timer interrupts preempt application and admitted
-module-worker code independently of Toolbox calls. Registered, fallibly grown
-application thread records own independent page-backed stacks (4 MiB by default,
-selected by the checked platform policy within 64 KiB–8 MiB),
-separately page-backed saved integer/FP/vector state (storage scales with hardware
-VLEN) and
-trusted AppId/ThreadId contexts. Native entry uses a separate 4 MiB System stack
-before saving CPU state; the same stack serves bootstrap and synchronous I/O
-under scoped executor/subject identity. Sv39 maps that System stack between
-unmapped guard pages; application stacks still use trusted physmap aliases.
-Kernel traps mask
-interrupts, including nested definition calls, so allocator and manager guards
-cannot be preempted by another application on this hart. Native event waits now
-block the actual application thread, with a separate idle WFI context. The checked
-platform currently selects a 250-microsecond quantum. Bootstrap selection gives a
-fresh foreground input wake priority over background and timeout wakes. An
-optional SCHD provider may supply a decision through the primary-only resident
-policy path; final readiness/claim/frame authority remains in the core. No manager
-guard or borrowed request crosses the context switch. General application-worker
-APIs, blocking primitives, migration and concurrent execution of authored code
-across multiple harts remain future work. The privileged module-worker backend
-is described below; discovered peers can separately complete System-idle startup. The dynamic capacity SDK gate now runs ten apps together,
-delivers physical keys to all nine workers and repeats with fresh identities after actual exits and slot reuse. A private
-RV64 SDK gate has demonstrated another app progressing during a
-no-trap/no-yield interval, plus launch, relaunch, ownership, input, hide and exit.
+The RV64 implementation schedules Finder, separately loaded APPLs and native
+module workers on the core-admitted eligible CPUs. The normal QemuRISC-V image
+has four physical CPUs and installs Multi-Scheduler; without an active policy,
+boot scheduling stays on the primary. Supervisor timer interrupts preempt
+application and admitted worker bodies independently of Toolbox calls.
+Registered, fallibly grown thread records own independent page-backed stacks
+(4 MiB by default, selected by checked platform policy within 64 KiB–8 MiB),
+separately page-backed complete integer/FP/vector state sized to actual VLEN,
+and trusted execution contexts. Each hart has its own guarded 4 MiB System
+service stack and affine idle executor. Application stacks still use trusted
+physmap aliases; shared supervisor mappings do not provide process isolation.
+
+The shared scheduler owns cross-CPU running claims. Local interrupt masking
+protects a CPU's bounded entry/metadata turns; shared atomic locks provide
+cross-CPU exclusion. No manager guard or borrowed request crosses a handoff.
+Primary-owned services migrate the actual calling continuation before request
+borrowing; direct Host callbacks retain a primary-service lease. Neither path
+impersonates another executor. The checked platform currently selects a
+250-microsecond quantum. The SCHD provider chooses from copied facts, while core
+commits the same active generation and actual THRD claim together. Physical
+input, compositor/firmware work and maintenance remain primary-owned. Idle peers
+use genuine readiness wakes rather than periodic author scheduling.
+
+General application-thread creation and broader blocking APIs remain open.
+Bounded optimized native observations include same-stack migration of two apps
+and two Automatic workers, overlapping bodies on four CPUs, real services and
+policy demotion/repromotion/retirement. These scenarios do not prove absence of
+races, timing bounds or whole-OS correctness. [SCHEDULING.md](SCHEDULING.md) records
+the exact artifacts, observations and remaining gates. Earlier single-hart
+captures below retain their narrower historical scope.
 
 Each scheduling boundary services physical input, cursor presentation and event
 wakes before background jobs, provider continuations, document delivery and
@@ -101,9 +105,10 @@ the caller's AppId/ThreadId at entry. Copying or moving a client does not transf
 object ownership between applications. Operations requiring a particular OS
 thread still report the typed `Error::WrongThread`; movement is not an exemption.
 Manager methods taking Copy `self` do not express exclusive resident access;
-the System guard supplies that serialization. The public SDK concurrency test
-exercises actual shared Memory Manager reads, writes, allocations and cleanup.
-This contract does not claim UI worker threads or SMP are implemented.
+the System guard supplies that serialization. Host-linked SDK concurrency
+fixtures are not native execution evidence. The native SMP scenarios described
+in [SCHEDULING.md](SCHEDULING.md) exercise ordinary app and module-worker paths;
+they do not add general application UI-worker APIs or qualify every SDK method.
 
 ## Execution identities
 
@@ -143,11 +148,25 @@ module-worker execution, while the diagnostic LOG operation remains available.
 actual eligible CPU set without an author opt-in when more CPUs become usable.
 `prepare_worker_with_affinity` can request `WorkerAffinity::Primary` for a genuine
 primary-CPU restriction. Neither choice activates a CPU or bypasses service,
-frame or running-claim safety. The current core floor remains primary-only; the
-resident placement integration and cross-hart execution still need their gates.
+frame or running-claim safety. Current placement may span multiple eligible
+CPUs after genuine policy admission. Temporary primary service obligations are
+independent of that declared affinity; clearing an obligation never removes an
+explicit Primary restriction.
 The native ABI1 worker descriptor is now72 bytes, with affinity/reserved at64/68;
 the module layout fingerprint includes this size and the unchanged48-byte worker
 call. Rebuild System and every module together. There is no earlier-size decoder.
+
+Scheduler input maintenance may invoke a loaded WDEF, CDEF or MDEF while the
+interrupted executor is still a module worker. The validated definition adapter
+scopes that invocation's borrowed surface on the existing thread. Only the
+primary CPU admits its synchronous drawing to that exact surface, font
+measurement, theme reads and definition panic reporting. Borrowed bitmap, PNG,
+picture bytes and resource-icon drawing use the normal resident services.
+Application objects, event waits, file loading and resource mutation are not
+admitted by this scope. It restores the previous definition and surface on
+return without changing executor identity, allocation authority or resource
+selection. A worker body cannot acquire it through a trap request; a peer cannot
+migrate a drawing borrow. Unknown operations remain refused.
 
 The QemuRISC-V policy defaults to a 4 MiB stack and 16 MiB Kernel budget per
 module, with zero Application-class allowance. Page-rounded stack backing,
@@ -281,10 +300,10 @@ extension service.
 The architecture selects execution state from this CPU's actual admitted
 `sscratch` control. Active context, current scheduler position, synchronous I/O
 selection and idle stack/CPU backing belong to that hart record. Runtime lookup
-never falls back to a frozen boot hart number. The primary remains the only
-scheduling-eligible record. Normal graphical
-boot admits peers to their own canonical System idle; readiness alone does not
-authorize application or module execution.
+never falls back to a frozen boot hart number. Normal graphical boot admits
+peers to their own canonical System idle. An active scheduler can request
+additional dispatch-eligible rows through their retained readiness receipts;
+readiness alone does not authorize application or module execution.
 
 Cold bootstrap publishes an allocation-free control after checked BootInfo and
 the one-shot System-entry claim. It cannot serve traps: its entering flag is
@@ -330,7 +349,7 @@ non-reentrant global lock to the invocation gate: owner-ledger growth can alloca
 and enter that gate again. Concurrent scheduling and reclamation still require
 target qualification, not inference from source locks or a host suite.
 
-Bounded native observations used optimized no_std RV64 QEMU, one hart, 8 GiB,
+Earlier bounded native observations used optimized no_std RV64 QEMU, one hart, 8 GiB,
 800×600 and no event/text-input trace. System resource SHA-256:
 `32152e1b394176d060a41899522ec389c709bd60c02c5c6265b16a0b0171b3e9`.
 Existing native worker assertions completed wake/park/cancel, original-Subject
@@ -358,10 +377,12 @@ Malformed external DTBs and a stale ROM exercised production boot refusals.
 These observations do not qualify sparse hardware IDs or SMP execution.
 
 The QemuRISC-V platform defines four physical harts by default. The normal
-launcher reads that platform value; `start --harts COUNT` overrides it. Only
-the primary schedules applications and modules. Other CPUs independently enter
-System idle and acknowledge startup SSIP; dispatch promotion remains gated.
-Diagnostic scenarios may explicitly select a smaller physical CPU count.
+launcher reads that platform value; `start --harts COUNT` overrides it. Other
+CPUs independently enter System idle and acknowledge startup SSIP before actual
+policy admission. Multi-Scheduler requests the checked maximum; Automatic apps
+and workers then follow that eligible set. Diagnostic scenarios may explicitly
+select a smaller physical CPU count. Removing the scheduler leaves the primary
+boot policy and admitted idle peers, not a smaller discovered topology.
 
 The custom ROM now supplies a mandatory checked monitor directory. Its per-hart
 integer-only M handler uses separate permanent control/stack backing, with no
@@ -405,8 +426,9 @@ owners stay pinned until reset, including for CPUs that never execute S code.
 Runtime selection authenticates `sscratch` against the logical raw control
 arena before loading its local binding, then checks the permanent row and
 online phase in constant time. No typed shared borrow covers assembly-mutated
-control words. Only the primary is dispatch-eligible. Peer controls remain poisoned until
-independent warm admission installs their actual affine idle context and frame.
+control words. Peer controls remain poisoned until independent warm admission
+installs their actual affine idle context and frame; a separate policy/core
+turn grants dispatch eligibility from the retained readiness receipt.
 Cold primary admission is explicit and cannot become a runtime fallback.
 
 Unique Foundation receipts attribute rounded physical service/CPU/control
@@ -439,24 +461,29 @@ admission and a separate acknowledged startup wake. All result slots are
 pre-reserved before release; typed failures retain completed and pending owners
 through the terminal boot refusal. No reduced-CPU fallback is installed. Public
 inspection reads the actual System ledger alongside process/module ledgers.
-Named-thread/hart and owned-stack enumeration remain unavailable; pool/domain
-labels are not a substitute, and System account/CPU-time coverage is not invented.
+Public CPU inspection separately reports topology, actual eligibility and
+idle/executing residency without an inspector grant or scheduler package.
+Named-thread and owned-stack enumeration remain unavailable; CPU residency is
+not per-domain CPU time, and pool/domain labels are not a substitute.
 
 Warm entry validates its independently observed CPU profile, saved-state
 geometry, actual permanent firmware/kernel roots and guarded service slot before
 selecting the real idle context. The SSIP handler clears the local interrupt
 before capturing/acknowledging work; it ends the mutable frame borrow first.
-AdmittedIdle resumes only that frame, never the run queue. Physical input, UI,
-firmware storage and maintenance remain primary-owned. Real policy admission,
-primary affinity/service routing and qualified cross-hart scheduling/reclamation
-remain gates before application/module placement. Returning monitor preservation
-and terminal takeover have bounded S-idle observations below; complete register
-preservation stress and competing-failure cases remain unqualified. Mapping
+AdmittedIdle resumes only that frame, never the run queue. Actual policy
+admission can grant dispatch eligibility; withdrawal enters DRAINING until the
+target releases its old running claim and commits that same affine idle/context.
+An IRQ ACK alone cannot acknowledge draining. Physical input, UI, firmware storage
+and maintenance remain primary-owned; actual application ECALL replay and Host
+service leases preserve that affinity while moving the same thread and stack.
+The bounded SMP scenarios in [SCHEDULING.md](SCHEDULING.md) add body migration,
+register/service and target-drain observations. Sustained preservation stress,
+competing failures and arbitrary privileged recovery remain unqualified. Mapping
 mutation, ASID reuse and frame reclamation
 also require their remote TLB/lifetime contract. The current immutable boot roots
 do not imply that such a dynamic protocol exists. No SBI service is assumed.
-Multi-Scheduler may later supply placement and activation policy; it cannot
-bypass these core safety gates.
+Multi-Scheduler supplies placement and activation policy through those core
+admission and claim gates; it cannot bypass them.
 
 
 The optimized trace-disabled no_std RV64 image with System resource SHA-256
@@ -504,7 +531,7 @@ privileged-fault containment is **unproven** and a **required future gate**.
 | Scrap Manager | One shared guarded System clipboard. Native edits stage fallible changes before publication. Original private scraps and process suspend/resume transfer remain unimplemented. |
 | Memory Manager | One synchronized resident store owns registered MMBL blocks and MMST per-domain arena/projection/MemErr state. The scheduler binds the authentic OwnerRef; traps never select memory by scheduler slot. Shared boot-wide projection generations reject stale/foreign 32-bit IDs, including after zone destruction. The generic walk owns block and backing release. |
 | File Manager | One mounted catalog/device service with owner-tagged fork marks. The native trap captures AppId before I/O handoff; handle read/seek/tell/close checks that identity. Exit closes only its owner's marks. Internal loader requests use reserved owner zero. |
-| Framebuffer, input and allocator | One-hart interrupt-masked kernel work serializes device and heap access. Application and module-worker bodies are preemptible. This is not a multi-hart synchronization or blocking-mutex design. Secondary harts are admitted idle only; ordinary bodies remain primary-affine. |
+| Framebuffer, input and allocator | Display/input and current Host/service bodies remain primary-owned; native routing moves the same calling continuation before borrowing requests. Application and Automatic worker bodies may run on admitted peers. Shared heap/account/ledger/buddy metadata uses its actual atomic locks with local IRQ discipline, not a global invocation lock. This does not qualify every concurrent device path or add blocking mutexes. |
 | Firmware `BootVolume` and disk callbacks | The original boot call remains live. `machine/io.rs` masks interrupts and selects the permanent bootstrap executor on the shared per-hart System stack, carrying the original resource/allocation/I/O selections across the handoff. It is not an independently runnable I/O thread or an asynchronous queue, and the opaque firmware context is not given a Send implementation. |
 | Host test-support | Host TLS, allocation/synchronization and substituted gates do not establish native RV64 trap, preemption, allocator or cleanup behavior. They provide no OS acceptance evidence. |
 
@@ -567,13 +594,13 @@ address-space/object translation rather than access to resident Rust addresses.
 | Gate | Current implementation and required evidence |
 | --- | --- |
 | Boundary hardening | One-shot publication, bounded guards, owner-tagged file marks and trusted context routing exist. Host-linked fixtures do not establish native exclusion/cleanup contracts; scenario-specific target-runtime evidence is required. |
-| Scheduler foundation | One-hart supervisor timer preemption, growable registered thread records, independently owned stacks/register frames, trusted identities and deferred retired-stack reclamation exist. A private RV64 observer progresses during a child's no-trap/no-yield loop on one hart; the canonical process acceptance passes. Native event wait deadlines, readiness wakes and a separate idle stack now exist; the SDK latency fixture verifies physical input during contention and that blocked apps leave the runnable rotation. General application blocking/thread APIs remain open; privileged module workers have the narrower implementation and native evidence described above. |
+| Scheduler foundation | Supervisor timer preemption, growable registered thread records, independent full frames/stacks, trusted identities and claim-aware reclamation exist. Per-hart policy loans and joint active-generation/THRD commitment support eligible peers; primary service routing and target-owned draining preserve their real lifetimes. Bounded native app/worker migration and policy lifecycle observations are recorded in SCHEDULING.md. General application blocking/thread APIs, sustained stress and timing qualification remain open. |
 | Application launch | Finder and disk-loaded native APPLs have independent application threads, app-local UI/resource/memory state and exit cleanup. Host SDK ownership tests cover file denial/cleanup and memory generation retention; the real RV64 launch/quit/relaunch, partition/ownership, Pascal and private synthetic-event gates pass. |
 | Application switching | Resident right-hand menu and Process Manager activation/hide/restore paths exist. Private SDK and actual Finder/two-app activation/hide/input/exit tests pass, including first-click activation and background dragging. The original popup comparison passes with explicit icon/cursor masks; this establishes the captured profile, not all application behavior. |
 | Interactive latency | Window/file drag and selection feedback use bounded frontbuffer-only XOR without scene replays or a tracking-mask scan. Canonical captures retain every decoded move, including the first; strict all-samples sub-millisecond qualification remains open on fresh Windows and Linux guests. Shared instruction paths and perimeter-intersection early-outs reduce work but do not establish a hard latency guarantee. Interrupt-masked resident calls and cold execution still need their own bounds. |
 | Reentrant service work | Existing definition-to-Surface/font/resource nesting remains supported. Stateful recursive manager calls still return Busy. General app callbacks require snapshot/callback/commit and cancellation tests. |
 | Legacy Thread Manager | Planned as [compatibility workstream P2](docs/CORE-TOOLBOX-ROADMAP.md#p2--legacy-thread-manager-cooperative-threads); not implemented. Capture the pinned extension's traps, scheduling, state, stack/global context and callbacks, then verify through SDK and translated 68k probes. Cooperative contexts remain inside their host application's OS thread and cannot replace kernel preemption, including during legacy critical sections. |
-| Multi-hart and devices | Planned as [platform workstream P1](docs/CORE-TOOLBOX-ROADMAP.md#p1--multi-hart-execution-smp); not implemented. Per-hart entry/context state, concurrent scheduling and inter-hart wakeups, migration, blocking/wakeup ordering, allocator/device synchronization and concurrent callback publication need independent evidence. |
+| Multi-hart and devices | The [P1 foundation](docs/CORE-TOOLBOX-ROADMAP.md#p1--multi-hart-execution-smp) includes per-hart entry/idle state, concurrent native app/worker bodies, actual migration, target wakes, primary service routing and policy draining. The exact bounded QEMU scenarios do not qualify all wake/cancel/fault interleavings, other hardware, arbitrary device concurrency or worst-case latency. |
 
 Canonical tests belong under `crates/mac-toolbox/tests` and use the public SDK.
 Host-linked test outcomes are not OS acceptance. Real RV64 scheduler, interrupt,
@@ -613,9 +640,10 @@ current-app variable is prohibited.
 
 Trap accounting is stored in `ThreadContext::traps`, with an RAII scope restoring
 its nesting count on exit. The current accessor selects the scheduled RV64
-thread and uses a separate bootstrap service context during synchronous firmware handoff. The one-hart
-provider and interrupt discipline must become per-hart before migration or
-parallel execution is enabled.
+thread and uses a separate bootstrap service context during synchronous firmware
+handoff. Per-hart entry state and canonical service obligations now permit native
+migration while the actual provider/firmware bodies remain primary-owned. Shared
+source or a host suite does not establish these target-runtime properties.
 
 `concurrent_services.rs` exercises one shared production holder/Memory Manager
 through public SDK calls from eight host OS threads. It verifies request
@@ -789,7 +817,8 @@ I/O, disconnect and interactive latency still need their own gates.
 This supplies the integration boundary for filesystem drivers; it does not by
 itself establish live host filesystem behavior. Public mount/read/write tests must
 exercise parking, cancellation/disconnect, other-app progress and single delivery
-of mutations before the host mount milestone is complete. SMP, general application worker threads and unresponsive-provider timeout
+of mutations before the host mount milestone is complete. Broader provider
+concurrency, general application worker threads and unresponsive-provider timeout
 recovery remain separate work. Privileged module workers can use the checked
 broker with their original durable I/O Subject.
 
@@ -800,15 +829,16 @@ provide safe owned requests, completions, cancellation and wakeups; extension
 policy and runtime adapters use ordinary versioned registrations. This does not
 move a Tokio dependency or a fixed async-provider list into the kernel.
 
-The resident SCHD/SCTL path now supports primary-only scheduling-policy
-preparation, shadow handover and retirement. The optional **Multi-Scheduler
-Extension** is not installed by default. It cannot authorize additional author
-execution: current limits expose one active scheduling hart and no MULTI_HART or
-PARK feature. Core retains the actual source/Instance/plan lease, canonical THRD
-facts, final live claim/frame commitment and primary-owned maintenance. Policy
-callbacks run without scheduler/registry/frame borrows and cannot allocate,
-perform I/O, call services or park through native gateways. Withdrawal retains
-its original owners until actual interface ACK and callback/reader quiescence.
+The resident SCHD/SCTL path supports scheduling-policy preparation, shadow
+handover, concurrent per-hart callbacks and actual target draining. The normal
+image installs **Multi-Scheduler** in the Extensions folder. LIMITS exposes
+TAKEOVER and, with multiple discovered CPUs, MULTI_HART; PARK is not exposed.
+Core retains the source/Instance/plan leases, per-CPU prepaid buffers, canonical
+THRD facts and joint live generation/claim/frame commitment. Policy callbacks
+run without scheduler/registry/frame borrows and cannot allocate, perform I/O,
+call services or park through native gateways. Withdrawal retains its original
+owners through interface ACK, target-owned idle receipts and real callback/reader
+quiescence.
 
 The platform independently configures the current 250-microsecond quantum and
 1000-microsecond callback allowance, generated from its checked JSON record.
@@ -816,15 +846,17 @@ Conversions use the admitted boot monitor DT timebase. The allowance detects a
 late returned sample, which is discarded before refreshed bootstrap selection;
 it does not by itself quarantine the policy. Invalid replies/forbidden operations
 remain protocol failures. This is not a non-return watchdog or UI-latency promise.
-Private optimized native one- and four-CPU runs observed primary-only takeover,
+Earlier optimized native one- and four-CPU runs observed primary-only takeover,
 valid-sample expiry, early-confirm/service/envelope refusals, canonical retirement,
 stale-status rejection and two actual post-retirement worker reclaims. The
 shipping package also completed startup with real Reactor launch,
 mouse input and own-process exit. All author execution remained primary-only;
 these scenarios do not establish every schedule decision or latency/fairness.
 See [SCHEDULING.md](SCHEDULING.md) for the exact current contract and remaining
-qualification gates. Concurrent author scheduling, service/firmware affinity,
-retirement and wake/progress across harts still require their full native gate.
+qualification gates. Later exact-artifact four-CPU observations add actual app
+and worker same-stack migration, services, cancellation/reclamation and policy
+demotion/repromotion/retirement. They are bounded scenarios, not full wake-race,
+latency, pressure or arbitrary-fault qualification.
 
 Application identities use the shared facility's full u64 process-domain
 incarnation, separate from scheduled thread IDs. The owner directory retains

@@ -105,12 +105,12 @@ impl PrimaryWake
         // Only a genuinely selected HOT row may issue a general wake. Cold
         // producers retain work in the caller until this capability publishes.
         let sender = super::traps::execution::selected_hart();
-        checked_wake_entry(transport, sender)?;
-        checked_wake_entry(transport, self.key)?;
+        checked_wake_entry(transport, sender.binding())?;
+        checked_wake_entry(transport, self.key.binding())?;
         post_wake(self.entry).map(|_| ())
     }
 }
-fn checked_wake_entry(transport: &'static Admitted, key: super::traps::execution::HartKey)
+fn checked_wake_entry(transport: &'static Admitted, key: super::traps::execution::HartBinding)
                       -> Result<&'static Entry, WakeError>
 {
     let bad = || WakeError::Binding { hart: key.number() as u64 };
@@ -141,7 +141,7 @@ pub(crate) fn prepare_primary_wake() -> Result<PrimaryWake, WakeError>
     {
         return Err(WakeError::ForeignPrimary { hart: key.number() as u64 });
     }
-    let entry = checked_wake_entry(transport, key)?;
+    let entry = checked_wake_entry(transport, key.binding())?;
     if TERMINAL.load(Ordering::Acquire)
     {
         return Err(WakeError::Stopping);
@@ -512,6 +512,23 @@ pub(crate) fn ticks_to_microseconds(ticks: u64) -> Result<u64, Error>
     let transport = MONITOR.get().ok_or(Error::Missing)?;
     let micros = (u128::from(ticks) * 1_000_000) / u128::from(transport.timebase_hz);
     u64::try_from(micros).map_err(|_| Error::ClockOverflow)
+}
+
+pub(crate) fn ticks_to_nanoseconds(ticks: u64) -> Result<u64, Error>
+{
+    let transport = MONITOR.get().ok_or(Error::Missing)?;
+    let nanos = (u128::from(ticks) * 1_000_000_000) / u128::from(transport.timebase_hz);
+    u64::try_from(nanos).map_err(|_| Error::ClockOverflow)
+}
+
+/// Classic event waits are expressed in sixtieths of a second. Convert once
+/// against the admitted clock, avoiding a machine-specific 10 MHz constant or
+/// intermediate microsecond rounding.
+pub(crate) fn event_ticks_to_ticks(ticks: u32) -> Result<u64, Error>
+{
+    let transport = MONITOR.get().ok_or(Error::Missing)?;
+    let duration = (u128::from(ticks) * u128::from(transport.timebase_hz)).div_ceil(60);
+    u64::try_from(duration).map_err(|_| Error::ClockOverflow)
 }
 
 /// A measured callback duration rounds upward for its strict time budget; a
@@ -1030,6 +1047,23 @@ pub(crate) struct ReadyHart
 }
 impl ReadyHart
 {
+    /// Data binding derives from the retained hardware admission receipt. It
+    /// cannot select that CPU or substitute for this unique readiness owner.
+    pub(crate) fn binding(&self) -> super::traps::execution::HartBinding
+    {
+        self.prepared.binding()
+    }
+
+    /// General work notification through the same monotonic target epoch used
+    /// for startup. A ready receipt and the genuine sender are both required.
+    pub(crate) fn post_work(&self) -> Result<(), WakeError>
+    {
+        let transport = MONITOR.get().ok_or(WakeError::Missing)?;
+        checked_wake_entry(transport, super::traps::execution::selected_hart().binding())?;
+        let entry = checked_wake_entry(transport, self.binding())?;
+        post_wake(entry).map(|_| ())
+    }
+
     pub(crate) fn ordinal(&self) -> usize
     {
         self.prepared.ordinal()

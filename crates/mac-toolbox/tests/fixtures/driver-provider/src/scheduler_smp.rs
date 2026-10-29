@@ -381,6 +381,12 @@ fn coordinate(context: &WorkerContext, client: Client, provider: Provider, start
 
     select(context, controller, 1)?;
     active(context, controller, generation, 1)?;
+    // A bounded phase marker lets the external read-only observer inspect
+    // real idle frames during the existing hold; execution never waits for
+    // a host acknowledgment or observation result.
+    probe::log(format_args!("SCHEDULER_SMP_DRAINED module={} generation={generation} active=1 \
+                             target_receipts=host-required\n",
+                            client.module()));
     let before = counts();
     probe::require((0..=ROWS).any(|index| before[index] != 0 && hardware(index) == Some(boot)),
                    "all-CPU callback observations omitted actual primary")?;

@@ -1,7 +1,7 @@
 //! Canonical SCHD registration and SCTL lifecycle. No foreign callback runs here.
 #![forbid(unsafe_code)]
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use mac_abi::{ACCESS_DENIED, BAD_ABI, BAD_ARGUMENT, CORRUPT_DATA, NO_MEMORY, NOT_FOUND,
               NOT_SUPPORTED, SERVICE_BUSY, Status};
@@ -35,6 +35,7 @@ struct Registration
     offer:      Offer,
     limits:     Limits,
     generation: AtomicU64,
+    refusal:    AtomicI32,
     receipt:    spin::Once<CompletionKey>,
     state:      Spinlock<Phase>
 }
@@ -49,6 +50,7 @@ struct Phase
     withdrawal_refusal:       Option<WithdrawalRefusal>,
     retiring:                 bool,
     committing:               bool,
+    requested_harts:          u32,
     plan:                     Option<Arc<Plan>>,
     binding:                  Option<Arc<BoundPolicy>>
 }
@@ -167,6 +169,7 @@ struct BoundPolicy
 pub(crate) struct PolicyPin
 {
     registration: Arc<Registration>,
+    plan:         Arc<Plan>,
     _released:    Released
 }
 #[derive(Clone)]
@@ -242,6 +245,11 @@ impl Drop for CallLease
 }
 impl PolicyPin
 {
+    pub(crate) fn plan(&self) -> &Plan
+    {
+        &self.plan
+    }
+
     pub(crate) fn generation(&self) -> u64
     {
         self.registration.generation.load(Ordering::Acquire)
@@ -256,6 +264,11 @@ fn changed()
 {
     WORK.store(true, Ordering::Release);
     super::recovery::changed();
+}
+pub(crate) fn report_pending()
+{
+    changed();
+    crate::machine::scheduler::wake::request();
 }
 /// Canonical lower ACKs already enter drivers::recovery_changed. Subscribe
 /// without polling or adding a new authority/registry.
@@ -290,7 +303,7 @@ fn snapshot(row: &Registration, state: &Phase) -> Reply
     Reply { generation:   row.generation.load(Ordering::Acquire),
             state:        state.kind,
             last_status:  state.withdrawal_refusal.map_or(state.status, WithdrawalRefusal::status),
-            active_harts: 1,
+            active_harts: crate::machine::scheduler::active_harts(),
             callbacks:    state.callbacks,
             transition:   state.transition }
 }
@@ -298,10 +311,11 @@ fn with_catalog<R>(op: impl FnOnce(&mut Catalog) -> R) -> Result<R, Status>
 {
     InvocationGate::run(|| CATALOG.with(op).map_err(|e| e.status()))
 }
-fn pin(row: &Arc<Registration>) -> PolicyPin
+fn pin(row: &Arc<Registration>, plan: Arc<Plan>) -> PolicyPin
 {
     PolicyPin { registration: row.clone(),
-                _released:    Released }
+                plan,
+                _released: Released }
 }
 fn owner_row(catalog: &Catalog, owner: &OwnerRef) -> Option<Arc<Registration>>
 {
@@ -341,7 +355,7 @@ pub(crate) fn candidate() -> Result<Option<Candidate>, Status>
             changed();
             crate::machine::scheduler::wake::request();
         }
-        if state.retiring || !row.owner.accepting()
+        if state.retiring || row.refusal.load(Ordering::Acquire) != 0 || !row.owner.accepting()
         {
             INSTALLED.store(false, Ordering::Release);
             return Ok(None);
@@ -350,10 +364,11 @@ pub(crate) fn candidate() -> Result<Option<Candidate>, Status>
         {
             return Ok(None);
         }
+        let plan = state.plan.as_ref().ok_or(BAD_ABI)?.clone();
         Ok(match state.kind
         {
-            State::Armed => Some(Candidate::Shadow(pin(row))),
-            State::Active => Some(Candidate::Active(pin(row))),
+            State::Armed => Some(Candidate::Shadow(pin(row, plan))),
+            State::Active => Some(Candidate::Active(pin(row, plan))),
             _ => None
         })
     })?
@@ -368,6 +383,7 @@ pub(crate) fn begin_call(pin: &PolicyPin) -> Result<CallLease, Status>
         }
         let mut state = pin.registration.state.try_lock().ok_or(SERVICE_BUSY)?;
         if state.retiring
+           || pin.registration.refusal.load(Ordering::Acquire) != 0
            || !pin.registration.owner.accepting()
            || !matches!(state.kind, State::Armed | State::Active)
         {
@@ -376,12 +392,15 @@ pub(crate) fn begin_call(pin: &PolicyPin) -> Result<CallLease, Status>
         let plan = state.plan.as_ref().ok_or(BAD_ABI)?.clone();
         let binding = state.binding.as_ref().ok_or(BAD_ABI)?.clone();
         let instance = *binding.instance.get().ok_or(SERVICE_BUSY)?;
-        // Initial backend permits one primary callback. Never alias its scratch.
-        if state.callbacks != 0
+        // Actual per-hart scratch loans provide local exclusion. The total
+        // remains bounded by the prepaid discovered topology, never a guess
+        // that a module's Instance can be called through an unpinned copy.
+        let callbacks = state.callbacks.checked_add(1).ok_or(CORRUPT_DATA)?;
+        if callbacks > plan.limits().physical_harts
         {
             return Err(SERVICE_BUSY);
         }
-        state.callbacks = 1;
+        state.callbacks = callbacks;
         Ok(CallLease { plan,
                        binding,
                        pin: pin.clone(),
@@ -389,12 +408,27 @@ pub(crate) fn begin_call(pin: &PolicyPin) -> Result<CallLease, Status>
                        _released: Released })
     })
 }
-pub(crate) fn current(pin: &PolicyPin) -> Result<bool, Status>
+/// Final metadata exclusion for a canonical THRD claim. The caller holds
+/// SCHEDULER; this turn must not enter Runtime/catalog, allocate, call foreign
+/// code or dispose owning values. A retained pin cannot authorize a withdrawn
+/// or replaced generation. No registry lock is acquired in reverse order.
+pub(crate) fn with_active_policy<R>(pin: &PolicyPin, generation: u64,
+                                    operation: impl FnOnce() -> R)
+                                    -> Result<R, Status>
 {
     InvocationGate::run(|| {
-        authentic(pin)?;
         let state = pin.registration.state.try_lock().ok_or(SERVICE_BUSY)?;
-        Ok(state.kind == State::Active && !state.retiring && pin.owner().accepting())
+        if generation == 0
+           || pin.generation() != generation
+           || pin.registration.receipt.get().is_none()
+           || state.kind != State::Active
+           || state.retiring
+           || pin.registration.refusal.load(Ordering::Acquire) != 0
+           || !pin.owner().accepting()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        Ok(operation())
     })
 }
 pub(crate) fn commit_shadow(proof: ActivationProof) -> Result<(), Status>
@@ -434,6 +468,8 @@ pub(crate) fn commit_shadow(proof: ActivationProof) -> Result<(), Status>
             Ok(_) if !state.retiring && state.kind == State::Armed =>
             {
                 state.kind = State::Active;
+                changed();
+                crate::machine::scheduler::wake::request();
                 Ok(())
             }
             Ok(_) => Err(SERVICE_BUSY),
@@ -452,10 +488,23 @@ pub(crate) fn refuse(pin: &PolicyPin, cause: Status) -> Result<(), Status>
         {
             return Err(BAD_ARGUMENT);
         }
-        authentic(pin)?;
+        // PolicyPin is minted only from the original stored registration. A
+        // first refusal revokes new callbacks and claims before a potentially
+        // contended metadata turn, retaining its exact cause for the pump.
+        if pin.generation() == 0 || pin.registration.receipt.get().is_none()
+        {
+            return Err(BAD_ABI);
+        }
+        let _ = pin.registration
+                   .refusal
+                   .compare_exchange(0, cause, Ordering::AcqRel, Ordering::Acquire);
+        INSTALLED.store(false, Ordering::Release);
+        RETIRING.store(true, Ordering::Release);
+        changed();
+        crate::machine::scheduler::wake::request();
         let mut state = pin.registration.state.try_lock().ok_or(SERVICE_BUSY)?;
         advance(&mut state)?;
-        state.status = cause;
+        state.status = pin.registration.refusal.load(Ordering::Acquire);
         state.withdrawn = None;
         INSTALLED.store(false, Ordering::Release);
         state.kind = State::Quarantined;
@@ -552,13 +601,6 @@ fn prepare(module: u64, requirements: Requirements) -> Result<Reply, Status>
     let execution = crate::kernel::module_execution(image)?;
     crate::allocation::with_kernel_allocation(allocation, || {
         let limits = policy::limits()?;
-        // Initial mechanism is primary-only takeover, never advertised SMP/park.
-        if limits.features != control::TAKEOVER
-           || limits.maximum_active_harts != 1
-           || limits.active_harts != 1
-        {
-            return Err(NOT_SUPPORTED);
-        }
         let plan = Arc::try_new(Plan::prepare(&owner, requirements)?).map_err(|_| NO_MEMORY)?;
         let binding =
             Arc::try_new(BoundPolicy { execution,
@@ -572,6 +614,7 @@ fn prepare(module: u64, requirements: Requirements) -> Result<Reply, Status>
                             withdrawal_refusal:       None,
                             retiring:                 false,
                             committing:               false,
+                            requested_harts:          1,
                             plan:                     Some(plan),
                             binding:                  Some(binding) };
         let row =
@@ -580,6 +623,7 @@ fn prepare(module: u64, requirements: Requirements) -> Result<Reply, Status>
                                         offer,
                                         limits,
                                         generation: AtomicU64::new(0),
+                                        refusal: AtomicI32::new(0),
                                         receipt: spin::Once::new(),
                                         state: Spinlock::new(state) }).map_err(|_| NO_MEMORY)?;
         with_catalog(|catalog| {
@@ -675,14 +719,17 @@ fn control_operation(owner: &OwnerRef, operation: u32, input: &[u8]) -> Result<R
             control::HARTS
                 if owner.accepting()
                    && !state.retiring
-                   && matches!(state.kind, State::Prepared | State::Armed) =>
+                   && matches!(state.kind, State::Prepared | State::Armed | State::Active) =>
             {
                 let request = control::HartRequest::decode(input).map_err(|_| BAD_ARGUMENT)?;
-                if request.count != 1 || request.count > row.limits.maximum_active_harts
+                if request.count == 0 || request.count > row.limits.maximum_active_harts
                 {
                     return Err(NOT_SUPPORTED);
                 }
                 advance(&mut state)?;
+                state.requested_harts = request.count;
+                changed();
+                crate::machine::scheduler::wake::request();
             }
             _ => return Err(SERVICE_BUSY)
         }
@@ -771,8 +818,7 @@ fn request(module: u64, operation: u32, input: &[u8], output: &mut [u8]) -> Resu
                 }
                 BAD_ARGUMENT =>
                 {
-                    "Invalid SCTL payload, generation, reply capacity or requested primary-only \
-                     hart count"
+                    "Invalid SCTL payload, generation, reply capacity or requested hart count"
                 }
                 NO_MEMORY =>
                 {
@@ -819,6 +865,60 @@ pub(crate) fn pump()
             return;
         }
     };
+    let refused = row.refusal.load(Ordering::Acquire);
+    if refused != 0
+    {
+        let Some(mut state) = row.state.try_lock()
+        else
+        {
+            changed();
+            return;
+        };
+        if !state.retiring
+        {
+            if advance(&mut state).is_err()
+            {
+                return;
+            }
+            state.status = refused;
+            state.kind = State::Quarantined;
+            state.retiring = true;
+            state.withdrawn = None;
+        }
+    }
+    let (report_plan, activation) = {
+        let state = row.state.lock();
+        let plan = state.plan.as_ref().cloned();
+        let activation = if state.kind == State::Active && !state.retiring && row.owner.accepting()
+        {
+            plan.as_ref().map(|plan| (pin(&row, plan.clone()), state.requested_harts))
+        }
+        else
+        {
+            None
+        };
+        (plan, activation)
+    };
+    if let Some(plan) = report_plan
+    {
+        plan.report();
+    }
+    if let Some((pin, count)) = activation
+    {
+        // The actual core publication takes SCHEDULER then the same Active
+        // phase exclusion used by its THRD claim. No Runtime guard crosses it.
+        if let Err(status) = crate::machine::scheduler::set_policy_harts(&pin, count)
+        {
+            if status == SERVICE_BUSY
+            {
+                changed();
+            }
+            else
+            {
+                let _ = refuse(&pin, status);
+            }
+        }
+    }
     let intent = {
         let state = row.state.lock();
         if !state.retiring

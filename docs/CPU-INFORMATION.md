@@ -15,9 +15,11 @@ for ordinal in 0..count {
 
 The count includes every enabled CPU discovered at boot. Ordinals are positions,
 not hardware IDs, object handles or execution authority. Membership is immutable
-for the current boot. With primary-only scheduling, the primary executes the OS
-and applications while admitted peers select their System idle contexts. Loading
-a scheduler does not itself grant another CPU permission to execute authors.
+for the current boot. Without an active scheduler, the primary executes the OS
+and applications while admitted peers select their System idle contexts. With
+Multi-Scheduler active, core-approved eligible peers can execute ordinary apps
+and Automatic module workers. Loading a package or reading CPU metadata does
+not itself grant dispatch permission; actual policy/core admission owns it.
 
 Each row distinguishes discovery, admission, idle, executing and stopped states.
 Executing includes resident work. The eligibility flag describes the actual
@@ -58,7 +60,10 @@ primary-only policy exercised application launch/exit and subsequent input.
 The paired worker descriptor exercised refusal, normal execution, rollback and
 actual reclamation in that same System build.
 
-These bounded observations do not qualify concurrent application execution on
-peers, timing bounds or hardware outside QEMU. Clock regression, counter overflow,
+Those initial CPU-query observations alone do not qualify concurrent application
+execution. Later exact-artifact app/worker migration and policy-drain observations
+are recorded in [SCHEDULING.md](../SCHEDULING.md); topology/activity rows alone are
+not evidence of which thread ran where. No timing bound or hardware outside QEMU
+is qualified by those scenarios. Clock regression, counter overflow,
 unknown-stop handling and uninitialized-state branches were not fault-injected.
 They do not establish whole-System correctness or per-domain CPU accounting.

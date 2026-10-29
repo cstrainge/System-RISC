@@ -171,7 +171,15 @@ pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,
 pub(crate) fn module_execution(binding: crate::images::Binding)
                                -> Result<crate::images::ModuleExecution, Status>
 {
-    IMAGES.with(|images| images.execute_module(binding)).map_err(AccessError::status)?
+    use mac_object_table::shared::InvocationGate as _;
+    // Host continuations are preemptible even when pinned to the primary.
+    // Mask before acquiring IMAGES, through disposal of its outer guard: an
+    // inner alias/account gate alone leaves that guard exposed to suspension.
+    // Only the bounded lookup and execution-pin acquisition run here; module
+    // entry, code writes and foreign dispatch stay outside this metadata turn.
+    crate::toolbox::handles::InvocationGate::run(|| {
+        IMAGES.with(|images| images.execute_module(binding)).map_err(AccessError::status)?
+    })
 }
 pub(crate) fn finish_module_images()
 {
@@ -531,7 +539,19 @@ fn with_resource_binding<R>(app: u64, index: Option<crate::images::Binding>,
     {
         Some(binding) =>
         {
-            Some(IMAGES.with(|images| images.read(binding)).map_err(AccessError::status)??)
+            Some(IMAGES.with(|images| images.read(binding)).map_err(|cause| {
+                    // This is the primary-owned resource invocation boundary.
+                    // Preserve the typed refusal and useful source context;
+                    // ordinary successful resource reads produce no log work.
+                    static REPORTED: core::sync::atomic::AtomicBool =
+                        core::sync::atomic::AtomicBool::new(false);
+                    if !REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed)
+                    {
+                        serial!("RESOURCE_IMAGE_REFUSED owner={app} image={} cause={cause:?}; \
+                                 further invocation refusals are not logged", binding.id());
+                    }
+                    cause.status()
+                })??)
         }
         None => None
     };

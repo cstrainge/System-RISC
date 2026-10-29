@@ -133,6 +133,14 @@ pub(super) unsafe extern "C" fn control(module: u64, pointer: *mut abi::WorkerCa
     {
         return ACCESS_DENIED;
     }
+    // Policy refusal precedes routing. No caller pointer, module scope or
+    // metadata/IRQ guard exists until the actual canonical thread is pinned
+    // to the primary for this complete native invocation.
+    let _service = match crate::machine::scheduler::service::host::acquire()
+    {
+        Ok(lease) => lease,
+        Err(status) => return status
+    };
     let operation = || -> Result<(), Status> {
         crate::context::authenticate_module(module)?;
         if pointer.is_null() || !pointer.is_aligned()

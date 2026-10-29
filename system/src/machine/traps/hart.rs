@@ -139,6 +139,7 @@ const STARTING: u8 = 2;
 const ADMITTED_IDLE: u8 = 3;
 const DISPATCH_ELIGIBLE: u8 = 4;
 const REFUNDING: u8 = 5;
+const DRAINING: u8 = 6;
 struct Registry
 {
     // Before publication, failure drops every constructed row/CPU owner before
@@ -174,7 +175,8 @@ impl Registry
     fn selected(&'static self, control: usize) -> Option<&'static Hart>
     {
         let (_, row) = self.checked(control)?;
-        matches!(row.phase.load(Ordering::Acquire), ADMITTED_IDLE | DISPATCH_ELIGIBLE).then_some(row)
+        matches!(row.phase.load(Ordering::Acquire),
+                 ADMITTED_IDLE | DISPATCH_ELIGIBLE | DRAINING).then_some(row)
     }
 }
 #[derive(Debug)]
@@ -872,6 +874,11 @@ pub(crate) fn prepare_secondary(ordinal: usize) -> Result<PreparedHart, Error>
 }
 impl PreparedHart
 {
+    pub(crate) fn binding(&self) -> execution::HartBinding
+    {
+        execution::HartBinding(self.row())
+    }
+
     pub(crate) fn ordinal(&self) -> usize
     {
         self.ordinal

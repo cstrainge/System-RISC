@@ -27,11 +27,30 @@ pub(crate) fn request()
 
 /// Pre-bootstrap Finder readiness is consumed by the initial direct start,
 /// whereas a later real unblock must reach the primary receiver.
-pub(super) fn runnable()
+pub(super) fn runnable(primary_only: bool)
 {
     if RECEIVER.get().is_some()
     {
         WORK.fetch_or(RUNNABLE, Ordering::Release);
+    }
+    if !primary_only
+    {
+        crate::machine::smp::runnable();
+    }
+}
+
+/// A released claim exposes previously local captured work to other CPUs.
+/// The releasing CPU already owns its fresh choice, so do not self-interrupt
+/// it merely because its old thread joined a runnable queue.
+pub(super) fn execution_released(hart: HartKey, primary_only: bool)
+{
+    if !hart.is_primary() && RECEIVER.get().is_some()
+    {
+        WORK.fetch_or(RUNNABLE, Ordering::Release);
+    }
+    if !primary_only
+    {
+        crate::machine::smp::execution_released(hart);
     }
 }
 
@@ -59,6 +78,7 @@ pub(super) fn admitted(receiver: PrimaryWake)
 /// an IRQ. The real queues/tickets own the payload.
 pub(crate) fn flush()
 {
+    crate::machine::smp::flush();
     let work = WORK.load(Ordering::Acquire);
     if work & HINTS == 0 || work & POSTED != 0
     {
@@ -92,6 +112,7 @@ pub(crate) fn flush()
 
 pub(crate) fn acknowledged(hart: HartKey)
 {
+    crate::machine::smp::acknowledged(hart);
     if RECEIVER.get().is_some_and(|receiver| receiver.is_target(hart))
     {
         // Runs before this captured turn consumes queues. The Acquire side

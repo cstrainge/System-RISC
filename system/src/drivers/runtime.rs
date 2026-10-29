@@ -517,6 +517,14 @@ unsafe extern "C" fn broker(caller: u64, provider: u64, pointer: *mut abi::Call)
     {
         return ACCESS_DENIED;
     }
+    // Policy refusal precedes routing. No caller pointer, module scope or
+    // metadata/IRQ guard exists until the actual canonical thread is pinned
+    // to the primary for this complete native invocation.
+    let _service = match crate::machine::scheduler::service::host::acquire()
+    {
+        Ok(lease) => lease,
+        Err(status) => return status
+    };
     if let Err(error) = crate::context::authenticate_module(caller)
     {
         return error;
@@ -937,6 +945,14 @@ unsafe extern "C" fn resolve(caller: u64, class: u32, version: u32, output: *mut
     {
         return ACCESS_DENIED;
     }
+    // Policy refusal precedes routing. No caller pointer, module scope or
+    // metadata/IRQ guard exists until the actual canonical thread is pinned
+    // to the primary for this complete native invocation.
+    let _service = match crate::machine::scheduler::service::host::acquire()
+    {
+        Ok(lease) => lease,
+        Err(status) => return status
+    };
     if let Err(error) = crate::context::authenticate_module(caller)
     {
         return error;
