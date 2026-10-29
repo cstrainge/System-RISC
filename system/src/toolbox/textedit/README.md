@@ -44,7 +44,11 @@ Native Copy, Cut and Paste operate directly on the System clipboard. They are
 explicit native integration operations, distinct from original `TECopy` and
 `TEPaste`, which use the private TextEdit scrap. Empty native Copy/Cut preserves
 the clipboard; Paste with no TEXT flavor reports the Scrap Manager's missing
-flavor error. Cut and Paste stage all fallible text/layout allocation before
+flavor error. Native Paste maps CRLF and LF to the editor's CR line breaks;
+bare CR remains a line break. Native Copy/Cut exports those CR breaks as LF.
+The shared Scrap payload and host protocol retain their original bytes, and
+original private TE scrap operations keep their existing contract. Cut and
+Paste stage newline conversion and all fallible text/layout allocation before
 publishing any mutation. Pascal string convenience traps convert textual
 arguments and results but retain native UTF-8 offsets. Original TEHandle layout,
 MacRoman byte indices, private scrap and A-line adaptation remain deferred.

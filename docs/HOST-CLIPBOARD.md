@@ -183,6 +183,14 @@ zero-byte codec success does not prove that the host's native clipboard adapter
 preserves empty text. Images, rich text and file lists are separate future
 format contracts.
 
+TextEdit's native clipboard boundary converts external CRLF/LF to its CR-based
+editor model, and native Copy/Cut exports those breaks as LF. The shared Scrap
+and vdagent payload stay byte-preserving. Earlier exact-byte round trips did not
+establish line presentation: a user Windows report exposed LF drawn as a glyph.
+A focused optimized native public-SDK scenario now observes normalized editor
+text, actual logical lines/caret positions, Unicode, unchanged source Scrap and
+oversize refusal/retry. That scenario does not qualify a Windows host round trip.
+
 ## Resident Scrap integration
 
 Applications keep using the public Toolbox clipboard APIs. Native Rust text is

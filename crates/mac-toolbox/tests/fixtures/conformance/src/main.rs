@@ -43,7 +43,9 @@ impl Write for LogBuffer
         if n != text.len() { Err(fmt::Error) } else { Ok(()) }
     }
 }
-#[cfg(not(any(feature = "alert-tracking", feature = "memory-inspection")))]
+#[cfg(not(any(feature = "alert-tracking",
+              feature = "memory-inspection",
+              feature = "textedit-clipboard")))]
 fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
 {
     conformance::controls::author_families(system, gate)?;
@@ -55,6 +57,14 @@ fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::
     conformance::strings::graphical(system, gate)?;
     conformance::ownership::graphical(system, gate)?;
     Ok(())
+}
+#[cfg(feature = "textedit-clipboard")]
+#[path = "../../../conformance/textedit_clipboard.rs"]
+mod textedit_clipboard;
+#[cfg(feature = "textedit-clipboard")]
+fn run(system: &System<'_>, _gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
+{
+    textedit_clipboard::run(system)
 }
 #[cfg(feature = "memory-inspection")]
 #[path = "../../../conformance/memory_inspection.rs"]
@@ -102,7 +112,9 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
     {
         Ok(()) =>
         {
-            #[cfg(not(any(feature = "alert-tracking", feature = "memory-inspection")))]
+            #[cfg(not(any(feature = "alert-tracking",
+                          feature = "memory-inspection",
+                          feature = "textedit-clipboard")))]
             {
                 let _ = system.log("TEXTEDIT_USERSPACE_PASS original=356 native=20 legacy=6 \
                                     navigation=49\n");
