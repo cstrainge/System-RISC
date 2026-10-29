@@ -9,9 +9,10 @@ The resident SCHD/SCTL path is implemented for **primary-only takeover**. It
 exposes TAKEOVER, one active scheduling hart and no MULTI_HART or PARK feature.
 Other discovered CPUs may complete their genuine System-idle startup and wake
 acknowledgment; this does not authorize application or module bodies there.
-The [Multi-Scheduler package](extensions/multi-scheduler/README.md) is optional
-and is not installed by default. Native qualification remains limited as stated
-below; source integration is not runtime acceptance.
+The normal image installs the
+[Multi-Scheduler package](extensions/multi-scheduler/README.md) in the blessed
+Extensions directory. Native qualification remains limited as stated below;
+source integration is not runtime acceptance.
 
 ## Preparation, publication and retirement
 
@@ -144,7 +145,8 @@ The ordinary optional Multi-Scheduler package completed core-confirmed startup
 on both configurations. Reactor Room opened, processed mouse input and quit
 through its own application shortcut; following mouse input was observed. This
 establishes that scenario, not a mouse-latency bound or whole-OS acceptance.
-The package is still not part of the default installation.
+Those captures installed the package explicitly; the normal image builder now
+includes it. That build-list change is not additional native runtime evidence.
 
 The existing native module diagnostics additionally observed:
 

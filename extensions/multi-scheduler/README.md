@@ -1,8 +1,8 @@
 # Multi-Scheduler
 
-This optional package uses the implemented primary-only resident SCHD/SCTL v1
-consumer. It is not installed by default. Primary-only native observations are
-recorded below; full SMP remains unqualified. Missing SCTL or rejected preparation leaves the resident
+The normal image installs this package in `System Folder/Extensions`. It uses
+the implemented primary-only resident SCHD/SCTL v1 consumer. Primary-only native
+observations are recorded below; full SMP remains unqualified. Missing SCTL or rejected preparation leaves the resident
 bootstrap scheduler available. Current limits expose TAKEOVER with one active
 scheduling hart; this package does not enable secondary author execution.
 
