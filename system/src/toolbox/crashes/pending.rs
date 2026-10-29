@@ -181,6 +181,7 @@ pub(super) fn queue_dismissal(binding: ResourceBinding, activity: crate::recover
 /// prevents the modal session from becoming available. No timer retry is used.
 pub(crate) fn cleanup_progress()
 {
+    crate::toolbox::processes::finder::cleanup_progress();
     DISMISS_WAKE.store(true, Ordering::Release);
 }
 struct Dismissing;

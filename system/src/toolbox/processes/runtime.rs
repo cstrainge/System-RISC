@@ -245,24 +245,50 @@ impl Desktop
         Ok(())
     }
 
-    pub(crate) fn finder_started(&mut self, admission: &FinderAdmission, thread: u64)
-                                 -> Result<(), Status>
+    /// Prepare the resident UI before publishing runnable state. A refused
+    /// renderer leaves the actual published THRD inert and explicitly pending.
+    pub(crate) fn prepare_finder_start(&mut self, admission: &FinderAdmission, thread: u64)
+                                       -> Result<(), Status>
     {
         let id = admission.id();
         self.processes.get_mut(id)?.info.thread = thread;
         self.enter(id);
-        // The complete System-owned diagnostic remains available across the
-        // handoff. Its original app/thread metadata does not keep old authority.
+        if self.owner != id
+        {
+            return Err(NOT_FOUND);
+        }
         self.activate_process(id)?;
         self.refresh_app_menu();
-        self.crash.finder_recovered();
+        self.crash.restart_pending = true;
         if self.crash.info().report_bytes != 0
         {
             let window = self.resume_crash_report()?;
             admission.activity.set_object(window.0);
         }
+        Ok(())
+    }
+
+    /// Only the scheduler transition can commit this admission. The bounded
+    /// transition contains no renderer, allocation or foreign callback.
+    pub(crate) fn commit_finder_start(&mut self, admission: &mut FinderAdmission, thread: u64)
+                                      -> Result<(), Status>
+    {
+        if self.owner != admission.id()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        {
+            use mac_object_table::shared::InvocationGate as _;
+            crate::toolbox::handles::InvocationGate::run(|| {
+                crate::machine::scheduler::start_prepared(thread, admission.owner())?;
+                admission.started();
+                self.crash.finder_recovered();
+                Ok::<_, Status>(())
+            })?;
+        }
+        let id = admission.id();
         serial!("PROCESS_REGISTERED app={id} name=Finder");
-        serial!("FINDER_RECOVERED old={} new={id} thread={thread}", admission.old);
+        serial!("FINDER_RECOVERED old={} new={id} thread={thread} state=runnable", admission.old);
         Ok(())
     }
 

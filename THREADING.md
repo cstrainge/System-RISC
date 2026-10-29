@@ -212,7 +212,7 @@ then be insufficient. No such reader producer exists in the current backend.
 Bounded native observations on 2026-10-28 used the optimized RV64 QEMU image on
 one hart with 8 GiB RAM, RVA23 CPU profile and 128-bit VLEN. The packaged System
 resource SHA-256 was
-`13d5fd0c8f9a9116afe6d6be3f93c425914ba9bb1deabdfc39195f77e12c8cc7`.
+`211c830b3a9c90df8e5f525aafb34b6870d4a42e324f670d29bd223d1f0fac7c`.
 Real ModuleWorkers/ModuleEcho packages exercised two initially armed workers,
 a later parked worker, timer progress with Finder and physical input, coalesced
 wake, running/parked cancellation, bounded mutex refusal, broker Start/Poll/Cancel,
@@ -224,14 +224,101 @@ surrounding application paths. These observations qualify those scenarios only;
 host-linked services and compilation do not establish target execution.
 
 The normal coordinator PASS marker is emitted by its capture Drop before native
-EXIT. It does not directly assert that coordinator's final post-EXIT physical
-reap or result-row removal. Peer, inert-spare and parked-worker reuse/stale checks,
-and the separate complete rollback scenario, provide narrower quiescence
-observations. Sustained pressure/physical OOM, all cleanup failures, arbitrary
+EXIT; it is not final-reap evidence. Separate native reclamation observations
+confirmed actual backing, record and temporary-scope disposal plus accepted
+canonical THRD acknowledgement for all four published workers, including that
+coordinator. The rollback run confirmed reclamation of all three published
+workers before module rollback completion. A refused canonical acknowledgement
+remains quarantined and never emits a successful reclamation observation.
+
+The same System artifact also ran 44 independently linked modules whose real
+workers each completed strict Start-only registration and Status exchanges with
+complete replies and cleared broker tickets. That scoped workload does not
+establish all-worker teardown, heap exhaustion or UI responsiveness. Earlier
+runs exposed broker delivery/reply contention defects; the scoped rerun does not
+erase the separately observed Finder ServiceBusy under greedy worker traffic.
+Sustained pressure/physical OOM, all cleanup failures, arbitrary
 privileged faults, full recovery-kit guarantees, SMP and application std-thread
 services remain unqualified. CPU-time introspection is unavailable; scheduler
-switch counts are not CPU time. This backend does not establish a complete
-extension service or production clipboard readiness.
+switch counts are not CPU time. These prerequisites support external extension
+development; they do not establish production clipboard sharing or a complete
+extension service.
+
+## Hart execution and SMP admission
+
+The architecture selects execution state from this CPU's actual admitted
+`sscratch` control. Active context, current scheduler position, synchronous I/O
+selection and idle stack/CPU backing belong to that hart record. Runtime lookup
+never falls back to a frozen boot hart number. Only the primary record is
+admitted today; ROM secondaries remain parked.
+
+Cold bootstrap publishes an allocation-free control after checked BootInfo and
+the one-shot System-entry claim. It cannot serve traps: its entering flag is
+poisoned until real stack/CPU backing and the prepared control exist. This trusts
+the ROM's primary-only entry contract; it is not independent authentication of
+arbitrary secondary calls to System entry. Raw CSR/control access stays in the
+architecture binding, and safe concrete selection operations expose no mutable
+hart borrow across callbacks or nested ECALLs. Unchanged active contexts avoid
+Arc operations; allocator reservations still borrow their genuine selection.
+
+Opaque firmware retains its checked fixed owner. A foreign/unadmitted hart
+cannot borrow BOOT_THREAD or its default System allocation authority. Fallible
+authentication, allocation and firmware operations refuse; owned file cleanup
+returns its original argument through both handoff and manager refusal. Invalid
+infallible execution selection reports through the independent UART path and
+requests terminal shutdown rather than silently spinning.
+
+Each canonical THRD row carries a persistent claim by a sealed hart identity.
+The scheduler preflights backing and commits the incoming claim before publishing
+its CPU frame and local selection. Ownership spans frame restoration, the body
+and synchronous/nested services. Only a checked complete outer trap capture may
+hand it off: the native ABI receives a raw frame pointer, all safe mutable frame
+and service borrows end, the replacement selection/frame is published, then the
+old claim releases under the scheduler lock. Returning from a Rust scope does
+not release execution ownership. Both reapers exclude every claimed row,
+independently of their caller's hart, retaining the existing reader/ticket checks
+and signaling pending disposal on actual claim release.
+
+Cancellation records intent instead of patching another execution's restore
+storage. Park return status settles at the scheduler's restore commitment while
+it owns the captured or unclaimed frame. A persistent resume-committed bit
+distinguishes never-resumed preparations from a selected trampoline preempted
+before its body starts. The latter skips a cancelled body, retains the accepted
+capture for deferred destruction, and remains runnable through real private EXIT.
+It cannot be marked inert merely because its current claim was released by an
+earlier preemption.
+
+The shared heap, budgets, accounts, ledgers and buddy pools already have atomic
+locks; local interrupt masking is not their cross-hart exclusion. Do not add a
+non-reentrant global lock to the invocation gate: owner-ledger growth can allocate
+and enter that gate again. Concurrent scheduling and reclamation still require
+target qualification, not inference from source locks or a host suite.
+
+Bounded native observations used optimized no_std RV64 QEMU, one hart, 8 GiB,
+800×600 and no event/text-input trace. System resource SHA-256:
+`32152e1b394176d060a41899522ec389c709bd60c02c5c6265b16a0b0171b3e9`.
+Existing native worker assertions completed wake/park/cancel, original-Subject
+I/O, stale/foreign tokens, budget refusal and all four normal/all three rollback
+canonical reclamations. The strict broker workload completed all 44 clients;
+Finder ServiceBusy under that greedy load remains unresolved. Independent SDK
+processes completed preemption, launch/refusal, ownership, resource/window/event
+and document-lifetime assertions. A real Finder/Cursor Test capture recorded 39
+graphic states; 200 paced moves left compositions at 16 and pointer-only motion
+left base pixels identical with compositions at 17. These are bounded functional
+and repaint observations, not event-latency or multi-hart evidence. Exact remote
+cancellation interleavings and full OOM recovery remain unqualified. **M-D04:**
+the walk provides resource containment. Arbitrary privileged-fault containment
+is **unproven** and is a **required future gate**.
+
+Before releasing a secondary, the core still needs discovered CPU/interrupt
+topology checked against platform policy, independent M/S entry storage, a
+returning IPI transport, genuine secondary System-context admission, compatible
+ISA/vector frame validation, remote instruction-publication fences and terminal
+peer-stop acknowledgements. Mapping mutation, ASID reuse and frame reclamation
+also require their remote TLB/lifetime contract. The current immutable boot roots
+do not imply that such a dynamic protocol exists. No SBI service is assumed.
+Multi-Scheduler may later supply placement and activation policy; it cannot
+bypass these core safety gates.
 
 ## State audit
 
@@ -593,6 +680,32 @@ cleanup uses owned state admission so a busy registry cannot discard a ticket.
 Serialized-provider occupancy changes on admission/terminal reply; polling does
 not scan all requests. This establishes neither full four-part invocation
 accounting nor arbitrary privileged-fault containment or multi-hart activation.
+
+Each canonical DREQ owns its original Start bytes and admitted reply capacity.
+The runtime validates authority and sizes before preparing that storage, then
+rechecks publication. A unique delivery lease moves the buffers outside the
+registry; no registry or mailbox guard spans foreign execution. If a published
+request has not entered its provider, a correlated Poll delivers Start with the
+original bytes. Cancel before entry acknowledges absence of effects without
+calling the provider. Once entered, Poll and Cancel retain their normal meaning.
+
+The lease commits a returned terminal status and bytes before trying to reacquire
+the registry. Busy retries replay that result instead of repeating provider
+effects. The provider always receives the original admitted reply capacity; a
+smaller caller retry buffer can refuse the final copy without losing the result.
+Malformed replies or entry without a returned result retain uncertainty for
+quarantine; they do not fabricate completion or claim privileged-fault recovery.
+
+Terminal disposal releases the actual cancellation buffers, dispatch buffers and
+record outside the registry, before the canonical Removed guard acknowledges
+their retirement. The wire ticket clears only after that disposal. Cleanup races
+retain the same guard in the existing request slot. Preparation and invocation
+leases wake pending retirement after their actual alias decrement; a cleanup
+waiting on an active lease subscribes to that handback under the same short
+mailbox gate. No per-input retry scan or second request-ID scheme is involved.
+The current borrowed queued Broker interface still owns its reconciliation
+buffers as well as this DREQ storage. That additional backing is charged by the
+real allocator; its peak under ordinary heap exhaustion remains unqualified.
 
 
 Native driver-job wake identities now carry the shared facility's complete u64

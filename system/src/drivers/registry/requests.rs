@@ -3,7 +3,7 @@
 //! No ordinary lookup can resurrect an invalidated request.
 #![forbid(unsafe_code)]
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
-use core::{cell::Cell, sync::atomic::Ordering};
+use core::sync::atomic::Ordering;
 
 use mac_object_table::{domain::{PoolError, ReleasedResource},
                        registry::{CleanupFailure, Release, Source, Specification},
@@ -23,6 +23,7 @@ pub(crate) enum Origin
     Queued
 }
 pub(crate) mod cancellation;
+pub(crate) mod dispatch;
 
 pub(crate) fn specification(storage: bool) -> Specification<'static>
 {
@@ -73,10 +74,11 @@ impl Access<'_>
 }
 struct Record
 {
-    id:      u64,
-    value:   Cell<Request>,
-    subject: Subject,
-    parent:  Option<CompletionKey>
+    id:       u64,
+    value:    Request,
+    subject:  Subject,
+    parent:   Option<CompletionKey>,
+    dispatch: Arc<dispatch::Storage>
 }
 struct Slot
 {
@@ -86,7 +88,17 @@ struct Slot
     failure:      Option<PoolError>,
     cancellation: Option<cancellation::Reservation>,
     reply:        Option<cancellation::Reply>,
-    uncertain:    Option<mac_abi::Status>
+    uncertain:    Option<mac_abi::Status>,
+    // Last field: cancellation/reply backing dies before the Removed guard
+    // destroys Record and performs the real canonical completion ACK.
+    retired:      Option<mac_object_table::store::Removed<Record, InvocationGate>>
+}
+
+/// An actual Store removal guard, detached from Registry for destruction.
+/// No new public ID or separate cleanup namespace is issued.
+pub(crate) struct Retirement
+{
+    _slot: Slot
 }
 impl Slot
 {
@@ -147,9 +159,9 @@ impl Requests
         if let Some(receipt) = parent
         {
             let record = self.store.completing(&receipt).ok_or(Error::RequestParent)?;
-            let invoking = record.value.get();
+            let invoking = record.value;
             if origin != Origin::Direct
-               || !invoking.active
+               || !record.dispatch.active()
                || invoking.module != caller
                || !record.subject.scope().same_scope(subject.scope())
             {
@@ -159,7 +171,9 @@ impl Requests
         Ok(parent)
     }
 
-    pub(super) fn insert(&mut self, subject: &Subject, value: Request) -> Result<u64>
+    pub(super) fn insert(&mut self, subject: &Subject, value: Request,
+                         preparation: &mut dispatch::Preparation)
+                         -> Result<u64>
     {
         #[cfg(target_arch = "riscv64")]
         if let Some(activity) = subject.recovery_activity()
@@ -167,15 +181,19 @@ impl Requests
             if subject.uses_protected_publication()
                && !(value.origin == Origin::Direct && subject.current_request().is_none())
             {
-                return activity.with_storage(|| self.insert_prepared(subject, value));
+                return activity.with_storage(|| self.insert_prepared(subject, value, preparation));
             }
             let ordinary = subject.with_ordinary_publication();
-            return crate::context::without_recovery(|| self.insert_prepared(&ordinary, value));
+            return crate::context::without_recovery(|| {
+                self.insert_prepared(&ordinary, value, preparation)
+            });
         }
-        self.insert_prepared(subject, value)
+        self.insert_prepared(subject, value, preparation)
     }
 
-    fn insert_prepared(&mut self, subject: &Subject, value: Request) -> Result<u64>
+    fn insert_prepared(&mut self, subject: &Subject, value: Request,
+                       preparation: &mut dispatch::Preparation)
+                       -> Result<u64>
     {
         let parent = self.validate_parent(subject, value.caller, value.origin)?;
         let reserved = self.store.reserved_capacity();
@@ -204,18 +222,21 @@ impl Requests
             InvocationGate::with_system_allocation(|| self.slots.try_reserve(1 + reserved))
                 .map_err(|_| Error::Exhausted)?;
         }
-        let cancellation = if value.origin == Origin::Direct && parent.is_none()
+        if value.origin == Origin::Direct && parent.is_none()
         {
             let needed = self.slots.len().checked_add(1).ok_or(Error::Exhausted)?;
             InvocationGate::with_system_allocation(|| {
                 self.cancel_ready.try_reserve(needed.saturating_sub(self.cancel_ready.len()))
             }).map_err(|_| Error::Exhausted)?;
-            Some(cancellation::Reservation::new(value.max_reply as usize)?)
+            if !preparation.cancellation_ready()
+            {
+                return Err(Error::State);
+            }
         }
-        else
+        else if preparation.cancellation_ready()
         {
-            None
-        };
+            return Err(Error::RequestParent);
+        }
         let counter = if value.offer.flags & mac_module::Offer::SERIALIZED != 0
         {
             let at = self.active.binary_search_by_key(&value.interface, |entry| entry.0);
@@ -246,11 +267,13 @@ impl Requests
         let pin = activity.map(crate::recovery::Activity::acknowledgement_pin);
         #[cfg(not(target_arch = "riscv64"))]
         let pin = None;
+        let dispatch = preparation.storage().map_err(Error::AllocationScope)?.clone();
         let make = |id| {
             Record { id,
-                     value: Cell::new(value),
+                     value,
                      subject: subject.clone(),
-                     parent }
+                     parent,
+                     dispatch }
         };
         #[cfg(target_arch = "riscv64")]
         let publication = if let Some(activity) = activity.filter(|_| recovery)
@@ -288,9 +311,10 @@ impl Requests
                                  pending: None,
                                  terminal: false,
                                  failure: None,
-                                 cancellation,
+                                 cancellation: preparation.take_cancellation(),
                                  reply: None,
-                                 uncertain: None });
+                                 uncertain: None,
+                                 retired: None });
         Ok(id)
     }
 
@@ -298,17 +322,21 @@ impl Requests
     {
         let at = self.at(access.id()).ok_or(Error::Stale)?;
         let slot = &self.slots[at];
-        if slot.terminal
-        {
-            return Err(Error::Stale);
-        }
         match access
         {
+            Access::Ordinary(_) if slot.terminal => Err(Error::Stale),
             Access::Ordinary(id) => self.store.get(id).ok_or(Error::Stale),
             Access::Continuing { subject,
                                  .. } =>
             {
-                let record = self.store.completing(&slot.receipt).ok_or(Error::Stale)?;
+                let record = self.store
+                                 .completing(&slot.receipt)
+                                 .or_else(|| {
+                                     slot.retired
+                                         .as_ref()
+                                         .and_then(|removed| removed.completing(&slot.receipt))
+                                 })
+                                 .ok_or(Error::Stale)?;
                 if !record.subject.scope().same_scope(subject.scope())
                 {
                     return Err(Error::RequestSubject);
@@ -325,13 +353,49 @@ impl Requests
 
     pub(super) fn get(&self, access: Access<'_>) -> Result<Request>
     {
-        Ok(self.record(access)?.value.get())
+        Ok(self.record(access)?.value)
+    }
+
+    pub(super) fn terminal_reply(&self, access: Access<'_>) -> Result<bool>
+    {
+        Ok(self.record(access)?.dispatch.terminal())
+    }
+
+    pub(super) fn completed(&self, access: Access<'_>) -> Result<bool>
+    {
+        self.record(access)?;
+        Ok(self.slots[self.at(access.id()).ok_or(Error::Stale)?].terminal)
+    }
+
+    pub(super) fn exclusive_dispatch(&self, access: Access<'_>) -> Result<bool>
+    {
+        Ok(Arc::strong_count(&self.record(access)?.dispatch) == 1)
+    }
+
+    pub(super) fn take_completed(&mut self, access: Access<'_>) -> Result<Retirement>
+    {
+        self.record(access)?;
+        let at = self.at(access.id()).ok_or(Error::Stale)?;
+        if self.slots[at].retired.is_none()
+        {
+            return Err(Error::Busy);
+        }
+        if !self.exclusive_dispatch(access)?
+        {
+            return Err(Error::Busy);
+        }
+        Ok(Retirement { _slot: self.slots.remove(at) })
+    }
+
+    pub(super) fn dispatch(&self, access: Access<'_>) -> Result<Arc<dispatch::Storage>>
+    {
+        Ok(self.record(access)?.dispatch.clone())
     }
 
     pub(super) fn invoking(&self, access: Access<'_>) -> Result<Subject>
     {
         let record = self.record(access)?;
-        if !record.value.get().active
+        if !record.dispatch.active()
         {
             return Err(Error::RequestParent);
         }
@@ -339,13 +403,9 @@ impl Requests
         Ok(record.subject.in_request(receipt))
     }
 
-    pub(super) fn active(&self, access: Access<'_>, active: bool) -> Result<()>
+    pub(super) fn is_active(&self, access: Access<'_>) -> Result<bool>
     {
-        let record = self.record(access)?;
-        let mut value = record.value.get();
-        value.active = active;
-        record.value.set(value);
-        Ok(())
+        Ok(self.record(access)?.dispatch.active())
     }
 
     /// Include invalidated and terminal-but-not-yet-dispatched records: their
@@ -353,21 +413,29 @@ impl Requests
     pub(super) fn iter(&self) -> impl Iterator<Item = (u64, Request)> + '_
     {
         self.slots.iter().filter_map(|slot| {
-                             let record = self.store.completing(&slot.receipt)?;
-                             Some((record.id, record.value.get()))
+                             let record = self.store.completing(&slot.receipt)
+                                 .or_else(|| slot.retired.as_ref().and_then(|r| r.completing(&slot.receipt)))?;
+                             Some((record.id, record.value))
                          })
     }
 
     pub(super) fn finish(&mut self, access: Access<'_>) -> Result<()>
     {
-        let at = self.mark_terminal(access)?;
+        let at = if self.completed(access)?
+        {
+            self.at(access.id()).ok_or(Error::Stale)?
+        }
+        else
+        {
+            self.mark_terminal(access)?
+        };
         self.retire(at);
         Ok(())
     }
 
     fn mark_terminal(&mut self, access: Access<'_>) -> Result<usize>
     {
-        let request = self.record(access)?.value.get();
+        let request = self.record(access)?.value;
         let at = self.at(access.id()).ok_or(Error::Stale)?;
         if request.offer.flags & mac_module::Offer::SERIALIZED != 0
         {
@@ -404,7 +472,7 @@ impl Requests
             {
                 continue;
             };
-            let request = record.value.get();
+            let request = record.value;
             if record.parent.is_some()
                || request.caller != module
                || record.subject.scope().subject() != owner
@@ -454,8 +522,8 @@ impl Requests
             {
                 continue;
             };
-            let request = record.value.get();
-            if request.active
+            let request = record.value;
+            if record.dispatch.active_or_subscribe()
             {
                 self.cancel_ready.push_back(receipt);
                 continue;
@@ -490,7 +558,7 @@ impl Requests
         let slot = &self.slots[at];
         let reservation = slot.cancellation.as_ref().ok_or(Error::RequestSubject)?;
         if slot.terminal
-           || record.value.get() != plan.request
+           || record.value != plan.request
            || !record.subject.scope().same_scope(plan.subject.scope())
            || !Arc::ptr_eq(&reservation.state, &plan.state)
            || plan.state.phase.load(Ordering::Acquire) != cancellation::RUNNING
@@ -567,6 +635,14 @@ impl Requests
         }
         else
         {
+            // Return the preadmitted cancellation backing to Slot before its
+            // owned retirement leaves Registry; do not destroy it under this
+            // metadata borrow or before Removed's canonical completion ACK.
+            if let Some(reservation) = self.slots[at].cancellation.as_mut()
+            {
+                plan.output.clear();
+                reservation.output = Some(core::mem::take(&mut plan.output));
+            }
             self.retire(at);
             Ok(cancellation::Acknowledged::Released)
         }
@@ -612,7 +688,7 @@ impl Requests
     /// A refused ticket stays in its preallocated slot with its typed cause.
     fn retire(&mut self, at: usize)
     {
-        if self.slots[at].reply.is_some()
+        if self.slots[at].reply.is_some() || self.slots[at].retired.is_some()
         {
             return;
         }
@@ -640,11 +716,28 @@ impl Requests
         {
             self.store.remove(id)
         };
-        if mark.is_some()
+        if let Some(mark) = mark
         {
-            self.slots.remove(at);
+            self.slots[at].retired = Some(mark);
+            #[cfg(target_arch = "riscv64")]
+            crate::drivers::request_retirement_changed();
         }
-        drop(mark);
+    }
+
+    /// Per-retirement work only. A live dispatch/preparation alias prevents
+    /// physical disposal, so its canonical ACK cannot precede its actual data.
+    pub(super) fn take_retirement(&mut self) -> (Option<Retirement>, bool)
+    {
+        let at =
+            self.slots.iter().position(|slot| {
+                                 slot.retired
+                                     .as_ref()
+                                     .and_then(|removed| removed.completing(&slot.receipt))
+                                     .is_some_and(|record| Arc::strong_count(&record.dispatch) == 1)
+                             });
+        let retirement = at.map(|at| Retirement { _slot: self.slots.remove(at) });
+        let pending = self.slots.iter().any(|slot| slot.retired.is_some());
+        (retirement, pending)
     }
 
     pub(super) fn release(&mut self, ticket: ReleasedResource, storage: bool)
@@ -656,7 +749,8 @@ impl Requests
             if let Some((slot, record, status)) =
                 self.slots.iter().find_map(|slot| {
                                      let record = self.store.completing(&slot.receipt)?;
-                                     let status = slot.uncertainty()?;
+                                     let status = slot.uncertainty()
+                                                      .or_else(|| record.dispatch.uncertainty())?;
                                      (record.subject.scope().subject() == owner).then_some((slot,
                                                                                             record,
                                                                                             status))
@@ -664,7 +758,7 @@ impl Requests
             {
                 return Err(Failure::driver_cancellation_uncertain(ticket,
                                                                   slot.receipt.id(),
-                                                                  record.value.get().caller,
+                                                                  record.value.caller,
                                                                   status));
             }
             if let Some((slot, reply, record)) =
@@ -679,7 +773,7 @@ impl Requests
             {
                 return Err(Failure::driver_reply_pending(ticket,
                                                          slot.receipt.id(),
-                                                         record.value.get().caller,
+                                                         record.value.caller,
                                                          reply.bytes.len(),
                                                          reply.status));
             }
@@ -698,7 +792,7 @@ impl Requests
         }
         let (id, caller) = match self.store.releasing(&ticket)
         {
-            Some(record) => (record.id, record.value.get().caller),
+            Some(record) => (record.id, record.value.caller),
             None => return Err(Failure::registration_mismatch(ticket))
         };
         let Some(at) = self.at(id)
@@ -718,9 +812,19 @@ impl Requests
                                                      reply.bytes.len(),
                                                      reply.status));
         }
-        if let Some(status) = self.slots[at].uncertainty()
+        if let Some(status) = self.slots[at].uncertainty().or_else(|| {
+                                                              self.store
+                                                .completing(&self.slots[at].receipt)
+                                                .and_then(|record| record.dispatch.uncertainty())
+                                                          })
         {
             return Err(Failure::driver_cancellation_uncertain(ticket, id, caller, status));
+        }
+        if let Some(record) = self.store.completing(&self.slots[at].receipt)
+        {
+            // This real owner-walk ticket may precede any Removed guard.
+            // Its blocked lease handback must wake owner cleanup as well.
+            let _ = record.dispatch.active_or_subscribe();
         }
         self.slots[at].pending = Some(ticket);
         if self.slots[at].terminal

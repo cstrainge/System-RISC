@@ -217,8 +217,7 @@ pub struct Request
     pub operation: u32,
     pub max_reply: u32,
     interface_key: mac_object_table::domain::ResourceKey,
-    offer:         mac_module::Offer,
-    active:        bool
+    offer:         mac_module::Offer
 }
 impl Request
 {
@@ -311,6 +310,11 @@ impl Registry
         self.requests.release(ticket, storage)
     }
 
+    pub(crate) fn take_request_retirement(&mut self) -> (Option<requests::Retirement>, bool)
+    {
+        self.requests.take_retirement()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn fixture_subject(&self, caller: u64)
                                   -> Result<crate::drivers::jobs::subjects::Subject>
@@ -334,18 +338,21 @@ impl Registry
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn begin(&mut self, caller: u64, interface: u64, operation: u32, input_len: usize,
+    pub(crate) fn begin(&mut self, caller: u64, interface: u64, operation: u32, input: &[u8],
                         output_len: usize)
                         -> Result<u64>
     {
         let subject = self.fixture_subject(caller)?;
+        let mut preparation = requests::dispatch::prepare(&subject, requests::Origin::Direct, input, output_len)
+            .map_err(Error::AllocationScope)?;
         self.begin_scoped(&subject,
                           caller,
                           interface,
                           operation,
-                          input_len,
+                          input,
                           output_len,
-                          requests::Origin::Direct)
+                          requests::Origin::Direct,
+                          &mut preparation)
     }
 
     /// Resident services use the same capability/request machinery as modules.
@@ -809,8 +816,9 @@ impl Registry
         Ok(provider)
     }
 
-    fn authorize_call(&self, caller: u64, interface: u64, input_len: usize, output_len: usize)
-                      -> Result<Interface>
+    pub(crate) fn authorize_call(&self, caller: u64, interface: u64, input_len: usize,
+                                 output_len: usize)
+                                 -> Result<Interface>
     {
         let provider = self.interface(interface)?;
         if input_len > provider.offer.max_request as usize
@@ -851,11 +859,17 @@ impl Registry
     /// Caller 0 is resident System. Module callers are limited to dependencies
     /// declared in their own admitted contract; applications use class services.
     pub(crate) fn begin_scoped(&mut self, subject: &crate::drivers::jobs::subjects::Subject,
-                               caller: u64, interface: u64, operation: u32, input_len: usize,
-                               output_len: usize, origin: requests::Origin)
+                               caller: u64, interface: u64, operation: u32, input: &[u8],
+                               output_len: usize, origin: requests::Origin,
+                               preparation: &mut requests::dispatch::Preparation)
                                -> Result<u64>
     {
-        let provider = self.authorize_call(caller, interface, input_len, output_len)?;
+        let storage = preparation.storage().map_err(Error::AllocationScope)?;
+        if !storage.fits(input.len(), output_len)
+        {
+            return Err(Error::Contract(mac_module::Error::Limit));
+        }
+        let provider = self.authorize_call(caller, interface, input.len(), output_len)?;
 
         if provider.offer.flags & Offer::SERIALIZED != 0 && self.requests.busy(interface)
         {
@@ -885,8 +899,8 @@ impl Registry
                                                      interface_key: self.interfaces
                                                                         .key(interface)
                                                                         .ok_or(Error::Stale)?,
-                                                     offer: provider.offer,
-                                                     active: false })?;
+                                                     offer: provider.offer },
+                                           preparation)?;
         if provider.module != 0
         {
             self.modules.get_mut(provider.module).ok_or(Error::Stale)?.requests = count;
@@ -897,7 +911,8 @@ impl Registry
     pub(crate) fn request<'a>(&self, caller: u64, access: impl Into<requests::Access<'a>>)
                               -> Result<Request>
     {
-        let request = self.requests.get(access.into())?;
+        let access = access.into();
+        let request = self.requests.get(access)?;
         if request.caller != caller
         {
             return Err(Error::Access);
@@ -914,6 +929,7 @@ impl Registry
         }
 
         if request.module != 0
+           && !self.requests.terminal_reply(access)?
            && self.modules
                   .get(request.module)
                   .is_none_or(|m| !matches!(m.state, State::Ready | State::Quiescing))
@@ -932,17 +948,12 @@ impl Registry
                        offer:  request.offer })
     }
 
-    pub(crate) fn enter_request<'a>(&mut self, caller: u64,
-                                    access: impl Into<requests::Access<'a>>)
-                                    -> Result<()>
+    pub(crate) fn request_dispatch<'a>(&self, caller: u64, access: impl Into<requests::Access<'a>>)
+                                       -> Result<alloc::sync::Arc<requests::dispatch::Storage>>
     {
         let access = access.into();
-        let request = self.request(caller, access)?;
-        if request.active
-        {
-            return Err(Error::Busy);
-        }
-        self.requests.active(access, true)
+        self.request(caller, access)?;
+        self.requests.dispatch(access)
     }
 
     pub(crate) fn request_invocation<'a>(&self, caller: u64,
@@ -1026,17 +1037,20 @@ impl Registry
         Some(module.name.text())
     }
 
-    pub(crate) fn leave_request<'a>(&mut self, caller: u64,
-                                    access: impl Into<requests::Access<'a>>)
-                                    -> Result<()>
+    /// Extract the actual completion guard for synchronous caller ACK. Its
+    /// payload and cancellation backing must be destroyed outside Registry.
+    pub(crate) fn complete_dispatch<'a>(&mut self, caller: u64,
+                                        access: impl Into<requests::Access<'a>>, output_len: usize)
+                                        -> Result<requests::Retirement>
     {
         let access = access.into();
-        let request = self.request(caller, access)?;
-        if !request.active
+        self.request(caller, access)?;
+        if !self.requests.terminal_reply(access)? || !self.requests.exclusive_dispatch(access)?
         {
-            return Err(Error::State);
+            return Err(Error::Busy);
         }
-        self.requests.active(access, false)
+        self.complete(caller, access, output_len)?;
+        self.requests.take_completed(access)
     }
 
     /// Release on terminal success, failure or acknowledged cancellation only.
@@ -1047,13 +1061,18 @@ impl Registry
     {
         let access = access.into();
         let request = self.request(caller, access)?;
-        if request.active
+        if self.requests.is_active(access)?
         {
             return Err(Error::Busy);
         }
         if output_len > request.max_reply as usize
         {
             return Err(Error::Contract(mac_module::Error::Limit));
+        }
+        if self.requests.completed(access)?
+        {
+            self.requests.finish(access)?;
+            return Ok(request);
         }
         let count = if request.module != 0
         {
@@ -1323,22 +1342,23 @@ mod tests
         let module = stage(&mut registry, &bytes);
         registry.commit(module).unwrap();
         let (interface, _) = registry.find(OFFER.class, 1).next().unwrap();
-        let stale = registry.begin(0, interface, 7, 3, 10).unwrap();
+        let stale = registry.begin(0, interface, 7, &[0; 3], 10).unwrap();
         assert_eq!(registry.complete(123, stale, 0), Err(Error::Access));
         assert_eq!(registry.complete(0, stale, 11), Err(Error::Contract(mac_module::Error::Limit)));
-        registry.enter_request(0, stale).unwrap();
-        assert_eq!(registry.enter_request(0, stale), Err(Error::Busy));
+        let lease = registry.request_dispatch(0, stale).unwrap().acquire().unwrap();
+        assert_eq!(registry.request_dispatch(0, stale).unwrap().acquire().err(),
+                   Some(mac_abi::SERVICE_BUSY));
         assert_eq!(registry.complete(0, stale, 0), Err(Error::Busy));
-        registry.leave_request(0, stale).unwrap();
+        drop(lease);
         registry.complete(0, stale, 10).unwrap();
-        let live = registry.begin(0, interface, 7, 3, 10).unwrap();
+        let live = registry.begin(0, interface, 7, &[0; 3], 10).unwrap();
         assert_ne!(live, stale);
         assert_eq!(registry.complete(0, stale, 0), Err(Error::Stale));
         registry.quiesce(module).unwrap();
         assert_eq!(registry.interface_for_request(0, live).unwrap().module, module);
         assert_eq!(registry.find(OFFER.class, 1).count(), 0);
         assert_eq!(registry.finish_quiesce(module), Err(Error::Busy));
-        assert_eq!(registry.begin(0, interface, 7, 0, 0), Err(Error::State));
+        assert_eq!(registry.begin(0, interface, 7, &[], 0), Err(Error::State));
         registry.complete(0, live, 0).unwrap();
         registry.finish_quiesce(module).unwrap();
         assert_eq!(registry.interface(interface), Err(Error::Stale));
@@ -1374,9 +1394,9 @@ mod tests
         let consumer = stage(&mut registry, &consumer_bytes);
         let no_dep_bytes = metadata(*b"unrelated-id!!!!", &[], &[]);
         let unrelated = stage(&mut registry, &no_dep_bytes);
-        assert_eq!(registry.begin(u64::from(unrelated), interface, 1, 0, 0), Err(Error::Access));
-        let ticket = registry.begin(u64::from(consumer), interface, 1, 0, 0).unwrap();
-        assert_eq!(registry.begin(0, interface, 1, 0, 0), Err(Error::Busy));
+        assert_eq!(registry.begin(u64::from(unrelated), interface, 1, &[], 0), Err(Error::Access));
+        let ticket = registry.begin(u64::from(consumer), interface, 1, &[], 0).unwrap();
+        assert_eq!(registry.begin(0, interface, 1, &[], 0), Err(Error::Busy));
         registry.complete(u64::from(consumer), ticket, 0).unwrap();
         assert_eq!(BROKER_ABI, 1);
     }
@@ -1396,7 +1416,17 @@ mod tests
         let consumer = stage(&mut registry, &bytes);
         let subject = registry.fixture_subject(consumer).unwrap();
         let ticket =
-            registry.begin_scoped(&subject, consumer, interface, 1, 0, 0, requests::Origin::Direct)
+            registry.begin_scoped(&subject,
+                                  consumer,
+                                  interface,
+                                  1,
+                                  &[],
+                                  0,
+                                  requests::Origin::Direct,
+                                  &mut requests::dispatch::prepare(&subject,
+                                                                   requests::Origin::Direct,
+                                                                   &[],
+                                                                   0).unwrap())
                     .unwrap();
         drop(subject);
         assert_eq!(registry.commit(consumer), Err(Error::Busy));
@@ -1436,7 +1466,7 @@ mod tests
                    1,
                    "same lease/provider is one registered claim");
         // Lifetime claims do not grant undeclared resolution/call authority.
-        assert_eq!(registry.begin(consumer, interface, 1, 0, 0), Err(Error::Access));
+        assert_eq!(registry.begin(consumer, interface, 1, &[], 0), Err(Error::Access));
         registry.quiesce(provider).unwrap();
         let error = registry.finish_quiesce(provider).unwrap_err();
         assert_eq!(error,
@@ -1588,8 +1618,8 @@ mod tests
         let (ib, _) = second.find(OFFER.class, 1).next().unwrap();
         assert_ne!(ia, ib);
         assert_eq!(first.interface(ib), Err(Error::Stale));
-        let ta = first.begin(0, ia, 1, 0, 0).unwrap();
-        let tb = second.begin(0, ib, 1, 0, 0).unwrap();
+        let ta = first.begin(0, ia, 1, &[], 0).unwrap();
+        let tb = second.begin(0, ib, 1, &[], 0).unwrap();
         assert_ne!(ta, tb);
         assert_eq!(first.complete(0, tb, 0), Err(Error::Stale));
     }
@@ -1641,8 +1671,8 @@ mod tests
         assert_eq!(registry.resolve(u64::from(module), OFFER.class, 1), Ok(provider));
         let unrelated = stage(&mut registry, &metadata(*b"unrelated-id!!!!", &[], &[]));
         assert_eq!(registry.resolve(u64::from(unrelated), OFFER.class, 1), Err(Error::Access));
-        assert_eq!(registry.begin(u64::from(unrelated), provider, 1, 0, 0), Err(Error::Access));
-        let ticket = registry.begin(u64::from(module), provider, 1, 0, 0).unwrap();
+        assert_eq!(registry.begin(u64::from(unrelated), provider, 1, &[], 0), Err(Error::Access));
+        let ticket = registry.begin(u64::from(module), provider, 1, &[], 0).unwrap();
         assert_eq!(registry.commit(module), Err(Error::Busy));
         assert_eq!(registry.complete(0, ticket, 0), Err(Error::Access));
         registry.complete(u64::from(module), ticket, 0).unwrap();

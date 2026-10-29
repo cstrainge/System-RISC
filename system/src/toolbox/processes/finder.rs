@@ -11,6 +11,14 @@ use super::ResourceBinding;
 use crate::{machine::scheduler::{self, PreparedThread},
             toolbox::{handles::InvocationGate, runtime::FinderAdmission}};
 
+/// Unpublished backing is still owned here; published backing remains owned by
+/// its canonical THRD row. The admission authenticates both retry stages.
+enum PendingThread
+{
+    Unpublished(PreparedThread),
+    Published(u64)
+}
+
 enum Work
 {
     Requested
@@ -52,6 +60,10 @@ enum Work
     {
         next: ResourceBinding, admission: FinderAdmission, thread: u64
     },
+    RunningUi
+    {
+        next: ResourceBinding, admission: FinderAdmission, last: Status
+    },
     Failure
     {
         target:   ResourceBinding,
@@ -65,15 +77,15 @@ enum Work
         admission: FinderAdmission,
         loaded:    crate::kernel::LoadedImage,
         status:    Status,
-        shown:     bool
+        attempted: bool
     },
     Paused
     {
         next:      ResourceBinding,
         admission: FinderAdmission,
-        prepared:  PreparedThread,
+        thread:    PendingThread,
         status:    Status,
-        shown:     bool
+        attempted: bool
     }
 }
 static FLIGHT: Spinlock<Option<Work>> = Spinlock::new(None);
@@ -83,6 +95,7 @@ static WAITING_FOR_STACK: AtomicBool = AtomicBool::new(false);
 static WAITING_FOR_REPORT: AtomicBool = AtomicBool::new(false);
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static RETRY: AtomicBool = AtomicBool::new(false);
+static UI_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// Called only by the System-owned report action with its directory capability.
 pub(crate) fn request(binding: ResourceBinding, permit: crate::allocator::recovery::Permit)
@@ -96,6 +109,7 @@ pub(crate) fn request(binding: ResourceBinding, permit: crate::allocator::recove
             return Err(SERVICE_BUSY);
         }
         WAITING_FOR_REPORT.store(false, Ordering::Release);
+        UI_PROGRESS.store(false, Ordering::Release);
         *flight = Some(Work::Requested { old: binding,
                                          permit,
                                          activity });
@@ -131,6 +145,17 @@ pub(crate) fn retry(binding: &ResourceBinding) -> Result<(), Status>
         WAKE.store(true, Ordering::Release);
         Ok(())
     })
+}
+
+/// A real completion may release memory needed by a retained warning or
+/// post-start control refresh. Keep the callback bounded and allocation-free.
+pub(crate) fn cleanup_progress()
+{
+    if ACTIVE.load(Ordering::Acquire)
+    {
+        UI_PROGRESS.store(true, Ordering::Release);
+        WAKE.store(true, Ordering::Release);
+    }
 }
 
 struct Running;
@@ -174,6 +199,8 @@ fn step(work: Work) -> Option<Work>
                         .. }
         | Work::Started { admission,
                         .. }
+        | Work::RunningUi { admission,
+                          .. }
         | Work::BackingPaused { admission,
                               .. }
         | Work::Paused { admission,
@@ -334,7 +361,7 @@ fn step_inner(work: Work) -> Option<Work>
                                                       admission,
                                                       loaded,
                                                       status,
-                                                      shown: false });
+                                                      attempted: false });
                 }
             };
             WAITING_FOR_STACK.store(false, Ordering::Release);
@@ -348,7 +375,7 @@ fn step_inner(work: Work) -> Option<Work>
                                                           admission,
                                                           loaded,
                                                           status,
-                                                          shown: false });
+                                                          attempted: false });
                     }
                 };
             match scheduler::prepare_recovery(admission.owner().clone(), loaded, charges, loan)
@@ -369,7 +396,7 @@ fn step_inner(work: Work) -> Option<Work>
                                                admission,
                                                loaded,
                                                status,
-                                               shown: false })
+                                               attempted: false })
                 }
             }
         }
@@ -389,9 +416,9 @@ fn step_inner(work: Work) -> Option<Work>
                 {
                     Some(Work::Paused { next,
                                         admission,
-                                        prepared: failure.prepared,
+                                        thread: PendingThread::Unpublished(failure.prepared),
                                         status: failure.status,
-                                        shown: false })
+                                        attempted: false })
                 }
             }
         }
@@ -399,21 +426,61 @@ fn step_inner(work: Work) -> Option<Work>
                         mut admission,
                         thread } =>
         {
+            // The inner result belongs only to post-commit presentation. It
+            // cannot turn a runnable thread back into failed preparation.
             match desktop(&next, |desktop| {
-                      desktop.finder_started(&admission, thread)
-                             .and_then(|()| scheduler::start_prepared(thread, admission.owner()))
+                      desktop.prepare_finder_start(&admission, thread)?;
+                      desktop.commit_finder_start(&mut admission, thread)?;
+                      UI_PROGRESS.store(false, Ordering::Release);
+                      Ok(desktop.finish_finder_start_ui(&admission))
                   })
             {
-                Ok(()) =>
+                Ok(Ok(())) => None,
+                Ok(Err(status)) =>
                 {
-                    admission.started();
-                    None
+                    serial!("FINDER_REPORT_REFRESH_RETAINED app={} status={status}; Finder \
+                             remains runnable",
+                            admission.id());
+                    Some(Work::RunningUi { next,
+                                           admission,
+                                           last: status })
                 }
-                Err(_) =>
+                Err(status) =>
                 {
-                    Some(Work::Started { next,
-                                         admission,
-                                         thread })
+                    Some(Work::Paused { next,
+                                        admission,
+                                        thread: PendingThread::Published(thread),
+                                        status,
+                                        attempted: false })
+                }
+            }
+        }
+        Work::RunningUi { next,
+                          admission,
+                          mut last } =>
+        {
+            if !admission.owner().accepting()
+            {
+                // Normal owner teardown now owns the registered thread and UI.
+                // This committed refresh must not pin its closing account.
+                return None;
+            }
+            UI_PROGRESS.store(false, Ordering::Release);
+            match desktop(&next, |desktop| desktop.finish_finder_start_ui(&admission))
+            {
+                Ok(()) => None,
+                Err(status) =>
+                {
+                    if last != status
+                    {
+                        serial!("FINDER_REPORT_REFRESH_RETAINED app={} status={status}; Finder \
+                                 remains runnable",
+                                admission.id());
+                        last = status;
+                    }
+                    Some(Work::RunningUi { next,
+                                           admission,
+                                           last })
                 }
             }
         }
@@ -438,7 +505,7 @@ fn step_inner(work: Work) -> Option<Work>
                               admission,
                               loaded,
                               status,
-                              mut shown } =>
+                              mut attempted } =>
         {
             if RETRY.swap(false, Ordering::AcqRel)
             {
@@ -446,37 +513,51 @@ fn step_inner(work: Work) -> Option<Work>
                                          admission,
                                          loaded });
             }
-            if !shown
+            if !attempted || UI_PROGRESS.swap(false, Ordering::AcqRel)
             {
-                shown = desktop(&next, |desktop| desktop.finder_restart_failed(status)).is_ok();
+                let _notification = desktop(&next, |desktop| desktop.finder_restart_failed(status));
+                attempted = true;
             }
             Some(Work::BackingPaused { next,
                                        admission,
                                        loaded,
                                        status,
-                                       shown })
+                                       attempted })
         }
         Work::Paused { next,
                        admission,
-                       prepared,
+                       thread,
                        status,
-                       mut shown } =>
+                       mut attempted } =>
         {
             if RETRY.swap(false, Ordering::AcqRel)
             {
-                return Some(Work::Publish { next,
-                                            admission,
-                                            prepared });
+                return Some(match thread
+                            {
+                                PendingThread::Unpublished(prepared) =>
+                                {
+                                    Work::Publish { next,
+                                                    admission,
+                                                    prepared }
+                                }
+                                PendingThread::Published(thread) =>
+                                {
+                                    Work::Started { next,
+                                                    admission,
+                                                    thread }
+                                }
+                            });
             }
-            if !shown
+            if !attempted || UI_PROGRESS.swap(false, Ordering::AcqRel)
             {
-                shown = desktop(&next, |desktop| desktop.finder_restart_failed(status)).is_ok();
+                let _notification = desktop(&next, |desktop| desktop.finder_restart_failed(status));
+                attempted = true;
             }
             Some(Work::Paused { next,
                                 admission,
-                                prepared,
+                                thread,
                                 status,
-                                shown })
+                                attempted })
         }
     }
 }
@@ -501,10 +582,11 @@ pub(crate) fn pump()
     WAKE.store(false, Ordering::Release);
     let next = step(work);
     let sleep = matches!(&next,
-                         Some(Work::Paused { shown: true,
+                         Some(Work::Paused { attempted: true,
                                              .. }
-                              | Work::BackingPaused { shown: true,
-                                                      .. }))
+                              | Work::BackingPaused { attempted: true,
+                                                      .. }
+                              | Work::RunningUi { .. }))
                 || (matches!(&next, Some(Work::Commit { .. }))
                     && WAITING_FOR_REPORT.load(Ordering::Acquire))
                 || (matches!(&next, Some(Work::Wait { .. }))

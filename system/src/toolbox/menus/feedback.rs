@@ -232,7 +232,13 @@ impl Desktop
                     }
                 }
             };
-        if !valid || self.dialogs.active()
+        if !valid
+           || self.dialogs.active()
+           || self.core_dialogs.active()
+           || self.standard_file.active(feedback.owner).is_some()
+           || (self.crash.info().window.0 != 0
+               && self.crash.info().dismissed == 0
+               && self.windows.window(self.crash.info().window).is_some())
         {
             self.menu_feedback = Some(feedback);
             self.cancel_menu_feedback();

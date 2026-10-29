@@ -574,6 +574,9 @@ impl Manager
                         };
                         if index == 256
                         {
+                            serial!("MODULE_DISCOVERY_LIMIT directory={} max_entries=256; reduce \
+                                     this installation directory before restarting",
+                                    core::str::from_utf8(name).unwrap_or("?"));
                             return Err(NO_MEMORY);
                         }
                         if entry.directory
@@ -586,10 +589,10 @@ impl Manager
                         {
                             continue;
                         }
-                        if candidates.len() >= 32
-                        {
-                            return Err(NO_MEMORY);
-                        }
+                        // The bounded directory walk limits discovery work;
+                        // candidate storage itself follows real admission. An
+                        // unrelated package-count cap must not impersonate
+                        // heap exhaustion on an extensible installation.
                         candidates.try_reserve(1).map_err(|_| NO_MEMORY)?;
                         candidates.push(ModuleCandidate { directory,
                                                           volume: id,

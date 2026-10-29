@@ -10,6 +10,8 @@ use mac_toolbox::{System, SystemServices};
 mod process_cases;
 #[path = "../../../process_pascal_cases.rs"]
 mod process_pascal_cases;
+#[cfg(feature = "pressure")]
+mod pressure;
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 pub struct LogBuffer
 {
@@ -63,20 +65,34 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
         Ok(s) => s,
         Err(e) => return e.status()
     };
-    // SAFETY: the same loader-validated table supplies the raw legacy conversion gate.
-    let gate = unsafe { (*services).trap };
-    let outcome = process_pascal_cases::current_name(&system, gate).and_then(|_| {
-                      process_cases::observer(&system, |id| {
-                          process_pascal_cases::rejected_id(&system, gate, id)
-                      })
-                  });
+    #[cfg(feature = "pressure")]
+    let outcome = pressure::run(&system);
+    #[cfg(not(feature = "pressure"))]
+    let outcome = {
+        // SAFETY: the same loader-validated table supplies the raw legacy conversion gate.
+        let gate = unsafe { (*services).trap };
+        process_pascal_cases::current_name(&system, gate).and_then(|_| {
+            process_cases::observer(&system, |id| {
+                process_pascal_cases::rejected_id(&system, gate, id)
+            })
+        })
+    };
     match outcome
     {
         Ok(()) => 0,
         Err(error) =>
         {
             let mut text = LogBuffer::new();
-            let _ = writeln!(text, "PROCESS_FAIL {error:?}");
+            let _ = writeln!(text,
+                             "{} {error:?}",
+                             if cfg!(feature = "pressure")
+                             {
+                                 "PRESSURE_ACTOR_FAIL"
+                             }
+                             else
+                             {
+                                 "PROCESS_FAIL"
+                             });
             let _ = system.log(text.text());
             -1
         }
@@ -88,7 +104,16 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> !
     if let Ok(system) = unsafe { System::from_raw(SERVICES.load(Ordering::Acquire)) }
     {
         let mut text = LogBuffer::new();
-        let _ = writeln!(text, "PROCESS_FAIL panic {info}");
+        let _ = writeln!(text,
+                         "{} panic {info}",
+                         if cfg!(feature = "pressure")
+                         {
+                             "PRESSURE_ACTOR_FAIL"
+                         }
+                         else
+                         {
+                             "PROCESS_FAIL"
+                         });
         let _ = system.log(text.text());
     }
     loop

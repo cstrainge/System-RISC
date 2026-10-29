@@ -9,7 +9,7 @@ pub(crate) mod traps;
 /// Bootstrap hardware identity only; never an application or OS-thread identity.
 pub(crate) fn hart_id() -> usize
 {
-    paging::hart_id()
+    traps::execution::hart_id().unwrap_or(usize::MAX)
 }
 
 pub(crate) mod clock;

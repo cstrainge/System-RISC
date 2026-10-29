@@ -45,8 +45,8 @@ pub struct ExecutionContext
 #[cfg(target_arch = "riscv64")]
 pub fn bootstrap_thread() -> ThreadId
 {
-    // Used only to admit primary-hart bootstrap. Scheduled service calls obtain
-    // their actual identities from current_thread_context instead.
+    // This CPU must hold the actual admitted sscratch control. Checked boot
+    // metadata alone is never a runtime hart or bootstrap-thread selector.
     let hart = crate::machine::hart_id();
     if hart == 0 { BOOT_THREAD } else { ThreadId(0) }
 }
@@ -451,7 +451,7 @@ impl ThreadContext
         });
     }
 
-    /// Called only by the scheduler while ACTIVE is borrowed under the native
+    /// Called only by the architecture while its active slot is borrowed under the native
     /// interrupt gate. No owner lookup, retained reader, backing allocation or
     /// AccountUse destruction is part of this reservation path.
     pub(crate) fn reserve_allocation(

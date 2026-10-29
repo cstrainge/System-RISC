@@ -20,7 +20,10 @@ pub(super) fn context_released()
 pub(super) enum ReapState
 {
     Refused(mac_abi::Status),
-    Current,
+    Running
+    {
+        hart: usize
+    },
     Readers
     {
         core:    usize,
@@ -63,7 +66,13 @@ pub(super) struct WorkerState
     pub(super) wake:        bool,
     pub(super) dispose:     bool,
     pub(super) started:     bool,
+    // Set at the scheduler's real restore commitment; unlike started this
+    // survives preemption before the trampoline reaches its first check.
+    resume_committed:       bool,
     pub(super) returned:    bool,
+    // PARK has committed but its return has not yet been selected for restore.
+    // Other harts record cancellation; only a frame-owning handoff writes a0.
+    park_return:            bool,
     pub(super) exit_status: mac_abi::Status
 }
 pub(crate) struct WorkerStatus
@@ -187,18 +196,21 @@ pub(crate) fn publish_worker(prepared: PreparedWorker) -> Result<u64, WorkerPubl
             let scope = root.lease();
             let store = scheduler.records.as_mut().ok_or(mac_abi::BAD_ABI)?;
             let record = |id| {
-                let worker = WorkerState { phase:       mac_module::abi::worker::PREPARED,
-                                           cancelled:   false,
-                                           wake:        false,
-                                           dispose:     false,
-                                           started:     false,
-                                           returned:    false,
-                                           exit_status: mac_abi::OK };
-                let state = RunState { live:     false,
-                                       retired:  false,
-                                       switches: 0,
-                                       waiting:  None,
-                                       woken:    0 };
+                let worker = WorkerState { phase:            mac_module::abi::worker::PREPARED,
+                                           cancelled:        false,
+                                           wake:             false,
+                                           dispose:          false,
+                                           started:          false,
+                                           resume_committed: false,
+                                           returned:         false,
+                                           park_return:      false,
+                                           exit_status:      mac_abi::OK };
+                let state = RunState { claimed_by: None,
+                                       live:       false,
+                                       retired:    false,
+                                       switches:   0,
+                                       waiting:    None,
+                                       woken:      0 };
                 Thread { id,
                          core: prepared.core.share(),
                          scope: Some(scope),
@@ -354,7 +366,7 @@ pub(super) fn cancel_worker(thread: &Thread, dispose: bool)
         let mut state = worker.get();
         state.cancelled = true;
         state.dispose |= dispose;
-        if !state.started
+        if !state.started && !state.resume_committed
         {
             if !state.returned
             {
@@ -370,13 +382,6 @@ pub(super) fn cancel_worker(thread: &Thread, dispose: bool)
         }
         else if !state.returned
         {
-            if matches!(thread.state.get().waiting, Some(Wait::Worker))
-            {
-                if let Some(backing) = thread.core.backing.lock().as_ref()
-                {
-                    traps::worker_resume_status(&backing.cpu, mac_abi::OPERATION_CANCELLED);
-                }
-            }
             state.phase = mac_module::abi::worker::RUNNING;
             state.wake = true;
             thread.update(|s| {
@@ -433,14 +438,17 @@ pub(crate) fn worker_wake(owner: &OwnerRef, id: u64) -> Result<(), mac_abi::Stat
 }
 pub(crate) fn worker_current() -> Result<(u64, bool), mac_abi::Status>
 {
-    if IO.load(Ordering::Relaxed)
+    if in_io()
     {
         return Err(mac_abi::WRONG_THREAD);
     }
     interrupts::with_masked(|| {
         let scheduler = SCHEDULER.lock();
-        let thread =
-            scheduler.thread(CURRENT.load(Ordering::Relaxed)).ok_or(mac_abi::WRONG_THREAD)?;
+        let thread = scheduler.thread(current()).ok_or(mac_abi::WRONG_THREAD)?;
+        if thread.state.get().claimed_by != Some(selected_hart())
+        {
+            return Err(mac_abi::WRONG_THREAD);
+        }
         if !thread.core.context.is_worker_body()
         {
             return Err(mac_abi::WRONG_THREAD);
@@ -452,7 +460,7 @@ pub(crate) fn worker_current() -> Result<(u64, bool), mac_abi::Status>
 pub(crate) fn worker_park() -> Result<bool, mac_abi::Status>
 {
     let scheduler = SCHEDULER.lock();
-    let thread = scheduler.thread(CURRENT.load(Ordering::Relaxed)).ok_or(mac_abi::WRONG_THREAD)?;
+    let thread = scheduler.thread(current()).ok_or(mac_abi::WRONG_THREAD)?;
     let worker = thread.worker.as_ref().ok_or(mac_abi::WRONG_THREAD)?;
     let mut state = worker.get();
     if state.cancelled
@@ -466,6 +474,7 @@ pub(crate) fn worker_park() -> Result<bool, mac_abi::Status>
         return Ok(false);
     }
     state.phase = mac_module::abi::worker::PARKED;
+    state.park_return = true;
     worker.set(state);
     thread.update(|s| {
               s.waiting = Some(Wait::Worker);
@@ -476,7 +485,7 @@ pub(crate) fn worker_park() -> Result<bool, mac_abi::Status>
 pub(crate) fn worker_exit() -> Result<(), mac_abi::Status>
 {
     let scheduler = SCHEDULER.lock();
-    let thread = scheduler.thread(CURRENT.load(Ordering::Relaxed)).ok_or(mac_abi::WRONG_THREAD)?;
+    let thread = scheduler.thread(current()).ok_or(mac_abi::WRONG_THREAD)?;
     let worker = thread.worker.as_ref().ok_or(mac_abi::WRONG_THREAD)?;
     let mut state = worker.get();
     if !state.returned
@@ -501,11 +510,11 @@ fn refuse_entry(thread: &Thread, worker: &Cell<WorkerState>)
         WORKER_REAP_COUNT.fetch_add(1, Ordering::AcqRel);
     }
     state.returned = true;
-    state.phase = mac_module::abi::worker::FINISHED;
+    // This trampoline has already committed execution. Even a typed entry
+    // refusal keeps its real stack runnable until the actual private EXIT.
     state.exit_status = mac_abi::BAD_ABI;
     worker.set(state);
     thread.update(|state| {
-              state.live = false;
               state.waiting = None;
               state.woken = 0;
           });
@@ -515,7 +524,7 @@ extern "C" fn worker_entry() -> !
 {
     let work = interrupts::with_masked(|| {
         let scheduler = SCHEDULER.lock();
-        let slot = CURRENT.load(Ordering::Relaxed);
+        let slot = current();
         let Some(thread) = scheduler.thread(slot)
         else
         {
@@ -523,6 +532,10 @@ extern "C" fn worker_entry() -> !
                              format_args!("Worker trampoline has no retained scheduler row: \
                                            slot {slot}."));
         };
+        if thread.state.get().claimed_by != Some(selected_hart())
+        {
+            claim_lost(selected_hart(), slot, "worker entry does not own its selected THRD");
+        }
         let Some(worker) = thread.worker.as_ref()
         else
         {
@@ -531,6 +544,22 @@ extern "C" fn worker_entry() -> !
                                            {}.",
                                           thread.id));
         };
+        let mut state = worker.get();
+        if state.cancelled
+        {
+            // Selection can precede cancellation before the first instruction.
+            // Leave the accepted capture/code pin in the row for quiescent Drop.
+            // Keep RUNNING/live through any pre-EXIT timer preemption, just as
+            // a normally returned body does; only private EXIT finishes it.
+            if !state.returned
+            {
+                WORKER_REAP_COUNT.fetch_add(1, Ordering::AcqRel);
+            }
+            state.returned = true;
+            state.exit_status = mac_abi::OPERATION_CANCELLED;
+            worker.set(state);
+            return None;
+        }
         let Some(scope) = thread.scope.clone()
         else
         {
@@ -571,7 +600,7 @@ extern "C" fn worker_entry() -> !
         // reaper retains its code pin until both physical backing and callbacks leave.
         interrupts::with_masked(|| {
             let scheduler = SCHEDULER.lock();
-            let current = CURRENT.load(Ordering::Relaxed);
+            let current = current();
             let thread = scheduler.thread(current);
             let valid = thread.is_some_and(|thread| {
                                   thread.id == id
@@ -626,13 +655,62 @@ extern "C" fn worker_entry() -> !
                                    {status}."));
 }
 
+/// Commit a worker restore only while SCHEDULER owns the captured current
+/// frame or an unclaimed incoming frame. Never patch remote restore storage.
+pub(super) fn commit_resume(thread: &Thread)
+{
+    let Some(worker) = thread.worker.as_ref()
+    else
+    {
+        return;
+    };
+    let mut state = worker.get();
+    if state.resume_committed && !state.park_return
+    {
+        return;
+    }
+    if state.park_return
+    {
+        let backing = thread.core.backing.lock();
+        let Some(backing) = backing.as_ref()
+        else
+        {
+            emergency::enter(crate::emergency::Kind::SystemPanic,
+                             format_args!("Worker PARK return has no CPU backing: thread {}.",
+                                          thread.id));
+        };
+        traps::worker_resume_status(&backing.cpu,
+                                    if state.cancelled
+                                    {
+                                        mac_abi::OPERATION_CANCELLED
+                                    }
+                                    else
+                                    {
+                                        mac_abi::OK
+                                    });
+        state.park_return = false;
+    }
+    state.resume_committed = true;
+    worker.set(state);
+}
+/// Reap wake follows actual release of an executing hart's persistent claim.
+pub(super) fn execution_released(thread: &Thread)
+{
+    if thread.worker.as_ref().is_some_and(|worker| {
+                                 let state = worker.get();
+                                 state.returned && state.phase == mac_module::abi::worker::FINISHED
+                             })
+    {
+        WORKER_PENDING.store(true, Ordering::Release);
+    }
+}
+
 pub(super) fn reclaim_workers()
 {
     if !WORKER_PENDING.swap(false, Ordering::AcqRel)
     {
         return;
     }
-    let current = CURRENT.load(Ordering::Relaxed);
     let mut after = 0;
     loop
     {
@@ -651,9 +729,9 @@ pub(super) fn reclaim_workers()
                                 {
                                     return None;
                                 }
-                                let wait = if slot == current
+                                let wait = if let Some(hart) = thread.state.get().claimed_by
                                 {
-                                    Some(ReapState::Current)
+                                    Some(ReapState::Running { hart: hart.number() })
                                 }
                                 else
                                 {
@@ -682,10 +760,7 @@ pub(super) fn reclaim_workers()
                 serial!("MODULE_WORKER_RETIRE_WAIT thread={id} module={} reason={wait:?}",
                         core.binding.owner());
             }
-            if wait == ReapState::Current
-            {
-                WORKER_PENDING.store(true, Ordering::Release);
-            }
+            // A real claim release, not a repeated timer scan, rearms this wait.
             continue;
         }
         // A code-dependent destructor runs under its original THRD root, with
@@ -788,7 +863,27 @@ pub(super) fn reclaim_workers()
                 removed
             }
         };
+        let module = core.binding.owner();
+        let disposed = removed.is_some();
         drop(core);
         drop(removed);
+        // Backing/charges and the code-dependent capture already left above.
+        // Removed destroys the final record/context before attempting ACK;
+        // a refused ACK stays with the canonical completion quarantine.
+        let acknowledged = disposed && scope.as_ref().is_some_and(|scope| scope.root_retired());
+        // This temporary lease must leave before reporting the final disposal.
+        drop(scope);
+        if disposed
+        {
+            if acknowledged
+            {
+                serial!("MODULE_WORKER_RECLAIMED module={module} thread={id}");
+            }
+            else
+            {
+                serial!("MODULE_WORKER_RELEASE_RETAINED module={module} thread={id} \
+                         reason=canonical_ack_not_confirmed");
+            }
+        }
     }
 }

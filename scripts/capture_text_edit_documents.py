@@ -93,7 +93,8 @@ def capture(output):
             image.extract(path, output / (name + '.bytes'))
         report['original_before'] = before
         report['original_after'] = packaging.sha(base)
-        report['assertion_owner'] = 'mac-toolbox/tests/text_edit_documents.rs'
+        report['evidence_kind'] = 'physical guest workflow and offline saved-file capture'
+        report['host_rust_suite_run'] = False
         (output / 'capture.json').write_text(json.dumps(report, indent=2) + '\n')
     except BaseException:
         if process is not None and process.poll() is None:

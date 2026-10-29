@@ -50,6 +50,7 @@ pub(crate) enum Error
     Tables(MapError<FrameError>),
     Missing,
     AlreadyActive,
+    ForeignHart,
     Admission
     {
         root:   usize,
@@ -84,6 +85,11 @@ impl fmt::Display for Error
             {
                 f.write_str("supervisor boot/root ownership has not been admitted; reset and \
                              rebuild ROM/System together")
+            }
+            Self::ForeignHart =>
+            {
+                f.write_str("opaque firmware access requires its admitted owner hart; foreign CPU \
+                             refused")
             }
             Self::AlreadyActive =>
             {
@@ -177,9 +183,11 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
         });
     Ok(())
 }
-pub(crate) fn hart_id() -> usize
+/// Fixed opaque-firmware owner from checked boot metadata. This is not a
+/// current-CPU selector and must never supply runtime execution identity.
+pub(crate) fn firmware_owner_hart() -> Option<usize>
 {
-    BOOT.get().map_or(usize::MAX, |boot| boot.hart)
+    BOOT.get().map(|boot| boot.hart)
 }
 pub(crate) fn memory() -> Result<(CheckedMemory<'static>, DirectMap<'static>), Error>
 {
@@ -188,7 +196,7 @@ pub(crate) fn memory() -> Result<(CheckedMemory<'static>, DirectMap<'static>), E
 }
 /// Terminal admission reporting needs no heap, firmware callback or root switch.
 /// The bootstrap root declares this checked board UART window before entry.
-pub(crate) fn report_refusal(error: &Error)
+pub(crate) fn report_refusal(error: &impl fmt::Display)
 {
     use core::fmt::Write;
     struct Serial;
@@ -635,6 +643,10 @@ pub(crate) fn with_firmware<R>(call: impl FnOnce() -> R) -> Result<R, Error>
 {
     interrupts::with_masked(|| {
         let boot = BOOT.get().ok_or(Error::Missing)?;
+        if super::traps::execution::hart_id() != Some(boot.hart)
+        {
+            return Err(Error::ForeignHart);
+        }
         let (register, fence) = SPACES.get().map_or((boot.root, true), |spaces| {
                                                 (spaces.firmware.register, !spaces.distinct_tags)
                                             });

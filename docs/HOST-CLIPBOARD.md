@@ -110,8 +110,12 @@ stack, invocation identity, allocation account and cancellation/wakeup authority
 The worker must be eligible for bounded asynchronous channel and Scrap work
 outside the globally interrupt-masked application trap path. A boolean worker
 flag, borrowed application identity or manually constructed account token does
-not satisfy this gate. The current module `Host` descriptor exposes declared
-resolve/call callbacks; it does not itself grant this missing worker service.
+not satisfy this gate. The current 96-byte module `Host` descriptor provides
+the checked worker callbacks used by `mac-driver-alloc::Workers`. Native worker
+execution, cancellation, original-Subject I/O and actual reclamation have the
+bounded observations recorded in [THREADING.md](../THREADING.md). Obtain genuine
+worker admission through that API; descriptor size or callback presence alone
+is not admission or production clipboard readiness.
 Do not publish an always-successful placeholder initializer or package inert
 callbacks as a working bridge.
 
@@ -126,12 +130,15 @@ must identify the System worker prerequisite. Required hooks/services remain
 unpublished and local Scrap stays usable. Transport/protocol readiness does not
 stand in for worker/account admission.
 
-Activation is confirmed only after a scheduled readiness transition; a boot
+Bridge activation is confirmed only after a scheduled readiness transition; a boot
 initializer must not spin awaiting the host. The resident startup/lifecycle
 service must retain the provisional outcome until that transition and distinguish
 it from a confirmed active extension. Until that service is implemented, the
-extension must refuse activation rather than assert that asynchronous work is
-running. A failed cleanup keeps its exact ticket and backing quarantined; report
+extension must refuse bridge activation rather than assert that sharing is
+running. Current `MODULE_READY` reports synchronous initializer commitment and
+armed workers becoming runnable; it does not report asynchronous negotiation
+success. The worker foundation does not implement that later readiness surface.
+A failed cleanup keeps its exact ticket and backing quarantined; report
 recovery honestly instead of pretending rollback succeeded.
 
 ## Wire limits and text policy

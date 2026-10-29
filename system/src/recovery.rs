@@ -21,6 +21,10 @@ static MODAL: Spinlock<Modal> = Spinlock::new(Modal { opening: false,
 static REAP_REQUESTED: AtomicBool = AtomicBool::new(false);
 static CLEANUP_REQUESTED: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
+// There is one reusable modal session. It cannot be reopened until every old
+// Activity and canonical acknowledgement pin is released. Keep its closing
+// flag outside the Arc so the final use can signal after dropping that Arc.
+static CLOSING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind
@@ -45,7 +49,6 @@ struct Session
     permit:         Permit,
     subject:        Subject,
     publication:    crate::drivers::jobs::RecoveryEndpoints,
-    closing:        AtomicBool,
     object:         AtomicU64,
     windows:        Spinlock<[(u64, bool); 2]>,
     cleanup_status: AtomicI32
@@ -57,7 +60,10 @@ struct Session
 #[derive(Clone)]
 pub(crate) struct Activity
 {
-    session: Arc<Session>
+    session:   Arc<Session>,
+    // Fields drop in declaration order: this wake runs after the actual use
+    // is gone, even if preempted between Activity::drop and Arc destruction.
+    _released: ReleasedActivity
 }
 impl Activity
 {
@@ -79,6 +85,13 @@ impl Activity
     pub(crate) fn recipient(&self) -> OwnerRef
     {
         InvocationGate::run(|| self.session.recipient.lock().clone())
+    }
+
+    /// Borrow the actual service storage capability while producing its cheap
+    /// reset-lifetime resource proof; no owner Arc is cloned for replay.
+    pub(crate) fn resource_source(&self) -> Result<crate::kernel::SystemResources, Status>
+    {
+        crate::kernel::system_resources(&self.session.storage_owner)
     }
 
     pub(crate) fn storage_owner(&self) -> OwnerRef
@@ -170,7 +183,7 @@ impl Activity
 
     pub(crate) fn close(&self)
     {
-        self.session.closing.store(true, Ordering::Release);
+        CLOSING.store(true, Ordering::Release);
         CLEANUP_REQUESTED.store(true, Ordering::Release);
         REAP_REQUESTED.store(true, Ordering::Release);
     }
@@ -179,23 +192,36 @@ impl Activity
     /// service's own authentic I/O root, allocation and backing capabilities.
     pub(crate) fn run<R>(&self, operation: impl FnOnce() -> R) -> Result<R, Status>
     {
-        self.with_storage(|| crate::context::with_io_subject(self.subject(), operation))
+        self.with_storage(|| {
+                crate::kernel::with_system_resources(&self.session.storage_owner, || {
+                    crate::context::with_io_subject(self.subject(), operation)
+                }).and_then(core::convert::identity)
+            })
     }
 }
 impl Drop for Activity
 {
     fn drop(&mut self)
     {
-        if !self.session.closing.load(Ordering::Acquire)
+        if !CLOSING.load(Ordering::Acquire)
            && !InvocationGate::run(|| self.session.recipient.lock().accepting())
         {
-            if !self.session.closing.swap(true, Ordering::AcqRel)
+            if !CLOSING.swap(true, Ordering::AcqRel)
             {
                 CLEANUP_REQUESTED.store(true, Ordering::Release);
                 REAP_REQUESTED.store(true, Ordering::Release);
             }
         }
-        if self.session.closing.load(Ordering::Acquire) && Arc::strong_count(&self.session) == 2
+    }
+}
+
+#[derive(Clone)]
+struct ReleasedActivity;
+impl Drop for ReleasedActivity
+{
+    fn drop(&mut self)
+    {
+        if CLOSING.load(Ordering::Acquire)
         {
             REAP_REQUESTED.store(true, Ordering::Release);
         }
@@ -286,7 +312,6 @@ pub(crate) fn prepare_modal() -> Result<(), Status>
                                    permit,
                                    subject,
                                    publication,
-                                   closing: AtomicBool::new(false),
                                    object: AtomicU64::new(0),
                                    windows: Spinlock::new([(0, true); 2]),
                                    cleanup_status: AtomicI32::new(mac_abi::OK) }).map_err(|_| {
@@ -339,12 +364,13 @@ pub(crate) fn begin(recipient: OwnerRef, kind: Kind) -> Result<Opening, Status>
     unique.kind = kind;
     unique.object.store(0, Ordering::Release);
     *unique.windows.get_mut() = [(0, true); 2];
-    unique.closing.store(false, Ordering::Release);
+    CLOSING.store(false, Ordering::Release);
     unique.cleanup_status.store(mac_abi::OK, Ordering::Release);
     InvocationGate::run(|| {
         let mut modal = MODAL.lock();
         modal.opening = false;
-        let activity = Activity { session: session.clone() };
+        let activity = Activity { session:   session.clone(),
+                                  _released: ReleasedActivity };
         modal.session = Some(session);
         ACTIVE.store(true, Ordering::Release);
         Ok(Opening { activity,
@@ -361,8 +387,10 @@ pub(crate) fn active(owner: u64, kind: Kind) -> Option<Activity>
     InvocationGate::run(|| {
         let modal = MODAL.lock();
         let session = modal.session.as_ref()?;
-        (session.kind == kind && session.recipient_id.load(Ordering::Acquire) == owner)
-            .then(|| Activity { session: session.clone() })
+        (session.kind == kind && session.recipient_id.load(Ordering::Acquire) == owner).then(|| {
+            Activity { session:   session.clone(),
+                       _released: ReleasedActivity }
+        })
     })
 }
 
@@ -379,9 +407,9 @@ pub(crate) fn reap()
         let session = modal.session.as_ref()?;
         if !session.recipient.lock().accepting()
         {
-            session.closing.store(true, Ordering::Release);
+            CLOSING.store(true, Ordering::Release);
         }
-        if session.closing.load(Ordering::Acquire)
+        if CLOSING.load(Ordering::Acquire)
            && Arc::strong_count(session) == 1
            && session.subject.exclusive()
            && session.publication.idle()
@@ -430,7 +458,7 @@ pub(crate) fn owner_stopped(owner: &OwnerRef)
         if let Some(session) = MODAL.lock().session.as_ref()
            && session.recipient.lock().owner() == owner.owner()
         {
-            session.closing.store(true, Ordering::Release);
+            CLOSING.store(true, Ordering::Release);
             CLEANUP_REQUESTED.store(true, Ordering::Release);
             REAP_REQUESTED.store(true, Ordering::Release);
         }
@@ -445,7 +473,7 @@ pub(crate) fn standard_file_subject(owner: u64) -> Result<Subject, Status>
 pub(crate) fn claim_report(recipient: OwnerRef) -> Result<Activity, Status>
 {
     if let Some(activity) = active(recipient.owner().incarnation(), Kind::CrashReport)
-       && !activity.session.closing.load(Ordering::Acquire)
+       && !CLOSING.load(Ordering::Acquire)
     {
         return Ok(activity);
     }
@@ -465,7 +493,7 @@ pub(crate) fn for_input(owner: u64) -> Option<Activity>
         let modal = MODAL.lock();
         let session = modal.session.as_ref()?;
         (session.recipient_id.load(Ordering::Acquire) == owner
-         && !session.closing.load(Ordering::Acquire)).then(|| Activity { session: session.clone() })
+         && !CLOSING.load(Ordering::Acquire)).then(|| Activity { session: session.clone(), _released: ReleasedActivity })
     })
 }
 
@@ -502,7 +530,8 @@ pub(crate) fn standard_file_request(call: &mut mac_abi::standard_file::StandardF
                 {
                     return Err(ACCESS_DENIED);
                 }
-                Ok(Activity { session: session.clone() })
+                Ok(Activity { session:   session.clone(),
+                              _released: ReleasedActivity })
             })?;
             let result = activity.run(|| {
                                      crate::kernel::with_desktop(|desktop| {
@@ -571,7 +600,10 @@ pub(crate) fn pump()
     if CLEANUP_REQUESTED.swap(false, Ordering::AcqRel)
     {
         let activity = InvocationGate::run(|| {
-            MODAL.lock().session.as_ref().map(|session| Activity { session: session.clone() })
+            MODAL.lock().session.as_ref().map(|session| {
+                                             Activity { session:   session.clone(),
+                                                        _released: ReleasedActivity }
+                                         })
         });
         if let Some(activity) = activity
         {
@@ -581,7 +613,7 @@ pub(crate) fn pump()
                     crate::kernel::with_desktop(|desktop| {
                         entered.set(true);
                         desktop.windows.retry_recovery_cleanup();
-                        if !activity.session.closing.load(Ordering::Acquire)
+                        if !CLOSING.load(Ordering::Acquire)
                         {
                             return Ok(());
                         }

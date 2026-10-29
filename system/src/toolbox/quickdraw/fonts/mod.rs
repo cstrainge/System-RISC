@@ -390,6 +390,22 @@ impl FontManager
            })
     }
 
+    /// Protected UI admits the actual immutable strike before it can be
+    /// needed. Scaling, outline rasterization and synthetic styles require
+    /// scratch storage; an exact face uses the original bitmap renderer.
+    pub(crate) fn require_direct_bitmap(&self, selection: FontSelection) -> Result<(), Status>
+    {
+        let face = self.resolve(selection, FontPreference::BitmapPreferred)?;
+        if face.size != 0 && face.size == face.selection.size && face.synthetic == 0
+        {
+            Ok(())
+        }
+        else
+        {
+            Err(NOT_SUPPORTED)
+        }
+    }
+
     pub fn is_monospaced(&self, selection: FontSelection) -> Result<bool, Status>
     {
         let face = self.resolve(selection, FontPreference::default())?;

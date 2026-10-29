@@ -4,7 +4,9 @@ use core::{fmt::{Arguments, Write},
            ptr,
            sync::atomic::{AtomicPtr, Ordering}};
 
-use mac_driver::{Error, Result, abi};
+use mac_driver::abi;
+#[cfg(not(feature = "pressure"))]
+use mac_driver::{Error, Result};
 static HOST: AtomicPtr<abi::Host> = AtomicPtr::new(ptr::null_mut());
 pub unsafe fn install(host: *const abi::Host)
 {
@@ -20,6 +22,7 @@ pub fn now() -> u64
     }
     ticks
 }
+#[cfg(not(feature = "pressure"))]
 pub fn current_token() -> Result<u64>
 {
     // SAFETY: real entry installed the immutable resident descriptor.
@@ -75,6 +78,7 @@ pub fn log(arguments: Arguments<'_>)
 }
 /// Observe a token issued by CURRENT in this same real module; no token is
 /// synthesized and the resident still enforces ownership/generation.
+#[cfg(not(feature = "pressure"))]
 pub fn state(token: u64) -> Result<u32>
 {
     let host = unsafe { &*HOST.load(Ordering::Acquire) };

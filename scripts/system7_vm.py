@@ -216,13 +216,16 @@ def select_clipboard(frontend, preference):
 
 def launch(state, frontend='headless', extra_disks=(), *, writable=False, preserve=False,
            qmp_port=4447, host_bridge=None, expected_exports=None, vector_bits=None,
-           clipboard=None):
+           clipboard=None, boot_timeout=None):
     """Launch a private disk copy. Tests default to read-only and fresh copies.
 
     Persistent desktop starts retain their writable copy while the build is unchanged.
     A new OS build preserves Preferences/Documents into the replacement before
     retiring that copy; obsolete boot disks are not retained.
     """
+    if boot_timeout is not None and (type(boot_timeout) not in (int, float)
+                                     or not 0 < boot_timeout <= 600):
+        raise ValueError('boot_timeout must be between zero and 600 seconds')
     state = Path(state).resolve()
     if os.name == 'nt':
         frontend = {'headless': 'native-headless', 'gtk': 'native'}.get(frontend, frontend)
@@ -332,7 +335,10 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     (state / 'pid').write_text(str(process.pid) + '\n')
     # Native Windows QEMU reads WSL-hosted media through UNC paths. Its GTK
     # profile cold-boots this image in ~33 seconds, beyond the Linux budget.
-    deadline = time.monotonic() + (60 if native else 25)
+    # Larger private installations can qualify startup with an explicit bound;
+    # waiting longer changes no guest configuration or shipping launch defaults.
+    deadline = time.monotonic() + (boot_timeout if boot_timeout is not None else
+                                 (60 if native else 25))
     try:
         while time.monotonic() < deadline:
             log = serial.read_text(encoding='utf-8', errors='replace')

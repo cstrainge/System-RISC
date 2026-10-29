@@ -74,6 +74,43 @@ acknowledgement. An invalidated ID or missing live-window lookup is not proof of
 disposal. Reuse waits for those acknowledgements and the real I/O-root drain;
 concurrent requests receive typed Busy.
 
+## Resource sources and presentation
+
+Storage ownership also determines the service's resource source. A private
+`SystemResources` proof is checked against the genuine permanent System owner;
+a numeric app ID or a System-looking domain label cannot construct it. Service
+windows retain that source independently of their logical recipient's image.
+Their definitions resolve from System, including after recipient teardown.
+Ordinary window drawing clears ambient recovery authority before entering its
+application resource scope.
+
+Bootstrap admits the common service storage, its actual System WDEF/CDEF code
+and exact bitmap caption/report strikes before entering installed module
+initializers. It constructs one Desktop and moves the existing Control Manager
+into it once. A normal-renderer baseline is committed privately before foreign
+startup code; this does not replace the welcome screen or activate input early.
+
+Two display-sized pixel buffers retain committed ordinary output and staging
+for the same renderer. Their pixel payload is `2 * width * height * 4` bytes
+(3,840,000 bytes at 800x600), held as ordinary System storage during bootstrap.
+Partial updates commit and copy only their changed rectangles. Cursor and caret
+overlays preserve their separate bounded paths. Transient menu popups and
+tracking graphics do not enter committed ordinary backing.
+
+Ordinary rendering never borrows the service's protected capability. If it
+refuses, the last committed ordinary appearance remains available, its queued
+damage is retained, and genuine System service windows can render independently.
+Their clipping still follows actual window order; storage ownership does not
+put a background application's dialog above a foreground window. Ordinary retry
+requires a new scene change or increased observed heap availability.
+
+The 2 MiB logical retained-command limit applies to ordinary scenes. Genuine
+System service scenes use their actual protected allocation admission; this is
+not a second guessed logical quota or a claim that every possible scene fits.
+Shared scene/damage indices retain ordinary System backing and reserved service
+headroom. A damage-bookkeeping refusal can request a full framebuffer copy as a
+last resort; it does not request another full scene recomputation.
+
 ## Current scope and limits
 
 Standard File, managed controls/scrollboxes, core alerts and the report viewer
@@ -88,6 +125,12 @@ recovery, late Finder activation refusal/retry, repeated pressure recovery and
 SMP remain separate gates. Typed errors and proven contained failures do not
 establish containment of arbitrary privileged faults (M-D04).
 
+The current menu/MDEF interface cannot propagate every internal drawing refusal.
+Driver request delivery and completion must also retain their original phase,
+payload and terminal result across native contention before extension recovery
+can be qualified. Compilation and normal-memory UI observations do not close
+those gates.
+
 Selected checks ran on an optimized single-hart RV64 QEMU image with Sv39,
 8 GiB RAM, 800x600 display and input/event tracing disabled. Native SDK process
 workloads exercised normal Open/Save reuse, malformed Dispose across scheduler
@@ -98,3 +141,9 @@ retained pixels/metadata, denied external painting/closure, reset and exact UTF-
 READ. Earlier matching service paths exercised graphical short/long report
 scroll/copy/dismiss. These observations establish only those scenarios; host
 library results are not OS evidence, and no strict latency or SMP claim follows.
+
+Finder-role restart checks use an independently loaded diagnostic shell to
+assert the production kernel's restart, old-thread reclamation, report retention
+and backing reuse. They do not execute the production Finder application or
+establish its usable-desktop recovery under exhaustion. Production Finder boot,
+normal application launching and document workflows are separate observations.

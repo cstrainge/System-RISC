@@ -14,7 +14,12 @@ scenarios; host passes are not OS acceptance. The permanent evidence, production
 architecture and instrumentation guardrails below still apply. Keep TE2/common
 control migration deferred. Notify the user when an actual executable module
 worker backend meets its stated gates; do not automatically resume the extension
-agent or claim production clipboard readiness.
+agent or claim production clipboard readiness. The current handoff is scoped to
+native broker delivery/completion and worker execution, cancellation, rollback
+and actual reclamation. Full Save/Save As exhaustion and production Finder OOM
+restart remain separate OS qualification. After publishing the Clipboard
+development prerequisites, prioritize the kernel SMP safety gate; keep additional
+harts parked until that gate passes.
 
 ## Verification failure and recovery order — 2026-10-27
 
@@ -171,9 +176,10 @@ validation. This is not permission to resume now or retain the old Rust suite.
   checks establish only their stated properties. Correct or withdraw unsupported
   completion claims; preserve historical evidence without presenting it as proof.
 - Keep reports in root `status.txt` and coordinate through root `comms.txt`.
-  The extension worker backend remains unready. Do not resume the paused
-  extension agent automatically or equate heap capacity, retained application
-  account authority, or transport demos with a complete worker/clipboard service.
+  Clipboard development readiness requires the recorded native broker/worker
+  evidence and exact published starting commit. Do not resume the external agent
+  automatically or equate those prerequisites, heap capacity, retained account
+  authority or transport demos with production clipboard sharing or SMP safety.
 
 ## Architecture, runtime and project rules
 

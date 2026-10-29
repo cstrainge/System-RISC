@@ -107,9 +107,13 @@ impl State
             {
                 let ticket = self.state
                                  .registry
-                                 .begin(0, provider, action.operation(), 0, 0)
+                                 .begin(0, provider, action.operation(), &[], 0)
                                  .map_err(crate::drivers::status)?;
-                self.state.registry.enter_request(0, ticket).map_err(crate::drivers::status)?;
+                let lease = self.state
+                                .registry
+                                .request_dispatch(0, ticket)
+                                .map_err(crate::drivers::status)?
+                                .acquire()?;
                 let device = &mut self.state
                                       .devices
                                       .iter_mut()
@@ -118,7 +122,7 @@ impl State
                                       .1;
                 let result = core::mem::replace(&mut device.status, OK);
                 self.state.triggered.push(action);
-                self.state.registry.leave_request(0, ticket).map_err(crate::drivers::status)?;
+                drop(lease);
                 self.state.registry.complete(0, ticket, 0).map_err(crate::drivers::status)?;
                 if result == OK { Ok(()) } else { Err(result) }
             }

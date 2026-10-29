@@ -1,0 +1,12 @@
+{
+  "name": "Pressure Probe",
+  "file_type": "APPL",
+  "creator": "PRSS",
+  "role": "application",
+  "abi_version": 1,
+  "load_base": "0x81000000",
+  "load_limit": "0x82000000",
+  "description": "Public SDK ordinary heap pressure observer",
+  "resources": [],
+  "binary_name": "Finder"
+}

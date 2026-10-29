@@ -253,6 +253,7 @@ impl super::Desktop
     pub(crate) fn measure_crash_report_layout() -> Result<ReportLayout, Status>
     {
         let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
+        fonts.require_direct_bitmap(fonts_service::selection(MONACO))?;
         let metrics = fonts.metrics(fonts_service::selection(MONACO))?;
         let advance =
             metrics.ascent.saturating_add(metrics.descent).saturating_add(metrics.leading).max(1);
@@ -883,12 +884,41 @@ impl super::Desktop
         }
     }
 
+    /// A committed Finder is already runnable. This refresh can refuse without
+    /// rolling back its admission, restarting activation or reopening a report
+    /// which the user has already acknowledged and dismissed.
+    pub(crate) fn finish_finder_start_ui(&mut self, admission: &super::FinderAdmission)
+                                         -> Result<(), Status>
+    {
+        if self.owner != admission.id() || self.crash.restart_pending
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let window = self.crash.info().window;
+        if window.0 == 0
+        {
+            return Ok(());
+        }
+        if self.windows.window(window).is_none()
+        {
+            // Dismissal owns its real ACK wait; do not redraw an invalidated ID.
+            return Err(SERVICE_BUSY);
+        }
+        self.draw_crash_warnings()?;
+        self.crash_controls(false)
+    }
+
     pub(crate) fn finder_restart_failed(&mut self, status: Status) -> Result<(), Status>
     {
+        let changed = self.crash.restart_pending || self.crash.restart_error != Some(status);
         self.crash.restart_pending = false;
         self.crash.restart_error = Some(status);
-        serial!("FINDER_RESTART_FAILED app={} status={status}; report retained, retry available",
-                self.owner);
+        if changed
+        {
+            serial!("FINDER_RESTART_FAILED app={} status={status}; report retained, retry \
+                     available",
+                    self.owner);
+        }
         if self.crash.info().window.0 == 0
         {
             return self.show_crash_report();

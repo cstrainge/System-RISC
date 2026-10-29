@@ -126,9 +126,35 @@ impl Definitions
 
     pub fn resolve(&mut self, kind: [u8; 4], id: i16) -> Result<DefinitionEntry>
     {
-        crate::kernel::with_resources(|manager| {
+        // A process-resource cleanup wrapper can nest inside the resident
+        // service scope. The genuine Activity still selects System definitions.
+        // Ordinary window invocation clears Activity before reaching here.
+        if let Some(activity) = crate::context::recovery_activity()
+        {
+            let source =
+                activity.resource_source()
+                        .map_err(|_| {
+                            Error::Malformed("System UI resource authority is unavailable")
+                        })?;
+            return self.resolve_system(source, kind, id);
+        }
+        self.resolve_selected(kind, id)
+    }
+
+    pub(crate) fn resolve_system(&mut self, source: crate::kernel::SystemResources, kind: [u8; 4],
+                                 id: i16)
+                                 -> Result<DefinitionEntry>
+    {
+        source.with(|| self.resolve_selected(kind, id))
+              .map_err(|_| Error::Malformed("System UI resource scope is unavailable"))?
+    }
+
+    fn resolve_selected(&mut self, kind: [u8; 4], id: i16) -> Result<DefinitionEntry>
+    {
+        let lookup = crate::kernel::definition_resource_scope();
+        crate::kernel::with_resources_in(lookup, |manager| {
             let (scope, resource) =
-                manager.get(mac_abi::resources::CHAIN,
+                manager.get(lookup,
                             mac_abi::ResourceKey { kind,
                                                    id })
                        .map_err(|_| Error::Missing("definition resource is missing"))?;
@@ -204,7 +230,7 @@ impl Definitions
                     d.load_base,
                     base);
             Ok(entry)
-        }).ok_or(Error::Missing("resource catalog is missing"))?
+        }).map_err(|_| Error::Missing("selected definition resource catalog is unavailable"))?
     }
 }
 
