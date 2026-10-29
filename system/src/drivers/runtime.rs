@@ -536,7 +536,50 @@ unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
         });
     }
 
-    let (module, ticket, target, invocation) =
+    if call.phase == abi::START
+    {
+        if call.ticket != 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        // Validate the same central authority/offer contract before allocating
+        // payload storage. Publication rechecks it after fallible preparation;
+        // an invalid/foreign request must not masquerade as heap refusal.
+        RUNTIME.with(|runtime| {
+                   let interface = runtime.registry
+                                          .authorize_call(caller, provider, call.input_len as usize,
+                                                          call.output_capacity as usize)
+                                          .map_err(status)?;
+                   if interface.offer.class.0 != call.class
+                   {
+                       return Err(BAD_ARGUMENT);
+                   }
+                   Ok(())
+               })
+               .map_err(crate::state::AccessError::status)??;
+    }
+
+    // checked_call validated this exact borrow. Retain Start payload in the
+    // canonical request before publishing its ticket; later wire Poll calls do
+    // not need to lend that original buffer again.
+    let input = if call.input_len == 0
+    {
+        &[]
+    }
+    else
+    {
+        unsafe { core::slice::from_raw_parts(call.input, call.input_len as usize) }
+    };
+    let mut preparation = if call.phase == abi::START
+    {
+        Some(super::registry::requests::dispatch::prepare(subject, origin, input,
+                                                          call.output_capacity as usize)?)
+    }
+    else
+    {
+        None
+    };
+    let (module, ticket, target, invocation, mut lease, delivery) =
         RUNTIME.with(|runtime| {
                    let interface = if call.phase == abi::START
                                    {
@@ -554,33 +597,19 @@ unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
                    {
                        return Err(BAD_ARGUMENT);
                    }
-                   let target = if interface.module == 0
-                   {
-                       DispatchTarget::Resident(runtime.residents
-                                                       .iter()
-                                                       .find(|r| r.interface == provider)
-                                                       .ok_or(NOT_FOUND)?
-                                                       .callback
-                                                       .ok_or(NOT_SUPPORTED)?)
-                   }
-                   else
-                   {
-                       {
-                           let binding = runtime.bindings
-                                                .iter()
-                                                .find(|b| b.module == interface.module)
-                                                .ok_or(NOT_FOUND)?;
-                           DispatchTarget::Module(binding.instance.ok_or(NOT_FOUND)?, binding.image)
-                       }
-                   };
                    let ticket = match call.phase
                    {
                        abi::START if call.ticket == 0 =>
                        {
                            runtime.registry
-                                  .begin_scoped(subject, caller, provider, call.operation,
-                                                call.input_len as usize,
-                                                call.output_capacity as usize, origin)
+                                  .begin_scoped(subject,
+                                                caller,
+                                                provider,
+                                                call.operation,
+                                                input,
+                                                call.output_capacity as usize,
+                                                origin,
+                                                preparation.as_mut().ok_or(BAD_ARGUMENT)?)
                                   .map_err(status)?
                        }
                        abi::POLL | abi::CANCEL =>
@@ -603,160 +632,208 @@ unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
                        }
                        _ => return Err(BAD_ARGUMENT)
                    };
-                   runtime.registry
-                          .enter_request(caller,
-                                         Access::Continuing { subject,
-                                                              ticket })
-                          .map_err(status)?;
-                   let invocation = match runtime.registry
-                                                 .request_invocation(caller,
-                                                                     Access::Continuing { subject,
-                                                                                          ticket })
+                   // Publication is the irrevocable handoff: every later
+                   // refusal must return the real ticket, including code-pin
+                   // or invocation preparation failure before foreign entry.
+                   call.ticket = ticket;
+                   let storage = runtime.registry
+                                        .request_dispatch(caller,
+                                                          Access::Continuing { subject,
+                                                                               ticket })
+                                        .map_err(status)?;
+                   let mut lease = storage.acquire()?;
+                   let delivery = lease.delivery(call.phase);
+                   let invocation = if delivery.is_some()
                    {
-                       Ok(invocation) => invocation,
-                       Err(error) =>
-                       {
-                           runtime.registry
-                                  .leave_request(caller,
-                                                 Access::Continuing { subject,
-                                                                      ticket })
-                                  .map_err(status)?;
-                           return Err(status(error));
-                       }
+                       runtime.registry
+                              .request_invocation(caller,
+                                                  Access::Continuing { subject,
+                                                                       ticket })
+                              .map_err(status)?
+                   }
+                   else
+                   {
+                       subject.clone()
                    };
-                   Ok((interface.module, ticket, target, invocation))
+                   let target = if delivery.is_some()
+                   {
+                       Some({
+                           if interface.module == 0
+                           {
+                               DispatchTarget::Resident(runtime.residents
+                                                               .iter()
+                                                               .find(|r| r.interface == provider)
+                                                               .ok_or(NOT_FOUND)?
+                                                               .callback
+                                                               .ok_or(NOT_SUPPORTED)?)
+                           }
+                           else
+                           {
+                               {
+                                   let binding = runtime.bindings
+                                                        .iter()
+                                                        .find(|b| b.module == interface.module)
+                                                        .ok_or(NOT_FOUND)?;
+                                   DispatchTarget::Module(binding.instance.ok_or(NOT_FOUND)?,
+                                                          binding.image)
+                               }
+                           }
+                       })
+                   }
+                   else
+                   {
+                       None
+                   };
+                   Ok((interface.module, ticket, target, invocation, lease, delivery))
                })
                .map_err(crate::state::AccessError::status)??;
+    // Record and the invocation lease now own preparation; release this
+    // publication-time alias outside the registry before any foreign entry.
+    drop(preparation);
     call.ticket = ticket;
-    let original = *call;
-    let result =
-        crate::context::with_io_subject(invocation, || -> Result<Status, Status> {
-            Ok(match target
-            {
-                DispatchTarget::Module(instance, image) =>
-                {
-                    let dispatch = instance.dispatch.ok_or(NOT_SUPPORTED)?;
-                    let execution = crate::kernel::module_execution(image)?;
-                    invocation::enter(&execution, || {
-                        *started = true;
-                        unsafe { dispatch(instance.state, call) }
-                    })?
-                }
-                DispatchTarget::Resident(callback) =>
-                {
-                    // checked_call validated lengths, non-null pointers and disjoint
-                    // live borrows. No registry guard survives into this safe callback.
-                    let input = if call.input_len == 0
+    if let Some(phase) = delivery
+    {
+        let (result, length, malformed, entered) = {
+            let (original_input, output, entered) = lease.buffers()?;
+            let input = if phase == abi::START { original_input } else { input };
+            // Retry transport capacity cannot alter the admitted operation.
+            // Provider output always uses the original owned reply capacity;
+            // the current caller's capacity is checked only at final copy.
+            let mut forwarded = abi::Call { header: abi::Header::of::<abi::Call>(),
+                                            ticket,
+                                            phase,
+                                            class: call.class,
+                                            operation: call.operation,
+                                            input: input.as_ptr(),
+                                            input_len: input.len() as u32,
+                                            output: output.as_mut_ptr(),
+                                            output_capacity: output.len() as u32,
+                                            output_len: 0,
+                                            reserved: 0 };
+            let original = forwarded;
+            let admitted_reply_bytes = output.len();
+            let mut invalid_reply = false;
+            // The lease owns its buffers. No mailbox/registry/IRQ guard spans
+            // the callback, and each real invocation retains its original root.
+            let result =
+                crate::context::with_io_subject(invocation, || -> Result<Status, Status> {
+                    Ok(match target.ok_or(BAD_ABI)?
                     {
-                        &[]
-                    }
-                    else
-                    {
-                        unsafe { core::slice::from_raw_parts(call.input, call.input_len as usize) }
-                    };
-                    let output = if call.output_capacity == 0
-                    {
-                        &mut []
-                    }
-                    else
-                    {
-                        unsafe {
-                            core::slice::from_raw_parts_mut(call.output,
-                                                            call.output_capacity as usize)
-                        }
-                    };
-                    *started = true;
-                    match callback(ResidentCall { caller,
-                                                  ticket,
-                                                  phase: call.phase,
-                                                  operation: call.operation,
-                                                  input },
-                                   output)
-                    {
-                        Ok(ResidentCompletion::Complete(length)) if length <= output.len() =>
+                        DispatchTarget::Module(instance, image) =>
                         {
-                            call.output_len = length as u32;
-                            OK
+                            let dispatch = instance.dispatch.ok_or(NOT_SUPPORTED)?;
+                            let execution = crate::kernel::module_execution(image)?;
+                            invocation::enter(&execution, || {
+                                *started = true;
+                                *entered = true;
+                                unsafe { dispatch(instance.state, &mut forwarded) }
+                            })?
                         }
-                        Ok(ResidentCompletion::Complete(_)) => BAD_ABI,
-                        Ok(ResidentCompletion::Pending) => abi::PENDING,
-                        Err(status) if status < 0 => status,
-                        Err(_) => BAD_ABI
-                    }
-                }
-            })
-        }).and_then(core::convert::identity);
-    let output_len = call.output_len;
-    let mutated = call.header.version != original.header.version
-                  || call.header.size != original.header.size
-                  || call.ticket != original.ticket
-                  || call.phase != original.phase
-                  || call.class != original.class
-                  || call.operation != original.operation
-                  || call.input != original.input
-                  || call.input_len != original.input_len
-                  || call.output != original.output
-                  || call.output_capacity != original.output_capacity
-                  || call.reserved != original.reserved;
-    *call = original;
-    call.output_len = output_len;
-    // A module cannot forge a different caller's ticket through mutable Call.
-    let malformed = mutated
-                    || call.ticket != ticket
-                    || call.output_len > call.output_capacity
-                    || result == Ok(abi::PENDING) && call.output_len != 0;
-    call.ticket = ticket;
-    RUNTIME.with(|runtime| {
-               runtime.registry
-                      .leave_request(caller,
-                                     Access::Continuing { subject,
-                                                          ticket })
-                      .map_err(status)
-           })
-           .map_err(crate::state::AccessError::status)??;
-    let result = result?;
-    if policy == CompletionPolicy::Recovery
-    {
-        if malformed || result > abi::PENDING
+                        DispatchTarget::Resident(callback) =>
+                        {
+                            *started = true;
+                            *entered = true;
+                            match callback(ResidentCall { caller,
+                                                          ticket,
+                                                          phase,
+                                                          operation: call.operation,
+                                                          input },
+                                           output)
+                            {
+                                Ok(ResidentCompletion::Complete(length))
+                                    if length <= admitted_reply_bytes =>
+                                {
+                                    forwarded.output_len = length as u32;
+                                    OK
+                                }
+                                Ok(ResidentCompletion::Complete(_)) =>
+                                {
+                                    invalid_reply = true;
+                                    BAD_ABI
+                                }
+                                Ok(ResidentCompletion::Pending) => abi::PENDING,
+                                Err(status) if status < 0 => status,
+                                Err(_) =>
+                                {
+                                    invalid_reply = true;
+                                    BAD_ABI
+                                }
+                            }
+                        }
+                    })
+                }).and_then(core::convert::identity);
+            let malformed = invalid_reply
+                            || forwarded.header.version != original.header.version
+                            || forwarded.header.size != original.header.size
+                            || forwarded.ticket != original.ticket
+                            || forwarded.phase != original.phase
+                            || forwarded.class != original.class
+                            || forwarded.operation != original.operation
+                            || forwarded.input != original.input
+                            || forwarded.input_len != original.input_len
+                            || forwarded.output != original.output
+                            || forwarded.output_capacity != original.output_capacity
+                            || forwarded.reserved != original.reserved
+                            || forwarded.output_len > original.output_capacity
+                            || result == Ok(abi::PENDING) && forwarded.output_len != 0;
+            (result, forwarded.output_len as usize, malformed, *entered)
+        };
+        match result
         {
-            return Err(BAD_ABI);
+            Err(cause) =>
+            {
+                if entered
+                {
+                    lease.uncertain(cause);
+                }
+                // Before-entry Drop restores Unentered/Pending; after-entry
+                // failure retains uncertainty rather than inventing an ACK.
+                return Err(cause);
+            }
+            Ok(_) if malformed => lease.uncertain(BAD_ABI),
+            Ok(status) => lease.returned(status, length)
         }
-        // The owned recovery plan, not a borrowed wire call, must retain and
-        // classify the real reply before retiring its request/provider pin.
-        return Ok(result);
     }
-    if result == abi::PENDING && !malformed
+    let Some((result, reply)) = lease.reply()?
+    else
     {
-        return Ok(result);
-    }
-    RUNTIME.with(|runtime| {
-               let request = runtime.registry
-                                    .request(caller,
-                                             Access::Continuing { subject,
-                                                                  ticket })
-                                    .map_err(status)?;
-               if request.module != module
-               {
-                   return Err(BAD_ARGUMENT);
-               }
-               runtime.registry
-                      .complete(caller,
-                                Access::Continuing { subject,
-                                                     ticket },
-                                if malformed { 0 } else { call.output_len as usize })
-                      .map_err(status)?;
-               Ok(())
-           })
-           .map_err(crate::state::AccessError::status)??;
-    // The mutable field denotes a live request, not a historical identifier.
-    // In particular, callers can distinguish pre-dispatch contention (retained
-    // ticket) from a terminal provider error (cleared ticket).
-    call.ticket = 0;
-    if malformed || result > 0
+        return Ok(abi::PENDING);
+    };
+    if reply.len() > call.output_capacity as usize
     {
-        call.output_len = 0;
-        return Err(BAD_ABI);
+        // A smaller retry buffer cannot discard a previously committed reply.
+        return Err(BAD_ARGUMENT);
     }
+    let length = reply.len();
+    if !reply.is_empty()
+    {
+        unsafe { core::slice::from_raw_parts_mut(call.output, length) }.copy_from_slice(reply);
+    }
+    // Restore owned reply storage and really decrement the outside alias
+    // before any canonical ACK. A refused registry borrow can then replay it.
+    drop(lease);
+    if policy == CompletionPolicy::Caller
+    {
+        let retirement =
+            RUNTIME.with(|runtime| {
+                       let access = Access::Continuing { subject,
+                                                         ticket };
+                       let request = runtime.registry.request(caller, access).map_err(status)?;
+                       if request.module != module
+                       {
+                           return Err(BAD_ARGUMENT);
+                       }
+                       runtime.registry.complete_dispatch(caller, access, length).map_err(status)
+                   })
+                   .map_err(crate::state::AccessError::status)??;
+        // Actual buffers/refunds precede Removed's completion ACK, outside all
+        // registry/mailbox guards. Failed entry cannot pin a completed child.
+        drop(retirement);
+        call.ticket = 0;
+    }
+    // Recovery owns its existing unique cancellation ACK plan; its bytes are
+    // copied above and no second execution protocol or early retire is used.
+    call.output_len = length as u32;
     Ok(result)
 }
 
@@ -847,8 +924,10 @@ impl super::jobs::Broker for NativeBroker
                          }
                      }).and_then(core::convert::identity);
         *request.ticket = call.ticket;
-        // Provider errors are Ok(negative_status). Err(Busy) is admission or
-        // registry contention: the callback was not dispatched at this boundary.
+        // Provider errors are Ok(negative_status). Err(Busy) can precede entry
+        // or follow a returned callback during registry contention. The ticket
+        // retains delivery state and any terminal reply, so retry is correlation,
+        // never permission to repeat an already-completed provider effect.
         if result == Err(SERVICE_BUSY)
         {
             return Outcome::Contended;
@@ -983,8 +1062,69 @@ pub(crate) fn pin_backing_provider(dependent: u64, provider: u64,
            .map_err(crate::state::AccessError::status)?
 }
 
+static REQUEST_RETIREMENTS: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+static REQUEST_RETIREMENTS_WAITING: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+pub(crate) fn request_retirement_changed()
+{
+    REQUEST_RETIREMENTS_WAITING.store(true, core::sync::atomic::Ordering::Release);
+    REQUEST_RETIREMENTS.store(true, core::sync::atomic::Ordering::Release);
+}
+/// Actual subscribed lease progress, not a fabricated resource ACK. Only
+/// atomic owner cleanup/cancellation checkpoints are requested here.
+pub(crate) fn request_progress_changed(owner: mac_object_table::domain::DomainId)
+{
+    use mac_object_table::domain::DomainKind;
+    match owner.kind()
+    {
+        DomainKind::Process => crate::toolbox::processes::retirement::resources_released(),
+        DomainKind::Module => recovery::changed(),
+        // The System service root is permanent; owned queued work retains its
+        // own cancellation readiness. Modal reuse still waits for actual ACK.
+        DomainKind::System => ()
+    }
+}
+
+pub(crate) fn request_retirement_alias_released()
+{
+    if REQUEST_RETIREMENTS_WAITING.load(core::sync::atomic::Ordering::Acquire)
+    {
+        REQUEST_RETIREMENTS.store(true, core::sync::atomic::Ordering::Release);
+    }
+}
+fn retire_request_payload()
+{
+    if !REQUEST_RETIREMENTS.swap(false, core::sync::atomic::Ordering::AcqRel)
+    {
+        return;
+    }
+    match RUNTIME.with(|runtime| {
+                     let (retirement, pending) = runtime.registry.take_request_retirement();
+                     // Serialize this observation with publication/removal in the same
+                     // registry borrow; a later real retirement cannot lose its wake.
+                     REQUEST_RETIREMENTS_WAITING.store(pending,
+                                                       core::sync::atomic::Ordering::Release);
+                     if retirement.is_some() && pending
+                     {
+                         REQUEST_RETIREMENTS.store(true, core::sync::atomic::Ordering::Release);
+                     }
+                     retirement
+                 })
+    {
+        Ok(retirement) =>
+        {
+            // Slot backing and Record die before Removed's actual ACK. Its
+            // existing resource_released hook wakes owner/modal retirement.
+            drop(retirement);
+        }
+        Err(_) => request_retirement_changed()
+    }
+}
+
 pub(crate) fn pump_jobs()
 {
+    retire_request_payload();
     recovery::pump();
     if DEPENDENCIES_CHANGED.swap(false, core::sync::atomic::Ordering::AcqRel)
        && RUNTIME.with(|runtime| runtime.registry.reap_closed_dependencies()).is_err()
