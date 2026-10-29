@@ -47,6 +47,7 @@ pub fn disk_format(path: &Path) -> Result<&'static str>
 fn command(workspace: &Workspace, disks: &[(&Path, &str)]) -> Command
 {
     let mut command = Command::new("qemu-system-riscv64");
+    let harts = workspace.platform.qemu_harts.to_string();
     command.args(["-machine",
                   "virt",
                   "-cpu",
@@ -54,7 +55,7 @@ fn command(workspace: &Workspace, disks: &[(&Path, &str)]) -> Command
                   "-m",
                   workspace.platform.qemu_ram.as_str(),
                   "-smp",
-                  "1",
+                  &harts,
                   "-bios",
                   "none",
                   "-drive"])

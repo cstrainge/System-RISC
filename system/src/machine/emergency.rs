@@ -26,9 +26,9 @@ struct Kit
 }
 // SAFETY: bootstrap constructs the cell before publication. The only subsequent
 // mutable access follows CLAIMED's successful atomic transition, with SIE clear
-// on the sole admitted hart. That execution never returns or releases the claim.
-// SMP activation must supply a proven stop-other-harts protocol before reusing
-// this boundary; the current resident scheduler admits only hart0.
+// and actual M-monitor stop ACK from every other discovered CPU. This execution
+// never returns or releases the claim. Secondary S-mode release remains absent;
+// parked hardware monitors are stopped before mutable terminal-kit access.
 unsafe impl Sync for Kit
 {
 }
@@ -204,6 +204,10 @@ pub(crate) fn enter(kind: Kind, arguments: fmt::Arguments<'_>) -> !
     {
         stop(format_args!("SYSTEM_EMERGENCY_RECURSIVE: terminal path failed"));
     }
+    if let Err(error) = super::monitor::stop_peers()
+    {
+        stop(format_args!("SYSTEM_EMERGENCY_PEER_STOP_REFUSED: {error}"));
+    }
     let Some(kit) = KIT.get()
     else
     {
@@ -237,7 +241,7 @@ unsafe extern "C" fn run(pointer: *const ()) -> !
         Kind::PrivilegedFault => "SYSTEM_TRAP:"
     };
     serial(format_args!("{marker} {}", record.text()));
-    // SAFETY: CLAIMED has one winner, SIE is clear on the sole admitted hart,
+    // SAFETY: CLAIMED has one winner, SIE is clear and every peer acknowledged stop,
     // and ordinary code never resumes. Neither region aliases normal scanout,
     // compositor/tracking storage or normal input queues.
     let state = unsafe { &mut *kit.state.get() };

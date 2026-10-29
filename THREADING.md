@@ -327,11 +327,42 @@ the primary executes System code. The other three remain parked until the core
 admission gates pass, regardless of their presence in the discovered topology.
 Diagnostic scenarios may explicitly select a smaller physical CPU count.
 
-Before releasing a secondary, the core still needs interrupt-route discovery
-checked against platform policy, independent M/S entry storage, a
-returning IPI transport, genuine secondary System-context admission, compatible
-ISA/vector frame validation, remote instruction-publication fences and terminal
-peer-stop acknowledgements. Mapping mutation, ASID reuse and frame reclamation
+The custom ROM now supplies a mandatory checked monitor directory. Its per-hart
+integer-only M handler uses separate permanent control/stack backing, with no
+Rust callback, allocation, FP/vector instruction or ordinary service lock. DT
+CPU-controller phandles and paired CLINT interrupt routes supply MSIP addresses;
+frequency comes from the checked DTB. Unknown bindings/translations refuse.
+The platform's explicit reset contract is whole-machine reset, not CPU-only
+restart or hotplug. No secondary S release API exists.
+
+Executable writers order stores, fence locally and await each parked receiver's
+matching instruction-fence ACK before publishing an entry. Refused or uncertain
+transport retains typed identity through native code loading; an unacknowledged
+command retires the command channel until reset. Terminal stop has independent
+sticky request/ACK cells, bypasses normal locks and precedes mutable emergency
+kit access. Missing stop ACK causes direct fatal shutdown. These mechanisms do
+not establish concurrent System execution or arbitrary privileged-fault containment.
+
+The optimized trace-disabled no_std RV64 image with System resource SHA-256
+`36735139a17751852a16673d95e666f85cb1eb2763158faa16d3785a31eeda41`
+booted production ROM/System/Finder with 1, 2 and 4 physical QEMU CPUs. Physical
+control snapshots observed every peer joined, with request8=ACK8, FenceI result0,
+`satp`0 and PCs at the actual ROM WFI/JAL loop. Direct privilege was unavailable;
+the primary's returning M-interrupt path was not exercised. Wrong CLINT causes,
+duplicate controller phandles, an absent physical CPU and a stale160byte ROM
+handoff all refused with named causes and no desktop during bounded observation.
+A separate private package replaced only the Static Text CDEF with the existing
+native panic probe, retaining the shipping System executable. At terminal
+readiness all three peers had stop1/ACK1; actual restart booted a second desktop
+with fresh joined receivers, successful fence ACKs and clear stop cells. These
+are bounded parked-peer observations, not timing, after-boot lost-ACK retention,
+concurrent S execution or arbitrary-fault recovery qualification.
+
+Before releasing a secondary, the core still needs independent S entry storage,
+genuine secondary System-context admission, compatible per-CPU ISA/vector frame
+validation, primary-owned physical-device maintenance and qualified cross-hart
+scheduling/reclamation. Returning monitor preservation and terminal takeover
+must also be qualified with actual S-mode peers. Mapping mutation, ASID reuse and frame reclamation
 also require their remote TLB/lifetime contract. The current immutable boot roots
 do not imply that such a dynamic protocol exists. No SBI service is assumed.
 Multi-Scheduler may later supply placement and activation policy; it cannot

@@ -1,8 +1,11 @@
-//! Checked DTSpec v17 memory discovery. No MMIO, pointers, allocation or recursion.
+//! Checked DTSpec v17 discovery. No MMIO, raw pointers or recursion.
+//! Memory/CPU preflight is allocation-free; monitor routes use fallible metadata.
 //! <https://devicetree-specification.readthedocs.io/en/stable/flattened-format.html>
 use core::ops::Range;
 
+mod monitor;
 pub use mac_formats::Error;
+pub use monitor::{MonitorRoute, MonitorRoutes};
 type Result<T> = core::result::Result<T, Error>;
 fn word(bytes: &[u8], offset: usize) -> Result<u32>
 {
@@ -89,6 +92,128 @@ fn set_cpu_status(slot: &mut Option<bool>, value: &[u8]) -> Result<()>
                  });
     Ok(())
 }
+// One checked decoder serves memory, CPU and monitor-route admission. Walkers
+// retain their own binding checks and exact final-structure refusal messages.
+enum Event<'a>
+{
+    Begin
+    {
+        name:  &'a [u8],
+        depth: u32
+    },
+    End
+    {
+        depth: u32
+    },
+    Property
+    {
+        name:  &'a [u8],
+        value: &'a [u8],
+        depth: u32
+    },
+    Nop,
+    Finish
+}
+struct Scanner<'a>
+{
+    structure:   &'a [u8],
+    strings:     &'a [u8],
+    pos:         usize,
+    depth:       u32,
+    root_seen:   bool,
+    root_closed: bool
+}
+impl<'a> Scanner<'a>
+{
+    fn next(&mut self) -> Result<Event<'a>>
+    {
+        let token = word(self.structure, self.pos)?;
+        self.pos =
+            self.pos.checked_add(4).ok_or(Error::Malformed("device tree token offset overflow"))?;
+        match token
+        {
+            1 =>
+            {
+                if self.root_closed
+                {
+                    return Err(Error::Malformed("device tree contains multiple roots"));
+                }
+                let name = cstr(self.structure
+                                    .get(self.pos..)
+                                    .ok_or(Error::Malformed("truncated device tree node"))?)?;
+                self.pos = self.pos
+                               .checked_add(name.len() + 1)
+                               .and_then(|n| n.checked_add(3))
+                               .map(|n| n & !3)
+                               .ok_or(Error::Malformed("device tree node offset overflow"))?;
+                self.depth = self.depth
+                                 .checked_add(1)
+                                 .ok_or(Error::Malformed("device tree nesting overflow"))?;
+                if self.depth == 1
+                {
+                    if self.root_seen || !name.is_empty()
+                    {
+                        return Err(Error::Malformed("device tree root must have an empty name"));
+                    }
+                    self.root_seen = true;
+                }
+                Ok(Event::Begin { name,
+                                  depth: self.depth })
+            }
+            2 =>
+            {
+                if self.depth == 0
+                {
+                    return Err(Error::Malformed("device tree has an unmatched node end"));
+                }
+                let depth = self.depth;
+                self.depth -= 1;
+                if self.depth == 0
+                {
+                    self.root_closed = true;
+                }
+                Ok(Event::End { depth })
+            }
+            3 =>
+            {
+                if self.depth == 0
+                {
+                    return Err(Error::Malformed("device tree property is outside a node"));
+                }
+                let length = word(self.structure, self.pos)? as usize;
+                let name_offset = word(self.structure, self.pos + 4)? as usize;
+                self.pos = self.pos
+                               .checked_add(8)
+                               .ok_or(Error::Malformed("device tree property offset overflow"))?;
+                let end = self.pos
+                              .checked_add(length)
+                              .ok_or(Error::Malformed("device tree property length overflow"))?;
+                let value = self.structure
+                                .get(self.pos..end)
+                                .ok_or(Error::Malformed("truncated device tree property"))?;
+                let name = cstr(self.strings
+                                    .get(name_offset..)
+                                    .ok_or(Error::Malformed("device tree property name is \
+                                                             outside strings"))?)?;
+                self.pos = end.checked_add(3)
+                              .map(|n| n & !3)
+                              .ok_or(Error::Malformed("device tree property alignment overflow"))?;
+                Ok(Event::Property { name,
+                                     value,
+                                     depth: self.depth })
+            }
+            4 => Ok(Event::Nop),
+            9 => Ok(Event::Finish),
+            _ => Err(Error::Malformed("unknown device tree structure token"))
+        }
+    }
+
+    fn complete(&self) -> bool
+    {
+        self.root_seen && self.root_closed && self.depth == 0 && self.pos == self.structure.len()
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Tree<'a>
 {
@@ -99,6 +224,16 @@ pub struct Tree<'a>
 }
 impl<'a> Tree<'a>
 {
+    fn scanner(&self) -> Scanner<'a>
+    {
+        Scanner { structure:   self.structure,
+                  strings:     self.strings,
+                  pos:         0,
+                  depth:       0,
+                  root_seen:   false,
+                  root_closed: false }
+    }
+
     pub fn new(bytes: &'a [u8]) -> Result<Self>
     {
         if word(bytes, 0)? != 0xd00dfeed
@@ -194,8 +329,8 @@ impl<'a> Tree<'a>
     pub fn cpus(&self, mut visit: impl FnMut(mac_abi::boot::topology::Cpu) -> Result<()>)
                 -> Result<()>
     {
-        let (mut pos, mut depth) = (0usize, 0u32);
-        let (mut root_seen, mut root_closed, mut cpus_seen) = (false, false, false);
+        let mut scanner = self.scanner();
+        let mut cpus_seen = false;
         let mut root_children = false;
         let (mut cpus_parent, mut cpus_children, mut cpu_children) = (false, false, false);
         let (mut address_cells, mut size_cells) = (None, None);
@@ -206,35 +341,11 @@ impl<'a> Tree<'a>
         let mut cpu_name = false;
         loop
         {
-            let token = word(self.structure, pos)?;
-            pos =
-                pos.checked_add(4).ok_or(Error::Malformed("device tree token offset overflow"))?;
-            match token
+            match scanner.next()?
             {
-                1 =>
+                Event::Begin { name,
+                               depth } =>
                 {
-                    if root_closed
-                    {
-                        return Err(Error::Malformed("device tree contains multiple roots"));
-                    }
-                    let name = cstr(self.structure
-                                        .get(pos..)
-                                        .ok_or(Error::Malformed("truncated device tree node"))?)?;
-                    pos = pos.checked_add(name.len() + 1)
-                             .and_then(|n| n.checked_add(3))
-                             .map(|n| n & !3)
-                             .ok_or(Error::Malformed("device tree node offset overflow"))?;
-                    depth = depth.checked_add(1)
-                                 .ok_or(Error::Malformed("device tree nesting overflow"))?;
-                    if depth == 1
-                    {
-                        if root_seen || !name.is_empty()
-                        {
-                            return Err(Error::Malformed("device tree root must have an empty \
-                                                         name"));
-                        }
-                        root_seen = true;
-                    }
                     if depth == 2
                     {
                         root_children = true;
@@ -267,12 +378,8 @@ impl<'a> Tree<'a>
                         cpu_children = true;
                     }
                 }
-                2 =>
+                Event::End { depth } =>
                 {
-                    if depth == 0
-                    {
-                        return Err(Error::Malformed("device tree has an unmatched node end"));
-                    }
                     if depth == 3 && cpus_parent && (cpu_name || device_type == Some(&b"cpu\0"[..]))
                     {
                         if device_type != Some(&b"cpu\0"[..])
@@ -301,34 +408,11 @@ impl<'a> Tree<'a>
                         }
                         cpus_parent = false;
                     }
-                    depth -= 1;
-                    if depth == 0
-                    {
-                        root_closed = true;
-                    }
                 }
-                3 =>
+                Event::Property { name,
+                                  value,
+                                  depth } =>
                 {
-                    if depth == 0
-                    {
-                        return Err(Error::Malformed("device tree property is outside a node"));
-                    }
-                    let length = word(self.structure, pos)? as usize;
-                    let name_offset = word(self.structure, pos + 4)? as usize;
-                    pos = pos.checked_add(8)
-                             .ok_or(Error::Malformed("device tree property offset overflow"))?;
-                    let end = pos.checked_add(length)
-                                 .ok_or(Error::Malformed("device tree property length overflow"))?;
-                    let value = self.structure
-                                    .get(pos..end)
-                                    .ok_or(Error::Malformed("truncated device tree property"))?;
-                    let name = cstr(self.strings
-                                        .get(name_offset..)
-                                        .ok_or(Error::Malformed("device tree property name \
-                                                                 is outside strings"))?)?;
-                    pos = end.checked_add(3)
-                             .map(|n| n & !3)
-                             .ok_or(Error::Malformed("device tree property alignment overflow"))?;
                     if depth == 1 && root_children
                     {
                         return Err(Error::Malformed("device tree root properties must precede \
@@ -376,10 +460,10 @@ impl<'a> Tree<'a>
                         }
                     }
                 }
-                4 => (),
-                9 =>
+                Event::Nop => (),
+                Event::Finish =>
                 {
-                    if !root_seen || !root_closed || depth != 0 || pos != self.structure.len()
+                    if !scanner.complete()
                     {
                         return Err(Error::Malformed("device tree structure ended before root \
                                                      close or has trailing tokens"));
@@ -390,7 +474,6 @@ impl<'a> Tree<'a>
                     }
                     return Ok(());
                 }
-                _ => return Err(Error::Malformed("unknown device tree structure token"))
             }
         }
     }
@@ -417,8 +500,7 @@ impl<'a> Tree<'a>
     fn walk(&self, reservations: bool, visit: &mut impl FnMut(Range<u64>) -> Result<()>)
             -> Result<()>
     {
-        let (mut pos, mut depth) = (0usize, 0u32);
-        let (mut root_seen, mut root_closed) = (false, false);
+        let mut scanner = self.scanner();
         let (mut root_children, mut reserved_children) = (false, false);
         let (mut address_cells, mut size_cells) = (2, 1);
         let (mut reserved_address_cells, mut reserved_size_cells) = (2, 1);
@@ -427,35 +509,11 @@ impl<'a> Tree<'a>
         let mut reg = None;
         loop
         {
-            let token = word(self.structure, pos)?;
-            pos =
-                pos.checked_add(4).ok_or(Error::Malformed("device tree token offset overflow"))?;
-            match token
+            match scanner.next()?
             {
-                1 =>
+                Event::Begin { name,
+                               depth } =>
                 {
-                    if root_closed
-                    {
-                        return Err(Error::Malformed("device tree contains multiple roots"));
-                    }
-                    let name = cstr(self.structure
-                                        .get(pos..)
-                                        .ok_or(Error::Malformed("truncated device tree node"))?)?;
-                    pos = pos.checked_add(name.len() + 1)
-                             .and_then(|n| n.checked_add(3))
-                             .map(|n| n & !3)
-                             .ok_or(Error::Malformed("device tree node offset overflow"))?;
-                    depth = depth.checked_add(1)
-                                 .ok_or(Error::Malformed("device tree nesting overflow"))?;
-                    if depth == 1
-                    {
-                        if root_seen || !name.is_empty()
-                        {
-                            return Err(Error::Malformed("device tree root must have an empty \
-                                                         name"));
-                        }
-                        root_seen = true;
-                    }
                     if depth == 2
                     {
                         root_children = true;
@@ -479,12 +537,8 @@ impl<'a> Tree<'a>
                         reg = None;
                     }
                 }
-                2 =>
+                Event::End { depth } =>
                 {
-                    if depth == 0
-                    {
-                        return Err(Error::Malformed("device tree has an unmatched node end"));
-                    }
                     if candidate && ((!reservations && depth == 2) || (reservations && depth == 3))
                     {
                         if enabled && (reservations || memory_name || memory_type)
@@ -529,34 +583,11 @@ impl<'a> Tree<'a>
                     {
                         reserved_parent = false;
                     }
-                    depth -= 1;
-                    if depth == 0
-                    {
-                        root_closed = true;
-                    }
                 }
-                3 =>
+                Event::Property { name,
+                                  value,
+                                  depth } =>
                 {
-                    if depth == 0
-                    {
-                        return Err(Error::Malformed("device tree property is outside a node"));
-                    }
-                    let length = word(self.structure, pos)? as usize;
-                    let name_offset = word(self.structure, pos + 4)? as usize;
-                    pos = pos.checked_add(8)
-                             .ok_or(Error::Malformed("device tree property offset overflow"))?;
-                    let end = pos.checked_add(length)
-                                 .ok_or(Error::Malformed("device tree property length overflow"))?;
-                    let value = self.structure
-                                    .get(pos..end)
-                                    .ok_or(Error::Malformed("truncated device tree property"))?;
-                    let name = cstr(self.strings
-                                        .get(name_offset..)
-                                        .ok_or(Error::Malformed("device tree property name \
-                                                                 is outside strings"))?)?;
-                    pos = end.checked_add(3)
-                             .map(|n| n & !3)
-                             .ok_or(Error::Malformed("device tree property alignment overflow"))?;
                     if depth == 1
                     {
                         if root_children
@@ -622,18 +653,17 @@ impl<'a> Tree<'a>
                         }
                     }
                 }
-                4 =>
+                Event::Nop =>
                 {}
-                9 =>
+                Event::Finish =>
                 {
-                    if !root_seen || !root_closed || depth != 0 || pos != self.structure.len()
+                    if !scanner.complete()
                     {
                         return Err(Error::Malformed("device tree structure ended before the \
                                                      root closed or has trailing tokens"));
                     }
                     return Ok(());
                 }
-                _ => return Err(Error::Malformed("unknown device tree structure token"))
             }
         }
     }

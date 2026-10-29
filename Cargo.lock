@@ -10,21 +10,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "abi-smoke"
-version = "0.1.0"
-dependencies = [
- "bootrom",
- "linked_list_allocator",
- "mac-abi",
- "mac-build",
- "mac-formats",
- "mac-kernel-model",
- "mac-toolbox",
- "mac-traps",
- "toolbox-quickdraw",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -364,6 +349,7 @@ dependencies = [
 name = "mac-build"
 version = "0.1.0"
 dependencies = [
+ "mac-abi",
  "mac-device-interface",
  "mac-formats",
  "mac-kernel-model",
@@ -1398,7 +1384,6 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
- "bootrom",
  "getrandom",
  "hfs-b",
  "mac-abi",

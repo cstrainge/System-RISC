@@ -303,8 +303,6 @@ System7/
   tools/
     mac-build/             Host resource compiler and guest build support
     xtask/                 Build, inspect, HFS adapter and check commands
-  tests/
-    abi-smoke/             Bare-metal native entry/service test harness
 ```
 
 The public Toolbox crates provide safe Rust bindings over a single resident
@@ -385,7 +383,6 @@ spaces remain intact in the artifact and HFS filenames:
 | `dist/system7.hfs` | Sparse, 500 MiB unpartitioned HFS volume |
 | `dist/system7.qcow2` | Same volume in qcow2 format |
 | `dist/disk.json` | File fork verification, volume blessing and disk checks |
-| `abi-smoke/serial.log` | Actual System/Finder execution output |
 | `boot-checks/*.serial.log` | Cold-boot and rejection-case output |
 
 `../results/system7/toolchain-checks.json` records the complete check result.

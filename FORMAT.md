@@ -321,7 +321,7 @@ definition resources through its resident filesystem service. Normal disk-boot c
 for `DESKTOP_READY`. Rebuild the complete unreleased system on format changes.
 See [CODE-RESOURCES.md](CODE-RESOURCES.md) for executable resource families.
 
-The current BootInfo is 160 bytes on RV64; SystemServices remains24bytes. BootInfo
+The current BootInfo is 168 bytes on RV64; SystemServices remains24bytes. BootInfo
 contains RAM/log information, firmware disk-info/read/write/flush callbacks,
 startup disk/partition identity and flags. Device ordinals remain stable while
 System runs; NOT_FOUND ends enumeration. Each read/write transfers exactly512
@@ -343,8 +343,34 @@ primary-membership preflight, then sorted and checked before publication. System
 checks the mapped extent, reservation and shared topology contract at admission.
 CPU records describe discovery only: they neither authenticate the current hart
 nor release any secondary from the ROM park. BootInfo's ABI version remains1;
-its Header size must equal160bytes before the enlarged structure is read.
-Rebuild ROM and System together; the previous144byte layout is rejected.
+its Header size must equal168bytes before the enlarged structure is read.
+Rebuild ROM and System together; previous layouts are rejected.
+
+At byte160, BootInfo carries a mandatory physical pointer to the custom-ROM
+machine-monitor directory. Its32byte record is `{ entries: physical pointer,
+count: usize, stack_bytes: u64, timebase_hz: u64 }`. Each32byte entry is
+`{ hart: u64, msip: u64, storage: BootMemoryRange }`, in the same sorted order as
+the enabled CPU array. Directory and entries remain in reserved firmware RAM;
+per-CPU control/stack storage is disjoint, page-aligned firmware backing pinned
+until whole-machine reset. The platform defines its stack size (currently4KiB),
+legacy CLINT window and required whole-machine-reset contract. `/cpus` supplies
+the checked timebase; CPU interrupt-controller phandles and ordered software/
+timer interrupt pairs determine MSIP routes, including disabled CPUs' ordinals.
+Numeric hart IDs never serve as MMIO offsets. Unsupported bindings or translated
+buses refuse boot rather than infer a physical route.
+
+Each control has ten64bit words: hart, MSIP address, requested sequence,
+acknowledged sequence, sticky stop request, stop acknowledgement, joined state,
+command, signed result, and entry guard. Its integer frame follows at byte80:
+32register words, saved PC, saved status. The aligned control is352bytes. Layout
+offsets come from the shared Rust record; the assembly handler never borrows
+an ordinary Rust reference to mutable frame storage. Joined1means an enabled
+parked secondary receiver; joined2identifies the installed primary receiver.
+The only normal command is FenceI=1. A matching successful acknowledgement
+follows the receiving instruction fence. Stop uses separate irreversible cells
+and acknowledges only after interrupted execution will never resume. There is
+no secondary S-mode release command. No earlier/fake monitor or raw-memory boot
+fallback is accepted; native checks must boot the production ROM.
 
 At byte88, BootInfo appends a pointer/count pair for RAM banks, followed at
 byte104 by a pointer/count pair for reservations. Counts are native usize

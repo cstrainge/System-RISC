@@ -6,6 +6,7 @@ extern crate alloc;
 mod virtio_blk;
 mod screen;
 mod supervisor;
+mod monitor;
 mod virtual_memory
 {
     include!(concat!(env!("OUT_DIR"), "/platform-virtual.rs"));
@@ -67,8 +68,7 @@ _start:
 4:  mv a0, s0
     call boot_main
 parked:
-    wfi
-    j parked
+    j __monitor_park
     .balign 4
 trap:
     # Never use an interrupted S-mode virtual stack in M mode. This terminal
@@ -391,7 +391,8 @@ entry_from!(Physical, mac_kernel_model::pages::physical::Error);
 entry_from!(Supervisor, supervisor::Error);
 
 fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
-         partition: Partition, memory: &mut memory::Memory, cpus: &[mac_abi::boot::topology::Cpu])
+         partition: Partition, memory: &mut memory::Memory, cpus: &[mac_abi::boot::topology::Cpu],
+         monitor: &monitor::Published)
          -> core::result::Result<(), EntryError>
 {
     use bootrom::translation;
@@ -523,7 +524,8 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
                                                 length: memory::DISPLAY_SCRATCH_BYTES },
                           execution:               &execution,
                           cpus:                    cpus.as_ptr(),
-                          cpu_count:               cpus.len() };
+                          cpu_count:               cpus.len(),
+                          monitor:                 &monitor.directory };
     let info_virtual = root.cpu_address(PhysicalAddress((&info as *const BootInfo) as u64),
                                         size_of::<BootInfo>() as u64)?
                            .0;
@@ -621,6 +623,16 @@ extern "C" fn boot_main(tree_address: usize) -> !
             halt();
         }
     };
+    let monitor = match monitor::Published::prepare(&tree, &cpus, primary, &memory)
+    {
+        Ok(monitor) => monitor,
+        Err(error) =>
+        {
+            serial!("BOOT_MACHINE_MONITOR_REFUSED: {error}");
+            fatal_shutdown();
+        }
+    };
+    serial!("BOOT_MACHINE_MONITORS_READY count={} secondary_s_release=disabled", cpus.len());
     serial!("BOOT_RAM base={:#x} bytes={} banks={} reservations={}",
             memory.ram[0].base,
             memory.ram[0].length,
@@ -668,10 +680,11 @@ extern "C" fn boot_main(tree_address: usize) -> !
         for partition in partitions
         {
             let result = startup(&mut disks[disk_index], partition);
-            match result.map_err(EntryError::Format)
-                        .and_then(|startup| {
-                            enter(startup, &mut disks, disk_index, partition, &mut memory, &cpus)
-                        })
+            match result.map_err(EntryError::Format).and_then(|startup| {
+                                                        enter(startup, &mut disks, disk_index,
+                                                              partition, &mut memory, &cpus,
+                                                              &monitor)
+                                                    })
             {
                 Ok(()) =>
                 {

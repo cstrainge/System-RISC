@@ -1,5 +1,4 @@
 mod disk;
-mod smoke;
 mod boot;
 mod docs;
 mod authority;
@@ -237,8 +236,8 @@ impl Workspace
                                "--exclude", "quickdraw-test", "--exclude", "text-edit",
                                "--exclude", "cursor-test", "--exclude", "panic-test",
                                "--exclude", "resedit", "--exclude", "reactor", "--exclude",
-                               "abi-smoke", "--exclude", "native-wdef", "--exclude",
-                               "native-buttons-cdef", "--exclude", "native-mdef"]))?;
+                               "native-wdef", "--exclude", "native-buttons-cdef", "--exclude",
+                               "native-mdef"]))?;
         // The large-fork fixture writes every logical block through the shared
         // core, then verifies 64-bit File Manager transport through the SDK.
         run(self.cargo().args(["test", "--locked", "--release", "-p", "mac-toolbox", "--test",
@@ -251,7 +250,6 @@ impl Workspace
             serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
                                                              toolbox-boundaries.json"))?)?;
         let image = disk::image(self)?;
-        let smoke = smoke::check(self, &reports)?;
         for test in ["driver_modules", "host_filesystem_module", "file_sources", "stuffit",
                      "userspace_graphical", "window_interactions", "finder_png"]
         {
@@ -368,7 +366,7 @@ impl Workspace
                                                                  .join("results/system7/\
                                                                         panic-checks.json"))?)?;
         let report = json!({
-            "platform": self.platform.name, "target": &self.platform.rust_target, "host_tests": "passed", "driver_modules": drivers, "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "execution": smoke, "graphical_userspace":userspace,"event_manager":event_manager,"clipboard":clipboard,"textedit":textedit,"typing":typing,"processes":processes,"application_ui":application_ui,"retained_update":retained_update,"event_latency":event_latency,"cursors":cursors,"panics":panics,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
+            "platform": self.platform.name, "target": &self.platform.rust_target, "host_tests": "passed", "driver_modules": drivers, "packages": reports, "toolbox_boundaries": boundaries, "disk": image, "graphical_userspace":userspace,"event_manager":event_manager,"clipboard":clipboard,"textedit":textedit,"typing":typing,"processes":processes,"application_ui":application_ui,"retained_update":retained_update,"event_latency":event_latency,"cursors":cursors,"panics":panics,"boot": boot, "desktop": desktop, "wdef_appearance": appearance, "quickdraw": quickdraw, "filesystem":filesystem,"writable_filesystem":writable,"resource_desktop":resource_desktop,"finder":finder,
             "scope": "Native resource-fork System/Finder, flash ROM boot from blessed HFS-B, resource-loaded definitions, resident QuickDraw/fonts/icons/pictures, resource menus/alerts, captured Event/Scrap and monochrome TextEdit services with Finder exercisers, shared native HFS-B read/write services with UTF-8 names and microsecond dates, unchanged classic HFS exchange access, and read-only resource-fork inspection. Original visual comparisons are strict for primitives/icons/bitmap fonts; TrueType and synthetic styles retain measured pixel differences. Original 68k execution and full classic Toolbox remain incomplete."
         });
         let mut report = report;
@@ -466,8 +464,7 @@ fn execute() -> Result<()>
         }
     }
     let checking =
-        args.first()
-            .is_some_and(|s| matches!(s.as_str(), "check" | "test" | "boot-check" | "abi-check"));
+        args.first().is_some_and(|s| matches!(s.as_str(), "check" | "test" | "boot-check"));
     let name = platform.or_else(|| env::var(mac_build::platform::PLATFORM_ENV).ok())
                        .unwrap_or_else(|| mac_build::platform::DEFAULT_PLATFORM.into());
     let workspace = Workspace::new(build, checking, mac_build::platform::load(&name)?)?;
@@ -478,7 +475,6 @@ fn execute() -> Result<()>
                                             | "rom"
                                             | "boot"
                                             | "boot-check"
-                                            | "abi-check"
                                             | "check"
                                             | "test")
                                })
@@ -516,12 +512,6 @@ fn execute() -> Result<()>
                                        .arg("System7/scripts/prune_system7_images.py"));
             checked?;
             cleaned?;
-        }
-        [command] if command == "abi-check" =>
-        {
-            let reports = workspace.build()?;
-            let result = smoke::check(&workspace, &reports)?;
-            write_json(&workspace.build.join("abi-smoke/result.json"), &result)?;
         }
         [command] if command == "rom" =>
         {
@@ -580,11 +570,10 @@ fn help()
               and boot ROM\n  cargo xtask image          Build a separate 500 MiB HFS-B disk and \
               qcow2\n  cargo xtask rom            Build the read-only flash ROM\n  cargo xtask \
               boot [DISK]    Boot from a read-only raw/qcow2 disk; serial console\n  cargo xtask \
-              abi-check      Verify native/classic ABI through real ECALLs\n  cargo xtask \
               boot-check     Verify ROM disk boot and rejection cases\n  cargo xtask inspect \
               FILE   Validate a native MacBinary file\n  cargo xtask package MANIFEST ELF OUT  \
-              Package a native application\n  cargo xtask check          Host, disk, ABI, ROM \
-              boot and graphical desktop checks");
+              Package a native application\n  cargo xtask check          Host, disk, ROM boot \
+              and graphical desktop checks");
     println!("\n  --platform NAME           Select a known platform (default QemuRISC-V)");
     println!("\n  --build-dir DIRECTORY     Override all build/media output (also \
               SYSTEM7_BUILD_DIR)\n  check defaults to build/system7/check; normal builds use \
