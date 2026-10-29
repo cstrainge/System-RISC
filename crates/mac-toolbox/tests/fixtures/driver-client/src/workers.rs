@@ -169,6 +169,7 @@ pub fn initialize(host: Client, provider: Provider) -> Result<()>
 static DROPPED_COORDINATOR: AtomicU32 = AtomicU32::new(0);
 fn peer(context: WorkerContext, provider: Provider) -> Result<()>
 {
+    machine::worker_toolbox_refusals();
     PEER_TOKEN.store(machine::current_token()?, Ordering::Release);
     // Two actual runnable workers share the native mutex before this peer parks.
     for _ in 0..4096
@@ -200,6 +201,7 @@ fn peer(context: WorkerContext, provider: Provider) -> Result<()>
 }
 fn coordinator(context: WorkerContext, host: Client, provider: Provider) -> Result<()>
 {
+    machine::worker_toolbox_refusals();
     machine::log(format_args!("MODULE_WORKER_ACTIVE actors=2\n"));
     // Real private worker traps, actual canonical wait row and timer selection;
     // no host clock, replacement scheduler or per-operation host ACK.

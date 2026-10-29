@@ -195,7 +195,7 @@ pub(crate) fn row(index: usize) -> Result<wire::Row, ReadError>
             result.flags |= wire::PRIMARY;
         }
         let phase = row.phase.load(Ordering::Acquire);
-        if matches!(phase, super::ADMITTED_IDLE | super::DISPATCH_ELIGIBLE)
+        if matches!(phase, super::ADMITTED_IDLE | super::DISPATCH_ELIGIBLE | super::DRAINING)
         {
             result.flags |= wire::IS_ADMITTED;
             result.state = wire::ADMITTED;

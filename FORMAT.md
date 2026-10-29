@@ -1113,8 +1113,11 @@ spinlock storage. `with` returns `SERVICE_BUSY` on contention without invoking
 the closure; `try_with` returns `Ok(None)`. Neither spins waiting for an owner or
 lends an escaping guard. Authors must keep the closure bounded. Parking and
 foreign broker entry are refused while the native critical depth is nonzero;
-allocation and bounded worker wake/cancel/disposal remain available. The current
-native exclusion contract does not establish SMP correctness.
+allocation and bounded worker wake/cancel/disposal remain available. Direct
+Host entry acquires its actual canonical primary-service lease before this
+critical scope, so the mask and its restoration remain on the same CPU. The
+bounded native SMP observations do not establish every critical/cancellation
+interleaving or arbitrary privileged-fault containment.
 
 `WorkerSpecification` is 72 bytes:
 
@@ -1136,8 +1139,11 @@ rejects unknown affinity values or nonzero reserved fields before capture
 ownership transfers. There is no earlier-size decoder. Automatic placement
 follows the actual core-admitted eligible CPU set; Primary requests the genuine
 primary CPU. Neither value grants CPU admission or bypasses a service's affinity.
-The current dispatch floor remains primary-only; canonical placement and
-cross-hart execution retain their separate integration and qualification gates.
+An active scheduler may expand that eligible set using genuine hardware
+readiness receipts and core dispatch admission. Ordinary apps and Automatic
+workers need no opt-in. Primary service obligations and explicit Primary
+placement remain enforced during cross-CPU execution; see
+[SCHEDULING.md](SCHEDULING.md) for the mechanisms and bounded native observations.
 
 The name is nonempty, at most 128 bytes, and contains no control characters.
 Entry and destroy thunks must lie in this module's pinned executable ranges.
@@ -1158,8 +1164,8 @@ single publication handoff. Successful CREATE transfers ownership irrevocably
 and returns the published token. It cannot later report a preparation failure
 and let the SDK destroy a capture already owned by the resident.
 
-Ordinary `prepare_worker` selects `WorkerAffinity::Automatic`, allowing future
-safe CPU admission to expand placement without an application or worker opt-in.
+Ordinary `prepare_worker` selects `WorkerAffinity::Automatic`, following actual
+CPU admission without an application or worker opt-in.
 `prepare_worker_with_affinity(name, WorkerAffinity::Primary, body)` expresses a
 genuine pin when required. The same capture handoff and failure ownership apply
 to both preparation methods.
@@ -1183,7 +1189,7 @@ unique ticket for retry. Uncooperative privileged code is not force-unwound.
 | 24 | 8 | Borrowed WorkerSpecification pointer for CREATE; null otherwise |
 | 32 | 4 | Worker state, u32; STATUS result |
 | 36 | 4 | Exit status, i32; actual result when FINISHED |
-| 40 | 8 | Reserved, zero |
+| 40 | 8 | Microseconds: PARK_FOR input duration; MONOTONIC output; zero input otherwise |
 
 STATUS and CURRENT report sticky cancellation with output flag
 `CANCEL_REQUESTED=1`; no other flag bits are defined. Cancellation is independent
@@ -1201,6 +1207,8 @@ RUNNING=2, PARKED=3 and FINISHED=4.
 | CURRENT | 6 | Host; worker input zero; returns the actual worker token and cancellation flag |
 | PARK | 7 | Private native trap; consumes a pending wake or sleeps atomically |
 | EXIT | 8 | Private native trap; scheduler trampoline exits after entry returned |
+| MONOTONIC | 9 | Private native trap; reads checked admitted-clock microseconds |
+| PARK_FOR | 10 | Private native trap; checked relative-duration park |
 
 Host controls authenticate the actual module and retain separate THRD ownership
 and generation checks. Starting an initializing module only arms the worker;
@@ -1211,14 +1219,29 @@ intent; actual destruction and removal happen through registered cleanup.
 
 The private RV64 trap number is `0x4d57524b` (`MWRK`): `a7` carries the number,
 `a0` the WorkerCall pointer and `a1` its exact 48-byte extent; Status returns in
-`a0`. Only PARK/EXIT use this switch boundary. The trap requires the actual
+`a0`. PARK, PARK_FOR, MONOTONIC and EXIT use this private boundary. The trap requires the actual
 module-worker body at the outermost trap depth, pre-trap interrupts enabled and
 no active critical section. A nonzero token must be that current worker's token;
 zero selects the actual current worker. A wake recorded before PARK is consumed
 without sleeping, and wakes coalesce. Sticky cancellation returns
 `OPERATION_CANCELLED` (-17). EXIT is accepted only after the resident has recorded
 entry return; author code cannot use it to skip capture destruction. Process-only
-Toolbox traps reject worker contexts; diagnostic LOG remains available.
+Toolbox traps reject direct worker contexts; diagnostic LOG remains available.
+MONOTONIC and PARK_FOR convert through the admitted DT timebase. Unrepresentable
+duration/deadline inputs refuse instead of wrapping. A permanently quarantined
+worker's returned trampoline can schedule away without acknowledging backing
+disposal; ordinary controls preserve its typed fault and cannot reactivate it.
+
+Direct Host calls use the internal System-only `MSRV=0x4d535256` gate when actual
+thread migration is required. This is not a public Toolbox trap or module wire
+payload. The sole System callsite retains its exclusive native lease output on
+the same owned stack; only the raw binding knows that compiler-private shape.
+Policy denial precedes routing. The peer turn leaves PC/registers and output
+untouched; the primary replays the same actual continuation and mints one lease.
+No caller-chosen hart, copied executor, closure RPC or public placement grant is
+introduced. Ordinary ECALL routing likewise precedes request borrows and clears
+only after real result/PC commitment; deferred I/O retains its original replay
+contract. See [SCHEDULING.md](SCHEDULING.md) for lifetime/drain semantics.
 
 The SDK's unique `PreparedWorker::start` returns a Worker or a typed failure
 retaining its preparation. Worker cancellation and `try_join` do not wait;

@@ -19,6 +19,14 @@ pub(super) unsafe extern "C" fn enter(module: u64, callback: AllocationOperation
     {
         return mac_abi::ACCESS_DENIED;
     }
+    // Policy refusal precedes routing. No caller pointer, module scope or
+    // metadata/IRQ guard exists until the actual canonical thread is pinned
+    // to the primary for this complete native invocation.
+    let _service = match crate::machine::scheduler::service::host::acquire()
+    {
+        Ok(lease) => lease,
+        Err(status) => return status
+    };
     let operation = || -> Result<Status, Status> {
         crate::context::authenticate_module(module)?;
         super::invocation::callback_allowed(module, callback as usize)?;
