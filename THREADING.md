@@ -809,7 +809,7 @@ remain protocol failures. This is not a non-return watchdog or UI-latency promis
 Private optimized native one- and four-CPU runs observed primary-only takeover,
 valid-sample expiry, early-confirm/service/envelope refusals, canonical retirement,
 stale-status rejection and two actual post-retirement worker reclaims. The
-optional shipping package also completed startup with real Reactor launch,
+shipping package also completed startup with real Reactor launch,
 mouse input and own-process exit. All author execution remained primary-only;
 these scenarios do not establish every schedule decision or latency/fairness.
 See [SCHEDULING.md](SCHEDULING.md) for the exact current contract and remaining

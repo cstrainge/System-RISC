@@ -15,6 +15,7 @@ use crate::{context::{EventWaiter, ThreadContext},
             toolbox::handles::{OwnerRef, Store}};
 mod lifetime;
 mod worker;
+pub(crate) mod wake;
 pub(crate) mod policy;
 include!(concat!(env!("OUT_DIR"), "/platform-scheduling.rs"));
 pub(crate) mod recovery;
@@ -144,6 +145,7 @@ impl SystemThreadBinding
 pub(crate) enum StartError
 {
     Clock(super::monitor::Error),
+    Wake(super::monitor::WakeError),
     Load(crate::loader::LoadError),
     Idle(super::traps::execution::IdlePreparationFailure),
     Cpus(super::smp::Error)
@@ -155,6 +157,7 @@ impl core::fmt::Display for StartError
         match self
         {
             Self::Clock(cause) => cause.fmt(out),
+            Self::Wake(cause) => cause.fmt(out),
             Self::Load(cause) => cause.fmt(out),
             Self::Idle(cause) => cause.fmt(out),
             Self::Cpus(cause) => cause.fmt(out)
@@ -176,11 +179,31 @@ impl From<crate::loader::LoadError> for StartError
     }
 }
 
+/// Ordinary executors are eligible for automatic placement on the actual
+/// core-admitted dispatch set. Today that set contains only the primary; no
+/// per-application opt-in is needed when the real service/CPU gates broaden it.
+/// Affine System idles remain a distinct sealed Store variant.
+#[derive(Clone, Copy)]
+enum ThreadAffinity
+{
+    Eligible
+}
+impl ThreadAffinity
+{
+    fn allows(self, hart: HartKey) -> bool
+    {
+        match self
+        {
+            Self::Eligible => hart.dispatch_eligible()
+        }
+    }
+}
 #[derive(Clone, Copy)]
 struct RunState
 {
     // Scheduler-owned execution claim, retained across frame restore and body
     // execution. Only a complete outer-capture handoff may clear it.
+    affinity:    ThreadAffinity,
     claimed_by:  Option<HartKey>,
     live:        bool,
     retired:     bool,
@@ -242,7 +265,8 @@ impl RunState
 {
     const fn new() -> Self
     {
-        Self { claimed_by:  None,
+        Self { affinity:    ThreadAffinity::Eligible,
+               claimed_by:  None,
                live:        false,
                retired:     false,
                switches:    0,
@@ -284,6 +308,13 @@ impl Thread
             state.ready_since = Some(observed.unwrap_or_else(crate::platform::ticks));
         }
         self.state.set(state);
+        if !was_ready && state.ready() && observed.is_none()
+        {
+            // Capture already owns this round; it is not new queued work.
+            // Real event/I/O/activation edges notify only after the first
+            // scheduled-frame admission, never to prove a boot self-IPI.
+            wake::runnable();
+        }
     }
 
     fn capture_runnable(&self, captured: u64)
@@ -419,6 +450,7 @@ pub(crate) fn context_released()
     if RETIRED_COUNT.load(Ordering::Acquire) != 0
     {
         RECLAIM_PENDING.store(true, Ordering::Release);
+        wake::request();
     }
     worker::context_released();
 }
@@ -921,6 +953,7 @@ pub(crate) fn start() -> Result<(), StartError>
     // interrupt ACK before any scheduled-position lock or author execution.
     // Peers remain AdmittedIdle; this grants no dispatch policy permission.
     super::smp::initialize().map_err(StartError::Cpus)?;
+    let wake_receiver = super::monitor::prepare_primary_wake().map_err(StartError::Wake)?;
     let scheduler = SCHEDULER.lock();
     // Module preparations can precede Finder in the shared THRD store. Start
     // the genuine runnable Finder process, never an inert/armed module slot.
@@ -941,6 +974,11 @@ pub(crate) fn start() -> Result<(), StartError>
          .cpu_frame()
          .ok_or(mac_formats::Error::Malformed("scheduler bootstrap Finder has no CPU backing"))?;
     let hart = selected_hart();
+    if !t.state.get().affinity.allows(hart)
+    {
+        return Err(mac_formats::Error::Malformed("scheduler bootstrap Finder violates actual \
+                                                  dispatch eligibility").into());
+    }
     if t.state.get().claimed_by.is_some()
     {
         return Err(mac_formats::Error::Malformed("scheduler bootstrap Finder is already claimed").into());
@@ -951,6 +989,9 @@ pub(crate) fn start() -> Result<(), StartError>
     select_current(slot);
     drop(scheduler);
     arm();
+    // The frame/claim/selection is committed and no scheduler guard survives.
+    // Publish the real receiver, then notify only retained callable/cleanup work.
+    wake::admitted(wake_receiver);
     unsafe { __system_start_frame(frame) }
 }
 extern "C" fn idle() -> !
@@ -1360,6 +1401,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
     // allocation or logical app identities cannot impersonate this service hart.
     if super::paging::firmware_owner_hart() == Some(hart.number())
     {
+        wake::report_failure();
         crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
             // Device input and cursor publication precede all ordinary maintenance.
             // Never enable nested preemption while a resident manager owns its guards.
@@ -1429,6 +1471,10 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
     {
         if let Some(thread) = scheduler.thread(index)
         {
+            if !thread.state.get().affinity.allows(hart)
+            {
+                claim_lost(hart, index, "final frame choice violates actual thread affinity");
+            }
             let next = if index == current { Some(frame) } else { thread.core.cpu_frame() };
             if let Some(next) = next
             {
@@ -1478,10 +1524,18 @@ fn bootstrap_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture)
 {
     let current = capture.current();
     let hart = capture.hart();
+    if hart.is_primary()
+    {
+        // This fresh choice reads canonical readiness under the existing guard.
+        // It can consume earlier runnable hints, unlike revalidating an older
+        // immutable foreign-policy Round after a new off-hart wake.
+        wake::observed_runnable();
+    }
     let priority = scheduler.iter()
                             .filter(|(slot, t)| {
                                 let state = t.state.get();
                                 state.live
+                                && state.affinity.allows(hart)
                                 && (state.claimed_by.is_none()
                                     || (*slot == current && state.claimed_by == Some(hart)))
                             })
@@ -1507,6 +1561,7 @@ fn bootstrap_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture)
             };
             let state = thread.state.get();
             if state.live
+               && state.affinity.allows(hart)
                && !state.retired
                && (state.claimed_by.is_none()
                    || (index == current && state.claimed_by == Some(hart)))

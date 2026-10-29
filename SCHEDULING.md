@@ -97,6 +97,50 @@ claim/frame commitment is shared with bootstrap selection. Current author
 execution remains primary-only with interrupts masked across this commitment.
 This is not a cross-hart atomic policy/claim commit contract.
 
+## Placement and primary work notification
+
+Ordinary threads default to the actual core-admitted eligible set, currently
+only the primary. No permanent application opt-in or primary pin is imposed.
+Canonical System idles retain their separate actual hart affinity. Bootstrap,
+policy candidates and final frame commitment all check the genuine dispatch
+phase; discovery or a hardware number cannot grant execution.
+
+The primary receiver is admitted with SSIE while global interrupts remain
+masked, then published after the actual first scheduled frame commits. Real
+callable-policy, retirement and runnable changes publish coalesced hints;
+guard-free outer returns post the existing monitor transport. Target-local
+checked wake epochs are durable before MMIO, and only a captured primary SSIP
+acknowledgment clears a posted notification. Work ownership stays in the real
+queues and cleanup tickets. A typed transport refusal retains those obligations
+and records its first cause without an allocation or retry/log storm.
+
+Readiness already included in a complete policy snapshot or a fresh bootstrap
+choice discharges its unposted runnable hint under the existing scheduler lock.
+A new ready edge during foreign policy execution retains its own hint. This
+avoids an extra interrupt for work the current turn has already observed;
+it does not acknowledge a posted IRQ or unrelated cleanup work.
+
+Private optimized one- and four-CPU guests observed the real primary Joined2
+receiver acknowledging epoch1 after actual policy startup and epoch2 after an
+application launch; its SecondaryStart stayed Prepared0. Real policy retirement
+advanced the primary request and acknowledgment from1 to5 in both configurations.
+The same artifact exercised peer idle/startup acknowledgments and post-launch
+instruction publication, native refusal/retirement cases and subsequent UI use.
+A same-sized prior ROM was refused by the changed monitor fingerprint with a
+rebuild diagnostic, before expanded monitor views. Two initial diagnostic setup
+failures left the now-default policy installed; System rejected the competing
+exclusive offer. Those attempts did not reach their intended callback cases;
+the corrected private installations did.
+
+This artifact's System resource fork is
+`eea547c73768fae5ccf670388b59320396834e329da0881fc8048b2311e5a35d` and ROM
+`430dfaeb04be0d644a0207a9112dea7e57d6af9f2ccb6018b6bf8193d58c95f9`.
+These observations precede the72-byte worker descriptor and public CPU-query
+changes. Periodic primary maintenance remains. They do not establish indefinite
+idle/no-lost-WFI, concurrent author dispatch, all multiwriter races, arbitrary
+MMIO-fault recovery, latency or full SMP. Existing services require real routing
+and joint claim/retirement gates before eligibility can broaden.
+
 ## Clock, quantum and callback allowance
 
 The platform definition owns separate checked fields:

@@ -382,7 +382,15 @@ M independently validates the selected CPU profile/root/physical permissions and
 reports Starting=1 or Refused=3. Real warm System initialization reports
 AdmittedIdle=2; the initial phase is Prepared=0. A separate nonzero wake epoch
 must receive an actual S interrupt ACK before the core mints its unique readiness
-owner. M injection alone grants no readiness or scheduling authority. Stop is
+owner. Wake epochs are monotonic per target, including startup; they are not a
+global object ID or command sequence. Each producer publishes a checked atomic
+increment before MSIP notification. M accepts a real primary Joined2 receiver
+without fabricating a SecondaryStart, or a peer in actual AdmittedIdle. System
+clears local SSIP before its complete captured receiver acknowledges the latest
+epoch. A primary notification capability is published only after first-frame
+claim/context commitment. These protocol semantics participate in the shared
+fingerprint, so a same-sized older ROM is refused before monitor views are formed.
+M injection alone grants no readiness or scheduling authority. Stop is
 sticky and irreversible; only the M receiver ACKs after abandonment. No old
 monitor layout or raw-memory boot fallback is accepted. Rebuild the entire world
 when this unreleased ABI1 contract changes.

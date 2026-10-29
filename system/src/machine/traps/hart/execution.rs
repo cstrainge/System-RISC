@@ -42,6 +42,15 @@ impl HartKey
         self.0.ordinal
     }
 
+    /// Compare the sealed row itself with the admitted primary row. Hardware
+    /// numbers remain diagnostic metadata, never a placement authorization.
+    pub(crate) fn is_primary(self) -> bool
+    {
+        super::REGISTRY.get().is_some_and(|registry| {
+                                 core::ptr::eq(self.0, &registry.rows.as_slice()[registry.primary])
+                             })
+    }
+
     pub(crate) fn dispatch_eligible(self) -> bool
     {
         self.0.phase.load(Ordering::Acquire) == super::DISPATCH_ELIGIBLE
