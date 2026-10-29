@@ -1228,7 +1228,9 @@ pub fn with_disks<R>(bytes: &[&[u8]], startup_disk: u32, run: impl FnOnce(&Syste
                           reservations: core::ptr::null(),
                           reservation_count: 0,
                           display_scratch: Default::default(),
-                          execution: core::ptr::null() };
+                          execution: core::ptr::null(),
+                          cpus: core::ptr::null(),
+                          cpu_count: 0 };
     with_services(|services| {
         let storage =
             unsafe { crate::toolbox::files::BootStorage::from_boot_info(&boot) }.expect("storage");
@@ -1421,7 +1423,9 @@ pub fn with_file_disks<R>(paths: &[&std::path::Path], read_only: bool, faults: D
                           reservations:            core::ptr::null(),
                           reservation_count:       0,
                           display_scratch:         Default::default(),
-                          execution:               core::ptr::null() };
+                          execution:               core::ptr::null(),
+                          cpus:                    core::ptr::null(),
+                          cpu_count:               0 };
     let result = with_services(|services| {
         let storage=unsafe{crate::toolbox::files::BootStorage::from_boot_info(&boot)}.expect("file storage callbacks");
         let manager =

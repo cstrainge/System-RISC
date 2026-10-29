@@ -121,6 +121,10 @@ unsafe extern "C" fn log(bytes: *const u8, length: usize) -> Status
 #[unsafe(no_mangle)]
 extern "C" fn main(tree_address: usize) -> !
 {
+    let primary: u64;
+    unsafe {
+        asm!("csrr {},mhartid", out(reg)primary, options(nomem,nostack));
+    }
     // This private QEMU-virt probe uses the real reset DTB, not a guessed RAM
     // size or a second fake bootstrap account. Its machine has one RAM bank.
     let tree = unsafe {
@@ -139,6 +143,7 @@ extern "C" fn main(tree_address: usize) -> !
                                                                               boot_refused(error)
                                                                           })
     };
+    tree.cpu_count(primary).unwrap_or_else(|error| boot_refused(error));
     let mut ram = mac_abi::BootMemoryRange::default();
     tree.memory(|range| {
             if ram.length != 0
@@ -200,6 +205,8 @@ extern "C" fn main(tree_address: usize) -> !
     unsafe {
         BOOT_HEAP.lock().init(firmware.0 as *mut u8, (firmware.1 - firmware.0) as usize);
     }
+    let cpus =
+        platform_memory::discover_cpus(&tree, primary).unwrap_or_else(|error| boot_refused(error));
     use bootrom::translation;
     use mac_abi::{BootMemoryRange,
                   boot::execution::{EXECUTE, Execution, FIRMWARE_ONLY, READ, Region, WRITE}};
@@ -288,7 +295,9 @@ extern "C" fn main(tree_address: usize) -> !
                           reservations:            reservations.as_ptr(),
                           reservation_count:       reservations.len(),
                           display_scratch:         Default::default(),
-                          execution:               &execution };
+                          execution:               &execution,
+                          cpus:                    cpus.as_ptr(),
+                          cpu_count:               cpus.len() };
     let info_virtual = root.cpu_address(PhysicalAddress((&boot as *const BootInfo) as u64),
                                         size_of::<BootInfo>() as u64)
                            .unwrap_or_else(|error| boot_refused(error))

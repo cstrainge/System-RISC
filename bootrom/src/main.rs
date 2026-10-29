@@ -391,7 +391,7 @@ entry_from!(Physical, mac_kernel_model::pages::physical::Error);
 entry_from!(Supervisor, supervisor::Error);
 
 fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
-         partition: Partition, memory: &mut memory::Memory)
+         partition: Partition, memory: &mut memory::Memory, cpus: &[mac_abi::boot::topology::Cpu])
          -> core::result::Result<(), EntryError>
 {
     use bootrom::translation;
@@ -498,6 +498,8 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
                                regions: regions.as_ptr(),
                                region_count: regions.len() };
     execution.checked(account, &regions, execution.physical_image, execution.virtual_image, flash)?;
+    mac_abi::boot::topology::Topology::checked(cpus, hart)
+        .map_err(|_| mac_formats::Error::Malformed("CPU topology changed before System handoff"))?;
     let mut context = BootVolume { disks:      disks.as_mut_ptr(),
                                    disk_count: disks.len() };
     let info = BootInfo { header:                  Header::for_type::<BootInfo>(),
@@ -519,7 +521,9 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
                           display_scratch:
                               BootMemoryRange { base:   memory::DISPLAY_SCRATCH_BASE,
                                                 length: memory::DISPLAY_SCRATCH_BYTES },
-                          execution:               &execution };
+                          execution:               &execution,
+                          cpus:                    cpus.as_ptr(),
+                          cpu_count:               cpus.len() };
     let info_virtual = root.cpu_address(PhysicalAddress((&info as *const BootInfo) as u64),
                                         size_of::<BootInfo>() as u64)?
                            .0;
@@ -549,6 +553,11 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
 #[unsafe(no_mangle)]
 extern "C" fn boot_main(tree_address: usize) -> !
 {
+    let primary: u64;
+    // SAFETY: this is the real M-mode ROM entry; all other harts stay parked.
+    unsafe {
+        asm!("csrr {},mhartid", out(reg)primary, options(nomem,nostack));
+    }
     // SAFETY: QEMU's reset firmware passes the valid DTB address in a1. Only
     // this bootstrap boundary reads a physical pointer; parsing uses checked
     // slices. Limit the full read to the build-defined FDT reservation size.
@@ -580,6 +589,12 @@ extern "C" fn boot_main(tree_address: usize) -> !
         }
     };
 
+    if let Err(error) = tree.cpu_count(primary)
+    {
+        serial!("BOOT_CPU_TOPOLOGY_REJECTED: {error}");
+        halt();
+    }
+
     unsafe extern "C" {
         static mut __heap_start: u8;
         static mut __heap_end: u8;
@@ -594,6 +609,15 @@ extern "C" fn boot_main(tree_address: usize) -> !
         Err(error) =>
         {
             serial!("BOOT_MEMORY_REJECTED: {error}");
+            halt();
+        }
+    };
+    let cpus = match memory::discover_cpus(&tree, primary)
+    {
+        Ok(cpus) => cpus,
+        Err(error) =>
+        {
+            serial!("BOOT_CPU_TOPOLOGY_REJECTED: {error}");
             halt();
         }
     };
@@ -646,7 +670,7 @@ extern "C" fn boot_main(tree_address: usize) -> !
             let result = startup(&mut disks[disk_index], partition);
             match result.map_err(EntryError::Format)
                         .and_then(|startup| {
-                            enter(startup, &mut disks, disk_index, partition, &mut memory)
+                            enter(startup, &mut disks, disk_index, partition, &mut memory, &cpus)
                         })
             {
                 Ok(()) =>

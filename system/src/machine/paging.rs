@@ -9,7 +9,8 @@ use heap_partition::HeapPartition;
 pub(crate) use heap_partition::{ProtectedHeapStatistics, ProtectedRange};
 use mac_abi::{BootInfo, BootMemoryRange,
               boot::{CheckedMemory, MemoryError,
-                     execution::{self, EXECUTE, FIRMWARE_ONLY, READ, Region, WRITE}}};
+                     execution::{self, EXECUTE, FIRMWARE_ONLY, READ, Region, WRITE},
+                     topology}};
 use mac_kernel_model::{DomainId,
                        pages::{Access, AddressSpace, Architecture, AsidTag, PageBox,
                                PageGeometry, PageLayout, PageOwnership, Permissions,
@@ -32,6 +33,7 @@ struct Bootstrap
     ram:            DirectMap<'static>,
     memory:         CheckedMemory<'static>,
     regions:        &'static [Region],
+    topology:       topology::Topology<'static>,
     root:           usize,
     hart:           usize,
     tag_mask:       u16,
@@ -43,6 +45,7 @@ pub(crate) enum Error
 {
     Memory(MemoryError),
     Execution(execution::Error),
+    Topology(topology::Error),
     Physical(PhysicalError),
     Policy(ModelError),
     Pages(super::pages::Error),
@@ -76,6 +79,7 @@ impl fmt::Display for Error
         {
             Self::Memory(e) => e.fmt(f),
             Self::Execution(e) => e.fmt(f),
+            Self::Topology(e) => e.fmt(f),
             Self::Physical(e) => e.fmt(f),
             Self::Policy(e) => e.fmt(f),
             Self::Pages(e) => e.fmt(f),
@@ -140,6 +144,11 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
     }
     let memory = unsafe { super::memory::validate_boot(info) }.map_err(Error::Memory)?;
     let record = unsafe { super::memory::execution(info) }.map_err(Error::Memory)?;
+    // validate_boot checked the whole physical array's reservation before this
+    // mapped view is formed. Discovery metadata never selects the current hart.
+    let cpus = unsafe { super::memory::primary_slice(info, info.cpus, info.cpu_count) }
+        .map_err(Error::Memory)?;
+    let topology = topology::Topology::checked(cpus, record.hart).map_err(Error::Topology)?;
     let regions = unsafe {
                       super::memory::primary_slice(info, record.regions, record.region_count)
                   }.map_err(Error::Memory)?;
@@ -171,16 +180,23 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
                                       mask: record.hardware_tag_mask });
     }
     let ram=DirectMap::new::<Sv39>(memory,AddressRange::new(VM_PHYSMAP_START,VM_PHYSMAP_END).map_err(Error::Policy)?,PhysicalAddress(VM_PHYSMAP_PHYSICAL_BASE)).map_err(Error::Physical)?;
-    BOOT.call_once(|| {
-            Bootstrap { ram,
-                        memory,
-                        regions,
-                        root,
-                        hart: record.hart as usize,
-                        tag_mask: record.hardware_tag_mask as u16,
-                        image_physical: record.physical_image,
-                        image_virtual: record.virtual_image }
-        });
+    let boot = BOOT.call_once(|| {
+                       Bootstrap { ram,
+                                   memory,
+                                   regions,
+                                   topology,
+                                   root,
+                                   hart: record.hart as usize,
+                                   tag_mask: record.hardware_tag_mask as u16,
+                                   image_physical: record.physical_image,
+                                   image_virtual: record.virtual_image }
+                   });
+    // BOOT_LOG and the cold execution selector are not installed yet. Admission
+    // diagnostics use the independent UART path, never a firmware callback.
+    super::emergency::serial(format_args!("CPU_TOPOLOGY enabled={} primary={} \
+                                           admission=primary-only",
+                                          boot.topology.cpus().len(),
+                                          boot.hart));
     Ok(())
 }
 /// Fixed opaque-firmware owner from checked boot metadata. This is not a

@@ -46,6 +46,49 @@ fn cells(bytes: &[u8], count: u32) -> Result<u64>
         _ => Err(Error::Malformed("device tree addresses require one or two cells"))
     }
 }
+fn set_cpu_cell(slot: &mut Option<u32>, value: &[u8]) -> Result<()>
+{
+    if value.len() != 4 || slot.is_some()
+    {
+        return Err(Error::Malformed("CPU cell declaration must be one nonrepeated u32"));
+    }
+    *slot = Some(word(value, 0)?);
+    Ok(())
+}
+fn cpu_cells(address: Option<u32>, size: Option<u32>) -> Result<u32>
+{
+    match (address, size)
+    {
+        (Some(address @ (1 | 2)), Some(0)) => Ok(address),
+        _ => Err(Error::Malformed("/cpus requires one or two address cells and zero size cells"))
+    }
+}
+fn set_cpu_status(slot: &mut Option<bool>, value: &[u8]) -> Result<()>
+{
+    if slot.is_some()
+    {
+        return Err(Error::Malformed("device tree CPU repeats status"));
+    }
+    *slot = Some(match value
+                 {
+                     b"okay\0" | b"ok\0" => true,
+                     b"disabled\0" | b"reserved\0" | b"fail\0" => false,
+                     _ if value.starts_with(b"fail-")
+                          && value.len() > 6
+                          && value.last() == Some(&0)
+                          && value[..value.len() - 1].iter()
+                                                     .all(|byte| byte.is_ascii_graphic()) =>
+                     {
+                         false
+                     }
+                     _ =>
+                     {
+                         return Err(Error::Malformed("device tree CPU status is not a \
+                                                      recognized single string"));
+                     }
+                 });
+    Ok(())
+}
 #[derive(Clone, Copy)]
 pub struct Tree<'a>
 {
@@ -143,6 +186,232 @@ impl<'a> Tree<'a>
             visit(extent(base, size)?)?;
         }
         self.walk(true, &mut visit)
+    }
+
+    /// Visit enabled /cpus CPU nodes. Status, register width and container cell
+    /// declarations are checked even for disabled CPUs; only enabled identities
+    /// enter the firmware handoff. Hardware IDs need not be dense or ordered.
+    pub fn cpus(&self, mut visit: impl FnMut(mac_abi::boot::topology::Cpu) -> Result<()>)
+                -> Result<()>
+    {
+        let (mut pos, mut depth) = (0usize, 0u32);
+        let (mut root_seen, mut root_closed, mut cpus_seen) = (false, false, false);
+        let mut root_children = false;
+        let (mut cpus_parent, mut cpus_children, mut cpu_children) = (false, false, false);
+        let (mut address_cells, mut size_cells) = (None, None);
+        let mut parent_status = None;
+        let mut status = None;
+        let mut device_type: Option<&[u8]> = None;
+        let mut reg: Option<&[u8]> = None;
+        let mut cpu_name = false;
+        loop
+        {
+            let token = word(self.structure, pos)?;
+            pos =
+                pos.checked_add(4).ok_or(Error::Malformed("device tree token offset overflow"))?;
+            match token
+            {
+                1 =>
+                {
+                    if root_closed
+                    {
+                        return Err(Error::Malformed("device tree contains multiple roots"));
+                    }
+                    let name = cstr(self.structure
+                                        .get(pos..)
+                                        .ok_or(Error::Malformed("truncated device tree node"))?)?;
+                    pos = pos.checked_add(name.len() + 1)
+                             .and_then(|n| n.checked_add(3))
+                             .map(|n| n & !3)
+                             .ok_or(Error::Malformed("device tree node offset overflow"))?;
+                    depth = depth.checked_add(1)
+                                 .ok_or(Error::Malformed("device tree nesting overflow"))?;
+                    if depth == 1
+                    {
+                        if root_seen || !name.is_empty()
+                        {
+                            return Err(Error::Malformed("device tree root must have an empty \
+                                                         name"));
+                        }
+                        root_seen = true;
+                    }
+                    if depth == 2
+                    {
+                        root_children = true;
+                        cpus_parent = name == b"cpus";
+                        if cpus_parent
+                        {
+                            if cpus_seen
+                            {
+                                return Err(Error::Malformed("device tree repeats /cpus"));
+                            }
+                            cpus_seen = true;
+                            cpus_children = false;
+                            parent_status = None;
+                            address_cells = None;
+                            size_cells = None;
+                        }
+                    }
+                    if depth == 3 && cpus_parent
+                    {
+                        cpu_cells(address_cells, size_cells)?;
+                        cpus_children = true;
+                        cpu_children = false;
+                        cpu_name = name == b"cpu" || name.starts_with(b"cpu@");
+                        status = None;
+                        device_type = None;
+                        reg = None;
+                    }
+                    if depth == 4 && cpus_parent
+                    {
+                        cpu_children = true;
+                    }
+                }
+                2 =>
+                {
+                    if depth == 0
+                    {
+                        return Err(Error::Malformed("device tree has an unmatched node end"));
+                    }
+                    if depth == 3 && cpus_parent && (cpu_name || device_type == Some(&b"cpu\0"[..]))
+                    {
+                        if device_type != Some(&b"cpu\0"[..])
+                        {
+                            return Err(Error::Malformed("device tree CPU requires device_type \
+                                                         cpu"));
+                        }
+                        let address_cells = cpu_cells(address_cells, size_cells)?;
+                        let reg = reg.ok_or(Error::Malformed("device tree CPU has no reg"))?;
+                        if reg.len() != address_cells as usize * 4
+                        {
+                            return Err(Error::Malformed("device tree CPU reg must contain \
+                                                         exactly one hart ID"));
+                        }
+                        let hart = cells(reg, address_cells)?;
+                        if parent_status.unwrap_or(true) && status.unwrap_or(true)
+                        {
+                            visit(mac_abi::boot::topology::Cpu { hart })?;
+                        }
+                    }
+                    if depth == 2
+                    {
+                        if cpus_parent
+                        {
+                            cpu_cells(address_cells, size_cells)?;
+                        }
+                        cpus_parent = false;
+                    }
+                    depth -= 1;
+                    if depth == 0
+                    {
+                        root_closed = true;
+                    }
+                }
+                3 =>
+                {
+                    if depth == 0
+                    {
+                        return Err(Error::Malformed("device tree property is outside a node"));
+                    }
+                    let length = word(self.structure, pos)? as usize;
+                    let name_offset = word(self.structure, pos + 4)? as usize;
+                    pos = pos.checked_add(8)
+                             .ok_or(Error::Malformed("device tree property offset overflow"))?;
+                    let end = pos.checked_add(length)
+                                 .ok_or(Error::Malformed("device tree property length overflow"))?;
+                    let value = self.structure
+                                    .get(pos..end)
+                                    .ok_or(Error::Malformed("truncated device tree property"))?;
+                    let name = cstr(self.strings
+                                        .get(name_offset..)
+                                        .ok_or(Error::Malformed("device tree property name \
+                                                                 is outside strings"))?)?;
+                    pos = end.checked_add(3)
+                             .map(|n| n & !3)
+                             .ok_or(Error::Malformed("device tree property alignment overflow"))?;
+                    if depth == 1 && root_children
+                    {
+                        return Err(Error::Malformed("device tree root properties must precede \
+                                                     children"));
+                    }
+                    if cpus_parent && depth == 2
+                    {
+                        if cpus_children
+                        {
+                            return Err(Error::Malformed("/cpus properties must precede children"));
+                        }
+                        match name
+                        {
+                            b"#address-cells" => set_cpu_cell(&mut address_cells, value)?,
+                            b"#size-cells" => set_cpu_cell(&mut size_cells, value)?,
+                            b"status" => set_cpu_status(&mut parent_status, value)?,
+                            _ => ()
+                        }
+                    }
+                    if cpus_parent && depth == 3
+                    {
+                        if cpu_children
+                        {
+                            return Err(Error::Malformed("CPU properties must precede children"));
+                        }
+                        match name
+                        {
+                            b"device_type" =>
+                            {
+                                if device_type.replace(value).is_some()
+                                {
+                                    return Err(Error::Malformed("device tree CPU repeats \
+                                                                 device_type"));
+                                }
+                            }
+                            b"reg" =>
+                            {
+                                if reg.replace(value).is_some()
+                                {
+                                    return Err(Error::Malformed("device tree CPU repeats reg"));
+                                }
+                            }
+                            b"status" => set_cpu_status(&mut status, value)?,
+                            _ => ()
+                        }
+                    }
+                }
+                4 => (),
+                9 =>
+                {
+                    if !root_seen || !root_closed || depth != 0 || pos != self.structure.len()
+                    {
+                        return Err(Error::Malformed("device tree structure ended before root \
+                                                     close or has trailing tokens"));
+                    }
+                    if !cpus_seen
+                    {
+                        return Err(Error::Malformed("device tree has no /cpus container"));
+                    }
+                    return Ok(());
+                }
+                _ => return Err(Error::Malformed("unknown device tree structure token"))
+            }
+        }
+    }
+
+    /// Allocation-free structural/count/primary preflight. Uniqueness is checked
+    /// after exact fallible metadata admission and in-place sorting, before any
+    /// handoff is published; this avoids a quadratic sequence of DT scans.
+    pub fn cpu_count(&self, primary: u64) -> Result<usize>
+    {
+        let mut count = 0usize;
+        let mut present = false;
+        self.cpus(|cpu| {
+                count = count.checked_add(1).ok_or(Error::Malformed("CPU count overflow"))?;
+                present |= cpu.hart == primary;
+                Ok(())
+            })?;
+        if !present
+        {
+            return Err(Error::Malformed("device tree primary hart is absent or disabled"));
+        }
+        Ok(count)
     }
 
     fn walk(&self, reservations: bool, visit: &mut impl FnMut(Range<u64>) -> Result<()>)

@@ -849,8 +849,16 @@ pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
         return ptr::null();
     }
     let header = unsafe { &*info.cast::<Header>() };
-    if !header.supports::<BootInfo>()
+    if !header.supports::<BootInfo>() || header.size as usize != size_of::<BootInfo>()
     {
+        crate::machine::paging::report_refusal(&format_args!("native BootInfo layout is \
+                                                              incompatible: version {} size {}, \
+                                                              expected version {} size {}; \
+                                                              rebuild ROM and System together",
+                                                             header.version,
+                                                             header.size,
+                                                             ABI_VERSION,
+                                                             size_of::<BootInfo>()));
         return ptr::null();
     }
     let info: &'static BootInfo = unsafe { &*info };

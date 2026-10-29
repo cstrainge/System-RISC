@@ -1,7 +1,7 @@
 //! Bootstrap reservation account. Build policy and discovered extents stay distinct.
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
-use core::ops::Range;
+use core::{fmt, ops::Range};
 
 use mac_abi::BootMemoryRange;
 
@@ -40,6 +40,56 @@ fn primary(tree: &Tree<'_>) -> Result<Range<u64>, Error>
 pub fn admit(tree: &Tree<'_>) -> Result<(), Error>
 {
     primary(tree).map(|_| ())
+}
+/// CPU metadata admission keeps format/allocation refusal separate from the
+/// checked topology's exact identity failure. Neither category publishes data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CpuDiscoveryError
+{
+    Format(Error),
+    Topology(mac_abi::boot::topology::Error)
+}
+impl fmt::Display for CpuDiscoveryError
+{
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        match self
+        {
+            Self::Format(cause) => cause.fmt(out),
+            Self::Topology(cause) => cause.fmt(out)
+        }
+    }
+}
+impl From<Error> for CpuDiscoveryError
+{
+    fn from(cause: Error) -> Self
+    {
+        Self::Format(cause)
+    }
+}
+impl From<mac_abi::boot::topology::Error> for CpuDiscoveryError
+{
+    fn from(cause: mac_abi::boot::topology::Error) -> Self
+    {
+        Self::Topology(cause)
+    }
+}
+/// Allocate topology only after the memory preflight made firmware heap use
+/// safe. No CPU is released; sorted wire IDs are immutable discovery metadata.
+pub fn discover_cpus(tree: &Tree<'_>, primary: u64)
+                     -> Result<Vec<mac_abi::boot::topology::Cpu>, CpuDiscoveryError>
+{
+    let count = tree.cpu_count(primary)?;
+    let mut cpus = Vec::new();
+    cpus.try_reserve_exact(count)
+        .map_err(|_| Error::AllocationFailed("allocation failed for enabled CPU metadata"))?;
+    tree.cpus(|cpu| {
+            cpus.push(cpu);
+            Ok(())
+        })?;
+    cpus.sort_unstable_by_key(|cpu| cpu.hart);
+    mac_abi::boot::topology::Topology::checked(&cpus, primary)?;
+    Ok(cpus)
 }
 fn wire(range: Range<u64>) -> BootMemoryRange
 {

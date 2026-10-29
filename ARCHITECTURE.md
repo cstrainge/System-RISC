@@ -369,8 +369,14 @@ and embedded font strikes. Its result is included in `toolchain-checks.json`.
 
 ## Filesystem and Finder ownership
 
-BootInfo is 144 bytes with firmware disk-info/read/write/flush callbacks
-and startup volume identity. DiskInfo carries capacity, read-only state and the
+BootInfo is 160 bytes with firmware disk-info/read/write/flush callbacks
+and startup volume identity. Its size-checked tail carries the sorted enabled
+hardware CPU IDs in reserved firmware data. ROM and System share allocation-free
+topology validation; sparse IDs are preserved, duplicates and an absent primary
+are refused. DT structural/count/primary preflight precedes fallible firmware
+metadata allocation and sorting. This list is discovery metadata, separate from
+sscratch-authenticated execution ownership. All secondary harts remain in the
+ROM park; discovery enables no secondary dispatch or IPI operation. DiskInfo carries capacity, read-only state and the
 driver icon resource identity. System serializes firmware access through its I/O
 owner guard on the resident System stack. A hart-local RAII root scope
 selects the firmware mappings while invoking an opaque callback; every borrowed
