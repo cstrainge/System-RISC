@@ -129,6 +129,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                       (drivers, "System Folder/Drivers", "Host Transport"),
                                       (drivers, "System Folder/Drivers", "VDAgent Channel"),
                                       (extensions, "System Folder/Extensions", "Host Clipboard"),
+                                      (extensions, "System Folder/Extensions", "Multi-Scheduler"),
                                       (drivers, "System Folder/Drivers", "Host Filesystem"),
                                       (drivers, "System Folder/Drivers", "StuffIt Filesystem"),
                                       (drivers, "System Folder/Drivers", "Qemu Power Device")]
