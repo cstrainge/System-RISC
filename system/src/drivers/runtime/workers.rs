@@ -228,12 +228,19 @@ unsafe fn create(module: u64, pointer: *const abi::WorkerSpecification) -> Resul
     {
         return Err(WRONG_THREAD);
     }
-    // SAFETY: control validates pointer alignment; the SDK's CREATE contract
-    // provides this live initialized descriptor until the callback returns.
-    let specification = unsafe { *pointer };
-    if !specification.header.valid::<abi::WorkerSpecification>()
+    // SAFETY: control checked alignment and the SDK retains a live header.
+    // Check the exact descriptor size before reading its expanded fields.
+    let header = unsafe { pointer.cast::<abi::Header>().read() };
+    if !header.valid::<abi::WorkerSpecification>()
     {
         return Err(BAD_ABI);
+    }
+    // SAFETY: the exact current descriptor remains borrowed through CREATE.
+    let specification = unsafe { *pointer };
+    if specification.reserved != 0
+       || !matches!(specification.affinity, worker::AFFINITY_AUTOMATIC | worker::AFFINITY_PRIMARY)
+    {
+        return Err(BAD_ARGUMENT);
     }
     let entry = specification.entry.ok_or(BAD_ARGUMENT)?;
     let destroy = specification.destroy.ok_or(BAD_ARGUMENT)?;

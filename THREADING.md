@@ -139,6 +139,16 @@ authenticate the installed module frame or worker baseline; a copied numeric
 module label cannot construct that authority. Application-only traps reject
 module-worker execution, while the diagnostic LOG operation remains available.
 
+`prepare_worker` selects `WorkerAffinity::Automatic`: ordinary work follows the
+actual eligible CPU set without an author opt-in when more CPUs become usable.
+`prepare_worker_with_affinity` can request `WorkerAffinity::Primary` for a genuine
+primary-CPU restriction. Neither choice activates a CPU or bypasses service,
+frame or running-claim safety. The current core floor remains primary-only; the
+resident placement integration and cross-hart execution still need their gates.
+The native ABI1 worker descriptor is now72 bytes, with affinity/reserved at64/68;
+the module layout fingerprint includes this size and the unchanged48-byte worker
+call. Rebuild System and every module together. There is no earlier-size decoder.
+
 The QemuRISC-V policy defaults to a 4 MiB stack and 16 MiB Kernel budget per
 module, with zero Application-class allowance. Page-rounded stack backing,
 complete saved CPU backing, Context/Core metadata and forwarded captured closure

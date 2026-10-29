@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use mac_abi::{BAD_ARGUMENT, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED, OPERATION_CANCELLED,
               SERVICE_BUSY, WRONG_THREAD};
 use mac_driver::{Client, Completion, Error, Phase, Provider, Result, sync::Mutex};
-use mac_driver_alloc::{PreparedWorker, Worker, WorkerContext, Workers};
+use mac_driver_alloc::{PreparedWorker, Worker, WorkerAffinity, WorkerContext, Workers};
 
 use crate::machine;
 const SECOND: u64 = 10_000_000;
@@ -97,13 +97,16 @@ fn entered()
 }
 pub fn initialize(host: Client, provider: Provider) -> Result<()>
 {
+    machine::worker_descriptor_refusals();
     let capture = CaptureDrop(&PEER_DROPPED);
     let peer =
-        host.prepare_worker("wake/cancel peer", move |context| {
-                let _capture = capture;
-                entered();
-                peer(context, provider)
-            })
+        host.prepare_worker_with_affinity("wake/cancel peer",
+                                          WorkerAffinity::Primary,
+                                          move |context| {
+                                              let _capture = capture;
+                                              entered();
+                                              peer(context, provider)
+                                          })
             .unwrap_or_else(|failure| panic!("initial peer prepare refused {}", failure.cause.0));
     let capture = CaptureDrop(&DROPPED_COORDINATOR);
     let coordinator =

@@ -952,13 +952,15 @@ resource fork remains big-endian):
 | 88 | 32 | SHA-256 of the native entry envelope |
 | 120 | 8 | exact C boundary layout fingerprint |
 
-The fingerprint encodes pointer width (bits 0..7), Host size (bits 8..23), Instance
-size (bits 24..39), and Call size (bits 40..55). Bits 56 through 63 identify
+The fingerprint encodes pointer width (bits 0..7), Host size (bits 8..15), worker
+specification size (bits 16..23), Instance size (bits 24..31), worker call size
+(bits 32..39), and Call size (bits 40..55). Bits 56 through 63 identify
 full-width provider references, request tickets, device/DMA references,
 backing-source references, ticket-free synchronous resident calls, resident
 allocation forwarding, native module workers, and native critical sections,
-respectively. Current RV64 values are 64-bit pointers and structure sizes 96, 24
-and 64 bytes. Compile-time SDK assertions and the resident reject a mismatch. Changing these layouts requires rebuilding all modules; there
+respectively. Current RV64 values are 64-bit pointers and structure sizes
+96/72/24/48/64 bytes in that order. Compile-time SDK assertions and the resident
+reject a mismatch before module entry. Changing these layouts requires rebuilding all modules; there
 is no alternate old layout decoder.
 
 After the header come the interface, dependency, service and device-match tables,
@@ -1114,11 +1116,11 @@ foreign broker entry are refused while the native critical depth is nonzero;
 allocation and bounded worker wake/cancel/disposal remain available. The current
 native exclusion contract does not establish SMP correctness.
 
-`WorkerSpecification` is 64 bytes:
+`WorkerSpecification` is 72 bytes:
 
 | Offset | Size | Field |
 | --- | --- | --- |
-| 0 | 8 | Header, size 64 |
+| 0 | 8 | Header, size 72 |
 | 8 | 8 | Non-null WorkerEntry function pointer |
 | 16 | 8 | Non-null WorkerDestroy function pointer |
 | 24 | 8 | Exclusive captured-state pointer |
@@ -1126,6 +1128,16 @@ native exclusion contract does not establish SMP correctness.
 | 40 | 8 | Captured-state alignment, usize |
 | 48 | 8 | Borrowed UTF-8 name pointer |
 | 56 | 8 | Name byte length, usize |
+| 64 | 4 | Affinity: Automatic=0, Primary=1 |
+| 68 | 4 | Reserved, zero |
+
+The resident checks the exact header size before reading expanded fields, and
+rejects unknown affinity values or nonzero reserved fields before capture
+ownership transfers. There is no earlier-size decoder. Automatic placement
+follows the actual core-admitted eligible CPU set; Primary requests the genuine
+primary CPU. Neither value grants CPU admission or bypasses a service's affinity.
+The current dispatch floor remains primary-only; canonical placement and
+cross-hart execution retain their separate integration and qualification gates.
 
 The name is nonempty, at most 128 bytes, and contains no control characters.
 Entry and destroy thunks must lie in this module's pinned executable ranges.
@@ -1145,6 +1157,12 @@ cause and the original body; all fallible resident admission precedes the
 single publication handoff. Successful CREATE transfers ownership irrevocably
 and returns the published token. It cannot later report a preparation failure
 and let the SDK destroy a capture already owned by the resident.
+
+Ordinary `prepare_worker` selects `WorkerAffinity::Automatic`, allowing future
+safe CPU admission to expand placement without an application or worker opt-in.
+`prepare_worker_with_affinity(name, WorkerAffinity::Primary, body)` expresses a
+genuine pin when required. The same capture handoff and failure ownership apply
+to both preparation methods.
 
 The specification and name are borrowed only through CREATE return. After
 publication the resident retains the real module execution/source pin and
