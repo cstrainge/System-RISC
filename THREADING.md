@@ -212,7 +212,7 @@ then be insufficient. No such reader producer exists in the current backend.
 Bounded native observations on 2026-10-28 used the optimized RV64 QEMU image on
 one hart with 8 GiB RAM, RVA23 CPU profile and 128-bit VLEN. The packaged System
 resource SHA-256 was
-`13d5fd0c8f9a9116afe6d6be3f93c425914ba9bb1deabdfc39195f77e12c8cc7`.
+`211c830b3a9c90df8e5f525aafb34b6870d4a42e324f670d29bd223d1f0fac7c`.
 Real ModuleWorkers/ModuleEcho packages exercised two initially armed workers,
 a later parked worker, timer progress with Finder and physical input, coalesced
 wake, running/parked cancellation, bounded mutex refusal, broker Start/Poll/Cancel,
@@ -224,14 +224,25 @@ surrounding application paths. These observations qualify those scenarios only;
 host-linked services and compilation do not establish target execution.
 
 The normal coordinator PASS marker is emitted by its capture Drop before native
-EXIT. It does not directly assert that coordinator's final post-EXIT physical
-reap or result-row removal. Peer, inert-spare and parked-worker reuse/stale checks,
-and the separate complete rollback scenario, provide narrower quiescence
-observations. Sustained pressure/physical OOM, all cleanup failures, arbitrary
+EXIT; it is not final-reap evidence. Separate native reclamation observations
+confirmed actual backing, record and temporary-scope disposal plus accepted
+canonical THRD acknowledgement for all four published workers, including that
+coordinator. The rollback run confirmed reclamation of all three published
+workers before module rollback completion. A refused canonical acknowledgement
+remains quarantined and never emits a successful reclamation observation.
+
+The same System artifact also ran 44 independently linked modules whose real
+workers each completed strict Start-only registration and Status exchanges with
+complete replies and cleared broker tickets. That scoped workload does not
+establish all-worker teardown, heap exhaustion or UI responsiveness. Earlier
+runs exposed broker delivery/reply contention defects; the scoped rerun does not
+erase the separately observed Finder ServiceBusy under greedy worker traffic.
+Sustained pressure/physical OOM, all cleanup failures, arbitrary
 privileged faults, full recovery-kit guarantees, SMP and application std-thread
 services remain unqualified. CPU-time introspection is unavailable; scheduler
-switch counts are not CPU time. This backend does not establish a complete
-extension service or production clipboard readiness.
+switch counts are not CPU time. These prerequisites support external extension
+development; they do not establish production clipboard sharing or a complete
+extension service.
 
 ## State audit
 
@@ -593,6 +604,32 @@ cleanup uses owned state admission so a busy registry cannot discard a ticket.
 Serialized-provider occupancy changes on admission/terminal reply; polling does
 not scan all requests. This establishes neither full four-part invocation
 accounting nor arbitrary privileged-fault containment or multi-hart activation.
+
+Each canonical DREQ owns its original Start bytes and admitted reply capacity.
+The runtime validates authority and sizes before preparing that storage, then
+rechecks publication. A unique delivery lease moves the buffers outside the
+registry; no registry or mailbox guard spans foreign execution. If a published
+request has not entered its provider, a correlated Poll delivers Start with the
+original bytes. Cancel before entry acknowledges absence of effects without
+calling the provider. Once entered, Poll and Cancel retain their normal meaning.
+
+The lease commits a returned terminal status and bytes before trying to reacquire
+the registry. Busy retries replay that result instead of repeating provider
+effects. The provider always receives the original admitted reply capacity; a
+smaller caller retry buffer can refuse the final copy without losing the result.
+Malformed replies or entry without a returned result retain uncertainty for
+quarantine; they do not fabricate completion or claim privileged-fault recovery.
+
+Terminal disposal releases the actual cancellation buffers, dispatch buffers and
+record outside the registry, before the canonical Removed guard acknowledges
+their retirement. The wire ticket clears only after that disposal. Cleanup races
+retain the same guard in the existing request slot. Preparation and invocation
+leases wake pending retirement after their actual alias decrement; a cleanup
+waiting on an active lease subscribes to that handback under the same short
+mailbox gate. No per-input retry scan or second request-ID scheme is involved.
+The current borrowed queued Broker interface still owns its reconciliation
+buffers as well as this DREQ storage. That additional backing is charged by the
+real allocator; its peak under ordinary heap exhaustion remains unqualified.
 
 
 Native driver-job wake identities now carry the shared facility's complete u64

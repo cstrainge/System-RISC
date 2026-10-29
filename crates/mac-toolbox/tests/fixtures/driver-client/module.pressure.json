@@ -1,0 +1,12 @@
+{
+  "identity": "@IDENTITY@",
+  "heap_bytes": 0,
+  "stack_bytes": 8192,
+  "dependencies": [
+    {
+      "class": "PCTL",
+      "version": 1,
+      "module": "7731a00000000000000000000000aa00"
+    }
+  ]
+}

@@ -1,5 +1,10 @@
 fn main()
 {
+    if cfg!(feature = "pressure")
+    {
+        package_pressure();
+        return;
+    }
     let args: Vec<_> = std::env::args_os().collect();
     mac_build::package::build(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources.json"),
                               std::path::Path::new(&args[1]),
@@ -67,4 +72,38 @@ fn main()
         std::fs::write(output.join(format!("{name}.bin")), bytes).expect("write format-error \
                                                                           fixture");
     }
+}
+
+fn package_pressure()
+{
+    use mac_formats::{authority, macbinary, resource};
+    let args: Vec<_> = std::env::args_os().collect();
+    let output = std::path::Path::new(&args[2]);
+    mac_build::package::build(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources.pressure.json"), std::path::Path::new(&args[1]), output).expect("package real pressure observer");
+    let app =
+        macbinary::decode(&std::fs::read(output.join("Pressure Probe.bin")).unwrap()).unwrap();
+    let digest = authority::image_digest(&resource::decode(&app.resources).unwrap()).unwrap();
+    let mut system =
+        macbinary::decode(&std::fs::read(&args[3]).expect("current private System package \
+                                                           required")).unwrap();
+    let mut resources = resource::decode(&system.resources).unwrap();
+    let policy =
+        resources.iter_mut().find(|r| r.kind == authority::RESOURCE_KIND && r.id == 0).unwrap();
+    // Validate and preserve all existing exact-image grants, including Finder.
+    authority::granted(&policy.data, digest).unwrap();
+    let mut grants: Vec<([u8; 32], u64)> =
+        policy.data[12..].chunks_exact(40)
+                         .map(|row| {
+                             (row[..32].try_into().unwrap(),
+                              u64::from_be_bytes(row[32..].try_into().unwrap()))
+                         })
+                         .filter(|(old, _)| *old != digest)
+                         .collect();
+    grants.push((digest, authority::INSPECT_DOMAINS));
+    policy.data = authority::encode(&grants).unwrap();
+    system.resources = resource::encode_native(&resources).unwrap();
+    std::fs::write(output.join("System.bin"), macbinary::encode(&system).unwrap()).unwrap();
+    std::fs::write(output.join("pressure-actor-grant.txt"),
+                   format!("exact_image_digest={digest:02x?} capability=INSPECT_DOMAINS \
+                            existing_grants_preserved=true\n")).unwrap();
 }

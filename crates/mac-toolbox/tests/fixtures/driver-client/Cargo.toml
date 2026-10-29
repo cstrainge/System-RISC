@@ -7,6 +7,7 @@ publish = false
 [features]
 workers = ["dep:mac-driver-alloc"]
 workers-rollback = ["workers"]
+pressure = ["workers"]
 [[bin]]
 name = "ModuleClient"
 path = "src/main.rs"
@@ -22,6 +23,7 @@ mac-driver = { path = "../../../../mac-driver" }
 mac-abi = { path = "../../../../mac-abi" }
 mac-driver-alloc = { path = "../../../../mac-driver-alloc", optional = true }
 [target.'cfg(not(target_arch = "riscv64"))'.dependencies]
+mac-formats = { path = "../../../../mac-formats" }
 mac-build = { path = "../../../../../tools/mac-build" }
 [build-dependencies]
 mac-build = { path = "../../../../../tools/mac-build" }

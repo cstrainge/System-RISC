@@ -261,6 +261,18 @@ impl<G: InvocationGate> Lease<G>
         G::run(|| *self.state.root.lock())
     }
 
+    /// Observe whether this bound root's original canonical key is neither
+    /// live nor pending. An unbound lease returns false. Scope closure alone
+    /// cannot establish this: a refused completion retains its pending ticket.
+    /// This read grants no owner, publication or completion authority.
+    pub fn root_retired(&self) -> bool
+    {
+        self.owner.access(|index| {
+                      let root = *self.state.root.lock();
+                      root.is_some_and(|root| !index.contains(root) && !index.pending(root))
+                  })
+    }
+
     pub fn admitting(&self) -> Result<(), Failure>
     {
         self.owner.access(|index| self.state.authorize(index).map(|_| ()))

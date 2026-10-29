@@ -313,6 +313,7 @@ dependencies = [
  "mac-build",
  "mac-driver",
  "mac-driver-alloc",
+ "mac-formats",
 ]
 
 [[package]]

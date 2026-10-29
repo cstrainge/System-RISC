@@ -1,10 +1,16 @@
 #![no_std]
 #![no_main]
+#[cfg(not(feature = "pressure"))]
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+#[cfg(not(feature = "pressure"))]
 use mac_driver::{ClassId, Client, Completion, Driver, Error, Phase, Request, Result};
+#[cfg(not(feature = "pressure"))]
 static ACTIVE: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(feature = "pressure"))]
 static CANCELS: AtomicU32 = AtomicU32::new(0);
+#[cfg(feature = "pressure")]
+mod pressure;
 struct Device;
 static DEVICE: Device = Device;
 #[cfg(not(feature = "workers"))]
@@ -12,6 +18,7 @@ mac_driver::export_driver!(DEVICE);
 #[cfg(feature = "workers")]
 mod worker_probe;
 mac_driver::driver_panic_handler!();
+#[cfg(not(feature = "pressure"))]
 impl Driver for Device
 {
     fn initialize(&self, host: Client) -> Result<()>

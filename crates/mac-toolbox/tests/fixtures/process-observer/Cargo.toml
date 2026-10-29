@@ -7,6 +7,9 @@ build = "build.rs"
 
 [workspace]
 
+[features]
+pressure = []
+
 [[bin]]
 name = "Finder"
 path = "src/main.rs"

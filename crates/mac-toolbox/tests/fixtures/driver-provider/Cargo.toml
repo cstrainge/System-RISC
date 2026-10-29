@@ -6,6 +6,7 @@ publish = false
 [workspace]
 [features]
 workers = []
+pressure = ["dep:mac-filesystem-interface"]
 [[bin]]
 name = "ModuleEcho"
 path = "src/main.rs"
@@ -19,7 +20,9 @@ bench = false
 [dependencies]
 mac-driver = { path = "../../../../mac-driver" }
 mac-abi = { path = "../../../../mac-abi" }
+mac-filesystem-interface = { path = "../../../../mac-filesystem-interface", optional = true }
 [target.'cfg(not(target_arch = "riscv64"))'.dependencies]
+mac-formats = { path = "../../../../mac-formats" }
 mac-build = { path = "../../../../../tools/mac-build" }
 [build-dependencies]
 mac-build = { path = "../../../../../tools/mac-build" }

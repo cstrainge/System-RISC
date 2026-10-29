@@ -788,7 +788,27 @@ pub(super) fn reclaim_workers()
                 removed
             }
         };
+        let module = core.binding.owner();
+        let disposed = removed.is_some();
         drop(core);
         drop(removed);
+        // Backing/charges and the code-dependent capture already left above.
+        // Removed destroys the final record/context before attempting ACK;
+        // a refused ACK stays with the canonical completion quarantine.
+        let acknowledged = disposed && scope.as_ref().is_some_and(|scope| scope.root_retired());
+        // This temporary lease must leave before reporting the final disposal.
+        drop(scope);
+        if disposed
+        {
+            if acknowledged
+            {
+                serial!("MODULE_WORKER_RECLAIMED module={module} thread={id}");
+            }
+            else
+            {
+                serial!("MODULE_WORKER_RELEASE_RETAINED module={module} thread={id} \
+                         reason=canonical_ack_not_confirmed");
+            }
+        }
     }
 }
