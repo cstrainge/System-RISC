@@ -58,7 +58,10 @@ pub struct WorkerSpecification
     pub state_size:      usize,
     pub state_alignment: usize,
     pub name:            *const u8,
-    pub name_length:     usize
+    pub name_length:     usize,
+    /// Placement constraint, never permission to activate another CPU.
+    pub affinity:        u32,
+    pub reserved:        u32
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -76,6 +79,10 @@ pub struct WorkerCall
 }
 pub mod worker
 {
+    /// Ordinary workers follow the actual core-admitted dispatch set.
+    pub const AFFINITY_AUTOMATIC: u32 = 0;
+    /// Explicitly retain execution on the genuine primary CPU.
+    pub const AFFINITY_PRIMARY: u32 = 1;
     /// Native private worker trap: a0=WorkerCall*, a1=exact size, a7=TRAP;
     /// returns Status in a0. Only PARK/EXIT may use this boundary.
     pub const TRAP: u32 = 0x4d57524b;
@@ -169,8 +176,8 @@ pub const QUIESCE: u32 = 4;
 /// concurrent root-use/removal pin before this local gate can be widened.
 pub const SYNCHRONOUS: u32 = 5;
 pub const PENDING: i32 = 1;
-/// Exact contract fingerprint includes boundary sizes, pointer width and the
-/// full-width provider-reference signature (bit 56) request tickets (bit 57), and device/DMA
+/// Exact contract fingerprint includes boundary and worker descriptor/call sizes, pointer width and
+/// the full-width provider-reference signature (bit 56) request tickets (bit 57), and device/DMA
 /// references (bit 58), backing-source references (bit 59), and ticket-free
 /// synchronous resident calls (bit 60), and original-account allocator forwarding
 /// with synchronous module allocation selection (bit 61), native workers (bit 62),
@@ -178,7 +185,9 @@ pub const PENDING: i32 = 1;
 /// metadata and the resident reject a mismatch before entry.
 pub const LAYOUT_ID: u64 = 64
                            | (96 << 8)
+                           | (72 << 16)
                            | (24 << 24)
+                           | (48 << 32)
                            | (64 << 40)
                            | (1 << 56)
                            | (1 << 57)
@@ -191,10 +200,12 @@ pub const LAYOUT_ID: u64 = 64
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(core::mem::size_of::<Host>() == 96);
-    assert!(core::mem::size_of::<WorkerSpecification>() == 64);
+    assert!(core::mem::size_of::<WorkerSpecification>() == 72);
     assert!(core::mem::align_of::<WorkerSpecification>() == 8);
     assert!(core::mem::offset_of!(WorkerSpecification, state) == 24);
     assert!(core::mem::offset_of!(WorkerSpecification, name) == 48);
+    assert!(core::mem::offset_of!(WorkerSpecification, affinity) == 64);
+    assert!(core::mem::offset_of!(WorkerSpecification, reserved) == 68);
     assert!(core::mem::size_of::<WorkerCall>() == 48);
     assert!(core::mem::align_of::<WorkerCall>() == 8);
     assert!(core::mem::offset_of!(WorkerCall, worker) == 16);

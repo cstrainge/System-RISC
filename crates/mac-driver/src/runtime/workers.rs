@@ -9,6 +9,19 @@ use crate::{Client, Error, Result,
 
 pub const MAX_NAME_BYTES: usize = mac_module::MAX_NAME_BYTES;
 
+/// A placement constraint over the CPUs the core can actually dispatch on.
+/// This never grants CPU admission or bypasses a service's genuine affinity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u32)]
+pub enum WorkerAffinity
+{
+    /// Follow the eligible CPU set as it grows; currently primary-only.
+    #[default]
+    Automatic = worker::AFFINITY_AUTOMATIC,
+    /// Keep this worker on the actual primary CPU for a genuine affinity need.
+    Primary   = worker::AFFINITY_PRIMARY
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkerState
 {
