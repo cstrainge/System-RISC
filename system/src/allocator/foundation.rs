@@ -18,6 +18,17 @@ pub(crate) enum Error
         requested: u64
     }
 }
+impl Error
+{
+    pub(crate) fn status(&self) -> mac_abi::Status
+    {
+        match self
+        {
+            Self::Pages(cause) => cause.status(),
+            Self::CounterOverflow { .. } => mac_abi::NOT_SUPPORTED
+        }
+    }
+}
 impl fmt::Display for Error
 {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result

@@ -377,11 +377,30 @@ backing separately from heap occupancy. Inspection reports this partial scope,
 not all System memory. Its lazily built immutable mapping cache is ordinary
 System-owned storage regardless of the first querying application; it cannot
 retain that application's allocation account or borrow its recovery permit.
-The existing primary idle executor remains outside this physical attribution
-until canonical System-idle ownership is adopted.
+Every prepared CPU also owns a separate idle executor sized by the configurable
+System stack policy (currently4 MiB), its saved CPU backing and a genuine THRD
+publication in the existing shared thread store. Service entry never overwrites
+the idle executor's live stack. Both idle backing owners carry physical
+Foundation receipts; private context/record metadata uses System Foundation
+heap admission without borrowing a recovery permit.
 
-Before releasing a secondary, the core still needs genuine canonical idle
-threads and secondary System-context admission, compatible per-CPU ISA/vector frame
+System idle has an explicit System owner, native thread identity, resource
+selection and ordinary System allocation default. It does not impersonate the
+bootstrap thread or carry a dummy account or application image. A sealed
+publication binds the fresh context to its actual native THRD; all selection
+stacks use that identity. Each non-cloneable affine target remains retained by
+the actual store/core and installed hart, while scheduled positions resolve
+only scheduled records. Primary idle handoff installs this real context.
+
+An unexpected idle teardown returns the original cleanup ticket as a retained
+failure; reset-lifetime execution is not acknowledged as destroyed. Failed
+installation retains its actual idle owner through the typed boot-refusal
+report and nonreturning platform shutdown. Preparing peers does not mark them
+online or authorize S release. Public inspection still lacks a System-ledger
+and named-thread/hart enumeration query; pool/domain labels are not a substitute.
+
+Before releasing a secondary, the core still needs secondary System-context
+admission, compatible per-CPU ISA/vector frame
 validation, primary-owned physical-device maintenance and qualified cross-hart
 scheduling/reclamation. Returning monitor preservation and terminal takeover
 must also be qualified with actual S-mode peers. Mapping mutation, ASID reuse and frame reclamation

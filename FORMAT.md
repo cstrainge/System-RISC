@@ -2228,15 +2228,15 @@ The System memory-inspection summary separates
 `ordinary_foundation_heap_bytes` from `tracked_foundation_physical_bytes`.
 The former is a category within ordinary heap occupancy; the latter attributes
 the actual rounded page-pool leases held by prepared CPU service stacks, entry
-controls, bootstrap saved CPU arrays and their raw directory backing. Each unique
+controls, saved CPU arrays, affine System idle executors and their raw directory
+backing. Each unique
 physical owner carries one move-only receipt until backing disposal. Mapping
 aliases and guard addresses do not issue receipts, and physical attribution
 does not reduce ordinary heap capacity or subtract pool pages a second time.
 
-This physical counter has partial coverage. The existing primary idle executor
-(its 4 MiB stack and separate SavedState) remains untracked until its canonical
-System-idle owner is adopted. Existing page tables, page-pool metadata, ROM
-reservations and protected backing are also excluded. Protected
+This physical counter has partial coverage. Primary and prepared peer idle
+executors now carry their actual stack and SavedState receipts. Existing page
+tables, page-pool metadata, ROM reservations and protected backing are excluded. Protected
 Foundation heap attribution remains a separate origin. The summary retains
 `ACCOUNTING_UNAVAILABLE`; these two observations do not claim an all-System
 memory total or a synthetic System domain account. Mapping revision does not
