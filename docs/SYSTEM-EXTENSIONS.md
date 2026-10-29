@@ -3,11 +3,17 @@
 Status: shared native module loading, target-selected resource admission and the
 retained startup strip are resident. Native startup acceptance covers real INIT
 success, package artwork, theme fallback and initialization refusal. General
-extension services, scheduled module workers and native control panels remain
+extension services, asynchronous service-readiness publication and native control panels remain
 required [platform workstream P6](CORE-TOOLBOX-ROADMAP.md#p6--control-panels-and-kernel-extensions)
 work. Native Rust System extensions may execute in the kernel; their configuration
 UI remains an application using the public Toolbox. Finder extension execution
 has a separate, still-staged host/SDK boundary.
+
+Module-owned scheduled workers now have the real native execution, cancellation,
+I/O and reclamation observations described in [THREADING.md](../THREADING.md).
+Those development prerequisites do not qualify production clipboard sharing or
+SMP. A committed initializer with runnable workers is not an asynchronously
+negotiated service-ready transition.
 
 [P14 driver extraction](DRIVERS.md) uses this module machinery for in-kernel
 device drivers. The minimal block path stays built into System; other backends
