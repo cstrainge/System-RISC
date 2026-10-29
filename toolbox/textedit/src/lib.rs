@@ -232,6 +232,7 @@ impl<'a> TextEdit<'a>
         self.simple(id, DISPOSE).map(|_| ())
     }
 
+    /// Copy native Unicode text, exporting editor CR line breaks as LF.
     pub fn copy(self, id: EditorId) -> Result<EditorInfo>
     {
         self.simple(id, COPY)
@@ -242,6 +243,8 @@ impl<'a> TextEdit<'a>
         self.simple(id, CUT)
     }
 
+    /// Paste native Unicode text, treating CRLF, LF and CR as single line breaks.
+    /// Conversion/layout refusal preserves the editor and the original Scrap.
     pub fn paste(self, id: EditorId) -> Result<EditorInfo>
     {
         self.simple(id, PASTE)
