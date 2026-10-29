@@ -108,3 +108,9 @@ trap adaptation is a separate gate; native `MenuCommand` is not claimed as a
 classic Event Manager event. Application menu state follows the foreground saved
 context. The persistent System title and right-hand application menu are
 desktop-owned.
+
+A held menu gesture retains its popup while the pointer crosses blank or
+disabled menu-bar space. Another enabled title switches menus; returning to
+the popup continues hit testing. Releasing over blank space or outside the
+items still cancels. A press on blank bar space starts no capture and does not
+activate the desktop behind the bar.

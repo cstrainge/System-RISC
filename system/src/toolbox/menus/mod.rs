@@ -595,12 +595,30 @@ impl Manager
         self.bar().is_some_and(|bar| bar.tracking)
     }
 
-    pub fn begin(&mut self, point: Point) -> bool
+    fn title_at(&self, point: Point) -> Option<u64>
     {
         if !(0..20).contains(&point.v)
         {
-            return false;
+            return None;
         }
+        self.bar()?.order.iter().copied().find(|id| {
+                                             self.objects.get(*id).is_some_and(|menu| {
+                                                                      !is_apple(&menu.state)
+                                                                      && menu.state.enabled != 0
+                                                                      && menu.state
+                                                                             .title_bounds
+                                                                             .contains(point)
+                                                                  })
+                                         })
+    }
+
+    pub fn begin(&mut self, point: Point) -> bool
+    {
+        let Some(active) = self.title_at(point)
+        else
+        {
+            return false;
+        };
         let Some(bar) = self.bar_mut()
         else
         {
@@ -608,7 +626,8 @@ impl Manager
         };
         bar.tracking = true;
         bar.popup = true;
-        self.hover(point);
+        bar.active = Some(active);
+        bar.highlighted = 0;
         true
     }
 
@@ -621,23 +640,16 @@ impl Manager
         let previous = self.bar().map(|bar| (bar.active, bar.highlighted));
         if (0..20).contains(&point.v)
         {
-            let active = self.bar().and_then(|bar| {
-                                       bar.order.iter().copied().find(|id| {
-                                                                    self.objects
-                                                                        .get(*id)
-                                                                        .is_some_and(|menu| {
-                                                                            !is_apple(&menu.state)
-                                                                            && menu.state.enabled
-                                                                               != 0
-                                                                            && menu.state
-                                                                                   .title_bounds
-                                                                                   .contains(point)
-                                                                        })
-                                                                })
-                                   });
+            let active = self.title_at(point);
             if let Some(bar) = self.bar_mut()
             {
-                bar.active = active;
+                // Crossing blank/disabled bar space is still the same held
+                // gesture. Retain the popup so the pointer can enter its rows.
+                // Only another enabled title switches the active menu.
+                if let Some(active) = active
+                {
+                    bar.active = Some(active);
+                }
                 bar.highlighted = 0;
             }
         }
@@ -665,7 +677,6 @@ impl Manager
         }
         previous != self.bar().map(|bar| (bar.active, bar.highlighted))
     }
-
     pub fn release_tracking(&mut self, point: Point) -> Option<Selection>
     {
         if !self.is_tracking()

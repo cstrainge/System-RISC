@@ -2166,6 +2166,12 @@ impl Desktop
                         self.redraw |= previous_menu != self.menus.selected_menu();
                         return;
                     }
+                    if (0..20).contains(&point.v)
+                    {
+                        // Blank/disabled titles consume the press without
+                        // starting capture or activating the desktop behind it.
+                        return;
+                    }
                     let hit = self.windows.find_window(point);
                     let active_before = self.windows.active_window();
                     let owner = hit.window
