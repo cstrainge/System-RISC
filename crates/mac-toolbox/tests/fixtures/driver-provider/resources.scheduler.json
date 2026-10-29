@@ -7,7 +7,7 @@
   "abi_version": 1,
   "load_base": "0x82000000",
   "load_limit": "0x82100000",
-  "description": "Native primary scheduler lifecycle diagnostic",
+  "description": "Native scheduler lifecycle diagnostic",
   "resources": [],
   "extension_target": "system"
 }

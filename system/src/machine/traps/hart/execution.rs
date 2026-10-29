@@ -14,8 +14,41 @@ use crate::{allocator,
             toolbox::handles::OwnerRef};
 
 pub(crate) mod policy;
+pub(crate) mod dispatch;
 
 pub(crate) const IDLE: usize = usize::MAX;
+/// Reset-lifetime row binding for prepared metadata. Unlike HartKey, this is
+/// not proof that the caller executes on the row or may dispatch work there.
+#[derive(Clone, Copy)]
+pub(crate) struct HartBinding(pub(super) &'static super::Hart);
+impl HartBinding
+{
+    pub(crate) fn number(self) -> usize
+    {
+        self.0.local.id
+    }
+
+    pub(crate) fn is_primary(self) -> bool
+    {
+        super::REGISTRY.get().is_some_and(|registry| {
+                                 core::ptr::eq(self.0, &registry.rows.as_slice()[registry.primary])
+                             })
+    }
+
+    pub(crate) fn ordinal(self) -> usize
+    {
+        self.0.ordinal
+    }
+
+    pub(crate) fn matches(self, selected: HartKey) -> bool
+    {
+        core::ptr::eq(self.0, selected.0)
+    }
+}
+pub(crate) fn prepared_harts() -> Option<impl ExactSizeIterator<Item = HartBinding>>
+{
+    Some(super::REGISTRY.get()?.rows.as_slice().iter().map(HartBinding))
+}
 /// Reset-lifetime hardware identity, minted only by checked sscratch selection.
 /// The numeric label is diagnostic metadata, never authority to select a hart.
 #[derive(Clone, Copy)]
@@ -32,6 +65,11 @@ impl Eq for HartKey
 }
 impl HartKey
 {
+    pub(crate) fn binding(self) -> HartBinding
+    {
+        HartBinding(self.0)
+    }
+
     pub(crate) fn number(self) -> usize
     {
         self.0.local.id
@@ -42,9 +80,31 @@ impl HartKey
         self.0.ordinal
     }
 
+    /// Compare the sealed row itself with the admitted primary row. Hardware
+    /// numbers remain diagnostic metadata, never a placement authorization.
+    pub(crate) fn is_primary(self) -> bool
+    {
+        super::REGISTRY.get().is_some_and(|registry| {
+                                 core::ptr::eq(self.0, &registry.rows.as_slice()[registry.primary])
+                             })
+    }
+
+    /// Selected-state residency boundary, not accumulated per-thread CPU time.
+    pub(crate) fn resume_activity(self, idle: bool)
+    {
+        self.0.activity.resume(idle);
+    }
+
     pub(crate) fn dispatch_eligible(self) -> bool
     {
         self.0.phase.load(Ordering::Acquire) == super::DISPATCH_ELIGIBLE
+    }
+
+    /// Draining peers must capture and relinquish their real running claim;
+    /// lack of permission to select authors cannot mean resume the old author.
+    pub(crate) fn requires_schedule(self) -> bool
+    {
+        matches!(self.0.phase.load(Ordering::Acquire), super::DISPATCH_ELIGIBLE | super::DRAINING)
     }
 }
 pub(crate) fn selected_hart() -> HartKey
@@ -55,33 +115,6 @@ pub(crate) fn selected_hart() -> HartKey
             Some(hart) => HartKey(hart),
             None => super::unadmitted()
         }
-    })
-}
-/// The initial replaceable-policy gate admits only the real primary. A peer
-/// being awake in System idle is deliberately different from permission to
-/// run an application or a module there.
-pub(crate) fn primary_dispatch_only() -> bool
-{
-    with_masked(|| {
-        let Some(registry) = super::REGISTRY.get()
-        else
-        {
-            return false;
-        };
-        registry.rows.as_slice().iter().enumerate().all(|(index, row)| {
-                                                       let phase =
-                                                           row.phase.load(Ordering::Acquire);
-                                                       if index == registry.primary
-                                                       {
-                                                           phase == super::DISPATCH_ELIGIBLE
-                                                       }
-                                                       else
-                                                       {
-                                                           matches!(phase,
-                                                                    super::PREPARED
-                                                                    | super::ADMITTED_IDLE)
-                                                       }
-                                                   })
     })
 }
 /// Reset-lifetime terminal ownership tied to the actual sealed selection.

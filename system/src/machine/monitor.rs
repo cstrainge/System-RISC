@@ -31,7 +31,159 @@ static ISSUING: AtomicBool = AtomicBool::new(false);
 static BROKEN: AtomicBool = AtomicBool::new(false);
 static TERMINAL: AtomicBool = AtomicBool::new(false);
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static WAKE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// Notification refusal retains the original typed failure without allocating
+/// in a cleanup producer. MMIO has no recoverable completion result: only the
+/// eventual S ACK establishes receiver observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WakeError
+{
+    Missing,
+    Binding
+    {
+        hart: u64
+    },
+    ForeignPrimary
+    {
+        hart: u64
+    },
+    ReceiverEnabled
+    {
+        hart: u64
+    },
+    Stopping,
+    TransportRetired,
+    EpochExhausted
+    {
+        hart: u64
+    }
+}
+impl fmt::Display for WakeError
+{
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        match self
+        {
+            Self::Missing => out.write_str("primary wake has no admitted monitor"),
+            Self::Binding { hart } =>
+            {
+                write!(out, "wake hart {hart} lost its actual JOIN/control binding")
+            }
+            Self::ForeignPrimary { hart } =>
+            {
+                write!(out, "hart {hart} is not the admitted primary wake receiver")
+            }
+            Self::ReceiverEnabled { hart } =>
+            {
+                write!(out, "hart {hart} primary wake admission requires masked interrupts")
+            }
+            Self::Stopping => out.write_str("primary wake retained during terminal stop"),
+            Self::TransportRetired => out.write_str("primary wake transport is retired"),
+            Self::EpochExhausted { hart } =>
+            {
+                write!(out, "hart {hart} wake epoch is exhausted; reset required")
+            }
+        }
+    }
+}
+/// The actual primary receiver is prepared masked, then published only after
+/// first-frame ownership commits. This capability cannot target a numeric ID.
+pub(crate) struct PrimaryWake
+{
+    key:   super::traps::execution::HartKey,
+    entry: &'static Entry
+}
+impl PrimaryWake
+{
+    pub(crate) fn is_target(&self, key: super::traps::execution::HartKey) -> bool
+    {
+        self.key == key
+    }
+
+    pub(crate) fn post(&self) -> Result<(), WakeError>
+    {
+        let transport = MONITOR.get().ok_or(WakeError::Missing)?;
+        // Only a genuinely selected HOT row may issue a general wake. Cold
+        // producers retain work in the caller until this capability publishes.
+        let sender = super::traps::execution::selected_hart();
+        checked_wake_entry(transport, sender.binding())?;
+        checked_wake_entry(transport, self.key.binding())?;
+        post_wake(self.entry).map(|_| ())
+    }
+}
+fn checked_wake_entry(transport: &'static Admitted, key: super::traps::execution::HartBinding)
+                      -> Result<&'static Entry, WakeError>
+{
+    let bad = || WakeError::Binding { hart: key.number() as u64 };
+    let entry = transport.entries.get(key.ordinal()).ok_or_else(bad)?;
+    if entry.hart != key.number() as u64 || key.is_primary() != (key.number() == transport.primary)
+    {
+        return Err(bad());
+    }
+    let joined = field(entry, core::mem::offset_of!(Control, joined)).load(Ordering::Acquire);
+    if if key.is_primary()
+    {
+        joined != monitor::JOIN_PRIMARY
+    }
+    else
+    {
+        joined != monitor::JOIN_PARKED || start_phase(entry) != monitor::START_ADMITTED_IDLE
+    }
+    {
+        return Err(bad());
+    }
+    Ok(entry)
+}
+pub(crate) fn prepare_primary_wake() -> Result<PrimaryWake, WakeError>
+{
+    let transport = MONITOR.get().ok_or(WakeError::Missing)?;
+    let key = super::traps::execution::selected_hart();
+    if !key.is_primary() || !key.dispatch_eligible()
+    {
+        return Err(WakeError::ForeignPrimary { hart: key.number() as u64 });
+    }
+    let entry = checked_wake_entry(transport, key.binding())?;
+    if TERMINAL.load(Ordering::Acquire)
+    {
+        return Err(WakeError::Stopping);
+    }
+    let status: usize;
+    // Receiver admission must not expose an interrupt before first-frame
+    // ownership commits; preserve the caller's masked startup invariant.
+    unsafe {
+        asm!("csrr {status}, sstatus", status = out(reg) status, options(nostack));
+    }
+    if status & 2 != 0
+    {
+        return Err(WakeError::ReceiverEnabled { hart: key.number() as u64 });
+    }
+    // This runs once, SIE masked, before the first scheduled claim. Preserve
+    // STIE and all other local interrupt enables; no epoch or self-IPI here.
+    unsafe {
+        asm!("csrs sie, {ssie}", ssie = in(reg) 2usize, options(nostack));
+    }
+    Ok(PrimaryWake { key,
+                     entry })
+}
+fn post_wake(entry: &Entry) -> Result<u64, WakeError>
+{
+    if TERMINAL.load(Ordering::Acquire)
+    {
+        return Err(WakeError::Stopping);
+    }
+    if BROKEN.load(Ordering::Acquire)
+    {
+        return Err(WakeError::TransportRetired);
+    }
+    // CAS on the TARGET cell prevents a delayed sender from overwriting a
+    // newer intent. Startup and general wakes use this same monotonic path.
+    let sequence = field(entry, core::mem::offset_of!(Control, wake_requested))
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |old| old.checked_add(1))
+        .map_err(|_| WakeError::EpochExhausted { hart: entry.hart })? + 1;
+    // The durable intent exists before MMIO. Posting is not an S ACK; a fault
+    // or absent receiver cannot refund work or manufacture completion.
+    notify(entry);
+    Ok(sequence)
+}
 #[derive(Debug)]
 pub(crate) enum Error
 {
@@ -63,6 +215,7 @@ pub(crate) enum Error
         requested:    u64,
         acknowledged: u64
     },
+    Wake(WakeError),
     Missing,
     ForeignHart,
     Busy,
@@ -95,6 +248,7 @@ impl fmt::Display for Error
     {
         match self
         {
+            Self::Wake(error) => error.fmt(f),
             Self::Memory(error) => error.fmt(f),
             Self::Directory(error) => error.fmt(f),
             Self::Physical(error) => error.fmt(f),
@@ -198,6 +352,19 @@ impl Error
     {
         match self
         {
+            Self::Wake(cause) =>
+            {
+                match cause
+                {
+                    WakeError::Stopping => mac_abi::OPERATION_CANCELLED,
+                    WakeError::TransportRetired => mac_abi::IO_ERROR,
+                    WakeError::EpochExhausted { .. } => mac_abi::NOT_SUPPORTED,
+                    WakeError::ForeignPrimary { .. } => mac_abi::ACCESS_DENIED,
+                    WakeError::Missing
+                    | WakeError::Binding { .. }
+                    | WakeError::ReceiverEnabled { .. } => mac_abi::BAD_ABI
+                }
+            }
             Self::Busy => mac_abi::SERVICE_BUSY,
             Self::ForeignHart => mac_abi::ACCESS_DENIED,
             Self::Stopping => mac_abi::OPERATION_CANCELLED,
@@ -347,6 +514,23 @@ pub(crate) fn ticks_to_microseconds(ticks: u64) -> Result<u64, Error>
     u64::try_from(micros).map_err(|_| Error::ClockOverflow)
 }
 
+pub(crate) fn ticks_to_nanoseconds(ticks: u64) -> Result<u64, Error>
+{
+    let transport = MONITOR.get().ok_or(Error::Missing)?;
+    let nanos = (u128::from(ticks) * 1_000_000_000) / u128::from(transport.timebase_hz);
+    u64::try_from(nanos).map_err(|_| Error::ClockOverflow)
+}
+
+/// Classic event waits are expressed in sixtieths of a second. Convert once
+/// against the admitted clock, avoiding a machine-specific 10 MHz constant or
+/// intermediate microsecond rounding.
+pub(crate) fn event_ticks_to_ticks(ticks: u32) -> Result<u64, Error>
+{
+    let transport = MONITOR.get().ok_or(Error::Missing)?;
+    let duration = (u128::from(ticks) * u128::from(transport.timebase_hz)).div_ceil(60);
+    u64::try_from(duration).map_err(|_| Error::ClockOverflow)
+}
+
 /// A measured callback duration rounds upward for its strict time budget; a
 /// fractional microsecond beyond that budget cannot disappear by flooring.
 pub(crate) fn ticks_to_microseconds_ceil(ticks: u64) -> Result<u64, Error>
@@ -363,6 +547,24 @@ pub(crate) fn microseconds_to_ticks_ceil(microseconds: u64) -> Result<u64, Error
     let transport = MONITOR.get().ok_or(Error::Missing)?;
     let ticks = (u128::from(microseconds) * u128::from(transport.timebase_hz)).div_ceil(1_000_000);
     u64::try_from(ticks).map_err(|_| Error::ClockOverflow)
+}
+
+/// Read-only public CPU metadata uses checked topology position/label, never
+/// these scalar arguments as execution authority. No Control view is formed.
+pub(crate) fn cpu_observation(ordinal: usize, hardware: u64) -> Option<(u64, bool)>
+{
+    let transport = MONITOR.get()?;
+    let entry = transport.entries.get(ordinal)?;
+    if entry.hart != hardware
+    {
+        return None;
+    }
+    let stopped = field(entry, core::mem::offset_of!(Control, stopped)).load(Ordering::Acquire);
+    if stopped > 1
+    {
+        return None;
+    }
+    Some((transport.timebase_hz, stopped == 1))
 }
 
 fn notify(entry: &Entry)
@@ -778,14 +980,8 @@ impl PendingHart
                 }
                 else
                 {
-                    let sequence = WAKE_SEQUENCE.try_update(Ordering::AcqRel,
-                                                            Ordering::Acquire,
-                                                            |old| old.checked_add(1))
-                                                .map_err(|_| Error::SequenceExhausted)?
-                                   + 1;
+                    let sequence = post_wake(self.entry).map_err(Error::Wake)?;
                     self.wake = Some(sequence);
-                    field(self.entry,core::mem::offset_of!(Control,wake_requested)).store(sequence,Ordering::Release);
-                    notify(self.entry);
                     sequence
                 };
                 if field(self.entry,core::mem::offset_of!(Control,wake_acknowledged)).load(Ordering::Acquire)>=sequence {return Ok(true);}
@@ -851,6 +1047,23 @@ pub(crate) struct ReadyHart
 }
 impl ReadyHart
 {
+    /// Data binding derives from the retained hardware admission receipt. It
+    /// cannot select that CPU or substitute for this unique readiness owner.
+    pub(crate) fn binding(&self) -> super::traps::execution::HartBinding
+    {
+        self.prepared.binding()
+    }
+
+    /// General work notification through the same monotonic target epoch used
+    /// for startup. A ready receipt and the genuine sender are both required.
+    pub(crate) fn post_work(&self) -> Result<(), WakeError>
+    {
+        let transport = MONITOR.get().ok_or(WakeError::Missing)?;
+        checked_wake_entry(transport, super::traps::execution::selected_hart().binding())?;
+        let entry = checked_wake_entry(transport, self.binding())?;
+        post_wake(entry).map(|_| ())
+    }
+
     pub(crate) fn ordinal(&self) -> usize
     {
         self.prepared.ordinal()

@@ -13,7 +13,7 @@ fn main()
                     && std::env::var_os("CARGO_FEATURE_WORKERS").is_none(),
                     "scheduler is a distinct native diagnostic package");
             let variants = ["CARGO_FEATURE_SCHEDULER_DENY", "CARGO_FEATURE_SCHEDULER_MALFORMED",
-                            "CARGO_FEATURE_SCHEDULER_NO_DEFER"];
+                            "CARGO_FEATURE_SCHEDULER_NO_DEFER", "CARGO_FEATURE_SCHEDULER_SMP"];
             assert!(variants.into_iter().filter(|name| std::env::var_os(name).is_some()).count()
                     <= 1,
                     "choose one native scheduler guard diagnostic at a time");

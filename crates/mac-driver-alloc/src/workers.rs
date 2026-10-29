@@ -10,6 +10,7 @@ use core::{alloc::{GlobalAlloc, Layout},
            ptr::NonNull};
 
 use mac_abi::{BAD_ABI, BAD_ARGUMENT, NO_MEMORY, OK};
+pub use mac_driver::runtime::workers::WorkerAffinity;
 use mac_driver::{Client, Error, Result, abi,
                  runtime::workers::{self as transport, WorkerHandle, WorkerState}};
 
@@ -88,14 +89,30 @@ pub struct StartFailure
 /// Import this extension trait to prepare workers with a checked driver Client.
 pub trait Workers
 {
+    /// Prepare ordinary work with automatic placement over the actual eligible
+    /// CPUs. More CPUs become usable only after the core's real safety gates.
     fn prepare_worker<F>(self, name: &str, body: F)
                          -> core::result::Result<PreparedWorker, PrepareFailure<F>>
+        where F: FnOnce(WorkerContext) -> Result<()> + Send + 'static;
+
+    /// Constrain placement only when the worker has a genuine CPU-affinity need.
+    /// Failure returns the original body without transferring capture ownership.
+    fn prepare_worker_with_affinity<F>(
+        self, name: &str, affinity: WorkerAffinity, body: F)
+        -> core::result::Result<PreparedWorker, PrepareFailure<F>>
         where F: FnOnce(WorkerContext) -> Result<()> + Send + 'static;
 }
 impl Workers for Client
 {
     fn prepare_worker<F>(self, name: &str, body: F)
                          -> core::result::Result<PreparedWorker, PrepareFailure<F>>
+        where F: FnOnce(WorkerContext) -> Result<()> + Send + 'static
+    {
+        self.prepare_worker_with_affinity(name, WorkerAffinity::Automatic, body)
+    }
+
+    fn prepare_worker_with_affinity<F>(self, name: &str, affinity: WorkerAffinity, body: F)
+                                       -> core::result::Result<PreparedWorker, PrepareFailure<F>>
         where F: FnOnce(WorkerContext) -> Result<()> + Send + 'static
     {
         if name.is_empty()
@@ -125,7 +142,9 @@ impl Workers for Client
                                                        state_size:      mem::size_of::<F>(),
                                                        state_alignment: mem::align_of::<F>(),
                                                        name:            name.as_ptr(),
-                                                       name_length:     name.len() };
+                                                       name_length:     name.len(),
+                                                       affinity:        affinity as u32,
+                                                       reserved:        0 };
         // SAFETY: both thunks consume precisely this exclusive allocation once.
         // The resident's single publication handoff transfers ownership only on
         // success; the borrowed specification/name remain live through return.

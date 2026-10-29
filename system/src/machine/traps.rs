@@ -8,7 +8,8 @@ mod state;
 mod definition_services;
 mod hart;
 pub(crate) use hart::{Error as EntryError, OuterCapture, PreparedEntry, PreparedHart,
-                      StartingHart, admit_bootstrap, execution, prepare_secondary};
+                      StartingHart, activity as cpus, admit_bootstrap, execution,
+                      prepare_secondary};
 pub(crate) const MAX_TRAP_DEPTH: usize = 8;
 // One bootstrap baseline, eight admitted service levels, and one typed-refusal
 // frame. The bound follows the existing native service recursion contract.
@@ -133,14 +134,17 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
               super::paging::with_kernel(|| {
                   // SAFETY: assembly saved the complete live frame. This borrow ends,
                   // including service/context readers, before any ownership handoff.
-                  let action = dispatch_frame(&mut *frame);
-                  match action
+                  let (action, outer) = {
+                      let borrowed = &mut *frame;
+                      (dispatch_frame(borrowed), borrowed.prior_depth == 0)
+                  };
+                  let next = match action
                   {
                       Dispatch::Resume => frame,
                       Dispatch::Schedule =>
                       {
                           let capture = hart::captured_outer(frame);
-                          if capture.hart().dispatch_eligible()
+                          if capture.hart().requires_schedule()
                           {
                               super::scheduler::schedule(capture)
                           }
@@ -148,6 +152,7 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                           {
                               // Warm admitted idle has genuine affine backing,
                               // but no permission to select any author thread.
+                              capture.hart().resume_activity(true);
                               capture.frame()
                           }
                       }
@@ -160,7 +165,8 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                           let key = capture.hart();
                           match super::monitor::acknowledge_wake(key)
                           {
-                              Ok(_) => (), // Empty/already-ACKed SSIP advances nothing.
+                              Ok(true) => super::scheduler::wake::acknowledged(key),
+                              Ok(false) => (), // Empty/already-ACKed SSIP advances nothing.
                               Err(super::monitor::Error::Stopping) =>
                               {
                                   // This retains the pinned capture, posts no
@@ -181,7 +187,7 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                                                                        error));
                               }
                           }
-                          if key.dispatch_eligible()
+                          if key.requires_schedule()
                           {
                               super::scheduler::schedule(capture)
                           }
@@ -189,10 +195,19 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                           {
                               // Startup ACK does not itself authorize policy or
                               // author-body execution on an admitted idle hart.
+                              key.resume_activity(true);
                               capture.frame()
                           }
                       }
+                  };
+                  if outer
+                  {
+                      // Every service/frame borrow and scheduler guard ended.
+                      // A nested ECALL can still interrupt an outer guard, so
+                      // only the genuine outer return posts deferred intent.
+                      super::scheduler::wake::flush();
                   }
+                  next
               })
           }
     {
@@ -256,6 +271,27 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     {
         return worker_trap(frame);
     }
+    if number == super::scheduler::service::host::TRAP
+    {
+        // The one internal System gate validates its actual callsite/scalars;
+        // no caller output slot is borrowed on the peer before migration.
+        return match unsafe { super::scheduler::service::host::dispatch(frame) }
+        {
+            super::scheduler::service::host::Outcome::Resume => Dispatch::Resume,
+            super::scheduler::service::host::Outcome::Migrate => Dispatch::Schedule
+        };
+    }
+    let completion = match super::scheduler::service::enter_ecall(frame)
+    {
+        Ok(super::scheduler::service::Entry::Here(completion)) => completion,
+        Ok(super::scheduler::service::Entry::Migrate) => return Dispatch::Schedule,
+        Err(status) =>
+        {
+            frame.registers[8] = status as isize as usize;
+            frame.pc = frame.pc.wrapping_add(4);
+            return Dispatch::Resume;
+        }
+    };
     let thread = crate::context::current_thread_context();
     let scope = thread.traps.enter();
     let physical_depth = frame.prior_depth + 1;
@@ -278,8 +314,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
                     thread.identity().app.0,
                     thread.identity().thread.0);
         }
-        frame.registers[8] = SERVICE_BUSY as usize;
-        frame.pc = frame.pc.wrapping_add(4);
+        finish_service(frame, completion, SERVICE_BUSY as i64);
         return Dispatch::Resume;
     }
     let number = frame.registers[15] as u32;
@@ -289,9 +324,9 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     let started = crate::platform::ticks();
     let admission = if thread.is_module_worker() && number != LOG
     {
-        // Scheduler input maintenance can invoke a resident definition on the
-        // interrupted worker's stack. Admit only that invocation's synchronous
-        // borrowed-surface/query services, never application Toolbox authority.
+        // Scheduler maintenance retains the interrupted worker's identity.
+        // Only the validated resident definition's exact borrowed surface and
+        // synchronous query services are admitted, never application authority.
         unsafe { definition_services::admit(&thread.definitions, number, request, size) }
     }
     else
@@ -345,8 +380,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
                     crate::drivers::abandon_deferred_job(thread.identity().thread.0, handle)
                 }
             }
-            frame.registers[8] = BAD_ABI as usize;
-            frame.pc = frame.pc.wrapping_add(4);
+            finish_service(frame, completion, BAD_ABI as i64);
             return Dispatch::Resume;
         }
         // All request slices, legacy conversion temporaries and manager guards
@@ -358,14 +392,12 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
             Ok(false) => return Dispatch::Resume, // completion won the race; replay now
             Err(error) =>
             {
-                frame.registers[8] = error as usize;
-                frame.pc = frame.pc.wrapping_add(4);
+                finish_service(frame, completion, error as i64);
                 return Dispatch::Resume;
             }
         }
     }
-    frame.registers[8] = result as usize;
-    frame.pc = frame.pc.wrapping_add(4);
+    finish_service(frame, completion, result);
     if physical_depth == 1 && super::scheduler::retired()
     {
         return Dispatch::Schedule;
@@ -377,6 +409,20 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         return Dispatch::Schedule;
     }
     Dispatch::Resume
+}
+
+/// The service has finished and every manager/request borrow ended. Preserve
+/// its real result/PC commit before restoring automatic eligibility. Deferred
+/// replay intentionally never calls this helper.
+fn finish_service(frame: &mut TrapFrame,
+                  completion: Option<super::scheduler::service::Completion>, result: i64)
+{
+    frame.registers[8] = result as usize;
+    frame.pc = frame.pc.wrapping_add(4);
+    if let Err(status) = super::scheduler::service::complete(completion)
+    {
+        frame.registers[8] = status as isize as usize;
+    }
 }
 
 /// Private worker suspension uses the actual CPU trap/switch path. A direct C
@@ -424,13 +470,15 @@ fn worker_trap(frame: &mut TrapFrame) -> Dispatch
             }
             worker::MONOTONIC =>
             {
-                // QEMU's 10 MHz timebase belongs to this machine adapter.
-                call.microseconds = crate::platform::ticks() / 10;
+                call.microseconds = super::monitor::ticks_to_microseconds(crate::platform::ticks())
+                    .map_err(|_| BAD_ABI)?;
                 Ok(false)
             }
             worker::PARK_FOR =>
             {
-                let duration = call.microseconds.checked_mul(10).ok_or(BAD_ARGUMENT)?;
+                let duration = super::monitor::microseconds_to_ticks_ceil(call.microseconds)
+                    .map_err(|cause| if matches!(cause, super::monitor::Error::ClockOverflow)
+                             { BAD_ARGUMENT } else { BAD_ABI })?;
                 let deadline =
                     crate::platform::ticks().checked_add(duration).ok_or(BAD_ARGUMENT)?;
                 call.state = worker::PARKED;
@@ -561,7 +609,11 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         MONOTONIC_CLOCK =>
         {
             let call = read_request!(events::MonotonicCall);
-            call.nanoseconds = crate::platform::ticks().saturating_mul(100);
+            call.nanoseconds = match super::monitor::ticks_to_nanoseconds(crate::platform::ticks())
+            {
+                Ok(value) => value,
+                Err(_) => return BAD_ABI as i64
+            };
             OK as i64
         }
         TEXTEDIT =>
@@ -602,6 +654,11 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             crate::kernel::with_desktop(|runtime| runtime.menu(call)).unwrap_or_else(|error| {
                                                                          error.status()
                                                                      }) as i64
+        }
+        CPU_INFO =>
+        {
+            let call = read_request!(mac_abi::inspection::cpus::Call);
+            toolbox::processes::cpu_inspection_request(call) as i64
         }
         INSPECTION =>
         {
@@ -843,7 +900,11 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                                          call.timeout_ticks as u64,
                                          0,
                                          0);
-                    super::scheduler::wait_current(call.mask, call.timeout_ticks);
+                    if let Err(status) =
+                        super::scheduler::wait_current(call.mask, call.timeout_ticks)
+                    {
+                        return status;
+                    }
                 }
                 status
             }).unwrap_or_else(|error| error.status()) as i64
@@ -863,7 +924,11 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                                          call.timeout_ticks as u64,
                                          0,
                                          0);
-                    super::scheduler::wait_current(call.mask, call.timeout_ticks);
+                    if let Err(status) =
+                        super::scheduler::wait_current(call.mask, call.timeout_ticks)
+                    {
+                        return status;
+                    }
                 }
                 OK
             }).unwrap_or_else(|error| error.status()) as i64

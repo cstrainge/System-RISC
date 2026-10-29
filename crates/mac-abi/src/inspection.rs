@@ -1,5 +1,6 @@
 //! Native, read-only lifetime inspection. No pointers or caller identity on wire.
 pub mod memory;
+pub mod cpus;
 pub const BEGIN: u32 = 0;
 pub const DOMAIN: u32 = 1;
 pub const LEDGER_POOL: u32 = 2;

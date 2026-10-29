@@ -32,6 +32,14 @@ pub(super) unsafe extern "C" fn allocate(module: u64, size: usize, alignment: us
     {
         return mac_abi::ACCESS_DENIED;
     }
+    // Policy refusal precedes routing. No caller pointer, module scope or
+    // metadata/IRQ guard exists until the actual canonical thread is pinned
+    // to the primary for this complete native invocation.
+    let _service = match crate::machine::scheduler::service::host::acquire()
+    {
+        Ok(lease) => lease,
+        Err(status) => return status
+    };
     let operation = || -> Result<(), Status> {
         crate::context::authenticate_module(module)?;
         output(result)?;
@@ -65,6 +73,14 @@ pub(super) unsafe extern "C" fn deallocate(module: u64, pointer: *mut u8, size: 
     {
         return mac_abi::ACCESS_DENIED;
     }
+    // Policy refusal precedes routing. No caller pointer, module scope or
+    // metadata/IRQ guard exists until the actual canonical thread is pinned
+    // to the primary for this complete native invocation.
+    let _service = match crate::machine::scheduler::service::host::acquire()
+    {
+        Ok(lease) => lease,
+        Err(status) => return status
+    };
     let operation = || -> Result<(), Status> {
         crate::context::authenticate_module(module)?;
         let requested = layout(size, alignment)?;
@@ -94,6 +110,14 @@ pub(super) unsafe extern "C" fn reallocate(module: u64, pointer: *mut u8, size: 
     {
         return mac_abi::ACCESS_DENIED;
     }
+    // Policy refusal precedes routing. No caller pointer, module scope or
+    // metadata/IRQ guard exists until the actual canonical thread is pinned
+    // to the primary for this complete native invocation.
+    let _service = match crate::machine::scheduler::service::host::acquire()
+    {
+        Ok(lease) => lease,
+        Err(status) => return status
+    };
     let operation = || -> Result<(), Status> {
         crate::context::authenticate_module(module)?;
         output(result)?;
@@ -134,6 +158,14 @@ pub(super) unsafe extern "C" fn with_module_allocation(module: u64,
     {
         return mac_abi::ACCESS_DENIED;
     }
+    // Policy refusal precedes routing. No caller pointer, module scope or
+    // metadata/IRQ guard exists until the actual canonical thread is pinned
+    // to the primary for this complete native invocation.
+    let _service = match crate::machine::scheduler::service::host::acquire()
+    {
+        Ok(lease) => lease,
+        Err(status) => return status
+    };
     let operation = || -> Result<Status, Status> {
         crate::context::authenticate_module(module)?;
         super::invocation::callback_allowed(module, callback as usize)?;

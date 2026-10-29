@@ -4,6 +4,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 pub mod memory;
+pub mod cpus;
+pub use cpus::{Activity, ActivityDelta, Cpu, CpuState, Cpus, Residency, Unavailable};
 use mac_abi::inspection as wire;
 use mac_traps::{Client, Error, types::InlineText};
 pub use memory::{MemorySummary, Protection, Region, RegionBatch, RegionKind, Regions, SystemMemory};

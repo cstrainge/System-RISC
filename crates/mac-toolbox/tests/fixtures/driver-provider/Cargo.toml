@@ -8,6 +8,7 @@ publish = false
 scheduler-deny = ["scheduler", "dep:spin"]
 scheduler-malformed = ["scheduler"]
 scheduler-no-defer = ["scheduler"]
+scheduler-smp = ["scheduler"]
 scheduler = ["dep:mac-driver-alloc", "dep:mac-scheduler-interface", "dep:mac-module", "dep:mac-scheduler-policy"]
 workers = []
 pressure = ["dep:mac-filesystem-interface"]

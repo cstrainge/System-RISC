@@ -1,11 +1,11 @@
 # Scheduler policy and control, v1
 
-This allocation-free wire contract is consumed by the resident primary-only
-SCHD/SCTL implementation and the optional Multi-Scheduler extension. Current
-limits expose TAKEOVER and one active scheduling hart; MULTI_HART and PARK are
-not exposed. The package is not installed by default. Source integration,
-parsing bytes or advertising a feature does not establish native acceptance or
-safe SMP execution. See [scheduling](../../SCHEDULING.md) for current mechanisms,
+This allocation-free wire contract is consumed by the resident SCHD/SCTL
+implementation and the normally installed Multi-Scheduler extension. Current
+limits expose TAKEOVER and, for a multi-CPU topology, MULTI_HART with that checked
+physical maximum. PARK is not exposed. Actual admission, per-CPU callback loans,
+joint policy-generation/THRD commitment and target-owned draining remain core
+mechanisms; a feature bit, byte parser or package installation is not their proof. See [scheduling](../../SCHEDULING.md) for current mechanisms,
 clock/configuration and exact qualification limits.
 
 SCHD is an exclusive, kernel-only policy offer. The module has only irreducible
@@ -84,9 +84,10 @@ before any effect. Ordinary errors retain their actual cause.
 Limits64 contains version/features/candidate-capacity/max-active-harts (u32),
 minimum quantum/maximum quantum/callback budget (u64), physical/active counts
 (u32), boot hardware hart/topology epoch(u64). Features are TAKEOVER1,
-MULTI_HART2, PARK4: exposed mechanisms, never a proof flag. Desired count always includes the actual primary, then the lowest N-1 eligible
-other hardware IDs. Ascending order is an explicit package policy, not a hidden core
-preference. Registration32 contains generation(u64), State(u32), last status(i32),
+MULTI_HART2, PARK4: exposed mechanisms, never a proof flag. Desired count always
+includes the actual primary, then the lowest N-1 eligible hardware IDs in the
+checked topology. This interface selects a count rather than an arbitrary CPU
+mask; hardware labels never act as placement grants. Registration32 contains generation(u64), State(u32), last status(i32),
 active harts/callback count(u32), transition sequence(u64).
 
 PREPARE runs during initialization and preflights all fallible ownership/storage.
@@ -95,11 +96,13 @@ real RuntimeBinding afterward, before any shadow call. Retain the real provider
 image/Instance with a central shared-facility registration owned by the actual
 module. Failure cannot hide a published grant; uncertain effects remain retained
 for owner cleanup. ARM records a takeover request; it does not acknowledge an
-active policy or release a hart. HARTS is an intent while prepared/armed. The
-current resident path accepts only
-a count of 1 and refuses a count of 2 without partial activation. Other CPUs may already be
-admitted to System idle; that is separate from permission to dispatch authored
-code. Additional dispatch admission remains behind the core gates.
+active policy or release a hart. HARTS records a checked count intent while
+Prepared, Armed or Active. The primary is retained and peer selection follows
+checked hardware-ID order. Core preflights every actual retained readiness receipt
+before publishing dispatch eligibility. Live reduction waits for target-owned
+draining; the same active generation can later request expansion. Reported active
+counts include draining peers until their actual idle commitment. Startup System
+idle, feature bits and numeric hardware labels do not authorize authored code.
 
 After initializer return, core runs one shadow decision from a genuine core
 boundary, validates it, atomically changes active policy and confirms MLIF
@@ -114,8 +117,11 @@ fewer CPUs.
 RETIRE first revokes further policy decisions and restores bootstrap policy.
 Maintenance withdraws the actual offered interface and waits for its matching
 canonical completion acknowledgment. Retired also requires real callback
-quiescence, no remaining code-dependent plan/Instance readers and a primary-only
-dispatch floor; only then may those pins and registration backing be released.
+quiescence, returned per-CPU buffer/report loans, no remaining code-dependent
+plan/Instance readers and every peer's own affine idle/claim-release commitment;
+only then may those pins and registration backing be released. A wake ACK is not
+a target-drain receipt. RETIRE is final for that bound registration, not a request
+to prepare the same returned Instance again.
 Clean withdrawal reports MLIF Refused/OPERATION_CANCELLED while SCTL preserves a
 clean last status. Fault withdrawal retains its cause; no new MLIF wire phase
 is implied. Busy retains the original grant and ticket. Quiescing-owner status/

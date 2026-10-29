@@ -37,7 +37,8 @@ pub(crate) struct Launch
     owner:      OwnerRef,
     allocation: scheduler::accounting::AllocationAuthority,
     execution:  crate::images::ModuleExecution,
-    name:       String
+    name:       String,
+    affinity:   scheduler::ThreadAffinity
 }
 impl Launch
 {
@@ -54,6 +55,11 @@ impl Launch
     pub(crate) fn execution(&self) -> &crate::images::ModuleExecution
     {
         &self.execution
+    }
+
+    pub(crate) fn affinity(&self) -> scheduler::ThreadAffinity
+    {
+        self.affinity
     }
 
     pub(crate) fn name(&self) -> &str
@@ -127,6 +133,14 @@ pub(super) unsafe extern "C" fn control(module: u64, pointer: *mut abi::WorkerCa
     {
         return ACCESS_DENIED;
     }
+    // Policy refusal precedes routing. No caller pointer, module scope or
+    // metadata/IRQ guard exists until the actual canonical thread is pinned
+    // to the primary for this complete native invocation.
+    let _service = match crate::machine::scheduler::service::host::acquire()
+    {
+        Ok(lease) => lease,
+        Err(status) => return status
+    };
     let operation = || -> Result<(), Status> {
         crate::context::authenticate_module(module)?;
         if pointer.is_null() || !pointer.is_aligned()
@@ -228,13 +242,25 @@ unsafe fn create(module: u64, pointer: *const abi::WorkerSpecification) -> Resul
     {
         return Err(WRONG_THREAD);
     }
-    // SAFETY: control validates pointer alignment; the SDK's CREATE contract
-    // provides this live initialized descriptor until the callback returns.
-    let specification = unsafe { *pointer };
-    if !specification.header.valid::<abi::WorkerSpecification>()
+    // SAFETY: control checked alignment and the SDK retains a live header.
+    // Check the exact descriptor size before reading its expanded fields.
+    let header = unsafe { pointer.cast::<abi::Header>().read() };
+    if !header.valid::<abi::WorkerSpecification>()
     {
         return Err(BAD_ABI);
     }
+    // SAFETY: the exact current descriptor remains borrowed through CREATE.
+    let specification = unsafe { *pointer };
+    if specification.reserved != 0
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    let affinity = match specification.affinity
+    {
+        worker::AFFINITY_AUTOMATIC => scheduler::ThreadAffinity::Eligible,
+        worker::AFFINITY_PRIMARY => scheduler::ThreadAffinity::Primary,
+        _ => return Err(BAD_ARGUMENT)
+    };
     let entry = specification.entry.ok_or(BAD_ARGUMENT)?;
     let destroy = specification.destroy.ok_or(BAD_ARGUMENT)?;
     invocation::callback_allowed(module, entry as usize)?;
@@ -293,7 +319,8 @@ unsafe fn create(module: u64, pointer: *const abi::WorkerSpecification) -> Resul
                                                                            owner,
                                                                            allocation,
                                                                            execution,
-                                                                           name })
+                                                                           name,
+                                                                           affinity })
                                                            })??;
     let prepared = match scheduler::prepare_worker(launch)
     {

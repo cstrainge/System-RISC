@@ -16,10 +16,40 @@ pub(super) fn context_released()
     }
 }
 
+/// Called once at the actual first service fault, while SCHEDULER still owns
+/// this exact THRD. Permanent retention never polls the ordinary worker reaper.
+pub(super) fn service_quarantined(thread: &Thread)
+{
+    let Some(worker) = thread.worker.as_ref()
+    else
+    {
+        return;
+    };
+    let mut state = worker.get();
+    state.cancelled = true;
+    if state.returned
+    {
+        if WORKER_REAP_COUNT.try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                                count.checked_sub(1)
+                            })
+                            .is_err()
+        {
+            // Retain the original permanent fault; do not wrap accounting or
+            // panic while attempting cleanup of already uncertain ownership.
+            thread.core
+                  .cleanup_refusal
+                  .lock()
+                  .replace(ReapState::NativeService(mac_abi::CORRUPT_DATA));
+        }
+    }
+    worker.set(state);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ReapState
 {
     Refused(mac_abi::Status),
+    NativeService(mac_abi::Status),
     Running
     {
         hart: usize
@@ -86,7 +116,8 @@ pub(crate) struct PreparedWorker
     owner:      OwnerRef,
     core:       mac_object_table::retained::Read<ThreadCore>,
     allocation: accounting::AllocationAuthority,
-    subject:    crate::drivers::jobs::subjects::Subject
+    subject:    crate::drivers::jobs::subjects::Subject,
+    affinity:   super::ThreadAffinity
 }
 pub(crate) struct WorkerPrepareFailure
 {
@@ -113,6 +144,7 @@ impl PreparedWorker
 pub(crate) fn prepare_worker(launch: crate::drivers::WorkerLaunch)
                              -> Result<PreparedWorker, WorkerPrepareFailure>
 {
+    let affinity = launch.affinity();
     let owner = launch.owner().clone();
     let allocation = launch.allocation().clone();
     let target = crate::allocator::Target::Owner { account: allocation.clone(),
@@ -154,6 +186,7 @@ pub(crate) fn prepare_worker(launch: crate::drivers::WorkerLaunch)
                                 binding: launch.execution().binding(),
                                 top,
                                 cleanup_refusal: Mutex::new(None),
+                                service_quarantine: spin::Once::new(),
                                 name: Some(name) };
         let core = Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)?;
         Ok((core, subject))
@@ -166,6 +199,7 @@ pub(crate) fn prepare_worker(launch: crate::drivers::WorkerLaunch)
             Ok(PreparedWorker { owner,
                                 allocation,
                                 subject,
+                                affinity,
                                 core: mac_object_table::retained::Read::new(core,
                                                                             context_released) })
         }
@@ -205,7 +239,8 @@ pub(crate) fn publish_worker(prepared: PreparedWorker) -> Result<u64, WorkerPubl
                                            returned:         false,
                                            park_return:      false,
                                            exit_status:      mac_abi::OK };
-                let state = RunState::new();
+                let mut state = RunState::new();
+                state.affinity = prepared.affinity;
                 Record::Scheduled(Thread { id,
                                            core: prepared.core.share(),
                                            scope: Some(scope),
@@ -285,6 +320,10 @@ fn checked_worker<'a>(scheduler: &'a Scheduler, owner: &OwnerRef, id: u64)
     {
         return Err(mac_abi::ACCESS_DENIED);
     }
+    if let Some(cause) = thread.state.get().service.failure()
+    {
+        return Err(cause);
+    }
     Ok(thread)
 }
 pub(crate) fn worker_start(owner: &OwnerRef, id: u64, activate: bool)
@@ -336,7 +375,9 @@ pub(crate) fn activate_workers(owner: &OwnerRef)
                 if let Some(worker) = &thread.worker
                 {
                     let mut state = worker.get();
-                    if state.phase == mac_module::abi::worker::ARMED && !state.cancelled
+                    if state.phase == mac_module::abi::worker::ARMED
+                       && !state.cancelled
+                       && thread.state.get().service.failure().is_none()
                     {
                         state.phase = mac_module::abi::worker::RUNNING;
                         worker.set(state);
@@ -365,9 +406,17 @@ pub(super) fn cancel_worker(thread: &Thread, dispose: bool)
         let mut state = worker.get();
         state.cancelled = true;
         state.dispose |= dispose;
+        if let Some(cause) = thread.state.get().service.failure()
+        {
+            // The owner walk may still record disposal intent, but a faulted
+            // body cannot become runnable or acquire a retryable reap receipt.
+            state.exit_status = cause;
+            worker.set(state);
+            return;
+        }
         if !state.started && !state.resume_committed
         {
-            if !state.returned
+            if !state.returned && thread.state.get().service.failure().is_none()
             {
                 WORKER_REAP_COUNT.fetch_add(1, Ordering::AcqRel);
             }
@@ -460,6 +509,10 @@ pub(crate) fn worker_park(deadline: Option<u64>) -> Result<bool, mac_abi::Status
 {
     let scheduler = SCHEDULER.lock();
     let thread = scheduler.thread(current()).ok_or(mac_abi::WRONG_THREAD)?;
+    if let Some(cause) = thread.state.get().service.failure()
+    {
+        return Err(cause);
+    }
     let worker = thread.worker.as_ref().ok_or(mac_abi::WRONG_THREAD)?;
     let mut state = worker.get();
     if state.cancelled
@@ -491,6 +544,29 @@ pub(crate) fn worker_exit() -> Result<(), mac_abi::Status>
     let thread = scheduler.thread(current()).ok_or(mac_abi::WRONG_THREAD)?;
     let worker = thread.worker.as_ref().ok_or(mac_abi::WRONG_THREAD)?;
     let mut state = worker.get();
+    if let Some(cause) = thread.state.get().service.failure()
+    {
+        if !state.returned
+        {
+            return Err(cause);
+        }
+        // The real body has returned and its launch/Core owners are back in
+        // the canonical row before this sole trampoline EXIT. Schedule away,
+        // retaining the permanent quarantine rather than returning to its
+        // unexpected-EXIT System panic. No reaper or cleanup ACK is issued.
+        state.phase = mac_module::abi::worker::FINISHED;
+        state.exit_status = cause;
+        worker.set(state);
+        thread.update(|s| {
+                  s.live = false;
+                  s.waiting = None;
+              });
+        return Ok(());
+    }
+    if !thread.state.get().service.quiescent()
+    {
+        return Err(mac_abi::SERVICE_BUSY);
+    }
     if !state.returned
     {
         return Err(mac_abi::ACCESS_DENIED);
@@ -508,14 +584,14 @@ pub(crate) fn worker_exit() -> Result<(), mac_abi::Status>
 fn refuse_entry(thread: &Thread, worker: &Cell<WorkerState>)
 {
     let mut state = worker.get();
-    if !state.returned
+    if !state.returned && thread.state.get().service.failure().is_none()
     {
         WORKER_REAP_COUNT.fetch_add(1, Ordering::AcqRel);
     }
     state.returned = true;
     // This trampoline has already committed execution. Even a typed entry
     // refusal keeps its real stack runnable until the actual private EXIT.
-    state.exit_status = mac_abi::BAD_ABI;
+    state.exit_status = thread.state.get().service.failure().unwrap_or(mac_abi::BAD_ABI);
     worker.set(state);
     thread.update(|state| {
               state.waiting = None;
@@ -554,12 +630,13 @@ extern "C" fn worker_entry() -> !
             // Leave the accepted capture/code pin in the row for quiescent Drop.
             // Keep RUNNING/live through any pre-EXIT timer preemption, just as
             // a normally returned body does; only private EXIT finishes it.
-            if !state.returned
+            if !state.returned && thread.state.get().service.failure().is_none()
             {
                 WORKER_REAP_COUNT.fetch_add(1, Ordering::AcqRel);
             }
             state.returned = true;
-            state.exit_status = mac_abi::OPERATION_CANCELLED;
+            state.exit_status =
+                thread.state.get().service.failure().unwrap_or(mac_abi::OPERATION_CANCELLED);
             worker.set(state);
             return None;
         }
@@ -622,15 +699,16 @@ extern "C" fn worker_entry() -> !
                                               id,
                                               current));
             }
+            let failure = thread.and_then(|thread| thread.state.get().service.failure());
             if let Some(worker) = thread.and_then(|thread| thread.worker.as_ref())
             {
                 let mut state = worker.get();
-                if !state.returned
+                if !state.returned && failure.is_none()
                 {
                     WORKER_REAP_COUNT.fetch_add(1, Ordering::AcqRel);
                 }
                 state.returned = true;
-                state.exit_status = result;
+                state.exit_status = failure.unwrap_or(result);
                 worker.set(state);
             }
             *core.launch.lock() = Some(launch);
@@ -699,10 +777,12 @@ pub(super) fn commit_resume(thread: &Thread)
 /// Reap wake follows actual release of an executing hart's persistent claim.
 pub(super) fn execution_released(thread: &Thread)
 {
-    if thread.worker.as_ref().is_some_and(|worker| {
-                                 let state = worker.get();
-                                 state.returned && state.phase == mac_module::abi::worker::FINISHED
-                             })
+    if thread.state.get().service.failure().is_none()
+       && thread.worker.as_ref().is_some_and(|worker| {
+                                    let state = worker.get();
+                                    state.returned
+                                    && state.phase == mac_module::abi::worker::FINISHED
+                                })
     {
         WORKER_PENDING.store(true, Ordering::Release);
     }
@@ -732,7 +812,11 @@ pub(super) fn reclaim_workers()
                                 {
                                     return None;
                                 }
-                                let wait = if let Some(hart) = thread.state.get().claimed_by
+                                let wait = if !thread.state.get().service.quiescent()
+                                {
+                                    Some(ReapState::NativeService(thread.state.get().service.failure().unwrap_or(mac_abi::SERVICE_BUSY)))
+                                }
+                                else if let Some(hart) = thread.state.get().claimed_by
                                 {
                                     Some(ReapState::Running { hart: hart.number() })
                                 }

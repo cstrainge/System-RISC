@@ -15,6 +15,8 @@ use crate::{context::{EventWaiter, ThreadContext},
             toolbox::handles::{OwnerRef, Store}};
 mod lifetime;
 mod worker;
+pub(crate) mod service;
+pub(crate) mod wake;
 pub(crate) mod policy;
 include!(concat!(env!("OUT_DIR"), "/platform-scheduling.rs"));
 pub(crate) mod recovery;
@@ -144,6 +146,7 @@ impl SystemThreadBinding
 pub(crate) enum StartError
 {
     Clock(super::monitor::Error),
+    Wake(super::monitor::WakeError),
     Load(crate::loader::LoadError),
     Idle(super::traps::execution::IdlePreparationFailure),
     Cpus(super::smp::Error)
@@ -155,6 +158,7 @@ impl core::fmt::Display for StartError
         match self
         {
             Self::Clock(cause) => cause.fmt(out),
+            Self::Wake(cause) => cause.fmt(out),
             Self::Load(cause) => cause.fmt(out),
             Self::Idle(cause) => cause.fmt(out),
             Self::Cpus(cause) => cause.fmt(out)
@@ -176,11 +180,34 @@ impl From<crate::loader::LoadError> for StartError
     }
 }
 
+/// Ordinary executors are eligible for automatic placement on the actual
+/// core-admitted dispatch set. Today that set contains only the primary; no
+/// per-application opt-in is needed when the real service/CPU gates broaden it.
+/// Affine System idles remain a distinct sealed Store variant.
+#[derive(Clone, Copy)]
+pub(crate) enum ThreadAffinity
+{
+    Eligible,
+    Primary
+}
+impl ThreadAffinity
+{
+    fn allows(self, hart: HartKey) -> bool
+    {
+        match self
+        {
+            Self::Eligible => hart.dispatch_eligible(),
+            Self::Primary => hart.is_primary() && hart.dispatch_eligible()
+        }
+    }
+}
 #[derive(Clone, Copy)]
 struct RunState
 {
     // Scheduler-owned execution claim, retained across frame restore and body
     // execution. Only a complete outer-capture handoff may clear it.
+    affinity:    ThreadAffinity,
+    service:     service::State,
     claimed_by:  Option<HartKey>,
     live:        bool,
     retired:     bool,
@@ -240,9 +267,20 @@ impl core::fmt::Display for RunFactsError
 }
 impl RunState
 {
+    fn requires_primary(self) -> bool
+    {
+        match self.affinity
+        {
+            ThreadAffinity::Eligible => self.service.primary(),
+            ThreadAffinity::Primary => true
+        }
+    }
+
     const fn new() -> Self
     {
-        Self { claimed_by:  None,
+        Self { affinity:    ThreadAffinity::Eligible,
+               service:     service::State::new(),
+               claimed_by:  None,
                live:        false,
                retired:     false,
                switches:    0,
@@ -251,6 +289,11 @@ impl RunState
                ready_since: None,
                last_hart:   None,
                at_handoff:  false }
+    }
+
+    fn allows(&self, hart: HartKey) -> bool
+    {
+        self.affinity.allows(hart) && (!self.service.primary() || hart.is_primary())
     }
 
     fn ready(&self) -> bool
@@ -284,6 +327,13 @@ impl Thread
             state.ready_since = Some(observed.unwrap_or_else(crate::platform::ticks));
         }
         self.state.set(state);
+        if !was_ready && state.ready() && observed.is_none()
+        {
+            // Capture already owns this round; it is not new queued work.
+            // Real event/I/O/activation edges notify only after the first
+            // scheduled-frame admission, never to prove a boot self-IPI.
+            wake::runnable(state.requires_primary());
+        }
     }
 
     fn capture_runnable(&self, captured: u64)
@@ -419,6 +469,7 @@ pub(crate) fn context_released()
     if RETIRED_COUNT.load(Ordering::Acquire) != 0
     {
         RECLAIM_PENDING.store(true, Ordering::Release);
+        wake::request();
     }
     worker::context_released();
 }
@@ -451,14 +502,17 @@ struct ThreadBacking
 }
 struct ThreadCore
 {
-    backing:         Mutex<Option<ThreadBacking>>,
-    launch:          Mutex<Option<crate::drivers::WorkerLaunch>>,
-    context:         Arc<ThreadContext>,
-    release:         Mutex<Option<ReleasedResource>>,
-    binding:         crate::images::Binding,
-    top:             usize,
-    cleanup_refusal: Mutex<Option<ReapState>>,
-    name:            Option<ThreadName>
+    backing:            Mutex<Option<ThreadBacking>>,
+    launch:             Mutex<Option<crate::drivers::WorkerLaunch>>,
+    context:            Arc<ThreadContext>,
+    release:            Mutex<Option<ReleasedResource>>,
+    binding:            crate::images::Binding,
+    top:                usize,
+    cleanup_refusal:    Mutex<Option<ReapState>>,
+    // Only impossible service binding uncertainty fills this prepaid slot.
+    // It intentionally retains the original core/ticket until reset.
+    service_quarantine: spin::Once<(Arc<ThreadCore>, mac_abi::Status)>,
+    name:               Option<ThreadName>
 }
 impl ThreadCore
 {
@@ -543,6 +597,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                              binding: loaded.binding(),
                                              top,
                                              cleanup_refusal: Mutex::new(None),
+                                             service_quarantine: spin::Once::new(),
                                              name: None }).map_err(|_| mac_abi::NO_MEMORY)?;
         Ok((core, allocation))
     });
@@ -613,6 +668,7 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
                                     binding: loaded.binding(),
                                     top: 0,
                                     cleanup_refusal: Mutex::new(None),
+                                    service_quarantine: spin::Once::new(),
                                     name: None };
             Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)
         })
@@ -921,6 +977,7 @@ pub(crate) fn start() -> Result<(), StartError>
     // interrupt ACK before any scheduled-position lock or author execution.
     // Peers remain AdmittedIdle; this grants no dispatch policy permission.
     super::smp::initialize().map_err(StartError::Cpus)?;
+    let wake_receiver = super::monitor::prepare_primary_wake().map_err(StartError::Wake)?;
     let scheduler = SCHEDULER.lock();
     // Module preparations can precede Finder in the shared THRD store. Start
     // the genuine runnable Finder process, never an inert/armed module slot.
@@ -941,6 +998,11 @@ pub(crate) fn start() -> Result<(), StartError>
          .cpu_frame()
          .ok_or(mac_formats::Error::Malformed("scheduler bootstrap Finder has no CPU backing"))?;
     let hart = selected_hart();
+    if !t.state.get().allows(hart)
+    {
+        return Err(mac_formats::Error::Malformed("scheduler bootstrap Finder violates actual \
+                                                  dispatch eligibility").into());
+    }
     if t.state.get().claimed_by.is_some()
     {
         return Err(mac_formats::Error::Malformed("scheduler bootstrap Finder is already claimed").into());
@@ -951,6 +1013,10 @@ pub(crate) fn start() -> Result<(), StartError>
     select_current(slot);
     drop(scheduler);
     arm();
+    // The frame/claim/selection is committed and no scheduler guard survives.
+    // Publish the real receiver, then notify only retained callable/cleanup work.
+    wake::admitted(wake_receiver);
+    hart.resume_activity(false);
     unsafe { __system_start_frame(frame) }
 }
 extern "C" fn idle() -> !
@@ -966,24 +1032,34 @@ extern "C" fn idle() -> !
 }
 
 /// Called only by the outermost native wait trap, with interrupts masked.
-pub fn wait_current(mask: u16, timeout_ticks: u32)
+pub fn wait_current(mask: u16, timeout_ticks: u32) -> Result<(), mac_abi::Status>
 {
+    let scheduler = SCHEDULER.lock();
+    let thread = scheduler.thread(current()).ok_or(mac_abi::WRONG_THREAD)?;
+    service::suspension_allowed(thread.state.get())?;
     if timeout_ticks == 0
     {
-        return;
+        return Ok(());
     }
-    let deadline = crate::platform::ticks()
-        .saturating_add((u64::from(timeout_ticks) * 10_000_000).div_ceil(60));
-    let index = current();
-    if let Some(thread) = SCHEDULER.lock().thread(index)
-    {
-        thread.update(|state| {
-                  state.waiting = Some(Wait::Events { mask,
-                                                      deadline });
-                  state.woken = 0;
-              });
-    }
+    let duration = super::monitor::event_ticks_to_ticks(timeout_ticks).map_err(|cause| {
+                       if matches!(cause, super::monitor::Error::ClockOverflow)
+                       {
+                           mac_abi::BAD_ARGUMENT
+                       }
+                       else
+                       {
+                           mac_abi::BAD_ABI
+                       }
+                   })?;
+    let deadline = crate::platform::ticks().checked_add(duration).ok_or(mac_abi::BAD_ARGUMENT)?;
+    thread.update(|state| {
+              state.waiting = Some(Wait::Events { mask,
+                                                  deadline });
+              state.woken = 0;
+          });
+    Ok(())
 }
+
 pub fn blocked() -> bool
 {
     SCHEDULER.lock().thread(current()).is_some_and(|thread| thread.state.get().waiting.is_some())
@@ -1087,6 +1163,7 @@ pub fn wait_io(job: crate::context::DeferredIo) -> Result<bool, mac_abi::Status>
     let thread = scheduler.thread(index)
                           .filter(|thread| thread.state.get().live)
                           .ok_or(mac_abi::WRONG_THREAD)?;
+    service::suspension_allowed(thread.state.get())?;
     let pending = match job
     {
         crate::context::DeferredIo::FileTransfer(handle) =>
@@ -1124,11 +1201,16 @@ pub fn wake_io(identity: u64, job: crate::context::DeferredIo)
 }
 fn retire(thread: &Thread)
 {
+    if service::defer_retire(thread)
+    {
+        return;
+    }
     if !thread.state.get().retired
     {
         thread.update(|state| {
                   state.live = false;
                   state.retired = true;
+                  state.service.retire_committed();
               });
         RETIRED_COUNT.fetch_add(1, Ordering::AcqRel);
     }
@@ -1182,7 +1264,9 @@ pub(crate) fn reclaim_retired()
         let removed = {
             let mut scheduler = SCHEDULER.lock();
             let found = scheduler.iter().find_map(|(slot, thread)| {
-                                            if slot < after || !thread.state.get().retired
+                                            if slot < after
+                                               || !thread.state.get().retired
+                                               || !thread.state.get().service.quiescent()
                                             {
                                                 return None;
                                             }
@@ -1334,11 +1418,49 @@ fn release_claim(scheduler: &Scheduler, slot: usize, hart: HartKey)
         RECLAIM_PENDING.store(true, Ordering::Release);
     }
     worker::execution_released(thread);
+    let released = thread.state.get();
+    if released.ready()
+    {
+        wake::execution_released(hart, released.requires_primary());
+    }
+}
+
+/// The boot-admitted topology fits the checked native scheduler limits. A
+/// draining target remains counted until it commits its own idle receipt.
+pub(crate) fn active_harts() -> u32
+{
+    super::smp::active_harts() as u32
+}
+
+/// Lock order for policy placement is SCHEDULER -> original registration Phase
+/// -> reset-lifetime admission rows. No provider or Runtime callback occurs.
+pub(crate) fn set_policy_harts(pin: &crate::drivers::scheduler::PolicyPin, count: u32)
+                               -> Result<(), mac_abi::Status>
+{
+    super::interrupts::with_masked(|| {
+        let scheduler = SCHEDULER.lock();
+        let result = crate::drivers::scheduler::with_active_policy(pin, pin.generation(), || {
+                         super::smp::apply_harts(pin.generation(), count)
+                     }).and_then(core::convert::identity);
+        drop(scheduler);
+        result
+    })
+}
+
+/// Withdrawal may be requested only by the real retained policy's retirement
+/// path. A true result follows each target's own idle-frame/claim commitment.
+pub(crate) fn drain_policy_harts() -> bool
+{
+    super::interrupts::with_masked(|| {
+        let scheduler = SCHEDULER.lock();
+        let drained = super::smp::withdraw_harts();
+        drop(scheduler);
+        drained
+    })
 }
 
 pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
 {
-    let frame = capture.frame();
     let hart = capture.hart();
     let current = capture.current();
     {
@@ -1360,6 +1482,8 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
     // allocation or logical app identities cannot impersonate this service hart.
     if super::paging::firmware_owner_hart() == Some(hart.number())
     {
+        wake::report_failure();
+        super::smp::report_failures();
         crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
             // Device input and cursor publication precede all ordinary maintenance.
             // Never enable nested preemption while a resident manager owns its guards.
@@ -1388,7 +1512,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
     wake_deadlines(&scheduler, crate::platform::ticks());
     // Deadline/wake edits above precede Round.now. No scheduler guard or
     // mutable frame borrow may cross foreign policy entry.
-    let preferred = if crate::drivers::scheduler::configured()
+    let preferred = if hart.dispatch_eligible() && crate::drivers::scheduler::configured()
     {
         drop(scheduler);
         let attempt = policy::select(&capture);
@@ -1416,44 +1540,85 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
     {
         None
     };
-    let choice =
-        preferred.as_ref()
-                 .and_then(|selection| {
-                     selection.slot(&scheduler, &capture)
-                              .map(|slot| (slot, selection.quantum_ticks))
-                 })
-                 .or_else(|| {
-                     bootstrap_choice(&scheduler, &capture).map(|slot| (slot, timer_interval()))
-                 });
-    if let Some((index, quantum)) = choice.filter(|(slot, _)| *slot != IDLE)
+    // Claim and policy generation are committed in one turn. A snapshot that
+    // lost a race is ordinary contention; bootstrap rechecks the same live
+    // canonical state instead of quarantining a healthy policy.
+    let committed = preferred.as_ref()
+                             .and_then(|selection| {
+                                 selection.commit(&scheduler, &capture, |slot, quantum| {
+                                              commit_choice(&scheduler, &capture, slot, quantum)
+                                          })
+                                          .ok()
+                                          .flatten()
+                             })
+                             .or_else(|| {
+                                 let slot = bootstrap_choice(&scheduler, &capture).unwrap_or(IDLE);
+                                 commit_choice(&scheduler, &capture, slot, timer_interval())
+                             });
+    let Some((next, quantum, idle)) = committed
+    else
     {
-        if let Some(thread) = scheduler.thread(index)
-        {
-            let next = if index == current { Some(frame) } else { thread.core.cpu_frame() };
-            if let Some(next) = next
-            {
-                // No fallible step follows this commit. The same implementation
-                // commits bootstrap and replacement-policy decisions.
-                worker::commit_resume(thread);
-                thread.commit_execution(hart);
-                thread.core.publish_cpu();
-                activate_context(Some(&thread.core.context));
-                select_current(index);
-                if index != current
-                {
-                    release_claim(&scheduler, current, hart);
-                }
-                arm_ticks(quantum);
-                return next;
-            }
+        claim_lost(hart, current, "fresh canonical frame choice cannot commit");
+    };
+    // A retained policy Selection owns real Plan/code pins. Never run their
+    // destructors while SCHEDULER or the registration phase is held.
+    drop(scheduler);
+    drop(preferred);
+    if hart.dispatch_eligible() && (!idle || hart.is_primary())
+    {
+        arm_ticks(quantum);
+    }
+    else
+    {
+        // Idle peers have no local author quantum. Primary maintenance owns
+        // global wait deadlines/input; genuine readiness posts a target wake.
+        // A drained peer likewise retains SSIP for admission or shutdown.
+        unsafe {
+            asm!("csrc sie, {timer}", timer = in(reg) 32usize, options(nostack));
         }
     }
-    let next = if current == IDLE { frame } else { idle_frame() };
+    hart.resume_activity(idle);
+    next
+}
+
+/// Bounded frame/claim commitment only: no foreign callback, allocation,
+/// owning retirement or fallible work follows the first ownership mutation.
+fn commit_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture, index: usize,
+                 quantum: u64)
+                 -> Option<(*mut TrapFrame, u64, bool)>
+{
+    let hart = capture.hart();
+    let current = capture.current();
+    if index != IDLE
+    {
+        let thread = scheduler.thread(index)?;
+        let state = thread.state.get();
+        if !state.live
+           || state.retired
+           || state.waiting.is_some()
+           || !state.allows(hart)
+           || !(state.claimed_by.is_none() || (index == current && state.claimed_by == Some(hart)))
+        {
+            return None;
+        }
+        let next = if index == current { capture.frame() } else { thread.core.cpu_frame()? };
+        worker::commit_resume(thread);
+        thread.commit_execution(hart);
+        thread.core.publish_cpu();
+        activate_context(Some(&thread.core.context));
+        select_current(index);
+        if index != current
+        {
+            release_claim(scheduler, current, hart);
+        }
+        return Some((next, quantum, false));
+    }
+    let next = if current == IDLE { capture.frame() } else { idle_frame() };
     activate_idle_context();
     select_current(IDLE);
-    release_claim(&scheduler, current, hart);
-    arm();
-    next
+    release_claim(scheduler, current, hart);
+    super::traps::execution::dispatch::idle_committed(hart, next);
+    Some((next, quantum, true))
 }
 
 fn wake_deadlines(scheduler: &Scheduler, now: u64)
@@ -1478,10 +1643,22 @@ fn bootstrap_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture)
 {
     let current = capture.current();
     let hart = capture.hart();
+    if hart.is_primary()
+    {
+        // This fresh choice reads canonical readiness under the existing guard.
+        // It can consume earlier runnable hints, unlike revalidating an older
+        // immutable foreign-policy Round after a new off-hart wake.
+        wake::observed_runnable();
+    }
+    else
+    {
+        super::smp::observed_runnable(hart);
+    }
     let priority = scheduler.iter()
                             .filter(|(slot, t)| {
                                 let state = t.state.get();
                                 state.live
+                                && state.allows(hart)
                                 && (state.claimed_by.is_none()
                                     || (*slot == current && state.claimed_by == Some(hart)))
                             })
@@ -1507,6 +1684,7 @@ fn bootstrap_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture)
             };
             let state = thread.state.get();
             if state.live
+               && state.allows(hart)
                && !state.retired
                && (state.claimed_by.is_none()
                    || (index == current && state.claimed_by == Some(hart)))

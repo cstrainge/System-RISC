@@ -3361,3 +3361,27 @@ full register preservation, race/latency or arbitrary-fault qualification.
 Independent application heaps, private process roots, image-page accounting and
 remaining protected recovery services are still staged. Common-control/TE2
 migration remains separate.
+
+
+### Native SMP development boundary — 2026-10-29
+
+The core now routes application services and native module Host calls through
+canonical temporary primary obligations while allowing ordinary application and
+Automatic worker bodies on admitted peers. Policy storage is prepared per CPU;
+final frame/claim commitment retains the sampled policy generation under joint
+metadata exclusion. Demotion and retirement require actual target-owned idle
+and running-claim release, rather than interrupt acknowledgment alone.
+
+The exact optimized native artifacts and bounded four-CPU body, register,
+service, cancellation, reclamation, policy-drain and Clipboard-worker/Get Info
+observations are recorded in [Scheduling](../SCHEDULING.md). They are development
+coverage, not a proof of race absence, all interrupted-service interleavings,
+other hardware, arbitrary privileged-fault recovery or production clipboard
+sharing. The module image-pin lookup now protects its complete short registry
+borrow against local preemption; foreign dispatch remains outside it.
+
+Application page-backed heaps and platform application startup/allocation,
+private process roots and privilege separation, executable-image page charging,
+full protected Save/Save As exhaustion and production Finder OOM restart remain
+separate work. TE2/common-control migration remains deferred. Public CPU activity
+is physical residency; per-domain CPU accounting is not inferred from it.

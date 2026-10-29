@@ -7,6 +7,9 @@ build = "build.rs"
 
 [workspace]
 
+[features]
+smp = []
+
 [[bin]]
 name = "ProcessSpinner"
 path = "src/main.rs"

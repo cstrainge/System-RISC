@@ -42,6 +42,20 @@ pub(crate) fn memory_inspection_request(call: &mut mac_abi::inspection::memory::
     }).unwrap_or_else(|error| error.status())
 }
 
+pub(crate) fn cpu_inspection_request(call: &mut mac_abi::inspection::cpus::Call) -> Status
+{
+    let caller = crate::context::current_thread_context().identity().app.0;
+    crate::kernel::with_desktop(|desktop| {
+        crate::toolbox::inspection::cpus::request(desktop.processes
+                                                         .entries
+                                                         .get(caller)
+                                                         .is_some_and(|entry| {
+                                                             entry.ledger().accepting()
+                                                         }),
+                                                  call)
+    }).unwrap_or_else(|error| error.status())
+}
+
 pub struct Process
 {
     pub info:         ProcessInfo,

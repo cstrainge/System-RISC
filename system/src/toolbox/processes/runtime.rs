@@ -1111,6 +1111,9 @@ impl Desktop
             SHOW_ALL => self.application_action(Action::ShowAll),
             EXIT =>
             {
+                // A native Host thunk still owns the continuation/guard. Refuse
+                // before stop/checkpoint effects can abandon that actual stack.
+                crate::machine::scheduler::service::exit_allowed()?;
                 if caller == crate::context::finder_app().0
                 {
                     return Err(ACCESS_DENIED);
