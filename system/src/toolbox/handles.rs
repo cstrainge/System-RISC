@@ -205,6 +205,12 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                    registry.register(&owner, crate::machine::scheduler::specification(storage),
                                        crate::machine::scheduler::ReleaseThreads(storage)).map_err(KindAccessError::Registry)?;
                                }
+                               for storage in [false, true] {
+                                   registry.register(&owner,
+                                       crate::drivers::scheduler::specification(storage),
+                                       crate::drivers::scheduler::ReleaseRegistration(storage))
+                                       .map_err(KindAccessError::Registry)?;
+                               }
                                for kind in crate::images::Registration::ALL {
                                    registry.register(&owner, kind.specification(), kind)
                                        .map_err(KindAccessError::Registry)?;
@@ -260,11 +266,21 @@ pub(crate) fn system_owner() -> Result<OwnerRef, mac_abi::Status>
     system_owner_checked().map_err(|error| error.status())
 }
 #[cfg(target_arch = "riscv64")]
+static SYSTEM_OWNER: spin::Once<OwnerRef> = spin::Once::new();
+#[cfg(target_arch = "riscv64")]
 fn system_owner_checked() -> Result<OwnerRef, KindAccessError>
 {
-    static OWNER: spin::Once<OwnerRef> = spin::Once::new();
-    OWNER.try_call_once(|| OwnerRef::issue(DomainKind::System).map_err(KindAccessError::Owner))
-         .cloned()
+    SYSTEM_OWNER.try_call_once(|| {
+                    OwnerRef::issue(DomainKind::System).map_err(KindAccessError::Owner)
+                })
+                .cloned()
+}
+/// Inspection borrows the already-issued root. A read must not issue a new
+/// domain, allocate authority storage or retain the querying app's account.
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn system_owner_if_ready() -> Option<&'static OwnerRef>
+{
+    SYSTEM_OWNER.get()
 }
 
 #[cfg(target_arch = "riscv64")]

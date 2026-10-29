@@ -357,6 +357,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
                 return process, endpoint
             if any(marker in log for marker in ['BOOT_NO_SYSTEM:', 'BOOT_TRAP:', 'BOOT_PANIC:', 'BOOT_UNSUPPORTED_ISA:',
                                                'BOOT_MEMORY_REJECTED:', 'BOOT_CPU_TOPOLOGY_REJECTED:',
+                                               'BOOT_MACHINE_MONITOR_REFUSED:',
                                                'BOOT_SUPERVISOR_REJECTED:', 'SYSTEM_STARTUP_FAILED:',
                                                'SYSTEM_PANIC:', 'SYSTEM_TRAP:', 'SYSTEM_ALLOCATION_FAILED:']):
                 raise RuntimeError('System RISC startup failed:\n' + log)

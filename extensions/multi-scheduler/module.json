@@ -1,0 +1,26 @@
+{
+  "identity": "7731a000000000000000000000000090",
+  "heap_bytes": 0,
+  "stack_bytes": 16384,
+  "interfaces": [
+    {
+      "class": "SCHD",
+      "version": 1,
+      "request_schema": 1,
+      "reply_schema": 1,
+      "max_request": 131136,
+      "max_reply": 48,
+      "exclusive": true
+    }
+  ],
+  "services": [
+    {
+      "class": "SCTL",
+      "version": 1
+    },
+    {
+      "class": "MLIF",
+      "version": 1
+    }
+  ]
+}

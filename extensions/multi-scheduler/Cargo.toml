@@ -1,0 +1,21 @@
+[package]
+name = "multi-scheduler-extension"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+[features]
+guest = []
+[[bin]]
+name = "MultiScheduler"
+path = "src/main.rs"
+required-features = ["guest"]
+test = false
+bench = false
+[dependencies]
+mac-abi.workspace = true
+mac-driver = { path = "../../crates/mac-driver" }
+mac-driver-alloc = { path = "../../crates/mac-driver-alloc" }
+mac-scheduler-interface.workspace = true
+mac-scheduler-policy.workspace = true
+[build-dependencies]
+mac-build.workspace = true

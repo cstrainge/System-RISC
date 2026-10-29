@@ -122,6 +122,11 @@ impl Launch
 /// offers its live descriptor, name and unique forwarded Send capture.
 pub(super) unsafe extern "C" fn control(module: u64, pointer: *mut abi::WorkerCall) -> Status
 {
+    if crate::machine::traps::execution::policy::deny(
+        crate::machine::traps::execution::policy::Operation::Worker)
+    {
+        return ACCESS_DENIED;
+    }
     let operation = || -> Result<(), Status> {
         crate::context::authenticate_module(module)?;
         if pointer.is_null() || !pointer.is_aligned()

@@ -1,6 +1,6 @@
 //! Native application/code-resource loading with shared automatic translation routing.
 use alloc::vec::Vec;
-use core::arch::asm;
+use core::fmt;
 
 use mac_abi::{BAD_ARGUMENT, DefinitionEntry, NOT_FOUND, Status};
 use mac_formats::{Error, Result,
@@ -8,6 +8,42 @@ use mac_formats::{Error, Result,
                   native::{Descriptor, Role, image},
                   resource::Resource,
                   text};
+
+/// Format refusal and executable publication failure retain distinct identity.
+/// The trap boundary deliberately chooses numeric Status; loading callers keep
+/// the original transport cause until that boundary or the startup diagnostic.
+#[derive(Debug)]
+pub(crate) enum LoadError
+{
+    Format(Error),
+    Publication(crate::machine::monitor::Error)
+}
+impl fmt::Display for LoadError
+{
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        match self
+        {
+            Self::Format(cause) => cause.fmt(out),
+            Self::Publication(cause) => write!(out, "executable publication refused: {cause}")
+        }
+    }
+}
+impl From<Error> for LoadError
+{
+    fn from(cause: Error) -> Self
+    {
+        Self::Format(cause)
+    }
+}
+impl From<crate::machine::monitor::Error> for LoadError
+{
+    fn from(cause: crate::machine::monitor::Error) -> Self
+    {
+        Self::Publication(cause)
+    }
+}
+pub(crate) type LoadResult<T> = core::result::Result<T, LoadError>;
 
 pub fn read_startup(name: &str) -> Result<Vec<Resource>>
 {
@@ -67,7 +103,7 @@ pub fn application_extent(resources: &[Resource]) -> Result<u64>
     let (descriptor, _, _) = application_parts(resources)?;
     Ok(descriptor.load_limit - descriptor.load_base)
 }
-pub fn application_at(resources: &[Resource], destination: u64) -> Result<usize>
+pub(crate) fn application_at(resources: &[Resource], destination: u64) -> LoadResult<usize>
 {
     let (descriptor, bytes, _) = application_parts(resources)?;
     let extent = descriptor.load_limit - descriptor.load_base;
@@ -75,7 +111,7 @@ pub fn application_at(resources: &[Resource], destination: u64) -> Result<usize>
                          .ok_or(Error::Malformed("application destination overflow"))?;
     if destination & 4095 != 0 || !application_region(destination, end)
     {
-        return Err(Error::Malformed("application destination overlaps resident images"));
+        return Err(Error::Malformed("application destination overlaps resident images").into());
     }
     let table = resources.iter()
                          .find(|r| r.kind == *b"RLOC" && r.id == 0)
@@ -84,15 +120,16 @@ pub fn application_at(resources: &[Resource], destination: u64) -> Result<usize>
 }
 
 fn load(descriptor: &Descriptor, bytes: &[u8], relocations: Option<&[u8]>, destination: u64)
-        -> Result<usize>
+        -> LoadResult<usize>
 {
     let plan = image::LoadPlan::new(bytes, descriptor, relocations, destination)?;
     // The image registry/definition allocator owns this disjoint RAM reservation.
     let output = unsafe { core::slice::from_raw_parts_mut(destination as *mut u8, plan.length()) };
     plan.write(output)?;
-    unsafe {
-        asm!("fence.i", options(nostack));
-    }
+    // Entries remain unpublished until the architecture has synchronized
+    // instructions on every admitted participant, or refused with its typed
+    // cause. A loading-hart fence alone does not publish executable code.
+    crate::machine::monitor::publish_instructions()?;
     Ok(plan.entry() as usize)
 }
 
@@ -124,7 +161,7 @@ impl Definitions
         self.bindings.retain(|binding| binding.origin != origin);
     }
 
-    pub fn resolve(&mut self, kind: [u8; 4], id: i16) -> Result<DefinitionEntry>
+    pub(crate) fn resolve(&mut self, kind: [u8; 4], id: i16) -> LoadResult<DefinitionEntry>
     {
         // A process-resource cleanup wrapper can nest inside the resident
         // service scope. The genuine Activity still selects System definitions.
@@ -143,13 +180,13 @@ impl Definitions
 
     pub(crate) fn resolve_system(&mut self, source: crate::kernel::SystemResources, kind: [u8; 4],
                                  id: i16)
-                                 -> Result<DefinitionEntry>
+                                 -> LoadResult<DefinitionEntry>
     {
         source.with(|| self.resolve_selected(kind, id))
               .map_err(|_| Error::Malformed("System UI resource scope is unavailable"))?
     }
 
-    fn resolve_selected(&mut self, kind: [u8; 4], id: i16) -> Result<DefinitionEntry>
+    fn resolve_selected(&mut self, kind: [u8; 4], id: i16) -> LoadResult<DefinitionEntry>
     {
         let lookup = crate::kernel::definition_resource_scope();
         crate::kernel::with_resources_in(lookup, |manager| {
@@ -177,7 +214,7 @@ impl Definitions
                || extent & 4095 != 0
                || d.load_base & 4095 != 0
             {
-                return Err(Error::Malformed("invalid code resource reservation"));
+                return Err(Error::Malformed("invalid code resource reservation").into());
             }
             // Definition resources are independently relocatable modules. Allocate
             // top-down rather than depending on their build-time preferred addresses.
@@ -186,7 +223,7 @@ impl Definitions
             {
                 if base < crate::machine::memory::DEFINITION_BASE
                 {
-                    return Err(Error::BudgetExceeded("code resource address space exhausted"));
+                    return Err(Error::BudgetExceeded("code resource address space exhausted").into());
                 }
                 let overlap =
                     self.bindings.iter().find(|b| base < b.limit && b.base < base + extent);
@@ -234,14 +271,18 @@ impl Definitions
     }
 }
 
-pub fn status(error: Error) -> Status
+pub(crate) fn status(error: impl Into<LoadError>) -> Status
 {
-    match error
+    match error.into()
     {
-        Error::BudgetExceeded(_) | Error::AllocationFailed(_) => mac_abi::NO_MEMORY,
-        Error::Missing(_) => NOT_FOUND,
-        Error::TranslationRequired(_) => mac_abi::TRANSLATION_REQUIRED,
-        Error::Malformed(_) => BAD_ARGUMENT
+        LoadError::Format(Error::BudgetExceeded(_) | Error::AllocationFailed(_)) =>
+        {
+            mac_abi::NO_MEMORY
+        }
+        LoadError::Format(Error::Missing(_)) => NOT_FOUND,
+        LoadError::Format(Error::TranslationRequired(_)) => mac_abi::TRANSLATION_REQUIRED,
+        LoadError::Format(Error::Malformed(_)) => BAD_ARGUMENT,
+        LoadError::Publication(cause) => cause.status()
     }
 }
 

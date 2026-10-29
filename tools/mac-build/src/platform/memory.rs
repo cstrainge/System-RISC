@@ -15,6 +15,50 @@ struct Region
     base:  String,
     bytes: String
 }
+// The only supported monitor profile. Unknown reset/transport values fail at
+// platform deserialization; there is no CPU-only reset, hotplug or SBI fallback.
+#[derive(Clone, Copy, Deserialize)]
+enum MonitorReset
+{
+    #[serde(rename = "whole-machine")]
+    WholeMachine
+}
+#[derive(Clone, Copy, Deserialize)]
+enum MonitorBinding
+{
+    #[serde(rename = "legacy-clint")]
+    LegacyClint
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MonitorPolicy
+{
+    reset:      MonitorReset,
+    binding:    MonitorBinding,
+    compatible: [String; 2]
+}
+impl MonitorPolicy
+{
+    fn check(&self) -> Result<()>
+    {
+        // Consume the selected reset/binding before emitting this profile's
+        // shared CLINT/frame geometry. This named profile supports exactly the
+        // two compatible tags decoded by the actual legacy route parser.
+        match (self.reset, self.binding)
+        {
+            (MonitorReset::WholeMachine, MonitorBinding::LegacyClint) =>
+            {
+                if self.compatible != ["sifive,clint0", "riscv,clint0"]
+                {
+                    return Err(error("legacy-clint monitor compatibility must be sifive,clint0 \
+                                      and riscv,clint0; another binding requires production \
+                                      support"));
+                }
+                Ok(())
+            }
+        }
+    }
+}
 /// Display size in pixels, from the platform record. This is the single
 /// build-time source of display geometry; the guest reads it through the
 /// generated DISPLAY_WIDTH/DISPLAY_HEIGHT constants. A future Display Control
@@ -49,6 +93,8 @@ pub(super) struct Definition
     definitions:                 Region,
     fdt_tail_bytes:              String,
     boot_stack_bytes:            String,
+    monitor_stack_bytes:         String,
+    machine_monitor:             MonitorPolicy,
     system_heap_bytes:           String,
     system_recovery_bytes:       String,
     stacks:                      stacks::Definition,
@@ -76,6 +122,7 @@ pub struct Checked
     pub(super) definitions:                 Range<u64>,
     pub(super) fdt_tail_bytes:              u64,
     pub(super) boot_stack_bytes:            u64,
+    monitor_stack_bytes:                    u64,
     pub(super) system_heap_bytes:           u64,
     system_recovery_bytes:                  u64,
     stacks:                                 stacks::Checked,
@@ -223,6 +270,17 @@ impl Definition
             return Err(error("platform memory boot_stack_bytes must be nonzero, 16-byte \
                               aligned and smaller than boot RAM"));
         }
+        self.machine_monitor.check()?;
+        let monitor_stack_bytes = address("monitor_stack_bytes", &self.monitor_stack_bytes)?;
+        if monitor_stack_bytes < page
+           || !monitor_stack_bytes.is_multiple_of(page)
+           || monitor_stack_bytes < mac_abi::boot::monitor::CONTROL_BYTES as u64
+           || !monitor_stack_bytes.is_multiple_of(mac_abi::boot::monitor::CONTROL_ALIGNMENT as u64)
+        {
+            return Err(error("monitor_stack_bytes must be page aligned and cover the \
+                              integer-only leaf monitor frame; Rust calls/nesting require a \
+                              revised policy"));
+        }
         let system_heap_bytes = address("system_heap_bytes", &self.system_heap_bytes)?;
         if system_heap_bytes == 0 || !system_heap_bytes.is_multiple_of(page)
         {
@@ -264,6 +322,7 @@ impl Definition
                      definitions,
                      fdt_tail_bytes: tail,
                      boot_stack_bytes,
+                     monitor_stack_bytes,
                      system_heap_bytes,
                      system_recovery_bytes,
                      stacks,
@@ -382,6 +441,8 @@ impl Checked
              ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
              ("FDT_TAIL_BYTES", self.fdt_tail_bytes),
              ("BOOT_STACK_BYTES", self.boot_stack_bytes),
+             ("MONITOR_STACK_BYTES", self.monitor_stack_bytes),
+             ("MONITOR_CONTROL_BYTES", mac_abi::boot::monitor::CONTROL_BYTES as u64),
              ("SYSTEM_HEAP_BYTES", self.system_heap_bytes),
              ("SYSTEM_RECOVERY_BYTES", self.system_recovery_bytes)].into_iter()
                                                                    .chain(self.display_buffers())
@@ -407,6 +468,10 @@ impl Checked
              ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
              ("DISPLAY_SCRATCH_BYTES", self.display_scratch.end - self.display_scratch.start),
              ("MODULE_LIMIT", self.modules.end),
+             ("FIRMWARE_HEAP_BASE", self.firmware_heap.start),
+             ("FIRMWARE_HEAP_BYTES", self.firmware_heap.end - self.firmware_heap.start),
+             ("MONITOR_STACK_BYTES", self.monitor_stack_bytes),
+             ("MONITOR_CONTROL_BYTES", mac_abi::boot::monitor::CONTROL_BYTES as u64),
              ("FDT_TAIL_BYTES", self.fdt_tail_bytes),
              ("APPLICATION_RELOCATION_BASE", self.application_relocation_base),
              ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
@@ -484,6 +549,10 @@ impl Checked
                               ("FLASH_BASE", self.flash.start),
                               ("FLASH_BYTES", self.flash.end - self.flash.start),
                               ("FW_CFG_BASE", self.fw_cfg.start),
+                              ("FIRMWARE_HEAP_BASE", self.firmware_heap.start),
+                              ("FIRMWARE_HEAP_BYTES", self.firmware_heap.end - self.firmware_heap.start),
+                              ("MONITOR_STACK_BYTES", self.monitor_stack_bytes),
+                              ("MONITOR_CONTROL_BYTES", mac_abi::boot::monitor::CONTROL_BYTES as u64),
                               ("DISPLAY_WIDTH", self.display_width),
                               ("DISPLAY_HEIGHT", self.display_height),
                               ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),

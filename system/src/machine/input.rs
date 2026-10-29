@@ -473,10 +473,16 @@ pub(crate) struct TerminalInput
 /// Abandon normal input and consume the one boot-admitted terminal preparation.
 ///
 /// # Safety
-/// The caller owns the terminal failure path on hart zero, with SIE disabled,
-/// after switching to its dedicated stack. It will never resume normal input or
-/// return to interrupted code, and no other hart may access these devices.
+/// The caller is the sole authenticated terminal winner, with SIE disabled,
+/// on its dedicated stack, after every other discovered CPU acknowledged actual
+/// irreversible M-mode stop. It never resumes normal input or interrupted code.
+/// Register windows, dedicated queues and their pretranslated DMA backing stay
+/// pinned and mapped in this admitted CPU's permanent root until reset. Polling
+/// uses no boot-hart interrupt route or firmware callback: an admitted peer may
+/// own this one-shot takeover under the same exclusive device contract.
 /// Ordinary Queue references may be suspended: they are never borrowed here.
+/// Each device must ACK reset before any terminal ring is modified/published;
+/// reset/refusal errors retain the backing and never authorize ring reuse.
 pub(crate) unsafe fn terminal_takeover() -> Result<TerminalInput, Error>
 {
     let state = unsafe { &*addr_of!(TERMINAL.state) };

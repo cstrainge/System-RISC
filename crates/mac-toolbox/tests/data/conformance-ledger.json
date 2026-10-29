@@ -5,14 +5,14 @@
   "mock_manager_results": false,
   "canonical_acceptance": "System7/crates/mac-toolbox/tests/conformance/mod.rs::run_all",
   "host": {
-    "status": "passed",
+    "status": "historical-host-result-not-os-qualification",
     "command": "cargo test --manifest-path System7/Cargo.toml -p mac-toolbox --tests",
     "canonical_host_tests": 8,
     "native_boundaries_owned_by_root": "System7/crates/mac-toolbox/tests/memory_boundaries.rs",
     "native_boundary_status": "passed-root-run"
   },
   "rv64_ecall": {
-    "status": "passed-declared-subset",
+    "status": "historical-subset-retired-raw-bootstrap",
     "launcher": "System7/tests/abi-smoke/src/main.rs",
     "shared_acceptance": "conformance::run_all",
     "serial_log": "build/system7/abi-smoke/serial.log",
@@ -545,5 +545,7 @@
     "native_utf8_bytes": 765,
     "pascal_bytes": 256,
     "ecall_maximum_name": "pending private maximum-name application resource fixture"
-  }
+  },
+  "historical_evidence_only": true,
+  "current_acceptance": "None: historical host results do not qualify the shipping OS; raw-memory bootstrap retired for mandatory ROM monitor contract"
 }

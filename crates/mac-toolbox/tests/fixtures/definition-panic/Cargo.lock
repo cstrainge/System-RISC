@@ -109,6 +109,7 @@ version = "0.1.0"
 name = "mac-build"
 version = "0.1.0"
 dependencies = [
+ "mac-abi",
  "mac-device-interface",
  "mac-formats",
  "mac-kernel-model",

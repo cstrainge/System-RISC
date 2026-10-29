@@ -224,6 +224,33 @@ impl Loaded
     }
 }
 
+/// Image ownership/admission can fail independently of writing its code.
+/// Keep the writer's typed cause until the caller chooses its API boundary.
+#[derive(Debug)]
+pub(crate) enum LoadError<E>
+{
+    Admission(Status),
+    Write(E)
+}
+impl<E> From<Status> for LoadError<E>
+{
+    fn from(cause: Status) -> Self
+    {
+        Self::Admission(cause)
+    }
+}
+impl<E: core::fmt::Display> core::fmt::Display for LoadError<E>
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Admission(status) => write!(out, "image admission refused: status {status}"),
+            Self::Write(cause) => cause.fmt(out)
+        }
+    }
+}
+
 pub(crate) struct Manager
 {
     sources: aliases::Store<Arc<Source>, InvocationGate, Arc<Instance>>
@@ -238,12 +265,12 @@ impl Manager
 
     /// Caller owns a genuine child ledger before any source is admitted. All
     /// fallible metadata allocation precedes executable-memory writes.
-    pub(crate) fn load(&mut self, owner: &OwnerRef, source: Arc<Source>, preferred: u64,
-                       extent: u64, relocation_base: u64, limit: u64,
-                       executable: Vec<core::ops::Range<u64>>,
-                       write: impl FnOnce(&[mac_formats::resource::Resource],
-                              u64) -> Result<usize, Status>)
-                       -> Result<Loaded, Status>
+    pub(crate) fn load<E>(&mut self, owner: &OwnerRef, source: Arc<Source>, preferred: u64,
+                          extent: u64, relocation_base: u64, limit: u64,
+                          executable: Vec<core::ops::Range<u64>>,
+                          write: impl FnOnce(&[mac_formats::resource::Resource],
+                                 u64) -> Result<usize, E>)
+                          -> Result<Loaded, LoadError<E>>
     {
         let role_matches_owner =
             matches!((&source.role, owner.owner().kind()),
@@ -251,11 +278,11 @@ impl Manager
                      | (Role::Module, mac_object_table::domain::DomainKind::Module));
         if !role_matches_owner
         {
-            return Err(ACCESS_DENIED);
+            return Err(LoadError::Admission(ACCESS_DENIED));
         }
         if !owner.accepting()
         {
-            return Err(SERVICE_BUSY);
+            return Err(LoadError::Admission(SERVICE_BUSY));
         }
         let free = |base: u64| {
             base.checked_add(extent).is_some_and(|end| {
@@ -306,7 +333,7 @@ impl Manager
         let result = (|| {
             let read = self.read(binding)?;
             let loading = read.instance.execution.begin_load().map_err(|_| SERVICE_BUSY)?;
-            let entry = write(&read.source.resources, base)?;
+            let entry = write(&read.source.resources, base).map_err(LoadError::Write)?;
             Ok(Loaded { binding,
                         entry,
                         _execution: Execution { _execution: loading.finish(),

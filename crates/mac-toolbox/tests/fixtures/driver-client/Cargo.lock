@@ -100,6 +100,7 @@ version = "0.1.0"
 name = "mac-build"
 version = "0.1.0"
 dependencies = [
+ "mac-abi",
  "mac-device-interface",
  "mac-formats",
  "mac-kernel-model",
@@ -132,6 +133,7 @@ dependencies = [
  "mac-device-interface",
  "mac-file-source-interface",
  "mac-module",
+ "mac-scheduler-interface",
  "spinning_top",
 ]
 
@@ -188,6 +190,13 @@ name = "mac-riscv-pages"
 version = "0.1.0"
 dependencies = [
  "mac-kernel-model",
+]
+
+[[package]]
+name = "mac-scheduler-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
 ]
 
 [[package]]
@@ -314,6 +323,8 @@ dependencies = [
  "mac-driver",
  "mac-driver-alloc",
  "mac-formats",
+ "mac-module",
+ "mac-scheduler-interface",
 ]
 
 [[package]]

@@ -97,36 +97,11 @@ class ImageCleanupTests(unittest.TestCase):
         self.assertTrue(all(path.exists() for path in keep))
         self.assertFalse(old.exists())
 
-    def test_abi_code_loads_survive_while_raw_disks_beside_and_outside_them_prune(self):
-        keep = []
-        old = []
-        for profile in ('', 'check/', 'nested/custom-profile/'):
-            base = f'build/system7/{profile}'
-            # Classification follows the producer's path role, not a guessed
-            # header, file length, completed result, or current installation.
-            keep.extend([self.write(base + 'abi-smoke/System.raw', b'HB\0not-a-disk'),
-                         self.write(base + 'abi-smoke/Finder.raw', b'code')])
-            old.extend([self.write(base + 'abi-smoke/disk.raw'),
-                        self.write(base + 'abi-smoke/failed.qcow2'),
-                        self.write(base + 'abi-smoke/unblessed.hfsb'),
-                        self.write(base + 'obsolete/System.raw'),
-                        self.write(base + 'obsolete/Finder.raw')])
-        # The same basename in a captured filesystem is not an xtask load image.
-        old.extend([self.write('results/system7/finished/abi-smoke/System.raw'),
-                    self.write('results/system7/finished/abi-smoke/Finder.raw')])
-        report = self.prune()
-        self.assertEqual(report['removed_files'], len(old))
-        self.assertTrue(all(path.exists() for path in keep))
-        self.assertTrue(all(not path.exists() for path in old))
-        self.assertEqual(self.prune()['removed_files'], 0)
-
-    def test_abi_artifact_roles_compose_with_live_current_user_and_reference_protections(self):
+    def test_generated_media_compose_with_live_current_user_and_reference_protections(self):
         self.write('build/system7/check/dist/build.json', b'{}')
         self.write('results/system7/live/pid', str(os.getpid()).encode())
         self.write('results/system7/failed/pid', b'not-a-process-id')
         keep = [self.write(name) for name in [
-            'build/system7/check/abi-smoke/System.raw',
-            'build/system7/check/abi-smoke/Finder.raw',
             'build/system7/check/dist/system7.hfsb',
             'build/system7/check/dist/system7.qcow2',
             'build/system7/check/dist/bootrom.bin',
@@ -140,8 +115,8 @@ class ImageCleanupTests(unittest.TestCase):
         self.assertFalse(obsolete.exists())
         self.assertEqual(report['files'], ['results/system7/failed/dist/disk.raw'])
 
-    def test_unlink_refusal_is_reported_without_touching_code_or_current_media(self):
-        code = self.write('build/system7/check/abi-smoke/System.raw')
+    def test_unlink_refusal_is_reported_without_touching_saved_or_current_media(self):
+        saved = self.write('build/system7/user-state/source/Saved.raw')
         current = self.write('build/system7/dist/system7.qcow2')
         obsolete = self.write('results/system7/finished/disk.raw')
         unlink = Path.unlink
@@ -156,7 +131,7 @@ class ImageCleanupTests(unittest.TestCase):
                 self.prune()
         self.assertIn(str(obsolete), str(error.exception))
         self.assertTrue(obsolete.exists())
-        self.assertTrue(code.exists())
+        self.assertTrue(saved.exists())
         self.assertTrue(current.exists())
         self.assertFalse((self.root / 'results/system7/image-cleanup.json').exists(),
                          'a refused cleanup must not publish a success report')

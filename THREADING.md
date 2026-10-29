@@ -27,13 +27,16 @@ unmapped guard pages; application stacks still use trusted physmap aliases.
 Kernel traps mask
 interrupts, including nested definition calls, so allocator and manager guards
 cannot be preempted by another application on this hart. Native event waits now
-block the actual application thread, with a separate idle WFI context and 250 us
-timer sampling. Readiness is inspected before taking the scheduler lock; a fresh
-foreground input wake takes priority over background and timeout wakes. No manager
+block the actual application thread, with a separate idle WFI context. The checked
+platform currently selects a 250-microsecond quantum. Bootstrap selection gives a
+fresh foreground input wake priority over background and timeout wakes. An
+optional SCHD provider may supply a decision through the primary-only resident
+policy path; final readiness/claim/frame authority remains in the core. No manager
 guard or borrowed request crosses the context switch. General application-worker
-APIs, blocking primitives, migration and multiple harts remain future work. The
-privileged module-worker backend is described below. The dynamic capacity SDK gate now runs ten apps together, delivers physical keys to all nine
-workers and repeats with fresh identities after actual exits and slot reuse. A private
+APIs, blocking primitives, migration and concurrent execution of authored code
+across multiple harts remain future work. The privileged module-worker backend
+is described below; discovered peers can separately complete System-idle startup. The dynamic capacity SDK gate now runs ten apps together,
+delivers physical keys to all nine workers and repeats with fresh identities after actual exits and slot reuse. A private
 RV64 SDK gate has demonstrated another app progressing during a
 no-trap/no-yield interval, plus launch, relaunch, ownership, input, hide and exit.
 
@@ -268,14 +271,18 @@ extension service.
 The architecture selects execution state from this CPU's actual admitted
 `sscratch` control. Active context, current scheduler position, synchronous I/O
 selection and idle stack/CPU backing belong to that hart record. Runtime lookup
-never falls back to a frozen boot hart number. Only the primary record is
-admitted today; ROM secondaries remain parked.
+never falls back to a frozen boot hart number. The primary remains the only
+scheduling-eligible record. Normal graphical
+boot admits peers to their own canonical System idle; readiness alone does not
+authorize application or module execution.
 
 Cold bootstrap publishes an allocation-free control after checked BootInfo and
 the one-shot System-entry claim. It cannot serve traps: its entering flag is
 poisoned until real stack/CPU backing and the prepared control exist. This trusts
-the ROM's primary-only entry contract; it is not independent authentication of
-arbitrary secondary calls to System entry. Raw CSR/control access stays in the
+the ROM's explicit BOOT entry contract. HART entry is separately authenticated
+against the actual control arena, publication sequence, root and stack before
+any normal context or supplied payload is borrowed. Raw CSR/control access stays in
+the
 architecture binding, and safe concrete selection operations expose no mutable
 hart borrow across callbacks or nested ECALLs. Unchanged active contexts avoid
 Arc operations; allocator reservations still borrow their genuine selection.
@@ -342,19 +349,139 @@ These observations do not qualify sparse hardware IDs or SMP execution.
 
 The QemuRISC-V platform defines four physical harts by default. The normal
 launcher reads that platform value; `start --harts COUNT` overrides it. Only
-the primary executes System code. The other three remain parked until the core
-admission gates pass, regardless of their presence in the discovered topology.
+the primary schedules applications and modules. Other CPUs independently enter
+System idle and acknowledge startup SSIP; dispatch promotion remains gated.
 Diagnostic scenarios may explicitly select a smaller physical CPU count.
 
-Before releasing a secondary, the core still needs interrupt-route discovery
-checked against platform policy, independent M/S entry storage, a
-returning IPI transport, genuine secondary System-context admission, compatible
-ISA/vector frame validation, remote instruction-publication fences and terminal
-peer-stop acknowledgements. Mapping mutation, ASID reuse and frame reclamation
+The custom ROM now supplies a mandatory checked monitor directory. Its per-hart
+integer-only M handler uses separate permanent control/stack backing, with no
+Rust callback, allocation, FP/vector instruction or ordinary service lock. DT
+CPU-controller phandles and paired CLINT interrupt routes supply MSIP addresses;
+frequency comes from the checked DTB. Unknown bindings/translations refuse.
+The platform's explicit reset contract is whole-machine reset, not CPU-only
+restart or hotplug. A private one-shot START admits only the sealed System entry.
+
+Executable writers order stores, fence locally and await each joined receiver's
+matching instruction-fence ACK before publishing an entry. Refused or uncertain
+transport retains typed identity through native code loading; an unacknowledged
+command retires the command channel until reset. Terminal stop has independent
+sticky request/ACK cells, bypasses normal locks and precedes mutable emergency
+kit access. Missing stop ACK causes direct fatal shutdown. These mechanisms do
+not establish cross-CPU author/service safety or arbitrary privileged-fault containment.
+
+The optimized trace-disabled no_std RV64 image with System resource SHA-256
+`36735139a17751852a16673d95e666f85cb1eb2763158faa16d3785a31eeda41`
+booted production ROM/System/Finder with 1, 2 and 4 physical QEMU CPUs. Physical
+control snapshots observed every peer joined, with request8=ACK8, FenceI result0,
+`satp`0 and PCs at the actual ROM WFI/JAL loop. Direct privilege was unavailable;
+the primary's returning M-interrupt path was not exercised. Wrong CLINT causes,
+duplicate controller phandles, an absent physical CPU and a stale160byte ROM
+handoff all refused with named causes and no desktop during bounded observation.
+A separate private package replaced only the Static Text CDEF with the existing
+native panic probe, retaining the shipping System executable. At terminal
+readiness all three peers had stop1/ACK1; actual restart booted a second desktop
+with fresh joined receivers, successful fence ACKs and clear stop cells. These
+are bounded parked-peer observations, not timing, after-boot lost-ACK retention,
+concurrent S execution or arbitrary-fault recovery qualification.
+
+Every checked discovered CPU now has its own 4 MiB System service stack, two
+unmapped guards, baseline saved CPU storage and entry-control row. Both permanent
+roots map all service slots before first activation. Placement uses topology
+ordinal and the generated platform stride, never a sparse hardware ID as an
+array index. The complete span must fit the configured window; allocation and
+geometry refusals do not install a smaller table. Published mapping/backing
+owners stay pinned until reset, including for CPUs that never execute S code.
+
+Runtime selection authenticates `sscratch` against the logical raw control
+arena before loading its local binding, then checks the permanent row and
+online phase in constant time. No typed shared borrow covers assembly-mutated
+control words. Only the primary is dispatch-eligible. Peer controls remain poisoned until
+independent warm admission installs their actual affine idle context and frame.
+Cold primary admission is explicit and cannot become a runtime fallback.
+
+Unique Foundation receipts attribute rounded physical service/CPU/control
+backing separately from heap occupancy. Inspection reports this partial scope,
+not all System memory. Its lazily built immutable mapping cache is ordinary
+System-owned storage regardless of the first querying application; it cannot
+retain that application's allocation account or borrow its recovery permit.
+Every prepared CPU also owns a separate idle executor sized by the configurable
+System stack policy (currently4 MiB), its saved CPU backing and a genuine THRD
+publication in the existing shared thread store. Service entry never overwrites
+the idle executor's live stack. Both idle backing owners carry physical
+Foundation receipts; private context/record metadata uses System Foundation
+heap admission without borrowing a recovery permit.
+
+System idle has an explicit System owner, native thread identity, resource
+selection and ordinary System allocation default. It does not impersonate the
+bootstrap thread or carry a dummy account or application image. A sealed
+publication binds the fresh context to its actual native THRD; all selection
+stacks use that identity. Each non-cloneable affine target remains retained by
+the actual store/core and installed hart, while scheduled positions resolve
+only scheduled records. Primary idle handoff installs this real context.
+
+An unexpected idle teardown returns the original cleanup ticket as a retained
+failure; reset-lifetime execution is not acknowledged as destroyed. Failed
+installation retains its actual idle owner through the typed boot-refusal
+report and nonreturning platform shutdown. Preparing idle owners does not mark
+peers
+ready. Normal boot consumes unique preparation through M acceptance, actual S
+admission and a separate acknowledged startup wake. All result slots are
+pre-reserved before release; typed failures retain completed and pending owners
+through the terminal boot refusal. No reduced-CPU fallback is installed. Public
+inspection reads the actual System ledger alongside process/module ledgers.
+Named-thread/hart and owned-stack enumeration remain unavailable; pool/domain
+labels are not a substitute, and System account/CPU-time coverage is not invented.
+
+Warm entry validates its independently observed CPU profile, saved-state
+geometry, actual permanent firmware/kernel roots and guarded service slot before
+selecting the real idle context. The SSIP handler clears the local interrupt
+before capturing/acknowledging work; it ends the mutable frame borrow first.
+AdmittedIdle resumes only that frame, never the run queue. Physical input, UI,
+firmware storage and maintenance remain primary-owned. Real policy admission,
+primary affinity/service routing and qualified cross-hart scheduling/reclamation
+remain gates before application/module placement. Returning monitor preservation
+and terminal takeover have bounded S-idle observations below; complete register
+preservation stress and competing-failure cases remain unqualified. Mapping
+mutation, ASID reuse and frame reclamation
 also require their remote TLB/lifetime contract. The current immutable boot roots
 do not imply that such a dynamic protocol exists. No SBI service is assumed.
 Multi-Scheduler may later supply placement and activation policy; it cannot
 bypass these core safety gates.
+
+
+The optimized trace-disabled no_std RV64 image with System resource SHA-256
+`4253b335dafa78a9f276993ab4e8665eebec3dcfa86c6e0067d70fa8d4affee9`
+and ROM SHA-256
+`8f45ef9ffa90aeb523fa3619ce458c0889db690600d865c2a63d59413a034d67`
+booted the production desktop with one and four physical CPUs. In the four-CPU
+run, peers independently reported 16-byte vector registers, actual kernel SATP
+`0x800010000008d002`, distinct authenticated controls and separate idle stacks.
+Read-only physical captures observed start sequences9/10/11, S-admitted phase2
+and real wake request=ACK epochs1/2/3. CPU PCs were inside the compiled System
+idle symbol; SPs were outside their guarded service slots. Direct privilege was
+not exposed by QEMU; no MPP inference was used. Actual MIE showed SSIE enabled
+and STIE disabled on peers. The debugger did not expose stimecmp directly.
+
+Launching the real Reactor Room application advanced all three peer instruction
+publication requests to13=ACK13/result0; they returned to those idle contexts.
+The existing native worker scenarios observed all four normal and three rollback
+THRD retirements and actual Duration/refusal checks. Public-SDK mapping/account
+checks observed four service stacks, eight unmapped guards and original-account
+reallocation/refusal/disposal behavior; Reactor's real memory/refresh/resize/quit
+workflow reached process retirement. A private package replaced only the Static
+Text CDEF with the existing native panic probe: all three S-idle peers physically
+ACKed irreversible stop, the terminal handled input, and Restart reached a second
+desktop with fresh admissions. Actual32-CPU stack-window,1GiB heap and stale-ROM
+entry configurations refused with named causes and no desktop. No host Rust
+suite supplied these observations.
+
+These runs cover S-idle admission, a returning remote publication, primary
+workers and a primary terminal winner. They do not qualify AP author execution,
+full FP/vector register-pattern preservation, lost-wake stress, competing panics,
+an AP terminal winner, cold-owner panic, device-refusal takeover, postpublication
+admission timeout/refusal injection, latency or arbitrary privileged-fault recovery.
+Debugger pauses and host capture timing preclude performance claims. Arbitrary
+privileged-fault containment is **unproven** and a **required future gate**.
 
 ## State audit
 
@@ -367,7 +494,7 @@ bypass these core safety gates.
 | Scrap Manager | One shared guarded System clipboard. Native edits stage fallible changes before publication. Original private scraps and process suspend/resume transfer remain unimplemented. |
 | Memory Manager | One synchronized resident store owns registered MMBL blocks and MMST per-domain arena/projection/MemErr state. The scheduler binds the authentic OwnerRef; traps never select memory by scheduler slot. Shared boot-wide projection generations reject stale/foreign 32-bit IDs, including after zone destruction. The generic walk owns block and backing release. |
 | File Manager | One mounted catalog/device service with owner-tagged fork marks. The native trap captures AppId before I/O handoff; handle read/seek/tell/close checks that identity. Exit closes only its owner's marks. Internal loader requests use reserved owner zero. |
-| Framebuffer, input and allocator | One-hart interrupt-masked kernel work serializes device and heap access. Application and module-worker bodies are preemptible. This is not a multi-hart synchronization or blocking-mutex design. Secondary harts remain parked. |
+| Framebuffer, input and allocator | One-hart interrupt-masked kernel work serializes device and heap access. Application and module-worker bodies are preemptible. This is not a multi-hart synchronization or blocking-mutex design. Secondary harts are admitted idle only; ordinary bodies remain primary-affine. |
 | Firmware `BootVolume` and disk callbacks | The original boot call remains live. `machine/io.rs` masks interrupts and selects the permanent bootstrap executor on the shared per-hart System stack, carrying the original resource/allocation/I/O selections across the handoff. It is not an independently runnable I/O thread or an asynchronous queue, and the opaque firmware context is not given a Send implementation. |
 | Host test-support | Host TLS, allocation/synchronization and substituted gates do not establish native RV64 trap, preemption, allocator or cleanup behavior. They provide no OS acceptance evidence. |
 
@@ -663,14 +790,31 @@ provide safe owned requests, completions, cancellation and wakeups; extension
 policy and runtime adapters use ordinary versioned registrations. This does not
 move a Tokio dependency or a fixed async-provider list into the kernel.
 
-Scheduling policy is also replaceable. The loadable **Multi-Scheduler Extension**
-takes over from the resident single-hart boot scheduler and decides when to
-activate additional harts. Core owns the architecture mechanisms for hart
-startup/parking, interrupts/IPIs, context switches and safe synchronization.
-Takeover is checked and atomic: rejection leaves boot scheduling usable, and no
-additional hart is released before per-hart context, memory and interrupt/lock
-safety gates pass. This remains the model's isolated scheduler capstone, not an
-SMP claim for the current kernel.
+The resident SCHD/SCTL path now supports primary-only scheduling-policy
+preparation, shadow handover and retirement. The optional **Multi-Scheduler
+Extension** is not installed by default. It cannot authorize additional author
+execution: current limits expose one active scheduling hart and no MULTI_HART or
+PARK feature. Core retains the actual source/Instance/plan lease, canonical THRD
+facts, final live claim/frame commitment and primary-owned maintenance. Policy
+callbacks run without scheduler/registry/frame borrows and cannot allocate,
+perform I/O, call services or park through native gateways. Withdrawal retains
+its original owners until actual interface ACK and callback/reader quiescence.
+
+The platform independently configures the current 250-microsecond quantum and
+1000-microsecond callback allowance, generated from its checked JSON record.
+Conversions use the admitted boot monitor DT timebase. The allowance detects a
+late returned sample, which is discarded before refreshed bootstrap selection;
+it does not by itself quarantine the policy. Invalid replies/forbidden operations
+remain protocol failures. This is not a non-return watchdog or UI-latency promise.
+Private optimized native one- and four-CPU runs observed primary-only takeover,
+valid-sample expiry, early-confirm/service/envelope refusals, canonical retirement,
+stale-status rejection and two actual post-retirement worker reclaims. The
+optional shipping package also completed startup with real Reactor launch,
+mouse input and own-process exit. All author execution remained primary-only;
+these scenarios do not establish every schedule decision or latency/fairness.
+See [SCHEDULING.md](SCHEDULING.md) for the exact current contract and remaining
+qualification gates. Concurrent author scheduling, service/firmware affinity,
+retirement and wake/progress across harts still require their full native gate.
 
 Application identities use the shared facility's full u64 process-domain
 incarnation, separate from scheduled thread IDs. The owner directory retains
@@ -684,9 +828,10 @@ these same resident lookups; this does not add a 68k Process Manager adapter.
 The application menu retains full-width identities in its resident actions;
 MDEF's u32 command is a row selector, not a truncated process ID. Window-owned
 resource resolution also retains the full process identity. The directory has
-no fixed-eight limit; scheduler stacks/contexts and other remaining fixed-eight
-storage still await their staged migration, so this alone does not admit more
-than eight running apps.
+no fixed-eight limit; scheduled application/worker records and backing grow
+fallibly under their actual ownership/accounting limits. The policy snapshot's
+4096-candidate capacity is a separate complete-set refusal threshold, not a
+hard-coded application/thread count.
 
 Opt-in event tracing uses private snapshot format 2. Its six-word header is
 followed by 16 full application identities, then the existing service counters,

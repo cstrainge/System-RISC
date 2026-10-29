@@ -13,10 +13,25 @@ pub(crate) fn authorize(registry: &Registry, subject: &Subject, caller: u64, pro
                         call: &abi::Call, callback: impl FnOnce(u64) -> Option<Callback>)
                         -> Result<Callback, Status>
 {
-    let interface = registry.authorize_synchronous(subject, caller, provider,
-                                                   call.input_len as usize,
-                                                   call.output_capacity as usize)
-                            .map_err(status)?;
+    let ordinary = registry.authorize_synchronous(subject, caller, provider,
+                                                  call.input_len as usize,
+                                                  call.output_capacity as usize);
+    #[cfg(target_arch = "riscv64")]
+    let ordinary =
+        ordinary.or_else(|original| {
+                    if call.class == mac_scheduler_interface::CONTROL_CLASS.0
+                    {
+                        registry.authorize_scheduler_cleanup(subject, caller, provider,
+                                                             call.operation,
+                                                             call.input_len as usize,
+                                                             call.output_capacity as usize)
+                    }
+                    else
+                    {
+                        Err(original)
+                    }
+                });
+    let interface = ordinary.map_err(status)?;
     if interface.offer.class.0 != call.class
     {
         return Err(BAD_ARGUMENT);

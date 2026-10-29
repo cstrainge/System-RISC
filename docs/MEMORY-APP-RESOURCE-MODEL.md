@@ -9,7 +9,8 @@ is split into480 MiB ordinary and32 MiB protected storage. Independent applicati
 heaps, image-page charges and private process mappings remain pending. Module
 allocation forwarding, genuine invocation/resource scopes and module-owned
 workers are implemented; bounded native observations are recorded below. The
-complete extension-backend handoff remains gated on protected recovery services.
+Host Clipboard development prerequisites are published; complete recovery-service
+and cross-CPU policy activation qualification remain separate gates.
 Kernel self-virtualization uses owned Sv39 roots and a guarded
 System stack. Graphical boot now pins an independent terminal panic/OOM kit;
 complete Save/Alert/Finder recovery kits and module/privilege gates remain open.
@@ -89,7 +90,9 @@ existing mutation points. Reads allocate nothing and never scan object values.
 Cross-domain detail is authorized by a generated System ACAP policy bound to
 canonical application resource digests; ordinary callers retain own-domain reads.
 The policy is not a gate on public chain/claim/mapping registry existence.
-Reactor Room explicitly reports process/module domains with partial-ledger coverage. See
+Reactor Room explicitly reports the canonical System owner and process/module
+domains with partial-ledger coverage. The System ledger uses its existing
+OwnerRef; its account and CPU time remain unavailable. See
 [Reactor Room staging](REACTOR.md) and [the policy wire format](../FORMAT.md#application-authority-policy-acap-0-development-abi-1).
 
 The following sections record successive §13.2 migrations and their remaining
@@ -228,12 +231,19 @@ private process mappings remain a separate paging gate.
 | Finder restart portion of that floor | 8 MiB / 16 MiB / 64 MiB | Subset of floor, never added twice; final value measured from restart peak |
 | Process kernel account | 4 MiB / 16 MiB / 128 MiB | Controls, tables, zones, TCBs and frames; admission also checks global remainder |
 | Process app committed heap budget | 4 MiB / 64 MiB / 2 GiB | Grow on demand; a 200 MB file uses file-backed views, not a forced whole-file copy |
-| Application heap growth minimum | 16 KiB / 64 KiB / 2 MiB | Rounded up to target geometry; bounded by selected process budget |
+| Application heap growth minimum (approved 2026-10-29) | 16 KiB / **64 KiB** / 2 MiB | Rounded up to target geometry; bounded by selected process budget |
 | Per-thread fixed stack (approved 2026-10-26) | 64 KiB / **4 MiB** / 8 MiB | Static per thread, charged app account, freed after switch-away |
 | Per-hart System stack (approved 2026-10-26) | 256 KiB / **4 MiB** / 8 MiB | Guarded resident stack is active; per-domain charges remain a heap-stage gate |
 | Designated per-control space | 1 MiB / 16 MiB / 128 MiB | A sub-budget of process kernel account, never independently guaranteed physical memory |
 | TE2 owned threshold | Tunable 0–100%, default 40%, bounded by a tunable **~3.2 MiB default ceiling** | Ratified 2026-10-23 calibration: owns strictly below both limits; at either limit uses view. The ceiling is 3,355,443 bytes (3.2 MiB rounded down), even if control space grows |
 | Process/thread/handle counts | Grow until account or memory refusal | No fixed-eight or guessed high replacement constant |
+
+Application-heap growth policy was selected on **2026-10-29**: the initial
+minimum extent is **64 KiB**, configurable within **16 KiB–2 MiB**. Larger
+requests may acquire larger extents. Each whole buddy-rounded extent is charged
+once to the canonical Application account and stays charged until its actual
+backing is released. This selects policy; it does not claim that the application
+allocator or private process roots are already implemented.
 
 Separate module-worker defaults were selected on **2026-10-27**: a configurable
 **4 MiB worker stack** and **16 MiB kernel budget per module**. They are distinct
@@ -513,9 +523,11 @@ Physical-map qualification includes 21 parser/ABI/build host tests, 219 public
 SDK host cases, optimized whole-world packaging, seventeen ROM boot/rejection/
 fallback cases, actual 128 MiB/512 MiB/8 GiB boots and a pre-heap 64 MiB refusal.
 Native/classic ECALL smoke, boot pixels, aggregate userspace and Reactor Room on
-Linux/Windows also pass. A standalone `cargo xtask abi-check` runs the same Rust
-smoke harness used by the canonical gate. Bootstrap library tests and the RAM
-campaign now join that gate.
+Linux/Windows observations were recorded at that stage. These historical host
+results are not current OS qualification. The raw-memory ABI bootstrap and its
+standalone command were subsequently retired when the real ROM machine-monitor
+handoff became mandatory. Current native evidence must boot that production ROM;
+a fabricated monitor or alternate bootstrap does not establish the contract.
 
 **Open performance qualification:** the strict 1-ms physical-delivery campaign is
 not consistently met for the cold first key: a fixed three-run set measured
@@ -3048,8 +3060,12 @@ and retains failed endpoints' buffers. Restart uses the checked platform reset
 register directly, without the normal driver registry or callbacks. Recursive
 failure, unavailable terminal backing, or an unusable display/input handoff reports
 and requests a loud platform shutdown. These are terminal actions, not recovery
-of a privileged call. The current contract admits only one running hart; a proven
-stop-other-harts protocol is required before extending terminal takeover to SMP.
+of a privileged call. A native terminal winner is tied to its actual admitted
+execution owner. Before exclusive kit access it requires irreversible machine-stop
+acknowledgments from every other CPU. A distinct peer loser abandons execution
+and waits for actual stop; same-owner recursion reports and shuts down directly.
+This contract still requires native S-peer qualification and does not imply
+arbitrary privileged-fault containment.
 
 The platform's required `fatal_shutdown` record names its MMIO device and supplies
 distinct nonzero `failure_value` and `restart_value` commands. Build validation
@@ -3305,3 +3321,43 @@ unavailable. These bounded observations do not establish SMP safety, exhaustive
 stop/pin races, stress behavior, arbitrary privileged-fault recovery or the full
 protected recovery kit. They do not by themselves authorize the complete
 extension-backend handoff.
+
+
+### Native peer idle admission
+
+Normal graphical boot now consumes genuine per-CPU preparations into one-shot
+M acceptance, independent warm System initialization and actual startup SSIP ACK.
+The shared boot wire is176bytes with explicit BOOT/HART roles and a complete
+monitor layout fingerprint, keeping development ABI1. One shared integer/CSR
+probe checks each CPU's admitted profile. Warm entry uses its actual permanent
+firmware root and guarded service slot, installs the poisoned System vector,
+then permanently selects the owned kernel root and canonical idle context.
+No reference is rebased and no peer can initialize global services or select the
+bootstrap thread as a fallback.
+
+Ready-result metadata is System Foundation storage reserved before any release.
+Typed startup refusals retain the original preparation or pending publication,
+plus all already-completed owners, through the nonreturning boot refusal. No
+reduced-CPU fallback, synthetic ACK or retry over uncertain hardware exists.
+Only the primary is scheduling-eligible; admitted peers resume only their own
+full captured idle frame. Actual readiness ownership is retained until reset.
+A future scheduler-policy consumer must retain that authority and establish its
+real generation/shadow/affinity gate before promotion; no unused dispatch grant
+or standalone boolean promotion is exposed today.
+
+Terminal ownership uses the actual sealed cold/hot selection, not a hardware
+number or shared boolean. Cold panic entry uses no ordinary control lock;
+a runtime peer loser waits for its actual machine stop instead of killing the
+winner as apparent recursion. A sealed, hart-affine winner revalidates its
+selection before requesting irreversible stop. Only after real peer ACKs may it
+borrow the separate protected kit and polled input/display state. Same-owner
+recursion and failed takeover remain loud terminal failures. No privileged
+recovery claim beyond M-D04 is added.
+
+[Threading](../THREADING.md#hart-execution-and-smp-admission) records the exact
+native images and bounded admission/returning-publication/worker/account/UI/
+terminal-reset observations. These are not cross-CPU author/service safety,
+full register preservation, race/latency or arbitrary-fault qualification.
+Independent application heaps, private process roots, image-page accounting and
+remaining protected recovery services are still staged. Common-control/TE2
+migration remains separate.

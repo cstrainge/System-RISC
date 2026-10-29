@@ -66,11 +66,18 @@ pub(crate) unsafe fn validate_boot(
                            })
                            .ok_or(mac_abi::boot::MemoryError::InvalidArray)?;
     let execution = unsafe { execution(info) }?;
+    let monitor = unsafe { primary_slice(info, info.monitor, 1) }?.first()
+        .ok_or(mac_abi::boot::MemoryError::InvalidArray)?;
     for (physical, bytes) in
         [(info_physical, size_of::<mac_abi::BootInfo>()),
          (info.ram_regions as u64, info.ram_region_count * size_of::<mac_abi::BootMemoryRange>()),
          (info.reservations as u64, info.reservation_count * size_of::<mac_abi::BootMemoryRange>()),
          (info.execution as u64, size_of::<mac_abi::boot::execution::Execution>()),
+         (info.monitor as u64, size_of::<mac_abi::boot::monitor::Directory>()),
+         (monitor.entries as u64,
+          monitor.count
+                 .checked_mul(size_of::<mac_abi::boot::monitor::Entry>())
+                 .ok_or(mac_abi::boot::MemoryError::InvalidArray)?),
          (info.cpus as u64,
           info.cpu_count
               .checked_mul(size_of::<mac_abi::boot::topology::Cpu>())

@@ -180,6 +180,11 @@ impl Drop for TrapScope<'_>
 #[cfg(target_arch = "riscv64")]
 enum ThreadOwner
 {
+    System
+    {
+        owner:     crate::toolbox::handles::OwnerRef,
+        resources: crate::kernel::ResourceSelection
+    },
     Process
     {
         owner: crate::toolbox::handles::OwnerRef, image: crate::images::Binding
@@ -199,23 +204,32 @@ impl ThreadOwner
     {
         match self
         {
-            Self::Process { owner,
+            Self::System { owner,
+                           .. }
+            | Self::Process { owner,
                             .. }
             | Self::Module { owner,
                            .. } => owner
         }
     }
 
-    fn image(&self) -> crate::images::Binding
+    fn image(&self) -> Option<crate::images::Binding>
     {
         match self
         {
             Self::Process { image,
                             .. }
             | Self::Module { image,
-                           .. } => *image
+                           .. } => Some(*image),
+            Self::System { .. } => None
         }
     }
+}
+#[cfg(target_arch = "riscv64")]
+enum DefaultAllocation
+{
+    Account(crate::machine::scheduler::accounting::AllocationAuthority),
+    System(crate::allocator::SystemClass)
 }
 #[cfg(target_arch = "riscv64")]
 pub struct ThreadContext
@@ -225,8 +239,7 @@ pub struct ThreadContext
     critical_depth:    core::sync::atomic::AtomicUsize,
     thread:            core::sync::atomic::AtomicU64,
     owner:             spinning_top::Spinlock<Option<ThreadOwner>>,
-    allocation:
-        spinning_top::Spinlock<Option<crate::machine::scheduler::accounting::AllocationAuthority>>,
+    allocation:        spinning_top::Spinlock<Option<DefaultAllocation>>,
     allocation_scope:  selection::ScopedSelection<crate::allocator::Target>,
     recovery_scope:    selection::ScopedSelection<Option<crate::allocator::recovery::Permit>>,
     recovery_default:  spinning_top::Spinlock<Option<crate::allocator::recovery::Permit>>,
@@ -277,7 +290,7 @@ impl ThreadContext
     {
         use mac_object_table::shared::InvocationGate as _;
         crate::toolbox::handles::InvocationGate::run(|| {
-            self.owner.lock().as_ref().map(ThreadOwner::image)
+            self.owner.lock().as_ref().and_then(ThreadOwner::image)
         })
     }
 
@@ -312,13 +325,33 @@ impl ThreadContext
             self.resources.reset(ThreadId(thread));
             self.io_subject.reset(ThreadId(thread));
             self.allocation_scope.reset(ThreadId(thread));
-            *self.allocation.lock() = Some(allocation.clone());
+            *self.allocation.lock() = Some(DefaultAllocation::Account(allocation.clone()));
             self.app.store(owner.owner().incarnation(), Relaxed);
             self.thread.store(thread, Relaxed);
             *binding = Some(ThreadOwner::Process { owner,
                                                    image });
             Ok(())
         })
+    }
+
+    /// The only constructor for a scheduled System execution context consumes
+    /// a sealed binding from an actual native SystemIdle publication. There is
+    /// no caller-selected context, numeric identity or Account in this path.
+    pub(crate) fn assign_system(binding: crate::machine::scheduler::SystemThreadBinding)
+    {
+        let (context, owner, thread, resources) = binding.into_parts();
+        context.recovery_scope.reset(ThreadId(thread));
+        context.recovery_activity.reset(ThreadId(thread));
+        context.module.reset(ThreadId(thread));
+        context.resources.reset(ThreadId(thread));
+        context.io_subject.reset(ThreadId(thread));
+        context.allocation_scope.reset(ThreadId(thread));
+        *context.allocation.lock() =
+            Some(DefaultAllocation::System(crate::allocator::SystemClass::Ordinary));
+        context.app.store(owner.owner().incarnation(), core::sync::atomic::Ordering::Relaxed);
+        context.thread.store(thread, core::sync::atomic::Ordering::Relaxed);
+        *context.owner.lock() = Some(ThreadOwner::System { owner,
+                                                           resources });
     }
 
     pub(crate) fn assign_module(&self, owner: crate::toolbox::handles::OwnerRef, thread: u64,
@@ -334,7 +367,7 @@ impl ThreadContext
         self.resources.reset(ThreadId(thread));
         self.io_subject.reset(ThreadId(thread));
         self.allocation_scope.reset(ThreadId(thread));
-        *self.allocation.lock() = Some(allocation.clone());
+        *self.allocation.lock() = Some(DefaultAllocation::Account(allocation.clone()));
         *self.owner.lock() =
             Some(ThreadOwner::Module { owner,
                                        image: execution.binding(),
@@ -415,7 +448,9 @@ impl ThreadContext
         crate::toolbox::handles::InvocationGate::run(|| {
             match self.owner.lock().as_ref()
             {
-                Some(ThreadOwner::Module { resources,
+                Some(ThreadOwner::System { resources,
+                                           .. }
+                     | ThreadOwner::Module { resources,
                                            .. }) => Some(*resources),
                 _ => None
             }
@@ -486,20 +521,27 @@ impl ThreadContext
                                     -> Result<R, crate::allocator::Error>
     {
         self.allocation_scope.borrow(|selected| {
-            if let Some(selected) = selected
+                                 if let Some(selected) = selected
+                                 {
+                                     return operation(selected.selection());
+                                 }
+                                 let worker_allocation = self.worker_allocation.lock();
+                                 if let Some(target) = worker_allocation.as_ref()
+                                 {
+                                     return operation(target.selection());
+                                 }
+                                 let allocation = self.allocation.lock();
+                                 match allocation.as_ref()
             {
-                return operation(selected.selection());
+                Some(DefaultAllocation::Account(account)) =>
+                    operation(crate::allocator::Selection::Owner {
+                        account, class: mac_kernel_model::policy::MemoryClass::Kernel
+                    }),
+                Some(DefaultAllocation::System(class)) =>
+                    operation(crate::allocator::Selection::System(*class)),
+                None => Err(crate::allocator::Error::ContextUnavailable)
             }
-            let worker_allocation = self.worker_allocation.lock();
-            if let Some(target) = worker_allocation.as_ref() {
-                return operation(target.selection());
-            }
-            let allocation = self.allocation.lock();
-            let account = allocation.as_ref().ok_or(crate::allocator::Error::ContextUnavailable)?;
-            operation(crate::allocator::Selection::Owner {
-                account, class: mac_kernel_model::policy::MemoryClass::Kernel
-            })
-        })
+                             })
     }
 
     fn selected_allocation(&self) -> AllocationSelection
@@ -515,10 +557,12 @@ impl ThreadContext
                                  }
                                  match self.allocation.lock().as_ref()
             {
-                Some(account) => AllocationSelection::Selected(crate::allocator::Target::Owner {
+                Some(DefaultAllocation::Account(account)) => AllocationSelection::Selected(crate::allocator::Target::Owner {
                     account: account.clone(),
                     class: mac_kernel_model::policy::MemoryClass::Kernel
                 }),
+                Some(DefaultAllocation::System(class)) =>
+                    AllocationSelection::Selected(crate::allocator::Target::System(*class)),
                 None => AllocationSelection::Unavailable
             }
                              })

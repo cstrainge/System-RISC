@@ -22,7 +22,8 @@ use mac_riscv_pages::{Entry, Sv39,
 
 use super::{interrupts::{self, NativeInvocationGate},
             memory::*,
-            pages::{Backing, Stack}};
+            pages::{ArrayError, Backing, OwnedArray, Stack}};
+use crate::allocator::foundation::{self, Foundation};
 const MODE: usize = 8usize << 60;
 const PPN: usize = (1usize << 44) - 1;
 type RootPage = PageBox<'static, 'static, [u64; 512], NativeInvocationGate>;
@@ -46,13 +47,23 @@ pub(crate) enum Error
     Memory(MemoryError),
     Execution(execution::Error),
     Topology(topology::Error),
+    Monitor(super::monitor::Error),
     Physical(PhysicalError),
     Policy(ModelError),
-    Pages(super::pages::Error),
+    StackStorage(ArrayError<foundation::Error>),
+    StackSlots
+    {
+        count: usize
+    },
     HeapPartition(heap_partition::Error),
     Tables(MapError<FrameError>),
     Missing,
     AlreadyActive,
+    StartingRoot
+    {
+        expected: usize,
+        observed: usize
+    },
     ForeignHart,
     Admission
     {
@@ -77,12 +88,26 @@ impl fmt::Display for Error
     {
         match self
         {
+            Self::StartingRoot { expected,
+                                 observed } =>
+            {
+                write!(f,
+                       "warm root transition refused: expected SATP {expected:#x}, observed \
+                        {observed:#x}")
+            }
             Self::Memory(e) => e.fmt(f),
             Self::Execution(e) => e.fmt(f),
             Self::Topology(e) => e.fmt(f),
+            Self::Monitor(e) => e.fmt(f),
             Self::Physical(e) => e.fmt(f),
             Self::Policy(e) => e.fmt(f),
-            Self::Pages(e) => e.fmt(f),
+            Self::StackStorage(e) => e.fmt(f),
+            Self::StackSlots { count } =>
+            {
+                write!(f,
+                       "{count} discovered CPUs do not fit the guarded System service-stack \
+                        window or its selected stack geometry")
+            }
             Self::HeapPartition(e) => e.fmt(f),
             Self::Tables(e) => e.fmt(f),
             Self::Missing =>
@@ -138,6 +163,12 @@ fn root_register() -> usize
 /// firmware root's permanent RAM map. No allocator or mutable pool exists yet.
 pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
 {
+    // Entry already checked the exact BootInfo size. Authenticate the expanded
+    // monitor layout before validate_boot forms any Directory/Entry view.
+    if info.monitor_layout != mac_abi::boot::monitor::LAYOUT_FINGERPRINT
+    {
+        return Err(Error::Monitor(super::monitor::Error::Layout));
+    }
     if BOOT.get().is_some()
     {
         return Err(Error::AlreadyActive);
@@ -180,6 +211,11 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
                                       mask: record.hardware_tag_mask });
     }
     let ram=DirectMap::new::<Sv39>(memory,AddressRange::new(VM_PHYSMAP_START,VM_PHYSMAP_END).map_err(Error::Policy)?,PhysicalAddress(VM_PHYSMAP_PHYSICAL_BASE)).map_err(Error::Physical)?;
+    // ROM already installed the admitted permanent RAM physmap; DirectMap is
+    // its checked software view, not a hardware mapping operation. Monitor
+    // admission checks every isolated control extent against that view before
+    // borrowing atomic cells; BOOT/global allocator publication happens later.
+    unsafe { super::monitor::admit(info, memory, cpus, record.hart as usize, &ram) }.map_err(Error::Monitor)?;
     let boot = BOOT.call_once(|| {
                        Bootstrap { ram,
                                    memory,
@@ -204,6 +240,12 @@ pub(crate) unsafe fn admit(info: &'static BootInfo) -> Result<(), Error>
 pub(crate) fn firmware_owner_hart() -> Option<usize>
 {
     BOOT.get().map(|boot| boot.hart)
+}
+/// Immutable discovery order used for storage ordinals, never current execution
+/// authority. Sparse hardware IDs do not become array or virtual-slot indices.
+pub(crate) fn enabled_cpus() -> Option<&'static [topology::Cpu]>
+{
+    Some(BOOT.get()?.topology.cpus())
 }
 pub(crate) fn memory() -> Result<(CheckedMemory<'static>, DirectMap<'static>), Error>
 {
@@ -409,9 +451,112 @@ struct Spaces
 {
     kernel:        Space,
     firmware:      Space,
-    stack:         Stack,
+    stacks:        OwnedArray<Foundation<Stack>>,
     heap:          HeapPartition,
     distinct_tags: bool
+}
+/// Validate the complete reserved window before allocating any stack backing.
+/// Each ordinal owns one configured stride, including its unmapped guards.
+fn check_stack_slots(count: usize) -> Result<(), Error>
+{
+    let invalid = || Error::StackSlots { count };
+    let minimum = PAGE_BYTES.checked_mul(2)
+                            .and_then(|guards| SYSTEM_STACK_BYTES.checked_add(guards))
+                            .ok_or_else(invalid)?;
+    let span = u64::try_from(count).ok()
+                                   .and_then(|n| n.checked_mul(VM_SYSTEM_STACK_STRIDE))
+                                   .ok_or_else(invalid)?;
+    if count == 0
+       || SYSTEM_STACK_BYTES == 0
+       || !SYSTEM_STACK_BYTES.is_multiple_of(PAGE_BYTES)
+       || !VM_SYSTEM_STACKS_START.is_multiple_of(PAGE_BYTES)
+       || !VM_SYSTEM_STACK_STRIDE.is_multiple_of(PAGE_BYTES)
+       || VM_SYSTEM_STACK_STRIDE < minimum
+       || VM_SYSTEM_STACKS_START.checked_add(span).is_none_or(|end| end > VM_SYSTEM_STACKS_END)
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+fn stack_slot_base(ordinal: usize) -> Result<u64, Error>
+{
+    u64::try_from(ordinal).ok()
+                          .and_then(|n| n.checked_mul(VM_SYSTEM_STACK_STRIDE))
+                          .and_then(|offset| VM_SYSTEM_STACKS_START.checked_add(offset))
+                          .and_then(|base| base.checked_add(PAGE_BYTES))
+                          .ok_or(Error::StackSlots { count: ordinal.saturating_add(1) })
+}
+/// The only stack table is owned by the same permanent roots that map it.
+/// Borrowed elements remain pinned until reset, including failed later S release.
+pub(crate) fn system_stacks() -> Option<&'static [Foundation<Stack>]>
+{
+    Some(SPACES.get()?.stacks.as_slice())
+}
+/// Actual permanent roots and one canonical service-stack slot. Construction
+/// borrows the owning Spaces, never caller-supplied SATP values. The proof
+/// neither selects a hart nor grants execution; the native row binding does.
+pub(in crate::machine) struct PreparedRoots
+{
+    spaces: &'static Spaces,
+    boot:   &'static Bootstrap,
+    stack:  &'static Stack
+}
+impl PreparedRoots
+{
+    pub(in crate::machine) fn firmware_register(&self) -> usize
+    {
+        self.spaces.firmware.register
+    }
+
+    pub(in crate::machine) fn hardware_tag_mask(&self) -> u16
+    {
+        self.boot.tag_mask
+    }
+
+    pub(in crate::machine) fn service_stack(&self) -> &'static Stack
+    {
+        self.stack
+    }
+
+    /// # Safety
+    /// Authenticated Starting entry owns this actual slot, executes masked on
+    /// it in the permanent firmware root, and has installed the poisoned local
+    /// System vector. Both roots map this same stack and all live Rust views.
+    /// This is a permanent local transition: no guard restores firmware root.
+    pub(in crate::machine) unsafe fn activate_kernel(&self) -> Result<(), Error>
+    {
+        if root_register() != self.spaces.firmware.register
+        {
+            return Err(Error::StartingRoot { expected: self.spaces.firmware.register,
+                                             observed: root_register() });
+        }
+        unsafe {
+            asm!("csrw satp,{}", "sfence.vma zero,zero",
+                 in(reg)self.spaces.kernel.register, options(nostack));
+        }
+        if root_register() != self.spaces.kernel.register
+        {
+            return Err(Error::StartingRoot { expected: self.spaces.kernel.register,
+                                             observed: root_register() });
+        }
+        Ok(())
+    }
+}
+pub(in crate::machine) fn prepared_roots(ordinal: usize) -> Option<PreparedRoots>
+{
+    let spaces = SPACES.get()?;
+    let stack: &'static Stack = spaces.stacks.as_slice().get(ordinal)?;
+    Some(PreparedRoots { spaces,
+                         boot: BOOT.get()?,
+                         stack })
+}
+fn system_stack_containing(base: u64) -> Option<&'static Stack>
+{
+    let offset = base.checked_sub(VM_SYSTEM_STACKS_START.checked_add(PAGE_BYTES)?)?;
+    let ordinal = usize::try_from(offset.checked_div(VM_SYSTEM_STACK_STRIDE)?).ok()?;
+    let stack: &Stack = system_stacks()?.get(ordinal)?;
+    let top = stack.top() as u64;
+    (base >= top.checked_sub(stack.bytes())? && base < top).then_some(stack)
 }
 fn permissions(flags: u32, global: bool) -> Permissions
 {
@@ -433,7 +578,7 @@ fn map(mapper: &mut Mapper<Frames>, virtual_base: u64, physical: u64, bytes: u64
           .map(|(_, changed)| changed)
           .map_err(Error::Tables)
 }
-fn prepare_space(boot: &Bootstrap, firmware: bool, stack: PhysicalAddress, stack_bytes: u64,
+fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
                  heap: PhysicalAddress, tag: usize)
                  -> Result<Space, Error>
 {
@@ -461,12 +606,15 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stack: PhysicalAddress, stack
                           region.flags & FIRMWARE_ONLY == 0)?;
         }
     }
-    leaves += map(&mut mapper,
-                  VM_SYSTEM_STACKS_START + PAGE_BYTES,
-                  stack.0,
-                  stack_bytes,
-                  READ | WRITE,
-                  true)?;
+    for (ordinal, stack) in stacks.iter().enumerate()
+    {
+        leaves += map(&mut mapper,
+                      stack_slot_base(ordinal)?,
+                      stack.physical().0,
+                      stack.bytes(),
+                      READ | WRITE,
+                      true)?;
+    }
     leaves += map(&mut mapper,
                   VM_SYSTEM_HEAP_BASE,
                   heap.0,
@@ -513,6 +661,12 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
         return Err(Error::AlreadyActive);
     }
     let boot = BOOT.get().ok_or(Error::Missing)?;
+    let cpus = boot.topology.cpus();
+    check_stack_slots(cpus.len())?;
+    let primary = cpus.binary_search_by_key(&(boot.hart as u64), |cpu| cpu.hart)
+                      .map_err(|_| Error::Topology(topology::Error::MissingPrimary {
+                          hart: boot.hart as u64
+                      }))?;
     // The fixed heap is admitted as one unique buddy extent before any heap
     // references or permanent roots exist. Its physmap alias remains stable;
     // only the configured usable bytes become allocator storage. A rounded
@@ -522,25 +676,35 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
                                           cause }
                })?;
     let heap = HeapPartition::new(heap).map_err(Error::HeapPartition)?;
-    let backing = Backing::allocate(SYSTEM_STACK_BYTES as usize).map_err(Error::Pages)?;
+    let stack_bytes =
+        usize::try_from(SYSTEM_STACK_BYTES).map_err(|_| Error::StackSlots { count: cpus.len() })?;
+    let mut stacks = OwnedArray::try_new(cpus.len(), |_| {
+                         Foundation::<Stack>::allocate(stack_bytes)
+                     }).map_err(Error::StackStorage)?;
     let distinct_tags = boot.tag_mask & 1 != 0;
-    let kernel = prepare_space(boot,
-                               false,
-                               backing.physical(),
-                               SYSTEM_STACK_BYTES,
-                               heap.physical(),
-                               usize::from(distinct_tags))?;
-    let firmware =
-        prepare_space(boot, true, backing.physical(), SYSTEM_STACK_BYTES, heap.physical(), 0)?;
-    let stack = unsafe {
-                    Stack::from_mapping(backing,
-                                        (VM_SYSTEM_STACKS_START + PAGE_BYTES) as usize,
-                                        SYSTEM_STACK_BYTES)
-                }.map_err(Error::Pages)?;
+    let kernel =
+        prepare_space(boot, false, stacks.as_slice(), heap.physical(), usize::from(distinct_tags))?;
+    let firmware = prepare_space(boot, true, stacks.as_slice(), heap.physical(), 0)?;
+    for (ordinal, stack) in stacks.as_mut_slice().iter_mut().enumerate()
+    {
+        let base =
+            usize::try_from(stack_slot_base(ordinal)?).map_err(|_| {
+                                                          Error::StackSlots { count: cpus.len() }
+                                                      })?;
+        // SAFETY: both fresh owned roots now map this exact unique physical
+        // lease at the checked guarded slot. No stack has been published or
+        // used for execution, CPU-frame pointers, or storage references. Only
+        // the future numeric executor address changes, never physmap backing.
+        // Any prepublication refusal drops both roots and the entire array.
+        unsafe { stack.bind_mapping(base) }.map_err(|cause| {
+            Error::StackStorage(ArrayError::Element { index: ordinal,
+                                                      cause })
+        })?;
+    }
     let spaces = SPACES.call_once(|| {
                            Spaces { kernel,
                                     firmware,
-                                    stack,
+                                    stacks,
                                     heap,
                                     distinct_tags }
                        });
@@ -557,14 +721,17 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
         asm!("csrw satp,{root}","sfence.vma zero,zero",root=in(reg)spaces.kernel.register,options(nostack));
     }
     serial!("MMU_READY mode=sv39 actual={:#x} kernel_root={:#x} firmware_root={:#x} tables={} \
-             leaves={} stack={:#x}+{} guards=2",
+             leaves={} stack={:#x}+{} guards=2 service_stacks={} stack_table={:#x}+{}",
             root_register(),
             spaces.kernel.owner.root_physical().0,
             spaces.firmware.owner.root_physical().0,
             spaces.kernel.tables.count + spaces.firmware.tables.count,
             spaces.kernel.leaves,
-            VM_SYSTEM_STACKS_START + PAGE_BYTES,
-            SYSTEM_STACK_BYTES);
+            stack_slot_base(primary)?,
+            SYSTEM_STACK_BYTES,
+            spaces.stacks.as_slice().len(),
+            spaces.stacks.physical().0,
+            spaces.stacks.bytes());
     serial!("SYSTEM_HEAP_READY base={:#x} bytes={} physical={:#x} backing_bytes={} \
              permissions=supervisor-rw-nx roots=2 protected_reserve=true ordinary_bytes={} \
              reserve_bytes={}",
@@ -574,7 +741,7 @@ pub(crate) unsafe fn initialize<R>(call: impl FnOnce(&'static Stack) -> R) -> Re
             spaces.heap.bytes(),
             spaces.heap.ordinary_range().1,
             SYSTEM_RECOVERY_BYTES);
-    Ok(call(&spaces.stack))
+    Ok(call(&spaces.stacks.as_slice()[primary]))
 }
 /// The allocation range is valid only once both permanent roots own the exact
 /// mapping and its physical lease. Numeric facts confer no independent owner.
@@ -738,9 +905,9 @@ pub(crate) fn firmware_visible(cpu: u64, bytes: u64) -> bool
     };
     (cpu >= boot.image_virtual.base && end <= boot.image_virtual.base + boot.image_virtual.length)
     || boot.ram.physical_address(VirtualAddress(cpu), bytes).is_ok()
-    || SPACES.get().is_some_and(|spaces| {
-                       (cpu >= spaces.stack.top() as u64 - spaces.stack.bytes()
-                        && end <= spaces.stack.top() as u64)
-                       || (bytes != 0 && cpu >= VM_SYSTEM_HEAP_BASE && end <= VM_SYSTEM_HEAP_LIMIT)
-                   })
+    || system_stack_containing(cpu).is_some_and(|stack| end <= stack.top() as u64)
+    || (SPACES.get().is_some()
+        && bytes != 0
+        && cpu >= VM_SYSTEM_HEAP_BASE
+        && end <= VM_SYSTEM_HEAP_LIMIT)
 }

@@ -1143,7 +1143,9 @@ pub fn with_disks<R>(bytes: &[&[u8]], startup_disk: u32, run: impl FnOnce(&Syste
                           display_scratch: Default::default(),
                           execution: core::ptr::null(),
                           cpus: core::ptr::null(),
-                          cpu_count: 0 };
+                          cpu_count: 0,
+                          monitor: core::ptr::null(),
+                          monitor_layout: mac_abi::boot::monitor::LAYOUT_FINGERPRINT };
     with_services(|services| {
         let storage =
             unsafe { crate::toolbox::files::BootStorage::from_boot_info(&boot) }.expect("storage");
@@ -1338,7 +1340,9 @@ pub fn with_file_disks<R>(paths: &[&std::path::Path], read_only: bool, faults: D
                           display_scratch:         Default::default(),
                           execution:               core::ptr::null(),
                           cpus:                    core::ptr::null(),
-                          cpu_count:               0 };
+                          cpu_count:               0,
+                          monitor:                 core::ptr::null(),
+                          monitor_layout:          mac_abi::boot::monitor::LAYOUT_FINGERPRINT };
     let result = with_services(|services| {
         let storage=unsafe{crate::toolbox::files::BootStorage::from_boot_info(&boot)}.expect("file storage callbacks");
         let manager =

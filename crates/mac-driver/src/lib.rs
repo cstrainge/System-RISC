@@ -4,6 +4,7 @@
 pub mod devices;
 pub mod lifecycle;
 pub mod preferences;
+pub mod scheduler;
 pub mod sync;
 #[doc(hidden)]
 pub mod runtime;
@@ -54,6 +55,15 @@ pub trait Driver: Sync
 {
     fn initialize(&self, host: Client) -> Result<()>;
     fn request(&self, request: Request<'_>, output: &mut [u8]) -> Result<Completion>;
+    /// Bounded scheduler-only entry. Core supplies the genuine immutable round
+    /// and validates a decision before switching; no allocation or service call
+    /// is allowed here. Ordinary drivers have no scheduler policy.
+    fn schedule(&self, _round: mac_scheduler_interface::Round<'_>)
+                -> Result<mac_scheduler_interface::Decision>
+    {
+        Err(Error(NOT_SUPPORTED))
+    }
+
     fn quiesce(&self) -> Result<()>
     {
         Ok(())
@@ -304,9 +314,10 @@ pub unsafe fn dispatch(driver: &impl Driver, state: u64, pointer: *mut abi::Call
     }
     let phase = match call.phase
     {
-        abi::START => Phase::Start,
-        abi::POLL => Phase::Poll,
-        abi::CANCEL => Phase::Cancel,
+        abi::START => Some(Phase::Start),
+        abi::POLL => Some(Phase::Poll),
+        abi::CANCEL => Some(Phase::Cancel),
+        mac_scheduler_interface::control::POLICY_PHASE => None,
         _ => return BAD_ARGUMENT
     };
     if call.ticket == 0 || call.class == [0; 4]
@@ -350,6 +361,25 @@ pub unsafe fn dispatch(driver: &impl Driver, state: u64, pointer: *mut abi::Call
     else
     {
         unsafe { core::slice::from_raw_parts_mut(call.output, call.output_capacity as usize) }
+    };
+    let Some(phase) = phase
+    else
+    {
+        if call.class != mac_scheduler_interface::POLICY_CLASS.0
+           || call.operation != mac_scheduler_interface::CHOOSE
+        {
+            return BAD_ARGUMENT;
+        }
+        return match scheduler::dispatch(driver, call.ticket, input, output)
+        {
+            Ok(length) =>
+            {
+                call.output_len = length as u32;
+                OK
+            }
+            Err(Error(status)) if status < 0 => status,
+            Err(_) => BAD_ABI
+        };
     };
     match driver.request(Request { ticket: call.ticket,
                                    phase,

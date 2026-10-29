@@ -38,7 +38,7 @@ pub(super) struct ThreadName
 }
 impl ThreadName
 {
-    fn new(name: &str) -> Result<Self, mac_abi::Status>
+    pub(super) fn new(name: &str) -> Result<Self, mac_abi::Status>
     {
         if name.is_empty()
            || name.len() > mac_module::MAX_NAME_BYTES
@@ -52,9 +52,9 @@ impl ThreadName
         Ok(result)
     }
 
-    fn text(&self) -> &str
+    pub(super) fn text(&self) -> &str
     {
-        core::str::from_utf8(&self.bytes[..self.length]).unwrap_or("Invalid admitted worker name")
+        core::str::from_utf8(&self.bytes[..self.length]).unwrap_or("Invalid admitted thread name")
     }
 }
 
@@ -205,17 +205,12 @@ pub(crate) fn publish_worker(prepared: PreparedWorker) -> Result<u64, WorkerPubl
                                            returned:         false,
                                            park_return:      false,
                                            exit_status:      mac_abi::OK };
-                let state = RunState { claimed_by: None,
-                                       live:       false,
-                                       retired:    false,
-                                       switches:   0,
-                                       waiting:    None,
-                                       woken:      0 };
-                Thread { id,
-                         core: prepared.core.share(),
-                         scope: Some(scope),
-                         worker: Some(Cell::new(worker)),
-                         state: Cell::new(state) }
+                let state = RunState::new();
+                Record::Scheduled(Thread { id,
+                                           core: prepared.core.share(),
+                                           scope: Some(scope),
+                                           worker: Some(Cell::new(worker)),
+                                           state: Cell::new(state) })
             };
             store.insert_root_with_receipt(root, record).map_err(lifetime::pool_status)
         })?;
@@ -281,7 +276,11 @@ pub(crate) fn publish_worker(prepared: PreparedWorker) -> Result<u64, WorkerPubl
 fn checked_worker<'a>(scheduler: &'a Scheduler, owner: &OwnerRef, id: u64)
                       -> Result<&'a Thread, mac_abi::Status>
 {
-    let thread = scheduler.records.as_ref().and_then(|s| s.get(id)).ok_or(mac_abi::NOT_FOUND)?;
+    let thread = scheduler.records
+                          .as_ref()
+                          .and_then(|s| s.get(id))
+                          .and_then(Record::scheduled)
+                          .ok_or(mac_abi::NOT_FOUND)?;
     if thread.worker.is_none() || thread.scope.as_ref().is_none_or(|s| s.subject() != owner.owner())
     {
         return Err(mac_abi::ACCESS_DENIED);

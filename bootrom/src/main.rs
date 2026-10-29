@@ -6,6 +6,7 @@ extern crate alloc;
 mod virtio_blk;
 mod screen;
 mod supervisor;
+mod monitor;
 mod virtual_memory
 {
     include!(concat!(env!("OUT_DIR"), "/platform-virtual.rs"));
@@ -67,8 +68,7 @@ _start:
 4:  mv a0, s0
     call boot_main
 parked:
-    wfi
-    j parked
+    j __monitor_park
     .balign 4
 trap:
     # Never use an interrupted S-mode virtual stack in M mode. This terminal
@@ -391,7 +391,8 @@ entry_from!(Physical, mac_kernel_model::pages::physical::Error);
 entry_from!(Supervisor, supervisor::Error);
 
 fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
-         partition: Partition, memory: &mut memory::Memory, cpus: &[mac_abi::boot::topology::Cpu])
+         partition: Partition, memory: &mut memory::Memory, cpus: &[mac_abi::boot::topology::Cpu],
+         monitor: &monitor::Published)
          -> core::result::Result<(), EntryError>
 {
     use bootrom::translation;
@@ -480,7 +481,30 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
     let root=translation::Prepared::new(account,AddressRange::new(VM_PHYSMAP_START,VM_PHYSMAP_END)
         .map_err(|_|mac_formats::Error::Malformed("invalid checked physmap range"))?,PhysicalAddress(VM_PHYSMAP_PHYSICAL_BASE),
         regions.iter().map(region).chain(fixed).chain(io).chain(devices))?;
-    let admitted = unsafe { supervisor::Admitted::prepare(root.root_physical()) }?;
+    let mut physical_limit =
+        flash.base
+             .checked_add(flash.length)
+             .ok_or(mac_formats::Error::Malformed("physical flash extent overflows"))?;
+    for bank in &memory.ram
+    {
+        physical_limit =
+            physical_limit.max(bank.base
+                                   .checked_add(bank.length)
+                                   .ok_or(mac_formats::Error::Malformed("physical RAM extent \
+                                                                         overflows"))?);
+    }
+    for &(_, end) in memory::BOOT_MMIO_REGIONS
+    {
+        physical_limit = physical_limit.max(end);
+    }
+    for &(_, _, base, bytes, _, _) in platform::PLATFORM_MMIO_DEVICES
+    {
+        physical_limit =
+            physical_limit.max(base.checked_add(bytes)
+                                   .ok_or(mac_formats::Error::Malformed("physical device \
+                                                                         extent overflows"))?);
+    }
+    let admitted = unsafe { supervisor::Admitted::prepare(root.root_physical(), physical_limit) }?;
     let hart: u64;
     unsafe {
         asm!("csrr {},mhartid",out(reg)hart,options(nomem,nostack));
@@ -523,7 +547,9 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
                                                 length: memory::DISPLAY_SCRATCH_BYTES },
                           execution:               &execution,
                           cpus:                    cpus.as_ptr(),
-                          cpu_count:               cpus.len() };
+                          cpu_count:               cpus.len(),
+                          monitor:                 &monitor.directory,
+                          monitor_layout:          mac_abi::boot::monitor::LAYOUT_FINGERPRINT };
     let info_virtual = root.cpu_address(PhysicalAddress((&info as *const BootInfo) as u64),
                                         size_of::<BootInfo>() as u64)?
                            .0;
@@ -547,6 +573,16 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
     // Keep every opaque firmware owner in this suspended physical frame. The
     // admitted callee has no owning payload below the captured stack boundary.
     let _root = core::mem::ManuallyDrop::new(root);
+    if let Err(error) = monitor.seal(plan.entry(),
+                                     execution.virtual_image,
+                                     physical_limit,
+                                     admitted.vector_bytes(),
+                                     u64::from(admitted.asid_mask()))
+    {
+        serial!("BOOT_MACHINE_IMAGE_SEAL_REFUSED: {error}");
+        fatal_shutdown();
+    }
+    // No fallible/retry path follows the unique image seal.
     unsafe { admitted.enter(plan.entry(), info_virtual, stack_virtual) }
 }
 
@@ -621,6 +657,16 @@ extern "C" fn boot_main(tree_address: usize) -> !
             halt();
         }
     };
+    let monitor = match monitor::Published::prepare(&tree, &cpus, primary, &memory)
+    {
+        Ok(monitor) => monitor,
+        Err(error) =>
+        {
+            serial!("BOOT_MACHINE_MONITOR_REFUSED: {error}");
+            fatal_shutdown();
+        }
+    };
+    serial!("BOOT_MACHINE_MONITORS_READY count={} secondary_s_release=not_published", cpus.len());
     serial!("BOOT_RAM base={:#x} bytes={} banks={} reservations={}",
             memory.ram[0].base,
             memory.ram[0].length,
@@ -668,10 +714,11 @@ extern "C" fn boot_main(tree_address: usize) -> !
         for partition in partitions
         {
             let result = startup(&mut disks[disk_index], partition);
-            match result.map_err(EntryError::Format)
-                        .and_then(|startup| {
-                            enter(startup, &mut disks, disk_index, partition, &mut memory, &cpus)
-                        })
+            match result.map_err(EntryError::Format).and_then(|startup| {
+                                                        enter(startup, &mut disks, disk_index,
+                                                              partition, &mut memory, &cpus,
+                                                              &monitor)
+                                                    })
             {
                 Ok(()) =>
                 {

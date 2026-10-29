@@ -70,12 +70,15 @@ impl<'a> Memory<'a>
         let s = self.snapshot.summary();
         let mut line = Line::new();
         let _ = write!(line,
-                       "System heap: {} / {} KiB    RAM: {} MiB\nFree pool: {} MiB    Root: {:#x}",
+                       "System heap: {} / {} KiB    RAM: {} MiB\nFree pool: {} MiB    Root: \
+                        {:#x}\nFoundation ordinary heap: {} KiB; tracked raw CPU backing: {} KiB",
                        s.heap_used / 1024,
                        s.heap_capacity / 1024,
                        s.ram_bytes / 1048576,
                        s.free_pages * s.page_bytes / 1048576,
-                       s.root_physical);
+                       s.root_physical,
+                       s.ordinary_foundation_heap_bytes / 1024,
+                       s.tracked_foundation_physical_bytes / 1024);
         self.header.set(line.text())
     }
 
@@ -142,8 +145,16 @@ impl<'a> Memory<'a>
             self.populate(self.rows.control().info()?)?;
             self.rows.control().draw()?;
         }
-        if (before.heap_used, before.heap_capacity, before.free_pages)
-           != (after.heap_used, after.heap_capacity, after.free_pages)
+        if (before.heap_used,
+            before.heap_capacity,
+            before.free_pages,
+            before.ordinary_foundation_heap_bytes,
+            before.tracked_foundation_physical_bytes)
+           != (after.heap_used,
+               after.heap_capacity,
+               after.free_pages,
+               after.ordinary_foundation_heap_bytes,
+               after.tracked_foundation_physical_bytes)
         {
             self.summary()?;
             self.header.draw()?;

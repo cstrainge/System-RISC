@@ -22,9 +22,9 @@ fn failed(_: Status) -> Error
 }
 impl BootScreen
 {
-    pub fn begin(resources: &[Resource], fonts: &FontManager,
-                 definitions: &mut crate::loader::Definitions, controls: &mut Manager)
-                 -> Result<Self>
+    pub(crate) fn begin(resources: &[Resource], fonts: &FontManager,
+                        definitions: &mut crate::loader::Definitions, controls: &mut Manager)
+                        -> crate::loader::LoadResult<Self>
     {
         let title = resources.iter()
                              .find(|r| r.kind == *b"STR " && r.id == 129)
@@ -33,7 +33,7 @@ impl BootScreen
             title.data.split_first().ok_or(Error::Malformed("invalid boot title resource"))?;
         if text.len() != usize::from(length)
         {
-            return Err(Error::Malformed("invalid boot title resource"));
+            return Err(Error::Malformed("invalid boot title resource").into());
         }
         let title = mac_formats::text::decode(text);
         let icon = resources.iter()

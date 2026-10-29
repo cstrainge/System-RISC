@@ -347,7 +347,15 @@ impl<'a> Snapshot<'a>
 
     pub fn process_domains_only(self) -> bool
     {
-        self.coverage & (wire::PROCESS_DOMAINS | wire::MODULE_DOMAINS) == wire::PROCESS_DOMAINS
+        self.coverage & (wire::PROCESS_DOMAINS | wire::MODULE_DOMAINS | wire::SYSTEM_DOMAINS)
+        == wire::PROCESS_DOMAINS
+    }
+
+    /// The real canonical System owner ledger is included. Its domain account
+    /// can still be unavailable; mapping/foundation totals are a separate read.
+    pub fn includes_system_domain(self) -> bool
+    {
+        self.coverage & wire::SYSTEM_DOMAINS != 0
     }
 
     pub fn includes_module_domains(self) -> bool
@@ -369,10 +377,11 @@ impl<'a> Snapshot<'a>
         {
             return Err(failure(Error::BadAbi, &call));
         }
-        let kind = match row.kind
+        let kind = match (row.kind, row.incarnation)
         {
-            wire::PROCESS => OwnerKind::Process,
-            wire::MODULE => OwnerKind::Module,
+            (wire::SYSTEM, 0) => OwnerKind::System,
+            (wire::PROCESS, 1..) => OwnerKind::Process,
+            (wire::MODULE, 1..) => OwnerKind::Module,
             _ => return Err(failure(Error::BadAbi, &call))
         };
         Ok(Domain { kind,

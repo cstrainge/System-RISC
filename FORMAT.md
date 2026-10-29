@@ -321,7 +321,7 @@ definition resources through its resident filesystem service. Normal disk-boot c
 for `DESKTOP_READY`. Rebuild the complete unreleased system on format changes.
 See [CODE-RESOURCES.md](CODE-RESOURCES.md) for executable resource families.
 
-The current BootInfo is 160 bytes on RV64; SystemServices remains24bytes. BootInfo
+The current BootInfo is 176 bytes on RV64; SystemServices remains24bytes. BootInfo
 contains RAM/log information, firmware disk-info/read/write/flush callbacks,
 startup disk/partition identity and flags. Device ordinals remain stable while
 System runs; NOT_FOUND ends enumeration. Each read/write transfers exactly512
@@ -343,8 +343,49 @@ primary-membership preflight, then sorted and checked before publication. System
 checks the mapped extent, reservation and shared topology contract at admission.
 CPU records describe discovery only: they neither authenticate the current hart
 nor release any secondary from the ROM park. BootInfo's ABI version remains1;
-its Header size must equal160bytes before the enlarged structure is read.
-Rebuild ROM and System together; the previous144byte layout is rejected.
+its Header size must equal176bytes before the enlarged structure is read.
+Rebuild ROM and System together; previous layouts are rejected.
+
+At byte160, BootInfo carries a mandatory physical machine-monitor directory
+pointer; byte168 holds its mandatory layout fingerprint. The fingerprint covers
+all shared sizes, alignments, offsets and protocol constants. The40byte directory
+is `{ entries: physical pointer, count: usize, stack_bytes: u64, timebase_hz: u64,
+image: physical pointer }`. Each32byte entry is `{ hart: u64, msip: u64,
+storage: BootMemoryRange }`, in checked topology order. All arrays, the80byte
+BootImage and disjoint page-aligned control backing remain reserved until reset.
+The checked DT timebase and CPU interrupt-controller/CLINT route pairs determine
+clock and MSIP addresses; numeric hart IDs are not MMIO offsets. Unsupported
+bindings or translated buses refuse boot.
+
+BootImage contains ten atomic u64s: sealed, entry, image base, image bytes,
+required physical limit, required ISA, vector bytes, hardware tag mask, fault
+entry and returned entry. The ROM seals the actual validated NABI load plan once
+before the primary's nonreturning handoff. Input cells become immutable before
+sealed=1 is release-published. System entry uses a0=payload, a1=exact payload
+bytes and a2=nonzero role: BOOT=0x424f4f54 or HART=0x48415254. Unknown/zero roles
+are rejected before cold initialization. Secondary entry is this same sealed
+System entry, never a caller-supplied callback.
+
+Each464byte Control begins with ten64bit words: hart, MSIP, requested,
+acknowledged, stop, stopped, joined, command, signed result and entry guard.
+Its96byte SecondaryStart begins at80: sequence, firmware-root SATP, control
+virtual address, service top, phase, admission step, observed, expected, vector
+bytes, hardware tag mask, PMP address and configuration. Wake request/ACK epochs
+follow at176/184. The272byte integer frame starts at192 (32registers, PC, status).
+Bindings borrow only individual atomic cells or raw scalars, never a shared
+Control/frame reference across assembly mutation.
+
+Joined1 denotes a peer receiver joined from M park; joined2 denotes the
+primary receiver. The joined field is not the current privilege/entry phase. FenceI=1
+ACKs actual remote fence.i. START=2 is a one-shot transition from the real M park:
+M independently validates the selected CPU profile/root/physical permissions and
+reports Starting=1 or Refused=3. Real warm System initialization reports
+AdmittedIdle=2; the initial phase is Prepared=0. A separate nonzero wake epoch
+must receive an actual S interrupt ACK before the core mints its unique readiness
+owner. M injection alone grants no readiness or scheduling authority. Stop is
+sticky and irreversible; only the M receiver ACKs after abandonment. No old
+monitor layout or raw-memory boot fallback is accepted. Rebuild the entire world
+when this unreleased ABI1 contract changes.
 
 At byte88, BootInfo appends a pointer/count pair for RAM banks, followed at
 byte104 by a pointer/count pair for reservations. Counts are native usize
@@ -2065,8 +2106,22 @@ Invalidation revokes an ID immediately; its slot remains unavailable until the
 unique cleanup ticket completes. A domain cannot retire while either count is
 nonzero. Refused completion retains the ticket for retry against its proper
 owner; it never acknowledges cleanup implicitly. Counters and
-revisions never wrap; saturated revisions refuse snapshots. Coverage includes process and module domains with partial ledgers; System
-and bootstrap domains and unmigrated objects remain outside this census.
+revisions never wrap; saturated revisions refuse snapshots. All-domain coverage
+includes process, module and the actual canonical System owner with partial
+ledgers. Coverage bits are process=1, partial ledgers=2, modules=4 and System=8.
+The System row is appended after the process/module directory rows, has kind0
+and incarnation0, and reads the same once-issued System OwnerRef used by
+resident registrations and objects. It is not a synthetic directory entry or
+an independently issued ledger. Its membership is fixed until reset; its
+ledger retains its own ordinary revision and stale-read checks. Own-domain
+scope still describes only the authenticated application. System ledger detail
+requires the same cross-domain policy grant as other foreign domains.
+
+System's domain account is unavailable: the all-zero Account payload has
+ACCOUNT_UNAVAILABLE coverage, not a fabricated zero-usage account. Separate
+memory-summary Foundation observations do not supply a DomainAccount or CPU
+time. Bootstrap executors, individual named-thread/owned-stack queries and
+unmigrated objects remain outside this census.
 Snapshot values allocate no resident session object and convey no authority to a
 foreign caller. Coalesced OsEvent 0x11000000 advises process/module membership changes. This tag is
 distinct from the Window Manager geometry notification.
@@ -2197,3 +2252,23 @@ excluded. Foundation/System/domain totals are categories of that same ordinary
 storage, not additive physical capacities. The checked platform module account
 policy selects16 MiB kernel admission and a4 MiB future worker stack; it does not
 activate workers. Rebuild all consumers together when changing these contracts.
+
+The System memory-inspection summary separates
+`ordinary_foundation_heap_bytes` from `tracked_foundation_physical_bytes`.
+The former is a category within ordinary heap occupancy; the latter attributes
+the actual rounded page-pool leases held by prepared CPU service stacks, entry
+controls, saved CPU arrays, affine System idle executors and their raw directory
+backing. Each unique
+physical owner carries one move-only receipt until backing disposal. Mapping
+aliases and guard addresses do not issue receipts, and physical attribution
+does not reduce ordinary heap capacity or subtract pool pages a second time.
+
+This physical counter has partial coverage. Primary and prepared peer idle
+executors now carry their actual stack and SavedState receipts. Existing page
+tables, page-pool metadata, ROM reservations and protected backing are excluded. Protected
+Foundation heap attribution remains a separate origin. The summary retains
+`ACCOUNTING_UNAVAILABLE`; these two observations do not claim an all-System
+memory total or a synthetic System domain account. Mapping revision does not
+claim that heap, physical attribution and page-pool counters were sampled
+simultaneously. ABI remains version1; the native layout fingerprint changes
+with the summary layout and all producers/consumers rebuild together.

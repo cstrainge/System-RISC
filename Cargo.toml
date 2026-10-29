@@ -6,6 +6,8 @@ members = [
     "crates/mac-definition",
     "crates/mac-definition-macros",
     "crates/mac-module",
+    "crates/mac-scheduler-interface",
+    "crates/mac-scheduler-policy",
     "crates/mac-object-table",
     "crates/mac-kernel-model",
     "crates/mac-riscv-pages",
@@ -43,7 +45,6 @@ members = [
     "tools/risc-forks",
     "tools/risc-host",
     "tools/xtask",
-    "tests/abi-smoke",
     "bootrom",
     "definitions/*",
     "drivers/*",
@@ -67,6 +68,8 @@ mac-kernel-model = { path = "crates/mac-kernel-model" }
 mac-definition = { path = "crates/mac-definition" }
 mac-file-types = { path = "crates/mac-file-types" }
 mac-module = { path = "crates/mac-module" }
+mac-scheduler-interface = { path = "crates/mac-scheduler-interface" }
+mac-scheduler-policy = { path = "crates/mac-scheduler-policy" }
 mac-device-interface = { path = "crates/mac-device-interface" }
 mac-power-interface = { path = "crates/mac-power-interface" }
 mac-filesystem-interface = { path = "crates/mac-filesystem-interface" }

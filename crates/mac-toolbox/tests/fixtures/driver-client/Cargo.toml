@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 [workspace]
 [features]
+scheduler = ["dep:mac-driver-alloc", "dep:mac-scheduler-interface", "dep:mac-module"]
 workers = ["dep:mac-driver-alloc"]
 workers-rollback = ["workers"]
 pressure = ["workers"]
@@ -19,6 +20,8 @@ path = "src/package.rs"
 test = false
 bench = false
 [dependencies]
+mac-module = { path = "../../../../mac-module", optional = true }
+mac-scheduler-interface = { path = "../../../../mac-scheduler-interface", optional = true }
 mac-driver = { path = "../../../../mac-driver" }
 mac-abi = { path = "../../../../mac-abi" }
 mac-driver-alloc = { path = "../../../../mac-driver-alloc", optional = true }

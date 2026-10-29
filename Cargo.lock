@@ -10,21 +10,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "abi-smoke"
-version = "0.1.0"
-dependencies = [
- "bootrom",
- "linked_list_allocator",
- "mac-abi",
- "mac-build",
- "mac-formats",
- "mac-kernel-model",
- "mac-toolbox",
- "mac-traps",
- "toolbox-quickdraw",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -377,6 +362,7 @@ dependencies = [
 name = "mac-build"
 version = "0.1.0"
 dependencies = [
+ "mac-abi",
  "mac-device-interface",
  "mac-formats",
  "mac-kernel-model",
@@ -437,6 +423,7 @@ dependencies = [
  "mac-device-interface",
  "mac-file-source-interface",
  "mac-module",
+ "mac-scheduler-interface",
  "spinning_top",
 ]
 
@@ -573,6 +560,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-scheduler-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
+]
+
+[[package]]
+name = "mac-scheduler-policy"
+version = "0.1.0"
+dependencies = [
+ "mac-scheduler-interface",
+]
+
+[[package]]
 name = "mac-scrap-extension-interface"
 version = "0.1.0"
 dependencies = [
@@ -611,6 +612,7 @@ dependencies = [
  "mac-object-table",
  "mac-power-interface",
  "mac-riscv-pages",
+ "mac-scheduler-interface",
  "mac-scrap-extension-interface",
  "mac-toolbox",
  "mac-traps",
@@ -723,6 +725,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
+]
+
+[[package]]
+name = "multi-scheduler-extension"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-driver",
+ "mac-driver-alloc",
+ "mac-scheduler-interface",
+ "mac-scheduler-policy",
 ]
 
 [[package]]
@@ -1434,7 +1448,6 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
- "bootrom",
  "getrandom",
  "hfs-b",
  "mac-abi",

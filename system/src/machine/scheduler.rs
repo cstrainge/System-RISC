@@ -5,7 +5,7 @@ use alloc::{sync::Arc, vec::Vec};
 use core::{arch::asm,
            cell::Cell,
            ops::{Deref, DerefMut},
-           sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
+           sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}};
 
 use mac_object_table::{domain::ReleasedResource, store::CompletionKey};
 use spinning_top::Spinlock as Mutex;
@@ -15,6 +15,8 @@ use crate::{context::{EventWaiter, ThreadContext},
             toolbox::handles::{OwnerRef, Store}};
 mod lifetime;
 mod worker;
+pub(crate) mod policy;
+include!(concat!(env!("OUT_DIR"), "/platform-scheduling.rs"));
 pub(crate) mod recovery;
 pub(crate) use recovery::{FinderBackingLoan, initialize_finder_recovery, pump_recovery_backing,
                           take_finder_recovery};
@@ -25,7 +27,7 @@ pub(crate) use worker::{activate_workers, prepare_worker, publish_worker, worker
 pub(crate) mod accounting;
 pub(crate) use lifetime::{ReleaseThreads, specification};
 
-use super::traps::execution::{HartKey, IDLE, current, idle_frame, in_io, install_idle,
+use super::traps::execution::{HartKey, IDLE, activate_idle_context, current, idle_frame, in_io,
                               select_current, selected_hart};
 pub(crate) use super::traps::execution::{activate_context, authenticate_module, critical_active,
                                          current_context, io_enter, io_leave,
@@ -33,11 +35,22 @@ pub(crate) use super::traps::execution::{activate_context, authenticate_module, 
                                          reserve_allocation, reserve_replacement};
 // Generated from the same checked platform policy as the linker artifacts.
 const STACK_BYTES: usize = super::memory::APPLICATION_STACK_BYTES as usize;
-// The current platform time counter runs at 10 MHz. At 500 us, two runnable peers can consume the
-// entire 1 ms interaction budget before a queued caller resumes. Use 250 us
-// for this resident round-robin policy; a freshly woken input consumer still
-// takes priority. This is not a hard real-time or future scheduler contract.
-const TIMER_INTERVAL: u64 = 2_500;
+const IDLE_STACK_BYTES: usize = super::memory::SYSTEM_STACK_BYTES as usize;
+// Convert the checked platform quantum through the admitted DT clock once,
+// before any frame is dispatched. QEMU defaults to 250 us; a freshly woken
+// input consumer still takes priority in bootstrap round robin. This is not
+// a hard real-time latency or future scheduler contract.
+static TIMER_INTERVAL: AtomicU64 = AtomicU64::new(0);
+fn timer_interval() -> u64
+{
+    let ticks = TIMER_INTERVAL.load(Ordering::Acquire);
+    if ticks == 0
+    {
+        super::traps::entry_lost("scheduler frame commitment preceded validated platform timer \
+                                  initialization");
+    }
+    ticks
+}
 static RECLAIM_PENDING: AtomicBool = AtomicBool::new(false);
 static RETIRED_COUNT: AtomicUsize = AtomicUsize::new(0);
 static WORKER_REAP_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -51,25 +64,281 @@ struct Thread
     worker: Option<Cell<WorkerState>>,
     scope:  Option<mac_object_table::scope::Lease<crate::toolbox::handles::InvocationGate>>
 }
+/// The one THRD store contains scheduled executors and reset-lifetime affine
+/// System idle owners. Run-queue positions can resolve only Scheduled records.
+enum Record
+{
+    Scheduled(Thread),
+    SystemIdle(IdleRecord)
+}
+impl Record
+{
+    fn scheduled(&self) -> Option<&Thread>
+    {
+        match self
+        {
+            Self::Scheduled(thread) => Some(thread),
+            Self::SystemIdle(_) => None
+        }
+    }
+}
+struct IdleRecord
+{
+    id:   u64,
+    core: Arc<SystemIdleCore>
+}
+struct SystemIdleCore
+{
+    cpu:         crate::allocator::foundation::Foundation<super::traps::SavedState>,
+    _stack:      crate::allocator::foundation::Foundation<super::pages::Stack>,
+    context:     Arc<ThreadContext>,
+    publication: spin::Once<CompletionKey>,
+    name:        ThreadName,
+    // Last: the row cannot be prepared again before all actual owners above die.
+    target:      super::traps::execution::IdleTarget
+}
+/// Affine owner of the exact canonical idle publication. The actual store and
+/// this holder retain the same core, including its receipt, until machine reset.
+/// This grants preparation/install affinity, never permission to release a CPU.
+pub(crate) struct SystemIdle
+{
+    core: Arc<SystemIdleCore>
+}
+impl SystemIdle
+{
+    pub(crate) fn target(&self) -> &super::traps::execution::IdleTarget
+    {
+        &self.core.target
+    }
+
+    pub(crate) fn context(&self) -> &Arc<ThreadContext>
+    {
+        &self.core.context
+    }
+
+    pub(crate) fn cpu(&self) -> &super::traps::SavedState
+    {
+        &self.core.cpu
+    }
+}
+/// Single-use constructor proof. Only the successful native SystemIdle Store
+/// publication below can construct this; the same fresh context is embedded in
+/// that row. An arbitrary context or a numeric thread ID cannot be supplied.
+pub(crate) struct SystemThreadBinding
+{
+    context:     Arc<ThreadContext>,
+    owner:       OwnerRef,
+    publication: CompletionKey,
+    resources:   crate::kernel::ResourceSelection
+}
+impl SystemThreadBinding
+{
+    pub(crate) fn into_parts(
+        self)
+        -> (Arc<ThreadContext>, OwnerRef, u64, crate::kernel::ResourceSelection)
+    {
+        (self.context, self.owner, self.publication.id(), self.resources)
+    }
+}
+
+pub(crate) enum StartError
+{
+    Clock(super::monitor::Error),
+    Load(crate::loader::LoadError),
+    Idle(super::traps::execution::IdlePreparationFailure),
+    Cpus(super::smp::Error)
+}
+impl core::fmt::Display for StartError
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Clock(cause) => cause.fmt(out),
+            Self::Load(cause) => cause.fmt(out),
+            Self::Idle(cause) => cause.fmt(out),
+            Self::Cpus(cause) => cause.fmt(out)
+        }
+    }
+}
+impl From<mac_formats::Error> for StartError
+{
+    fn from(cause: mac_formats::Error) -> Self
+    {
+        Self::Load(cause.into())
+    }
+}
+impl From<crate::loader::LoadError> for StartError
+{
+    fn from(cause: crate::loader::LoadError) -> Self
+    {
+        Self::Load(cause)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct RunState
 {
     // Scheduler-owned execution claim, retained across frame restore and body
     // execution. Only a complete outer-capture handoff may clear it.
-    claimed_by: Option<HartKey>,
-    live:       bool,
-    retired:    bool,
-    switches:   u64,
-    waiting:    Option<Wait>,
-    woken:      u8
+    claimed_by:  Option<HartKey>,
+    live:        bool,
+    retired:     bool,
+    switches:    u64,
+    waiting:     Option<Wait>,
+    woken:       u8,
+    ready_since: Option<u64>,
+    last_hart:   Option<HartKey>,
+    at_handoff:  bool
+}
+/// Policy refusal preserves the actual missing/invalid clock or ready interval.
+/// This surface does not invent a CPU-time counter.
+pub(super) enum RunFactsError
+{
+    NotReady
+    {
+        thread: u64
+    },
+    FutureReady
+    {
+        thread: u64,
+        ready:  u64,
+        now:    u64
+    },
+    Clock(super::monitor::Error)
+}
+impl RunFactsError
+{
+    pub(super) fn status(&self) -> mac_abi::Status
+    {
+        match self
+        {
+            Self::Clock(cause) => cause.status(),
+            Self::NotReady { .. } | Self::FutureReady { .. } => mac_abi::CORRUPT_DATA
+        }
+    }
+}
+impl core::fmt::Display for RunFactsError
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::NotReady { thread } =>
+            {
+                write!(out, "thread {thread} has no actual runnable interval")
+            }
+            Self::FutureReady { thread,
+                                ready,
+                                now } =>
+            {
+                write!(out, "thread {thread} ready timestamp {ready} exceeds round time {now}")
+            }
+            Self::Clock(cause) => cause.fmt(out)
+        }
+    }
+}
+impl RunState
+{
+    const fn new() -> Self
+    {
+        Self { claimed_by:  None,
+               live:        false,
+               retired:     false,
+               switches:    0,
+               waiting:     None,
+               woken:       0,
+               ready_since: None,
+               last_hart:   None,
+               at_handoff:  false }
+    }
+
+    fn ready(&self) -> bool
+    {
+        self.live
+        && !self.retired
+        && self.waiting.is_none()
+        && (self.claimed_by.is_none() || self.at_handoff)
+    }
 }
 impl Thread
 {
     fn update(&self, change: impl FnOnce(&mut RunState))
     {
+        self.update_at(None, change);
+    }
+
+    fn update_at(&self, observed: Option<u64>, change: impl FnOnce(&mut RunState))
+    {
         let mut state = self.state.get();
+        let was_ready = state.ready();
         change(&mut state);
+        if !state.ready()
+        {
+            state.ready_since = None;
+        }
+        else if !was_ready
+        {
+            // Actual publication/activation/unblock/capture edge only. A
+            // duplicate wake or unrelated priority change preserves queue age.
+            state.ready_since = Some(observed.unwrap_or_else(crate::platform::ticks));
+        }
         self.state.set(state);
+    }
+
+    fn capture_runnable(&self, captured: u64)
+    {
+        // The caller validated the genuine complete outer frame under the
+        // scheduler lock. Retaining the claim protects that frame while it
+        // competes locally; this metadata bit grants no remote execution.
+        self.update_at(Some(captured), |state| state.at_handoff = true);
+    }
+
+    fn commit_execution(&self, hart: HartKey)
+    {
+        self.update(|state| {
+                state.at_handoff = false;
+                state.last_hart = Some(hart);
+                state.claimed_by = Some(hart);
+                state.woken = 0;
+                state.switches += 1;
+            });
+    }
+
+    fn policy_record(&self, now_microseconds: u64)
+                     -> Result<mac_scheduler_interface::Record, RunFactsError>
+    {
+        let state = self.state.get();
+        let ready_ticks = state.ready_since
+                               .filter(|_| state.ready())
+                               .ok_or(RunFactsError::NotReady { thread: self.id })?;
+        let ready =
+            super::monitor::ticks_to_microseconds(ready_ticks).map_err(RunFactsError::Clock)?;
+        if ready > now_microseconds
+        {
+            return Err(RunFactsError::FutureReady { thread: self.id,
+                                                    ready,
+                                                    now: now_microseconds });
+        }
+        // Scheduled records are published only by the genuine application or
+        // module-worker constructors. Canonical SystemIdle is a distinct Store
+        // variant and cannot become a policy candidate. No owner Arc clone or
+        // caller-selected program-kind number is needed per candidate.
+        let kind = if self.core.context.is_module_worker()
+        {
+            mac_scheduler_interface::Kind::Module
+        }
+        else
+        {
+            mac_scheduler_interface::Kind::Application
+        };
+        Ok(mac_scheduler_interface::Record { thread: self.id,
+                                             ready_since_microseconds: ready,
+                                             last_hart: state.last_hart
+                                                             .map(HartKey::number)
+                                                             .map(|hart| hart as u64),
+                                             interactive_wake: state.woken == 2,
+                                             kind })
     }
 }
 #[derive(Clone, Copy)]
@@ -93,7 +362,7 @@ struct Scheduler
     // Positions select CPU backing only; genuine facility receipts authorize
     // access even after ordinary IDs have been invalidated by the owner walk.
     threads:        Vec<Option<CompletionKey>>,
-    records:        Option<Store<Thread>>,
+    records:        Option<Store<Record>>,
     waiters:        Vec<EventWaiter>,
     waiters_leased: bool,
     ticks:          u64
@@ -102,7 +371,7 @@ impl Scheduler
 {
     fn thread(&self, slot: usize) -> Option<&Thread>
     {
-        self.records.as_ref()?.completing(self.threads.get(slot)?.as_ref()?)
+        self.records.as_ref()?.completing(self.threads.get(slot)?.as_ref()?)?.scheduled()
     }
 
     fn iter(&self) -> impl Iterator<Item = (usize, &Thread)>
@@ -110,13 +379,19 @@ impl Scheduler
         self.threads.iter().enumerate().filter_map(|(slot, _)| self.thread(slot).map(|t| (slot, t)))
     }
 
-    fn prepare(&mut self) -> Result<usize, mac_abi::Status>
+    fn prepare_records(&mut self) -> Result<(), mac_abi::Status>
     {
         if self.records.is_none()
         {
             let (objects, backing) = crate::toolbox::handles::thread_kinds()?;
             self.records = Some(Store::owned(objects, backing).map_err(lifetime::pool_status)?);
         }
+        Ok(())
+    }
+
+    fn prepare(&mut self) -> Result<usize, mac_abi::Status>
+    {
+        self.prepare_records()?;
         let slot = self.threads.iter().position(Option::is_none).unwrap_or(self.threads.len());
         if slot == self.threads.len()
         {
@@ -419,14 +694,10 @@ fn spawn_prepared_inner(prepared: PreparedThread, runnable: bool) -> Result<u64,
                 account: prepared.allocation.clone(),
                 class: mac_kernel_model::policy::MemoryClass::Kernel
             }, || store.insert_with_receipt(&prepared.owner, |id| {
-                Thread { id,
+                Record::Scheduled(Thread { id,
                          core: prepared.core.share(),
                          worker: None, scope: None,
-                         state: Cell::new(RunState { claimed_by: None, live: false,
-                                                    retired: false,
-                                                    switches: 0,
-                                                    waiting: None,
-                                                    woken: 0 }) }
+                         state: Cell::new(RunState::new()) })
             })).map_err(lifetime::pool_status)?;
             let (id, receipt) = publication.into_parts();
             if slot == scheduler.threads.len()
@@ -500,8 +771,11 @@ fn spawn_prepared_inner(prepared: PreparedThread, runnable: bool) -> Result<u64,
 pub(crate) fn start_prepared(thread: u64, owner: &OwnerRef) -> Result<(), mac_abi::Status>
 {
     let scheduler = SCHEDULER.lock();
-    let record =
-        scheduler.records.as_ref().and_then(|store| store.get(thread)).ok_or(mac_abi::NOT_FOUND)?;
+    let record = scheduler.records
+                          .as_ref()
+                          .and_then(|store| store.get(thread))
+                          .and_then(Record::scheduled)
+                          .ok_or(mac_abi::NOT_FOUND)?;
     if !owner.accepting() || record.core.context.identity().app.0 != owner.owner().incarnation()
     {
         return Err(mac_abi::ACCESS_DENIED);
@@ -548,36 +822,106 @@ extern "C" fn app_start(entry: usize) -> !
 }
 fn arm()
 {
-    let deadline = crate::platform::ticks().wrapping_add(TIMER_INTERVAL);
-    // Sstc was admitted by firmware before supervisor entry.
+    arm_ticks(timer_interval());
+}
+fn arm_ticks(interval: u64)
+{
+    let deadline = crate::platform::ticks().wrapping_add(interval);
+    // Sstc was admitted by firmware before supervisor entry. Enable STIE only
+    // with an actual deadline and only when hardware reports it clear. Warm
+    // admitted-idle entry enables SSIE alone; this preserves that separate bit.
     unsafe {
-        asm!("csrw 0x14d,{}",in(reg)deadline,options(nostack));
+        asm!("csrw 0x14d, {deadline}",
+             "csrr {enabled}, sie",
+             "and {enabled}, {enabled}, {timer}",
+             "bnez {enabled}, 2f",
+             "csrs sie, {timer}",
+             "2:",
+             deadline = in(reg) deadline,
+             timer = in(reg) 32usize,
+             enabled = out(reg) _,
+             options(nostack));
     }
 }
 
-pub fn start() -> mac_formats::Result<()>
+fn prepare_system_idle(target: super::traps::execution::IdleTarget)
+                       -> Result<SystemIdle, mac_abi::Status>
 {
-    let scheduler = SCHEDULER.lock();
-    let stack = super::pages::Stack::allocate(STACK_BYTES).map_err(|error| {
-                    serial!("IDLE_STACK_REFUSED: {error}");
-                    mac_formats::Error::AllocationFailed("physical page allocation refused for \
-                                                          idle stack")
+    use crate::allocator::{SystemClass, foundation::Foundation};
+    crate::context::without_recovery(|| {
+        crate::allocator::with_system(SystemClass::Foundation, || {
+            let owner = crate::toolbox::handles::system_owner()?;
+            let source = crate::kernel::system_resources(&owner)?;
+            let resources = source.with(crate::kernel::current_resource_selection)?;
+            let stack =
+                Foundation::<super::pages::Stack>::allocate(IDLE_STACK_BYTES).map_err(|cause| {
+                    serial!("SYSTEM_IDLE_BACKING_REFUSED hart={} resource=stack cause={cause}",
+                            target.number());
+                    cause.status()
                 })?;
-    let top = stack.top();
-    let mut initial = TrapFrame::default();
-    initial.pc = idle as *const () as usize;
-    initial.status = super::traps::INITIAL_STATUS;
-    initial.stack_pointer = top;
-    let cpu = super::traps::SavedState::new(initial).map_err(|error| {
-                  serial!("IDLE_CPU_STATE_REFUSED: {error}");
-                  mac_formats::Error::AllocationFailed("physical page allocation refused for idle \
-                                                        CPU state")
-              })?;
-    install_idle(stack, cpu).map_err(|status| {
-                                serial!("IDLE_INSTALL_REFUSED status={status}");
-                                mac_formats::Error::Malformed("scheduler idle backing does not \
-                                                               match its admitted hart")
-                            })?;
+            let mut initial = TrapFrame::default();
+            initial.pc = idle as *const () as usize;
+            initial.status = super::traps::INITIAL_STATUS;
+            initial.stack_pointer = stack.top();
+            let cpu = Foundation::<super::traps::SavedState>::new(initial).map_err(|cause| {
+                          serial!("SYSTEM_IDLE_BACKING_REFUSED hart={} resource=CPU cause={cause}",
+                                  target.number());
+                          cause.status()
+                      })?;
+            let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
+            let name = ThreadName::new("System idle")?;
+            let core = Arc::try_new(SystemIdleCore { cpu,
+                                                     _stack: stack,
+                                                     context,
+                                                     target,
+                                                     publication: spin::Once::new(),
+                                                     name }).map_err(|_| mac_abi::NO_MEMORY)?;
+            {
+                let mut scheduler = SCHEDULER.lock();
+                scheduler.prepare_records()?;
+                let store = scheduler.records.as_mut().ok_or(mac_abi::BAD_ABI)?;
+                let publication = store.insert_with_receipt(&owner, |id| {
+                                           Record::SystemIdle(IdleRecord { id,
+                                                                           core: core.clone() })
+                                       })
+                                       .map_err(lifetime::pool_status)?;
+                let (_, receipt) = publication.into_parts();
+                // No fallible action follows actual native publication. The proof
+                // binds this row's same fresh Arc, canonical System owner and source.
+                core.publication.call_once(|| receipt);
+                ThreadContext::assign_system(SystemThreadBinding { context: core.context
+                                                                                .clone(),
+                                                                   owner,
+                                                                   publication: receipt,
+                                                                   resources });
+            }
+            serial!("SYSTEM_IDLE_REGISTERED thread={} hart={} name={}",
+                    core.context.identity().thread.0,
+                    core.target.number(),
+                    core.name.text());
+            Ok(SystemIdle { core })
+        })
+    })
+}
+
+pub(crate) fn start() -> Result<(), StartError>
+{
+    let interval = super::monitor::microseconds_to_ticks_ceil(QUANTUM_MICROSECONDS)
+        .map_err(StartError::Clock)?;
+    TIMER_INTERVAL.compare_exchange(0, interval, Ordering::AcqRel, Ordering::Acquire)
+                  .map_err(|_| {
+                      mac_formats::Error::Malformed("native scheduler timer was already \
+                                                     initialized; reset before restarting")
+                  })?;
+    // Genuine owner/kind services now exist. Registry preparation allocates and
+    // publishes each affine idle before we borrow the scheduled-position table.
+    // A typed install refusal retains its actual SystemIdle through boot report.
+    super::traps::execution::prepare_idles(prepare_system_idle).map_err(StartError::Idle)?;
+    // Normal CPU initialization completes real warm admission and a startup
+    // interrupt ACK before any scheduled-position lock or author execution.
+    // Peers remain AdmittedIdle; this grants no dispatch policy permission.
+    super::smp::initialize().map_err(StartError::Cpus)?;
+    let scheduler = SCHEDULER.lock();
     // Module preparations can precede Finder in the shared THRD store. Start
     // the genuine runnable Finder process, never an inert/armed module slot.
     let finder = crate::context::finder_app().0;
@@ -599,21 +943,15 @@ pub fn start() -> mac_formats::Result<()>
     let hart = selected_hart();
     if t.state.get().claimed_by.is_some()
     {
-        return Err(mac_formats::Error::Malformed("scheduler bootstrap Finder is already claimed"));
+        return Err(mac_formats::Error::Malformed("scheduler bootstrap Finder is already claimed").into());
     }
-    t.update(|state| {
-         state.claimed_by = Some(hart);
-         state.switches += 1;
-     });
+    t.commit_execution(hart);
     t.core.publish_cpu();
     activate_context(Some(&t.core.context));
     select_current(slot);
     drop(scheduler);
     arm();
-    unsafe {
-        asm!("csrs sie, {}",in(reg)32usize,options(nomem,nostack));
-        __system_start_frame(frame)
-    }
+    unsafe { __system_start_frame(frame) }
 }
 extern "C" fn idle() -> !
 {
@@ -773,7 +1111,8 @@ pub fn wait_io(job: crate::context::DeferredIo) -> Result<bool, mac_abi::Status>
 pub fn wake_io(identity: u64, job: crate::context::DeferredIo)
 {
     let scheduler = SCHEDULER.lock();
-    if let Some(thread) = scheduler.records.as_ref().and_then(|store| store.get(identity))
+    if let Some(thread) =
+        scheduler.records.as_ref().and_then(|store| store.get(identity)).and_then(Record::scheduled)
        && thread.state.get().live
        && matches!(thread.state.get().waiting, Some(Wait::Io { job: expected }) if expected == job)
     {
@@ -861,12 +1200,13 @@ pub(crate) fn reclaim_retired()
                                             }
                                             thread.core.release.lock().take().map(|ticket| {
                                                                                  (slot,
+                                                                                  thread.id,
                                                                                   ticket,
                                                                                   thread.core
                                                                                         .clone())
                                                                              })
                                         });
-            let Some((slot, ticket, core)) = found
+            let Some((slot, id, ticket, core)) = found
             else
             {
                 break;
@@ -906,8 +1246,10 @@ pub(crate) fn reclaim_retired()
                     RETIRED_COUNT.fetch_sub(1, Ordering::AcqRel);
                     // The temporary read must leave before Removed destroys
                     // its payload and acknowledges stack/code quiescence.
+                    let context = core.context.clone();
+                    let app = context.identity().app.0;
                     drop(core);
-                    Some(removed)
+                    Some((removed, context, app, id))
                 }
                 Err(ticket) =>
                 {
@@ -918,12 +1260,11 @@ pub(crate) fn reclaim_retired()
                 }
             }
         };
-        if let Some(thread) = removed
+        if let Some((removed, context, app, id)) = removed
         {
-            let app = thread.core.context.identity().app.0;
-            let id = thread.id;
-            thread.core.context.release();
-            drop(thread);
+            context.release();
+            drop(context);
+            drop(removed);
             serial!("PROCESS_THREAD_RECLAIMED app={app} thread={id}");
             crate::toolbox::processes::retirement::thread_reclaimed();
         }
@@ -984,7 +1325,10 @@ fn release_claim(scheduler: &Scheduler, slot: usize, hart: HartKey)
     {
         claim_lost(hart, slot, "handoff does not own the old THRD");
     }
-    thread.update(|state| state.claimed_by = None);
+    thread.update(|state| {
+              state.claimed_by = None;
+              state.at_handoff = false;
+          });
     if thread.state.get().retired
     {
         RECLAIM_PENDING.store(true, Ordering::Release);
@@ -997,34 +1341,123 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
     let frame = capture.frame();
     let hart = capture.hart();
     let current = capture.current();
-    validate_capture(&SCHEDULER.lock(), &capture);
+    {
+        let scheduler = SCHEDULER.lock();
+        validate_capture(&scheduler, &capture);
+        if current != IDLE
+        {
+            if let Some(thread) = scheduler.thread(current)
+            {
+                thread.capture_runnable(capture.captured_ticks());
+            }
+        }
+    }
     // The admitted hart selection still names the interrupted app until a new CPU frame is
     // selected. Generic scheduler maintenance uses permanent System authority; provider
     // callbacks must explicitly restore their own retained subject selection.
-    crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-        // Device input and cursor publication precede all ordinary maintenance.
-        // Never enable nested preemption while a resident manager owns its guards.
-        let fresh_input = crate::kernel::poll_waiting_events();
-        if INPUT_PRIORITY.background_allowed(fresh_input)
-        {
-            reclaim_workers();
-            reclaim_retired();
-            crate::drivers::pump_jobs();
-            crate::toolbox::files::pump_provider_operations();
-            crate::toolbox::runtime::Desktop::pump_standard_file();
-            pump_recovery_backing();
-            crate::recovery::pump();
-            crate::toolbox::crashes::pump_dismissals();
-            crate::toolbox::crashes::pump_reports();
-            crate::toolbox::processes::documents::pump();
-            crate::toolbox::processes::retirement::pump();
-            crate::toolbox::processes::finder::pump();
-        }
-    });
+    // Maintenance may enter real owner-affine FILES/ROM/code-publication
+    // services. The complete capture carries the authenticated hardware key;
+    // allocation or logical app identities cannot impersonate this service hart.
+    if super::paging::firmware_owner_hart() == Some(hart.number())
+    {
+        crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+            // Device input and cursor publication precede all ordinary maintenance.
+            // Never enable nested preemption while a resident manager owns its guards.
+            let fresh_input = crate::kernel::poll_waiting_events();
+            if INPUT_PRIORITY.background_allowed(fresh_input)
+            {
+                reclaim_workers();
+                reclaim_retired();
+                crate::drivers::scheduler::pump();
+                crate::drivers::pump_jobs();
+                crate::toolbox::files::pump_provider_operations();
+                crate::toolbox::runtime::Desktop::pump_standard_file();
+                pump_recovery_backing();
+                crate::recovery::pump();
+                crate::toolbox::crashes::pump_dismissals();
+                crate::toolbox::crashes::pump_reports();
+                crate::toolbox::processes::documents::pump();
+                crate::toolbox::processes::retirement::pump();
+                crate::toolbox::processes::finder::pump();
+            }
+        });
+    }
     let mut scheduler = SCHEDULER.lock();
     validate_capture(&scheduler, &capture);
     scheduler.ticks += 1;
-    let now = crate::platform::ticks();
+    wake_deadlines(&scheduler, crate::platform::ticks());
+    // Deadline/wake edits above precede Round.now. No scheduler guard or
+    // mutable frame borrow may cross foreign policy entry.
+    let preferred = if crate::drivers::scheduler::configured()
+    {
+        drop(scheduler);
+        let attempt = policy::select(&capture);
+        if attempt.is_err() && super::paging::firmware_owner_hart() == Some(hart.number())
+        {
+            // A late result is discarded before any frame/claim change. Input
+            // may have arrived during that elapsed interval; service it now.
+            crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                let _ = crate::kernel::poll_waiting_events();
+            });
+        }
+        scheduler = SCHEDULER.lock();
+        validate_capture(&scheduler, &capture);
+        match attempt
+        {
+            Ok(preferred) => preferred,
+            Err(policy::Expired) =>
+            {
+                wake_deadlines(&scheduler, crate::platform::ticks());
+                None
+            }
+        }
+    }
+    else
+    {
+        None
+    };
+    let choice =
+        preferred.as_ref()
+                 .and_then(|selection| {
+                     selection.slot(&scheduler, &capture)
+                              .map(|slot| (slot, selection.quantum_ticks))
+                 })
+                 .or_else(|| {
+                     bootstrap_choice(&scheduler, &capture).map(|slot| (slot, timer_interval()))
+                 });
+    if let Some((index, quantum)) = choice.filter(|(slot, _)| *slot != IDLE)
+    {
+        if let Some(thread) = scheduler.thread(index)
+        {
+            let next = if index == current { Some(frame) } else { thread.core.cpu_frame() };
+            if let Some(next) = next
+            {
+                // No fallible step follows this commit. The same implementation
+                // commits bootstrap and replacement-policy decisions.
+                worker::commit_resume(thread);
+                thread.commit_execution(hart);
+                thread.core.publish_cpu();
+                activate_context(Some(&thread.core.context));
+                select_current(index);
+                if index != current
+                {
+                    release_claim(&scheduler, current, hart);
+                }
+                arm_ticks(quantum);
+                return next;
+            }
+        }
+    }
+    let next = if current == IDLE { frame } else { idle_frame() };
+    activate_idle_context();
+    select_current(IDLE);
+    release_claim(&scheduler, current, hart);
+    arm();
+    next
+}
+
+fn wake_deadlines(scheduler: &Scheduler, now: u64)
+{
     for (_, thread) in scheduler.iter()
     {
         if matches!(thread.state.get().waiting,
@@ -1039,6 +1472,12 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
             }
         }
     }
+}
+
+fn bootstrap_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture) -> Option<usize>
+{
+    let current = capture.current();
+    let hart = capture.hart();
     let priority = scheduler.iter()
                             .filter(|(slot, t)| {
                                 let state = t.state.get();
@@ -1073,45 +1512,14 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
                    || (index == current && state.claimed_by == Some(hart)))
                && if boosted { state.woken == priority } else { state.waiting.is_none() }
             {
-                let next = if index == current
+                if index == current || thread.core.cpu_frame().is_some()
                 {
-                    frame
+                    return Some(index);
                 }
-                else
-                {
-                    let Some(next) = thread.core.cpu_frame()
-                    else
-                    {
-                        continue;
-                    };
-                    next
-                };
-                // No fallible step follows this commit. Park-return writes
-                // occur only with a captured/unclaimed frame, never during sret.
-                worker::commit_resume(thread);
-                thread.update(|state| {
-                          state.claimed_by = Some(hart);
-                          state.woken = 0;
-                          state.switches += 1;
-                      });
-                thread.core.publish_cpu();
-                activate_context(Some(&thread.core.context));
-                select_current(index);
-                if index != current
-                {
-                    release_claim(&scheduler, current, hart);
-                }
-                arm();
-                return next;
             }
         }
     }
-    let next = if current == IDLE { frame } else { idle_frame() };
-    activate_context(None);
-    select_current(IDLE);
-    release_claim(&scheduler, current, hart);
-    arm();
-    next
+    None
 }
 
 pub fn retired() -> bool

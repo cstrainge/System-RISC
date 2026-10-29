@@ -40,16 +40,22 @@ pub struct Region
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Summary
 {
-    pub revision:      u64,
-    pub page_bytes:    u64,
-    pub ram_bytes:     u64,
-    pub free_pages:    u64,
-    pub heap_used:     u64,
-    pub heap_capacity: u64,
-    pub root_physical: u64,
-    pub region_count:  u64,
-    pub flags:         u32,
-    pub reserved:      u32
+    pub revision:                          u64,
+    pub page_bytes:                        u64,
+    pub ram_bytes:                         u64,
+    pub free_pages:                        u64,
+    pub heap_used:                         u64,
+    pub heap_capacity:                     u64,
+    pub root_physical:                     u64,
+    pub region_count:                      u64,
+    /// Foundation attribution within the ordinary heap, never extra capacity.
+    pub ordinary_foundation_heap_bytes:    u64,
+    /// Selected CPU/service backing owned by unique physical receipts. Partial
+    /// coverage excludes old page tables, pool metadata, ROM reservations and
+    /// the protected floor. Not extra heap use or a sum of mapping aliases.
+    pub tracked_foundation_physical_bytes: u64,
+    pub flags:                             u32,
+    pub reserved:                          u32
 }
 
 #[repr(C)]

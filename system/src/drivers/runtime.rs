@@ -13,8 +13,11 @@ mod admission;
 mod allocation;
 mod critical;
 mod invocation;
+mod scheduler_entry;
+pub(crate) use scheduler_entry::{Failure as SchedulerFailure, choose as choose_scheduler};
 mod workers;
 mod lifecycle;
+pub(crate) mod scheduler;
 mod preferences;
 pub(crate) use workers::Launch as WorkerLaunch;
 mod discovery;
@@ -22,8 +25,37 @@ mod file_handlers;
 mod recovery;
 pub(crate) use discovery::discover;
 pub(crate) use file_handlers::{file_handler_icon, file_handler_provider};
-pub(crate) use recovery::changed as recovery_changed;
-static RUNTIME: TryState<Runtime> = TryState::new();
+pub(crate) fn recovery_changed()
+{
+    recovery::changed();
+    scheduler::cleanup_progress();
+}
+static RUNTIME: RuntimeState = RuntimeState(TryState::new());
+
+/// Direct module Host calls do not pass through ECALL's interrupt mask. Keep
+/// each metadata guard on this CPU until it drops; otherwise a timer could
+/// suspend its holder and make another app observe a spurious busy service.
+/// Foreign dispatch remains outside these closures and outside this mask.
+struct RuntimeState(TryState<Runtime>);
+impl RuntimeState
+{
+    fn with<R>(&self, call: impl FnOnce(&mut Runtime) -> R)
+               -> Result<R, crate::state::AccessError>
+    {
+        crate::machine::interrupts::with_masked(|| self.0.with(call))
+    }
+
+    fn with_owned<A, R>(&self, argument: A, call: impl FnOnce(A, &mut Runtime) -> R)
+                        -> Result<R, (crate::state::AccessError, A)>
+    {
+        crate::machine::interrupts::with_masked(|| self.0.with_owned(argument, call))
+    }
+
+    fn publish(&self, runtime: Runtime) -> Result<(), crate::state::AccessError>
+    {
+        crate::machine::interrupts::with_masked(|| self.0.publish(runtime))
+    }
+}
 struct Runtime
 {
     registry:  Registry,
@@ -86,14 +118,18 @@ pub(crate) fn inspect<T: crate::toolbox::inspection::Subject>(processes:&mac_obj
 {
     if call.scope == mac_abi::inspection::SELF
     {
-        return crate::toolbox::inspection::request(processes, caller, call);
+        // Own-domain reads neither enumerate nor touch the System root.
+        return crate::toolbox::inspection::request(processes, None, caller, call);
     }
     match RUNTIME.with(|runtime| runtime.registry.inspect(processes, caller, call))
     {
         Ok(status) => status,
         Err(crate::state::AccessError::Unavailable) =>
         {
-            crate::toolbox::inspection::request(processes, caller, call)
+            crate::toolbox::inspection::request(processes,
+                                                crate::toolbox::handles::system_owner_if_ready(),
+                                                caller,
+                                                call)
         }
         Err(error) =>
         {
@@ -118,10 +154,15 @@ pub(crate) fn register_synchronous_service(offer: mac_module::Offer,
 {
     RUNTIME.with(|runtime| {
                runtime.residents.try_reserve(1).map_err(|_| NO_MEMORY)?;
-               let interface = runtime.registry.register_service(offer).map_err(|cause| {
-                   serial!("RESIDENT_SERVICE_REFUSED class={:?} cause={cause}; rebuild the declared resident service contract", offer.class);
-                   status(cause)
-               })?;
+               let interface =
+                   runtime.registry.register_service(offer).map_err(|cause| {
+                                                                serial!("RESIDENT_SERVICE_REFUSED \
+                                                                  class={:?} cause={cause}; \
+                                                                  rebuild the declared resident \
+                                                                  service contract",
+                                                                 offer.class);
+                                                                status(cause)
+                                                            })?;
                runtime.residents.push(ResidentBinding { interface,
                                                         callback: asynchronous,
                                                         synchronous: callback });
@@ -227,16 +268,19 @@ pub(crate) fn initialize(arena: core::ops::Range<u64>, target: Target) -> Result
                               limit:     arena.end })
            .map_err(crate::state::AccessError::status)?;
     lifecycle::install()?;
-    preferences::install()
+    preferences::install()?;
+    scheduler::install()
 }
 
 pub(crate) fn startup_pending(module: u64) -> Result<bool, Status>
 {
     RUNTIME.with(|runtime| {
-               runtime.registry
-                      .startup_phase(module)
-                      .map(|phase| phase != mac_module::lifecycle::ACTIVE)
-                      .map_err(status)
+               let (phase, status) = runtime.registry.startup_status(module).map_err(status)?;
+               if phase == mac_module::lifecycle::REFUSED
+               {
+                   return Err(if status < 0 { status } else { BAD_ABI });
+               }
+               Ok(phase != mac_module::lifecycle::ACTIVE)
            })
            .map_err(crate::state::AccessError::status)?
 }
@@ -336,7 +380,11 @@ pub(crate) fn load(resources: Vec<Resource>, file_type: [u8; 4], directory: Pack
                                // Exact disjoint RAM remains reserved until reset. No reclamation is claimed.
                                let output = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, plan.length()) };
                                plan.write(output).map_err(|_| BAD_ABI)?;
-                               unsafe { core::arch::asm!("fence.i", options(nostack)); }
+                               crate::machine::monitor::publish_instructions().map_err(|cause| {
+                                   serial!("MODULE_INSTRUCTION_PUBLICATION_REFUSED module={} base={:#x} cause={}",
+                                           module, base, cause);
+                                   cause.status()
+                               })?;
                                Ok(plan.entry() as usize)
                            })
                        })
@@ -376,27 +424,34 @@ pub(crate) fn load(resources: Vec<Resource>, file_type: [u8; 4], directory: Pack
     // root on each callback makes a genuine pending ticket look foreign.
     // This result reaches the same rollback path even if admission or context
     // installation fails before any foreign code executes.
-    let result = module_authority(module).and_then(|owner| {
-                                             let allocation = crate::allocation::Target::Owner {
+    let mut result = module_authority(module).and_then(|owner| {
+                                                 let allocation = crate::allocation::Target::Owner {
             account: module_allocation(module)?,
             class: mac_kernel_model::policy::MemoryClass::Kernel
         };
-                                             super::jobs::subjects::resident()?.admit(
+                                                 super::jobs::subjects::resident()?.admit(
             &crate::toolbox::handles::subject::Authority::Client(owner), allocation)
-                                         })
-                                         .and_then(|subject| {
-                                             crate::context::with_io_subject(subject, || {
-                                                 invocation::enter(&execution, || unsafe {
-                                                     entry(host, &mut instance)
-                                                 })
-                                             }).and_then(core::convert::identity)
-                                         })
-                                         .unwrap_or_else(|status| status);
+                                             })
+                                             .and_then(|subject| {
+                                                 crate::context::with_io_subject(subject, || {
+                                                     invocation::enter(&execution, || unsafe {
+                                                         entry(host, &mut instance)
+                                                     })
+                                                 }).and_then(core::convert::identity)
+                                             })
+                                             .unwrap_or_else(|status| status);
     let valid=instance.header.valid::<abi::Instance>() && instance.dispatch.is_some_and(|dispatch|{
         let address=dispatch as usize as u64;
         address & 1==0 && image::decode(&package.code.code,&package.code.descriptor).is_ok_and(|image|
             image.segments.iter().any(|s|s.flags & image::EXECUTE!=0 && address>=base+s.offset && address<base+s.offset+s.length as u64))
     });
+    if result == OK && valid
+    {
+        if let Err(cause) = scheduler::bind_returned(module, execution.binding(), instance)
+        {
+            result = cause;
+        }
+    }
     drop(execution);
     crate::machine::interrupts::with_masked(|| {
         RUNTIME.with(|runtime| {
@@ -457,6 +512,11 @@ pub(crate) fn load(resources: Vec<Resource>, file_type: [u8; 4], directory: Pack
 }
 unsafe extern "C" fn broker(caller: u64, provider: u64, pointer: *mut abi::Call) -> Status
 {
+    if crate::machine::traps::execution::policy::deny(
+        crate::machine::traps::execution::policy::Operation::Broker)
+    {
+        return ACCESS_DENIED;
+    }
     if let Err(error) = crate::context::authenticate_module(caller)
     {
         return error;
@@ -536,6 +596,10 @@ unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
     use super::registry::requests::Access;
     let call = unsafe { super::synchronous::checked_call(pointer) }?;
     call.output_len = 0;
+    if call.class == mac_scheduler_interface::POLICY_CLASS.0
+    {
+        return Err(ACCESS_DENIED);
+    }
     if call.phase == abi::SYNCHRONOUS
     {
         // Keep root validation and this bounded leaf in one native invocation.
@@ -868,6 +932,11 @@ unsafe fn invoke_scoped(origin: super::registry::requests::Origin,
 
 unsafe extern "C" fn resolve(caller: u64, class: u32, version: u32, output: *mut u64) -> Status
 {
+    if crate::machine::traps::execution::policy::deny(
+        crate::machine::traps::execution::policy::Operation::Resolve)
+    {
+        return ACCESS_DENIED;
+    }
     if let Err(error) = crate::context::authenticate_module(caller)
     {
         return error;

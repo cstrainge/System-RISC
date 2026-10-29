@@ -1,6 +1,11 @@
 #![no_std]
 #![no_main]
-#![cfg_attr(feature = "workers", feature(alloc_error_handler))]
+#![cfg_attr(any(feature = "workers", feature = "scheduler"), feature(alloc_error_handler))]
+#[cfg(feature = "scheduler")]
+mod scheduler;
+#[cfg(feature = "scheduler")]
+#[path = "../../scheduler_support.rs"]
+mod scheduler_support;
 #[cfg(feature = "workers")]
 mod machine;
 #[cfg(all(feature = "workers", not(feature = "pressure")))]
@@ -9,26 +14,28 @@ mod workers;
 mod pressure;
 #[cfg(feature = "pressure")]
 extern crate alloc;
-#[cfg(feature = "workers")]
+#[cfg(any(feature = "workers", feature = "scheduler"))]
 #[global_allocator]
 static ALLOCATOR: mac_driver_alloc::ForwardingAllocator = mac_driver_alloc::ForwardingAllocator;
-#[cfg(feature = "workers")]
+#[cfg(any(feature = "workers", feature = "scheduler"))]
 #[alloc_error_handler]
 fn allocation_failed(layout: core::alloc::Layout) -> !
 {
     mac_driver::runtime::allocation_failed(layout)
 }
-#[cfg(not(feature = "pressure"))]
+#[cfg(not(any(feature = "pressure", feature = "scheduler")))]
 use mac_driver::{ClassId, Client, Completion, Driver, Error, Phase, Request, Result};
 struct Device;
 static DEVICE: Device = Device;
 // Intentionally exercise the raw resident boundary before entering the safe
 // SDK. A rejected output pointer must not write or poison later resolution.
+#[cfg(not(feature = "scheduler"))]
 #[used]
 #[unsafe(link_section = ".system_risc_module")]
 static MODULE_CONTRACT: [u8;
                            include_bytes!(concat!(env!("OUT_DIR"), "/module_contract.bin")).len()] =
     *include_bytes!(concat!(env!("OUT_DIR"), "/module_contract.bin"));
+#[cfg(not(feature = "scheduler"))]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 unsafe extern "C" fn _start(host: *const mac_driver::abi::Host,
@@ -42,7 +49,7 @@ unsafe extern "C" fn _start(host: *const mac_driver::abi::Host,
         }
         return unsafe { mac_driver::entry(&DEVICE, host, output, module_dispatch) };
     }
-    #[cfg(not(feature = "pressure"))]
+    #[cfg(not(any(feature = "pressure", feature = "scheduler")))]
     {
         // Loader-owned Host is valid and pinned for this invocation. None of the
         // deliberately bad result pointers is dereferenced by this fixture.
@@ -72,13 +79,16 @@ unsafe extern "C" fn _start(host: *const mac_driver::abi::Host,
         unsafe { mac_driver::entry(&DEVICE, host, output, module_dispatch) }
     }
 }
+#[cfg(not(feature = "scheduler"))]
 unsafe extern "C" fn module_dispatch(state: u64, call: *mut mac_driver::abi::Call) -> i32
 {
     // Normal valid broker calls use the same audited SDK decoder as drivers.
     unsafe { mac_driver::dispatch(&DEVICE, state, call) }
 }
+#[cfg(feature = "scheduler")]
+mac_driver::export_driver!(DEVICE);
 mac_driver::driver_panic_handler!();
-#[cfg(not(feature = "pressure"))]
+#[cfg(not(any(feature = "pressure", feature = "scheduler")))]
 impl Driver for Device
 {
     fn initialize(&self, host: Client) -> Result<()>
