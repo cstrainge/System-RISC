@@ -309,7 +309,8 @@ impl super::Desktop
                         self.definitions.resolve(*b"WDEF", 0).map_err(crate::loader::status)?;
                     let mut state = definitions::WindowDefinitionState::new(alert.bounds, "");
                     let mut definition =
-                        DefinitionCall { header:    Header::for_type::<DefinitionCall>(),
+                        DefinitionCall { reflow:    0,
+                                         header:    Header::for_type::<DefinitionCall>(),
                                          kind:      definitions::WDEF,
                                          id:        0,
                                          variation: 1,

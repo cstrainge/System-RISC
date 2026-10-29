@@ -23,7 +23,8 @@ fn run(system: &System<'_>) -> Result<(), Error>
         *id = system.controls()
                     .create_standard(window,
                                      controls::StandardKind::WindowFontButton,
-                                     demo::selector(system, index)?)?
+                                     demo::selector(system, index)?,
+                                     mac_toolbox::controls::Reflow::No)?
                     .into_id();
     }
     let mut page = 0;

@@ -243,8 +243,30 @@ fn main<'a>(message: Message<'a, Scrollbar>, services: Services<'a>) -> Result<R
 {
     match message
     {
+        Message::Reflow { request,
+                          creation,
+                          .. } =>
+        {
+            if services.reflow() != mac_definition::Reflow::Yes
+            {
+                return Err(Error::NotSupported);
+            }
+            return mac_definition::leaf_reflow(request, creation, mac_definition::reflow::Size::try_from(if creation.width() > creation.height() { mac_abi::Dimensions { width: 30, height: 15 } } else { mac_abi::Dimensions { width: 15, height: 30 } }).map_err(|_| Error::BadAbi)?);
+        }
         Message::Draw { state,
-                        mut port } => draw(&mut port, &state, services.theme()?)?,
+                        mut port } =>
+        {
+            if services.reflow() == mac_definition::Reflow::Yes && geometry(&state).is_err()
+            {
+                let theme = services.theme()?;
+                port.paint_rect(state.bounds, theme.scrollbar.face_light)?;
+                port.frame_rect(state.bounds, theme.scrollbar.ink)?;
+            }
+            else
+            {
+                draw(&mut port, &state, services.theme()?)?;
+            }
+        }
         Message::HitTest { state,
                            point } => return Ok(Reply::Hit(hit(&state, point))),
         Message::Track { state,
@@ -255,7 +277,14 @@ fn main<'a>(message: Message<'a, Scrollbar>, services: Services<'a>) -> Result<R
         }
         Message::Validate(state) =>
         {
-            geometry(&state)?;
+            if services.reflow() != mac_definition::Reflow::Yes
+            {
+                geometry(&state)?;
+            }
+            else if state.maximum < 0 || state.value < 0 || state.value > state.maximum
+            {
+                return Err(Error::BadArgument);
+            }
         }
         Message::Initialize(_) | Message::Dispose(_) => (),
         Message::CalculateRegions(_) | Message::ChangeBounds { .. } =>

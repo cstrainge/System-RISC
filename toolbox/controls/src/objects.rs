@@ -20,14 +20,19 @@ pub struct Control<'a>
 #[derive(Clone, Copy)]
 pub struct ControlInfo
 {
-    pub window:    WindowId,
-    pub standard:  StandardState,
-    pub scrollbar: ScrollbarState,
-    pub tracking:  bool,
-    pub handled:   bool,
-    pub action:    bool,
-    pub changed:   bool,
-    pub part:      super::Part
+    pub window:              WindowId,
+    pub reflow:              super::Reflow,
+    /// Leaf state waiting for explicit measurement/assignment. Container/root
+    /// scheduling is not enabled by this API foundation.
+    pub measurement_pending: bool,
+    pub arrangement_pending: bool,
+    pub standard:            StandardState,
+    pub scrollbar:           ScrollbarState,
+    pub tracking:            bool,
+    pub handled:             bool,
+    pub action:              bool,
+    pub changed:             bool,
+    pub part:                super::Part
 }
 impl TryFrom<ControlCall> for ControlInfo
 {
@@ -35,16 +40,18 @@ impl TryFrom<ControlCall> for ControlInfo
 
     fn try_from(c: ControlCall) -> Result<Self>
     {
-        Ok(Self { window:    WindowId(c.window),
-                  standard:  c.standard,
-                  scrollbar: c.scrollbar,
-                  tracking:  c.flags & TRACKING != 0,
-                  handled:   c.flags & HANDLED != 0,
-                  action:    c.flags & ACTION != 0,
-                  changed:   c.flags & CHANGED != 0,
-                  part:      super::Part::from_code(c.result as i16).map_err(|_| {
-                                                                        super::Error::BadAbi
-                                                                    })? })
+        Ok(Self { window:              WindowId(c.window),
+                  reflow:              c.reflow.try_into().map_err(|_| super::Error::BadAbi)?,
+                  measurement_pending: c.layout.invalidation & reflow::INVALIDATE_MEASUREMENT != 0,
+                  arrangement_pending: c.layout.invalidation & reflow::INVALIDATE_ARRANGEMENT != 0,
+                  standard:            c.standard,
+                  scrollbar:           c.scrollbar,
+                  tracking:            c.flags & TRACKING != 0,
+                  handled:             c.flags & HANDLED != 0,
+                  action:              c.flags & ACTION != 0,
+                  changed:             c.flags & CHANGED != 0,
+                  part:
+                      super::Part::from_code(c.result as i16).map_err(|_| super::Error::BadAbi)? })
     }
 }
 impl<'a> super::Controls<'a>
@@ -61,20 +68,24 @@ impl<'a> super::Controls<'a>
         Ok(Control { control: self.control(ControlId(call.id)) })
     }
 
-    pub fn create_standard(&self, window: WindowId, kind: StandardKind, state: StandardState)
+    pub fn create_standard(&self, window: WindowId, kind: StandardKind, state: StandardState,
+                           reflow: super::Reflow)
                            -> Result<Control<'a>>
     {
-        self.create(ControlCall { operation: CREATE_STANDARD,
+        self.create(ControlCall { reflow: reflow.into(),
+                                  operation: CREATE_STANDARD,
                                   window: window.0,
                                   procedure: kind as i16,
                                   standard: state,
                                   ..Default::default() })
     }
 
-    pub fn create_scrollbar(&self, window: WindowId, state: ScrollbarState, step: i16, page: i16)
+    pub fn create_scrollbar(&self, window: WindowId, state: ScrollbarState, step: i16, page: i16,
+                            reflow: super::Reflow)
                             -> Result<Control<'a>>
     {
-        self.create(ControlCall { operation: CREATE_SCROLLBAR,
+        self.create(ControlCall { reflow: reflow.into(),
+                                  operation: CREATE_SCROLLBAR,
                                   window: window.0,
                                   scrollbar: state,
                                   step,
@@ -84,6 +95,11 @@ impl<'a> super::Controls<'a>
 }
 impl<'a> Control<'a>
 {
+    pub fn reflow(&self) -> Result<super::Reflow>
+    {
+        self.control.reflow()
+    }
+
     pub fn id(&self) -> ControlId
     {
         self.control.id
@@ -121,6 +137,93 @@ impl ControlRef<'_>
         call.id = self.id.0;
         self.client.control(&mut call)?;
         call.try_into()
+    }
+
+    /// Query the immutable choice held by System, including on borrowed refs.
+    pub fn reflow(self) -> Result<super::Reflow>
+    {
+        Ok(self.info()?.reflow)
+    }
+
+    fn layout(self, layout: reflow::Payload) -> Result<reflow::Payload>
+    {
+        let mut call = ControlCall { id: self.id.0,
+                                     operation: REFLOW_OBJECT,
+                                     layout,
+                                     ..Default::default() };
+        self.client.control(&mut call)?;
+        Ok(call.layout)
+    }
+
+    pub fn ask_size(self, constraints: super::Constraints) -> Result<super::Measurement>
+    {
+        self.layout(reflow::Payload { message: reflow::ASK_SIZE,
+                                      constraints: constraints.into(),
+                                      ..Default::default() })?
+            .measurement
+            .try_into()
+            .map_err(|_| super::Error::BadAbi)
+    }
+
+    pub fn assign_rect(self, bounds: super::LayoutRect) -> Result<()>
+    {
+        self.layout(reflow::Payload { message: reflow::ASSIGN_RECT,
+                                      rect: bounds.rect(),
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    /// Window-local clip, independent of the assigned rectangle.
+    pub fn set_visible_rect(self, bounds: super::LayoutRect) -> Result<()>
+    {
+        self.layout(reflow::Payload { message: reflow::SET_VISIBLE_RECT,
+                                      rect: bounds.rect(),
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    pub fn invalidate_layout(self, invalidation: super::Invalidation) -> Result<()>
+    {
+        self.layout(reflow::Payload { message: reflow::INVALIDATE_LAYOUT,
+                                      invalidation: invalidation.into(),
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    pub fn set_minimum(self, size: super::Size) -> Result<()>
+    {
+        self.set_size(reflow::SET_MINIMUM, size)
+    }
+
+    pub fn clear_minimum(self) -> Result<()>
+    {
+        self.set_size(reflow::CLEAR_MINIMUM, super::Size::ZERO)
+    }
+
+    pub fn set_preferred(self, size: super::Size) -> Result<()>
+    {
+        self.set_size(reflow::SET_PREFERRED, size)
+    }
+
+    pub fn clear_preferred(self) -> Result<()>
+    {
+        self.set_size(reflow::CLEAR_PREFERRED, super::Size::ZERO)
+    }
+
+    fn set_size(self, message: i16, size: super::Size) -> Result<()>
+    {
+        self.layout(reflow::Payload { message,
+                                      size: size.into(),
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    pub fn set_size_preferences(self, preferences: super::SizePreferences) -> Result<()>
+    {
+        self.layout(reflow::Payload { message: reflow::SET_SIZE_PREFERENCES,
+                                      preferences: preferences.into(),
+                                      ..Default::default() })
+            .map(|_| ())
     }
 
     pub fn info(self) -> Result<ControlInfo>

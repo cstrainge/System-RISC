@@ -56,13 +56,38 @@ fn main<'a>(message: Message<'a, Button<'a>>, services: Services<'a>) -> Result<
 {
     match message
     {
+        Message::Reflow { request,
+                          creation,
+                          .. } =>
+        {
+            if services.reflow() != mac_definition::Reflow::Yes
+            {
+                return Err(Error::NotSupported);
+            }
+            return mac_definition::leaf_reflow(request,
+                                               creation,
+                                               mac_definition::reflow::Size::ZERO);
+        }
         Message::Draw { state,
-                        mut port } => draw(&mut port, &state, services.theme()?)?,
+                        mut port } =>
+        {
+            if services.reflow() != mac_definition::Reflow::Yes || !button_bounds(&state).is_empty()
+            {
+                draw(&mut port, &state, services.theme()?)?;
+            }
+        }
         Message::HitTest { state,
                            point } => return Ok(Reply::Hit(hit(&state, point))),
         Message::Validate(state) =>
         {
-            validate(&state)?;
+            if services.reflow() == mac_definition::Reflow::Yes
+            {
+                caption_font(&state)?;
+            }
+            else
+            {
+                validate(&state)?;
+            }
         }
         Message::CalculateRegions(_) | Message::Initialize(_) | Message::Dispose(_) => (),
         Message::Track { .. } | Message::ChangeBounds { .. } => return Err(Error::NotSupported)
@@ -206,11 +231,15 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &Button<'_>, theme: mac_definit
 }
 fn validate(state: &Button<'_>) -> mac_traps::Result<CaptionFont>
 {
-    use toolbox_quickdraw::font::GENEVA_9;
     if button_bounds(state).is_empty()
     {
         return Err(Error::BadArgument);
     }
+    caption_font(state)
+}
+fn caption_font(state: &Button<'_>) -> mac_traps::Result<CaptionFont>
+{
+    use toolbox_quickdraw::font::GENEVA_9;
     let font = if state.caption == CaptionMode::System
                   || (state.font.family == 0 && state.font.size == 12 && state.font.face == 0)
     {

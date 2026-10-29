@@ -118,7 +118,8 @@ fn run(system: &System<'_>) -> Result<(), Error>
                                           controls::StandardState::new(BUTTONS[index],
                                                                        label(system,
                                                                              index + 1,
-                                                                             &mut text)?))
+                                                                             &mut text)?),
+                                          mac_toolbox::controls::Reflow::No)
     };
     let buttons = [create_button(0)?, create_button(1)?, create_button(2)?];
     draw(system, window, &buttons)?;

@@ -358,7 +358,10 @@ pub struct DefinitionCall
     pub param:     i64,
     pub object:    *mut (),
     pub surface:   *mut Surface,
-    pub gate:      TrapGate
+    pub gate:      TrapGate,
+    /// Native control-instance metadata; zero for other definition families.
+    /// Independent of the original resource ID and variation encoding.
+    pub reflow:    u32
 }
 pub type DefinitionEntry = unsafe extern "C" fn(*mut DefinitionCall) -> i64;
 

@@ -32,6 +32,7 @@ mac-kernel-model.workspace = true
 mac-riscv-pages.workspace = true
 spinning_top = "=0.2.5"
 mac-abi.workspace = true
+sr-control-reflow-handling.workspace = true
 mac-boot-screen.workspace = true
 mac-formats.workspace = true
 mac-hfs.workspace = true

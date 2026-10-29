@@ -3,21 +3,48 @@
 //! System owns instance storage, object identities, child lifetime, invocation
 //! pins, scheduling and publication. This crate owns neither a registry nor a
 //! second layout tree. Definition bindings decode wire values before passing
-//! these safe types to control authors. No native reflow dispatch is enabled by
-//! importing this library; resident/binding integration is a separate step.
-//! Opt-in encoding, ownership-transaction payloads, child invocation/pinning,
-//! constrained measurement caching, wider scrolling extents and atomic geometry
-//! publication remain integration gates. Existing CDEF dispatch still refuses
-//! these new messages; this crate does not fabricate success for those paths.
+//! these safe types to control authors. Native leaf dispatch is opt-in per
+//! instance. Relationship transactions, root scheduling and wider scrolling
+//! extents remain separate integration gates; leaf handling refuses adoption.
 #![no_std]
 #![forbid(unsafe_code)]
+
+/// Immutable native creation choice, independent of legacy procID/variation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Reflow
+{
+    Yes,
+    #[default]
+    No
+}
+impl TryFrom<u32> for Reflow
+{
+    type Error = Error;
+
+    fn try_from(value: u32) -> Result<Self>
+    {
+        match value
+        {
+            0 => Ok(Self::No),
+            1 => Ok(Self::Yes),
+            _ => Err(Error::InvalidEncoding)
+        }
+    }
+}
+impl From<Reflow> for u32
+{
+    fn from(value: Reflow) -> Self
+    {
+        u32::from(value == Reflow::Yes)
+    }
+}
 
 mod geometry;
 mod messages;
 mod sizing;
 pub use geometry::{AxisConstraint, Constraints, Extent, LayoutRect, Size};
 pub use mac_abi::{Dimensions, Point, Rect};
-pub use messages::{Effects, Invalidation, Message, Operation, Outcome};
+pub use messages::{Effects, Invalidation, Message, Operation, Outcome, decode_leaf};
 pub use sizing::{Measurement, PreparedSettings, Requirements, SettingsChange, SizePreferences,
                  SizingState};
 

@@ -165,7 +165,7 @@ impl<'a> Controls<'a>
             ProgressStyle::Color => StandardKind::ProgressBar,
             ProgressStyle::Monochrome => StandardKind::MonochromeProgressBar
         };
-        Ok(ProgressBar { control: self.create_standard(window, kind, state)?,
+        Ok(ProgressBar { control: self.create_standard(window, kind, state, crate::Reflow::No)?,
                          state,
                          kind })
     }
@@ -175,7 +175,10 @@ impl<'a> Controls<'a>
                               -> Result<StaticText<'a>>
     {
         let state = text_state(bounds, text, font, alignment as i16)?;
-        Ok(StaticText { control: self.create_standard(window, StandardKind::StaticText, state)?,
+        Ok(StaticText { control: self.create_standard(window,
+                                                      StandardKind::StaticText,
+                                                      state,
+                                                      crate::Reflow::No)?,
                         state })
     }
 }

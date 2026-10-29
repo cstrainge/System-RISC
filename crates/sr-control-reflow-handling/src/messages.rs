@@ -182,3 +182,29 @@ pub enum Outcome<M, R, E>
         cause:   E
     }
 }
+
+/// Decode the implemented leaf vocabulary. Relationship messages are refused
+/// until the resident ownership transaction supplies its typed owner/ref payload.
+pub fn decode_leaf(payload: &wire::Payload) -> Result<Message>
+{
+    if payload.reserved != 0
+    {
+        return Err(Error::InvalidEncoding);
+    }
+    Ok(match Operation::try_from(payload.message)?
+    {
+        Operation::AskSize => Message::AskSize(payload.constraints.try_into()?),
+        Operation::AssignRect => Message::AssignRect(payload.rect.try_into()?),
+        Operation::SetVisibleRect => Message::SetVisibleRect(payload.rect.try_into()?),
+        Operation::InvalidateLayout => Message::InvalidateLayout(payload.invalidation.try_into()?),
+        Operation::SetMinimum => Message::SetMinimum(payload.size.try_into()?),
+        Operation::ClearMinimum => Message::ClearMinimum,
+        Operation::SetPreferred => Message::SetPreferred(payload.size.try_into()?),
+        Operation::ClearPreferred => Message::ClearPreferred,
+        Operation::SetSizePreferences =>
+        {
+            Message::SetSizePreferences(payload.preferences.try_into()?)
+        }
+        _ => return Err(Error::UnsupportedMessage(payload.message))
+    })
+}

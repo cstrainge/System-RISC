@@ -3,6 +3,8 @@
 #![forbid(unsafe_code)]
 pub use mac_abi::{Point, Rect, WindowId, controls::ScrollbarState,
                   definitions::ControlDefinitionState as StandardState, quickdraw::FontSelection};
+pub use sr_control_reflow_handling::{Constraints, Invalidation, LayoutRect, Measurement, Reflow,
+                                     Size, SizePreferences};
 #[repr(i16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StandardKind

@@ -171,6 +171,14 @@ impl SizingState
                               .unwrap_or(self.creation))
     }
 
+    /// Apply explicit overrides to a current CDEF measurement without changing
+    /// the calculated defaults or original creation fallback.
+    pub fn resolve(&self, measured: Requirements) -> Requirements
+    {
+        Requirements::new(self.overrides.minimum.unwrap_or(measured.minimum()),
+                          self.overrides.preferred.unwrap_or(measured.preferred()))
+    }
+
     /// Shared settings dispatch, before publication. All sizes are already
     /// validated. The caller admits the returned effects before committing the
     /// prepared reply. Other operations retain their original payload for the

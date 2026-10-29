@@ -29,7 +29,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>>
     let mut canvas = Canvas::new(&mut pixels, 640, 480);
     canvas.paint_rect(bounds, 0xffffff);
     let mut surface = Surface::from_canvas(&mut canvas);
-    let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+    let mut call = DefinitionCall { reflow: 0,
+                                    header: Header::for_type::<DefinitionCall>(),
                                     kind: definition::WDEF,
                                     id: 0,
                                     variation,

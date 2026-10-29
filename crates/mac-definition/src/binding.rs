@@ -83,14 +83,57 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
             return Err(Error::NotSupported);
         }
         F::variation(call.variation)?;
-        let operation = operation::<F>(call.message)?;
+        let reflow = crate::Reflow::try_from(call.reflow).map_err(|_| Error::BadArgument)?;
+        let layout = (30..=42).contains(&call.message);
+        if layout && reflow != crate::Reflow::Yes
+        {
+            return Err(Error::NotSupported);
+        }
+        let operation = if layout { Operation::Validate } else { operation::<F>(call.message)? };
         let services = SystemServices { header:       Header::for_type::<SystemServices>(),
                                         trap:         call.gate,
                                         capabilities: 0 };
-        let services = Services::new(mac_traps::Client::new(&services)?);
+        let services = Services::new(mac_traps::Client::new(&services)?, reflow);
         if call.object.is_null()
         {
             return Err(Error::BadArgument);
+        }
+        if layout
+        {
+            let payload = call.param as usize as *mut mac_abi::controls::reflow::Payload;
+            if !call.surface.is_null()
+               || payload.is_null()
+               || payload.addr() % align_of::<mac_abi::controls::reflow::Payload>() != 0
+               || call.object.addr() % align_of::<F::Wire>() != 0
+            {
+                return Err(Error::BadArgument);
+            }
+            // SAFETY: the resident invocation lends separate, exclusive payload
+            // and immutable family state for this call; neither borrow escapes.
+            let payload = unsafe { &mut *payload };
+            if payload.message != call.message
+            {
+                return Err(Error::BadAbi);
+            }
+            let request = crate::reflow::decode_leaf(payload).map_err(|error| {
+                                                                 Error::from_status(error.status())
+                                                             })?;
+            let creation = payload.creation.try_into().map_err(|_| Error::BadArgument)?;
+            let state = F::decode(unsafe { &*call.object.cast::<F::Wire>() }, call.variation)?;
+            let reply = handler(Message::Reflow { state,
+                                                  request,
+                                                  creation },
+                                services)?;
+            return match reply
+            {
+                Reply::Measurement(measurement) if call.message == controls::reflow::ASK_SIZE =>
+                {
+                    payload.measurement = measurement.into();
+                    Ok(0)
+                }
+                Reply::Done if call.message != controls::reflow::ASK_SIZE => Ok(0),
+                _ => Err(Error::BadAbi)
+            };
         }
         let reply = if matches!(operation, Operation::Change)
         {
@@ -128,6 +171,16 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
                         as i16
                     };
                     let bounds = F::bounds(&state);
+                    if reflow == crate::Reflow::Yes
+                    {
+                        crate::reflow::LayoutRect::try_from(bounds).map_err(|_| {
+                                                                       Error::BadArgument
+                                                                   })?;
+                        if bounds.is_empty()
+                        {
+                            return Ok(0);
+                        }
+                    }
                     let bounds = Rect::new(offset(bounds.left, surface.origin.h),
                                            offset(bounds.top, surface.origin.v),
                                            offset(bounds.right, surface.origin.h),
@@ -179,6 +232,8 @@ macro_rules! adapter {
         /// # Safety
         /// Host guarantees accessible/exclusive live family state and pixels,
         /// a synchronous resident service gate, and pinned executable backing.
+        /// Reflow calls additionally lend a separate exclusive Payload through
+        /// param; it must not overlap the call or the family state.
         pub unsafe fn $name(pointer: *mut DefinitionCall,
                             handler: for<'a> fn(Message<'a, $view>, Services<'a>) -> Result<Reply>)
                             -> i64

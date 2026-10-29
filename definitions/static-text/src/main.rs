@@ -53,6 +53,18 @@ fn main<'a>(message: Message<'a, StaticText<'a>>, services: Services<'a>) -> Res
 {
     match message
     {
+        Message::Reflow { request,
+                          creation,
+                          .. } =>
+        {
+            if services.reflow() != mac_definition::Reflow::Yes
+            {
+                return Err(Error::NotSupported);
+            }
+            return mac_definition::leaf_reflow(request,
+                                               creation,
+                                               mac_definition::reflow::Size::ZERO);
+        }
         Message::Draw { state,
                         mut port } =>
         {

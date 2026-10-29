@@ -8,6 +8,7 @@ use core::{fmt::{self, Write},
 use mac_toolbox::{System, SystemServices};
 #[path = "../../../conformance/mod.rs"]
 mod conformance;
+mod reflow;
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 struct LogBuffer
 {
@@ -49,6 +50,7 @@ impl Write for LogBuffer
               feature = "textedit-clipboard")))]
 fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
 {
+    reflow::run(system)?;
     conformance::managed_controls::regressions(system, gate)?;
     conformance::controls::author_families(system, gate)?;
     conformance::run_all(system)?;

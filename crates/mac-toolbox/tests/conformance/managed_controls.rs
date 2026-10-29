@@ -138,7 +138,8 @@ pub fn tracking(system: &System<'_>, window: WindowId) -> Result<(), Failure>
     for kind in [StandardKind::Button, StandardKind::Checkbox, StandardKind::Radio]
     {
         let state = StandardState::new(Rect::new(8, 8, 128, 32), "Action");
-        let owned = system.controls().create_standard(window, kind, state)?;
+        let owned = system.controls()
+                          .create_standard(window, kind, state, mac_toolbox::controls::Reflow::No)?;
         let control = owned.control();
         let press = control.begin_tracking(inside, 0)?;
         assert!(press.handled && press.tracking && !press.action && press.changed);
@@ -182,7 +183,11 @@ pub fn tracking(system: &System<'_>, window: WindowId) -> Result<(), Failure>
                                  maximum: 100,
                                  active: 1,
                                  ..Default::default() };
-    let owned = system.controls().create_scrollbar(window, state, 5, 20)?;
+    let owned = system.controls().create_scrollbar(window,
+                                                    state,
+                                                    5,
+                                                    20,
+                                                    mac_toolbox::controls::Reflow::No)?;
     let control = owned.control();
     let up = Point { h: 16,
                      v: 44 };
@@ -256,7 +261,8 @@ pub fn reuse(system: &System<'_>, window: WindowId, gate: mac_abi::TrapGate)
                                                                    active: 1,
                                                                    ..Default::default() },
                                                   1,
-                                                  10)?;
+                                                  10,
+                                                  mac_toolbox::controls::Reflow::No)?;
     let mut configure =
         mac_abi::controls::ControlCall { operation: mac_abi::controls::CONFIGURE_OBJECT,
                                          id: bar.id().0,
@@ -278,10 +284,16 @@ pub fn reuse(system: &System<'_>, window: WindowId, gate: mac_abi::TrapGate)
     for _ in 0..8
     {
         let state = StandardState::new(Rect::new(8, 8, 128, 32), "Owned");
-        let owner = system.controls().create_standard(window, StandardKind::Button, state)?;
+        let owner = system.controls().create_standard(window,
+                                                       StandardKind::Button,
+                                                       state,
+                                                       mac_toolbox::controls::Reflow::No)?;
         let stale = owner.id();
         owner.control().dispose()?;
-        let replacement = system.controls().create_standard(window, StandardKind::Button, state)?;
+        let replacement = system.controls().create_standard(window,
+                                                             StandardKind::Button,
+                                                             state,
+                                                             mac_toolbox::controls::Reflow::No)?;
         assert!(replacement.id().0 > u64::from(u32::MAX),
                 "native identity is not a classic projection");
         assert_ne!(stale, replacement.id());
@@ -318,7 +330,10 @@ pub fn regressions(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), F
               .create_owned(WindowSpec::new(Rect::new(60, 60, 380, 280), "Control regressions"))?;
     window.select()?;
     let original = StandardState::new(Rect::new(8, 8, 128, 32), "Original");
-    let owned = system.controls().create_standard(window.id(), StandardKind::Button, original)?;
+    let owned = system.controls().create_standard(window.id(),
+                                                   StandardKind::Button,
+                                                   original,
+                                                   mac_toolbox::controls::Reflow::No)?;
     let control = owned.control();
     system.windows().begin_update(window.id())?;
     // Exhaust the real retained-command ceiling, without a substitute allocator.
@@ -364,7 +379,8 @@ pub fn regressions(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), F
                                                                    active: 1,
                                                                    ..Default::default() },
                                                   1,
-                                                  20)?;
+                                                  20,
+                                                  mac_toolbox::controls::Reflow::No)?;
     let control = bar.control();
     let point = Point { h: 16,
                         v: 98 };

@@ -1,6 +1,7 @@
 //! Resident Control Manager. Each CDEF owns drawing, hit geometry and tracking math.
 mod snapshot;
 mod tracking;
+mod reflow;
 use alloc::sync::Arc;
 
 pub use mac_abi::definitions::{CDEF, ControlDefinitionState};
@@ -43,7 +44,9 @@ pub struct Drawing
     entry:     DefinitionEntry,
     gate:      TrapGate,
     variation: i16,
-    damage:    [Rect; 2]
+    damage:    [Rect; 2],
+    reflow:    u32,
+    visible:   Option<Rect>
 }
 impl Drawing
 {
@@ -55,6 +58,22 @@ impl Drawing
             State::Standard(state) => state.clear_highlight(),
             State::Scrollbar(state) => core::mem::replace(&mut state.highlighted, 0) != 0,
             State::Progress { .. } => false
+        }
+    }
+
+    fn visible_bounds(&self) -> Rect
+    {
+        let bounds = self.bounds();
+        self.visible.map_or(bounds, |visible| intersection(bounds, visible))
+    }
+
+    fn set_visible(&mut self, visible: Option<Rect>)
+    {
+        self.visible = visible;
+        let clip = self.visible_bounds();
+        for damage in &mut self.damage
+        {
+            *damage = intersection(*damage, clip);
         }
     }
 
@@ -74,7 +93,8 @@ impl Drawing
         let mut change = ControlChange { before,
                                          after,
                                          damage: [Rect::ZERO; 2] };
-        let mut call = DefinitionCall { header:    Header::for_type::<DefinitionCall>(),
+        let mut call = DefinitionCall { reflow:    self.reflow,
+                                        header:    Header::for_type::<DefinitionCall>(),
                                         kind:      CDEF,
                                         id:        CDEF_PROGRESS_BAR,
                                         variation: 0,
@@ -133,7 +153,7 @@ impl Drawing
 
     pub fn paint_clipped(&self, canvas: &mut Canvas) -> Result<(), Status>
     {
-        let mut bounds = self.bounds();
+        let mut bounds = self.visible_bounds();
         bounds.offset(canvas.origin().h, canvas.origin().v);
         let mut clip = Rect::ZERO;
         if !crate::toolbox::quickdraw::geometry::sect_rect(bounds, canvas.clip(), &mut clip)
@@ -172,7 +192,8 @@ impl Drawing
             };
             (1, (scrollbar as *mut ScrollbarState).cast())
         };
-        let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+        let mut call = DefinitionCall { reflow: self.reflow,
+                                        header: Header::for_type::<DefinitionCall>(),
                                         kind: CDEF,
                                         id,
                                         variation: variation(self.variation, id),
@@ -222,13 +243,22 @@ pub fn definition_id(call: &ControlCall) -> Result<i16, Status>
 }
 fn validate_state(call: &ControlCall, id: i16) -> Result<(), Status>
 {
+    if call.reflow > 1
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    let bounds = if id == 1 { call.scrollbar.bounds } else { call.standard.bounds };
+    if call.reflow == 1
+    {
+        sr_control_reflow_handling::LayoutRect::try_from(bounds).map_err(|e| e.status())?;
+    }
     if id == 1
     {
         let state = &call.scrollbar;
         if state.maximum < 0
            || state.value < 0
            || state.value > state.maximum
-           || state.bounds.is_empty()
+           || (state.bounds.is_empty() && call.reflow == 0)
         {
             return Err(BAD_ARGUMENT);
         }
@@ -236,7 +266,7 @@ fn validate_state(call: &ControlCall, id: i16) -> Result<(), Status>
     else
     {
         let state = &call.standard;
-        if state.bounds.is_empty()
+        if state.bounds.is_empty() && call.reflow == 0
         {
             return Err(BAD_ARGUMENT);
         }
@@ -259,7 +289,8 @@ pub fn validate(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
     {
         (&mut call.standard as *mut ControlDefinitionState).cast()
     };
-    let mut validation = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+    let mut validation = DefinitionCall { reflow: call.reflow,
+                                          header: Header::for_type::<DefinitionCall>(),
                                           kind: CDEF,
                                           id,
                                           variation: variation(call.procedure, id),
@@ -291,6 +322,8 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionEntry, gate: Trap
     {
         validate(call, entry, gate)?;
         return Ok(Some(Drawing { id: 0,
+                                 reflow: call.reflow,
+                                 visible: None,
                                  state: if id == 1
                                  {
                                      State::Scrollbar(call.scrollbar)
@@ -333,7 +366,8 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionEntry, gate: Trap
         bits |= ((call.anchor.h as u16 as u64) << 32) | ((call.anchor.v as u16 as u64) << 48);
     }
     let mut definition =
-        DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+        DefinitionCall { reflow: call.reflow,
+                         header: Header::for_type::<DefinitionCall>(),
                          kind: CDEF,
                          id,
                          variation: variation(call.procedure, id),
@@ -386,6 +420,10 @@ pub mod native
                 return Err(BAD_ARGUMENT);
             }
             let call = unsafe { &mut *pointer.cast::<ControlCall>() };
+            if call.reflow != 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
             let id = definition_id(call)?;
             let entry = resolve(id)?;
             if let Some(drawing) = prepare(call, entry, gate)?
@@ -400,3 +438,12 @@ pub mod native
 pub mod scrollbox;
 pub mod scrollbox_native;
 pub mod objects;
+
+fn intersection(a: Rect, b: Rect) -> Rect
+{
+    let result = Rect::new(a.left.max(b.left),
+                           a.top.max(b.top),
+                           a.right.min(b.right),
+                           a.bottom.min(b.bottom));
+    if result.is_empty() { Rect::ZERO } else { result }
+}

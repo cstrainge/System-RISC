@@ -960,7 +960,8 @@ pub fn worker(system: &System<'_>) -> Result<()>
                                mac_toolbox::controls::StandardKind::Button,
                                mac_toolbox::controls::StandardState::new(Rect::new(8, 8, 128,
                                                                                    32),
-                                                                         "Owned control"))?;
+                                                                         "Owned control"),
+                               mac_toolbox::controls::Reflow::No)?;
     let scroll_box =
         system.controls()
               .create_scroll_box(window,

@@ -1,10 +1,11 @@
 //! Native definition author API. Pointer decoding and the entry/panic scaffold
 //! belong here; definition bodies receive safe Rust values and borrowed ports.
 #![no_std]
-/// Shared layout message/state types for the staged control reflow migration.
-pub use sr_control_reflow_handling as reflow;
 #[doc(hidden)]
 pub use mac_abi as __abi;
+pub use reflow::Reflow;
+/// Shared layout message/state types for the staged control reflow migration.
+pub use sr_control_reflow_handling as reflow;
 mod binding;
 mod families;
 pub use families::{Button, ButtonKind, CaptionMode, Highlight, Progress, ProgressRange,
@@ -43,6 +44,12 @@ pub struct StaticText<'a>
 /// Adding a supported message requires every author to answer it explicitly.
 pub enum Message<'a, S>
 {
+    Reflow
+    {
+        state:    S,
+        request:  reflow::Message,
+        creation: reflow::Size
+    },
     Draw
     {
         state: S,
@@ -75,13 +82,21 @@ pub enum Message<'a, S>
 #[derive(Clone, Copy)]
 pub struct Services<'a>
 {
-    client: mac_traps::Client<'a>
+    client: mac_traps::Client<'a>,
+    reflow: Reflow
 }
 impl<'a> Services<'a>
 {
-    pub(crate) fn new(client: mac_traps::Client<'a>) -> Self
+    pub(crate) fn new(client: mac_traps::Client<'a>, reflow: Reflow) -> Self
     {
-        Self { client }
+        Self { client,
+               reflow }
+    }
+
+    /// Immutable choice captured from the resident control object.
+    pub const fn reflow(self) -> Reflow
+    {
+        self.reflow
     }
 
     pub fn theme(self) -> Result<mac_abi::theme::Palette>
@@ -107,4 +122,26 @@ macro_rules! definition_panic_handler {
             $crate::runtime::panic(info)
         }
     };
+}
+
+/// Base leaf protocol. These fixed-content controls retain their creation size
+/// as preferred until their family supplies a calculated default. Constraints do
+/// not lower minimum requirements or perform assignment. Relationship messages
+/// require a container implementation and are explicitly refused.
+pub fn leaf_reflow(request: reflow::Message, creation: reflow::Size, minimum: reflow::Size)
+                   -> Result<Reply>
+{
+    match request
+    {
+        reflow::Message::AskSize(_) =>
+        {
+            let requirements = reflow::Requirements::new(minimum, creation);
+            Ok(Reply::Measurement(reflow::Measurement { intrinsic:   requirements,
+                                                        constrained: requirements }))
+        }
+        reflow::Message::AssignRect(_)
+        | reflow::Message::SetVisibleRect(_)
+        | reflow::Message::InvalidateLayout(_) => Ok(Reply::Done),
+        _ => Err(Error::NotSupported)
+    }
 }

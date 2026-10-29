@@ -624,6 +624,7 @@ dependencies = [
  "skrifa",
  "spin",
  "spinning_top",
+ "sr-control-reflow-handling",
  "toolbox-controls",
  "toolbox-files",
  "toolbox-quickdraw",
@@ -1125,6 +1126,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-traps",
+ "sr-control-reflow-handling",
  "toolbox-quickdraw",
 ]
 

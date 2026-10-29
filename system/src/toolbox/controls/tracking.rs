@@ -39,7 +39,7 @@ impl Tracking
     /// Compute a candidate transition. The caller applies any fallible scroll
     /// or drawing admission before publishing it, so refusal preserves capture.
     pub fn poll(mut self, point: Point, down: bool, ticks: u64, scrollbar: Option<ScrollbarState>,
-                entry: DefinitionEntry, gate: TrapGate,
+                reflow: u32, entry: DefinitionEntry, gate: TrapGate,
                 hit: impl FnOnce(Point) -> Result<i16, Status>)
                 -> Result<Transition, Status>
     {
@@ -50,7 +50,8 @@ impl Tracking
             if point != self.point
             {
                 scrollbar.value = self.initial;
-                let mut call = ControlCall { operation: TRACK_SCROLLBAR,
+                let mut call = ControlCall { reflow,
+                                             operation: TRACK_SCROLLBAR,
                                              scrollbar,
                                              anchor: self.anchor,
                                              point,

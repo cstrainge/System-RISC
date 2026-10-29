@@ -729,6 +729,7 @@ impl Manager
                                       call.flags & BUTTON_DOWN != 0,
                                       call.ticks,
                                       Some(state),
+                                      0,
                                       entry,
                                       gate,
                                       |point| {

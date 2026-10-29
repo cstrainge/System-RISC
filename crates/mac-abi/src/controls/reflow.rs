@@ -1,6 +1,6 @@
 //! Additive control layout vocabulary. These are definition message numbers,
 //! not `ControlCall.operation` values or classic CDEF message translations.
-//! The existing resident dispatcher does not yet send or accept these messages.
+//! Managed native instances opt in independently of classic variation bits.
 //!
 //! Bounds/visibility carry a Rect; single size setters carry Dimensions;
 //! clear operations carry no payload. AskSize uses Constraints/Measurement,
@@ -99,3 +99,21 @@ const _: () = {
     assert!(core::mem::size_of::<Requirements>() == 8);
     assert!(core::mem::size_of::<Measurement>() == 16);
 };
+
+/// Inline native request/reply storage. System lends this exclusively to the
+/// CDEF during one synchronous call; it never contains caller-owned pointers.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Payload
+{
+    pub message:      i16,
+    pub reserved:     u16,
+    pub invalidation: u32,
+    pub constraints:  Constraints,
+    pub rect:         crate::Rect,
+    pub size:         Dimensions,
+    pub preferences:  SizePreferences,
+    pub measurement:  Measurement,
+    /// Resident-captured original size; callers cannot replace it.
+    pub creation:     Dimensions
+}

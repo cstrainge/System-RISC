@@ -390,7 +390,8 @@ fn invoke(definition: DefinitionEntry, gate: TrapGate, state: &mut MenuDefinitio
           message: i16, param: i64, surface: *mut Surface)
           -> i64
 {
-    let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+    let mut call = DefinitionCall { reflow: 0,
+                                    header: Header::for_type::<DefinitionCall>(),
                                     kind: MDEF,
                                     id: 0,
                                     variation: 0,

@@ -98,8 +98,11 @@ impl<'a> Options<'a>
             }
             if let Some(procedure) = procedure
             {
-                controls[index] =
-                    Some(system.controls().create_standard(window.id(), procedure, *state)?);
+                controls[index] = Some(system.controls()
+                                             .create_standard(window.id(),
+                                                              procedure,
+                                                              *state,
+                                                              mac_toolbox::controls::Reflow::No)?);
             }
             at += 14 + count + (count & 1);
         }

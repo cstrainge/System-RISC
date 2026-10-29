@@ -230,7 +230,8 @@ impl<'a> Info<'a>
                         Some(system.controls()
                                    .create_standard(window,
                                                     controls::StandardKind::WindowFontCheckbox,
-                                                    state)?
+                                                    state,
+                                                    mac_toolbox::controls::Reflow::No)?
                                    .into_id());
                 }
             }

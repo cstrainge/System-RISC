@@ -294,6 +294,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sr-control-reflow-handling"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+]
+
+[[package]]
 name = "syn"
 version = "3.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -310,6 +317,7 @@ version = "0.1.0"
 dependencies = [
  "mac-abi",
  "mac-traps",
+ "sr-control-reflow-handling",
  "toolbox-quickdraw",
 ]
 

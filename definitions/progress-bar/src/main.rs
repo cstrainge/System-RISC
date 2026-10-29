@@ -16,12 +16,9 @@ struct Geometry
 fn geometry(state: &Progress) -> Result<Geometry>
 {
     let r = state.bounds;
+    validate_progress(state)?;
     let p = state.progress;
-    if i32::from(r.right) - i32::from(r.left) < 3
-       || i32::from(r.bottom) - i32::from(r.top) < 3
-       || p.completed > p.total
-       || p.in_progress > p.total - p.completed
-       || (!p.determinate && (p.total != 0 || p.completed != 0 || p.in_progress != 0))
+    if small(r)
     {
         return Err(Error::BadArgument);
     }
@@ -76,25 +73,88 @@ fn main<'a>(message: Message<'a, Progress>, services: Services<'a>) -> Result<Re
 {
     match message
     {
+        Message::Reflow { request,
+                          creation,
+                          .. } =>
+        {
+            if services.reflow() != mac_definition::Reflow::Yes
+            {
+                return Err(Error::NotSupported);
+            }
+            return mac_definition::leaf_reflow(request, creation, mac_definition::reflow::Size::try_from(mac_abi::Dimensions { width: 3, height: 3 }).map_err(|_| Error::BadAbi)?);
+        }
         Message::Draw { state,
-                        mut port } => draw(&mut port, &state, services.theme()?)?,
+                        mut port } =>
+        {
+            if services.reflow() == mac_definition::Reflow::Yes && small(state.bounds)
+            {
+                port.frame_rect(state.bounds, services.theme()?.control_outline)?;
+            }
+            else
+            {
+                draw(&mut port, &state, services.theme()?)?;
+            }
+        }
         Message::ChangeBounds { before,
                                 after,
-                                damage } => change(&before, &after, damage)?,
+                                damage } =>
+        {
+            if services.reflow() == mac_definition::Reflow::Yes
+               && (small(before.bounds) || small(after.bounds))
+            {
+                *damage = [before.bounds, after.bounds];
+            }
+            else
+            {
+                change(&before, &after, damage)?;
+            }
+        }
         Message::Validate(state)
         | Message::CalculateRegions(state)
         | Message::Initialize(state)
         | Message::Dispose(state) =>
         {
-            geometry(&state)?;
+            if services.reflow() == mac_definition::Reflow::Yes
+            {
+                validate_progress(&state)?;
+            }
+            else
+            {
+                geometry(&state)?;
+            }
         }
         Message::HitTest { state,
                            .. } =>
         {
-            geometry(&state)?;
+            if services.reflow() == mac_definition::Reflow::Yes
+            {
+                validate_progress(&state)?;
+            }
+            else
+            {
+                geometry(&state)?;
+            }
             return Ok(Reply::Hit(Part::None));
         }
         Message::Track { .. } => return Err(Error::NotSupported)
     }
     Ok(Reply::Done)
+}
+
+fn small(bounds: Rect) -> bool
+{
+    i32::from(bounds.right) - i32::from(bounds.left) < 3
+    || i32::from(bounds.bottom) - i32::from(bounds.top) < 3
+}
+
+fn validate_progress(state: &Progress) -> Result<()>
+{
+    let p = state.progress;
+    if p.completed > p.total
+       || p.in_progress > p.total - p.completed
+       || (!p.determinate && (p.total != 0 || p.completed != 0 || p.in_progress != 0))
+    {
+        return Err(Error::BadArgument);
+    }
+    Ok(())
 }

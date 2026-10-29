@@ -81,6 +81,7 @@ impl Default for Scrollbar
 pub enum Reply
 {
     Done,
+    Measurement(crate::reflow::Measurement),
     Hit(Part),
     Value(u16)
 }
@@ -124,11 +125,7 @@ impl Family for StaticFamily
 
     fn decode<'a>(wire: &'a Self::Wire, _: i16) -> Result<Self::View<'a>>
     {
-        if wire.bounds.is_empty()
-           || wire.flags != 0
-           || wire.highlighted != 0
-           || wire.minimum != 0
-           || wire.maximum != 0
+        if wire.flags != 0 || wire.highlighted != 0 || wire.minimum != 0 || wire.maximum != 0
         {
             return Err(Error::BadArgument);
         }

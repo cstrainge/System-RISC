@@ -995,7 +995,8 @@ impl Browser
                                                controls::ScrollbarState { bounds,
                                                                           ..Default::default() },
                                                1,
-                                               1)
+                                               1,
+                                               mac_toolbox::controls::Reflow::No)
         };
         let bars = (|| {
             Ok::<_, Error>([create(vertical_scrollbar(bounds.right - bounds.left,

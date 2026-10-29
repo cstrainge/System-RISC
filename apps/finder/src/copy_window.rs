@@ -174,7 +174,10 @@ impl<'a> CopyWindow<'a>
         let progress =
             controls.create_progress_bar(window.id(), layout.rects[4], Progress::Preparing)?;
         let stop_state = StandardState::new(layout.rects[5], layout.stop.as_str());
-        let stop = controls.create_standard(window.id(), StandardKind::Button, stop_state)?;
+        let stop = controls.create_standard(window.id(),
+                                            StandardKind::Button,
+                                            stop_state,
+                                            mac_toolbox::controls::Reflow::No)?;
         let ui = Self { label,
                         remaining,
                         operation_label,

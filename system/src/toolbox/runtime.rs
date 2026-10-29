@@ -1195,17 +1195,23 @@ impl Desktop
     {
         let mut removed = Vec::new();
         let mut coalesced = None;
-        for content in self.content.iter_mut().chain(&mut self.pending_content)
-            .filter(|content| content.id == SceneTarget::from(window))
+        for content in self.content
+                           .iter_mut()
+                           .chain(&mut self.pending_content)
+                           .filter(|content| content.id == SceneTarget::from(window))
         {
             for command in content.iter_commands_mut()
             {
                 let bounds = match command
                 {
                     RenderCommand::Control(drawing) if !scroll_box && drawing.id == id =>
-                        drawing.cancel_tracking().then(|| drawing.bounds()),
+                    {
+                        drawing.cancel_tracking().then(|| drawing.bounds())
+                    }
                     RenderCommand::ScrollBox(drawing) if scroll_box && drawing.id == id =>
-                        drawing.cancel_tracking(),
+                    {
+                        drawing.cancel_tracking()
+                    }
                     _ => None
                 };
                 if let Some(bounds) = bounds
@@ -1266,8 +1272,10 @@ impl Desktop
         let definition = self.controls.definition(call, owner)?;
         let entry = self.control_definition(definition)?;
         let (used, limit) = self.retained_admission(SceneTarget::from(window));
-        let content = self.pending_content.iter_mut().chain(&mut self.content)
-            .find(|content| content.id == SceneTarget::from(window));
+        let content = self.pending_content
+                          .iter_mut()
+                          .chain(&mut self.content)
+                          .find(|content| content.id == SceneTarget::from(window));
         let drawing = self.controls.request_with(&recipient,
                                                   &storage,
                                                   call,
@@ -1358,7 +1366,7 @@ impl Desktop
         {
             return self.managed_control(call).map_or_else(|e| e, |_| OK);
         }
-        if !call.surface.is_null()
+        if !call.surface.is_null() || call.reflow != 0
         {
             return BAD_ARGUMENT;
         }
@@ -2215,7 +2223,7 @@ impl Desktop
                             if let Some(command) = button
                             {
                                 let mut state = control(command);
-                                let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(), kind: u32::from_be_bytes(*b"CDEF"), id: 0, variation: 0, message: 1, reserved: 0, param: (((local.v as u16 as u32) << 16) | local.h as u16 as u32) as i64, object: (&mut state as *mut crate::toolbox::controls::ControlDefinitionState).cast(), gate: crate::machine::traps::gateway, surface: core::ptr::null_mut() };
+                                let mut call = DefinitionCall { reflow: 0, header: Header::for_type::<DefinitionCall>(), kind: u32::from_be_bytes(*b"CDEF"), id: 0, variation: 0, message: 1, reserved: 0, param: (((local.v as u16 as u32) << 16) | local.h as u16 as u32) as i64, object: (&mut state as *mut crate::toolbox::controls::ControlDefinitionState).cast(), gate: crate::machine::traps::gateway, surface: core::ptr::null_mut() };
                                 if super::resources::definitions::invoke(self.cdef, &mut call) > 0
                                 {
                                     self.events.post_system(Event { payload: 0,
@@ -2855,7 +2863,7 @@ fn paint(canvas: &mut Canvas, command: &DrawCommand, cdef: DefinitionEntry)
         {
             let mut state = control(command);
             let mut surface = Surface::from_canvas(canvas);
-            let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(), kind: u32::from_be_bytes(*b"CDEF"), id: 0, variation: 0, message: 0, reserved: 0, param: 0, object: (&mut state as *mut crate::toolbox::controls::ControlDefinitionState).cast(), gate: crate::machine::traps::gateway, surface: &mut surface };
+            let mut call = DefinitionCall { reflow: 0, header: Header::for_type::<DefinitionCall>(), kind: u32::from_be_bytes(*b"CDEF"), id: 0, variation: 0, message: 0, reserved: 0, param: 0, object: (&mut state as *mut crate::toolbox::controls::ControlDefinitionState).cast(), gate: crate::machine::traps::gateway, surface: &mut surface };
             super::resources::definitions::invoke(cdef, &mut call);
         }
         _ =>

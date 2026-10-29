@@ -677,6 +677,7 @@ impl Manager
         }
         previous != self.bar().map(|bar| (bar.active, bar.highlighted))
     }
+
     pub fn release_tracking(&mut self, point: Point) -> Option<Selection>
     {
         if !self.is_tracking()
@@ -994,7 +995,8 @@ fn invoke(entry: DefinitionEntry, gate: TrapGate, state: &mut MenuDefinitionStat
           param: i64, surface: *mut Surface)
           -> i64
 {
-    let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+    let mut call = DefinitionCall { reflow: 0,
+                                    header: Header::for_type::<DefinitionCall>(),
                                     kind: MDEF,
                                     id: 0,
                                     variation: 0,

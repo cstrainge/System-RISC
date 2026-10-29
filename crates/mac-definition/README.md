@@ -48,3 +48,24 @@ do not establish guest runtime behavior.
 
 MDEF and WDEF retain their existing author entry forms. Their distinct decoders
 require a separate migration.
+
+Native managed controls opt in at creation with `Reflow::Yes`; existing native
+callers use `Reflow::No`. The resident object retains this immutable choice.
+Owners query `Control::reflow()` or `ControlRef::reflow()`, and definition authors
+query `Services::reflow()` during any message. Neither procID nor variation bits
+encode this choice. All native artifacts must be rebuilt together after this ABI
+change; the development ABI version remains 1.
+
+`Message::Reflow` supplies a validated leaf request and the original creation
+size. The base leaf handler answers size queries using that size as preferred,
+with family minima where available. It does not yet calculate text-content sizes
+or wrapping. Assignments preserve creation fallback and explicit size overrides;
+forced small/empty assignments do not constitute a preference veto. The resident
+manager stages geometry, visibility and tracking changes until drawing admission
+succeeds, retains bounded measurement results, and reports pending measurement
+and arrangement in control information. Visibility clips paint and hit testing.
+
+Leaf settings, measurement, assignment, visibility and invalidation are connected.
+Child adoption/removal/reparenting, parent propagation, root/window scheduling,
+and automatic layout remain unimplemented and must not be inferred from leaf
+support. Relationship requests return `NotSupported` without changing ownership.

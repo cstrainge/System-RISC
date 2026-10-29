@@ -15,6 +15,7 @@ pub const DRAW_OBJECT: u32 = 15;
 pub const BEGIN_TRACKING: u32 = 16;
 pub const POLL_TRACKING: u32 = 17;
 pub const CANCEL_TRACKING: u32 = 18;
+pub const REFLOW_OBJECT: u32 = 19;
 pub const BUTTON_DOWN: u32 = 1;
 pub const TRACKING: u32 = 2;
 pub const HANDLED: u32 = 4;
@@ -74,6 +75,10 @@ pub struct ScrollbarState
 pub struct ControlCall
 {
     pub id:        u64,
+    /// Native creation choice: 0 = no reflow, 1 = reflow. Read back by INFO_OBJECT.
+    /// Non-creation requests must leave this zero; configuration cannot change it.
+    pub reflow:    u32,
+    pub layout:    reflow::Payload,
     pub flags:     u32,
     pub ticks:     u64,
     pub step:      i16,
