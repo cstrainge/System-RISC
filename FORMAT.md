@@ -2298,3 +2298,23 @@ memory total or a synthetic System domain account. Mapping revision does not
 claim that heap, physical attribution and page-pool counters were sampled
 simultaneously. ABI remains version1; the native layout fingerprint changes
 with the summary layout and all producers/consumers rebuild together.
+
+## Public CPU information
+
+Native `CPU_INFO=0x10029` exposes ordinary live-application enumeration and
+selected-state residency independently of inspector privileges and SCHD/SCTL.
+The SDK surface is `System::inspection().cpus()`; see
+[CPU information](docs/CPU-INFORMATION.md) for measurement semantics and limits.
+
+The 280-byte `inspection::cpus::Call` contains operation/reserved u32s at0/4,
+ordinal u64 at8, Summary16 at16, Row48 at32, a192-byte output diagnostic at80,
+length u32 at272 and reserved-tail u32 at276. BEGIN9 requires ordinal0; READ10
+selects an immutable topology position. Both reserved fields must be zero;
+result fields are output only. Unknown operations, malformed reserved fields
+and out-of-range indices return typed status plus bounded UTF-8 detail.
+
+Summary is count u64 and DT ticks_per_second u64. Row is hardware label, idle
+residency, executing residency and sample tick (four u64s), followed by state,
+flags, activity availability and reserved (four u32s). No addresses, thread IDs,
+object IDs or scheduler grants are returned. The native layout fingerprint
+covers this family, its shape and semantic constants; ABI remains version 1.

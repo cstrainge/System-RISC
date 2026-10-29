@@ -184,9 +184,10 @@ impl From<crate::loader::LoadError> for StartError
 /// per-application opt-in is needed when the real service/CPU gates broaden it.
 /// Affine System idles remain a distinct sealed Store variant.
 #[derive(Clone, Copy)]
-enum ThreadAffinity
+pub(crate) enum ThreadAffinity
 {
-    Eligible
+    Eligible,
+    Primary
 }
 impl ThreadAffinity
 {
@@ -194,7 +195,8 @@ impl ThreadAffinity
     {
         match self
         {
-            Self::Eligible => hart.dispatch_eligible()
+            Self::Eligible => hart.dispatch_eligible(),
+            Self::Primary => hart.is_primary() && hart.dispatch_eligible()
         }
     }
 }
@@ -992,6 +994,7 @@ pub(crate) fn start() -> Result<(), StartError>
     // The frame/claim/selection is committed and no scheduler guard survives.
     // Publish the real receiver, then notify only retained callable/cleanup work.
     wake::admitted(wake_receiver);
+    hart.resume_activity(false);
     unsafe { __system_start_frame(frame) }
 }
 extern "C" fn idle() -> !
@@ -1490,6 +1493,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
                     release_claim(&scheduler, current, hart);
                 }
                 arm_ticks(quantum);
+                hart.resume_activity(false);
                 return next;
             }
         }
@@ -1499,6 +1503,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
     select_current(IDLE);
     release_claim(&scheduler, current, hart);
     arm();
+    hart.resume_activity(true);
     next
 }
 

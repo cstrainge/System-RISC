@@ -7,7 +7,8 @@ use crate::toolbox;
 mod state;
 mod hart;
 pub(crate) use hart::{Error as EntryError, OuterCapture, PreparedEntry, PreparedHart,
-                      StartingHart, admit_bootstrap, execution, prepare_secondary};
+                      StartingHart, activity as cpus, admit_bootstrap, execution,
+                      prepare_secondary};
 pub(crate) const MAX_TRAP_DEPTH: usize = 8;
 // One bootstrap baseline, eight admitted service levels, and one typed-refusal
 // frame. The bound follows the existing native service recursion contract.
@@ -150,6 +151,7 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                           {
                               // Warm admitted idle has genuine affine backing,
                               // but no permission to select any author thread.
+                              capture.hart().resume_activity(true);
                               capture.frame()
                           }
                       }
@@ -192,6 +194,7 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                           {
                               // Startup ACK does not itself authorize policy or
                               // author-body execution on an admitted idle hart.
+                              key.resume_activity(true);
                               capture.frame()
                           }
                       }
@@ -604,6 +607,11 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             crate::kernel::with_desktop(|runtime| runtime.menu(call)).unwrap_or_else(|error| {
                                                                          error.status()
                                                                      }) as i64
+        }
+        CPU_INFO =>
+        {
+            let call = read_request!(mac_abi::inspection::cpus::Call);
+            toolbox::processes::cpu_inspection_request(call) as i64
         }
         INSPECTION =>
         {
