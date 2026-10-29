@@ -1,8 +1,10 @@
 #![no_std]
 #![no_main]
 #![cfg_attr(feature = "scheduler", feature(alloc_error_handler))]
-#[cfg(feature = "scheduler")]
+#[cfg(all(feature = "scheduler", not(feature = "scheduler-smp")))]
 mod scheduler;
+#[cfg(feature = "scheduler-smp")]
+mod scheduler_smp;
 #[cfg(feature = "scheduler")]
 #[path = "../../scheduler_support.rs"]
 mod scheduler_support;
