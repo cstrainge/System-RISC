@@ -51,6 +51,12 @@ impl HartKey
                              })
     }
 
+    /// Selected-state residency boundary, not accumulated per-thread CPU time.
+    pub(crate) fn resume_activity(self, idle: bool)
+    {
+        self.0.activity.resume(idle);
+    }
+
     pub(crate) fn dispatch_eligible(self) -> bool
     {
         self.0.phase.load(Ordering::Acquire) == super::DISPATCH_ELIGIBLE

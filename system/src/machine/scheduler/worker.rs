@@ -86,7 +86,8 @@ pub(crate) struct PreparedWorker
     owner:      OwnerRef,
     core:       mac_object_table::retained::Read<ThreadCore>,
     allocation: accounting::AllocationAuthority,
-    subject:    crate::drivers::jobs::subjects::Subject
+    subject:    crate::drivers::jobs::subjects::Subject,
+    affinity:   super::ThreadAffinity
 }
 pub(crate) struct WorkerPrepareFailure
 {
@@ -113,6 +114,7 @@ impl PreparedWorker
 pub(crate) fn prepare_worker(launch: crate::drivers::WorkerLaunch)
                              -> Result<PreparedWorker, WorkerPrepareFailure>
 {
+    let affinity = launch.affinity();
     let owner = launch.owner().clone();
     let allocation = launch.allocation().clone();
     let target = crate::allocator::Target::Owner { account: allocation.clone(),
@@ -166,6 +168,7 @@ pub(crate) fn prepare_worker(launch: crate::drivers::WorkerLaunch)
             Ok(PreparedWorker { owner,
                                 allocation,
                                 subject,
+                                affinity,
                                 core: mac_object_table::retained::Read::new(core,
                                                                             context_released) })
         }
@@ -205,7 +208,8 @@ pub(crate) fn publish_worker(prepared: PreparedWorker) -> Result<u64, WorkerPubl
                                            returned:         false,
                                            park_return:      false,
                                            exit_status:      mac_abi::OK };
-                let state = RunState::new();
+                let mut state = RunState::new();
+                state.affinity = prepared.affinity;
                 Record::Scheduled(Thread { id,
                                            core: prepared.core.share(),
                                            scope: Some(scope),

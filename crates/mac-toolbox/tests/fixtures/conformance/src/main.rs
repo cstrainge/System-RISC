@@ -45,6 +45,7 @@ impl Write for LogBuffer
 }
 #[cfg(not(any(feature = "alert-tracking",
               feature = "memory-inspection",
+              feature = "cpu-inspection",
               feature = "textedit-clipboard")))]
 fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
 {
@@ -72,6 +73,14 @@ mod memory_inspection;
 fn run(system: &System<'_>, _gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
 {
     memory_inspection::run(system)
+}
+#[cfg(feature = "cpu-inspection")]
+#[path = "../../../conformance/cpu_inspection.rs"]
+mod cpu_inspection;
+#[cfg(feature = "cpu-inspection")]
+fn run(system: &System<'_>, _gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
+{
+    cpu_inspection::run(system)
 }
 #[cfg(feature = "alert-tracking")]
 fn run(system: &System<'_>, _gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
@@ -113,6 +122,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
         {
             #[cfg(not(any(feature = "alert-tracking",
                           feature = "memory-inspection",
+                          feature = "cpu-inspection",
                           feature = "textedit-clipboard")))]
             {
                 let _ = system.log("TEXTEDIT_USERSPACE_PASS original=356 native=20 legacy=6 \
@@ -122,6 +132,8 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
                                     controls=86 controlpixels=269600 controlhits=8424 \
                                     strings=passed dates=passed\n");
             }
+            #[cfg(feature = "cpu-inspection")]
+            let _ = system.log("TOOLBOX_USERSPACE_PASS cpu-inspection=passed\n");
             #[cfg(feature = "memory-inspection")]
             let _ = system.log("TOOLBOX_USERSPACE_PASS memory-mappings=passed\n");
             #[cfg(feature = "alert-tracking")]

@@ -54,6 +54,11 @@ impl<'a> Client<'a>
         status(self.invoke(INSPECTION, call))
     }
 
+    pub fn inspect_cpus(self, call: &mut mac_abi::inspection::cpus::Call) -> Result<()>
+    {
+        status(self.invoke(CPU_INFO, call))
+    }
+
     pub fn theme(self) -> Result<mac_abi::theme::Palette>
     {
         let mut palette = mac_abi::theme::Palette::default();

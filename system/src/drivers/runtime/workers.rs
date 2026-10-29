@@ -37,7 +37,8 @@ pub(crate) struct Launch
     owner:      OwnerRef,
     allocation: scheduler::accounting::AllocationAuthority,
     execution:  crate::images::ModuleExecution,
-    name:       String
+    name:       String,
+    affinity:   scheduler::ThreadAffinity
 }
 impl Launch
 {
@@ -54,6 +55,11 @@ impl Launch
     pub(crate) fn execution(&self) -> &crate::images::ModuleExecution
     {
         &self.execution
+    }
+
+    pub(crate) fn affinity(&self) -> scheduler::ThreadAffinity
+    {
+        self.affinity
     }
 
     pub(crate) fn name(&self) -> &str
@@ -238,10 +244,15 @@ unsafe fn create(module: u64, pointer: *const abi::WorkerSpecification) -> Resul
     // SAFETY: the exact current descriptor remains borrowed through CREATE.
     let specification = unsafe { *pointer };
     if specification.reserved != 0
-       || !matches!(specification.affinity, worker::AFFINITY_AUTOMATIC | worker::AFFINITY_PRIMARY)
     {
         return Err(BAD_ARGUMENT);
     }
+    let affinity = match specification.affinity
+    {
+        worker::AFFINITY_AUTOMATIC => scheduler::ThreadAffinity::Eligible,
+        worker::AFFINITY_PRIMARY => scheduler::ThreadAffinity::Primary,
+        _ => return Err(BAD_ARGUMENT)
+    };
     let entry = specification.entry.ok_or(BAD_ARGUMENT)?;
     let destroy = specification.destroy.ok_or(BAD_ARGUMENT)?;
     invocation::callback_allowed(module, entry as usize)?;
@@ -300,7 +311,8 @@ unsafe fn create(module: u64, pointer: *const abi::WorkerSpecification) -> Resul
                                                                            owner,
                                                                            allocation,
                                                                            execution,
-                                                                           name })
+                                                                           name,
+                                                                           affinity })
                                                            })??;
     let prepared = match scheduler::prepare_worker(launch)
     {

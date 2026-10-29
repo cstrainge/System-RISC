@@ -532,6 +532,24 @@ pub(crate) fn microseconds_to_ticks_ceil(microseconds: u64) -> Result<u64, Error
     u64::try_from(ticks).map_err(|_| Error::ClockOverflow)
 }
 
+/// Read-only public CPU metadata uses checked topology position/label, never
+/// these scalar arguments as execution authority. No Control view is formed.
+pub(crate) fn cpu_observation(ordinal: usize, hardware: u64) -> Option<(u64, bool)>
+{
+    let transport = MONITOR.get()?;
+    let entry = transport.entries.get(ordinal)?;
+    if entry.hart != hardware
+    {
+        return None;
+    }
+    let stopped = field(entry, core::mem::offset_of!(Control, stopped)).load(Ordering::Acquire);
+    if stopped > 1
+    {
+        return None;
+    }
+    Some((transport.timebase_hz, stopped == 1))
+}
+
 fn notify(entry: &Entry)
 {
     // Release alone does not order MMIO. Neither operation calls foreign code.

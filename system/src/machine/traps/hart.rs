@@ -9,11 +9,28 @@ use core::{arch::{asm, global_asm},
            sync::atomic::{AtomicU8, AtomicU64, Ordering}};
 
 pub(crate) mod execution;
+pub(crate) mod activity;
 use execution::HartLocal;
 
 use super::{SavedState, TrapFrame};
 use crate::{allocator::foundation::{self, Foundation},
             machine::pages::{ArrayError, Backing, OwnedArray, Stack}};
+
+/// Order the counter's memory critical section against the time CSR read.
+/// Zicsr classifies CSR reads as device input, which an ordinary memory lock
+/// does not order by itself. Only actual class changes/row queries call this.
+fn residency_ticks() -> u64
+{
+    let value;
+    // SAFETY: the admitted native profile grants rdtime. The I/RW fences and
+    // compiler memory clobber keep this sample inside the protected interval.
+    // See RISC-V Zicsr, CSR Access Ordering. Cost is not measured here.
+    unsafe {
+        asm!("fence rw,i", "rdtime {value}", "fence i,rw",
+             value = out(reg) value, options(nostack));
+    }
+    value
+}
 
 #[derive(Clone, Copy)]
 #[repr(C, align(16))]
@@ -78,7 +95,8 @@ pub(super) struct Hart
     control:  usize,
     local:    HartLocal,
     phase:    AtomicU8,
-    sequence: AtomicU64
+    sequence: AtomicU64,
+    activity: activity::Counter
 }
 /// Control has plain assembly-mutated words. Owning only raw Backing avoids
 /// freezing those words through an accidental immutable typed slice.
@@ -412,7 +430,8 @@ pub(crate) fn prepare(stack: &'static Stack) -> Result<PreparedEntry, Error>
                                                   {
                                                       PREPARED
                                                   }),
-                             sequence: AtomicU64::new(0) })
+                             sequence: AtomicU64::new(0),
+                             activity: activity::Counter::new() })
                }).map_err(|error| {
                      match error
                      {
@@ -541,6 +560,10 @@ pub(super) unsafe fn captured_outer(frame: *mut TrapFrame) -> OuterCapture
                            stack");
     }
     let captured_ticks = crate::platform::ticks();
+    // Residency transitions serialize their clock sample with remote readers.
+    // The earlier captured tick cannot safely shorten an already projected
+    // idle interval. Executing continuations still avoid another lock/read.
+    hart.activity.enter();
     OuterCapture { frame,
                    captured_ticks,
                    hart: execution::selected_hart(),
@@ -1090,6 +1113,7 @@ pub(crate) fn start_secondary(payload: *const (), bytes: usize) -> !
     // scheduler enables STIE when it arms the first genuine local deadline.
     unsafe {
         asm!("csrs sie,{}",in(reg)2usize,options(nomem,nostack));
+        proof.row.activity.resume(true);
         __system_start_frame(frame)
     }
 }

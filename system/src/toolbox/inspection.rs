@@ -2,6 +2,8 @@
 //! object-value scans, formatting allocations, or caller-selected identity.
 #![forbid(unsafe_code)]
 pub(crate) mod memory;
+#[cfg(target_arch = "riscv64")]
+pub(crate) mod cpus;
 use mac_abi::{inspection::*, *};
 use mac_object_table::{domain::{CapacityPolicy, Directory, DomainKind, LedgerReadError},
                        shared::InvocationGate};
