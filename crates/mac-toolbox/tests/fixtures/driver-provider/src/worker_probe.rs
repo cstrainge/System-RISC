@@ -31,7 +31,7 @@ pub fn foreign_status(token: u64) -> i32
                                      specification: ptr::null(),
                                      state:         0,
                                      exit_status:   0,
-                                     reserved1:     0 };
+                                     microseconds:  0 };
     let callback = host.workers.expect("validated mandatory worker callback invariant");
     // Only the token belongs to another real module; all storage is valid.
     unsafe { callback(host.context, &mut call) }

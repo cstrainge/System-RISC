@@ -1,16 +1,20 @@
 # Virtual host clipboard extension
 
-Status: required System-extension proving milestone, tracked as
-[P18](CORE-TOOLBOX-ROADMAP.md#p18--virtual-host-clipboard-extension). The shared
-named-port adapter, VBYT byte-channel contract, SPICE vdagent codec, startup
-outcome strip and authenticated resident SCEX Scrap observation/import service
-are present.
-They do not yet make an active clipboard bridge. Module-owned worker execution,
-account/invocation authority, worker delivery/batching and complete guest bridge
-activation remain gates. This is the next real consumer of the
-[P6 extension SDK](SYSTEM-EXTENSIONS.md), proving typed hooks beyond storage.
-The memory/model module-domain integration stage is incomplete with driver-only
-or protocol-only evidence.
+Status: the external `Host Clipboard` INIT package now connects a genuine
+module-owned scheduled worker, standard vdagent transport and resident Scrap.
+A private Linux/X11 run of optimized RV64 System observed exact Unicode,
+multiline and emoji copy/paste between Mousepad and Text Edit in both directions,
+including a guest-edited suffix saved by both applications. This is bounded
+evidence for that QEMU GTK profile, including four physical CPUs with
+primary-only scheduling. Direction settings, disabled/invalid/read-only policy
+and missing-preference creation have additional bounded native observations.
+Windows, macOS, empty text, sustained pressure, live policy changes and complete
+bridge shutdown remain
+unverified; this is not production clipboard or SMP qualification.
+
+This is the [P18](CORE-TOOLBOX-ROADMAP.md#p18--virtual-host-clipboard-extension)
+consumer of the [P6 extension SDK](SYSTEM-EXTENSIONS.md). Module execution,
+transport negotiation and a confirmed active bridge are separate states.
 
 ## Guest-only QEMU architecture
 
@@ -83,9 +87,12 @@ on endpoint changes rather than on each input event.
 Graphical desktop launches automatically supply the standard QEMU endpoint when
 that QEMU advertises its required facilities. No enable flag is needed. Use
 `python scripts/system7_vm.py start --no-clipboard` to omit the endpoint while
-keeping the installed extension present: this exercises its actual unavailable
-facility refusal and startup X. Headless launches supply no graphical clipboard
-peer. Missing host facilities leave local Scrap functional and report the reason;
+keeping the installed extension present. An absent transport device makes the
+loader skip the channel driver and refuse the extension's missing dependency,
+with the synchronous startup X. A present device with the wrong port name can
+admit the worker, which retains the endpoint refusal asynchronously. The latter
+does not repaint the already dismissed startup strip; see the readiness limit
+below. Headless launches supply no graphical clipboard peer. Missing host facilities leave local Scrap functional and report the reason;
 launcher configuration alone never reports sharing as active. The System JSON
 enablement/direction preference remains the persistent guest policy.
 
@@ -130,16 +137,24 @@ must identify the System worker prerequisite. Required hooks/services remain
 unpublished and local Scrap stays usable. Transport/protocol readiness does not
 stand in for worker/account admission.
 
-Bridge activation is confirmed only after a scheduled readiness transition; a boot
-initializer must not spin awaiting the host. The resident startup/lifecycle
-service must retain the provisional outcome until that transition and distinguish
-it from a confirmed active extension. Until that service is implemented, the
-extension must refuse bridge activation rather than assert that sharing is
-running. Current `MODULE_READY` reports synchronous initializer commitment and
-armed workers becoming runnable; it does not report asynchronous negotiation
-success. The worker foundation does not implement that later readiness surface.
-A failed cleanup keeps its exact ticket and backing quarantined; report
-recovery honestly instead of pretending rollback succeeded.
+`mac_driver::lifecycle::Startup::defer` uses resident MLIF v1 before the
+initializer returns. System commits the module and arms its actual workers,
+but leaves offered interfaces unpublished and records pending startup. The
+boot strip uses a hollow pending badge. Only the scheduled worker may confirm
+readiness after protocol negotiation and Scrap session/storage admission;
+MLIF then atomically publishes the declared interfaces. A refusal retains its
+bounded status/cause and can be retried by the same admitted module. Confirming
+an already active module is idempotent. Later connectivity/policy diagnostics
+update status without claiming a new startup or changing module identity.
+`MODULE_ADMITTED ... startup=pending`, `MODULE_ASYNC_READY` and
+`MODULE_ASYNC_STATUS` distinguish these transitions in serial output.
+
+The boot strip is dismissed before scheduled negotiation completes. Its existing
+X covers synchronous initializer refusal; asynchronous refusal is currently
+retained in the registry/serial status, without a visible post-desktop status
+surface or repaint of that strip. That presentation requirement remains open.
+A failed cleanup keeps its exact ticket and backing quarantined; quarantine is
+not successful rollback or reclamation.
 
 ## Wire limits and text policy
 
@@ -207,7 +222,7 @@ the notification. Concurrently retained pins keep their own immutable content
 across subsequent Scrap commits and bounded partial reads.
 
 SCEX uses checked little-endian requests for OPEN, NOTICE, SNAPSHOT, INFO, READ,
-IMPORT, CLOSE_PIN and DISCONNECT. A reply has an eight-byte status/length header;
+IMPORT, CLOSE_PIN, DISCONNECT and IMPORT_SNAPSHOT. A reply has an eight-byte status/length header;
 terminal failures include the informative UTF-8 resident cause. Callers provide
 512–4096 reply bytes, validated before any effect, so a session or pin is never
 published without room to return its identity. READ carries at most 4088 payload
@@ -215,7 +230,10 @@ bytes per wire reply. IMPORT permits at most `1 MiB - 32` text bytes and must al
 fit the resident Scrap text limit. The
 [wire contract](../crates/mac-scrap-extension-interface/src/lib.rs) defines the
 exact layouts. Snapshot and metadata requests are separate; INFO or a later
-read failure cannot hide an already minted pin from its caller.
+read failure cannot hide an already minted pin from its caller. IMPORT_SNAPSHOT
+pre-admits a new pin before publication and returns the exact imported snapshot,
+so a later application copy cannot be mistaken for the imported text. Revision-only
+IMPORT remains available when the caller does not need that pin.
 
 This service supplies coalesced wake state, not a scheduled observer thread.
 The worker must consume it at a documented bounded delivery boundary. Commits
@@ -250,68 +268,114 @@ The ordinary owner walk reclaims stopped extension sessions, pins and backing
 through the same registered release catalog. A missing cleanup context retains
 the unique invalidated ticket and typed cause for quarantine/retry; stopping an
 owner does not bypass cleanup authentication or free a retained pin by decree.
-The host service fixture verifies real INIT admission, public SDK mutations,
-coalesced notifications, stable pins, CAS refusal, origin suppression,
-disconnect/reopen and exact-ticket cleanup retry. It does not execute a guest
-worker or establish native interrupt, account or arbitrary privileged-fault
-containment.
+Earlier host-linked fixture results do not qualify native worker, interrupt,
+account or arbitrary privileged-fault behavior.
 
 `mac-driver-alloc::scrap` supplies non-copyable session and snapshot guards over
 the original resolved SCEX provider. It reserves each retirement record before
-OPEN or SNAPSHOT can have an effect. Guard destruction only marks that admitted
-record; a module-lifetime controller performs bounded cleanup later. Child pins
-keep their session connected until their releases are acknowledged. Each drain
-visits at most its supplied record budget, with constant-time record removal;
-Busy preserves the same provider and grant for retry. A malformed post-effect
-creation reply retains its uncertain record rather than repeating creation.
+OPEN, SNAPSHOT or IMPORT_SNAPSHOT can have an effect. Guard destruction only
+marks that admitted record; a module-lifetime controller performs bounded cleanup
+later. Child pins keep their session connected until their releases are
+acknowledged. Each drain visits at most its supplied record budget, with
+constant-time record removal. Busy preserves the original provider/grant for
+retry. A malformed post-effect creation reply retains its uncertain record
+rather than repeating creation.
 
-Explicit shutdown returns the retained client when cleanup cannot complete.
-Dropping the entire controller with outstanding records is last-resort quarantine,
-not a release acknowledgement: neither resident owner cleanup nor dropping the
-module frees that forgotten SDK allocation. A production worker must own and drain
-the controller through its real lifecycle. This SDK stage covers guard ownership,
-notification and snapshot metadata; immutable text capture, READ/IMPORT adapters
-and automatic production lifecycle remain unimplemented.
+The SDK now supplies bounded READ and IMPORT adapters, immutable UTF-8 capture,
+and `capture_pin`, which returns its original unique pin on refusal. The bridge
+retains an acknowledged import pin while retrying capture; it never repeats the
+committed import. Explicit shutdown returns the retained client if cleanup
+cannot complete. Dropping the controller with outstanding records is last-resort
+quarantine, not a release acknowledgement or successful owner cleanup.
 
-Canonical host SDK tests obtain a Client through the real module entry binding
-and route genuine Registry-issued providers and open operation scopes through the
-same synchronous broker core as native System. They cover real contention,
-closed roots, stale/foreign guards, preflight allocation refusal, corrupted replies
-after actual creation, bounded cleanup and authoritative owner cleanup. Native
-System keeps its interrupt/preemption gate across admission and the bounded
-resident effect; the host adapter does not qualify that gate, SMP or a worker.
+The pump checks the coalesced resident revision on a scheduled 16 ms cadence.
+It defers a changed local revision until it has remained unchanged for 32 ms,
+then captures one immutable payload. These are scheduling policy intervals,
+not measured maximum transfer latency. A producer that waits longer than that
+between clear and put can still expose an intermediate empty Scrap; the public
+Scrap protocol has no transaction-end marker. The bridge reads unchanged text
+zero times, performs no clipboard work on input events, and retains decoded
+frames/output/correlated pins across bounded retries. Actual worker timed park
+uses `core::time::Duration`; host I/O never runs under a module mutex or Scrap
+lock. Negotiation and fetch deadlines are five seconds. Ambiguous transfer
+failure requires acknowledged VBYT RESET before a new protocol epoch.
 
-Store enablement/direction preferences in versioned System JSON. Support local
-operation when preferences are read-only/unavailable, and extensions-disabled
-startup. The module stays pinned for the boot session initially; disabling bridge
-traffic must still cancel pending work and preserve the local clipboard.
+Enablement/direction preferences use resident MPRE v1, with the admitted stable
+package identity obtained from the registry. Display names cannot redirect the
+storage scope. The 256-byte versioned JSON document lives at
+`System Folder/Preferences/7731a000000000000000000000000080.json`.
+The image builder derives this same key from the actual packaged EABI identity.
+LOAD and exact-byte
+compare/exchange use the real Files service; a successful write requires writable
+media. Comparison, writer admission and commit share its guard. Stale writes
+refuse, abort failures retain their cleanup ticket, and no failure is reported
+as successful persistence. The SDK exposes immutable `Document` bytes and
+`Preferences::{load,save,revision}`; it supplies no request-controlled path.
 
-The typed policy codec accepts version 1 JSON with optional `enabled` (default
-`true`) and `direction` (`both`, `host-to-guest`, or `guest-to-host`; default
-`both`). It rejects unknown fields, unsupported versions and documents exceeding
-256 bytes. Policy is immutable for a transport epoch: changing it requires a new
-epoch after draining or resetting owned transfers. Disabled and denied directions
-avoid scanning or copying text, while protocol refusals retain bounded reply
-state through allocation refusal. The codec and engine policy are implemented;
-transactional System preference storage and live policy changes remain gates.
+The typed clipboard policy accepts version 1 with optional `enabled` (default
+`true`) and `direction` (`both`, `host-to-guest`, `guest-to-host`; default `both`).
+Unknown fields, unsupported versions and oversized documents refuse. The image
+builder installs an explicit default; a missing document is created through real
+compare/exchange. Unavailable/invalid preferences leave sharing local. The worker
+checks the startup catalog revision once per second and reloads only on change;
+a policy change retires the old session and resets the actual transport before
+opening another epoch. Denied export observes revision metadata without reading
+local text. Disabled policy performs no text observation or transfer.
+There is no control-panel application yet. Live changes, concurrent preference
+writers and failure recovery still need native qualification.
 
 ## Acceptance
 
-Canonical `crates/mac-toolbox/tests` assertions use public Scrap calls through
-real services. Test native Unicode copy/paste both ways, legacy conversion where
-implemented, cross-app copying, clear/put batching, empty/large/unsupported offers,
-conversion failures, no echo loops, concurrent changes and delayed replies.
-Fake endpoints cover deterministic failures; private VM checks must additionally
-copy real text between host editors and guest apps on each claimed host profile.
+The current bounded native observations use real optimized no_std RV64/RVA23
+System and 8 GiB, with input/text traces disabled. The editor round trip uses
+the standard four physical CPUs with primary-only admission; policy and worker
+diagnostics explicitly select one hart. Extra physical CPUs do not establish
+concurrent supervisor execution or SMP safety. The installed INIT
+worker reached readiness after genuine vdagent negotiation and SCEX admission.
+A fresh private Xvfb with upstream QEMU 11.1.50 GTK (`gl=off`, clipboard schema
+present) and Mousepad 0.6.3 exchanged `Host café 雪 🦀`, a second line and a guest
+typed suffix with Text Edit. Both editors saved exactly the expected UTF-8 bytes;
+the guest file was read offline only after VM exit. The collector allowed GTK's
+asynchronous paste to finish before Save. This establishes that scenario, not a
+transfer-time bound, other QEMU binaries or other host profiles.
 
-The native transport fixture has passed capability exchange, wrong-port refusal,
-malformed-protocol rejection and absent-provider startup with a usable desktop.
-A fresh private Xvfb and GTK QEMU have also passed real bidirectional UTF-8,
-multiline and emoji text exchange through the guest policy engine. This fixture
-uses bounded bootstrap execution and fixed private text: it does not admit the
-production worker or connect application Scrap to that worker. Empty-text and
-native Windows/macOS text exchange remain unqualified. Launcher tests pass on
-Linux and native Windows; those tests do not qualify host clipboard text exchange.
+Separate existing native worker diagnostic modules exercised zero duration,
+checked conversion/deadline overflow, coalesced wake, a 30 ms deadline (32,180
+observed guest microseconds), early wake and cancellation of timed parks, plus
+clock/park refusal inside a critical section. Real canonical publication and
+acknowledgement records correlated all four normal and all three rollback worker
+reclamations. This uses the actual native scheduler; it does not qualify complete
+clipboard-controller shutdown, pressure or SMP.
+
+Direction cases used actual Mousepad/Text Edit copies and exact saved bytes.
+Host-to-guest preserved the host clipboard after a guest edit/copy;
+guest-to-host preserved the guest's prior local Scrap after a host copy, then
+exported the guest edit. Disabled/invalid policy retained local copy/paste and
+saved guest text. Wrong-name endpoint refusal also left local text usable.
+A missing document was created through actual MPRE/File Manager transactions and
+read back after VM exit. Read-only creation refused with READ_ONLY, retained
+local operation, issued no active confirmation and left no preference file;
+its local text was observed in the editor screenshot, not a saved guest file.
+These are boot-time policy scenarios, not concurrent-writer or live-change
+qualification.
+
+The private QEMU build omits HMP; its standard QMP `memsave` reads the existing
+System UI observer for pointer acknowledgements. That debugger observation and
+paced GUI actions have overhead and do not qualify timing or sustained stress.
+Some rapid Finder navigation attempts stopped after opening Applications before
+its layout completed, including an absent-endpoint case where the clipboard
+worker never ran. A separate earlier Text Edit initialization returned only a
+generic error. Error-only stage/status/cause logging is now present; later runs
+did not reproduce that initialization error. Neither issue has an established
+cause or fix. File → Open/gesture-completion scenarios have narrower evidence;
+they do not establish rapid double-click reliability or general OS stability.
+
+Exercise public Scrap calls through actual guest services. Remaining campaigns
+include legacy conversion, cross-app copying, clear/put batching, empty/large/
+unsupported offers, conversion failures, concurrent changes, delayed replies,
+policy transitions and recovery. Private VM checks must copy real text between
+host editors and guest apps on each claimed host profile. Codec results,
+launcher probes and historical host Rust pass counts cannot substitute for this.
 
 Verify actual startup displays the package-owned extension icon, and a package
 without artwork uses the standard extension icon. Compare the startup strip with
@@ -323,8 +387,9 @@ claim. Native discovery/boot captures now qualify successful package artwork,
 theme fallback and a genuine initializer refusal using three dedicated INIT
 probes, including exact public-SDK icon pixels, unchanged pixels outside the
 cells and usable desktop input afterward. These probes qualify the resident
-presentation machinery. Host Clipboard still needs its own real package/worker
-activation and missing-prerequisite campaign.
+presentation machinery. Those earlier probe observations are limited to their artifacts and scenarios;
+the actual Host Clipboard package's missing-prerequisite and artwork campaign
+remains separate from the successful Linux editor round trip.
 
 Cover absent/disabled/unsupported bridges, disconnect/reconnect, timeout, malformed
 messages, allocation limits, boot without host integration and stale/foreign

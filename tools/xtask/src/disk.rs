@@ -82,7 +82,8 @@ pub fn image(workspace: &Workspace) -> Result<Value>
     let applications = volume.create(2, "Applications", true, when)?.id;
     volume.create(2, "Documents", true, when)?;
     let drivers = volume.create(system, "Drivers", true, when)?.id;
-    for name in ["Extensions", "Fonts", "Control Panels", "Preferences"]
+    let extensions = volume.create(system, "Extensions", true, when)?.id;
+    for name in ["Fonts", "Control Panels", "Preferences"]
     {
         let folder = volume.create(system, name, true, when)?.id;
         if name == "Preferences"
@@ -97,6 +98,23 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                 mac_hfs_b::ForkKind::Data,
                                 mac_file_types::DEFAULT_JSON,
                                 when)?;
+            // Derive the persistent key from the actual packaged EABI identity,
+            // just as resident MPRE does. Display names confer no storage scope.
+            let bytes = fs::read(workspace.build.join("dist/Host Clipboard.bin"))?;
+            let module = macbinary::decode(&bytes)?;
+            let resources = mac_formats::resource::decode(&module.resources)?;
+            let package = mac_formats::module::Package::inspect(&resources, module.file_type)?;
+            let filename = mac_module::preferences::filename(package.contract.identity);
+            let filename = core::str::from_utf8(&filename)?;
+            let file = volume.create(folder, filename, false, when)?.id;
+            volume.set_finder_metadata(file, 0, finder_info, when)?;
+            let mut bytes = [0; mac_host_clipboard::MAX_SETTINGS_BYTES];
+            let length = mac_host_clipboard::Settings::default().encode(&mut bytes)?;
+            hfs_b::write_stream(&mut volume,
+                                file,
+                                mac_hfs_b::ForkKind::Data,
+                                &bytes[..length],
+                                when)?;
         }
     }
     let mut verified = Vec::new();
@@ -110,6 +128,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                       (applications, "Applications", "Reactor Room"),
                                       (drivers, "System Folder/Drivers", "Host Transport"),
                                       (drivers, "System Folder/Drivers", "VDAgent Channel"),
+                                      (extensions, "System Folder/Extensions", "Host Clipboard"),
                                       (drivers, "System Folder/Drivers", "Host Filesystem"),
                                       (drivers, "System Folder/Drivers", "StuffIt Filesystem"),
                                       (drivers, "System Folder/Drivers", "Qemu Power Device")]

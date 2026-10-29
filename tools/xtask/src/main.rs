@@ -117,6 +117,7 @@ impl Workspace
                || matches!(*package,
                            "vhost-transport"
                            | "vdagent-channel"
+                           | "host-clipboard-extension"
                            | "vhost-filesystem"
                            | "stuffit-filesystem"
                            | "qemu-power-device")
@@ -145,7 +146,7 @@ impl Workspace
         self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "cursor-test",
                            "panic-test", "resedit", "reactor", "bootrom", "vhost-transport",
                            "vhost-filesystem", "stuffit-filesystem", "qemu-power-device",
-                           "vdagent-channel"])?;
+                           "vdagent-channel", "host-clipboard-extension"])?;
         // Keep userspace's allocation-free serde graph independent of the
         // resident System's alloc-enabled serde. Cargo feature unification
         // across the kernel and an app must not impose a userspace heap.
@@ -163,6 +164,7 @@ impl Workspace
              ("apps/reactor", "Reactor Room", "Reactor"),
              ("drivers/vhost-transport", "Host Transport", "HostTransport"),
              ("drivers/vdagent-channel", "VDAgent Channel", "VDAgentChannel"),
+             ("extensions/host-clipboard", "Host Clipboard", "HostClipboard"),
              ("drivers/vhost-filesystem", "Host Filesystem", "HostFilesystem"),
              ("drivers/stuffit-filesystem", "StuffIt Filesystem", "StuffItFilesystem"),
              ("drivers/qemu-power-device", "Qemu Power Device", "QemuPowerDevice")]

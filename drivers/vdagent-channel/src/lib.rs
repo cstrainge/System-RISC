@@ -28,7 +28,30 @@ mod driver
         fn request(&self, request: Request<'_>, output: &mut [u8]) -> Result<Completion>
         {
             let mut device = DEVICE.try_lock().ok_or(Error(SERVICE_BUSY))?;
-            crate::engine::request(device.as_mut().ok_or(Error(NOT_SUPPORTED))?, request, output)
+            let device = device.as_mut().ok_or(Error(NOT_SUPPORTED))?;
+            if request.class == mac_byte_channel::CLASS
+               && request.operation == mac_byte_channel::RESET
+            {
+                if !request.input.is_empty()
+                {
+                    return Err(Error(mac_abi::BAD_ARGUMENT));
+                }
+                if request.phase == mac_driver::Phase::Cancel
+                {
+                    // DMA cleanup remains owned by Device; STATUS continues
+                    // its acknowledged retirement before any queue can reopen.
+                    return Ok(Completion::Complete(0));
+                }
+                return if device.reset_connection()?
+                {
+                    Ok(Completion::Complete(0))
+                }
+                else
+                {
+                    Ok(Completion::Pending)
+                };
+            }
+            crate::engine::request(device, request, output)
         }
 
         fn quiesce(&self) -> Result<()>

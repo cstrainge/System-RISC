@@ -15,6 +15,9 @@ pub const IMPORT: u32 = 5;
 pub const CLOSE_PIN: u32 = 6;
 pub const DISCONNECT: u32 = 7;
 pub const INFO: u32 = 8;
+/// IMPORT with an immutable pin of the exact committed text returned atomically.
+/// All pin/backing admission precedes the change; reply is one nonzero pin word.
+pub const IMPORT_SNAPSHOT: u32 = 9;
 pub const MAX_REQUEST: usize = 1024 * 1024;
 pub const MAX_REPLY: usize = 4096;
 pub const MAX_TEXT: usize = MAX_REQUEST - 32;

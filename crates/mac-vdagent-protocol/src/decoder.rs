@@ -88,6 +88,19 @@ impl Decoder
         self.payload.capacity()
     }
 
+    /// Retry a fully decoded frame without feeding later bytes past a refused
+    /// consumer effect. Its payload remains borrowed from this exact decoder.
+    pub fn current_frame(&self) -> Option<Frame<'_>>
+    {
+        if !self.ready
+        {
+            return None;
+        }
+        let header = self.header?;
+        Some(Frame { header,
+                     payload: if header.kind().retained() { Some(&self.payload) } else { None } })
+    }
+
     /// Validate a closed transport before discarding its decoder. Partial wire
     /// state is a truncation, never a complete message or successful transfer.
     pub fn end_of_stream(&self) -> crate::Result<()>

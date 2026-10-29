@@ -71,7 +71,8 @@ pub struct WorkerCall
     pub specification: *const WorkerSpecification,
     pub state:         u32,
     pub exit_status:   i32,
-    pub reserved1:     u64
+    /// Operation-specific monotonic microseconds; zero for other operations.
+    pub microseconds:  u64
 }
 pub mod worker
 {
@@ -89,6 +90,8 @@ pub mod worker
     pub const CURRENT: u32 = 6;
     pub const PARK: u32 = 7;
     pub const EXIT: u32 = 8;
+    pub const MONOTONIC: u32 = 9;
+    pub const PARK_FOR: u32 = 10;
     pub const PREPARED: u32 = 0;
     pub const ARMED: u32 = 1;
     pub const RUNNING: u32 = 2;

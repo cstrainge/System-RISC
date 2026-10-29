@@ -253,6 +253,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "host-clipboard-extension"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-byte-channel",
+ "mac-driver",
+ "mac-driver-alloc",
+ "mac-host-clipboard",
+ "mac-vdagent-protocol",
+]
+
+[[package]]
 name = "io-extras"
 version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -593,6 +606,8 @@ dependencies = [
  "mac-traps",
  "minipng",
  "miniz_oxide",
+ "serde",
+ "serde-json-core",
  "skrifa",
  "spin",
  "spinning_top",
@@ -1406,6 +1421,8 @@ dependencies = [
  "mac-file-types",
  "mac-formats",
  "mac-hfs-b",
+ "mac-host-clipboard",
+ "mac-module",
  "serde",
  "serde_json",
 ]

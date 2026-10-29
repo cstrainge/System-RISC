@@ -316,7 +316,7 @@ fn worker_trap(frame: &mut TrapFrame) -> Dispatch
                    }.ok_or(BAD_ARGUMENT)?;
         if !call.header.valid::<WorkerCall>()
            || call.flags != 0
-           || call.reserved1 != 0
+           || (!matches!(call.operation, worker::PARK_FOR) && call.microseconds != 0)
            || !call.specification.is_null()
            || (call.worker != 0 && call.worker != id)
         {
@@ -330,7 +330,22 @@ fn worker_trap(frame: &mut TrapFrame) -> Dispatch
             {
                 call.state = worker::PARKED;
                 call.exit_status = if cancelled { OPERATION_CANCELLED } else { OK };
-                super::scheduler::worker_park()
+                super::scheduler::worker_park(None)
+            }
+            worker::MONOTONIC =>
+            {
+                // QEMU's 10 MHz timebase belongs to this machine adapter.
+                call.microseconds = crate::platform::ticks() / 10;
+                Ok(false)
+            }
+            worker::PARK_FOR =>
+            {
+                let duration = call.microseconds.checked_mul(10).ok_or(BAD_ARGUMENT)?;
+                let deadline =
+                    crate::platform::ticks().checked_add(duration).ok_or(BAD_ARGUMENT)?;
+                call.state = worker::PARKED;
+                call.exit_status = if cancelled { OPERATION_CANCELLED } else { OK };
+                super::scheduler::worker_park(Some(deadline))
             }
             worker::EXIT =>
             {

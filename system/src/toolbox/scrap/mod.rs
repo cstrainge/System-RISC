@@ -153,6 +153,12 @@ pub struct Manager
     revision:   Revision,
     extensions: Option<extension::Service>
 }
+struct TextReplacement
+{
+    records:  Vec<Record>,
+    size:     u32,
+    snapshot: Snapshot
+}
 impl Default for Manager
 {
     fn default() -> Self
@@ -222,8 +228,19 @@ impl Manager
 
     fn replace(&mut self, text: &str) -> Result<Revision, ChangeError>
     {
+        let replacement = self.prepare_text_replacement(text)?;
+        Ok(self.commit_text_replacement(replacement))
+    }
+
+    fn prepare_text_replacement(&self, text: &str) -> Result<TextReplacement, ChangeError>
+    {
         let revision = self.next_revision()?;
-        let record = Self::text_record(text, 8)?;
+        let shared = Self::text_storage(text)?;
+        let snapshot = Snapshot { revision,
+                                  content: SharedContent::Text(shared.clone()) };
+        let record = Record { kind:   TEXT,
+                              bytes:  Payload::Text(shared),
+                              offset: 8 };
         let size = 8 + text.len() + (text.len() & 1);
         let mut records = Vec::new();
         InvocationGate::with_system_allocation(|| records.try_reserve_exact(1))
@@ -231,15 +248,23 @@ impl Manager
         records.push(record);
         // All storage and version admission completed before the old clipboard
         // or its classic clear count is touched. No rollback is necessary.
-        self.records = records;
-        self.size = size as u32;
+        Ok(TextReplacement { records,
+                             size: size as u32,
+                             snapshot })
+    }
+
+    fn commit_text_replacement(&mut self, replacement: TextReplacement) -> Revision
+    {
+        let revision = replacement.snapshot.revision;
+        self.records = replacement.records;
+        self.size = replacement.size;
         self.count = self.count.wrapping_add(1);
         self.revision = revision;
         self.extension_changed();
-        Ok(revision)
+        revision
     }
 
-    fn text_record(text: &str, offset: u32) -> Result<Record, ChangeError>
+    fn text_storage(text: &str) -> Result<Arc<String>, ChangeError>
     {
         let maximum = MAX_BYTES - 8;
         if text.len() > maximum
@@ -255,9 +280,7 @@ impl Manager
             bytes.push_str(text);
             Arc::try_new(bytes).map_err(|_| ChangeError::Allocation)
         })?;
-        Ok(Record { kind: TEXT,
-                    bytes: Payload::Text(bytes),
-                    offset })
+        Ok(bytes)
     }
 
     /// Borrow the first native text record while holding the Scrap guard.
@@ -372,7 +395,10 @@ impl Manager
         {
             return Err(NO_MEMORY);
         }
-        let record = Self::text_record(text, self.size + 8).map_err(ChangeError::status)?;
+        let record =
+            Record { kind:   TEXT,
+                     bytes:  Payload::Text(Self::text_storage(text).map_err(ChangeError::status)?),
+                     offset: self.size + 8 };
         InvocationGate::with_system_allocation(|| self.records.try_reserve(1)).map_err(|_| {
                                                                                   NO_MEMORY
                                                                               })?;

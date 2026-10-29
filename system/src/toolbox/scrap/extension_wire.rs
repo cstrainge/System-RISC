@@ -157,7 +157,7 @@ fn operation(manager: &mut Manager, authority: &Authority, operation: u32, input
             let info = manager.extension_read(authority, session, pin, offset, output)?;
             Ok(info.copied)
         }
-        wire::IMPORT =>
+        wire::IMPORT | wire::IMPORT_SNAPSHOT =>
         {
             let prefix =
                 input.get(..16).ok_or(Fault::Arguments("IMPORT requires the original session \
@@ -169,8 +169,15 @@ fn operation(manager: &mut Manager, authority: &Authority, operation: u32, input
                                                                                current Scrap was \
                                                                                retained")
                                                          })?;
-            let revision = manager.extension_import(authority, session, pin, text)?;
-            output[..8].copy_from_slice(&revision.get().to_le_bytes());
+            let value = if operation == wire::IMPORT_SNAPSHOT
+            {
+                manager.extension_import_snapshot(authority, session, pin, text)?.raw()
+            }
+            else
+            {
+                manager.extension_import(authority, session, pin, text)?.get()
+            };
+            output[..8].copy_from_slice(&value.to_le_bytes());
             Ok(8)
         }
         wire::CLOSE_PIN =>

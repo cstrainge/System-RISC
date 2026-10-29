@@ -178,7 +178,8 @@ fn peer(context: WorkerContext, provider: Provider) -> Result<()>
     waker.wake()?;
     context.park()?; // exactly one coalesced wake is consumed here.
     PEER_PHASE.store(1, Ordering::Release);
-    context.park()?; // must really sleep until the coordinator wakes it.
+    context.park_for(core::time::Duration::from_secs(60))?;
+    // The coordinator's real wake must resume this before the long deadline.
     PEER_PHASE.store(2, Ordering::Release);
     for _ in 0..2048
     {
@@ -189,12 +190,37 @@ fn peer(context: WorkerContext, provider: Provider) -> Result<()>
     });
     assert_eq!(context.park(), Err(Error(OPERATION_CANCELLED)), "cancelled running worker parked");
     assert_eq!(context.park(), Err(Error(OPERATION_CANCELLED)), "cancellation was not sticky");
+    assert_eq!(context.park_for(core::time::Duration::from_millis(1)),
+               Err(Error(OPERATION_CANCELLED)));
     let _ = provider; // dependency is exercised by the other actual worker.
     Ok(())
 }
 fn coordinator(context: WorkerContext, host: Client, provider: Provider) -> Result<()>
 {
     machine::log(format_args!("MODULE_WORKER_ACTIVE actors=2\n"));
+    // Real private worker traps, actual canonical wait row and timer selection;
+    // no host clock, replacement scheduler or per-operation host ACK.
+    let before = context.monotonic_microseconds()?;
+    context.park_for(core::time::Duration::ZERO)?;
+    assert!(context.monotonic_microseconds()? >= before);
+    assert_eq!(context.park_for(core::time::Duration::MAX), Err(Error(mac_abi::BAD_ARGUMENT)));
+    assert_eq!(context.park_for(core::time::Duration::from_micros(u64::MAX)),
+               Err(Error(mac_abi::BAD_ARGUMENT)));
+    let wake = context.waker();
+    wake.wake()?;
+    wake.wake()?;
+    wake.wake()?;
+    context.park_for(core::time::Duration::from_secs(60))?;
+    let before = context.monotonic_microseconds()?;
+    context.park_for(core::time::Duration::from_millis(30))?;
+    let elapsed = context.monotonic_microseconds()?
+                         .checked_sub(before)
+                         .expect("native monotonic worker clock invariant");
+    assert!(elapsed >= 30_000, "coalesced wake leaked into the next timed park: {elapsed}");
+    machine::log(format_args!("MODULE_WORKER_TIMER_PASS elapsed_microseconds={} zero=ok \
+                               conversion_overflow=refused deadline_overflow=refused \
+                               wake=coalesced\n",
+                              elapsed));
     let active = machine::now();
     // Real CPU work remains preemptible while Finder creates and services the
     // desktop. The host injects one observational input, never per-operation ACKs.
@@ -217,6 +243,9 @@ fn coordinator(context: WorkerContext, host: Client, provider: Provider) -> Resu
               assert_eq!(context.park(),
                          Err(Error(WRONG_THREAD)),
                          "park inside critical section was accepted");
+              assert_eq!(context.park_for(core::time::Duration::from_millis(1)),
+                         Err(Error(WRONG_THREAD)));
+              assert_eq!(context.monotonic_microseconds(), Err(Error(WRONG_THREAD)));
               let mut ticket = 0;
               let mut output = [0; 32];
               assert_eq!(provider.invoke(&mut ticket, Phase::Start, 7, b"blocked", &mut output),
@@ -303,7 +332,7 @@ fn coordinator(context: WorkerContext, host: Client, provider: Provider) -> Resu
                            let _capture = capture;
                            entered();
                            PARKED_TOKEN.store(machine::current_token()?, Ordering::Release);
-                           assert_eq!(context.park(),
+                           assert_eq!(context.park_for(core::time::Duration::from_secs(60)),
                                       Err(Error(OPERATION_CANCELLED)),
                                       "parked cancellation did not resume with sticky refusal");
                            assert!(context.cancelled()?);

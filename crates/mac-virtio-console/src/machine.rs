@@ -698,6 +698,41 @@ impl Device
         Ok(false)
     }
 
+    /// Flush a real connection before reusing any protocol correlation. Keep
+    /// the arena exclusively admitted, and retain cleanup authority on refusal.
+    /// Success means old queues and mappings have actually retired; later poll
+    /// starts discovery and can publish only a new checked generation.
+    pub fn reset_connection(&mut self) -> Result<bool>
+    {
+        if !self.live
+        {
+            return Err(Error(NOT_SUPPORTED));
+        }
+        self.connected = false;
+        if let Some(hardware) = self.hardware.as_mut()
+        {
+            if !hardware.closing
+            {
+                hardware.closing = true;
+                if hardware.running
+                {
+                    hardware.resources.life.reset_complete = false;
+                }
+            }
+            if !hardware.resources.cleanup()?
+            {
+                return Ok(false);
+            }
+            self.hardware = None;
+        }
+        let count = self.service.count()?;
+        self.discovery = Discovery::new(count);
+        self.terminal = false;
+        self.refusal = None;
+        self.diagnostic = Diagnostic::Discovering;
+        Ok(true)
+    }
+
     pub fn quiesce(&mut self) -> Result<()>
     {
         if !self.live
