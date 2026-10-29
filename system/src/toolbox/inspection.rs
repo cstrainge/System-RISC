@@ -163,27 +163,54 @@ pub(crate) fn registered_kinds<C: ?Sized + 'static,
     OK
 }
 
-pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>, caller: u64,
-                                                     call: &mut Call)
+pub(crate) fn request<T: Subject, G: InvocationGate>(directory: &Directory<T, G>,
+                                                     system: Option<&mac_object_table::shared::OwnerRef<G>>,
+                                                     caller: u64, call: &mut Call)
                                                      -> Status
 {
     request_sources(Sources::<T, T, G> { processes: directory,
-                                         modules:   None },
+                                         modules: None,
+                                         system },
                     caller,
                     call)
 }
 
 pub(crate) fn request_with_modules<T: Subject, M: Subject, G: InvocationGate>(processes:&Directory<T,G>,
                                                                               modules:&Directory<M,G>,
+                                                                              system: Option<&mac_object_table::shared::OwnerRef<G>>,
                                                                               caller: u64,
                                                                               call: &mut Call)
                                                                               -> Status
 {
     request_sources(Sources { processes,
-                              modules: Some(modules) },
+                              modules: Some(modules),
+                              system },
                     caller,
                     call)
 }
+/// Display metadata for the actual canonical root. System has no DomainAccount;
+/// the default execution_account=None is intentional. Foundation/heap counters
+/// remain separately labelled memory observations, never a fabricated account.
+struct SystemSubject;
+impl Subject for SystemSubject
+{
+    fn label(&self) -> &str
+    {
+        "System RISC"
+    }
+
+    fn foreground(&self) -> bool
+    {
+        false
+    }
+
+    fn authority(&self) -> u64
+    {
+        0
+    }
+}
+static SYSTEM_SUBJECT: SystemSubject = SystemSubject;
+
 struct Entry<'a, G: InvocationGate>
 {
     ledger:  &'a mac_object_table::shared::OwnerRef<G>,
@@ -215,7 +242,8 @@ fn entry<T: Subject, G: InvocationGate>(entry: &mac_object_table::domain::Domain
 struct Sources<'a, T: Subject, M: Subject, G: InvocationGate>
 {
     processes: &'a Directory<T, G>,
-    modules:   Option<&'a Directory<M, G>>
+    modules:   Option<&'a Directory<M, G>>,
+    system:    Option<&'a mac_object_table::shared::OwnerRef<G>>
 }
 impl<T: Subject, M: Subject, G: InvocationGate> Sources<'_, T, M, G>
 {
@@ -236,7 +264,9 @@ impl<T: Subject, M: Subject, G: InvocationGate> Sources<'_, T, M, G>
 
     fn count(&self) -> usize
     {
-        self.processes.len() + self.modules.map_or(0, Directory::len)
+        self.processes.len()
+        + self.modules.map_or(0, Directory::len)
+        + usize::from(self.system.is_some())
     }
 
     fn at(&self, index: usize) -> Option<Entry<'_, G>>
@@ -247,7 +277,23 @@ impl<T: Subject, M: Subject, G: InvocationGate> Sources<'_, T, M, G>
         }
         else
         {
-            self.modules?.iter().nth(index - self.processes.len()).map(entry)
+            let module_index = index - self.processes.len();
+            let modules = self.modules.map_or(0, Directory::len);
+            if module_index < modules
+            {
+                self.modules?.iter().nth(module_index).map(entry)
+            }
+            else if module_index == modules
+            {
+                self.system.map(|ledger| {
+                               Entry { ledger,
+                                       subject: &SYSTEM_SUBJECT }
+                           })
+            }
+            else
+            {
+                None
+            }
         }
     }
 }
@@ -284,10 +330,16 @@ fn request_sources<T: Subject, M: Subject, G: InvocationGate>(source: Sources<'_
                       "inspection membership revision exhausted; restart System to obtain new \
                        snapshots");
     }
+    if source.system.is_some_and(|owner| owner.owner().kind() != DomainKind::System)
+    {
+        return reject(call, CORRUPT_DATA,
+                      "System inspection source is not the canonical System lifetime owner");
+    }
     call.coverage =
         PROCESS_DOMAINS
         | PARTIAL_LEDGERS
-        | if source.modules.is_some() && call.scope == ALL { MODULE_DOMAINS } else { 0 };
+        | if source.modules.is_some() && call.scope == ALL { MODULE_DOMAINS } else { 0 }
+        | if source.system.is_some() && call.scope == ALL { SYSTEM_DOMAINS } else { 0 };
     match call.operation
     {
         BEGIN =>
@@ -320,13 +372,6 @@ fn request_sources<T: Subject, M: Subject, G: InvocationGate>(source: Sources<'_
             {
                 return reject(call, NOT_FOUND, "domain index is outside this inspection snapshot");
             };
-            if !matches!(entry.owner().kind(), DomainKind::Process | DomainKind::Module)
-            {
-                return reject(call,
-                              NOT_SUPPORTED,
-                              "this inspection source does not describe the requested lifetime \
-                               domain");
-            }
             if matches!(call.operation, LEDGER_POOL | COMPLETION_FAULT)
             {
                 if call.scope == SELF && call.subject != caller
@@ -480,7 +525,7 @@ fn request_sources<T: Subject, M: Subject, G: InvocationGate>(source: Sources<'_
                          {
                              DomainKind::Process => PROCESS,
                              DomainKind::Module => MODULE,
-                             DomainKind::System => OWNER_SYSTEM
+                             DomainKind::System => SYSTEM
                          },
                          flags: if ledger.accepting { ACCEPTING } else { 0 }
                                 | if entry.value().foreground() { FOREGROUND } else { 0 }

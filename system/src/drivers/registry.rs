@@ -291,6 +291,7 @@ impl Registry
     {
         crate::toolbox::inspection::request_with_modules(processes,
                                                          self.modules.directory(),
+                                                         Some(&self.system),
                                                          caller,
                                                          call)
     }

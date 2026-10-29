@@ -134,14 +134,16 @@
       "payload": {
         "format": "strings",
         "strings": [
-          "Process + module domains; partial ledgers; reserve unavailable",
+          "System + process + module domains; partial ledgers",
           "Select a lifetime domain.",
-          "Partial System accounting; tracked raw backing only.",
-          "Module domains are not live.",
+          "Domain memory: execution backing + resident heap only.",
+          "Other charges and CPU time are unavailable.",
           "Domains",
           "Ledger snapshot",
           "Ledger changed; refresh pending",
-          "Shared supervisor mappings. Direct map is an alias.\nPartial charges exclude untracked System backing and protected storage."
+          "Shared supervisor mappings. Direct map is an alias.\nPartial charges exclude untracked System backing and protected storage.",
+          "System domain account is unavailable.",
+          "CPU time is not recorded."
         ]
       }
     },

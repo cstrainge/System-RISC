@@ -25,12 +25,14 @@ pub const ALL: u32 = 1;
 pub const INSPECT_DOMAINS: u64 = 1;
 /// Coalesced advisory wake; obtain a new membership snapshot after delivery.
 pub const CHANGED_EVENT: u32 = 0x1100_0000;
+pub const SYSTEM: u32 = OWNER_SYSTEM;
 pub const PROCESS: u32 = 1;
 pub const MODULE: u32 = 2;
 /// Coverage is deliberately explicit while resident managers migrate.
 pub const PROCESS_DOMAINS: u64 = 1;
 pub const PARTIAL_LEDGERS: u64 = 2;
 pub const MODULE_DOMAINS: u64 = 4;
+pub const SYSTEM_DOMAINS: u64 = 8;
 pub const ACCEPTING: u32 = 1;
 pub const FOREGROUND: u32 = 2;
 pub const COUNTERS_SATURATED: u32 = 4;

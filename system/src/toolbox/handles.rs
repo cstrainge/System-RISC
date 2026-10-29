@@ -260,11 +260,21 @@ pub(crate) fn system_owner() -> Result<OwnerRef, mac_abi::Status>
     system_owner_checked().map_err(|error| error.status())
 }
 #[cfg(target_arch = "riscv64")]
+static SYSTEM_OWNER: spin::Once<OwnerRef> = spin::Once::new();
+#[cfg(target_arch = "riscv64")]
 fn system_owner_checked() -> Result<OwnerRef, KindAccessError>
 {
-    static OWNER: spin::Once<OwnerRef> = spin::Once::new();
-    OWNER.try_call_once(|| OwnerRef::issue(DomainKind::System).map_err(KindAccessError::Owner))
-         .cloned()
+    SYSTEM_OWNER.try_call_once(|| {
+                    OwnerRef::issue(DomainKind::System).map_err(KindAccessError::Owner)
+                })
+                .cloned()
+}
+/// Inspection borrows the already-issued root. A read must not issue a new
+/// domain, allocate authority storage or retain the querying app's account.
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn system_owner_if_ready() -> Option<&'static OwnerRef>
+{
+    SYSTEM_OWNER.get()
 }
 
 #[cfg(target_arch = "riscv64")]

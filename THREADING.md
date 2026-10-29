@@ -425,8 +425,9 @@ ready. Normal boot consumes unique preparation through M acceptance, actual S
 admission and a separate acknowledged startup wake. All result slots are
 pre-reserved before release; typed failures retain completed and pending owners
 through the terminal boot refusal. No reduced-CPU fallback is installed. Public
-inspection still lacks a System-ledger
-and named-thread/hart enumeration query; pool/domain labels are not a substitute.
+inspection reads the actual System ledger alongside process/module ledgers.
+Named-thread/hart and owned-stack enumeration remain unavailable; pool/domain
+labels are not a substitute, and System account/CPU-time coverage is not invented.
 
 Warm entry validates its independently observed CPU profile, saved-state
 geometry, actual permanent firmware/kernel roots and guarded service slot before

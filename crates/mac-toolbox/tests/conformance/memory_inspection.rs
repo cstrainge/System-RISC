@@ -233,5 +233,81 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
                      summary.ordinary_foundation_heap_bytes,
                      summary.tracked_foundation_physical_bytes);
     system.log(attribution.text())?;
+    system_ledger(system, stack_count)
+}
+
+/// The same real native diagnostic also checks System's canonical ledger. The
+/// private ACAP policy grants inspection; no service or account is substituted.
+fn system_ledger(system: &System<'_>, idle_threads: u64) -> Result<(), Failure>
+{
+    use mac_toolbox::inspection::{MemoryAccounting, OwnerKind, Scope};
+    let own = system.inspection().snapshot(Scope::Own).map_err(service)?;
+    require(own.count == 1 && own.process_domains_only() && !own.includes_system_domain(),
+            "own scope contains only the genuine application")?;
+    let bad = own.at(1).err().ok_or(Failure::Mismatch("own snapshot exposed another domain"))?;
+    let mut detail = LogBuffer::new();
+    let _ = write!(detail, "{bad}");
+    require(bad.cause == Error::NotFound
+            && detail.text().contains("outside this inspection snapshot"),
+            "own-domain bounds refusal is typed and informative")?;
+    let all = system.inspection().snapshot(Scope::All).map_err(service)?;
+    require(all.includes_system_domain()
+            && all.includes_module_domains()
+            && !all.complete_ledgers(),
+            "all-domain coverage includes actual System and honest partial ledgers")?;
+    let mut system_index = None;
+    for index in 0..all.count
+    {
+        let row = all.at(index).map_err(service)?;
+        if row.kind == OwnerKind::System
+        {
+            require(system_index.is_none()
+                    && row.incarnation == 0
+                    && row.name.as_str() == "System RISC"
+                    && row.accepting
+                    && !row.foreground
+                    && row.accounting == MemoryAccounting::Unavailable,
+                    "one genuine System owner, with account explicitly unavailable")?;
+            system_index = Some(index);
+        }
+    }
+    let index = system_index.ok_or(Failure::Mismatch("canonical System ledger missing"))?;
+    require(index + 1 == all.count, "System row follows existing process and module rows")?;
+    let ledger = all.ledger(index).map_err(service)?;
+    require(!ledger.is_empty(), "System ledger has actual registered pools")?;
+    let mut threads = None;
+    let mut live = 0u64;
+    for index in 0..ledger.len()
+    {
+        let pool = ledger.at(index).map_err(service)?;
+        live =
+            live.checked_add(pool.live).ok_or(Failure::Mismatch("System pool total overflow"))?;
+        if pool.kind == *b"THRD"
+        {
+            require(threads.is_none(), "System THRD pool is not duplicated")?;
+            threads = Some(pool.live);
+        }
+    }
+    require(threads == Some(idle_threads) && live == ledger.domain().live,
+            "real canonical System idles and ledger pool totals agree")?;
+    let bad = ledger.at(ledger.len())
+                    .err()
+                    .ok_or(Failure::Mismatch("out-of-range System pool read succeeded"))?;
+    let mut detail = LogBuffer::new();
+    let _ = write!(detail, "{bad}");
+    require(bad.cause == Error::NotFound
+            && detail.text().contains("outside this ledger snapshot"),
+            "System ledger bounds refusal retains its informative cause")?;
+    require(ledger.at(0).is_ok()
+            && own.at(0).map_err(service)?.incarnation == system.processes().current()?.id.0,
+            "refused System read leaves both real snapshots usable")?;
+    let mut line = LogBuffer::new();
+    let _ = writeln!(line,
+                     "MEMORY_SYSTEM_LEDGER domain=0 kinds={} live={} idle_threads={} \
+                      account=unavailable own_scope=isolated refusal=usable",
+                     ledger.len(),
+                     live,
+                     idle_threads);
+    system.log(line.text())?;
     Ok(())
 }
