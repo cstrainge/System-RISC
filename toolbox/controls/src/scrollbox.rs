@@ -190,18 +190,7 @@ impl ScrollBoxRef<'_>
         {
             return Ok(());
         }
-        struct Capture<'a>(Option<ScrollBoxRef<'a>>);
-        impl Drop for Capture<'_>
-        {
-            fn drop(&mut self)
-            {
-                if let Some(control) = self.0
-                {
-                    let _ = control.cancel();
-                }
-            }
-        }
-        let mut capture = Capture(Some(self));
+        let capture = crate::capture::Capture::new(self);
         let result = (|| {
             let mut query = Call { id: self.id.0,
                                    ..Default::default() };
@@ -257,15 +246,14 @@ impl ScrollBoxRef<'_>
                                          ..Default::default() })?;
             }
         })();
-        let cancelled = match self.cancel()
-        {
-            Err(Error::NotFound) => Ok(()), // Callback may dispose the viewport.
-            result => result
-        };
-        if cancelled.is_ok()
-        {
-            capture.0 = None;
-        }
-        result.and(cancelled)
+        capture.finish(result)
+    }
+}
+
+impl crate::capture::Cancel for ScrollBoxRef<'_>
+{
+    fn cancel(self) -> Result<()>
+    {
+        ScrollBoxRef::cancel(self)
     }
 }

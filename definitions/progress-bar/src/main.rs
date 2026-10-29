@@ -8,7 +8,12 @@ use mac_definition::{Error, Message, Part, Progress, ProgressStyle, Rect, Reply,
 // the fvew5250 class table and its explicit item8803 branch. See the source
 // hashes and colour/pattern observations in provenance/finder-copy-window.json.
 
-fn interior(state: &Progress) -> Result<Rect>
+struct Geometry
+{
+    interior: Rect,
+    edge:     i16
+}
+fn geometry(state: &Progress) -> Result<Geometry>
 {
     let r = state.bounds;
     let p = state.progress;
@@ -20,32 +25,29 @@ fn interior(state: &Progress) -> Result<Rect>
     {
         return Err(Error::BadArgument);
     }
-    Ok(Rect::new(r.left + 1, r.top + 1, r.right - 1, r.bottom - 1))
-}
-fn edge(state: &Progress) -> Result<i16>
-{
-    let r = interior(state)?;
-    let width = i32::from(r.right) - i32::from(r.left);
-    let p = state.progress;
-    Ok((i32::from(r.left)
-        + if !p.determinate
-        {
-            0
-        }
-        else if p.total == 0
-        {
-            width
-        }
-        else
-        {
-            (width as u128 * u128::from(p.completed) / u128::from(p.total)) as i32
-        }) as i16)
+    let interior = Rect::new(r.left + 1, r.top + 1, r.right - 1, r.bottom - 1);
+    let width = i32::from(interior.right) - i32::from(interior.left);
+    let filled = if !p.determinate
+    {
+        0
+    }
+    else if p.total == 0
+    {
+        width
+    }
+    else
+    {
+        (width as u128 * u128::from(p.completed) / u128::from(p.total)) as i32
+    };
+    Ok(Geometry { interior,
+                  edge: (i32::from(interior.left) + filled) as i16 })
 }
 fn change(before: &Progress, after: &Progress, damage: &mut [Rect; 2]) -> Result<()>
 {
-    let r = interior(after)?;
-    let old = edge(before)?;
-    let new = edge(after)?;
+    let old = geometry(before)?.edge;
+    let next = geometry(after)?;
+    let r = next.interior;
+    let new = next.edge;
     *damage = [Rect::ZERO; 2];
     if before.bounds != after.bounds
     {
@@ -59,8 +61,8 @@ fn change(before: &Progress, after: &Progress, damage: &mut [Rect; 2]) -> Result
 }
 fn draw(port: &mut SurfacePort<'_>, state: &Progress, theme: mac_definition::Theme) -> Result<()>
 {
-    let inside = interior(state)?;
-    let settled = edge(state)?;
+    let Geometry { interior: inside,
+                   edge: settled } = geometry(state)?;
     let mono = state.style == ProgressStyle::Monochrome;
     port.frame_rect(state.bounds, theme.control_outline)?;
     port.paint_rect(Rect::new(inside.left, inside.top, settled, inside.bottom),
@@ -84,12 +86,12 @@ fn main<'a>(message: Message<'a, Progress>, services: Services<'a>) -> Result<Re
         | Message::Initialize(state)
         | Message::Dispose(state) =>
         {
-            interior(&state)?;
+            geometry(&state)?;
         }
         Message::HitTest { state,
                            .. } =>
         {
-            interior(&state)?;
+            geometry(&state)?;
             return Ok(Reply::Hit(Part::None));
         }
         Message::Track { .. } => return Err(Error::NotSupported)

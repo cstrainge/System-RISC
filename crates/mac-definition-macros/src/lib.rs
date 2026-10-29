@@ -114,19 +114,13 @@ fn expand(function: ItemFn) -> syn::Result<proc_macro2::TokenStream>
     Ok(quote! {
         #function
 
-        #[allow(unsafe_code)]
-        unsafe extern "C" fn __cdef_entry(call: *mut ::mac_definition::__abi::DefinitionCall) -> i64
-        {
-            unsafe { ::mac_definition::#binding(call, main) }
-        }
-
         #[cfg(target_arch = "riscv64")]
         #[allow(unsafe_code)]
         #[unsafe(no_mangle)]
         #[unsafe(link_section = ".text.entry")]
         pub unsafe extern "C" fn _start(call: *mut ::mac_definition::__abi::DefinitionCall) -> i64
         {
-            unsafe { __cdef_entry(call) }
+            unsafe { ::mac_definition::#binding(call, main) }
         }
 
         #[cfg(target_arch = "riscv64")]

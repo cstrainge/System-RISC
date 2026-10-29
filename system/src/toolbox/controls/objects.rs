@@ -4,8 +4,9 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use mac_abi::{controls::*, *};
+use mac_abi::{controls::*, definitions::ControlDefinitionState, *};
 
+use super::tracking::{Action, Tracking};
 use crate::toolbox::handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store};
 
 pub(crate) fn specification() -> mac_object_table::registry::Specification<'static>
@@ -63,52 +64,186 @@ struct Object
 #[derive(Clone)]
 struct State
 {
-    spec:      Spec,
-    scrollbar: bool,
-    title:     Option<Arc<super::snapshot::Title>>,
-    tracking:  Option<Tracking>
+    spec:     Spec,
+    title:    Option<Arc<super::snapshot::Title>>,
+    tracking: Option<Tracking>
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct Spec
+enum Spec
 {
-    standard:  mac_abi::definitions::ControlDefinitionState,
-    scrollbar: ScrollbarState,
-    procedure: i16,
-    step:      i16,
-    page:      i16
+    Standard
+    {
+        state: ControlDefinitionState, procedure: i16
+    },
+    Scrollbar
+    {
+        state: ScrollbarState, step: i16, page: i16
+    }
 }
 impl Spec
 {
-    fn from_call(c: &ControlCall) -> Self
+    fn from_call(call: &ControlCall, scrollbar: bool) -> Self
     {
-        Self { standard:  c.standard,
-               scrollbar: c.scrollbar,
-               procedure: c.procedure,
-               step:      c.step,
-               page:      c.page }
+        if scrollbar
+        {
+            Self::Scrollbar { state: call.scrollbar,
+                              step:  call.step,
+                              page:  call.page }
+        }
+        else
+        {
+            Self::Standard { state:     call.standard,
+                             procedure: call.procedure }
+        }
+    }
+
+    fn write(self, call: &mut ControlCall)
+    {
+        match self
+        {
+            Self::Standard { state,
+                             procedure } =>
+            {
+                call.standard = state;
+                call.procedure = procedure;
+                call.scrollbar = Default::default();
+                call.step = 0;
+                call.page = 0;
+            }
+            Self::Scrollbar { state,
+                              step,
+                              page } =>
+            {
+                call.scrollbar = state;
+                call.step = step;
+                call.page = page;
+                call.standard = Default::default();
+                call.procedure = 0;
+            }
+        }
     }
 
     fn call(self, operation: u32) -> ControlCall
     {
-        ControlCall { operation,
-                      standard: self.standard,
-                      scrollbar: self.scrollbar,
-                      procedure: self.procedure,
-                      step: self.step,
-                      page: self.page,
-                      ..Default::default() }
+        let mut call = ControlCall { operation,
+                                     ..Default::default() };
+        self.write(&mut call);
+        call
+    }
+
+    fn scrollbar(self) -> Option<ScrollbarState>
+    {
+        match self
+        {
+            Self::Scrollbar { state,
+                              .. } => Some(state),
+            _ => None
+        }
+    }
+
+    fn draw(self) -> ControlCall
+    {
+        self.call(if self.scrollbar().is_some() { DRAW_SCROLLBAR } else { DRAW_STANDARD })
+    }
+
+    fn highlight(self) -> u32
+    {
+        match self
+        {
+            Self::Standard { state,
+                             .. } => state.highlighted,
+            Self::Scrollbar { state,
+                              .. } => state.highlighted as u32
+        }
+    }
+
+    fn set_highlight(&mut self, highlight: u32)
+    {
+        match self
+        {
+            Self::Standard { state,
+                             .. } => state.highlighted = highlight,
+            Self::Scrollbar { state,
+                              .. } => state.highlighted = highlight as i16
+        }
+    }
+
+    fn appearance_matches(self, next: Self) -> bool
+    {
+        match (self, next)
+        {
+            (Self::Standard { state: a,
+                              procedure: p },
+             Self::Standard { state: b,
+                              procedure: q }) => a == b && p == q,
+            (Self::Scrollbar { state: a,
+                               .. },
+             Self::Scrollbar { state: b,
+                               .. }) => a == b,
+            _ => false
+        }
+    }
+
+    fn cancels_capture(self, next: Self, tracking: Option<Tracking>) -> bool
+    {
+        match (self, next)
+        {
+            (Self::Standard { state: a,
+                              procedure: p },
+             Self::Standard { state: b,
+                              procedure: q }) =>
+            {
+                a.bounds != b.bounds || a.enabled != b.enabled || p != q
+            }
+            (Self::Scrollbar { state: a,
+                               .. },
+             Self::Scrollbar { state: b,
+                               .. }) =>
+            {
+                a.bounds != b.bounds
+                || a.active != b.active
+                || a.maximum != b.maximum
+                || (tracking.is_some_and(|t| t.part == SCROLL_THUMB) && a.value != b.value)
+            }
+            _ => true
+        }
+    }
+
+    fn set_value(&mut self, value: i16) -> bool
+    {
+        if let Self::Scrollbar { state,
+                                 .. } = self
+        {
+            core::mem::replace(&mut state.value, value) != value
+        }
+        else
+        {
+            false
+        }
+    }
+
+    fn step(&mut self, part: i16) -> bool
+    {
+        let Self::Scrollbar { state,
+                              step,
+                              page } = self
+        else
+        {
+            return false;
+        };
+        let amount = match part
+        {
+            SCROLL_UP => -i32::from(*step),
+            SCROLL_DOWN => i32::from(*step),
+            SCROLL_PAGE_UP => -i32::from(*page),
+            SCROLL_PAGE_DOWN => i32::from(*page),
+            _ => 0
+        };
+        let value = (i32::from(state.value) + amount).clamp(0, i32::from(state.maximum)) as i16;
+        core::mem::replace(&mut state.value, value) != value
     }
 }
-#[derive(Clone, Copy)]
-struct Tracking
-{
-    part:    i16,
-    anchor:  Point,
-    initial: i16,
-    next:    u64,
-    point:   Point,
-    hot:     bool
-}
+
 pub struct Manager
 {
     objects: Store<Object>,
@@ -184,19 +319,13 @@ impl Manager
         let object = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
         let state = &mut object.state;
         let handled = state.tracking.take().is_some();
-        let old = (state.spec.standard.highlighted, state.spec.scrollbar.highlighted);
+        let old = state.spec.highlight();
         state.highlight(0);
         call.window = object.window;
-        call.standard = state.spec.standard;
-        call.scrollbar = state.spec.scrollbar;
-        call.procedure = state.spec.procedure;
-        call.step = state.spec.step;
-        call.page = state.spec.page;
+        state.spec.write(call);
         call.result = 0;
         call.flags =
-            u32::from(handled) * HANDLED
-            | u32::from(old != (state.spec.standard.highlighted, state.spec.scrollbar.highlighted))
-              * CHANGED;
+            u32::from(handled) * HANDLED | u32::from(old != state.spec.highlight()) * CHANGED;
         Ok(())
     }
 
@@ -218,19 +347,12 @@ impl Manager
            }
            else if call.operation == CREATE_STANDARD
            {
-               super::definition_id(&Spec::from_call(call).call(DRAW_STANDARD))?
+               super::definition_id(&Spec::from_call(call, false).draw())?
            }
            else
            {
                let o = self.get(call.id, owner)?;
-               super::definition_id(&o.state.spec.call(if o.state.scrollbar
-                                                       {
-                                                           DRAW_SCROLLBAR
-                                                       }
-                                                       else
-                                                       {
-                                                           DRAW_STANDARD
-                                                       }))?
+               super::definition_id(&o.state.spec.draw())?
            })
     }
 
@@ -281,7 +403,7 @@ impl Manager
         {
             let scrollbar = if operation == CONFIGURE_OBJECT
             {
-                self.get(call.id, owner)?.state.scrollbar
+                self.get(call.id, owner)?.state.spec.scrollbar().is_some()
             }
             else
             {
@@ -296,11 +418,12 @@ impl Manager
             if operation == CONFIGURE_OBJECT
             {
                 let old = self.get(call.id, owner)?;
-                spec.standard.highlighted = old.state.spec.standard.highlighted;
-                spec.scrollbar.highlighted = old.state.spec.scrollbar.highlighted;
+                let highlight = old.state.spec.highlight();
+                spec.standard.highlighted = highlight;
+                spec.scrollbar.highlighted = highlight as i16;
             }
             if operation != CONFIGURE_OBJECT
-               || self.get(call.id, owner)?.state.spec != Spec::from_call(&spec)
+               || self.get(call.id, owner)?.state.spec != Spec::from_call(&spec, scrollbar)
             {
                 // Validate through the real resource before publishing or mutating.
                 super::validate(&mut spec, entry, gate)?;
@@ -325,9 +448,8 @@ impl Manager
                     Object { window:                                             call.window,
                              recipient:                                          owner,
                              state:
-                                 State { spec: Spec::from_call(&spec),
-                                         scrollbar,
-                                         title: admitted_title.clone(),
+                                 State { spec:     Spec::from_call(&spec, scrollbar),
+                                         title:    admitted_title.clone(),
                                          tracking: None },
                              #[cfg(target_arch = "riscv64")]
                              _recovery_activity:                                 if recovery
@@ -386,7 +508,7 @@ impl Manager
         let object = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
         let mut next = object.state.clone();
         let o = &mut next;
-        let previous = (o.spec.standard, o.spec.scrollbar, o.spec.procedure);
+        let previous = o.spec;
         let mut action = false;
         let mut handled = false;
         let mut part = 0;
@@ -397,36 +519,15 @@ impl Manager
             {
                 // New title backing was admitted before any state/capture mutation.
                 o.title = admitted_title;
-                let cancel = o.spec.standard.bounds != call.standard.bounds
-                             || o.spec.standard.enabled != call.standard.enabled
-                             || o.spec.scrollbar.bounds != call.scrollbar.bounds
-                             || o.spec.scrollbar.active != call.scrollbar.active
-                             || (o.scrollbar && o.spec.scrollbar.maximum != call.scrollbar.maximum)
-                             || (o.tracking.is_some_and(|t| t.part == SCROLL_THUMB)
-                                 && o.spec.scrollbar.value != call.scrollbar.value)
-                             || o.spec.procedure != call.procedure;
-                let highlight = if cancel
-                {
-                    0
-                }
-                else if o.scrollbar
-                {
-                    o.spec.scrollbar.highlighted as u32
-                }
-                else
-                {
-                    o.spec.standard.highlighted
-                };
-                o.spec.standard = call.standard;
-                o.spec.scrollbar = call.scrollbar;
-                o.spec.procedure = call.procedure;
-                o.spec.step = call.step;
-                o.spec.page = call.page;
+                let next = Spec::from_call(call, o.spec.scrollbar().is_some());
+                let cancel = o.spec.cancels_capture(next, o.tracking);
+                let highlight = if cancel { 0 } else { o.spec.highlight() };
+                o.spec = next;
                 if cancel
                 {
                     o.tracking = None;
                 }
-                o.highlight(highlight as i16);
+                o.spec.set_highlight(highlight);
             }
             BEGIN_TRACKING =>
             {
@@ -445,74 +546,40 @@ impl Manager
                             | SCROLL_THUMB)
                 {
                     handled = true;
-                    o.tracking = Some(Tracking { part,
-                                                 anchor: call.point,
-                                                 initial: o.spec.scrollbar.value,
-                                                 next: call.ticks.saturating_add(20),
-                                                 point: call.point,
-                                                 hot: true });
+                    o.tracking =
+                        Some(Tracking::new(part,
+                                           call.point,
+                                           o.spec.scrollbar().map_or(0, |state| state.value),
+                                           call.ticks));
                     o.highlight(part);
-                    if o.scrollbar && part != SCROLL_THUMB
+                    if o.spec.scrollbar().is_some() && part != SCROLL_THUMB
                     {
-                        action = o.step(part);
+                        action = o.spec.step(part);
                     }
                 }
             }
             POLL_TRACKING =>
             {
-                if let Some(mut t) = o.tracking.take()
+                if let Some(tracking) = o.tracking
                 {
                     handled = true;
-                    part = t.part;
-                    let down = call.flags & BUTTON_DOWN != 0;
-                    if o.scrollbar && t.part == SCROLL_THUMB
+                    part = tracking.part;
+                    let transition = tracking.poll(call.point,
+                                                   call.flags & BUTTON_DOWN != 0,
+                                                   call.ticks,
+                                                   o.spec.scrollbar(),
+                                                   entry,
+                                                   gate,
+                                                   |point| o.hit(point, entry, gate))?;
+                    action = match transition.action
                     {
-                        if call.point != t.point
-                        {
-                            let mut c = o.spec.call(TRACK_SCROLLBAR);
-                            c.scrollbar.value = t.initial;
-                            c.anchor = t.anchor;
-                            c.point = call.point;
-                            super::prepare(&mut c, entry, gate)?;
-                            let value = c.result as i16;
-                            action = value != o.spec.scrollbar.value;
-                            o.spec.scrollbar.value = value;
-                        }
-                        o.highlight(if down { t.part } else { 0 });
-                    }
-                    else
-                    {
-                        // Page steps move the thumb beneath a stationary pointer.
-                        // Only cache hits whose geometry cannot change while held.
-                        let inside = if call.point == t.point
-                                        && !matches!(t.part, SCROLL_PAGE_UP | SCROLL_PAGE_DOWN)
-                        {
-                            t.hot
-                        }
-                        else
-                        {
-                            o.hit(call.point, entry, gate)? == t.part
-                        };
-                        t.hot = inside;
-                        o.highlight(if down && inside { t.part } else { 0 });
-                        if o.scrollbar
-                        {
-                            if down && inside && call.ticks >= t.next
-                            {
-                                action = o.step(t.part);
-                                t.next = call.ticks.saturating_add(3);
-                            }
-                        }
-                        else
-                        {
-                            action = !down && inside;
-                        }
-                    }
-                    t.point = call.point;
-                    if down
-                    {
-                        o.tracking = Some(t);
-                    }
+                        Action::None => false,
+                        Action::Activate => true,
+                        Action::Step(part) => o.spec.step(part),
+                        Action::Value(value) => o.spec.set_value(value)
+                    };
+                    o.highlight(transition.highlight);
+                    o.tracking = transition.tracking;
                 }
             }
             CANCEL_TRACKING =>
@@ -522,13 +589,9 @@ impl Manager
             }
             _ => return Err(NOT_SUPPORTED)
         }
-        let changed = previous != (o.spec.standard, o.spec.scrollbar, o.spec.procedure);
+        let changed = !previous.appearance_matches(o.spec);
         call.window = object.window;
-        call.standard = o.spec.standard;
-        call.scrollbar = o.spec.scrollbar;
-        call.procedure = o.spec.procedure;
-        call.step = o.spec.step;
-        call.page = o.spec.page;
+        o.spec.write(call);
         call.result = i32::from(part);
         call.flags = (u32::from(o.tracking.is_some()) * TRACKING)
                      | (u32::from(handled) * HANDLED)
@@ -536,15 +599,19 @@ impl Manager
                      | (u32::from(changed) * CHANGED);
         let drawing = if changed || operation == DRAW_OBJECT
         {
-            let mut state = o.spec.call(if o.scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD });
+            let mut state = o.spec.draw();
             let mut drawing = super::prepare_with_title(&mut state, entry, gate, o.title.as_ref())?.ok_or(BAD_ARGUMENT)?;
             drawing.id = call.id;
             if changed
                && operation == CONFIGURE_OBJECT
-               && previous.0.bounds == o.spec.standard.bounds
-               && previous.2 == o.spec.procedure
+               && let (Spec::Standard { state: before,
+                                        procedure: old },
+                       Spec::Standard { state: after,
+                                        procedure: new }) = (previous, o.spec)
+               && before.bounds == after.bounds
+               && old == new
             {
-                drawing.change_from(previous.0)?;
+                drawing.change_from(before)?;
             }
             Some(publish(drawing)?)
         }
@@ -561,38 +628,22 @@ impl State
 {
     fn highlight(&mut self, part: i16)
     {
-        if self.scrollbar
-        {
-            self.spec.scrollbar.highlighted = part;
-        }
-        else
-        {
-            self.spec.standard.highlighted = part as u32;
-        }
+        self.spec.set_highlight(part as u32);
     }
 
     fn hit(&self, point: Point, entry: DefinitionEntry, gate: TrapGate) -> Result<i16, Status>
     {
-        let mut c = self.spec.call(if self.scrollbar { HIT_SCROLLBAR } else { HIT_STANDARD });
-        c.point = point;
-        super::prepare(&mut c, entry, gate)?;
-        Ok(c.result as i16)
-    }
-
-    fn step(&mut self, part: i16) -> bool
-    {
-        let amount = match part
-        {
-            SCROLL_UP => -i32::from(self.spec.step),
-            SCROLL_DOWN => i32::from(self.spec.step),
-            SCROLL_PAGE_UP => -i32::from(self.spec.page),
-            SCROLL_PAGE_DOWN => i32::from(self.spec.page),
-            _ => 0
-        };
-        let old = self.spec.scrollbar.value;
-        self.spec.scrollbar.value =
-            (i32::from(old) + amount).clamp(0, i32::from(self.spec.scrollbar.maximum)) as i16;
-        old != self.spec.scrollbar.value
+        let mut call = self.spec.call(if self.spec.scrollbar().is_some()
+                                      {
+                                          HIT_SCROLLBAR
+                                      }
+                                      else
+                                      {
+                                          HIT_STANDARD
+                                      });
+        call.point = point;
+        super::prepare(&mut call, entry, gate)?;
+        Ok(call.result as i16)
     }
 }
 

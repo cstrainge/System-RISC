@@ -160,30 +160,7 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &Button<'_>, theme: mac_definit
         }
         else
         {
-            let outline = if pressed { RADIO_PRESSED } else { RADIO };
-            for (y, row) in outline.iter().enumerate()
-            {
-                for x in 0..12
-                {
-                    if row & (1 << (11 - x)) != 0
-                    {
-                        pixel(canvas, left + x, top + y as i32, theme.control_outline)?;
-                    }
-                }
-            }
-            if state.value & 1 != 0
-            {
-                for (y, row) in RADIO_DOT.iter().enumerate()
-                {
-                    for x in 0..12
-                    {
-                        if row & (1 << (11 - x)) != 0
-                        {
-                            pixel(canvas, left + x, top + y as i32, theme.control_outline)?;
-                        }
-                    }
-                }
-            }
+            draw_radio(canvas, left, top, pressed, state.value & 1 != 0, theme.control_outline)?;
         }
     }
     let metrics = font.metrics(canvas)?;
@@ -264,6 +241,37 @@ fn button_bounds(state: &Button<'_>) -> mac_abi::Rect
         bounds.bottom = bounds.bottom.saturating_sub(4);
     }
     bounds
+}
+fn draw_radio(canvas: &mut SurfacePort<'_>, left: i32, top: i32, pressed: bool, selected: bool,
+              ink: u32)
+              -> mac_traps::Result<()>
+{
+    let outline = if pressed { &RADIO_PRESSED } else { &RADIO };
+    for (y, (&outline, &dot)) in outline.iter().zip(&RADIO_DOT).enumerate()
+    {
+        let row = outline | if selected { dot } else { 0 };
+        let mut x = 0;
+        while x < 12
+        {
+            if row & (1 << (11 - x)) == 0
+            {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            while x < 12 && row & (1 << (11 - x)) != 0
+            {
+                x += 1;
+            }
+            let y = top + y as i32;
+            canvas.paint_rect(mac_abi::Rect::new((left + start) as i16,
+                                                 y as i16,
+                                                 (left + x) as i16,
+                                                 (y + 1) as i16),
+                              ink)?;
+        }
+    }
+    Ok(())
 }
 fn pixel(canvas: &mut SurfacePort<'_>, x: i32, y: i32, ink: u32) -> mac_traps::Result<()>
 {

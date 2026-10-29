@@ -1,5 +1,6 @@
 //! Resident Control Manager. Each CDEF owns drawing, hit geometry and tracking math.
 mod snapshot;
+mod tracking;
 use alloc::sync::Arc;
 
 pub use mac_abi::definitions::{CDEF, ControlDefinitionState};
@@ -219,24 +220,37 @@ pub fn definition_id(call: &ControlCall) -> Result<i16, Status>
         _ => Err(NOT_SUPPORTED)
     }
 }
+fn validate_state(call: &ControlCall, id: i16) -> Result<(), Status>
+{
+    if id == 1
+    {
+        let state = &call.scrollbar;
+        if state.maximum < 0
+           || state.value < 0
+           || state.value > state.maximum
+           || state.bounds.is_empty()
+        {
+            return Err(BAD_ARGUMENT);
+        }
+    }
+    else
+    {
+        let state = &call.standard;
+        if state.bounds.is_empty()
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let title = state.title.get(..state.title_length as usize).ok_or(BAD_ARGUMENT)?;
+        core::str::from_utf8(title).map_err(|_| BAD_ARGUMENT)?;
+    }
+    Ok(())
+}
 /// Validate CDEF state without allocating a retained drawing.
 pub fn validate(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
                 -> Result<(), Status>
 {
     let id = definition_id(call)?;
-    if id == 1
-       && (call.scrollbar.maximum < 0
-           || call.scrollbar.value < 0
-           || call.scrollbar.value > call.scrollbar.maximum
-           || call.scrollbar.bounds.is_empty())
-    {
-        return Err(BAD_ARGUMENT);
-    }
-    if id != 1 && (call.standard.bounds.is_empty()
-        || call.standard.title_length as usize > call.standard.title.len()
-        || core::str::from_utf8(&call.standard.title[..(call.standard.title_length as usize).min(call.standard.title.len())]).is_err()) {
-        return Err(BAD_ARGUMENT);
-    }
+    validate_state(call, id)?;
     let object = if id == 1
     {
         (&mut call.scrollbar as *mut ScrollbarState).cast()
@@ -273,27 +287,6 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionEntry, gate: Trap
                       -> Result<Option<Drawing>, Status>
 {
     let id = definition_id(call)?;
-    if id == 1
-    {
-        if call.scrollbar.maximum < 0
-           || call.scrollbar.value < 0
-           || call.scrollbar.value > call.scrollbar.maximum
-           || call.scrollbar.bounds.is_empty()
-        {
-            return Err(BAD_ARGUMENT);
-        }
-    }
-    else
-    {
-        let s = &call.standard;
-        let length = s.title_length as usize;
-        if s.bounds.is_empty()
-           || length > s.title.len()
-           || core::str::from_utf8(&s.title[..length]).is_err()
-        {
-            return Err(BAD_ARGUMENT);
-        }
-    }
     if matches!(call.operation, DRAW_SCROLLBAR | DRAW_STANDARD)
     {
         validate(call, entry, gate)?;
@@ -325,6 +318,7 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionEntry, gate: Trap
                                           },
                                           Rect::ZERO] }));
     }
+    validate_state(call, id)?;
     let object = if id == 1
     {
         (&mut call.scrollbar as *mut ScrollbarState).cast()

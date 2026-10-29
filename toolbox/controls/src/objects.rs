@@ -239,18 +239,7 @@ impl ControlRef<'_>
         {
             return Ok(false);
         }
-        struct Capture<'a>(Option<ControlRef<'a>>);
-        impl Drop for Capture<'_>
-        {
-            fn drop(&mut self)
-            {
-                if let Some(control) = self.0
-                {
-                    let _ = control.cancel();
-                }
-            }
-        }
-        let mut capture = Capture(Some(self));
+        let capture = crate::capture::Capture::new(self);
         let result = (|| {
             loop
             {
@@ -283,15 +272,14 @@ impl ControlRef<'_>
                                        input.uptime_ticks)?;
             }
         })();
-        let cancelled = match self.cancel()
-        {
-            Err(super::Error::NotFound) => Ok(()), // Callback may dispose the control.
-            result => result
-        };
-        if cancelled.is_ok()
-        {
-            capture.0 = None;
-        }
-        result.and_then(|handled| cancelled.map(|()| handled))
+        capture.finish(result)
+    }
+}
+
+impl crate::capture::Cancel for ControlRef<'_>
+{
+    fn cancel(self) -> Result<()>
+    {
+        ControlRef::cancel(self)
     }
 }
