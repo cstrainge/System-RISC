@@ -13,13 +13,12 @@ pub struct PriorityBands;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Rank
 {
-    band:            u8,
+    band:           u8,
     // Older runnable intervals outrank newer intervals within one band.
-    age:             u64,
-    // Prefer less accumulated CPU time, then cache locality and stable identity.
-    inverse_runtime: u64,
-    local:           bool,
-    inverse_thread:  u64
+    age:            u64,
+    // Prefer cache locality and stable identity only after runnable age.
+    local:          bool,
+    inverse_thread: u64
 }
 impl PriorityBands
 {
@@ -53,7 +52,6 @@ impl PriorityBands
             let band = (base + (age / AGING_MICROSECONDS).min(3) as u8).min(3);
             let rank = Rank { band,
                               age,
-                              inverse_runtime: u64::MAX - record.running_microseconds,
                               local: record.last_hart == Some(context.hart),
                               inverse_thread: u64::MAX - record.thread };
             if best.is_none_or(|(_, previous)| rank > previous)

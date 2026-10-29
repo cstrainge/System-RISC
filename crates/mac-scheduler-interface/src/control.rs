@@ -229,7 +229,7 @@ impl Registration
     }
 }
 /// Explicit package policy: request the first N eligible hardware IDs in
-/// ascending order, including the primary. Core must not silently substitute
+/// ascending order after always including the actual primary. Core must not silently substitute
 /// fewer CPUs or claim completed admission after partial transition failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HartRequest

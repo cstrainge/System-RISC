@@ -25,14 +25,15 @@ All integers are little endian. Round header is64 bytes:
 | Offset | Value |
 |---|---|
 |0|`SCH1`|
-|4|candidate record size, u32=40|
+|4|candidate record size, u32=32|
 |8/16/24|policy generation / checked per-hart round / actual hardware hart, u64 each|
 |32/40|actual monotonic microseconds / previous full thread incarnation or0|
 |48/52|candidate count / Cause, u32 each|
 |56/60|minimum / maximum quantum microseconds, nonzero u32|
 
-Each40-byte candidate has u64 thread incarnation, runnable-since microseconds,
-last hardware hart, accumulated running microseconds, then u32 flags and Kind.
+Each32-byte candidate has u64 thread incarnation, runnable-since microseconds,
+last hardware hart, then u32 flags and Kind. No unmeasured CPU-time value is
+requested or fabricated.
 Flags: interactive wake1, last-hart-present2. Absent last hart stores0. Hardware
 IDs can be sparse/full-width. Candidates have nonzero canonical thread IDs,
 not application IDs. Core owns uniqueness, complete-set construction, affinity,
@@ -67,8 +68,8 @@ before any effect. Ordinary errors retain their actual cause.
 Limits64 contains version/features/candidate-capacity/max-active-harts (u32),
 minimum quantum/maximum quantum/callback budget (u64), physical/active counts
 (u32), boot hardware hart/topology epoch(u64). Features are TAKEOVER1,
-MULTI_HART2, PARK4: exposed mechanisms, never a proof flag. Desired count includes
-the primary. Ascending order is an explicit package policy, not a hidden core
+MULTI_HART2, PARK4: exposed mechanisms, never a proof flag. Desired count always includes the actual primary, then the lowest N-1 eligible
+other hardware IDs. Ascending order is an explicit package policy, not a hidden core
 preference. Registration32 contains generation(u64), State(u32), last status(i32),
 active harts/callback count(u32), transition sequence(u64).
 
@@ -83,7 +84,9 @@ admission occurs only behind core gates at the defined handover boundary.
 
 After initializer return, core runs one shadow decision from a genuine core
 boundary, validates it, atomically changes active policy and confirms MLIF
-startup. Never call policy from MLIF CONFIRM on an author stack. No general
+startup. Author MLIF CONFIRM and synchronous commit must refuse SCHD
+publication without the actual core handover proof. Never call policy from MLIF
+CONFIRM on an author stack. No general
 application/module task may execute on peers until the actual dispatch gate
 passes. Partial admission/rollback failure retains exact per-hart preparations
 and cause; it cannot report the requested count as active or silently substitute

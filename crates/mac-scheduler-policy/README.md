@@ -3,8 +3,7 @@
 This allocation-free policy consumes genuine SCHD candidate snapshots. It gives
 interactive wakeups band2, ordinary applications/System work band1 and module
 workers band0. Each20ms continuously runnable adds one band, capped at3. Within
-a band it chooses the oldest runnable interval, then less accumulated CPU time,
-last-hart locality and stable thread identity. Core must reset runnable-since
+a band it chooses the oldest runnable interval, then last-hart locality and stable thread identity. Core must reset runnable-since
 when a dispatched thread re-enters the ready set; unchanged waiting rows retain
 that timestamp. None of these fields grants dispatch authority.
 
