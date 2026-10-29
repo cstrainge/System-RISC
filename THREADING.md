@@ -139,6 +139,17 @@ authenticate the installed module frame or worker baseline; a copied numeric
 module label cannot construct that authority. Application-only traps reject
 module-worker execution, while the diagnostic LOG operation remains available.
 
+Scheduler input maintenance may invoke a loaded WDEF, CDEF or MDEF while the
+interrupted executor is still a module worker. The validated definition adapter
+scopes that invocation's borrowed surface on the existing thread. Nested native
+traps admit drawing only to that exact surface, font measurement, theme reads
+and definition panic reporting. Borrowed bitmap, PNG and picture bytes and
+resource-icon drawing use the same resident services as other definition calls.
+Application objects, event waits, file loading and resource mutation are not
+admitted by this scope. It restores the previous definition and surface on
+return, without changing executor identity, allocation authority or resource
+selection. A worker body cannot acquire it through a trap request.
+
 The QemuRISC-V policy defaults to a 4 MiB stack and 16 MiB Kernel budget per
 module, with zero Application-class allowance. Page-rounded stack backing,
 complete saved CPU backing, Context/Core metadata and forwarded captured closure

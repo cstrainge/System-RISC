@@ -1140,34 +1140,49 @@ mod tests
 }
 
 
-/// Diagnostic invocation identity belongs to the scheduled thread, never a hart
-/// global or caller-selected request. This is not the later module resource scope.
+/// Resident definition invocation identity and borrowed drawing surface belong to
+/// the scheduled thread. Only the validated definition adapter installs them;
+/// neither a caller request nor the interrupted worker selects this scope.
+/// This does not change the thread identity or its module resource authority.
 #[cfg(any(target_arch = "riscv64", test))]
 pub struct DefinitionInvocations
 {
-    current: core::sync::atomic::AtomicU64
+    current: core::sync::atomic::AtomicU64,
+    surface: core::sync::atomic::AtomicPtr<mac_abi::Surface>
 }
 #[cfg(any(target_arch = "riscv64", test))]
 impl DefinitionInvocations
 {
     pub const fn new() -> Self
     {
-        Self { current: core::sync::atomic::AtomicU64::new(0) }
+        Self { current: core::sync::atomic::AtomicU64::new(0),
+               surface: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()) }
     }
 
-    pub fn with<R>(&self, kind: u32, id: i16, operation: impl FnOnce() -> R) -> R
+    pub fn with<R>(&self, kind: u32, id: i16, surface: *mut mac_abi::Surface,
+                   operation: impl FnOnce() -> R)
+                   -> R
     {
-        let _scope = self.enter(kind, id);
+        let _scope = self.enter(kind, id, surface);
         operation()
     }
 
-    fn enter(&self, kind: u32, id: i16) -> DefinitionScope<'_>
+    fn enter(&self, kind: u32, id: i16, surface: *mut mac_abi::Surface) -> DefinitionScope<'_>
     {
         let identity = (u64::from(kind) << 16) | u64::from(id as u16);
         assert_ne!(kind, 0, "definition family must be named");
         let previous = self.current.swap(identity, core::sync::atomic::Ordering::Relaxed);
+        let previous_surface = self.surface.swap(surface, core::sync::atomic::Ordering::Relaxed);
         DefinitionScope { state: self,
-                          previous }
+                          previous,
+                          previous_surface }
+    }
+
+    /// Some(null) is a live nondrawing invocation; None means no definition.
+    #[cfg(target_arch = "riscv64")]
+    pub fn borrowed_surface(&self) -> Option<*mut mac_abi::Surface>
+    {
+        self.current().map(|_| self.surface.load(core::sync::atomic::Ordering::Relaxed))
     }
 
     pub fn current(&self) -> Option<(u32, i16)>
@@ -1179,14 +1194,16 @@ impl DefinitionInvocations
 #[cfg(any(target_arch = "riscv64", test))]
 struct DefinitionScope<'a>
 {
-    state:    &'a DefinitionInvocations,
-    previous: u64
+    state:            &'a DefinitionInvocations,
+    previous:         u64,
+    previous_surface: *mut mac_abi::Surface
 }
 #[cfg(any(target_arch = "riscv64", test))]
 impl Drop for DefinitionScope<'_>
 {
     fn drop(&mut self)
     {
+        self.state.surface.store(self.previous_surface, core::sync::atomic::Ordering::Relaxed);
         self.state.current.store(self.previous, core::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -1200,8 +1217,8 @@ mod definition_tests
         let first = DefinitionInvocations::new();
         let other = DefinitionInvocations::new();
         assert_eq!(first.current(), None);
-        first.with(mac_abi::definitions::WDEF, 0, || {
-                 first.with(mac_abi::definitions::CDEF, -32759, || {
+        first.with(mac_abi::definitions::WDEF, 0, core::ptr::null_mut(), || {
+                 first.with(mac_abi::definitions::CDEF, -32759, core::ptr::null_mut(), || {
                           assert_eq!(first.current(), Some((mac_abi::definitions::CDEF, -32759)));
                           assert_eq!(other.current(), None);
                       });

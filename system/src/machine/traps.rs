@@ -5,6 +5,7 @@ use mac_abi::{traps::*, *};
 
 use crate::toolbox;
 mod state;
+mod definition_services;
 mod hart;
 pub(crate) use hart::{Error as EntryError, OuterCapture, PreparedEntry, PreparedHart,
                       StartingHart, admit_bootstrap, execution, prepare_secondary};
@@ -286,11 +287,20 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     let size = frame.registers[9];
     #[cfg(feature = "event-trace")]
     let started = crate::platform::ticks();
-    let result = if thread.is_module_worker() && number != LOG
+    let admission = if thread.is_module_worker() && number != LOG
     {
-        // Application-only trap services never reinterpret a module executor
-        // as the bootstrap/System caller. Modules use their authenticated Host.
-        WRONG_THREAD as i64
+        // Scheduler input maintenance can invoke a resident definition on the
+        // interrupted worker's stack. Admit only that invocation's synchronous
+        // borrowed-surface/query services, never application Toolbox authority.
+        unsafe { definition_services::admit(&thread.definitions, number, request, size) }
+    }
+    else
+    {
+        Ok(())
+    };
+    let result = if let Err(status) = admission
+    {
+        status as i64
     }
     else if matches!(number, WAIT_EVENT | POSITIONED_EVENT) && physical_depth != 1
     {
