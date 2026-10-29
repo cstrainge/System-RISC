@@ -80,6 +80,25 @@ impl SavedState
                stride }
     }
 
+    /// Compare this independently measured CPU against the actual admitted
+    /// backing/layout, rather than treating the primary's cached width as an
+    /// observation of another CPU. No frame/header borrow escapes.
+    pub(super) fn matches_vector_profile(&self, vector_bytes: usize) -> bool
+    {
+        let Some(stride) =
+            vector_bytes.checked_mul(32)
+                        .and_then(|vectors| size_of::<TrapFrame>().checked_add(vectors))
+        else
+        {
+            return false;
+        };
+        stride == self.stride
+        && stride.checked_mul(super::CPU_SLOTS) == Some(self.bytes)
+        && self.base().checked_add(vector_bytes * 32) == Some(self.frame)
+        && self.frame.is_multiple_of(align_of::<TrapFrame>())
+        && self.backing.bytes() >= self.bytes as u64
+    }
+
     pub(crate) fn frame(&self) -> *mut TrapFrame
     {
         self.frame as *mut TrapFrame

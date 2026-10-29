@@ -136,12 +136,12 @@
         "strings": [
           "Process + module domains; partial ledgers; reserve unavailable",
           "Select a lifetime domain.",
-          "Memory accounting is not live.",
+          "Partial System accounting; tracked raw backing only.",
           "Module domains are not live.",
           "Domains",
           "Ledger snapshot",
           "Ledger changed; refresh pending",
-          "Shared supervisor mappings. Direct map is an alias.\nPer-domain charges and recovery reserve are not installed."
+          "Shared supervisor mappings. Direct map is an alias.\nPartial charges exclude untracked System backing and protected storage."
         ]
       }
     },

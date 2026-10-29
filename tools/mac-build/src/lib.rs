@@ -85,6 +85,8 @@ pub fn build_guest() -> Result<()>
                                                        "VM_PHYSMAP_START", "VM_PHYSMAP_END",
                                                        "VM_PHYSMAP_PHYSICAL_BASE",
                                                        "VM_SYSTEM_STACKS_START",
+                                                       "VM_SYSTEM_STACKS_END",
+                                                       "VM_SYSTEM_STACK_STRIDE",
                                                        "VM_SYSTEM_HEAP_BASE",
                                                        "VM_SYSTEM_HEAP_LIMIT"])?)?;
     let mut script =

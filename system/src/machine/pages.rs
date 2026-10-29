@@ -2,7 +2,7 @@
 //! Firmware supplies permanent mapped views before pool owners exist. CPU and
 //! physical addresses remain separate; references are never rebased or
 //! transported through a physical/virtual mode flag.
-use core::{alloc::Layout, fmt, mem::MaybeUninit};
+use core::{alloc::Layout, fmt, marker::PhantomData, mem::MaybeUninit};
 
 use mac_abi::boot::CheckedMemory;
 use mac_kernel_model::{bootstrap::{BankPlan, Error as PlanError},
@@ -12,6 +12,7 @@ use mac_kernel_model::{bootstrap::{BankPlan, Error as PlanError},
                        policy::AddressRange};
 
 use super::interrupts::NativeInvocationGate;
+use crate::allocator::foundation::{self, Foundation};
 type Pool = BuddyPool<'static, NativeInvocationGate>;
 type Block = PageBlock<'static, 'static, NativeInvocationGate>;
 struct Bank
@@ -38,6 +39,12 @@ pub(crate) enum Error
         free_pages: usize
     },
     Geometry,
+    ArrayLayout
+    {
+        elements:      usize,
+        element_bytes: usize,
+        alignment:     usize
+    },
     Mapping(MapError),
     Model(mac_kernel_model::policy::ModelError)
 }
@@ -58,6 +65,7 @@ impl Error
                        | BuddyError::InvalidFreeRange
                        | BuddyError::AlreadyManaged)
             | Self::Geometry
+            | Self::ArrayLayout { .. }
             | Self::Mapping(_)
             | Self::Model(_) => mac_abi::BAD_ARGUMENT
         }
@@ -87,8 +95,40 @@ impl fmt::Display for Error
             {
                 f.write_str("physical pool range or stack size exceeds the selected page geometry")
             }
+            Self::ArrayLayout { elements,
+                                element_bytes,
+                                alignment } =>
+            {
+                write!(f,
+                       "page-backed array layout refused: {elements} elements of {element_bytes} \
+                        bytes with alignment {alignment}")
+            }
             Self::Mapping(error) => error.fmt(f),
             Self::Model(error) => error.fmt(f)
+        }
+    }
+}
+/// Initialization keeps the exact element refusal, while the array retains and
+/// drops every previously constructed element before returning its page lease.
+#[derive(Debug)]
+pub(crate) enum ArrayError<E>
+{
+    Storage(foundation::Error),
+    Element
+    {
+        index: usize,
+        cause: E
+    }
+}
+impl<E: fmt::Display> fmt::Display for ArrayError<E>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        match self
+        {
+            Self::Storage(error) => error.fmt(f),
+            Self::Element { index,
+                            cause } => write!(f, "page-backed array element {index}: {cause}")
         }
     }
 }
@@ -256,6 +296,97 @@ impl Backing
         self.pages.bytes()
     }
 }
+/// Native typed metadata whose allocation precedes GlobalAlloc initialization.
+/// The unique raw lease stays at its permanent physmap address when this owner
+/// moves. Constructed elements are dropped before the underlying page block.
+pub(crate) struct OwnedArray<T>
+{
+    backing:     Foundation<Backing>,
+    initialized: usize,
+    _values:     PhantomData<T>
+}
+impl<T> OwnedArray<T>
+{
+    pub(crate) fn try_new<E>(len: usize, mut initialize: impl FnMut(usize) -> Result<T, E>)
+                             -> Result<Self, ArrayError<E>>
+    {
+        let invalid = || {
+            foundation::Error::Pages(Error::ArrayLayout { elements:      len,
+                                                          element_bytes: size_of::<T>(),
+                                                          alignment:     align_of::<T>() })
+        };
+        let layout = Layout::array::<T>(len).map_err(|_| ArrayError::Storage(invalid()))?;
+        if layout.size() == 0 || layout.align() > super::memory::PAGE_BYTES as usize
+        {
+            return Err(ArrayError::Storage(invalid()));
+        }
+        let backing = Foundation::<Backing>::reserve_uninitialized(layout.size())
+            .map_err(ArrayError::Storage)?;
+        if !backing.cpu_base().is_multiple_of(layout.align())
+        {
+            return Err(ArrayError::Storage(invalid()));
+        }
+        let mut array = Self { backing,
+                               initialized: 0,
+                               _values: PhantomData };
+        for index in 0..len
+        {
+            let value = initialize(index).map_err(|cause| {
+                                             ArrayError::Element { index,
+                                                                   cause }
+                                         })?;
+            // SAFETY: Layout::array checked the complete span and alignment.
+            // The unique lease contains no live value at this index yet, and
+            // initialized advances only after that value has been written.
+            unsafe {
+                (array.backing.cpu_base() as *mut T).add(index).write(value);
+            }
+            array.initialized += 1;
+        }
+        Ok(array)
+    }
+
+    pub(crate) fn as_slice(&self) -> &[T]
+    {
+        // SAFETY: only the fully initialized array escapes try_new. Its unique
+        // backing outlives this borrow, and mutable access requires &mut self.
+        unsafe {
+            core::slice::from_raw_parts(self.backing.cpu_base() as *const T, self.initialized)
+        }
+    }
+
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [T]
+    {
+        // SAFETY: the owner and this exclusive borrow cover all live elements.
+        unsafe {
+            core::slice::from_raw_parts_mut(self.backing.cpu_base() as *mut T, self.initialized)
+        }
+    }
+
+    pub(crate) fn physical(&self) -> PhysicalAddress
+    {
+        self.backing.physical()
+    }
+
+    pub(crate) fn bytes(&self) -> u64
+    {
+        self.backing.bytes()
+    }
+}
+impl<T> Drop for OwnedArray<T>
+{
+    fn drop(&mut self)
+    {
+        // SAFETY: initialized records exactly the live prefix, including when
+        // an initializer refused. Backing remains owned throughout destruction
+        // and its automatic field Drop returns the pages only afterwards.
+        unsafe {
+            core::ptr::drop_in_place(core::ptr::slice_from_raw_parts_mut(self.backing.cpu_base()
+                                                                         as *mut T,
+                                                                         self.initialized));
+        }
+    }
+}
 /// Native byte ownership for stack/CPU consumers. Protected pieces have no
 /// buddy token; dropping them returns the actual boot-admitted Finder lease.
 pub(crate) enum Storage
@@ -326,23 +457,19 @@ impl Stack
     }
 
     /// # Safety
-    /// Both permanent roots already map this fresh owned backing at cpu_base;
-    /// the guards remain unmapped and the caller retains the roots until reset.
-    /// This creates the first stack view, never rebases an existing reference.
-    pub(crate) unsafe fn from_mapping(backing: Backing, cpu_base: usize, bytes: u64)
-                                      -> Result<Self, Error>
+    /// Both owned permanent roots already map this stack's physical extent at
+    /// cpu_base. The stack has never been published to an executor or used to
+    /// form a pointer/reference into its storage; only its future numeric CPU
+    /// address changes. The caller retains both roots and this lease until reset.
+    pub(crate) unsafe fn bind_mapping(&mut self, cpu_base: usize) -> Result<(), Error>
     {
-        if bytes == 0
-           || bytes > backing.bytes()
-           || !bytes.is_multiple_of(super::memory::PAGE_BYTES)
-           || !cpu_base.is_multiple_of(super::memory::PAGE_BYTES as usize)
-           || cpu_base.checked_add(bytes as usize).is_none()
+        if !cpu_base.is_multiple_of(super::memory::PAGE_BYTES as usize)
+           || cpu_base.checked_add(self.bytes as usize).is_none()
         {
             return Err(Error::Geometry);
         }
-        Ok(Self { backing: Storage::Ordinary(backing),
-                  bytes,
-                  cpu_base })
+        self.cpu_base = cpu_base;
+        Ok(())
     }
 
     pub(crate) fn physical(&self) -> PhysicalAddress

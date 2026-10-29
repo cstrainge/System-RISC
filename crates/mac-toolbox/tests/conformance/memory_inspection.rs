@@ -90,9 +90,10 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
                 stack=unchanged disposal=passed\n")?;
     let mut previous = None;
     let mut count = 0;
-    let mut stack = None::<Region>;
-    let mut lower = None;
-    let mut upper = None;
+    let mut stack_count = 0u64;
+    let mut stack_bytes = 0u64;
+    let mut lower = None::<Region>;
+    let mut upper = None::<u64>;
     let mut heap = 0;
     let mut direct = 0;
     let mut code = false;
@@ -105,6 +106,12 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
                 "mapping rows sorted and nonoverlapping")?;
         previous = row.virtual_base.checked_add(row.bytes);
         require(!row.protection.user, "current shared mappings are supervisor-only")?;
+        require(lower.is_none() || row.kind == RegionKind::SystemStack,
+                "lower service guard immediately precedes its stack")?;
+        require(upper.is_none_or(|base| {
+                         row.kind == RegionKind::Guard && row.virtual_base == base
+                     }),
+                "upper service guard immediately follows its stack")?;
         match row.kind
         {
             RegionKind::SystemHeap =>
@@ -115,19 +122,37 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
             }
             RegionKind::SystemStack =>
             {
-                require(stack.is_none(), "single real hart0 stack")?;
-                stack = Some(row);
+                require(row.bytes == 4 * 1024 * 1024
+                        && row.physical_base.is_some_and(|base| base % summary.page_bytes == 0)
+                        && row.protection.read
+                        && row.protection.write
+                        && !row.protection.execute
+                        && row.protection.global,
+                        "real configured service stack is backed supervisor global RW/NX")?;
+                require(lower.take().is_some_and(|guard| {
+                                        guard.virtual_base.checked_add(guard.bytes)
+                                        == Some(row.virtual_base)
+                                    }),
+                        "unmapped lower guard brackets each service stack")?;
+                upper = row.virtual_base.checked_add(row.bytes);
+                require(upper.is_some(), "service stack upper bound is representable")?;
+                stack_count = stack_count.checked_add(1)
+                                         .ok_or(Failure::Mismatch("service stack count overflow"))?;
+                stack_bytes = stack_bytes.checked_add(row.bytes)
+                                         .ok_or(Failure::Mismatch("service stack sum overflow"))?;
             }
             RegionKind::Guard =>
             {
-                require(row.physical_base.is_none(), "guard has no backing mapping")?;
-                if lower.is_none()
+                require(row.physical_base.is_none()
+                        && row.bytes == summary.page_bytes
+                        && !row.protection.read
+                        && !row.protection.write
+                        && !row.protection.execute
+                        && !row.protection.global,
+                        "each service guard is one unmapped page with no protection")?;
+                if upper.take().is_none()
                 {
                     lower = Some(row);
-                }
-                else
-                {
-                    upper = Some(row);
                 }
                 guard_count += 1;
             }
@@ -144,12 +169,22 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
             {}
         }
     }
-    require(count == summary.region_count && guard_count == 2,
-            "all actual mapping batches and both guards enumerated")?;
-    let stack = stack.ok_or(Failure::Mismatch("System stack missing"))?;
-    require(lower.is_some_and(|r| r.virtual_base + r.bytes == stack.virtual_base)
-            && upper.is_some_and(|r| r.virtual_base == stack.virtual_base + stack.bytes),
-            "unmapped guards bracket real stack")?;
+    require(count == summary.region_count
+            && stack_count > 0
+            && stack_count.checked_mul(2) == Some(guard_count)
+            && lower.is_none()
+            && upper.is_none(),
+            "every observed service stack has exactly two real unmapped guards")?;
+    // The SDK exposes mapped owners, not a topology query. The capture report
+    // compares this observed count with its actual shipping machine configuration.
+    // These counters remain separate attribution samples, never a whole-System
+    // usage sum or a promise of an atomic machine-wide snapshot.
+    require(summary.ordinary_foundation_heap_bytes > 0
+            && summary.ordinary_foundation_heap_bytes <= summary.heap_capacity
+            && summary.tracked_foundation_physical_bytes >= stack_bytes
+            && summary.tracked_foundation_physical_bytes <= summary.ram_bytes
+            && summary.tracked_foundation_physical_bytes % summary.page_bytes == 0,
+            "Foundation heap occupancy and tracked physical leases are separately bounded")?;
     // This existing guest scenario checks the selected QemuRISC-V defaults:
     // mapped reserve bytes must never be advertised as ordinary allocator space.
     require(heap == 512 * 1024 * 1024
@@ -176,7 +211,8 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
     let mut line = LogBuffer::new();
     let _ = writeln!(line,
                      "MEMORY_SNAPSHOT root={:#x} rows={} ram={} page={} heap_used={} \
-                      heap_capacity={} mapped_heap={} free_pages={} stack={} guards={}",
+                      heap_capacity={} mapped_heap={} free_pages={} stack={} stacks={} \
+                      stack_total={} guards={}",
                      summary.root_physical,
                      summary.region_count,
                      summary.ram_bytes,
@@ -185,8 +221,17 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
                      summary.heap_capacity,
                      heap,
                      summary.free_pages,
-                     stack.bytes,
+                     4 * 1024 * 1024,
+                     stack_count,
+                     stack_bytes,
                      guard_count);
     system.log(line.text())?;
+    let mut attribution = LogBuffer::new();
+    let _ = writeln!(attribution,
+                     "MEMORY_FOUNDATION ordinary_heap_bytes={} tracked_physical_bytes={} \
+                      physical_scope=service-storage accounting=partial",
+                     summary.ordinary_foundation_heap_bytes,
+                     summary.tracked_foundation_physical_bytes);
+    system.log(attribution.text())?;
     Ok(())
 }

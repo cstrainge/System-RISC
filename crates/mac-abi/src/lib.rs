@@ -210,16 +210,19 @@ pub struct BootInfo
     pub cpus:                    *const boot::topology::Cpu,
     pub cpu_count:               usize,
     /// Mandatory physical custom-ROM monitor directory, pinned until reset.
-    pub monitor:                 *const boot::monitor::Directory
+    pub monitor:                 *const boot::monitor::Directory,
+    /// Exact shared monitor structure identity. Validate before expanded views.
+    pub monitor_layout:          u64
 }
 
 // The size gate must reject an earlier ROM before System forms a BootInfo
 // reference. These are production wire-layout invariants, independent of tests.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<BootInfo>() == 168
+const _: () = assert!(core::mem::size_of::<BootInfo>() == 176
                       && core::mem::offset_of!(BootInfo, cpus) == 144
                       && core::mem::offset_of!(BootInfo, cpu_count) == 152
                       && core::mem::offset_of!(BootInfo, monitor) == 160
+                      && core::mem::offset_of!(BootInfo, monitor_layout) == 168
                       && core::mem::size_of::<boot::topology::Cpu>() == 8);
 
 /// Resident in System memory for the entire application lifetime.
@@ -327,7 +330,9 @@ pub struct DefinitionCall
 }
 pub type DefinitionEntry = unsafe extern "C" fn(*mut DefinitionCall) -> i64;
 
-pub type SystemEntry = unsafe extern "C" fn(*const BootInfo) -> *const SystemServices;
+/// Private native ROM entry: payload pointer, exact payload bytes, BOOT/HART tag.
+/// Each role validates its exact payload before any typed borrow or cold setup.
+pub type SystemEntry = unsafe extern "C" fn(*const (), usize, u64) -> *const SystemServices;
 pub type ApplicationEntry = unsafe extern "C" fn(*const SystemServices) -> Status;
 
 #[cfg(test)]
@@ -343,14 +348,14 @@ mod tests
         assert_eq!(core::mem::size_of::<inspection::Account>(), 56);
         assert_eq!(core::mem::offset_of!(inspection::Account, kernel), 8);
         assert_eq!(core::mem::offset_of!(inspection::Account, application), 32);
-        assert_eq!(core::mem::size_of::<inspection::memory::Call>(), 824);
+        assert_eq!(core::mem::size_of::<inspection::memory::Call>(), 840);
         assert_eq!(core::mem::offset_of!(inspection::memory::Call, operation), 0);
         assert_eq!(core::mem::offset_of!(inspection::memory::Call, summary), 40);
-        assert_eq!(core::mem::offset_of!(inspection::memory::Call, regions), 112);
-        assert_eq!(core::mem::offset_of!(inspection::memory::Call, detail), 624);
+        assert_eq!(core::mem::offset_of!(inspection::memory::Call, regions), 128);
+        assert_eq!(core::mem::offset_of!(inspection::memory::Call, detail), 640);
         assert_eq!(core::mem::offset_of!(BootInfo, ram_base), 8);
         assert_eq!(core::mem::offset_of!(BootInfo, log), 24);
-        assert_eq!(core::mem::size_of::<BootInfo>(), 168);
+        assert_eq!(core::mem::size_of::<BootInfo>(), 176);
         assert_eq!(core::mem::offset_of!(BootInfo, execution), 136);
         assert_eq!(core::mem::offset_of!(BootInfo, display_scratch), 120);
         assert_eq!(core::mem::offset_of!(BootInfo, storage_context), 32);

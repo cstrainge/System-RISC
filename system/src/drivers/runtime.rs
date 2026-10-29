@@ -117,17 +117,22 @@ pub(crate) fn register_synchronous_service(offer: mac_module::Offer,
                                            -> Result<u64, Status>
 {
     RUNTIME.with(|runtime| {
-               runtime.residents.try_reserve(1).map_err(|_| NO_MEMORY)?;
-               let interface = runtime.registry.register_service(offer).map_err(|cause| {
-                   serial!("RESIDENT_SERVICE_REFUSED class={:?} cause={cause}; rebuild the declared resident service contract", offer.class);
-                   status(cause)
-               })?;
-               runtime.residents.push(ResidentBinding { interface,
-                                                        callback: asynchronous,
-                                                        synchronous: callback });
-               Ok(interface)
-           })
-           .map_err(crate::state::AccessError::status)?
+        runtime.residents.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        let interface =
+            runtime.registry.register_service(offer).map_err(|cause| {
+                                                         serial!("RESIDENT_SERVICE_REFUSED \
+                                                                  class={:?} cause={cause}; \
+                                                                  rebuild the declared resident \
+                                                                  service contract",
+                                                                 offer.class);
+                                                         status(cause)
+                                                     })?;
+        runtime.residents.push(ResidentBinding { interface,
+                                                 callback: asynchronous,
+                                                 synchronous: callback });
+        Ok(interface)
+    })
+    .map_err(crate::state::AccessError::status)?
 }
 
 pub(crate) fn scrap_authority(

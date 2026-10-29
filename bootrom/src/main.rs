@@ -481,7 +481,30 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
     let root=translation::Prepared::new(account,AddressRange::new(VM_PHYSMAP_START,VM_PHYSMAP_END)
         .map_err(|_|mac_formats::Error::Malformed("invalid checked physmap range"))?,PhysicalAddress(VM_PHYSMAP_PHYSICAL_BASE),
         regions.iter().map(region).chain(fixed).chain(io).chain(devices))?;
-    let admitted = unsafe { supervisor::Admitted::prepare(root.root_physical()) }?;
+    let mut physical_limit =
+        flash.base
+             .checked_add(flash.length)
+             .ok_or(mac_formats::Error::Malformed("physical flash extent overflows"))?;
+    for bank in &memory.ram
+    {
+        physical_limit =
+            physical_limit.max(bank.base
+                                   .checked_add(bank.length)
+                                   .ok_or(mac_formats::Error::Malformed("physical RAM extent \
+                                                                         overflows"))?);
+    }
+    for &(_, end) in memory::BOOT_MMIO_REGIONS
+    {
+        physical_limit = physical_limit.max(end);
+    }
+    for &(_, _, base, bytes, _, _) in platform::PLATFORM_MMIO_DEVICES
+    {
+        physical_limit =
+            physical_limit.max(base.checked_add(bytes)
+                                   .ok_or(mac_formats::Error::Malformed("physical device \
+                                                                         extent overflows"))?);
+    }
+    let admitted = unsafe { supervisor::Admitted::prepare(root.root_physical(), physical_limit) }?;
     let hart: u64;
     unsafe {
         asm!("csrr {},mhartid",out(reg)hart,options(nomem,nostack));
@@ -525,7 +548,8 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
                           execution:               &execution,
                           cpus:                    cpus.as_ptr(),
                           cpu_count:               cpus.len(),
-                          monitor:                 &monitor.directory };
+                          monitor:                 &monitor.directory,
+                          monitor_layout:          mac_abi::boot::monitor::LAYOUT_FINGERPRINT };
     let info_virtual = root.cpu_address(PhysicalAddress((&info as *const BootInfo) as u64),
                                         size_of::<BootInfo>() as u64)?
                            .0;
@@ -549,6 +573,16 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
     // Keep every opaque firmware owner in this suspended physical frame. The
     // admitted callee has no owning payload below the captured stack boundary.
     let _root = core::mem::ManuallyDrop::new(root);
+    if let Err(error) = monitor.seal(plan.entry(),
+                                     execution.virtual_image,
+                                     physical_limit,
+                                     admitted.vector_bytes(),
+                                     u64::from(admitted.asid_mask()))
+    {
+        serial!("BOOT_MACHINE_IMAGE_SEAL_REFUSED: {error}");
+        fatal_shutdown();
+    }
+    // No fallible/retry path follows the unique image seal.
     unsafe { admitted.enter(plan.entry(), info_virtual, stack_virtual) }
 }
 
@@ -632,7 +666,7 @@ extern "C" fn boot_main(tree_address: usize) -> !
             fatal_shutdown();
         }
     };
-    serial!("BOOT_MACHINE_MONITORS_READY count={} secondary_s_release=disabled", cpus.len());
+    serial!("BOOT_MACHINE_MONITORS_READY count={} secondary_s_release=not_published", cpus.len());
     serial!("BOOT_RAM base={:#x} bytes={} banks={} reservations={}",
             memory.ram[0].base,
             memory.ram[0].length,

@@ -597,7 +597,7 @@ pub(crate) fn with_resources_in<R>(scope: mac_abi::resources::Scope,
         fonts().ok_or(NOT_SUPPORTED)?.resources()).with_images(&catalog, origin, primary.as_ref())))
 }
 
-fn launch(info: &BootInfo) -> crate::loader::LoadResult<()>
+fn launch(info: &BootInfo) -> Result<(), crate::machine::scheduler::StartError>
 {
     let ram_end = info.ram_base
                       .checked_add(info.ram_size)
@@ -682,7 +682,7 @@ fn launch(info: &BootInfo) -> crate::loader::LoadResult<()>
     serial!("BOOT_RESOURCE_SCOPE_RELEASED");
     // End the bootstrap resource scope and drop all admission guards before
     // leaving this stack permanently. Scheduled threads own their actual pins.
-    crate::machine::scheduler::start().map_err(Into::into)
+    crate::machine::scheduler::start()
 }
 
 fn recovery_boot_error(service: &'static str, status: Status) -> mac_formats::Error
@@ -876,8 +876,29 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
 /// # Safety
 /// Bootstrap supplies a valid header and compatible BootInfo for this call.
 /// Startup callbacks/context remain valid while System or Finder is running.
-pub unsafe extern "C" fn start(info: *const BootInfo) -> *const SystemServices
+pub unsafe extern "C" fn start(payload: *const (), bytes: usize, role: u64)
+                               -> *const SystemServices
 {
+    // Dispatch before STARTED, BOOT/header/context access or any global service
+    // initialization. Warm entry never re-enters the cold primary path.
+    match role
+    {
+        mac_abi::boot::monitor::ENTRY_SECONDARY =>
+        {
+            // SAFETY: the entry contract supplies the actual monitor payload;
+            // private warm admission authenticates its row before reading it.
+            unsafe { crate::machine::traps::start_secondary(payload, bytes) }
+        }
+        mac_abi::boot::monitor::ENTRY_PRIMARY if bytes == size_of::<BootInfo>() => (),
+        _ =>
+        {
+            crate::machine::emergency::serial(format_args!("SYSTEM_ENTRY_REJECTED \
+                                                            role={role:#x} bytes={bytes}; \
+                                                            rebuild ROM and System together\n"));
+            return ptr::null();
+        }
+    }
+    let info = payload.cast::<BootInfo>();
     if info.is_null()
     {
         return ptr::null();
@@ -1057,8 +1078,12 @@ unsafe fn start_services(info: &BootInfo) -> *const SystemServices
     }
     if let Err(error) = launch(info)
     {
-        serial!("SYSTEM_STARTUP_FAILED: {}", error);
-        return ptr::null();
+        serial!("SYSTEM_STARTUP_FAILED: {}", &error);
+        // Boot admission cannot retry over published reset-lifetime state.
+        // Keep any owned idle-install refusal on this abandoned stack and in
+        // its actual canonical Store/core until reset. No cleanup ACK or panic
+        // is fabricated merely to return an unowned numeric startup failure.
+        crate::machine::power::fatal_shutdown();
     }
     &SERVICES
 }

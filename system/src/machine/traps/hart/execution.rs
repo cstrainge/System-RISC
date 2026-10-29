@@ -3,22 +3,21 @@
 //! borrow or selection guard spans a foreign call or a nested ECALL.
 #![forbid(unsafe_code)]
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::{fmt,
+           sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering}};
 
 use spinning_top::Spinlock;
 
 use crate::{allocator,
             context::ThreadContext,
-            machine::{interrupts::with_masked,
-                      pages::Stack,
-                      traps::{SavedState, TrapFrame}},
+            machine::{interrupts::with_masked, scheduler::SystemIdle, traps::TrapFrame},
             toolbox::handles::OwnerRef};
 
 pub(crate) const IDLE: usize = usize::MAX;
 /// Reset-lifetime hardware identity, minted only by checked sscratch selection.
 /// The numeric label is diagnostic metadata, never authority to select a hart.
 #[derive(Clone, Copy)]
-pub(crate) struct HartKey(&'static HartLocal);
+pub(crate) struct HartKey(&'static super::Hart);
 impl PartialEq for HartKey
 {
     fn eq(&self, other: &Self) -> bool
@@ -33,34 +32,265 @@ impl HartKey
 {
     pub(crate) fn number(self) -> usize
     {
-        self.0.id
+        self.0.local.id
+    }
+
+    pub(crate) fn ordinal(self) -> usize
+    {
+        self.0.ordinal
+    }
+
+    pub(crate) fn dispatch_eligible(self) -> bool
+    {
+        self.0.phase.load(Ordering::Acquire) == super::DISPATCH_ELIGIBLE
     }
 }
 pub(crate) fn selected_hart() -> HartKey
 {
-    with_masked(|| HartKey(required()))
+    with_masked(|| {
+        match super::selected_hart()
+        {
+            Some(hart) => HartKey(hart),
+            None => super::unadmitted()
+        }
+    })
 }
+/// Reset-lifetime terminal ownership tied to the actual sealed selection.
+/// Genuine COLD may claim before the registry, without becoming a runtime key.
+/// Its pointer stays private: labels and caller-chosen numbers cannot create a
+/// winner, and no factory can reconstruct execution authority from this cell.
+pub(in crate::machine) struct TerminalOwnership(AtomicPtr<HartLocal>);
+pub(in crate::machine) enum TerminalClaim
+{
+    Winner(TerminalWinner),
+    Recursive,
+    Peer(HartKey)
+}
+/// Winner affinity is valid for the actual current hot or cold selection.
+/// It grants terminal stop only, never runtime/firmware execution authority.
+/// A boot owner cannot transfer this native claim to another CPU.
+pub(in crate::machine) struct TerminalWinner
+{
+    local: &'static HartLocal,
+    _cpu:  core::marker::PhantomData<*mut ()>
+}
+impl TerminalWinner
+{
+    pub(in crate::machine) fn number(&self) -> usize
+    {
+        self.local.id
+    }
+
+    pub(in crate::machine) fn is_current(&self) -> bool
+    {
+        with_masked(|| {
+            super::terminal_local().is_some_and(|local| core::ptr::eq(local, self.local))
+        })
+    }
+}
+impl TerminalOwnership
+{
+    pub(in crate::machine) const fn new() -> Self
+    {
+        Self(AtomicPtr::new(core::ptr::null_mut()))
+    }
+
+    /// Claims only for the genuine current CPU. Never reset/release this owner:
+    /// terminal execution abandons all contexts and backing until machine reset.
+    pub(in crate::machine) fn claim(&self) -> TerminalClaim
+    {
+        with_masked(|| {
+            let local = match super::terminal_local()
+            {
+                Some(local) => local,
+                None => super::unadmitted()
+            };
+            let identity = core::ptr::from_ref(local).cast_mut();
+            match self.0.compare_exchange(core::ptr::null_mut(),
+                                          identity,
+                                          Ordering::AcqRel,
+                                          Ordering::Acquire)
+            {
+                Ok(_) =>
+                {
+                    TerminalClaim::Winner(TerminalWinner { local,
+                                                           _cpu: core::marker::PhantomData })
+                }
+                Err(owner) if owner == identity => TerminalClaim::Recursive,
+                // A cold winner never returns and no peer may enter S before
+                // registry publication. Thus a distinct legitimate loser has
+                // an actual runtime key; this never invents a cold HartKey.
+                Err(_) => TerminalClaim::Peer(selected_hart())
+            }
+        })
+    }
+}
+
 pub(super) struct HartLocal
 {
     pub(super) id: usize,
     active:        Spinlock<Option<Arc<ThreadContext>>>,
     current:       AtomicUsize,
     io:            AtomicBool,
-    idle:          Spinlock<Option<Idle>>
+    idle_claimed:  AtomicBool,
+    idle:          Spinlock<Option<SystemIdle>>
 }
-struct Idle
+/// Unique preparation lease for an actual permanent registry row. It is not
+/// execution or current-CPU authority and exposes no numeric-ID constructor.
+/// Kept LAST in the shared SystemIdleCore so claim release follows disposal of
+/// its other fields. Automatic Send/Sync reflects only this permanent atomic/
+/// locked reference; PreparedEntry's boot authority remains !Send/!Sync.
+pub(crate) struct IdleTarget
 {
-    _stack: Stack,
-    cpu:    SavedState
+    local: &'static HartLocal
+}
+impl IdleTarget
+{
+    fn claim(local: &'static HartLocal) -> Result<Self, mac_abi::Status>
+    {
+        local.idle_claimed
+             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+             .map_err(|_| mac_abi::SERVICE_BUSY)?;
+        Ok(Self { local })
+    }
+
+    /// Diagnostic label only. No caller can use it to issue/select a target.
+    pub(crate) fn number(&self) -> usize
+    {
+        self.local.id
+    }
+}
+impl Drop for IdleTarget
+{
+    fn drop(&mut self)
+    {
+        // A live Store/local owner retains the same core, and therefore this
+        // target. Dropping a failed install result alone cannot mint a duplicate.
+        self.local.idle_claimed.store(false, Ordering::Release);
+    }
+}
+pub(crate) enum IdlePreparationFailure
+{
+    Admission(mac_abi::Status),
+    Prepare
+    {
+        hart:   usize,
+        status: mac_abi::Status
+    },
+    Install
+    {
+        status: mac_abi::Status,
+        idle:   SystemIdle
+    }
+}
+impl fmt::Display for IdlePreparationFailure
+{
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        match self
+        {
+            Self::Admission(status) =>
+            {
+                write!(out, "System idle preparation caller refused: status {status}")
+            }
+            Self::Prepare { hart,
+                            status } =>
+            {
+                write!(out, "System idle preparation for hart {hart} refused: status {status}")
+            }
+            Self::Install { status,
+                            idle } =>
+            {
+                write!(out,
+                       "System idle installation for hart {} thread {} refused: status {status}; \
+                        canonical owner retained",
+                       idle.target().number(),
+                       idle.context().identity().thread.0)
+            }
+        }
+    }
+}
+/// Only actual primary bootstrap may initialize all affine idle endpoints.
+/// No lock, mutable local borrow or scope guard escapes into the constructor.
+fn idle_preparation_owner() -> Result<(), mac_abi::Status>
+{
+    let hart = super::selected_hart().ok_or(mac_abi::WRONG_THREAD)?;
+    let local = &hart.local;
+    if !bootstrap_owner(local)
+       || local.io.load(Ordering::Relaxed)
+       || local.current.load(Ordering::Relaxed) != IDLE
+    {
+        return Err(mac_abi::WRONG_THREAD);
+    }
+    let active = local.active.lock().is_some();
+    if active
+    {
+        return Err(mac_abi::WRONG_THREAD);
+    }
+    Ok(())
+}
+/// Admission is per immutable topology row. Already-installed owners survive a
+/// later row's refusal; uninstalled failures return their real owner to startup.
+pub(crate) fn prepare_idles(mut prepare: impl FnMut(IdleTarget) -> Result<SystemIdle, mac_abi::Status>)
+                            -> Result<(), IdlePreparationFailure>
+{
+    with_masked(idle_preparation_owner).map_err(IdlePreparationFailure::Admission)?;
+    let registry =
+        super::REGISTRY.get().ok_or(IdlePreparationFailure::Admission(mac_abi::NOT_SUPPORTED))?;
+    for row in registry.rows.as_slice()
+    {
+        let installed = with_masked(|| row.local.idle.lock().is_some());
+        if installed
+        {
+            continue;
+        }
+        let hart = row.local.id;
+        let target = IdleTarget::claim(&row.local).map_err(|status| {
+                                                      IdlePreparationFailure::Prepare { hart,
+                                                                                        status }
+                                                  })?;
+        // No active/idle/registry lock crosses allocation or the resident
+        // constructor. The opaque lease is retained by its actual shared core.
+        let idle = prepare(target).map_err(|status| {
+                                      IdlePreparationFailure::Prepare { hart,
+                                                                        status }
+                                  })?;
+        // A constructor must return the very row capability it consumed.
+        // Returning another retained owner cannot establish this row's readiness.
+        if !core::ptr::eq(idle.target().local, &row.local)
+        {
+            return Err(IdlePreparationFailure::Install { status: mac_abi::BAD_ABI,
+                                                         idle });
+        }
+        install_idle(idle).map_err(|(status, idle)| {
+                              IdlePreparationFailure::Install { status,
+                                                                idle }
+                          })?;
+    }
+    Ok(())
 }
 impl HartLocal
 {
+    /// Primary cold -> registry transition cannot silently discard state.
+    /// This runs once, masked, before any runtime HartKey/THRD is published.
+    pub(super) fn is_cold(&self) -> bool
+    {
+        let active_empty = self.active.lock().is_none();
+        let idle_empty = self.idle.lock().is_none();
+        self.current.load(Ordering::Relaxed) == IDLE
+        && !self.io.load(Ordering::Relaxed)
+        && !self.idle_claimed.load(Ordering::Acquire)
+        && active_empty
+        && idle_empty
+    }
+
     pub(super) const fn new(id: usize) -> Self
     {
         Self { id,
                active: Spinlock::new(None),
                current: AtomicUsize::new(IDLE),
                io: AtomicBool::new(false),
+               idle_claimed: AtomicBool::new(false),
                idle: Spinlock::new(None) }
     }
 }
@@ -287,24 +517,58 @@ pub(crate) fn io_leave(previous: bool)
 {
     with_masked(|| required().io.store(previous, Ordering::Relaxed));
 }
-pub(crate) fn install_idle(stack: Stack, cpu: SavedState) -> Result<(), mac_abi::Status>
+pub(crate) fn install_idle(idle: SystemIdle) -> Result<(), (mac_abi::Status, SystemIdle)>
 {
-    let mut incoming = Some(Idle { _stack: stack,
-                                   cpu });
-    let result = with_masked(|| {
-        let local = super::selected_local().ok_or(mac_abi::WRONG_THREAD)?;
-        let mut idle = local.idle.lock();
-        if idle.is_some()
+    with_masked(|| {
+        if let Err(status) = idle_preparation_owner()
         {
-            return Err(mac_abi::SERVICE_BUSY);
+            return Err((status, idle));
         }
-        *idle = incoming.take();
+        let local = idle.target().local;
+        if !local.idle_claimed.load(Ordering::Acquire)
+        {
+            return Err((mac_abi::BAD_ABI, idle));
+        }
+        let mut destination = local.idle.lock();
+        if destination.is_some()
+        {
+            return Err((mac_abi::SERVICE_BUSY, idle));
+        }
+        // The target supplies the destination directly. There is no numeric
+        // CPU lookup and no way to install a core into another row's slot.
+        *destination = Some(idle);
         Ok(())
+    })
+}
+/// Select the genuine affine System thread. Same-context idle->idle performs
+/// no Arc operation; old pins are dropped outside both active and idle guards.
+pub(crate) fn activate_idle_context()
+{
+    with_masked(|| {
+        let local = required();
+        let current = {
+            let active = local.active.lock();
+            active.as_ref().map(Arc::as_ptr)
+        };
+        let incoming = {
+            let idle = local.idle.lock();
+            let Some(idle) = idle.as_ref()
+            else
+            {
+                super::super::entry_lost("scheduler handoff has no canonical System idle owner");
+            };
+            if current == Some(Arc::as_ptr(idle.context()))
+            {
+                return;
+            }
+            idle.context().clone()
+        };
+        let previous = {
+            let mut active = local.active.lock();
+            active.replace(incoming)
+        };
+        drop(previous);
     });
-    // A refused installation retains the original idle and drops new backing
-    // outside its metadata guard.
-    drop(incoming);
-    result
 }
 pub(crate) fn idle_frame() -> *mut TrapFrame
 {
@@ -313,10 +577,84 @@ pub(crate) fn idle_frame() -> *mut TrapFrame
         let Some(idle) = idle.as_ref()
         else
         {
-            super::super::entry_lost("scheduler bootstrap did not install this hart's idle \
-                                      backing");
+            super::super::entry_lost("scheduler bootstrap did not install this hart's canonical \
+                                      idle owner");
         };
-        super::publish(&idle.cpu);
-        idle.cpu.frame()
+        super::publish(idle.cpu());
+        idle.cpu().frame()
     })
+}
+
+/// Preparation examines the same canonical affine idle that the starting CPU
+/// will select. No numeric thread/hart label substitutes for its owned target.
+pub(super) fn idle_prepared(local: &'static HartLocal) -> bool
+{
+    if !local.idle_claimed.load(Ordering::Acquire)
+    {
+        return false;
+    }
+    let idle = local.idle.lock();
+    idle.as_ref().is_some_and(|idle| core::ptr::eq(idle.target().local, local))
+}
+pub(super) fn idle_matches_profile(local: &'static HartLocal, vector_bytes: usize) -> bool
+{
+    let idle = local.idle.lock();
+    idle.as_ref().is_some_and(|idle| {
+                     core::ptr::eq(idle.target().local, local)
+                     && idle.cpu().matches_vector_profile(vector_bytes)
+                 })
+}
+/// Called only through authenticated private Starting entry with all local
+/// interrupts masked. It cannot fall back to Bootstrap/None and does not
+/// publish ordinary dispatch permission. The canonical Store/local core pins
+/// both the real context and CPU backing until reset.
+pub(super) fn initialize_starting_idle(local: &'static HartLocal)
+                                       -> Result<*mut TrapFrame, mac_abi::Status>
+{
+    if local.current.load(Ordering::Relaxed) != IDLE || local.io.load(Ordering::Relaxed)
+    {
+        return Err(mac_abi::BAD_ABI);
+    }
+    let (context, frame) = {
+        let idle = local.idle.lock();
+        let idle = idle.as_ref().ok_or(mac_abi::BAD_ABI)?;
+        if !core::ptr::eq(idle.target().local, local)
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        (idle.context().clone(), idle.cpu().frame())
+    };
+    let mut active = local.active.lock();
+    if active.is_some()
+    {
+        return Err(mac_abi::BAD_ABI);
+    }
+    *active = Some(context);
+    Ok(frame)
+}
+
+/// Startup SSIP acknowledgment must come from this installed affine idle,
+/// never merely a pointer copied into Control.frames. No lock is nested and
+/// the reset-lifetime canonical core pins the compared context/backing.
+pub(super) fn admitted_idle_capture(local: &'static HartLocal, frame: *mut TrapFrame) -> bool
+{
+    if local.current.load(Ordering::Relaxed) != IDLE || local.io.load(Ordering::Relaxed)
+    {
+        return false;
+    }
+    let expected = {
+        let idle = local.idle.lock();
+        let Some(idle) = idle.as_ref()
+        else
+        {
+            return false;
+        };
+        if !core::ptr::eq(idle.target().local, local) || idle.cpu().frame() != frame
+        {
+            return false;
+        }
+        Arc::as_ptr(idle.context())
+    };
+    let active = local.active.lock();
+    active.as_ref().is_some_and(|context| Arc::as_ptr(context) == expected)
 }

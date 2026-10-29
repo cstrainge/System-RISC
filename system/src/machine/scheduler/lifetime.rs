@@ -10,7 +10,7 @@ use crate::toolbox::handles::{CapacityPolicy, KindCode, cleanup::Failure};
 pub(crate) fn specification(storage: bool) -> Specification<'static>
 {
     Specification { kind:     KindCode(if storage { *b"THST" } else { *b"THRD" }),
-                    label:    if storage { "Thread backing" } else { "Scheduled threads" },
+                    label:    if storage { "Thread backing" } else { "Threads" },
                     provider: "System scheduler",
                     source:   Source::Resident,
                     capacity: if storage
@@ -46,10 +46,23 @@ impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> fo
         {
             return store.release_storage(ticket).map_err(Failure::from);
         }
-        let Some(thread) = store.releasing(&ticket)
+        let Some(record) = store.releasing(&ticket)
         else
         {
             return Err(Failure::registration_mismatch(ticket));
+        };
+        let thread = match record
+        {
+            Record::Scheduled(thread) => thread,
+            Record::SystemIdle(idle) =>
+            {
+                serial!("SYSTEM_IDLE_RELEASE_RETAINED thread={} hart={} reason=reset-lifetime",
+                        idle.id,
+                        idle.core.target.number());
+                return Err(Failure::context_unavailable(ticket,
+                                                        "reset-lifetime System idle remains \
+                                                         owned until machine reset"));
+            }
         };
         let mut pending = thread.core.release.lock();
         if let Some(previous) = pending.take()
