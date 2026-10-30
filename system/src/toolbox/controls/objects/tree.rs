@@ -453,6 +453,10 @@ impl Manager
             }
             self.invalidate_ancestors(old);
         }
+        if new == 0
+        {
+            self.invalidate_ancestors(payload.child);
+        }
         Ok(true)
     }
 
@@ -494,6 +498,7 @@ impl Manager
 
     pub(super) fn invalidate_arrangement_ancestors(&mut self, mut id: u64)
     {
+        let origin = id;
         while let Some(o) = self.objects.get_mut(id)
         {
             if let Some(layout) = &mut o.state.layout
@@ -502,10 +507,12 @@ impl Manager
             }
             id = o.tree.parent;
         }
+        self.schedule_layout(origin);
     }
 
     pub(super) fn invalidate_ancestors(&mut self, mut id: u64)
     {
+        let origin = id;
         while let Some(o) = self.objects.get_mut(id)
         {
             if let Some(layout) = &mut o.state.layout
@@ -516,10 +523,11 @@ impl Manager
             }
             id = o.tree.parent;
         }
+        self.schedule_layout(origin);
     }
 
     /// Depth-first row/column order, without recursion or an allocated stack.
-    fn next_in(&self, root: u64, mut id: u64) -> u64
+    pub(super) fn next_in(&self, root: u64, mut id: u64) -> u64
     {
         let Some(o) = self.objects.get(id)
         else

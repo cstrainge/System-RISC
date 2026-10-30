@@ -13,6 +13,7 @@ impl super::Desktop
         {
             self.cursor_dirty |= self.responsiveness.foreground(self.foreground, Self::when());
             self.cursor_dirty |= self.responsiveness.polled(self.owner, Self::when());
+            self.automatic_control_layout();
         }
         self.poll_inputs();
         // Quotient/remainder conversion avoids overflowing an intermediate

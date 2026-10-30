@@ -25,10 +25,13 @@ pub struct ControlInfo
     pub reflow:              super::Reflow,
     pub anchors:             super::Anchors,
     pub window_border:       super::BorderOffsets,
-    /// Work waiting for explicit assignment, a root-anchor reapplication, or
-    /// the next accepted owning-window size change.
+    /// Work waiting for the next event boundary or explicit assignment.
     pub measurement_pending: bool,
     pub arrangement_pending: bool,
+    /// Last automatic refusal of this control's root. Geometry remains usable;
+    /// success clears the cause. Busy waits for paint/capture release; memory
+    /// refusal retries at a bounded interval. Other causes need a settings edit.
+    pub layout_error:        Option<super::Error>,
     pub standard:            StandardState,
     pub scrollbar:           ScrollbarState,
     pub tracking:            bool,
@@ -57,6 +60,8 @@ impl TryFrom<ControlCall> for ControlInfo
                                         .map_err(|_| super::Error::BadAbi)?,
                   measurement_pending: c.layout.invalidation & reflow::INVALIDATE_MEASUREMENT != 0,
                   arrangement_pending: c.layout.invalidation & reflow::INVALIDATE_ARRANGEMENT != 0,
+                  layout_error:
+                      (c.layout.status != OK).then(|| super::Error::from_status(c.layout.status)),
                   standard:            c.standard,
                   scrollbar:           c.scrollbar,
                   tracking:            c.flags & TRACKING != 0,

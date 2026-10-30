@@ -129,7 +129,14 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
             "hit query disagrees with tree order")?;
     system.log("REFLOW_TREE_PAINT_READY order=front-cell\n")?;
     system.client().wait_event(0, 120)?;
-    require(front.begin_tracking(point, 100)?.tracking, "child did not capture")?;
+    // The event boundary now consumes pending Table placement. Capture/clip
+    // checks use the published child rectangle rather than its creation point.
+    let placed = front.info()?.standard.bounds;
+    let front_point = Point { h: placed.left + 16,
+                              v: placed.top + 12 };
+    let outside_clip = Point { h: placed.left + 60,
+                               v: placed.top + 12 };
+    require(front.begin_tracking(front_point, 100)?.tracking, "child did not capture")?;
     require(matches!(parent.remove_child(front), Err(Error::ServiceBusy)), "live capture moved")?;
     require(matches!(table.control()
                           .configure(StandardKind::Table,
@@ -141,21 +148,12 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
     let removed = parent.remove_child(front)?;
     require(removed.control().info()?.parent.is_none(), "removal failed to return root owner")?;
     let front = adopt(parent, second, removed)?;
-    table.control().set_visible_rect(Rect::new(8, 8, 48, 48).try_into().unwrap())?;
-    require(parent.hit_test(Point { h: 80,
-                                    v: 28 })?
-                  .is_none(),
-            "tree hit escaped ancestor clip")?;
-    require(!front.begin_tracking(Point { h: 80,
-                                          v: 28 },
-                                  200)?
-                  .handled,
+    table.control().set_visible_rect(Rect::new(8, 8, placed.left + 40, 48).try_into().unwrap())?;
+    require(parent.hit_test(outside_clip)?.is_none(), "tree hit escaped ancestor clip")?;
+    require(!front.begin_tracking(outside_clip, 200)?.handled,
             "direct capture escaped ancestor clip")?;
-    require(front.begin_tracking(point, 210)?.tracking, "visible child capture failed")?;
-    let released = front.poll_tracking(Point { h: 80,
-                                               v: 28 },
-                                       false,
-                                       211)?;
+    require(front.begin_tracking(front_point, 210)?.tracking, "visible child capture failed")?;
+    let released = front.poll_tracking(outside_clip, false, 211)?;
     require(!released.action && !released.tracking, "outside-ancestor release activated child")?;
     table.control().set_visible_rect(Rect::new(8, 8, 240, 160).try_into().unwrap())?;
     system.log("REFLOW_TREE capture=refuse,cancel,retry clip=ancestor release=cancelled\n")?;

@@ -57,6 +57,7 @@ struct Object
     recipient:          u64,
     state:              State,
     tree:               tree::Node,
+    automatic:          automatic::Automatic,
     // Last: registered removal must finish payload destruction before the
     // protected modal service can become available to another recipient.
     #[cfg(target_arch = "riscv64")]
@@ -308,7 +309,7 @@ impl Spec
 
 pub struct Manager
 {
-    objects: Store<Object>,
+    objects: Store<Object, automatic::Work>,
     next_order: u64,
     publications: Vec<mac_object_table::store::PublicationReservation<crate::toolbox::handles::InvocationGate>>
 }
@@ -316,7 +317,7 @@ impl Manager
 {
     pub(crate) fn new((kind, storage): (KindLease, KindLease)) -> Result<Self, Status>
     {
-        Ok(Self { objects:      Store::owned(kind, storage).map_err(|_| BAD_ARGUMENT)?,
+        Ok(Self { objects:      Store::owned_state(kind, storage, |_| Ok(automatic::Work::default())).map_err(|_| BAD_ARGUMENT)?,
                   publications: Vec::new(),
                   next_order:   1 })
     }
@@ -380,6 +381,7 @@ impl Manager
             return Err(BAD_ARGUMENT);
         }
         self.get(call.id, owner)?;
+        let layout_status = self.layout_status(call.id);
         let object = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
         let state = &mut object.state;
         let handled = state.tracking.take().is_some();
@@ -392,9 +394,11 @@ impl Manager
         call.layout.window_border =
             state.layout.as_ref().map_or(Default::default(), |l| l.window_border.into());
         call.layout.invalidation = state.layout.as_ref().map_or(0, Layout::pending);
+        call.layout.status = layout_status;
         call.result = 0;
         call.flags =
             u32::from(handled) * HANDLED | u32::from(old != state.spec.highlight()) * CHANGED;
+        self.wake_capture(call.id);
         Ok(())
     }
 
@@ -524,7 +528,9 @@ impl Manager
             if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
             {
                 let next_order = self.next_order.checked_add(1).ok_or(NO_MEMORY)?;
-                let object = Object { tree:
+                let object = Object { automatic:
+                                          automatic::Automatic::default(),
+                                      tree:
                                           tree::Node::new(self.next_order),
                                       window:
                                           call.window,
@@ -576,6 +582,7 @@ impl Manager
                     self.objects.insert(storage, object).map_err(pool_status)?
                 };
                 self.next_order = next_order;
+                self.schedule_layout(call.id);
             }
         }
         let object = self.get(call.id, owner)?;
@@ -602,6 +609,7 @@ impl Manager
             return Err(SERVICE_BUSY);
         }
         let inherited_clip = self.inherited_clip(call.id);
+        let layout_status = self.layout_status(call.id);
         let object = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
         let mut next = object.state.clone();
         let o = &mut next;
@@ -745,6 +753,7 @@ impl Manager
         call.layout.window_border =
             o.layout.as_ref().map_or(Default::default(), |l| l.window_border.into());
         call.layout.invalidation = o.layout.as_ref().map_or(0, Layout::pending);
+        call.layout.status = layout_status;
         call.result = i32::from(part);
         call.flags = (u32::from(o.tracking.is_some()) * TRACKING)
                      | (u32::from(handled) * HANDLED)
@@ -798,6 +807,8 @@ impl Manager
         {
             l.window_extent = None;
         }
+        let released_capture = object.state.tracking.is_some() && next.tracking.is_none();
+        let configured = operation == CONFIGURE_OBJECT && previous != next.spec;
         object.state = next;
         if changed_requirements
         {
@@ -807,6 +818,20 @@ impl Manager
         {
             self.invalidate_arrangement_ancestors(parent);
         }
+        if changed_requirements
+           || changed_geometry
+           || newly_pending
+           || configured
+           || (operation == REFLOW_OBJECT
+               && call.layout.message == mac_abi::controls::reflow::INVALIDATE_LAYOUT)
+        {
+            self.schedule_layout(call.id);
+        }
+        if released_capture
+        {
+            self.wake_capture(call.id);
+        }
+        self.layout_committed(call.id);
         Ok(drawing)
     }
 }
@@ -863,3 +888,4 @@ mod tree;
 mod grid;
 pub(crate) use grid::Prepared;
 mod window;
+mod automatic;

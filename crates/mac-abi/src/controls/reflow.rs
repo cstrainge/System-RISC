@@ -109,6 +109,8 @@ pub struct Payload
     pub message:       i16,
     pub reserved:      u16,
     pub invalidation:  u32,
+    /// Last automatic layout refusal of the owning root; zero after success.
+    pub status:        crate::Status,
     pub constraints:   Constraints,
     pub rect:          crate::Rect,
     pub size:          Dimensions,

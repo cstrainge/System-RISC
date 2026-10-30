@@ -122,6 +122,95 @@ impl Desktop
         Ok(())
     }
 
+    /// Consume only this caller's pending roots, under its actual service and
+    /// allocation authority. A root is one atomic publication; an unrelated
+    /// blocked root does not prevent another root from progressing.
+    pub(super) fn automatic_control_layout(&mut self)
+    {
+        // A resident recovery dialog must not spend its protected allocation
+        // authority on the application's ordinary deferred layout work.
+        if crate::context::recovery_activity().is_some()
+        {
+            return;
+        }
+        let now = Self::uptime();
+        let owner = self.owner;
+        let roots = match self.controls.take_layout_work(owner, now)
+        {
+            Ok(Some(roots)) => roots,
+            Ok(None) | Err(_) => return
+        };
+        let mut changed = false;
+        for root in roots
+        {
+            let result =
+                (|| -> Result<Vec<Rect>, Status> {
+                    let window = self.windows.window(WindowId(root.window)).ok_or(NOT_FOUND)?;
+                    if !self.owns(WindowId(root.window))
+                    {
+                        return Err(ACCESS_DENIED);
+                    }
+                    let prepared = self.controls.prepare_automatic(
+                    root, owner, window.local_bounds(),
+                    self.pending_content.iter().any(|c| c.id == SceneTarget::from(root.window)),
+                    crate::machine::traps::gateway,
+                    |id| self.definitions.resolve(*b"CDEF", id).map_err(crate::loader::status))?;
+                    let (used, limit) = self.retained_admission(SceneTarget::from(root.window));
+                    publish(&mut self.content, &mut self.controls, root.window, prepared, used,
+                            limit)
+                })();
+            match result
+            {
+                Ok(damage) =>
+                {
+                    changed |= !damage.is_empty();
+                    for rect in damage.into_iter().filter(|r| !r.is_empty())
+                    {
+                        self.content_changed_rect(root.window, rect);
+                    }
+                }
+                Err(status) =>
+                {
+                    if self.controls.layout_refused(root.id, status, now)
+                    {
+                        serial!("CONTROL_LAYOUT_DEFERRED root={} window={} status={} {}; \
+                                 previous geometry retained",
+                                root.id,
+                                root.window,
+                                status,
+                                match status
+                                {
+                                    SERVICE_BUSY =>
+                                        "finish painting or release capture; automatic retry \
+                                         follows",
+                                    NO_MEMORY =>
+                                        "layout storage unavailable; automatic retry is rate \
+                                         limited",
+                                    BAD_ARGUMENT =>
+                                        "layout dimensions cannot be represented; correct sizing \
+                                         settings",
+                                    BAD_ABI =>
+                                        "definition contract mismatch; rebuild all native packages",
+                                    ACCESS_DENIED => "layout owner authority refused",
+                                    _ => "layout preparation failed; correct settings before retry"
+                                });
+                    }
+                }
+            }
+        }
+        self.controls.finish_layout_work(owner);
+        if changed
+        {
+            self.present();
+        }
+    }
+
+    /// A native wait must return in time to retry a refused layout batch.
+    pub(crate) fn control_layout_wait(&self, requested: u32) -> u32
+    {
+        self.controls.layout_wait_ticks(self.owner, Self::uptime(), requested)
+    }
+
     pub(super) fn track_window(&mut self, point: Point, released: bool, when: u32)
                                -> Option<Action>
     {

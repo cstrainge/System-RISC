@@ -599,6 +599,7 @@ impl Manager
             {
                 object.state = state;
             }
+            self.layout_committed(id);
         }
         for staged in prepared.items
         {
@@ -606,6 +607,7 @@ impl Manager
             {
                 object.state = staged.state;
             }
+            self.layout_committed(staged.id);
         }
         if prepared.assign
         {

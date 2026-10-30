@@ -1003,6 +1003,7 @@ impl Desktop
                         {
                             self.textedit.begin_cursor_update(id);
                             self.windows.end_update(id);
+                            self.controls.layout_scene_changed(self.owner, id.0);
                             return status;
                         }
                     }
@@ -1013,6 +1014,7 @@ impl Desktop
                     self.textedit.commit_cursor_update(id);
                 }
                 self.windows.end_update(id);
+                self.controls.layout_scene_changed(self.owner, id.0);
                 if let Some(outline) = outline
                    && let Err(status) = self.apply_content_outline(id, outline)
                 {
@@ -2578,6 +2580,7 @@ impl Desktop
         self.cursor_dirty |= self.responsiveness.foreground(self.foreground, Self::when());
         self.cursor_dirty |= self.responsiveness.polled(self.owner, Self::when());
         self.poll_inputs();
+        self.automatic_control_layout();
         let when = Self::when();
         self.route_events();
         let mut synthetic = false;
