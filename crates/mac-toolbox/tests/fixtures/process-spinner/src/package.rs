@@ -1,7 +1,15 @@
 fn main()
 {
     let args: Vec<_> = std::env::args_os().collect();
-    let manifest = if cfg!(feature = "tls")
+    let manifest = if cfg!(feature = "exit-late")
+    {
+        "resources.exit-late.json"
+    }
+    else if cfg!(feature = "exit")
+    {
+        "resources.exit.json"
+    }
+    else if cfg!(feature = "tls")
     {
         "resources.tls.json"
     }

@@ -143,6 +143,13 @@ impl Activity
         })
     }
 
+    pub(crate) fn has_outstanding_windows(&self) -> bool
+    {
+        InvocationGate::run(|| {
+            self.session.windows.lock().iter().any(|(id, closed)| *id != 0 && !*closed)
+        })
+    }
+
     /// Restore backing for a resident admission step without replacing its
     /// original request/active-parent receipt or canonical account target.
     pub(crate) fn with_storage<R>(&self, operation: impl FnOnce() -> R) -> R
@@ -179,6 +186,11 @@ impl Activity
         })?;
         drop(old);
         Ok(())
+    }
+
+    pub(crate) fn closing(&self) -> bool
+    {
+        CLOSING.load(Ordering::Acquire)
     }
 
     pub(crate) fn close(&self)
@@ -454,6 +466,7 @@ pub(crate) fn acknowledgement_changed()
 
 pub(crate) fn owner_stopped(owner: &OwnerRef)
 {
+    crate::toolbox::crashes::pending_owner_stopped();
     InvocationGate::run(|| {
         if let Some(session) = MODAL.lock().session.as_ref()
            && session.recipient.lock().owner() == owner.owner()
@@ -472,6 +485,11 @@ pub(crate) fn standard_file_subject(owner: u64) -> Result<Subject, Status>
 
 pub(crate) fn claim_report(recipient: OwnerRef) -> Result<Activity, Status>
 {
+    if !recipient.accepting()
+       || recipient.owner().kind() != mac_object_table::domain::DomainKind::Process
+    {
+        return Err(ACCESS_DENIED);
+    }
     if let Some(activity) = active(recipient.owner().incarnation(), Kind::CrashReport)
        && !CLOSING.load(Ordering::Acquire)
     {
@@ -481,6 +499,97 @@ pub(crate) fn claim_report(recipient: OwnerRef) -> Result<Activity, Status>
     let activity = opening.activity().clone();
     opening.commit();
     Ok(activity)
+}
+
+/// A fresh accepted Opening proves every previous reusable-session child
+/// reached its actual ACK barrier. It pins that exact Session until consumed;
+/// no caller-supplied boolean, window lookup or report origin can mint it.
+pub(crate) struct FreshReport
+{
+    activity:  Activity,
+    recipient: mac_object_table::domain::DomainId
+}
+impl FreshReport
+{
+    pub(crate) fn validate(&self, activity: &Activity, recipient: &OwnerRef) -> Result<(), Status>
+    {
+        if !self.activity.same_session(activity)
+           || self.recipient != recipient.owner()
+           || activity.recipient().owner() != self.recipient
+        {
+            return Err(ACCESS_DENIED);
+        }
+        if activity.closing()
+           || activity.has_outstanding_windows()
+           || activity.session.object.load(Ordering::Acquire) != 0
+        {
+            return Err(SERVICE_BUSY);
+        }
+        Ok(())
+    }
+}
+pub(crate) struct ReportClaim
+{
+    activity: Activity,
+    fresh:    Option<FreshReport>
+}
+pub(crate) enum ReportAdoption
+{
+    Ready,
+    FreshClaimNeeded
+}
+impl ReportClaim
+{
+    pub(crate) fn into_parts(self) -> (Activity, Option<FreshReport>)
+    {
+        (self.activity, self.fresh)
+    }
+}
+/// Native failure owns its Process protocol before asking for the one modal.
+/// Close only that same reporter's previous dialog; unrelated owners keep it.
+pub(crate) fn claim_failure_report(recipient: OwnerRef) -> Result<ReportClaim, Status>
+{
+    if !recipient.accepting()
+       || recipient.owner().kind() != mac_object_table::domain::DomainKind::Process
+    {
+        return Err(ACCESS_DENIED);
+    }
+    if let Some(activity) = for_input(recipient.owner().incarnation())
+       && activity.session.kind != Kind::CrashReport
+    {
+        activity.close();
+    }
+    pump();
+    if let Some(activity) = active(recipient.owner().incarnation(), Kind::CrashReport)
+       && !CLOSING.load(Ordering::Acquire)
+    {
+        return Ok(ReportClaim { activity,
+                                fresh: None });
+    }
+    let opening = begin(recipient, Kind::CrashReport)?;
+    let activity = opening.activity().clone();
+    let fresh = FreshReport { recipient: activity.recipient().owner(),
+                              activity:  activity.clone() };
+    opening.commit();
+    Ok(ReportClaim { activity,
+                     fresh: Some(fresh) })
+}
+
+/// Failure closes only this owner's previous file/alert protocol. A queued
+/// failure must not depend on getting the report runner before its own modal
+/// can finish cleanup; the original session/children retain their real ACKs.
+pub(crate) fn owner_failed(owner: &OwnerRef)
+{
+    InvocationGate::run(|| {
+        if let Some(session) = MODAL.lock().session.as_ref()
+           && session.recipient.lock().owner() == owner.owner()
+           && session.kind != Kind::CrashReport
+        {
+            CLOSING.store(true, Ordering::Release);
+            CLEANUP_REQUESTED.store(true, Ordering::Release);
+            REAP_REQUESTED.store(true, Ordering::Release);
+        }
+    });
 }
 
 pub(crate) fn for_input(owner: u64) -> Option<Activity>
@@ -693,6 +802,11 @@ pub(crate) fn crash_request(call: &mut mac_abi::crashes::CrashCall, input: &str,
             BEGIN | APPEND | INFO | READ =>
             {
                 if call.operation == BEGIN
+                {
+                    crate::kernel::with_desktop(|desktop| desktop.note_crash_capture_attempt())
+                        .map_err(|error| error.status())?;
+                }
+                if call.operation == BEGIN
                    && let Some(activity) = active(owner_id, Kind::CrashReport)
                 {
                     // Reset is a real service close, including WDEF/child ACK.
@@ -724,10 +838,7 @@ pub(crate) fn crash_request(call: &mut mac_abi::crashes::CrashCall, input: &str,
             {
                 // Do not let a malformed SHOW cancel a valid, unrelated dialog.
                 let info = crate::kernel::with_desktop(|desktop| {
-                               let mut info = CrashCall { operation: INFO,
-                                                          ..Default::default() };
-                               desktop.crash_request(&mut info, "", &mut [])?;
-                               Ok::<_, Status>(info.info)
+                               desktop.submit_crash_capture(call.flags)
                            }).map_err(|error| error.status())??;
                 if info.app == 0
                 {

@@ -5,10 +5,22 @@
 use core::{alloc::{GlobalAlloc, Layout},
            ptr::{self, NonNull}};
 
+use mac_traps::emergency as machine;
+pub(crate) use machine::abort;
+
 #[cfg(feature = "application")]
 use crate::{Client, System, SystemServices, ToolboxResult, abi, panic};
-mod machine;
-pub(crate) use machine::{abort, exit_returned};
+/// Terminate with an actual program result. Explicit exit skips user TLS
+/// destructors; a normal CRT must finish its teardown before calling this.
+#[cfg(feature = "application")]
+pub fn exit(code: i32) -> !
+{
+    match client().native_exit(code, mac_traps::native_exit::ExitKind::Normal)
+    {
+        Ok(never) => match never {},
+        Err(cause) => abort(format_args!("APPLICATION_EXIT_CONTRACT_FAILURE: {cause}"))
+    }
+}
 /// # Safety
 /// The native loader initialized this application image and supplies a readable,
 /// aligned service table/callbacks pinned through every application thread and
@@ -32,7 +44,7 @@ pub unsafe fn enter(services: *const SystemServices,
     let result = run(&system);
     // Every ordinary no_std application exercises its actual native-thread TLS
     // completion protocol; std CRT replaces this process scaffold separately.
-    if let Err(cause) = unsafe { teardown_tls(client) }
+    if let Err(cause) = unsafe { mac_traps::native_threads::teardown_tls(client) }
     {
         panic::fail(format_args!("Application TLS teardown failed: {cause}"));
     }
@@ -180,49 +192,4 @@ fn exhausted(layout: Layout) -> !
 fn application_panic(info: &core::panic::PanicInfo<'_>) -> !
 {
     panic::handle(info)
-}
-
-/// # Safety
-/// The actual native application thread owns teardown. Resident validates each
-/// callback against its pinned Process executable and retains it until ACK.
-#[cfg(feature = "application")]
-unsafe fn teardown_tls(client: Client<'_>) -> Result<(), mac_traps::native_threads::Failure>
-{
-    use abi::tls as wire;
-    let mut begin = wire::Call { operation: wire::BEGIN,
-                                 ..Default::default() };
-    unsafe {
-        client.tls(&mut begin)?;
-    }
-    loop
-    {
-        let mut next = wire::Call { operation: wire::NEXT,
-                                    ..Default::default() };
-        unsafe {
-            client.tls(&mut next)?;
-        }
-        if next.present == 0
-        {
-            break;
-        }
-        if next.destructor == 0 || next.ticket == 0
-        {
-            return Err(mac_traps::native_threads::Failure::Protocol("NEXT omitted callback \
-                                                                     receipt"));
-        }
-        let callback: unsafe extern "C" fn(*mut u8) =
-            unsafe { core::mem::transmute(next.destructor) };
-        unsafe {
-            callback(next.value as *mut u8);
-        }
-        let mut ack = wire::Call { operation: wire::ACK,
-                                   ticket: next.ticket,
-                                   ..Default::default() };
-        unsafe {
-            client.tls(&mut ack)?;
-        }
-    }
-    let mut finish = wire::Call { operation: wire::FINISH,
-                                  ..Default::default() };
-    unsafe { client.tls(&mut finish) }
 }

@@ -131,7 +131,8 @@
           "Finder restart failed. Try again.",
           "Not enough memory to restart Finder. Close another application and try again.",
           "Close Report",
-          "Retry Finder"
+          "Retry Finder",
+          "Earlier diagnostic retained; the latest capture failed."
         ]
       }
     },

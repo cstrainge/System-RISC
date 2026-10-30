@@ -16,7 +16,14 @@ pub const NATIVE_SEGMENT_RECORD_BYTES: usize = 28;
 /// Native descriptors carry this fingerprint so stale packages fail before
 /// entry rather than interpreting new payloads with an older struct layout.
 pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
-    let words = [core::mem::size_of::<address_wait::Call>(),
+    let words = [core::mem::size_of::<processes::NativeExitCall>(),
+                 core::mem::align_of::<processes::NativeExitCall>(),
+                 core::mem::offset_of!(processes::NativeExitCall, code),
+                 core::mem::offset_of!(processes::NativeExitCall, flags),
+                 core::mem::offset_of!(processes::NativeExitCall, reserved),
+                 processes::NATIVE_EXIT_NORMAL as usize,
+                 processes::NATIVE_EXIT_ABORT as usize,
+                 core::mem::size_of::<address_wait::Call>(),
                  core::mem::align_of::<address_wait::Call>(),
                  core::mem::offset_of!(address_wait::Call, address),
                  core::mem::offset_of!(address_wait::Call, outcome),

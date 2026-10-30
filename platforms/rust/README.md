@@ -17,6 +17,7 @@ the default compiler or edit an installed source tree.
 ```
 cargo xtask sdk prepare --build-dir /absolute/private/build
 cargo xtask sdk build --build-dir /absolute/private/build
+cargo xtask sdk app crates/mac-toolbox/tests/fixtures/std-application/Cargo.toml --build-dir /absolute/private/build
 ```
 
 Use an appropriate native path on Windows. The existing `SYSTEM7_PYTHON`
@@ -34,6 +35,12 @@ stub in `.rlib`; distributing only the archive is not a usable compiler sysroot.
 Sources, target outputs, provenance and failure receipts stay
 below the supplied build directory. No guest image is launched or replaced.
 
+`app` checks or builds the matching sysroot, compiles an ordinary application in
+the optimized release profile, and uses the existing native resource packager.
+Its manifest must declare the application role and APPL file type. The linker
+pulls the platform-owned `_start` from std; authors supply ordinary `main`.
+`sdk/application.json` distinguishes compilation and packaging from execution.
+
 The target uses the existing LP64 ABI and RVA23 ISA, PIC code, panic-abort and
 OS-key TLS. It advertises neither Unix/Windows APIs nor compiler-native TLS.
 Host build tools and low-level no_std guest roles keep their existing targets.
@@ -50,8 +57,14 @@ CRT interface, not Rust types from different crate instances.
 The source port selects the existing real application-heap transport and std's
 atomic/futex synchronization implementations. It forwards thread creation, OS-key
 TLS, waits, entropy and exit through private CRT symbols declared in
-`library/std/src/sys/pal/systemrisc/runtime.rs`. The corresponding native service
-adapters are an integration dependency: missing symbols must fail final linkage.
+`library/std/src/sys/pal/systemrisc/runtime.rs`. Startup now installs the validated
+service table once inside std before entering the compiler's main wrapper. The
+Toolbox reads that same installation through a C-layout getter. Canonical current
+thread and OS-key TLS bind the published native traps; std and no_std startup
+share the real teardown protocol in mac-traps. Atomic wait/wake now bind the
+published scheduler compare-and-park transport; only timeout returns false,
+while typed refusals retain their resident diagnostic. Child threads, entropy and
+process exit still need native adapters: missing symbols must fail final linkage.
 There is no no_threads implementation, static TLS, zero-seed generator or host
 allocator substituted to get an executable to link.
 
@@ -61,9 +74,11 @@ through the CRT panic bridge for the existing System crash service. The hook add
 no allocation, stdio lock, thread-name/TLS lookup or backtrace lock. This does not
 remove TLS/synchronization used earlier by std's panic machinery. Custom hooks
 remain upstream behavior; explicit abort and abort after a custom hook use a
-separate terminal bridge and do not call the default hook again. The CRT bridge
-and concurrent process-failure ownership still need native implementation and
-qualification; compiling this hook does not establish a functioning bomb dialog.
+separate terminal bridge and do not call the default hook again. The CRT report
+bridge now uses the existing CRASH begin/append/show service and its resident
+viewer; early failure uses the shared core-only emergency transport. Native std
+reporting and concurrent process-failure ownership remain unqualified; compiling
+this hook does not establish a functioning bomb dialog.
 
 The actual default allocation-error hook also uses a dedicated CRT report bridge,
 preserving the refused size/alignment and `NO_MEMORY` cause. It does not invoke
@@ -71,7 +86,9 @@ a user panic hook or format through allocating stdio/backtrace code. Fallible
 allocation still returns refusal normally. Custom allocation-error hooks retain
 their upstream semantics. Native OOM reporting remains a separate runtime gate.
 
-Files, launch environment, clock adapters and process streams still require their
+Instant and SystemTime now bind the published native clocks, with checked signed
+Unix-epoch arithmetic and nanosecond calculations. Their std execution remains
+unqualified. Files, launch environment and process streams still require their
 named implementations. Existing upstream unsupported backends remain unsupported
 while this stage is developed. Neither linking std nor resolving one of its
 private symbols qualifies a service.
@@ -80,6 +97,9 @@ private symbols qualifies a service.
 application runtime without allocation or a new authority selector. The existing
 native heap APPL fixture checks repeated acquisition on its real startup path;
 native observations must be recorded separately from compiling that fixture.
+The ordinary-main Std Probe fixture adds Vec/String/Box, repeated System
+acquisition, window calls and a real thread-local destructor. It requires a
+matching native execution record before any of those std paths are accepted.
 
 The pinned compiler emits its ordinary main wrapper as `i32 main(i32, pointer)`
 on this target. The CRT must preserve that C entry signature; the internal

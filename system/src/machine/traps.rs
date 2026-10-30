@@ -138,6 +138,19 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
                       let borrowed = &mut *frame;
                       (dispatch_frame(borrowed), borrowed.prior_depth == 0)
                   };
+                  // Every early service/Host/refusal branch reaches this one
+                  // guard-free outer return. A safe-parked author must hand off
+                  // its genuine claim rather than resume through such a branch.
+                  let action = if outer
+                                  && matches!(action, Dispatch::Resume)
+                                  && super::scheduler::must_leave_current()
+                  {
+                      Dispatch::Schedule
+                  }
+                  else
+                  {
+                      action
+                  };
                   let next = match action
                   {
                       Dispatch::Resume => frame,
@@ -342,6 +355,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         (WRONG_THREAD as i64, super::scheduler::service::RequestAction::Return)
     }
     else if matches!(number, NATIVE_THREAD | ADDRESS_WAIT)
+              || (number == PROCESS && size == size_of::<mac_abi::processes::NativeExitCall>())
     {
         let identity = super::scheduler::service::request_identity(frame);
         let suspension = super::scheduler::service::request_suspension_allowed(frame);
@@ -414,7 +428,7 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         return Dispatch::Schedule;
     }
     finish_service(frame, completion, result);
-    if physical_depth == 1 && super::scheduler::retired()
+    if physical_depth == 1 && action == super::scheduler::service::RequestAction::Exit
     {
         return Dispatch::Schedule;
     }
@@ -574,6 +588,14 @@ unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
     use super::scheduler::service::RequestResult;
     match number
     {
+        PROCESS =>
+        {
+            match unsafe { request::<mac_abi::processes::NativeExitCall>(pointer, size) }
+            {
+                Some(call) => toolbox::processes::termination::request(call, suspension),
+                None => RequestResult::done(BAD_ARGUMENT)
+            }
+        }
         NATIVE_THREAD =>
         {
             match unsafe { request::<mac_abi::native_threads::Call>(pointer, size) }

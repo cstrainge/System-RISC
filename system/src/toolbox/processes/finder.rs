@@ -1,7 +1,7 @@
 //! System-owned, staged shell replacement. Preparation never destroys the
 //! report; replacement never reuses a dying owner's image or stack.
 #![forbid(unsafe_code)]
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use mac_abi::*;
 use mac_object_table::shared::InvocationGate as _;
@@ -102,6 +102,8 @@ enum Work
 }
 static FLIGHT: Spinlock<Option<Work>> = Spinlock::new(None);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
+static ORIGIN_OWNER: AtomicU64 = AtomicU64::new(0);
+static ORIGIN_IMAGE: AtomicU64 = AtomicU64::new(0);
 static WAKE: AtomicBool = AtomicBool::new(false);
 static WAITING_FOR_STACK: AtomicBool = AtomicBool::new(false);
 static WAITING_FOR_REPORT: AtomicBool = AtomicBool::new(false);
@@ -114,12 +116,30 @@ pub(crate) fn request(binding: ResourceBinding, permit: crate::allocator::recove
                       -> Result<(), Status>
 {
     let activity = crate::context::recovery_activity().ok_or(NOT_SUPPORTED)?;
+    if binding.owner() != crate::context::finder_app().0
+       || binding.owner() != activity.owner()
+       || !binding.ledger().accepting()
+    {
+        return Err(ACCESS_DENIED);
+    }
+    let image = binding.image().ok_or(BAD_ABI)?.id();
     InvocationGate::run(|| {
         let mut flight = FLIGHT.lock();
-        if ACTIVE.swap(true, Ordering::AcqRel)
+        if ACTIVE.load(Ordering::Acquire)
         {
-            return Err(SERVICE_BUSY);
+            return if ORIGIN_OWNER.load(Ordering::Acquire) == binding.owner()
+                      && ORIGIN_IMAGE.load(Ordering::Acquire) == image
+            {
+                Ok(())
+            }
+            else
+            {
+                Err(SERVICE_BUSY)
+            };
         }
+        ORIGIN_OWNER.store(binding.owner(), Ordering::Release);
+        ORIGIN_IMAGE.store(image, Ordering::Release);
+        ACTIVE.store(true, Ordering::Release);
         WAITING_FOR_REPORT.store(false, Ordering::Release);
         UI_PROGRESS.store(false, Ordering::Release);
         *flight = Some(Work::Requested { old: binding,
@@ -763,10 +783,15 @@ pub(crate) fn pump()
     {
         WAKE.store(true, Ordering::Release);
     }
+    let active = next.is_some();
     InvocationGate::run(|| {
-        ACTIVE.store(next.is_some(), Ordering::Release);
+        ACTIVE.store(active, Ordering::Release);
         *FLIGHT.lock() = next;
     });
+    if !active
+    {
+        super::termination::progress();
+    }
 }
 
 /// A retained old stack advances only after a real reclamation checkpoint.

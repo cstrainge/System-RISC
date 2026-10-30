@@ -145,6 +145,23 @@ pub fn validate_guest(target: &str, actual: &str) -> Result<()>
                                   cargo xtask image",
                                  platform.rust_target, platform.llvm_profile)));
     }
+    validate_profile(target, actual)
+}
+
+/// Application-role target supplied by the pinned private Rust SDK. Low-level
+/// image roles continue to require the platform's explicit no_std target.
+pub fn validate_std_application(target: &str, actual: &str) -> Result<()>
+{
+    if target != "riscv64-unknown-systemrisc"
+    {
+        return Err(error("std application requires the pinned System RISC SDK target"));
+    }
+    validate_profile(target, actual)
+}
+
+fn validate_profile(target: &str, actual: &str) -> Result<()>
+{
+    let platform = current();
     let compiler = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     let expected = Command::new(compiler).args(["--print", "cfg", "--target", target, "-C"])
                                          .arg(format!("target-feature=+{}", platform.llvm_profile))

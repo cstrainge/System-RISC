@@ -2489,3 +2489,28 @@ setting another nonzero value invalidates that completion observation. Forced
 Process retirement drops retained receipts only after real execution quiescence
 and does not claim the user destructor ran. Key/code/storage cleanup remains in
 the actual owner's canonical walk.
+
+## Native signed process exit
+
+Native PROCESS accepts a size-distinct 16-byte `NativeExitCall`: signed i32
+program result at byte 0, u32 flags at byte 4, and reserved-zero u64 at byte 8.
+Flags are NORMAL=0 and ABORT=1; other bits are refused before admission. No
+process identity is on this wire. The System authenticates the genuine baseline
+Process executor and outer suspension contract. The existing classic/native
+`ProcessCall` layout and its legacy EXIT behavior remain separate.
+
+The program result is distinct from ApplicationEntry's native service Status.
+NORMAL does not imply user TLS destructor execution: the normal CRT completes
+its own teardown before exit, while explicit process exit skips it. ABORT never
+acknowledges user callbacks as completed. Accepted native exit consumes the
+current author continuation through the outer trap action after borrowed state
+has ended; every returned transport value, including zero, is an exit-contract
+refusal or violation for a nonreturning CRT facade.
+
+The first accepted typed outcome belongs to the real Process row and is consumed
+by stop/recovery policy and actual reclamation reporting. Finder termination
+enters System-owned replacement rather than bypassing the legacy Finder EXIT
+restriction. Diagnostic origin is metadata, never authority to create a recovery
+Activity or select another Process. A submitted resident report is retained;
+unfinished streaming is explicitly marked as a captured prefix. When no report
+was captured, the System labels its generated termination diagnostic accordingly.

@@ -2,7 +2,7 @@
 //! is absent or the genuine nonreturning process EXIT unexpectedly returns.
 use core::fmt::{self, Write};
 
-use crate::abi;
+use mac_abi as abi;
 struct Text
 {
     bytes: [u8; 768],
@@ -32,7 +32,9 @@ unsafe fn invoke<T>(number: u32, request: &mut T) -> i64
     }
     result as i64
 }
-pub(crate) fn abort(arguments: fmt::Arguments<'_>) -> !
+/// Emit a bounded diagnostic and request terminal application exit without
+/// depending on an installed services table, allocation, TLS or user callbacks.
+pub fn abort(arguments: fmt::Arguments<'_>) -> !
 {
     let mut text = Text { bytes: [0; 768],
                           used:  0 };
@@ -45,12 +47,14 @@ pub(crate) fn abort(arguments: fmt::Arguments<'_>) -> !
                                         length: text.used };
     // SAFETY: fixed live stack buffers; no service-table or heap dependency.
     let _ = unsafe { invoke(abi::traps::LOG, &mut log) };
-    let mut exit = abi::processes::ProcessCall { operation: abi::processes::EXIT,
-                                                 ..Default::default() };
+    let mut exit = abi::processes::NativeExitCall { code:     101,
+                                                    flags:    abi::processes::NATIVE_EXIT_ABORT,
+                                                    reserved: 0 };
     let status = unsafe { invoke(abi::traps::PROCESS, &mut exit) };
     exit_returned(status)
 }
-pub(crate) fn exit_returned(status: i64) -> !
+/// Last-resort terminal fault when the resident nonreturning exit contract fails.
+pub fn exit_returned(status: i64) -> !
 {
     let mut text = Text { bytes: [0; 768],
                           used:  0 };

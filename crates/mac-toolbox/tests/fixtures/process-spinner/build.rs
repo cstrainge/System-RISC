@@ -8,5 +8,7 @@ fn main()
         println!("cargo:rerun-if-changed=resources.smp.json");
         println!("cargo:rerun-if-changed=resources.heap.json");
         println!("cargo:rerun-if-changed=resources.tls.json");
+        println!("cargo:rerun-if-changed=resources.exit.json");
+        println!("cargo:rerun-if-changed=resources.exit-late.json");
     }
 }

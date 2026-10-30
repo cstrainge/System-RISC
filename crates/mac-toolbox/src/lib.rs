@@ -1,6 +1,9 @@
 //! Rust Toolbox facade over the resident System trap gate.
 #![no_std]
 #![cfg_attr(all(feature = "application", target_arch = "riscv64"), feature(alloc_error_handler))]
+#[cfg(all(feature = "application", target_os = "systemrisc"))]
+compile_error!("the System RISC std target supplies startup; remove the no_std application \
+                feature");
 /// Explicit wire/entry-point escape hatch. Ordinary applications use decoded
 /// native services, typed identities and Error rather than numeric statuses.
 pub use mac_abi as abi;
@@ -20,7 +23,7 @@ pub use toolbox_events::{Event, EventMask, Modifiers};
 pub use toolbox_inspection as inspection;
 pub mod panic;
 /// Native application entry, allocator and failure scaffold.
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
 pub mod application;
 pub use toolbox_controls as controls;
 pub use toolbox_crashes as crashes;

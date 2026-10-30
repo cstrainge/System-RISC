@@ -1049,3 +1049,63 @@ and RV64 disassembly, scrolled to the final instructions and quit. The earlier
 one/four-CPU and bundled-app observations above used the preceding integration
 build, before removal of unused continuation variants and wake-count preflight.
 Neither image establishes concurrent child-thread or full recovery correctness.
+
+Native process termination records the first signed program result independently
+of native entry service Status. Ordinary NORMAL exit uses the same canonical
+owner walk, real thread/image/stack barriers and retained cleanup tickets.
+ABORT and Finder termination use an inline Process failure slot admitted with
+that row. A sealed runtime-root gate closes author/child birth independently of
+Finder's still-accepting owner ledger; actual Host continuations drain their
+leases before a failure capture is frozen. No failed author resumes to retry.
+
+The guard-free System controller retains the genuine resource binding, claims
+or joins the preadmitted report Activity and keeps typed refusal state. It joins
+Finder's actual replacement flight by the original owner/image identity. The
+Activity recipient moves to the real successor before the old owner stops.
+Ordinary aborted processes remain parked until System report disposal completes,
+then enter their normal walk. Heavy Activity/capability releases occur outside
+scheduler and controller guards. Progress is signalled by actual safe-point,
+stock, modal and cleanup changes; there is no per-input retry scan.
+
+Report retention distinguishes submitted bytes, a truncated captured prefix and
+a System-generated diagnostic. A later failure during Finder replacement may
+retain the prior report; its original app/thread remain explicit in the report
+and actual exit record. These contracts do not qualify arbitrary privileged
+fault containment, full Finder exhaustion recovery or native std execution.
+
+The native termination transport is `Client::native_exit(i32, ExitKind)`, using
+the 16-byte `NativeExitCall` on PROCESS. Accepted termination consumes the
+author continuation. Any return is `ExitReturned`: a typed resident refusal,
+unexpected success, or invalid wire status. NORMAL does not execute TLS callbacks;
+a CRT performs normal-return TLS teardown before this call, while explicit exit
+skips it. Panic and allocator-failure producers submit ABORT immediately after
+attempting capture; failed authors do not poll the report viewer.
+
+Fresh report admission carries a sealed proof from the actual reusable modal
+Opening. Only that proof permits clearing saved stale window metadata, after
+the previous session's real acknowledgment barriers. A joined session retains
+its close obligations. Stopped unpublished reporters release their queued
+snapshot outside the queue guard; published windows retain their actual cleanup
+tickets. These are implemented ownership rules, not a claim that every possible
+close/refusal interleaving has been exercised.
+
+Finite native termination observations used release/LTO with debug information
+level 1, tracing disabled, 8 GiB RAM and four configured CPUs in private QEMU.
+System resource SHA-256: `fcaa968d6a634932bfe7a7dddd4080096c14a7144da59e71930d91217cc323e3`.
+Boot ROM SHA-256: `333aef570ac05592631513b5d030e5cd2646603b2ef0ddd31e9f959201197dc7`.
+The actual packaged native applications exercised malformed-exit refusal and
+subsequent reuse, explicit signed result -23 without TLS callbacks, six normal
+application quits, a 27,246-byte panic report with scrolling and dismissal,
+and report dismissal before a later ABORT without reopening it. Real thread and
+process reclamation followed. A separate Finder-role native fixture exercised
+two replacements, stale window/handle rejection, and input in the replacement
+and surviving application; this was not the production Finder under exhaustion.
+
+On the same resident code, an existing native paint-refusal fixture used one
+deliberately oversized System warning resource. It observed typed NO_MEMORY,
+preserved report data/live-window ownership, cancelled painting, and reset/retry
+with exact text readback. This modified-resource, host-checkpointed scenario
+does not qualify pristine-resource timing, first-paint ABORT, concurrent failure,
+delayed-close acknowledgment races or queued publication interrupted by owner
+stop. Those paths, full Save/Save As exhaustion, production Finder OOM recovery,
+native std execution and concurrent child-thread behavior remain unverified.

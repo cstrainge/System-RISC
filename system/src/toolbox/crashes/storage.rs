@@ -17,6 +17,13 @@ pub(super) struct Origin
     app:    u64,
     thread: u64
 }
+impl Origin
+{
+    pub(super) fn app(self) -> u64
+    {
+        self.app
+    }
+}
 pub(super) struct Data
 {
     pub(super) report: String,
@@ -66,14 +73,42 @@ pub(super) fn prepare() -> Result<(), Status>
         Ok(())
     })
 }
+/// Availability is a scheduling hint, not capture authority. The actual claim
+/// still validates unique ownership under this same stock gate.
+pub(super) fn available() -> bool
+{
+    InvocationGate::run(|| {
+        POOL.lock().archive.as_ref().is_some_and(|data| Arc::strong_count(data) == 1)
+    })
+}
+
 /// A temporary read pin. Pool metadata is unlocked before callers inspect or
 /// copy bytes, and the original account is never retained by this view.
-pub(super) struct Archived(Arc<Data>);
+#[derive(Clone)]
+struct ReleasedStock;
+impl Drop for ReleasedStock
+{
+    fn drop(&mut self)
+    {
+        #[cfg(target_arch = "riscv64")]
+        if available()
+        {
+            crate::toolbox::processes::termination::progress();
+        }
+    }
+}
+// The notification drops after the actual Arc, never before a final reader
+// releases the stock it was preventing another capture from claiming.
+pub(super) struct Archived
+{
+    data:      Arc<Data>,
+    _released: ReleasedStock
+}
 impl Archived
 {
     pub(super) fn data(&self) -> &Data
     {
-        &self.0
+        &self.data
     }
 }
 pub(super) fn archived(origin: Origin) -> Option<Archived>
@@ -81,16 +116,23 @@ pub(super) fn archived(origin: Origin) -> Option<Archived>
     InvocationGate::run(|| {
         let pool = POOL.lock();
         let data = pool.archive.as_ref()?;
-        (data.origin == Some(origin)).then(|| Archived(data.clone()))
+        (data.origin == Some(origin)).then(|| {
+                                         Archived { data:      data.clone(),
+                                                    _released: ReleasedStock }
+                                     })
     })
 }
 #[derive(Clone)]
-pub(super) struct Protected(Arc<Data>);
+pub(super) struct Protected
+{
+    data:      Arc<Data>,
+    _released: ReleasedStock
+}
 impl Protected
 {
     fn claim() -> Result<Self, Status>
     {
-        InvocationGate::run(|| {
+        let claimed = InvocationGate::run(|| {
             let mut pool = POOL.lock();
             if !pool.initialized
             {
@@ -100,8 +142,17 @@ impl Protected
             {
                 return Err(SERVICE_BUSY);
             }
-            pool.archive.take().map(Self).ok_or(SERVICE_BUSY)
-        })
+            pool.archive
+                .take()
+                .map(|data| {
+                    Self { data,
+                           _released: ReleasedStock }
+                })
+                .ok_or(SERVICE_BUSY)
+        })?;
+        #[cfg(target_arch = "riscv64")]
+        crate::toolbox::processes::termination::progress();
+        Ok(claimed)
     }
 
     fn restart(&mut self) -> Result<(), Status>
@@ -110,7 +161,7 @@ impl Protected
             let mut pool = POOL.lock();
             match pool.archive.as_ref()
             {
-                Some(data) if Arc::ptr_eq(data, &self.0) && Arc::strong_count(data) == 2 =>
+                Some(data) if Arc::ptr_eq(data, &self.data) && Arc::strong_count(data) == 2 =>
                 {
                     drop(pool.archive.take());
                 }
@@ -118,7 +169,7 @@ impl Protected
                 None =>
                 {}
             }
-            if Arc::strong_count(&self.0) != 1
+            if Arc::strong_count(&self.data) != 1
             {
                 return Err(SERVICE_BUSY);
             }
@@ -132,7 +183,7 @@ impl Protected
             let mut pool = POOL.lock();
             if pool.archive.is_none()
             {
-                pool.archive = Some(self.0.clone());
+                pool.archive = Some(self.data.clone());
             }
         });
     }
@@ -158,6 +209,11 @@ impl Default for Payload
 }
 impl Payload
 {
+    pub(super) fn protected(&self) -> bool
+    {
+        matches!(self, Self::Protected(_))
+    }
+
     pub(super) fn origin(&self) -> Option<Origin>
     {
         self.data().origin
@@ -165,7 +221,10 @@ impl Payload
 
     pub(super) fn from_archive(origin: Origin) -> Option<Self>
     {
-        archived(origin).map(|data| Self::Protected(Protected(data.0)))
+        archived(origin).map(|data| {
+                            Self::Protected(Protected { data:      data.data.clone(),
+                                                        _released: ReleasedStock })
+                        })
     }
 
     pub(super) fn data(&self) -> &Data
@@ -173,7 +232,7 @@ impl Payload
         match self
         {
             Self::Local(data) => data,
-            Self::Protected(data) => &data.0
+            Self::Protected(data) => &data.data
         }
     }
 
@@ -182,7 +241,7 @@ impl Payload
         match self
         {
             Self::Local(data) => Ok(data),
-            Self::Protected(data) => Arc::get_mut(&mut data.0).ok_or(SERVICE_BUSY)
+            Self::Protected(data) => Arc::get_mut(&mut data.data).ok_or(SERVICE_BUSY)
         }
     }
 

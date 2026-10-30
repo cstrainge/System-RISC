@@ -67,6 +67,19 @@ impl fmt::Display for Label
         output.write_str(self.text().map_err(|_| fmt::Error)?)
     }
 }
+impl fmt::Write for Label
+{
+    fn write_str(&mut self, text: &str) -> fmt::Result
+    {
+        if text.len() > self.bytes.len() - self.length
+        {
+            return Err(fmt::Error);
+        }
+        self.bytes[self.length..self.length + text.len()].copy_from_slice(text.as_bytes());
+        self.length += text.len();
+        Ok(())
+    }
+}
 fn label(index: u32) -> Result<Label, Status>
 {
     let mut bytes = [0; 256];
@@ -150,6 +163,151 @@ fn window_request(id: WindowId) -> WindowRequest
 
 impl super::Desktop
 {
+    pub(crate) fn note_crash_capture_attempt(&mut self)
+    {
+        self.crash.capture_attempt();
+    }
+
+    pub(crate) fn acknowledged_native_failure(
+        &mut self, binding: &crate::toolbox::processes::ResourceBinding)
+        -> Result<Option<crate::toolbox::processes::termination::Retention>, Status>
+    {
+        self.native_failure_selection(binding)?;
+        if binding.owner() == crate::context::finder_app().0
+           || !self.crash.acknowledged_capture(binding.owner())
+        {
+            return Ok(None);
+        }
+        Ok(Some(self.crash.seal_failure_capture()))
+    }
+
+    pub(crate) fn submit_crash_capture(&mut self, flags: u32) -> Result<CrashInfo, Status>
+    {
+        if self.crash.info().app == 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        self.crash.submit(flags);
+        Ok(self.crash.info())
+    }
+
+    pub(crate) fn adopt_native_failure_report(&mut self,
+                                              binding: &crate::toolbox::processes::ResourceBinding,
+                                              snapshot: &mut Option<crate::toolbox::crashes::Snapshot>,
+                                              fresh: &mut Option<crate::recovery::FreshReport>,
+                                              activity: &crate::recovery::Activity)
+                                              -> Result<crate::recovery::ReportAdoption, Status>
+    {
+        use crate::recovery::ReportAdoption;
+        self.native_failure_selection(binding)?;
+        if activity.closing()
+        {
+            return Ok(ReportAdoption::FreshClaimNeeded);
+        }
+        let old = self.crash.info().window;
+        if let Some(proof) = fresh.as_ref()
+        {
+            // A fresh Opening is the actual all-prior-children-ACK receipt.
+            // It cannot clear anything published in this current session.
+            if activity.has_outstanding_windows()
+               || (old.0 != 0 && self.windows.window(old).is_some())
+            {
+                return Ok(ReportAdoption::FreshClaimNeeded);
+            }
+            proof.validate(activity, binding.ledger())?;
+        }
+        else if old.0 != 0
+        {
+            if snapshot.is_some() || self.windows.window(old).is_none()
+            {
+                return Ok(ReportAdoption::FreshClaimNeeded);
+            }
+        }
+        else if activity.has_outstanding_windows()
+        {
+            return Ok(ReportAdoption::FreshClaimNeeded);
+        }
+        // Consume before replacing metadata or publishing a new window, with
+        // or without a queued snapshot. A retry can never reuse this receipt.
+        let proof = fresh.take();
+        if proof.is_some() && old.0 != 0
+        {
+            self.crash.set_window(WindowId(0));
+        }
+        if let Some(snapshot) = snapshot.take()
+        {
+            let superseded = self.crash.capture_superseded();
+            self.crash = crate::toolbox::crashes::Manager::from_snapshot(snapshot);
+            if superseded
+            {
+                self.crash.capture_attempt();
+            }
+        }
+        drop(proof);
+        Ok(ReportAdoption::Ready)
+    }
+
+    pub(crate) fn native_failure_keeps_stock(&mut self,
+                                             binding: &crate::toolbox::processes::ResourceBinding)
+                                             -> Result<bool, Status>
+    {
+        self.native_failure_selection(binding)?;
+        Ok(self.crash.owns_protected_stock())
+    }
+
+    /// All authors were actually quiesced before this snapshot boundary. A
+    /// submitted report remains complete; unfinished streaming is labelled as
+    /// a captured prefix, never passed off as the full userspace diagnostic.
+    pub(crate) fn prepare_native_failure_report(
+        &mut self, binding: &crate::toolbox::processes::ResourceBinding,
+        record: crate::toolbox::processes::termination::Record)
+        -> Result<crate::toolbox::processes::termination::Retention, Status>
+    {
+        self.native_failure_selection(binding)?;
+        let info = self.crash.info();
+        if info.app == 0 || info.dismissed != 0 || info.thread == 0
+        {
+            if info.window.0 != 0
+            {
+                let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                self.close_crash_report(&activity)?;
+            }
+            self.crash.begin_protected(binding.owner(), record.thread, 0)?;
+            let layout = crate::toolbox::crashes::prepared_layout()?;
+            self.crash.set_columns(layout.columns)?;
+            self.crash.set_page_lines(layout.page_lines);
+            let mut text = Label { bytes:  [0; 256],
+                                   length: 0 };
+            use core::fmt::Write;
+            write!(text,
+                   "System-owned process termination.\nApp: {}  Thread: {}\n{}\nNo complete \
+                    application diagnostic was submitted.\n",
+                   binding.owner(),
+                   record.thread,
+                   record.outcome).map_err(|_| BAD_ARGUMENT)?;
+            self.crash.request(&mut CrashCall { operation: APPEND,
+                                                 ..Default::default() },
+                                text.text()?,
+                                &mut [])?;
+            self.crash.seal_system_diagnostic();
+        }
+        let retention = self.crash.seal_failure_capture();
+        self.resume_crash_report()?;
+        Ok(retention)
+    }
+
+    pub(crate) fn native_failure_dismissed(&self,
+                                           binding: &crate::toolbox::processes::ResourceBinding)
+                                           -> Result<bool, Status>
+    {
+        let info = self.crash.info();
+        if info.app != binding.owner()
+        {
+            return Err(BAD_ABI);
+        }
+        Ok(info.dismissed != 0 && info.window.0 == 0)
+    }
+
     /// Boot preparation uses the renderer's actual managed-button requirement.
     pub(crate) const fn crash_control_count() -> usize
     {
@@ -378,12 +536,21 @@ impl super::Desktop
         {
             return Err(ACCESS_DENIED);
         }
+        if !owner.accepting()
+        {
+            return Err(OPERATION_CANCELLED);
+        }
         self.enter(binding.owner());
         if self.owner != binding.owner()
         {
             return Err(NOT_FOUND);
         }
+        let superseded = self.crash.capture_superseded();
         self.crash = crate::toolbox::crashes::Manager::from_snapshot(snapshot);
+        if superseded
+        {
+            self.crash.capture_attempt();
+        }
         self.resume_crash_report()
     }
 
@@ -393,6 +560,10 @@ impl super::Desktop
         if activity.owner() != self.owner
         {
             return Err(ACCESS_DENIED);
+        }
+        if activity.closing()
+        {
+            return Err(OPERATION_CANCELLED);
         }
         if self.dialogs.active()
            && let Err(status) = self.close_dialog()
@@ -602,7 +773,16 @@ impl super::Desktop
                         append(&mut warnings, label(index)?.text()?)?;
                     }
                 }
-                if let Some(status) = self.crash.restart_error
+                if self.crash.capture_superseded()
+                {
+                    warnings.clear();
+                    append(&mut warnings, label(22)?.text()?)?;
+                    if let Some(status) = self.crash.restart_error
+                    {
+                        write_text(&mut warnings, format_args!("  {} ({status})", label(7)?))?;
+                    }
+                }
+                else if let Some(status) = self.crash.restart_error
                 {
                     warnings.clear();
                     append(&mut warnings,
@@ -848,6 +1028,20 @@ impl super::Desktop
             return Ok(());
         }
         let binding = self.processes.resource_binding(self.owner)?;
+        self.queue_native_finder_restart(binding)
+    }
+
+    /// Authority is the actual Process/Activity binding. The diagnostic may
+    /// still describe an earlier Finder instance and cannot mint authority.
+    pub(crate) fn queue_native_finder_restart(&mut self,
+                                              binding: crate::toolbox::processes::ResourceBinding)
+                                              -> Result<(), Status>
+    {
+        self.native_failure_selection(&binding)?;
+        if binding.owner() != crate::context::finder_app().0
+        {
+            return Err(ACCESS_DENIED);
+        }
         let permit = crate::recovery::permit()?;
         match crate::toolbox::processes::finder::request(binding, permit)
         {

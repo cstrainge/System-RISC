@@ -9,6 +9,7 @@ mod presentation;
 pub(crate) mod documents;
 pub(crate) mod retirement;
 pub(crate) mod finder;
+pub(crate) mod termination;
 pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
 {
     let caller = crate::context::current_thread_context().identity().app.0;
@@ -64,6 +65,7 @@ pub struct Process
     tls:              Option<crate::toolbox::native_threads::RootBinding>,
     pub stamp:        u64,
     cleanup:          Option<crate::toolbox::handles::cleanup::Checkpoint>,
+    termination:      termination::State,
     account:          crate::machine::scheduler::accounting::ProcessAccount
 }
 
@@ -137,6 +139,12 @@ impl ResourceBinding
     pub(crate) fn owner(&self) -> u64
     {
         self.owner.owner().incarnation()
+    }
+
+    pub(crate) fn retain(&self) -> Self
+    {
+        Self { owner: self.owner.clone(),
+               image: self.image }
     }
 
     pub(crate) fn image(&self) -> Option<crate::images::Binding>
@@ -447,6 +455,7 @@ impl Manager
                               tls: None,
                               stamp: 0,
                               cleanup: Some(cleanup),
+                              termination: Default::default(),
                               account })
             .map_err(|error| {
                 serial!("PROCESS_DOMAIN_REFUSED: {error}");

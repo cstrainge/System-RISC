@@ -6,7 +6,10 @@ use alloc::boxed::Box;
 use mac_abi::{processes::*, *};
 
 use crate::toolbox::{events::EventManager,
-                     processes::menu::{Action, Entry},
+                     handles::OwnerRef,
+                     processes::{ResourceBinding,
+                                 menu::{Action, Entry},
+                                 termination::{Outcome, Retention}},
                      runtime::Desktop,
                      windows::{GroupFocus, WindowId}};
 
@@ -143,6 +146,47 @@ impl Drop for FinderAdmission
 }
 impl Desktop
 {
+    /// A scheduling preference only. Capture authority remains the exact
+    /// retained binding, not a saved report's original app/thread label.
+    pub(crate) fn native_failure_stock_owner(&self) -> Option<u64>
+    {
+        if self.crash.owns_protected_stock() && self.processes.has_native_failure(self.owner)
+        {
+            return Some(self.owner);
+        }
+        self.locals
+            .iter()
+            .find(|local| {
+                local.crash.owns_protected_stock() && self.processes.has_native_failure(local.id)
+            })
+            .map(|local| local.id)
+    }
+
+    fn log_actual_exit(owner: u64, outcome: Option<crate::toolbox::processes::termination::Record>)
+    {
+        match outcome
+        {
+            Some(outcome) => serial!("PROCESS_EXIT app={owner} {outcome}"),
+            None => serial!("PROCESS_EXIT app={owner} kind=unstarted")
+        }
+    }
+
+    pub(crate) fn native_failure_selection(&mut self,
+                                           binding: &crate::toolbox::processes::ResourceBinding)
+                                           -> Result<(), Status>
+    {
+        if self.processes.ledger(binding.owner())?.owner() != binding.ledger().owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        self.enter(binding.owner());
+        if self.owner != binding.owner()
+        {
+            return Err(NOT_FOUND);
+        }
+        Ok(())
+    }
+
     pub(crate) fn reserve_finder(&mut self, old: u64, permit: crate::allocator::recovery::Permit)
                                  -> Result<FinderAdmission, Status>
     {
@@ -1140,6 +1184,22 @@ impl Desktop
         crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
             let caller = file.id;
             self.enter(caller);
+            if let Err(status) =
+                self.processes.note_exit(&ledger,
+                                         if replacement.is_some()
+                                         {
+                                             Outcome::ShellReplacement
+                                         }
+                                         else
+                                         {
+                                             Outcome::Legacy
+                                         },
+                                         crate::context::current_thread_context().identity()
+                                                                                 .thread
+                                                                                 .0)
+            {
+                serial!("PROCESS_EXIT_RECORD_RETAINED app={caller} status={status}");
+            }
             {
                 use mac_object_table::shared::InvocationGate as _;
                 crate::toolbox::handles::InvocationGate::run(|| {
@@ -1224,9 +1284,10 @@ impl Desktop
                 };
                 if self.processes.cleanup_drained(owner) == Ok(true)
                 {
+                    let outcome = self.processes.exit_record(owner).ok().flatten();
                     if self.processes.remove(owner).is_ok()
                     {
-                        serial!("PROCESS_EXIT app={owner}");
+                        Self::log_actual_exit(owner, outcome);
                     }
                     continue;
                 }
@@ -1320,6 +1381,7 @@ impl Desktop
                 }
                 self.locals.retain(|state| state.id != owner);
                 drop(checkpoint);
+                let outcome = self.processes.exit_record(owner).ok().flatten();
                 if let Err(status) = self.processes.remove(owner)
                 {
                     let remaining = ledger.summary();
@@ -1349,7 +1411,7 @@ impl Desktop
                     }
                     continue;
                 }
-                serial!("PROCESS_EXIT app={owner}");
+                Self::log_actual_exit(owner, outcome);
             }
         });
     }
@@ -1574,5 +1636,60 @@ impl crate::toolbox::files::pins::PinHost for Desktop
                 Err(crate::toolbox::handles::cleanup::Failure::files_unavailable(ticket, error))
             }
         }
+    }
+}
+
+impl Desktop
+{
+    pub(crate) fn native_normal_exit(&mut self, owner: &OwnerRef, image: crate::images::Binding,
+                                     thread: u64, outcome: Outcome)
+                                     -> Result<(), Status>
+    {
+        let id = owner.owner().incarnation();
+        let binding = self.processes.resource_binding(id)?;
+        if id == crate::context::finder_app().0
+           || binding.ledger().owner() != owner.owner()
+           || binding.image().map(crate::images::Binding::id) != Some(image.id())
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let file = self.processes.snapshot(id)?;
+        let checkpoint = self.processes.cleanup_checkpoint(id)?;
+        self.processes.note_exit(owner, outcome, thread)?;
+        self.stop_process(file, owner.clone(), checkpoint, binding, None);
+        Ok(())
+    }
+
+    pub(crate) fn record_native_report(
+        &mut self, binding: &ResourceBinding, retention: Retention)
+        -> Result<crate::toolbox::processes::termination::Record, Status>
+    {
+        if self.processes.ledger(binding.owner())?.owner() != binding.ledger().owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let info = self.crash.info();
+        self.processes.note_report(binding, retention, info.app, info.thread)
+    }
+
+    pub(crate) fn stop_native_failure(&mut self, binding: &ResourceBinding) -> Result<(), Status>
+    {
+        if binding.owner() == crate::context::finder_app().0
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let file = self.processes.snapshot(binding.owner())?;
+        let ledger = self.processes.ledger(binding.owner())?;
+        if ledger.owner() != binding.ledger().owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let checkpoint = self.processes.cleanup_checkpoint(binding.owner())?;
+        self.stop_process(file,
+                          ledger,
+                          checkpoint,
+                          self.processes.resource_binding(binding.owner())?,
+                          None);
+        Ok(())
     }
 }

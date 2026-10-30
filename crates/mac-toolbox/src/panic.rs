@@ -1,13 +1,15 @@
 //! Shared native application panic handler. System owns the report window and
 //! its input handling; the failed application only streams text and sleeps.
-use core::{fmt::{self, Write},
-           sync::atomic::{AtomicPtr, Ordering}};
+use core::fmt::{self, Write};
+#[cfg(not(target_os = "systemrisc"))]
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::{Client, SystemServices,
             crashes::{self, Crashes}};
 
+#[cfg(not(target_os = "systemrisc"))]
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
 static PANICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Install the loader's service table before executing application code.
@@ -15,6 +17,7 @@ static PANICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBoo
 /// # Safety
 /// The table and callbacks must remain valid until every application thread has
 /// terminated, including while its panic handler is running.
+#[cfg(not(target_os = "systemrisc"))]
 pub unsafe fn install(services: *const SystemServices) -> Result<(), crate::abi::Status>
 {
     if !services.addr().is_multiple_of(core::mem::align_of::<SystemServices>())
@@ -35,7 +38,17 @@ pub unsafe fn install(services: *const SystemServices) -> Result<(), crate::abi:
 /// or synthetic current application exists in the SDK.
 pub(crate) fn installed_client() -> Option<Client<'static>>
 {
+    #[cfg(not(target_os = "systemrisc"))]
     let pointer = SERVICES.load(Ordering::Acquire);
+    #[cfg(target_os = "systemrisc")]
+    let pointer = unsafe {
+        // std's platform entry owns the one installation for a std process.
+        // Only the C-layout service table crosses the sysroot/Cargo boundary.
+        unsafe extern "C" {
+            fn __system_risc_services_v1() -> *const SystemServices;
+        }
+        __system_risc_services_v1()
+    };
     // SAFETY: install requires permanent immutable table/callback lifetime.
     unsafe { Client::from_raw(pointer) }.ok()
 }
@@ -91,7 +104,7 @@ impl Write for Writer<'_>
     }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
 pub(crate) fn diagnostic(client: Client<'_>, arguments: fmt::Arguments<'_>)
 {
     let mut writer = Writer { client,
@@ -141,16 +154,17 @@ pub fn report(client: Client<'_>, arguments: fmt::Arguments<'_>)
 
 /// Called by the application's single panic handler. No application events or
 /// drawing callbacks run after a panic; native event waits park the OS thread.
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
 pub fn handle(info: &core::panic::PanicInfo<'_>) -> !
 {
     fail(format_args!("{info}"))
 }
 
 /// Nonallocating common path for panic, OOM and allocator protocol failures.
-/// Current applications have one scheduled author thread; this does not claim
-/// a future concurrent application-failure coordinator or arbitrary unwind.
-#[cfg(target_arch = "riscv64")]
+/// One caller attempts resident capture; secondary failures request the System
+/// termination protocol. Unsubmitted text can only be reported as a captured
+/// prefix or unavailable diagnostic, never as arbitrary fault recovery.
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
 pub(crate) fn fail(arguments: fmt::Arguments<'_>) -> !
 {
     let Some(client) = installed_client()
@@ -161,44 +175,25 @@ pub(crate) fn fail(arguments: fmt::Arguments<'_>) -> !
     if PANICKING.swap(true, Ordering::AcqRel)
     {
         crate::application::abort(format_args!("APPLICATION_FAILURE_ALREADY_REPORTING; \
-                                                recursive/concurrent failure is uncontained"));
+                                                requesting System-owned abort; unsubmitted \
+                                                diagnostic text may be unavailable"));
     }
     let _ = client.log("APPLICATION_PANIC_BEGIN\n");
-    let shown = match report(client, arguments)
+    if let Err(cause) = report(client, arguments)
     {
-        Ok(_) => true,
+        diagnostic(client,
+                   format_args!("APPLICATION_PANIC_VIEWER_UNAVAILABLE status={} cause={cause}; \
+                                 see serial diagnostics\n",
+                                cause.status()));
+    }
+    // The System owns report retention, dismissal and recovery from here.
+    // No failed author continuation remains to poll or service events.
+    match client.native_exit(101, mac_traps::native_exit::ExitKind::Abort)
+    {
+        Ok(never) => match never {},
         Err(cause) =>
         {
-            diagnostic(client,
-                       format_args!("APPLICATION_PANIC_VIEWER_UNAVAILABLE status={} \
-                                     cause={cause}; see serial diagnostics\n",
-                                    cause.status()));
-            false
-        }
-    };
-    park(client, shown)
-}
-
-#[cfg(target_arch = "riscv64")]
-fn park(client: Client<'_>, shown: bool) -> !
-{
-    loop
-    {
-        let dismissed = !shown || Crashes::new(client).info().is_ok_and(|info| info.dismissed);
-        if dismissed
-        {
-            let mut call = mac_abi::processes::ProcessCall { operation: mac_abi::processes::EXIT,
-                                                             ..Default::default() };
-            let status =
-                client.process(&mut call).map_or_else(|error| error.status(), |_| crate::abi::OK);
-            crate::application::exit_returned(i64::from(status));
-        }
-        // System owns input and reporting. This wait invokes no app handlers.
-        if let Err(cause) = client.wait_event(0, 60)
-        {
-            crate::application::abort(format_args!("APPLICATION_FAILURE_WAIT_REFUSED status={} \
-                                                    cause={cause}",
-                                                   cause.status()));
+            crate::application::abort(format_args!("APPLICATION_EXIT_CONTRACT_FAILURE: {cause}"))
         }
     }
 }
