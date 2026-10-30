@@ -91,7 +91,7 @@ pub unsafe extern "C" fn __system_risc_thread_id_v1() -> u64
 {
     match runtime::client().current_native_thread()
     {
-        Ok(thread) => thread,
+        Ok(thread) => thread.0,
         Err(cause) => refused("current thread", cause)
     }
 }
