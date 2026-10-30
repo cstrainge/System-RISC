@@ -3,9 +3,10 @@
 #![forbid(unsafe_code)]
 pub use mac_abi::{Point, Rect, WindowId, controls::ScrollbarState,
                   definitions::ControlDefinitionState as StandardState, quickdraw::FontSelection};
-pub use sr_control_reflow_handling::{Anchors, AxisConstraint, Constraints, Error as LayoutError,
-                                     Extent, Invalidation, LayoutRect, Measurement, Reflow,
-                                     Requirements, Size, SizePreferences, Span, TrackSize};
+pub use sr_control_reflow_handling::{Anchors, AxisConstraint, BorderOffsets, Constraints,
+                                     Error as LayoutError, Extent, Invalidation, LayoutRect,
+                                     Measurement, Reflow, Requirements, Size, SizePreferences,
+                                     Span, TrackSize};
 #[repr(i16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StandardKind

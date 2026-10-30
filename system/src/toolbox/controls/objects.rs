@@ -76,6 +76,8 @@ struct Layout
 {
     sizing:              layout::SizingState,
     anchors:             layout::Anchors,
+    window_border:       layout::BorderOffsets,
+    window_extent:       Option<(i16, i16)>,
     visible:             Option<Rect>,
     measured:            Option<(layout::Constraints, layout::Measurement)>,
     intrinsic:           Option<layout::Measurement>,
@@ -88,7 +90,9 @@ impl Layout
     fn new(bounds: Rect) -> Result<Self, Status>
     {
         let bounds = layout::LayoutRect::try_from(bounds).map_err(|e| e.status())?;
-        Ok(Self { anchors:             layout::Anchors::NONE,
+        Ok(Self { window_border:       layout::BorderOffsets::ZERO,
+                  window_extent:       None,
+                  anchors:             layout::Anchors::NONE,
                   sizing:              layout::SizingState::new(bounds.size()),
                   visible:             None,
                   measured:            None,
@@ -385,6 +389,8 @@ impl Manager
         state.spec.write(call);
         call.reflow = u32::from(state.layout.is_some());
         call.layout.anchors = state.layout.as_ref().map_or(0, |l| l.anchors.into());
+        call.layout.window_border =
+            state.layout.as_ref().map_or(Default::default(), |l| l.window_border.into());
         call.layout.invalidation = state.layout.as_ref().map_or(0, Layout::pending);
         call.result = 0;
         call.flags =
@@ -722,6 +728,8 @@ impl Manager
         o.spec.write(call);
         call.reflow = u32::from(o.layout.is_some());
         call.layout.anchors = o.layout.as_ref().map_or(0, |l| l.anchors.into());
+        call.layout.window_border =
+            o.layout.as_ref().map_or(Default::default(), |l| l.window_border.into());
         call.layout.invalidation = o.layout.as_ref().map_or(0, Layout::pending);
         call.result = i32::from(part);
         call.flags = (u32::from(o.tracking.is_some()) * TRACKING)
@@ -772,6 +780,10 @@ impl Manager
         let changed_geometry = object.state.spec.bounds() != next.spec.bounds();
         let newly_pending = next.layout.as_ref().is_some_and(|l| l.arrangement_pending)
                             && object.state.layout.as_ref().is_some_and(|l| !l.arrangement_pending);
+        if changed_geometry && let Some(l) = &mut next.layout
+        {
+            l.window_extent = None;
+        }
         object.state = next;
         if changed_requirements
         {
@@ -835,3 +847,5 @@ mod reflow;
 mod tree;
 
 mod grid;
+pub(crate) use grid::Prepared;
+mod window;

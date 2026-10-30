@@ -40,6 +40,47 @@ struct Item
     columns:         Axis,
     rows:            Axis
 }
+pub(crate) struct Prepared
+{
+    metadata:               Option<(u64, State)>,
+    items:                  Vec<Item>,
+    pub(crate) drawings:    Vec<super::super::Drawing>,
+    pub(crate) measurement: wire::Measurement,
+    parent:                 u64,
+    assign:                 bool
+}
+impl Prepared
+{
+    pub(super) fn empty() -> Self
+    {
+        Self { metadata:    None,
+               items:       Vec::new(),
+               drawings:    Vec::new(),
+               measurement: Default::default(),
+               parent:      0,
+               assign:      false }
+    }
+
+    pub(super) fn metadata(id: u64, state: State) -> Self
+    {
+        Self { metadata: Some((id, state)),
+               ..Self::empty() }
+    }
+
+    pub(super) fn extend(&mut self, mut next: Self) -> Result<(), Status>
+    {
+        if self.items.is_empty() && self.drawings.is_empty()
+        {
+            *self = next;
+            return Ok(());
+        }
+        self.items.try_reserve(next.items.len()).map_err(|_| NO_MEMORY)?;
+        self.drawings.try_reserve(next.drawings.len()).map_err(|_| NO_MEMORY)?;
+        self.items.append(&mut next.items);
+        self.drawings.append(&mut next.drawings);
+        Ok(())
+    }
+}
 fn size(width: i64, height: i64) -> Result<layout::Size, Status>
 {
     Ok(layout::Size::new(layout::Extent::from_wide(width).map_err(|e| e.status())?,
@@ -163,20 +204,19 @@ impl Manager
                                         .. }))
     }
 
-    /// All fallible allocation, CDEF preparation and retained admission precede
-    /// publication. A no-op returns before resolving images or allocating a plan.
-    pub(crate) fn request_grid(&mut self, call: &mut ControlCall, owner: u64, paint_pending: bool,
-                               gate: TrapGate,
-                               mut resolve: impl FnMut(i16) -> Result<DefinitionEntry, Status>,
-                               mut publish: impl FnMut(&mut Vec<super::super::Drawing>)
-                                     -> Result<(), Status>)
-                               -> Result<bool, Status>
+    /// Prepare with cloned state only. The caller admits all retained output
+    /// before committing; multiple roots can share one window transaction.
+    pub(crate) fn prepare_layout(&self, call: &ControlCall, owner: u64, paint_pending: bool,
+                                 gate: TrapGate,
+                                 mut resolve: impl FnMut(i16) -> Result<DefinitionEntry, Status>,
+                                 window: Option<(Rect, layout::Anchors, layout::BorderOffsets)>)
+                                 -> Result<Prepared, Status>
     {
         if call.layout.reserved != 0
         {
             return Err(BAD_ARGUMENT);
         }
-        let root = self.table(call.id, owner)?;
+        let root = self.get(call.id, owner)?;
         let assign = call.layout.message == wire::ASSIGN_RECT;
         let constraints: layout::Constraints = if assign
         {
@@ -193,11 +233,12 @@ impl Manager
             return Err(NOT_SUPPORTED);
         };
         let root_layout = root.state.layout.as_ref().ok_or(NOT_SUPPORTED)?;
-        if assign
+        if window.is_none()
+           && assign
            && root.state.spec.bounds() == call.layout.rect
            && !root_layout.arrangement_pending
         {
-            return Ok(false);
+            return Ok(Prepared::empty());
         }
         if assign && paint_pending
         {
@@ -215,12 +256,20 @@ impl Manager
             };
             if let Some(measured) = cached
             {
-                call.layout.measurement = layout::Measurement { intrinsic: root_layout.sizing.resolve(measured.intrinsic), constrained: root_layout.sizing.resolve(measured.constrained) }.into();
-                return Ok(false);
+                let mut prepared = Prepared::empty();
+                prepared.measurement = layout::Measurement { intrinsic: root_layout.sizing.resolve(measured.intrinsic), constrained: root_layout.sizing.resolve(measured.constrained) }.into();
+                return Ok(prepared);
             }
         }
         let mut plan = Vec::new();
         self.append_plan(&mut plan, call.id, None, owner, &mut resolve)?;
+        if let Some((viewport, anchors, border)) = window
+        {
+            let l = plan[0].state.layout.as_mut().ok_or(NOT_SUPPORTED)?;
+            l.anchors = anchors;
+            l.window_border = border;
+            l.window_extent = Some((viewport.right, viewport.bottom));
+        }
         let mut index = 0;
         while index < plan.len()
         {
@@ -287,6 +336,18 @@ impl Manager
             layout::AxisConstraint::AtMost(v) => root_pref.min(v.pixels()),
             layout::AxisConstraint::Exact(v) => v.pixels()
         };
+        if let Some((viewport, anchors, border)) = window
+        {
+            let (start, extent) = super::window::axis(viewport.right,
+                                                      border.left(),
+                                                      border.right(),
+                                                      root_pref,
+                                                      anchors.left,
+                                                      anchors.right);
+            plan[0].width = extent;
+            plan[0].rect.left = start;
+            plan[0].rect.right = start + extent;
+        }
         // Resolve widths top-down, including anchors, before any row calculation.
         for i in 0..plan.len()
         {
@@ -383,7 +444,22 @@ impl Manager
         }
         if assign
         {
-            plan[0].rect = call.layout.rect;
+            if let Some((viewport, anchors, border)) = window
+            {
+                let preferred = plan[0].constrained.constrained.preferred().height().pixels();
+                let (start, extent) = super::window::axis(viewport.bottom,
+                                                          border.top(),
+                                                          border.bottom(),
+                                                          preferred,
+                                                          anchors.top,
+                                                          anchors.bottom);
+                plan[0].rect.top = start;
+                plan[0].rect.bottom = start + extent;
+            }
+            else
+            {
+                plan[0].rect = call.layout.rect;
+            }
             for i in 0..plan.len()
             {
                 if !plan[i].children.is_empty()
@@ -499,29 +575,42 @@ impl Manager
                 }
             }
         }
-        // Admission closure may fail, but then no live state or scene has changed.
-        let changed = !drawings.is_empty();
-        let parent = self.get(call.id, owner)?.tree.parent;
-        for item in &plan
+        if let Some((viewport, _, _)) = window
         {
-            self.get(item.id, owner)?;
+            plan[0].state.layout.as_mut().ok_or(CORRUPT_DATA)?.window_extent =
+                Some((viewport.right, viewport.bottom));
         }
-        publish(&mut drawings)?;
-        for staged in plan
+        let parent = self.get(call.id, owner)?.tree.parent;
+        Ok(Prepared { metadata: None,
+                      items: plan,
+                      drawings,
+                      measurement: answer.into(),
+                      parent,
+                      assign })
+    }
+
+    /// No allocation, definition call or fallible work after scene publication.
+    /// The desktop guard and definition nonreentrancy keep every staged ID live.
+    pub(crate) fn commit_layout(&mut self, prepared: Prepared)
+    {
+        if let Some((id, state)) = prepared.metadata
         {
-            // The held desktop guard and nonreentrant invocation contract keep
-            // these IDs live. No fallible operation follows scene publication.
+            if let Some(object) = self.objects.get_mut(id)
+            {
+                object.state = state;
+            }
+        }
+        for staged in prepared.items
+        {
             if let Some(object) = self.objects.get_mut(staged.id)
             {
                 object.state = staged.state;
             }
         }
-        if assign
+        if prepared.assign
         {
-            self.invalidate_arrangement_ancestors(parent);
+            self.invalidate_arrangement_ancestors(prepared.parent);
         }
-        call.layout.measurement = answer.into();
-        Ok(changed)
     }
 
     fn append_plan(&self, plan: &mut Vec<Item>, id: u64, parent: Option<usize>, owner: u64,

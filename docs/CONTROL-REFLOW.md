@@ -4,8 +4,9 @@ Reflow is an immutable creation choice (`Reflow::Yes` or `Reflow::No`).
 Controls retain creation size, calculated size requirements, explicit overrides
 and assigned geometry separately. `ask_size` measures; `assign_rect` prepares and
 publishes geometry. Setters mark dependent work pending; they do not resize a
-control immediately. Window-root scheduling and scrolling containers are not
-provided by these APIs yet.
+control immediately within a Table. Explicit window anchors additionally arrange
+top-level controls immediately and on accepted resize/zoom. General automatic
+content-driven root scheduling and scrolling containers remain separate work.
 
 ## Table cells and spans
 
@@ -65,6 +66,45 @@ within the rectangle it receives. Drawing and hit testing use the resulting
 resident tree geometry and ancestor clipping. Dotted outlines show occupied cell
 regions, including merged regions without internal dividers.
 
+## Owning-window borders
+
+On a top-level `Reflow::Yes` control, `set_anchors` uses its owning window's
+**content** borders (local `(0, 0, width, height)`), excluding the title bar and
+frame. Nonempty anchors opt the root into immediate placement and subsequent
+window resize/zoom. Opposing edges stretch; a single edge pins the preferred
+size; an axis with neither edge centers. Available space can shrink the preferred
+size below its minimum. `Anchors::NONE` disables automatic window placement and
+preserves the current rectangle. Unconfigured roots keep their existing geometry.
+
+`set_window_border(BorderOffsets::new(left, right, top, bottom)?)` supplies
+nonnegative per-side offsets. All offsets default to zero, so anchors align
+directly to the content borders. Offsets reduce the available rectangle before
+pinning, centering or stretching. If they consume an entire axis, its extent is
+zero; the placement stays within the window. `BorderOffsets::ZERO` clears them.
+`ControlInfo::window_border` reports the property. Setting the property on a
+Table child or a control without reflow is refused. This is placement spacing,
+not a request to draw a border.
+
+For example, set a root Table's border offsets to twelve pixels on every side,
+then call `table.control().set_anchors(Anchors::ALL)`. System arranges the Table
+inside that inset rectangle and the Table arranges its children normally.
+Table children continue to use cell/span anchors. Adoption suspends window-root
+placement; a removed child becomes eligible for it again. Reapply its anchors to
+arrange immediately. Window movement leaves all control-local rectangles intact.
+
+Grow and zoom prepare the proposed window geometry and every active root subtree
+before publishing. An unfinished paint transaction, active affected control
+capture, unrepresentable geometry or resource refusal preserves the old window,
+zoom state, control settings and all control rectangles. The gesture is released
+and may be retried; the diagnostic retains the status and a contextual cause.
+Explicit anchor/border setters return the typed error to their caller. Cancel
+capture or finish painting before retrying. A repeated clean setting at the same
+window size does no layout allocation and preserves capture.
+
+Size/content setters still mark work pending. Reapplying root anchors or the next
+accepted size change consumes that work; an automatic content-change scheduler,
+content-derived window minimum and scrolling policy are not supplied here.
+
 ## Measurement and publication
 
 The shared `sr-control-reflow-handling` crate defines validated sizing and
@@ -100,7 +140,7 @@ Calculations use checked wide arithmetic, then validate conversion into local
 `Dimensions`/`Rect`. This API currently refuses aggregate requirements or local
 geometry outside their representable range; it does not truncate, wrap, or turn
 an overflow into apparent success. Wider logical scrolling extents, scrollbar
-coupling and window-root scheduling remain separate work.
+coupling and general content-driven root scheduling remain separate work.
 
 ## Evidence boundary
 

@@ -106,24 +106,25 @@ const _: () = {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Payload
 {
-    pub message:      i16,
-    pub reserved:     u16,
-    pub invalidation: u32,
-    pub constraints:  Constraints,
-    pub rect:         crate::Rect,
-    pub size:         Dimensions,
-    pub preferences:  SizePreferences,
-    pub measurement:  Measurement,
+    pub message:       i16,
+    pub reserved:      u16,
+    pub invalidation:  u32,
+    pub constraints:   Constraints,
+    pub rect:          crate::Rect,
+    pub size:          Dimensions,
+    pub preferences:   SizePreferences,
+    pub measurement:   Measurement,
     /// Resident-captured original size; callers cannot replace it.
-    pub creation:     Dimensions,
+    pub creation:      Dimensions,
     /// Relationship requests name existing generational Control Manager IDs.
     /// `ControlCall.id` is the current parent; REPARENT names its destination here.
-    pub child:        u64,
-    pub parent:       u64,
-    pub cell:         Cell,
-    pub span:         Span,
-    pub anchors:      u32,
-    pub track:        TrackSetting
+    pub child:         u64,
+    pub parent:        u64,
+    pub cell:          Cell,
+    pub span:          Span,
+    pub anchors:       u32,
+    pub track:         TrackSetting,
+    pub window_border: BorderOffsets
 }
 
 /// A live tree cursor is invalidated by a membership change of its parent.
@@ -235,3 +236,15 @@ pub struct GridPaint
     pub cells: *const crate::Rect,
     pub count: usize
 }
+
+/// Insets from the owning window's content borders, in local pixels.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BorderOffsets
+{
+    pub left:   i16,
+    pub right:  i16,
+    pub top:    i16,
+    pub bottom: i16
+}
+pub const SET_WINDOW_BORDER: i16 = 47;

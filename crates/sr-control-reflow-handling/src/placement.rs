@@ -143,3 +143,72 @@ impl TrackSize
         }
     }
 }
+
+/// Nonnegative offsets from each owning-window content border. Zero aligns
+/// directly to that border. Oversized opposing offsets leave zero usable space.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BorderOffsets
+{
+    left:   i16,
+    right:  i16,
+    top:    i16,
+    bottom: i16
+}
+impl BorderOffsets
+{
+    pub const ZERO: Self = Self { left:   0,
+                                  right:  0,
+                                  top:    0,
+                                  bottom: 0 };
+
+    pub const fn new(left: i16, right: i16, top: i16, bottom: i16) -> Result<Self>
+    {
+        if left < 0 || right < 0 || top < 0 || bottom < 0
+        {
+            return Err(Error::InvalidEncoding);
+        }
+        Ok(Self { left,
+                  right,
+                  top,
+                  bottom })
+    }
+
+    pub const fn left(self) -> i16
+    {
+        self.left
+    }
+
+    pub const fn right(self) -> i16
+    {
+        self.right
+    }
+
+    pub const fn top(self) -> i16
+    {
+        self.top
+    }
+
+    pub const fn bottom(self) -> i16
+    {
+        self.bottom
+    }
+}
+impl From<BorderOffsets> for wire::BorderOffsets
+{
+    fn from(v: BorderOffsets) -> Self
+    {
+        Self { left:   v.left,
+               right:  v.right,
+               top:    v.top,
+               bottom: v.bottom }
+    }
+}
+impl TryFrom<wire::BorderOffsets> for BorderOffsets
+{
+    type Error = Error;
+
+    fn try_from(v: wire::BorderOffsets) -> Result<Self>
+    {
+        Self::new(v.left, v.right, v.top, v.bottom)
+    }
+}

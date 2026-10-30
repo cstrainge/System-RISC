@@ -189,20 +189,11 @@ impl Desktop
     /// retained commands. This is not a protected-pool-fit assertion.
     pub(super) fn retained_admission(&self, id: SceneTarget) -> (usize, usize)
     {
-        let system = self.system_scene(id);
-        let used = self.content
-                       .iter()
-                       .chain(&self.pending_content)
-                       .filter(|content| self.system_scene(content.id) == system)
-                       .fold(0usize, |bytes, content| bytes.saturating_add(content.storage()));
-        if system
-        {
-            (used, usize::MAX)
-        }
-        else
-        {
-            (used.saturating_add(self.desktop.storage()), super::MAX_RETAINED_BYTES)
-        }
+        super::window_layout::scene_admission(&self.windows,
+                                              &self.content,
+                                              &self.pending_content,
+                                              self.desktop.storage(),
+                                              id)
     }
 
     fn paint_ordinary_full(&mut self, pixels: &mut [u32]) -> Result<(), Status>

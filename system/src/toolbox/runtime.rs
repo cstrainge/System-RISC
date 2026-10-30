@@ -59,6 +59,8 @@ mod drag_runtime;
 mod textedit_runtime;
 #[path = "quickdraw/ordinary_underlay.rs"]
 mod ordinary_underlay;
+#[path = "controls/window_layout.rs"]
+mod window_layout;
 use ordinary_underlay::OrdinaryUnderlay;
 #[path = "processes/runtime.rs"]
 mod local;
@@ -1322,64 +1324,48 @@ impl Desktop
             return self.controls.grid_configuration(call, owner);
         }
         if call.operation == REFLOW_OBJECT
+           && matches!(call.layout.message, reflow::SET_ANCHORS | reflow::SET_WINDOW_BORDER)
+           && (call.layout.message == reflow::SET_WINDOW_BORDER
+               || self.controls.is_root(call.id, owner)?)
+        {
+            if !self.controls.is_root(call.id, owner)?
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let viewport = self.windows.window(WindowId(window)).ok_or(NOT_FOUND)?.local_bounds();
+            let pending = self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let prepared = self.controls.prepare_window(window,
+                                                         viewport,
+                                                         pending,
+                                                         Some((call, owner)),
+                                                         crate::machine::traps::gateway,
+                                                         |id| {
+                                                             self.definitions
+                                                                 .resolve(*b"CDEF", id)
+                                                                 .map_err(crate::loader::status)
+                                                         })?;
+            let (used, limit) = self.retained_admission(SceneTarget::from(window));
+            return self.publish_control_layout(window, prepared, used, limit);
+        }
+        if call.operation == REFLOW_OBJECT
            && matches!(call.layout.message, reflow::ASK_SIZE | reflow::ASSIGN_RECT)
            && self.controls.is_table(call.id, owner)?
         {
             let paint_pending =
                 self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
-            let definitions = &mut self.definitions;
-            let mut content = self.content.iter_mut().find(|c| c.id == SceneTarget::from(window));
-            let mut damage = Vec::new();
-            let changed = self.controls.request_grid(call, owner, paint_pending, crate::machine::traps::gateway,
-                |id| definitions.resolve(*b"CDEF", id).map_err(crate::loader::status), |drawings| {
-                    if drawings.is_empty() { return Ok(()); }
-                    let content = content.as_deref_mut().ok_or(NOT_FOUND)?;
-                    let mut removed_bytes = 0usize;
-                    let mut removed_count = 0usize;
-                    for command in content.iter_commands() {
-                        if matches!(command, RenderCommand::Control(d) if drawings.iter().any(|new| new.id == d.id)) {
-                            removed_bytes = removed_bytes.checked_add(command.storage()).ok_or(NO_MEMORY)?;
-                            removed_count += 1;
-                        }
-                    }
-                    let mut next_bytes = used.checked_sub(removed_bytes).ok_or(CORRUPT_DATA)?;
-                    for d in drawings.iter() { next_bytes = next_bytes.checked_add(d.storage()).ok_or(NO_MEMORY)?; }
-                    let count = content.iter_commands().count().checked_sub(removed_count).and_then(|n| n.checked_add(drawings.len())).ok_or(NO_MEMORY)?;
-                    if next_bytes > limit || count > 512 { return Err(NO_MEMORY); }
-                    content.commands.try_reserve(drawings.len()).map_err(|_| NO_MEMORY)?;
-                    damage.try_reserve_exact(removed_count.checked_add(drawings.len()).ok_or(NO_MEMORY)?).map_err(|_| NO_MEMORY)?;
-                    // No fallible work below: old fragments and current commands
-                    // lose all superseded snapshots, then receive one new snapshot.
-                    content.retain_commands(|command| {
-                        if let RenderCommand::Control(d) = command
-                            && drawings.iter().any(|new| new.id == d.id) {
-                            damage.push(d.visible_bounds()); return false;
-                        }
-                        true
-                    });
-                    for d in drawings.drain(..) {
-                        damage.push(d.visible_bounds());
-                        content.commands.push(RenderCommand::Control(d));
-                    }
-                    Ok(())
-                })?;
-            let mut coalesced = None;
-            if changed
-            {
-                if let Some(content) =
-                    self.content.iter_mut().find(|c| c.id == SceneTarget::from(window))
-                {
-                    content.sync_control_tree(&self.controls, |r| {
-                               accumulate_removed_damage(&mut damage, &mut coalesced, r)
-                           });
-                }
-                for r in damage.into_iter().chain(coalesced).filter(|r| !r.is_empty())
-                {
-                    self.content_changed_rect(window, r);
-                }
-                self.present();
-            }
+            let prepared = self.controls.prepare_layout(call,
+                                                         owner,
+                                                         paint_pending,
+                                                         crate::machine::traps::gateway,
+                                                         |id| {
+                                                             self.definitions
+                                                                 .resolve(*b"CDEF", id)
+                                                                 .map_err(crate::loader::status)
+                                                         },
+                                                         None)?;
+            call.layout.measurement = prepared.measurement;
+            self.publish_control_layout(window, prepared, used, limit)?;
             return Ok(());
         }
         if self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
@@ -2300,7 +2286,7 @@ impl Desktop
                     }
                     return;
                 }
-                if let Some(action) = self.windows.track(point, false, &mut self.events, when)
+                if let Some(action) = self.track_window(point, false, when)
                 {
                     self.action(action, when);
                 }
@@ -2467,7 +2453,7 @@ impl Desktop
                         return;
                     }
                     let active_before = self.windows.active_window();
-                    if let Some(action) = self.windows.track(point, true, &mut self.events, when)
+                    if let Some(action) = self.track_window(point, true, when)
                     {
                         self.action(action, when);
                     }

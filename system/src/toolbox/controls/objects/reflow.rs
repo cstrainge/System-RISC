@@ -75,6 +75,7 @@ impl State
            && rect.rect() == self.spec.bounds()
         {
             layout.arrangement_pending = false;
+            layout.window_extent = None;
             return Ok(false);
         }
         if let layout::Message::SetVisibleRect(rect) = request
@@ -88,6 +89,7 @@ impl State
         {
             layout::Message::AssignRect(rect) =>
             {
+                layout.window_extent = None;
                 self.spec.set_bounds(rect.rect());
                 self.tracking = None;
                 self.spec.set_highlight(0);

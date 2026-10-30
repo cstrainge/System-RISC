@@ -42,7 +42,7 @@ impl From<Reflow> for u32
 mod geometry;
 mod placement;
 pub mod grid;
-pub use placement::{Anchors, Span, TrackSize};
+pub use placement::{Anchors, BorderOffsets, Span, TrackSize};
 mod messages;
 mod sizing;
 pub use geometry::{AxisConstraint, Constraints, Extent, LayoutRect, Size};

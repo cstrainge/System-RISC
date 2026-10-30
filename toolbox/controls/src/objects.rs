@@ -24,8 +24,9 @@ pub struct ControlInfo
     pub parent:              Option<ControlId>,
     pub reflow:              super::Reflow,
     pub anchors:             super::Anchors,
-    /// Leaf state waiting for explicit measurement/assignment. Container/root
-    /// scheduling is not enabled by this API foundation.
+    pub window_border:       super::BorderOffsets,
+    /// Work waiting for explicit assignment, a root-anchor reapplication, or
+    /// the next accepted owning-window size change.
     pub measurement_pending: bool,
     pub arrangement_pending: bool,
     pub standard:            StandardState,
@@ -48,6 +49,10 @@ impl TryFrom<ControlCall> for ControlInfo
                   reflow:              c.reflow.try_into().map_err(|_| super::Error::BadAbi)?,
                   anchors:             c.layout
                                         .anchors
+                                        .try_into()
+                                        .map_err(|_| super::Error::BadAbi)?,
+                  window_border:       c.layout
+                                        .window_border
                                         .try_into()
                                         .map_err(|_| super::Error::BadAbi)?,
                   measurement_pending: c.layout.invalidation & reflow::INVALIDATE_MEASUREMENT != 0,
@@ -163,12 +168,25 @@ impl ControlRef<'_>
         Ok(call.layout)
     }
 
-    /// Defer rearrangement of this control in its parent's cell. Empty anchors
-    /// center; opposite edges stretch. This does not assign a rectangle itself.
+    /// Inside a Table, defer arrangement in its cell. At the window root,
+    /// nonempty anchors immediately arrange against the window's content borders
+    /// and follow resize/zoom. An unanchored axis centers; opposing edges stretch.
+    /// NONE disables automatic window placement and preserves current geometry.
+    /// Window placement failure leaves both old settings and geometry intact.
     pub fn set_anchors(self, anchors: super::Anchors) -> Result<()>
     {
         self.layout(reflow::Payload { message: reflow::SET_ANCHORS,
                                       anchors: anchors.into(),
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    /// Set per-side offsets from the owning window's content borders. Only root
+    /// reflow controls accept this property. Active anchors rearrange atomically.
+    pub fn set_window_border(self, border: super::BorderOffsets) -> Result<()>
+    {
+        self.layout(reflow::Payload { message: reflow::SET_WINDOW_BORDER,
+                                      window_border: border.into(),
                                       ..Default::default() })
             .map(|_| ())
     }
