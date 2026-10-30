@@ -94,7 +94,7 @@ pub fn run(system: &System<'static>) -> ToolboxResult<()>
     invalid_callback_requests();
     let client = system.client();
     let actual = client.current_native_thread().map_err(|cause| cause.cause())?;
-    assert_eq!(actual, system.processes().current()?.thread.0, "CURRENT is actual initial THRD");
+    assert_eq!(actual, system.processes().current()?.thread, "CURRENT is actual initial THRD");
     let key = exchange(client, wire::Call::default()).map_err(|cause| cause.cause())?.key;
     for value in [0, 1, 2, usize::MAX]
     {
