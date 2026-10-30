@@ -11,6 +11,7 @@ build = "build.rs"
 smp = []
 heap = ["mac-toolbox/application"]
 tls = ["mac-toolbox/application"]
+threads = ["mac-toolbox/application"]
 exit = ["mac-toolbox/application"]
 exit-late = ["exit"]
 

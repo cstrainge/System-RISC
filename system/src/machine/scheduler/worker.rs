@@ -61,6 +61,7 @@ pub(super) enum ReapState
     }
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct ThreadName
 {
     bytes:  [u8; mac_module::MAX_NAME_BYTES],
@@ -179,7 +180,7 @@ pub(crate) fn prepare_worker(launch: crate::drivers::WorkerLaunch)
         let stack = super::stack::StackBacking::prepare(&owner, stack)?;
         let backing = ThreadBacking { cpu,
                                       stack,
-                                      loaded: None };
+                                      image: None };
         let core = ThreadCore { address: Mutex::new(None),
                                 backing: Mutex::new(Some(backing)),
                                 launch: Mutex::new(None),
@@ -189,7 +190,9 @@ pub(crate) fn prepare_worker(launch: crate::drivers::WorkerLaunch)
                                 top,
                                 cleanup_refusal: Mutex::new(None),
                                 service_quarantine: spin::Once::new(),
-                                name: Some(name) };
+                                name: Mutex::new(Some(name)),
+                                application: None,
+                                pending_join: Mutex::new(None) };
         let core = Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)?;
         Ok((core, subject))
     });
@@ -288,8 +291,9 @@ pub(crate) fn publish_worker(prepared: PreparedWorker) -> Result<u64, WorkerPubl
                                      backing.cpu.backing_bytes())
                                 })
             };
+            let name = *prepared.core.name.lock();
             if let (Some(name), Some((stack_bytes, stack_backing, cpu_bytes, cpu_backing))) =
-                (&prepared.core.name, info)
+                (name, info)
             {
                 serial!("MODULE_WORKER_THREAD module={} thread={} name={} stack_bytes={} \
                          stack_backing_bytes={} cpu_state_bytes={} cpu_backing_bytes={}",

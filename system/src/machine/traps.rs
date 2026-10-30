@@ -428,7 +428,10 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
         return Dispatch::Schedule;
     }
     finish_service(frame, completion, result);
-    if physical_depth == 1 && action == super::scheduler::service::RequestAction::Exit
+    if physical_depth == 1
+       && matches!(action,
+                   super::scheduler::service::RequestAction::Yield
+                   | super::scheduler::service::RequestAction::Exit)
     {
         return Dispatch::Schedule;
     }
@@ -600,8 +603,45 @@ unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
         {
             match unsafe { request::<mac_abi::native_threads::Call>(pointer, size) }
             {
-                Some(call) => RequestResult::done(toolbox::native_threads::native::current(call)),
-                None => RequestResult::done(BAD_ARGUMENT)
+                Some(call) =>
+                {
+                    let mut name = [0u8; mac_module::MAX_NAME_BYTES];
+                    toolbox::native_threads::thread_request::request(
+                                                                     call,
+                                                                     identity,
+                                                                     suspension,
+                                                                     |pointer, length| {
+                                                                         use super::scheduler::application::Error;
+                                                                         if length > name.len() || (length != 0 && pointer.is_null())
+                            {
+                                return Err(Error::Invalid("thread name pointer/length exceeds bounded inline storage"));
+                            }
+                                                                         if length != 0
+                                                                         {
+                                                                             // SAFETY: the native
+                                                                             // supervisor ABI
+                                                                             // requires readable
+                                                                             // input
+                                                                             // for this synchronous
+                                                                             // call. Copy before
+                                                                             // scheduler guards;
+                                                                             // scalar validation
+                                                                             // and bounded length
+                                                                             // precede this access.
+                                                                             name[..length].copy_from_slice(unsafe {
+                                    core::slice::from_raw_parts(pointer, length)
+                                });
+                                                                         }
+                                                                         core::str::from_utf8(&name[..length])
+                                .map_err(|_| Error::Invalid("thread name is not UTF-8"))
+                                                                     }
+                    )
+                }
+                None =>
+                {
+                    super::scheduler::application::cancel_current();
+                    RequestResult::done(BAD_ARGUMENT)
+                }
             }
         }
         ADDRESS_WAIT =>

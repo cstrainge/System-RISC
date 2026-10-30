@@ -962,8 +962,49 @@ using BEGIN/NEXT/ACK/FINISH and a retained original-key receipt. Eight-round
 exhaustion and forced process retirement do not claim callbacks completed.
 Initial no_std applications use the shared application scaffold for teardown;
 a std CRT owns the same protocol in its own startup/exit path. This surface does
-not supply child creation, join/detach, address waits or general std readiness.
+not by itself establish child-thread, address-wait or general std readiness.
 Native validation must distinguish main-thread TLS from those separate gates.
+
+Native children use the same genuine Process image/heap/TLS root and account,
+with independent THRD registrations, full CPU frames, stacks and prepaid slots.
+Creation prepares backing and canonical publication credits before protected
+scheduler turns; only the final checked live transition transfers entry/data.
+A unique registered join right owns completion metadata, with no reference back
+to ThreadCore. Normal completion requires actual TLS FINISH and release of the
+last execution claim before JOIN can return. DETACH drops that right without
+cancelling work. Process stop cancels owned pending joins and address pins before
+stack-reader/reap barriers; forced stop does not fabricate user TLS execution.
+The core-only transport preserves CREATE ownership uncertainty: only a valid
+resident refusal proves that the caller retains its opaque data. A malformed
+reply may follow acceptance and must not cause the CRT to free a child's input.
+The current affine `NativeJoinRight` is deliberately !Send/!Sync and restricted
+to ordinary execution on its creating application thread. It is not std's
+transferable JoinHandle. The raw CRT transport preserves the underlying typed
+refusal and transfer state for a runtime with its own ownership implementation.
+
+Finite native child observations used optimized release/LTO, debug information
+level 1, tracing disabled and 8 GiB RAM on one- and four-CPU private QEMU guests.
+System resource SHA-256: `ed75851dcbb39aeb0291cf1adb3a5908ec9eb4f599b8b798c401add4411f33d9`.
+Boot ROM SHA-256: `66a2d84e44896ec0648dc4b48a3eae1a2f1bbdb7d4c143b39b50ecbb87fb8e54`.
+The real packaged no_std Thread Probe created 14 children before typed budget
+refusal, exercised independent identities/stacks/TLS, shared heap operations,
+stack/heap/data/BSS waits, reverse-order joins, stale-right refusal and actual
+TLS callback completion. Each original THRD and the final Process were reclaimed.
+The admitted parallelism reply was one and four respectively; these observations
+do not establish simultaneous execution or the absence of multi-hart races.
+
+A subsequent workload on that same System image also exercised malformed flags,
+invalid UTF-8 names, invalid stack sizing, invalid/overflowing sleep durations,
+main-thread child EXIT refusal, child self-join refusal, explicit detach, stale
+detach/query refusal and actual affine-owner Drop. Refusals retained bounded
+typed diagnostics; legitimate parent joins remained usable; detached children
+continued, and their original THRDs were reclaimed. Creating further children
+after the initial budget refusal and joins exercised eventual reuse, rather than
+assuming an unsuccessful CREATE synchronously refunds all inert backing.
+No host acknowledgment serialized the operations within either native workload.
+These finite runs do not qualify foreign-process rights, stop during preparation
+or pending join, general std execution, transferable std JoinHandle behavior,
+private application mappings, full OOM recovery or latency bounds.
 
 Bounded native TLS observations (2026-10-29) used optimized QEMU virt/RVA23,
 8 GiB RAM, 800×600, with tracing disabled. The same System resource fork

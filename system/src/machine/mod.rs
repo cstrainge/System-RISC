@@ -16,6 +16,7 @@ pub(crate) mod clock;
 
 pub(crate) mod scheduler;
 mod smp;
+pub(crate) use smp::eligible_harts;
 pub(crate) mod io;
 pub(crate) mod interrupts;
 

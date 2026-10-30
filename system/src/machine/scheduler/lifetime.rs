@@ -44,7 +44,15 @@ impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> fo
         };
         if self.0
         {
-            return store.release_storage(ticket).map_err(Failure::from);
+            let preparing = store.publication_preparations(ticket.key().owner());
+            if preparing != 0
+            {
+                return Err(Failure::thread_preparations(ticket, preparing));
+            }
+            let retired = store.release_storage_with_backing(ticket).map_err(Failure::from)?;
+            drop(scheduler);
+            drop(retired);
+            return Ok(());
         }
         let Some(record) = store.releasing(&ticket)
         else

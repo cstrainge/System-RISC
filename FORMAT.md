@@ -2454,12 +2454,64 @@ Native development ABI remains 1. The layout fingerprint includes these actual
 records and operations; rebuild System, applications, definitions, modules and
 fixtures together after changing them.
 
-`NATIVE_THREAD` trap `0x1002a` currently implements only `CURRENT=0`. Its RV64
-Call is 216 bytes, aligned to 8: operation u32 at 0, reserved u32 at 4, output
-canonical ThreadId u64 at 8, detail_length u32 at 16, reserved2 u32 at 20 and 192
-UTF-8 diagnostic bytes at 24. CURRENT authenticates the actual scheduled Process
-ThreadContext and its preadmitted TLS slots; it never returns ProcessInfo's main
-thread by substitution. General child creation/join is a separate facility.
+`NATIVE_THREAD` trap `0x1002a` uses a 304-byte, 8-aligned RV64 Call:
+
+| Field | Offset | Type |
+| --- | ---: | --- |
+| operation, flags | 0, 4 | u32 |
+| reserved | 8 | two u64 |
+| entry, data | 24, 32 | usize |
+| stack_bytes | 40 | u64 |
+| thread, right | 48, 56 | u64 |
+| seconds, nanoseconds | 64, 72 | u64, u32 |
+| name_length, name | 76, 80 | u32, pointer to readable UTF-8 |
+| state, outcome, parallelism | 88, 92, 96 | u32 |
+| reserved2, detail_length, reserved3 | 100, 104, 108 | u32 |
+| detail | 112 | 192 UTF-8 bytes |
+
+Flags and all reserved fields are zero. Refusals return negative Status and
+bounded nonempty UTF-8 detail; success has detail_length zero. Output IDs are
+never caller authority. The SDK exposes ThreadId and an affine NativeJoinRight;
+the raw numeric fields belong to this transport boundary. NativeJoinRight is
+initially !Send/!Sync and restricted to its creating application thread's
+ordinary context; it is not std's transferable Send JoinHandle contract.
+CREATE errors preserve data ownership explicitly: a valid resident refusal is
+Retained, while any malformed/protocol reply is Indeterminate. Callers must not
+free data on an indeterminate result; a child may already have accepted it.
+
+| Operation | Value | Inputs and behavior |
+| --- | ---: | --- |
+| CURRENT | 0 | Returns actual current canonical ThreadId, authenticated against this Process and its prepaid TLS slots. |
+| CREATE | 1 | entry/data/stack_bytes; returns thread plus one unique join right. |
+| QUERY | 2 | right; returns its child's identity, state and outcome. |
+| JOIN | 3 | right; consumes it after actual TLS FINISH and final execution-claim release; parks and replays while incomplete. |
+| DETACH | 4 | right; consumes it without cancelling the child; a pending JOIN on that right is woken with cancellation. |
+| EXIT | 5 | Actual child only; requires TLS FINISH and accepts no abandoned Host lease. Accepted exit does not return. Process main uses the separate native process-exit record. |
+| YIELD | 6 | Gives the scheduler an ordinary choice after ending service borrows. |
+| SLEEP | 7 | seconds/nanoseconds; zero returns immediately, finite duration parks through its checked deadline. |
+| NAME | 8 | name/name_length; bounded UTF-8 label, empty clears it. |
+| PARALLELISM | 9 | Returns currently dispatch-admitted eligible CPU allowance, minimum one. |
+
+CREATE's entry has signature `unsafe extern "C" fn(*mut u8)`. It must complete
+its actual TLS teardown before returning. Accepted CREATE transfers data once;
+the child can run before CREATE returns. A resident refusal transfers no data.
+The new child shares the original Process image, heap, account and TLS root;
+its own THRD, full saved CPU state, stack and prepaid TLS slots are independent.
+Zero stack_bytes selects the configurable 4 MiB default. Explicit sizes round
+up to whole pages and must satisfy the configured 64 KiB–8 MiB range and CPU
+state floor. Stack physical backing is charged to the Process Application
+budget; CPU/context/TLS metadata is charged to its Kernel budget. Recovery-kit
+inheritance is not a child-thread allocation source.
+
+States are PREPARING 0, RUNNING 1, RETURNING 2, COMPLETE 3 and ABORTED 4; outcomes
+are NORMAL 0 and ABORTED 1. A join right retains completion metadata, never a
+ThreadCore or stack. Aborted execution does not claim TLS destructors ran. A
+stopped Process closes new key/child admission before teardown. JOIN, EXIT,
+YIELD and SLEEP require a genuine preemptible outer application frame, no held
+Host lease and no critical/nested scope. Replay retains the original invocation
+identity and unique pending right; changing that request cancels its old claim.
+All unrelated input fields must be zero. Nanoseconds must be below one billion;
+finite deadline overflow is BAD_ARGUMENT, never a wrapped or pretend timeout.
 
 `TLS` trap `0x1002b` uses a 264-byte, 8-aligned Call. Fields are operation u32 at 0,
 flags u32 at 4, two reserved u64s at 8, key u64 at 24, opaque value usize at 32,

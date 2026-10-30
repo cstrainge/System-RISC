@@ -56,6 +56,14 @@ pub(crate) fn prepare_slots(owner: &OwnerRef, binding: &RootBinding) -> Result<T
         return Err(Error::Finished);
     }
     let root = root(binding, owner)?;
+    if root.closing.load(Ordering::Acquire)
+    {
+        return Err(Error::Finished);
+    }
+    prepare_from_root(&root)
+}
+pub(super) fn prepare_from_root(root: &Arc<Root>) -> Result<ThreadSlots, Error>
+{
     root.kernel(|| {
             let mut slots = Vec::new();
             let capacity = crate::machine::memory::TLS_KEY_CAPACITY as usize;
@@ -66,11 +74,22 @@ pub(crate) fn prepare_slots(owner: &OwnerRef, binding: &RootBinding) -> Result<T
                              drain: None,
                              phase: Phase::Active,
                              root: root.clone(),
-                             _progress: Progress { owner: owner.clone() } })
+                             _progress: Progress { owner: root.owner.clone() } })
         })
 }
 impl ThreadSlots
 {
+    pub(crate) fn runtime_admission(&self) -> Result<RuntimeAdmission, Error>
+    {
+        if matches!(self.phase, Phase::Finished)
+           || self.root.closing.load(Ordering::Acquire)
+           || !self.root.owner.accepting()
+        {
+            return Err(Error::Finished);
+        }
+        Ok(RuntimeAdmission { root: self.root.clone() })
+    }
+
     pub(crate) fn owner(&self) -> DomainId
     {
         self.root.owner.owner()

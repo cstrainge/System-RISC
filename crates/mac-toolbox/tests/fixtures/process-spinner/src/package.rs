@@ -1,7 +1,11 @@
 fn main()
 {
     let args: Vec<_> = std::env::args_os().collect();
-    let manifest = if cfg!(feature = "exit-late")
+    let manifest = if cfg!(feature = "threads")
+    {
+        "resources.threads.json"
+    }
+    else if cfg!(feature = "exit-late")
     {
         "resources.exit-late.json"
     }
