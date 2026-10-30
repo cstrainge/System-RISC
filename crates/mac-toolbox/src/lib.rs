@@ -41,6 +41,19 @@ pub struct System<'a>
 {
     client: Client<'a>
 }
+impl System<'static>
+{
+    /// Acquire the services installed by this application's platform startup.
+    ///
+    /// This is a cheap, repeatable routing view, not a new System owner. It
+    /// allocates nothing and does not change application or thread authority.
+    /// Calls made before valid application startup return `Error::BadAbi`.
+    /// Each service still enforces its documented ownership/thread restrictions.
+    pub fn new() -> ToolboxResult<Self>
+    {
+        crate::panic::installed_client().map(|client| Self { client }).ok_or(Error::BadAbi)
+    }
+}
 impl<'a> System<'a>
 {
     pub fn power(&self) -> power::Power<'a>

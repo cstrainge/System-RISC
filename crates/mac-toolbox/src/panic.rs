@@ -33,7 +33,6 @@ pub unsafe fn install(services: *const SystemServices) -> Result<(), crate::abi:
 /// Read only the table installed by the genuine entry contract. A nonnull
 /// pointer is published only after validation; no separate allocator selection
 /// or synthetic current application exists in the SDK.
-#[cfg(target_arch = "riscv64")]
 pub(crate) fn installed_client() -> Option<Client<'static>>
 {
     let pointer = SERVICES.load(Ordering::Acquire);

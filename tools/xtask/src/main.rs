@@ -4,6 +4,7 @@ mod docs;
 mod authority;
 mod resource_map;
 mod modules;
+mod sdk;
 
 use std::{env,
           ffi::OsStr,
@@ -425,6 +426,10 @@ fn write_json(path: &Path, value: &Value) -> Result<()>
 
 fn main() -> ExitCode
 {
+    if let Some(status) = sdk::compiler_proxy()
+    {
+        return status;
+    }
     match execute()
     {
         Ok(()) => ExitCode::SUCCESS,
@@ -476,6 +481,7 @@ fn execute() -> Result<()>
     let lease = if args.first().is_some_and(|s| {
                                    matches!(s.as_str(),
                                             "build"
+                                            | "sdk"
                                             | "image"
                                             | "rom"
                                             | "boot"
@@ -492,6 +498,10 @@ fn execute() -> Result<()>
     };
     match args.as_slice()
     {
+        [command, action] if command == "sdk" && matches!(action.as_str(), "prepare" | "build") =>
+        {
+            sdk::run(&workspace, action)?;
+        }
         [command, path] if command == "resource-map" =>
         {
             println!("{}", resource_map::inspect(Path::new(path))?);
@@ -568,6 +578,8 @@ fn execute() -> Result<()>
 
 fn help()
 {
+    println!("  cargo xtask sdk prepare    Materialize the pinned private Rust application SDK");
+    println!("  cargo xtask sdk build      Compile the staged System RISC standard library");
     println!("  cargo xtask doc            Generate Rust library documentation in docs/api");
     println!("  cargo xtask resource-map FILE  Inspect checked resource metadata as JSON");
     println!("System7 build tools\n\n  cargo xtask rebuild MANIFEST OUT  Rebuild a ResEdit \

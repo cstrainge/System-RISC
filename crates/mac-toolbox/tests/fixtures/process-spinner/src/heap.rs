@@ -527,7 +527,20 @@ fn leave_for_exit(system: &System<'_>, id: ProcessId, baseline: AccountUsage, se
 
 pub(crate) fn run(system: &System<'_>) -> ToolboxResult<()>
 {
-    let me = system.processes().current()?;
+    let acquired = System::new()?;
+    let repeated = System::new()?;
+    require(system,
+            acquired.client() == system.client() && repeated.client() == acquired.client(),
+            "system-acquisition",
+            "repeated System::new did not retain the actual installed routing view")?;
+    let me = acquired.processes().current()?;
+    require(system,
+            repeated.processes().current()?.id == me.id,
+            "system-acquisition",
+            "repeated System::new changed process authority")?;
+    log(&acquired,
+        format_args!("HEAP_PROBE_SYSTEM_ACQUIRED app={} thread={} repeated=2\n",
+                     me.id.0, me.thread.0))?;
     let baseline = account(system, me.id, "baseline")?;
     let mut text = [0; 32];
     require(system,

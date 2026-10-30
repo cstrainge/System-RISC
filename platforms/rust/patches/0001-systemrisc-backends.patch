@@ -1,0 +1,238 @@
+--- a/library/std/Cargo.toml
++++ b/library/std/Cargo.toml
+@@ -32,7 +32,7 @@
+ miniz_oxide = { version = "0.9.0", optional = true, default-features = false }
+ addr2line = { version = "0.27.0", optional = true, default-features = false }
+ 
+-[target.'cfg(not(all(windows, target_env = "msvc")))'.dependencies]
++[target.'cfg(all(not(target_os = "systemrisc"), not(all(windows, target_env = "msvc"))))'.dependencies]
+ libc = { version = "0.2.189", default-features = false, features = [
+     'rustc-dep-of-std',
+ ], public = true }
+@@ -101,6 +101,10 @@
+ vex-sdk = { version = "0.27.0", features = [
+     'rustc-dep-of-std',
+ ], default-features = false }
++
++[target.'cfg(target_os = "systemrisc")'.dependencies]
++mac-abi = { package = "systemrisc-std-abi", path = "../mac-abi" }
++mac-traps = { package = "systemrisc-std-traps", path = "../mac-traps" }
+ 
+ [features]
+ backtrace = [
+--- a/library/std/build.rs
++++ b/library/std/build.rs
+@@ -17,7 +17,8 @@
+     println!("cargo::rustc-check-cfg=cfg(no_global_oom_handling)");
+ 
+     println!("cargo:rustc-check-cfg=cfg(restricted_std)");
+-    if target_os == "linux"
++    if target_os == "systemrisc"
++        || target_os == "linux"
+         || target_os == "android"
+         || target_os == "netbsd"
+         || target_os == "dragonfly"
+--- a/library/std/src/lib.rs
++++ b/library/std/src/lib.rs
+@@ -473,7 +473,7 @@
+ // so include it here even if it's unused.
+ #[doc(masked)]
+ #[allow(unused_extern_crates)]
+-#[cfg(not(all(windows, target_env = "msvc")))]
++#[cfg(all(not(target_os = "systemrisc"), not(all(windows, target_env = "msvc"))))]
+ extern crate libc;
+ 
+ // We always need an unwinder currently for backtraces
+--- a/library/std/src/panicking.rs
++++ b/library/std/src/panicking.rs
+@@ -232,7 +232,27 @@
+     *hook = Hook::Custom(Box::new(move |info| hook_fn(&prev, info)));
+ }
+ 
+-/// The default panic handler.
++/// The System-owned application panic path. No hook registration, stdio,
++/// backtrace lock, thread-name lookup or heap formatting is needed here.
++#[cfg(target_os = "systemrisc")]
++#[optimize(size)]
++fn default_hook(info: &PanicHookInfo<'_>) {
++    let message = payload_as_str(info.payload());
++    let (file, line, column) = match info.location() {
++        Some(location) => (location.file(), location.line(), location.column()),
++        None => ("", 0, 0),
++    };
++    // C-layout spans only: the CRT and sysroot may use distinct ABI crates.
++    // The existing System crash service owns report retention and its viewer.
++    unsafe {
++        crate::sys::runtime::__system_risc_panic_v1(
++            message.as_ptr(), message.len(), file.as_ptr(), file.len(), line, column,
++        )
++    }
++}
++
++/// The default panic handler on other targets.
++#[cfg(not(target_os = "systemrisc"))]
+ #[optimize(size)]
+ fn default_hook(info: &PanicHookInfo<'_>) {
+     // If this is a double panic, make sure that we print a backtrace
+--- a/library/std/src/sys/alloc/mod.rs
++++ b/library/std/src/sys/alloc/mod.rs
+@@ -64,6 +64,10 @@
+ }
+ 
+ cfg_select! {
++    target_os = "systemrisc" => {
++        mod systemrisc;
++        use systemrisc as imp;
++    }
+     any(target_family = "unix", target_os = "wasi", target_os = "teeos", target_os = "trusty") => {
+         mod unix;
+         use unix as imp;
+--- a/library/std/src/sys/env_consts.rs
++++ b/library/std/src/sys/env_consts.rs
+@@ -15,6 +15,17 @@
+ 
+ cfg_unordered! {
+ 
++#[cfg(target_os = "systemrisc")]
++pub mod os {
++    pub const FAMILY: &str = "";
++    pub const OS: &str = "systemrisc";
++    pub const DLL_PREFIX: &str = "";
++    pub const DLL_SUFFIX: &str = "";
++    pub const DLL_EXTENSION: &str = "";
++    pub const EXE_SUFFIX: &str = "";
++    pub const EXE_EXTENSION: &str = "";
++}
++
+ #[cfg(target_os = "aix")]
+ pub mod os {
+     pub const FAMILY: &str = "unix";
+--- a/library/std/src/sys/exit.rs
++++ b/library/std/src/sys/exit.rs
+@@ -93,6 +93,7 @@
+ 
+ pub fn exit(code: i32) -> ! {
+     cfg_select! {
++        target_os = "systemrisc" => unsafe { crate::sys::pal::runtime::__system_risc_exit_v1(code) },
+         target_os = "hermit" => unsafe { hermit_abi::exit(code) },
+         target_os = "linux" => unsafe {
+             unique_thread_exit();
+--- a/library/std/src/sys/io/error/mod.rs
++++ b/library/std/src/sys/io/error/mod.rs
+@@ -1,4 +1,8 @@
+ cfg_select! {
++    target_os = "systemrisc" => {
++        mod systemrisc;
++        pub use systemrisc::*;
++    }
+     target_os = "hermit" => {
+         mod hermit;
+         pub use hermit::*;
+--- a/library/std/src/sys/pal/mod.rs
++++ b/library/std/src/sys/pal/mod.rs
+@@ -4,6 +4,10 @@
+ #![allow(missing_debug_implementations)]
+ 
+ cfg_select! {
++    target_os = "systemrisc" => {
++        mod systemrisc;
++        pub use self::systemrisc::*;
++    }
+     unix => {
+         mod unix;
+         pub use self::unix::*;
+--- a/library/std/src/sys/random/mod.rs
++++ b/library/std/src/sys/random/mod.rs
+@@ -1,4 +1,8 @@
+ cfg_select! {
++    target_os = "systemrisc" => {
++        mod systemrisc;
++        pub use systemrisc::fill_bytes;
++    }
+     // Tier 1
+     any(target_os = "linux", target_os = "android") => {
+         mod linux;
+--- a/library/std/src/sys/sync/condvar/mod.rs
++++ b/library/std/src/sys/sync/condvar/mod.rs
+@@ -1,5 +1,6 @@
+ cfg_select! {
+     any(
++        target_os = "systemrisc",
+         all(target_os = "windows", not(target_vendor = "win7")),
+         target_os = "linux",
+         target_os = "android",
+--- a/library/std/src/sys/sync/futex/mod.rs
++++ b/library/std/src/sys/sync/futex/mod.rs
+@@ -1,4 +1,8 @@
+ cfg_select! {
++    target_os = "systemrisc" => {
++        mod systemrisc;
++        pub use systemrisc::*;
++    }
+     any(
+         target_os = "linux",
+         target_os = "android",
+--- a/library/std/src/sys/sync/mutex/mod.rs
++++ b/library/std/src/sys/sync/mutex/mod.rs
+@@ -1,5 +1,6 @@
+ cfg_select! {
+     any(
++        target_os = "systemrisc",
+         all(target_os = "windows", not(target_vendor = "win7")),
+         target_os = "linux",
+         target_os = "android",
+--- a/library/std/src/sys/sync/once/mod.rs
++++ b/library/std/src/sys/sync/once/mod.rs
+@@ -9,6 +9,7 @@
+ 
+ cfg_select! {
+     any(
++        target_os = "systemrisc",
+         all(target_os = "windows", not(target_vendor = "win7")),
+         target_os = "linux",
+         target_os = "android",
+--- a/library/std/src/sys/sync/rwlock/mod.rs
++++ b/library/std/src/sys/sync/rwlock/mod.rs
+@@ -1,5 +1,6 @@
+ cfg_select! {
+     any(
++        target_os = "systemrisc",
+         all(target_os = "windows", not(target_vendor = "win7")),
+         target_os = "linux",
+         target_os = "android",
+--- a/library/std/src/sys/sync/thread_parking/mod.rs
++++ b/library/std/src/sys/sync/thread_parking/mod.rs
+@@ -1,5 +1,6 @@
+ cfg_select! {
+     any(
++        target_os = "systemrisc",
+         all(target_os = "windows", not(target_vendor = "win7")),
+         target_os = "linux",
+         target_os = "android",
+--- a/library/std/src/sys/thread/mod.rs
++++ b/library/std/src/sys/thread/mod.rs
+@@ -1,4 +1,8 @@
+ cfg_select! {
++    target_os = "systemrisc" => {
++        mod systemrisc;
++        pub use systemrisc::*;
++    }
+     target_os = "hermit" => {
+         mod hermit;
+         pub use hermit::{DEFAULT_MIN_STACK_SIZE, Thread, available_parallelism, sleep, yield_now};
+--- a/library/std/src/sys/thread_local/mod.rs
++++ b/library/std/src/sys/thread_local/mod.rs
+@@ -150,6 +150,13 @@
+ /// with a pointer which we can get and set to store our data.
+ pub(crate) mod key {
+     cfg_select! {
++        target_os = "systemrisc" => {
++            mod racy;
++            mod systemrisc;
++            pub(super) use racy::LazyKey;
++            pub(super) use systemrisc::{Key, get, set};
++            use systemrisc::{create, destroy};
++        }
+         any(
+             all(not(target_vendor = "apple"), not(target_family = "wasm"), target_family = "unix"),
+             all(not(target_thread_local), target_vendor = "apple"),
