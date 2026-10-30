@@ -61,6 +61,7 @@ pub struct Process
     pub info:         ProcessInfo,
     pub(crate) image: Option<crate::images::Binding>,
     heap:             Option<crate::toolbox::application_heap::RootBinding>,
+    tls:              Option<crate::toolbox::native_threads::RootBinding>,
     pub stamp:        u64,
     cleanup:          Option<crate::toolbox::handles::cleanup::Checkpoint>,
     account:          crate::machine::scheduler::accounting::ProcessAccount
@@ -360,6 +361,43 @@ impl Manager
         Ok(heap.clone())
     }
 
+    pub(crate) fn bind_tls(&mut self, owner: &OwnerRef,
+                           tls: crate::toolbox::native_threads::RootBinding)
+                           -> Result<(), Status>
+    {
+        let entry = self.entries.get(owner.owner().incarnation()).ok_or(NOT_FOUND)?;
+        if entry.ledger().owner() != owner.owner() || tls.owner() != owner.owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        if !entry.ledger().accepting()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if entry.value().tls.is_some() || entry.value().info.thread != 0
+        {
+            return Err(BAD_ABI);
+        }
+        self.get_mut(owner.owner().incarnation())?.tls = Some(tls);
+        Ok(())
+    }
+
+    pub(crate) fn tls(&self, id: u64)
+                      -> Result<crate::toolbox::native_threads::RootBinding, Status>
+    {
+        let entry = self.entries.get(id).ok_or(NOT_FOUND)?;
+        if !entry.ledger().accepting()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let tls = entry.value().tls.as_ref().ok_or(BAD_ABI)?;
+        if tls.owner() != entry.ledger().owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(tls.clone())
+    }
+
     pub(crate) fn provision(&mut self, name: &str, volume: u32, cnid: u32) -> Result<u64, Status>
     {
         let mut info = ProcessInfo { volume,
@@ -406,6 +444,7 @@ impl Manager
                     Process { info,
                               image: None,
                               heap: None,
+                              tls: None,
                               stamp: 0,
                               cleanup: Some(cleanup),
                               account })
@@ -631,8 +670,22 @@ pub(crate) fn launch_application(call: &mut ProcessCall,
                     failure.prepared.dispose();
                     status
                 })?;
+            let prepared_tls = crate::toolbox::native_threads::prepare_root(
+                admission.owner().clone(), admission.allocation()).map_err(|cause| {
+                    serial!("PROCESS_TLS_REFUSED app={} {cause}",admission.id()); cause.status()
+                })?;
+            let tls =
+                crate::toolbox::native_threads::publish_root(prepared_tls).map_err(|failure| {
+                    let status = failure.cause.status();
+                    serial!("PROCESS_TLS_PUBLICATION_REFUSED app={} {}",
+                            admission.id(),
+                            failure.cause);
+                    failure.prepared.dispose();
+                    status
+                })?;
             crate::kernel::with_desktop(|desktop| {
                 desktop.processes.bind_heap(admission.owner(), heap)?;
+                desktop.processes.bind_tls(admission.owner(), tls)?;
                 desktop.finish_application_launch(call, loaded, &mut admission)
             }).map_err(|error| error.status())?
         })();

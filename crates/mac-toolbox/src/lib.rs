@@ -6,6 +6,8 @@
 pub use mac_abi as abi;
 pub use mac_abi::{ApplicationEntry, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_CLOCK, Point,
                   Rect, SystemServices, WindowId, dates::Timestamp};
+/// Core-only native thread/TLS transport consumed by the platform CRT.
+pub use mac_traps::native_threads;
 /// Owned, bounded UTF-8 text returned by Toolbox snapshots.
 pub use mac_traps::types::InlineText;
 pub use mac_traps::{Client, Cnid, Error, MenuId, ProcessId, Result as ToolboxResult, ThreadId,

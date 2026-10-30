@@ -742,6 +742,14 @@ impl Desktop
                                 i32::try_from(reply).unwrap_or(BAD_ABI)
                             }
                             #[cfg(target_arch = "riscv64")]
+                            super::handles::cleanup::Cause::NativeTls(cause) => match cause {
+                                super::native_threads::CleanupCause::Contract => BAD_ABI,
+                                super::native_threads::CleanupCause::Unavailable => NOT_SUPPORTED,
+                                super::native_threads::CleanupCause::Threads
+                                | super::native_threads::CleanupCause::Readers { .. }
+                                | super::native_threads::CleanupCause::Preparing { .. } => SERVICE_BUSY,
+                            },
+                            #[cfg(target_arch = "riscv64")]
                             super::handles::cleanup::Cause::ApplicationHeap(cause) =>
                             {
                                 match cause

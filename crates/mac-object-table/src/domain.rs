@@ -16,6 +16,13 @@ pub(crate) fn issue_native_identity() -> Result<NonZeroU64, IncarnationsExhauste
 {
     issue(&NEXT_INCARNATION)
 }
+/// Issue a non-reused correlation for an owner-held protocol receipt. This
+/// number grants no authority: the service must retain and authenticate the
+/// actual receipt and its owner. Shares the canonical boot-wide ID issuer.
+pub fn issue_correlation_identity() -> Result<NonZeroU64, IncarnationsExhausted>
+{
+    issue_native_identity()
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DomainKind
 {

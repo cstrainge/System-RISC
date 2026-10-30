@@ -81,6 +81,7 @@
       "kernel_bytes": "0x1000000",
       "worker_stack_bytes": "0x400000"
     },
+    "tls": { "key_capacity": 256 },
     "application_heap": {
       "minimum_extent_bytes": "0x10000"
     },

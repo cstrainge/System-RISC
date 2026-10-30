@@ -194,6 +194,24 @@ impl ModuleFrame
         }
     }
 }
+/// Process callback execution admitted against one actual initialized image.
+/// This is not a resource selection or permission to impersonate a Process.
+pub(crate) struct ApplicationExecution(Execution);
+impl ApplicationExecution
+{
+    pub(crate) fn validate(&self, owner: &OwnerRef, address: usize) -> Result<(), Status>
+    {
+        let instance = &self.0._source.instance;
+        if instance.owner.owner() != owner.owner()
+           || address == 0
+           || address & 1 != 0
+           || !instance.executable.iter().any(|range| range.contains(&(address as u64)))
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(())
+    }
+}
 pub(crate) struct Loaded
 {
     binding:    Binding,
@@ -310,7 +328,7 @@ impl Manager
     /// fallible metadata allocation precedes executable-memory writes.
     pub(crate) fn prepare_load(&mut self, owner: &OwnerRef, source: Arc<Source>, preferred: u64,
                                extent: u64, relocation_base: u64, limit: u64,
-                               executable: Vec<core::ops::Range<u64>>)
+                               mut executable: Vec<core::ops::Range<u64>>)
                                -> Result<PreparedLoad, Status>
     {
         let role_matches_owner =
@@ -358,6 +376,17 @@ impl Manager
                 }
             }
         };
+        for range in &mut executable
+        {
+            let start = range.start.checked_sub(preferred).ok_or(BAD_ABI)?;
+            let end = range.end.checked_sub(preferred).ok_or(BAD_ABI)?;
+            if start >= end || end > extent
+            {
+                return Err(BAD_ABI);
+            }
+            *range =
+                base.checked_add(start).ok_or(BAD_ABI)?..base.checked_add(end).ok_or(BAD_ABI)?;
+        }
         let activity =
             Arc::try_new(Activity { readers:  AtomicUsize::new(0),
                                     retiring: AtomicBool::new(false) }).map_err(|_| NO_MEMORY)?;
@@ -413,6 +442,22 @@ impl Manager
     pub(crate) fn root_only(owner: &OwnerRef) -> bool
     {
         !owner.has_resources_outside(&ROOT_KINDS)
+    }
+
+    pub(crate) fn execute_application(&self, owner: &OwnerRef, binding: Binding)
+                                      -> Result<ApplicationExecution, Status>
+    {
+        let read = self.read(binding)?;
+        if read.instance.module
+           || !owner.accepting()
+           || owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+           || read.instance.owner.owner() != owner.owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let pin = read.instance.execution.pin().map_err(|_| SERVICE_BUSY)?;
+        Ok(ApplicationExecution(Execution { _execution: pin,
+                                            _source:    read }))
     }
 
     pub(crate) fn execute_module(&self, binding: Binding) -> Result<ModuleExecution, Status>

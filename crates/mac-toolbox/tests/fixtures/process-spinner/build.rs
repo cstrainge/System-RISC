@@ -7,5 +7,6 @@ fn main()
         mac_build::build_guest().expect("public process fixture resources");
         println!("cargo:rerun-if-changed=resources.smp.json");
         println!("cargo:rerun-if-changed=resources.heap.json");
+        println!("cargo:rerun-if-changed=resources.tls.json");
     }
 }

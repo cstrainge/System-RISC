@@ -33,6 +33,12 @@ enum Work
         admission: FinderAdmission,
         heap:      Option<crate::toolbox::application_heap::RootBinding>
     },
+    Tls
+    {
+        old:       ResourceBinding,
+        admission: FinderAdmission,
+        tls:       Option<crate::toolbox::native_threads::RootBinding>
+    },
     Image
     {
         old: ResourceBinding, admission: FinderAdmission
@@ -195,6 +201,8 @@ fn step(work: Work) -> Option<Work>
                         .. } => (permit.clone(), activity.clone()),
         Work::Heap { admission,
                      .. }
+        | Work::Tls { admission,
+                    .. }
         | Work::Image { admission,
                       .. }
         | Work::Prepare { admission,
@@ -315,14 +323,76 @@ fn step_inner(work: Work) -> Option<Work>
             {
                 Ok(()) =>
                 {
-                    Some(Work::Image { old,
-                                       admission })
+                    Some(Work::Tls { old,
+                                     admission,
+                                     tls: None })
                 }
                 Err(SERVICE_BUSY) =>
                 {
                     Some(Work::Heap { old,
                                       admission,
                                       heap: Some(heap) })
+                }
+                Err(status) =>
+                {
+                    Some(Work::Failure { target: old,
+                                         status,
+                                         permit: admission.permit(),
+                                         activity: admission.activity() })
+                }
+            }
+        }
+        Work::Tls { old,
+                    admission,
+                    tls } =>
+        {
+            if !admission.owner().accepting()
+            {
+                return Some(Work::Failure { target:   old,
+                                            status:   SERVICE_BUSY,
+                                            permit:   admission.permit(),
+                                            activity: admission.activity() });
+            }
+            let tls = match tls
+            {
+                Some(tls) => tls,
+                None =>
+                {
+                    let prepared =
+                        crate::toolbox::native_threads::prepare_root(admission.owner().clone(),
+                                                                     admission.allocation());
+                    let result = prepared.and_then(|prepared| {
+                        crate::toolbox::native_threads::publish_root(prepared).map_err(|failure| {
+                            let cause = failure.cause; failure.prepared.dispose(); cause
+                        })
+                    });
+                    match result
+                    {
+                        Ok(tls) => tls,
+                        Err(cause) =>
+                        {
+                            return Some(Work::Failure { target:   old,
+                                                        status:   cause.status(),
+                                                        permit:   admission.permit(),
+                                                        activity: admission.activity() });
+                        }
+                    }
+                }
+            };
+            match desktop(&old, |desktop| {
+                      desktop.processes.bind_tls(admission.owner(), tls.clone())
+                  })
+            {
+                Ok(()) =>
+                {
+                    Some(Work::Image { old,
+                                       admission })
+                }
+                Err(SERVICE_BUSY) =>
+                {
+                    Some(Work::Tls { old,
+                                     admission,
+                                     tls: Some(tls) })
                 }
                 Err(status) =>
                 {
@@ -455,9 +525,10 @@ fn step_inner(work: Work) -> Option<Work>
                 }
             };
             WAITING_FOR_STACK.store(false, Ordering::Release);
-            let (charges, heap) = match desktop(&next, |desktop| {
+            let (charges, heap, tls) = match desktop(&next, |desktop| {
                       Ok((desktop.processes.thread_charges(admission.id())?,
-                          desktop.processes.heap(admission.id())?))
+                          desktop.processes.heap(admission.id())?,
+                          desktop.processes.tls(admission.id())?))
                   })
             {
                 Ok(admission) => admission,
@@ -474,7 +545,8 @@ fn step_inner(work: Work) -> Option<Work>
                                               loaded,
                                               charges,
                                               loan,
-                                              heap)
+                                              heap,
+                                              tls)
             {
                 Ok(prepared) =>
                 {

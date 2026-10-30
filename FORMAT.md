@@ -2427,3 +2427,45 @@ residency, executing residency and sample tick (four u64s), followed by state,
 flags, activity availability and reserved (four u32s). No addresses, thread IDs,
 object IDs or scheduler grants are returned. The native layout fingerprint
 covers this family, its shape and semantic constants; ABI remains version 1.
+
+### Native current-thread and TLS requests
+
+Native development ABI remains 1. The layout fingerprint includes these actual
+records and operations; rebuild System, applications, definitions, modules and
+fixtures together after changing them.
+
+`NATIVE_THREAD` trap `0x1002a` currently implements only `CURRENT=0`. Its RV64
+Call is 216 bytes, aligned to 8: operation u32 at 0, reserved u32 at 4, output
+canonical ThreadId u64 at 8, detail_length u32 at 16, reserved2 u32 at 20 and 192
+UTF-8 diagnostic bytes at 24. CURRENT authenticates the actual scheduled Process
+ThreadContext and its preadmitted TLS slots; it never returns ProcessInfo's main
+thread by substitution. General child creation/join is a separate facility.
+
+`TLS` trap `0x1002b` uses a 264-byte, 8-aligned Call. Fields are operation u32 at 0,
+flags u32 at 4, two reserved u64s at 8, key u64 at 24, opaque value usize at 32,
+destructor address usize at 40, receipt token u64 at 48, present u32 at 56, round
+u32 at 60, detail_length u32 at 64, reserved2 u32 at 68 and 192 diagnostic bytes at 72.
+Flags/reserved are zero. Negative Status preserves the cause and returns bounded
+nonempty UTF-8 detail; success returns detail_length 0. Zero/one/two opaque values
+are legal. IDs and receipt tokens are nonzero and issued by the shared facility.
+
+Operations are CREATE 0, DELETE 1, GET 2, SET 3, BEGIN 4, NEXT 5, ACK 6 and FINISH 7.
+CREATE takes a nullable C destructor address and returns a key. DELETE invalidates
+that Process-owned key without invoking its values' callbacks. GET/SET only
+address the actual current canonical thread and perform no allocation. Every
+thread prepays the platform-selected process key capacity before entry; QemuRISC-V
+selects 256, checked within 16..4096. Existing-key access cannot hide a lazy slot
+allocation failure. Other-process and stale keys are rejected.
+
+BEGIN starts current-thread teardown. NEXT clears one eligible nonzero slot
+before returning present 1, key/value/destructor and its unique receipt; CRT calls
+that pinned destructor outside resident locks, then ACKs that receipt on the same
+thread. The token is correlation only: the actual THRD retains the key and code
+pin; another token cannot reconstruct authority. One receipt may be outstanding.
+Reinitialized/new values are eligible in a later round. There are at most eight
+rounds; exhaustion reports remaining nonzero slots rather than claiming their
+callbacks completed. After NEXT returns present 0, FINISH confirms completion;
+setting another nonzero value invalidates that completion observation. Forced
+Process retirement drops retained receipts only after real execution quiescence
+and does not claim the user destructor ran. Key/code/storage cleanup remains in
+the actual owner's canonical walk.

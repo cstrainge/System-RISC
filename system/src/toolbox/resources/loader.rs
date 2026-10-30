@@ -103,6 +103,25 @@ pub fn application_extent(resources: &[Resource]) -> Result<u64>
     let (descriptor, _, _) = application_parts(resources)?;
     Ok(descriptor.load_limit - descriptor.load_base)
 }
+/// Checked initialized executable ranges at the package's preferred origin.
+/// The registry rebases them together with the actual image placement.
+pub(crate) fn application_executable(resources: &[Resource])
+                                     -> Result<alloc::vec::Vec<core::ops::Range<u64>>>
+{
+    let (descriptor, _, image) = application_parts(resources)?;
+    let mut ranges = alloc::vec::Vec::new();
+    ranges.try_reserve_exact(image.segments.len()).map_err(|_| {
+                                                       Error::AllocationFailed("application \
+                                                                                executable range \
+                                                                                allocation failed")
+                                                   })?;
+    for segment in image.segments.iter().filter(|s| s.flags & image::EXECUTE != 0)
+    {
+        let start = descriptor.load_base + segment.offset;
+        ranges.push(start..start + segment.length as u64);
+    }
+    Ok(ranges)
+}
 pub(crate) fn application_at(resources: &[Resource], destination: u64) -> LoadResult<usize>
 {
     let (descriptor, bytes, _) = application_parts(resources)?;

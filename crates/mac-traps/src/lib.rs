@@ -3,6 +3,7 @@
 use mac_abi::{traps::*, *};
 
 pub mod application_heap;
+pub mod native_threads;
 mod error;
 pub mod types;
 pub mod coordinates;

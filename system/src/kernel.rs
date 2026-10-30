@@ -117,6 +117,8 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
     let extent =
         crate::loader::application_extent(&source.resources)
             .map_err(|cause| crate::images::LoadError::Write(cause.into()))?;
+    let executable = crate::loader::application_executable(&source.resources)
+        .map_err(|cause| crate::images::LoadError::Write(cause.into()))?;
     let prepared = IMAGES.with(|images| {
                              images.prepare_load(owner,
                                            source,
@@ -124,7 +126,7 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
                                            extent,
                                            crate::machine::memory::APPLICATION_RELOCATION_BASE,
                                            crate::machine::memory::IMAGE_LIMIT,
-                                           alloc::vec::Vec::new())
+                                           executable)
                          })
                          .map_err(|cause| crate::images::LoadError::Admission(cause.status()))??;
     // The original alias already reserves its destination and retains its
@@ -183,6 +185,16 @@ pub(crate) fn module_execution(binding: crate::images::Binding)
     // entry, code writes and foreign dispatch stay outside this metadata turn.
     crate::toolbox::handles::InvocationGate::run(|| {
         IMAGES.with(|images| images.execute_module(binding)).map_err(AccessError::status)?
+    })
+}
+pub(crate) fn application_execution(owner: &crate::toolbox::handles::OwnerRef,
+                                    binding: crate::images::Binding)
+                                    -> Result<crate::images::ApplicationExecution, Status>
+{
+    use mac_object_table::shared::InvocationGate as _;
+    crate::toolbox::handles::InvocationGate::run(|| {
+        IMAGES.with(|images| images.execute_application(owner, binding))
+              .map_err(AccessError::status)?
     })
 }
 pub(crate) fn finish_module_images()
@@ -641,6 +653,11 @@ fn launch(info: &BootInfo) -> Result<(), crate::machine::scheduler::StartError>
         serial!("APPLICATION_HEAP_INITIALIZATION_FAILED: {cause}");
         recovery_boot_error("application heap manager initialization refused", cause.status())
     })?;
+    crate::toolbox::native_threads::initialize().map_err(|cause| {
+                                                    recovery_boot_error("native TLS manager \
+                                                                         initialization refused",
+                                                                        cause.status())
+                                                })?;
     let system = crate::loader::read_startup("System")?;
     let finder = crate::loader::read_startup("Finder")?;
     let mut processes = crate::toolbox::processes::Manager::new();
@@ -692,6 +709,21 @@ fn launch(info: &BootInfo) -> Result<(), crate::machine::scheduler::StartError>
                                                                       refused",
                                                                      status)
                                              })?;
+    let tls_prepared =
+        crate::toolbox::native_threads::prepare_root(finder_owner.clone(),
+                                                     finder_allocation.clone()).map_err(|cause| {
+            recovery_boot_error("Finder TLS root preparation refused", cause.status())
+        })?;
+    let tls = crate::toolbox::native_threads::publish_root(tls_prepared).map_err(|failure| {
+                  let status = failure.cause.status();
+                  failure.prepared.dispose();
+                  recovery_boot_error("Finder TLS root publication refused", status)
+              })?;
+    processes.bind_tls(&finder_owner, tls).map_err(|status| {
+                                               recovery_boot_error("Finder TLS root attachment \
+                                                                    refused",
+                                                                   status)
+                                           })?;
     let finder_loaded = crate::allocator::with_target(crate::allocator::Target::Owner {
         account: finder_allocation, class: mac_kernel_model::policy::MemoryClass::Kernel
     }, || admit_image(&finder_owner,

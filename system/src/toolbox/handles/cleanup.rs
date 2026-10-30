@@ -9,6 +9,8 @@ pub(crate) enum Cause
     #[cfg(target_arch = "riscv64")]
     ApplicationHeap(crate::toolbox::application_heap::CleanupCause),
     #[cfg(target_arch = "riscv64")]
+    NativeTls(crate::toolbox::native_threads::CleanupCause),
+    #[cfg(target_arch = "riscv64")]
     RequestRegistryUnavailable(crate::state::AccessError),
     #[cfg(target_arch = "riscv64")]
     ScrapManagerUnavailable(crate::state::AccessError),
@@ -99,6 +101,8 @@ impl core::fmt::Display for Cause
         {
             #[cfg(target_arch = "riscv64")]
             Self::ApplicationHeap(cause) => cause.fmt(f),
+            #[cfg(target_arch = "riscv64")]
+            Self::NativeTls(cause) => cause.fmt(f),
             #[cfg(target_arch = "riscv64")]
             Self::RequestRegistryUnavailable(cause) =>
             {
@@ -260,6 +264,15 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn native_tls(ticket: ReleasedResource,
+                             cause: crate::toolbox::native_threads::CleanupCause)
+                             -> Self
+    {
+        Self { ticket,
+               cause: Cause::NativeTls(cause) }
+    }
+
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn application_heap(ticket: ReleasedResource,
                                    cause: crate::toolbox::application_heap::CleanupCause)

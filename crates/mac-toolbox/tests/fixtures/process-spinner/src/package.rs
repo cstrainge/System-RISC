@@ -1,7 +1,11 @@
 fn main()
 {
     let args: Vec<_> = std::env::args_os().collect();
-    let manifest = if cfg!(feature = "heap")
+    let manifest = if cfg!(feature = "tls")
+    {
+        "resources.tls.json"
+    }
+    else if cfg!(feature = "heap")
     {
         "resources.heap.json"
     }

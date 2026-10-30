@@ -559,7 +559,8 @@ pub(crate) struct SpawnFailure
 }
 pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                       loaded: crate::kernel::LoadedImage, charges: accounting::ThreadCharges,
-                      heap: crate::toolbox::application_heap::RootBinding)
+                      heap: crate::toolbox::application_heap::RootBinding,
+                      tls: crate::toolbox::native_threads::RootBinding)
                       -> Result<PreparedThread, PrepareFailure>
 {
     let target = crate::allocator::Target::Owner { account: charges.allocation().clone(),
@@ -578,6 +579,13 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
             return Err(mac_abi::ACCESS_DENIED);
         }
         let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
+        let slots = crate::toolbox::native_threads::prepare_slots(&owner, &tls).map_err(|cause| {
+                                                                                   cause.status()
+                                                                               })?;
+        context.install_tls(slots).map_err(|(cause, slots)| {
+                                       drop(slots);
+                                       cause.status()
+                                   })?;
         let (stack, cpu, allocation) = charges.allocate(&owner, |top| {
                                                   let mut initial = TrapFrame::default();
                                                   initial.pc = app_start as *const () as usize;
@@ -651,7 +659,8 @@ pub(crate) struct RecoveryPrepareFailure
 /// backing. All fallible control-block work precedes consumption of the loan.
 pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
                                charges: accounting::ThreadCharges, loan: FinderBackingLoan,
-                               heap: crate::toolbox::application_heap::RootBinding)
+                               heap: crate::toolbox::application_heap::RootBinding,
+                               tls: crate::toolbox::native_threads::RootBinding)
                                -> Result<PreparedThread, RecoveryPrepareFailure>
 {
     let permit = loan.permit();
@@ -670,6 +679,14 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
                 return Err(mac_abi::ACCESS_DENIED);
             }
             let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
+            let slots =
+                crate::toolbox::native_threads::prepare_slots(&owner, &tls).map_err(|cause| {
+                                                                               cause.status()
+                                                                           })?;
+            context.install_tls(slots).map_err(|(cause, slots)| {
+                                           drop(slots);
+                                           cause.status()
+                                       })?;
             context.install_recovery_default(permit.clone());
             let core = ThreadCore { backing: Mutex::new(None),
                                     launch: Mutex::new(None),
@@ -857,20 +874,21 @@ pub(crate) fn start_prepared(thread: u64, owner: &OwnerRef) -> Result<(), mac_ab
 }
 pub(crate) fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
                     charges: accounting::ThreadCharges,
-                    heap: crate::toolbox::application_heap::RootBinding)
+                    heap: crate::toolbox::application_heap::RootBinding,
+                    tls: crate::toolbox::native_threads::RootBinding)
                     -> Result<u64, mac_abi::Status>
 {
     let prepared =
-        prepare(owner, loaded, charges, heap).map_err(|failure| {
-                                                 let PrepareFailure { status,
-                                                                      loaded } = failure;
-                                                 // Failed preparation retains the unique image
-                                                 // until its caller accepts
-                                                 // the refusal; dispose that lease through its
-                                                 // ordinary owned path.
-                                                 drop(loaded);
-                                                 status
-                                             })?;
+        prepare(owner, loaded, charges, heap, tls).map_err(|failure| {
+                                                      let PrepareFailure { status,
+                                                                           loaded } = failure;
+                                                      // Failed preparation retains the unique image
+                                                      // until its caller accepts
+                                                      // the refusal; dispose that lease through its
+                                                      // ordinary owned path.
+                                                      drop(loaded);
+                                                      status
+                                                  })?;
     spawn_prepared(prepared, true).map_err(|failure| failure.status)
 }
 
@@ -988,6 +1006,7 @@ fn prepare_system_idle(target: super::traps::execution::IdleTarget)
                           cause.status()
                       })?;
             let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
+
             let name = ThreadName::new("System idle")?;
             let core = Arc::try_new(SystemIdleCore { cpu,
                                                      _stack: stack,
@@ -1564,6 +1583,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
                 crate::toolbox::crashes::pump_dismissals();
                 crate::toolbox::crashes::pump_reports();
                 crate::toolbox::processes::documents::pump();
+                crate::toolbox::native_threads::pump();
                 crate::toolbox::processes::retirement::pump();
                 crate::toolbox::processes::finder::pump();
             }

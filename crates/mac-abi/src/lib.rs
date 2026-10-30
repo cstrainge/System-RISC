@@ -2,6 +2,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 pub mod application_heap;
+pub mod native_threads;
+pub mod tls;
 pub mod power;
 
 pub const ABI_VERSION: u32 = 1;
@@ -9,7 +11,34 @@ pub const ABI_VERSION: u32 = 1;
 /// Native descriptors carry this fingerprint so stale packages fail before
 /// entry rather than interpreting new payloads with an older struct layout.
 pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
-    let words = [core::mem::size_of::<usize>(),
+    let words = [core::mem::align_of::<native_threads::Call>(),
+                 core::mem::align_of::<tls::Call>(),
+                 core::mem::offset_of!(native_threads::Call, detail),
+                 core::mem::offset_of!(tls::Call, value),
+                 core::mem::offset_of!(tls::Call, destructor),
+                 core::mem::offset_of!(tls::Call, present),
+                 core::mem::offset_of!(tls::Call, round),
+                 core::mem::offset_of!(tls::Call, detail_length),
+                 native_threads::CURRENT as usize,
+                 tls::CREATE as usize,
+                 tls::DELETE as usize,
+                 tls::GET as usize,
+                 tls::SET as usize,
+                 tls::BEGIN as usize,
+                 tls::NEXT as usize,
+                 tls::ACK as usize,
+                 tls::FINISH as usize,
+                 tls::DETAIL_BYTES,
+                 core::mem::size_of::<native_threads::Call>(),
+                 core::mem::offset_of!(native_threads::Call, thread),
+                 core::mem::size_of::<tls::Call>(),
+                 core::mem::offset_of!(tls::Call, key),
+                 core::mem::offset_of!(tls::Call, ticket),
+                 core::mem::offset_of!(tls::Call, detail),
+                 tls::DESTRUCTOR_ROUNDS as usize,
+                 traps::NATIVE_THREAD as usize,
+                 traps::TLS as usize,
+                 core::mem::size_of::<usize>(),
                  core::mem::size_of::<resources::Scope>(),
                  core::mem::offset_of!(resources::Scope, image),
                  core::mem::size_of::<resources::ResourceCall>(),

@@ -950,3 +950,38 @@ be revived by reset continuations. Losing the manager quarantines its live uses
 without acknowledging DMA completion. This is a lifetime/ACK policy, not a proof
 of physical page pinning, reclaimable module images, IRQ-driven reset progress
 or multi-hart device synchronization.
+
+Native Process TLS is separate from module-worker execution and CPU identity.
+Each admitted application thread receives a fully prepaid slot array, authentic
+Process account and shared TLS-root binding before entry; the root never owns
+ThreadContexts. Keys and their storage are registered Process resources and
+callback-bearing keys retain the actual initialized executable image. GET/SET
+need no allocation and accept std's opaque sentinel values. User destructor code
+runs through the application CRT on that actual thread, outside resident locks,
+using BEGIN/NEXT/ACK/FINISH and a retained original-key receipt. Eight-round
+exhaustion and forced process retirement do not claim callbacks completed.
+Initial no_std applications use the shared application scaffold for teardown;
+a std CRT owns the same protocol in its own startup/exit path. This surface does
+not supply child creation, join/detach, address waits or general std readiness.
+Native validation must distinguish main-thread TLS from those separate gates.
+
+Bounded native TLS observations (2026-10-29) used optimized QEMU virt/RVA23,
+8 GiB RAM, 800×600, with tracing disabled. The same System resource fork
+`7321a8ffa9965ec5a8220b3f22f70098ccd65786da0cbad8e3e29fb648afa619`
+and ROM `d9c5207d287c832f586365e0da570225d7b69f11d0858b32f34d8fad78c63d3b`
+ran the normal packaged TLS Probe on one and four configured CPUs. It exercised
+CURRENT, opaque sentinel values, deleted-key refusal/reuse, the configured
+256-key capacity refusal with diagnostics, malformed flags, and four raw native
+requests for non-executable callback addresses. Its normal application runtime
+ran three destructor rounds, preserved the real receipt after a wrong ACK, and
+handled key deletion during its callback. Actual THRD reclamation and process
+account closure followed, with subsequent input observed. Separate matching
+runs exercised all bundled entries, six application-owned quits, and a long SDK
+panic report with scrolling, dismissal and process retirement.
+
+This does not establish child-thread TLS independence, concurrent key deletion,
+all eight-round exhaustion paths, foreign ACK handling, timing, complete Finder
+OOM recovery, or std execution. Deferred deletion now receives coalesced actual
+reader-release notifications; its serialized pump disposes code/root owners
+outside TLS context and manager guards. Those synchronization rules still need
+multi-thread native qualification when child-thread support lands.

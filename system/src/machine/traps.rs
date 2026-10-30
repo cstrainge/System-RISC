@@ -569,6 +569,16 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
     }
     match number
     {
+        NATIVE_THREAD =>
+        {
+            let call = read_request!(mac_abi::native_threads::Call);
+            toolbox::native_threads::native::current(call) as i64
+        }
+        TLS =>
+        {
+            let call = read_request!(mac_abi::tls::Call);
+            toolbox::native_threads::native::request(call) as i64
+        }
         APPLICATION_HEAP =>
         {
             let call = read_request!(application_heap::Call);

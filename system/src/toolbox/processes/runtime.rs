@@ -367,7 +367,8 @@ impl Desktop
         crate::machine::scheduler::spawn(self.processes.ledger(id)?,
                                          loaded,
                                          charges,
-                                         self.processes.heap(id)?)
+                                         self.processes.heap(id)?,
+                                         self.processes.tls(id)?)
     }
 
     pub(super) fn post_drag_notice(&mut self, notice: crate::toolbox::drag::Notice)
