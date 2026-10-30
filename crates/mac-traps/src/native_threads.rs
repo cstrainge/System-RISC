@@ -4,7 +4,7 @@ use core::fmt;
 
 use mac_abi::{native_threads as thread, tls};
 
-use crate::{Client, Error, types::InlineText};
+use crate::{Client, Error, ThreadId, types::InlineText};
 #[derive(Clone, Copy, Debug)]
 pub enum Failure
 {
@@ -75,7 +75,7 @@ pub(crate) fn result(status: i64, bytes: [u8; 192], length: u32) -> Result<()>
 }
 impl Client<'_>
 {
-    pub fn current_native_thread(self) -> Result<u64>
+    pub fn current_native_thread(self) -> Result<ThreadId>
     {
         let mut call = thread::Call::default();
         let status = self.invoke(mac_abi::traps::NATIVE_THREAD, &mut call);
@@ -88,7 +88,7 @@ impl Client<'_>
         {
             return Err(Failure::Protocol("CURRENT returned no canonical THRD"));
         }
-        Ok(call.thread)
+        Ok(ThreadId(call.thread))
     }
 
     /// # Safety
