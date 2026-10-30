@@ -261,7 +261,12 @@ pub(crate) fn entry_icon(system: &System<'_>, volume: &VolumeInfo, entry: &Catal
                                     {
                                         standard::DOCUMENT
                                     });
+    // Extensions arrive self-decorated: like applications, an INIT file's
+    // own BNDL/FREF icon family is its icon, with the generic extension
+    // puzzle as fallback. The associated-type path below never opens the
+    // file's own fork, so without this every extension shows the generic.
     if entry.file_type == TypeCode::new(*b"APPL")
+       || entry.file_type == TypeCode::new(*b"INIT")
     {
         Icon::Application { volume: volume.id,
                             cnid: entry.id,

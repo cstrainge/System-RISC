@@ -34,7 +34,34 @@
       "symbol": "CLIPBOARD_ICON",
       "payload": {
         "format": "hex",
-        "hex": "000000000000000000000000001ff800001ff80007ffffe007ffffe0061ff860061ff860060000600600006006000c600600066006fffe6006fffe6006c0066006c00c6006cc006006d8006006fffe6006fffe6006180060060c0060060000600600006006000060060000600600006007ffffe007ffffe0000000000000000000000000000000000000000007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe007ffffe00000000000000000"
+        "hex": "7ffffff080000008800000088007e008800c3008801668088021840880700e08a08ff108d080010a908f710d10800109108df10110800101108eb10110800101108ed10110800101108bb10110800101108001099080010dd080010aa080010880800108808001088080010880800108807ffe0880000008800000087ffffff07ffffff0fffffff8fffffff8fffffff8fffffff8fffffff8fffffff8fffffff8fffffff8dffffffa9fffffff1fffffff1fffffff1fffffff1fffffff1fffffff1fffffff1fffffff1fffffff1fffffff1fffffff9fffffffdffffffafffffff8fffffff8fffffff8fffffff8fffffff8fffffff8fffffff8fffffff87ffffff0"
+      }
+    },
+    {
+      "type": "icl8",
+      "id": 128,
+      "symbol": "CLIPBOARD_ICON_COLOR",
+      "payload": {
+        "format": "hex",
+        "hex": "00ffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000ff000000000000000000000000000000000000000000000000000000ff000000ff00f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6ff000000ff00f6f6f6f6f6f6f6f6f6f6f6fffffffffffff6f6f6f6f6f6f6f6f6ff000000ff00f6f6f6f6f6f6f6f6f6f6fffff5f7f7f7fffff6f6f6f6f6f6f6f6ff000000ff00f6f6f6f6f6f6f6f6f6fff5fffff7f7fffff9fff6f6f6f6f6f6f6ff000000ff00f6f6f6f6f6f6f6f6fff5f7f7f7fffff9f9f7f7fff6f6f6f6f6f6ff000000ff0000f6f6f6f6f6f6fffffff7f7f7f7f9f9f7f7fffffff6f6f6f6f6ff000000ff00ff00f6f6f6f6ff3a0000ffffffffffffffff00003afff6f6f6f6ff000000ffff00fff6f6f6f6ff3a0000000000000000000000003afff6f6f6f6ff00ff00ff0000fff6f6f6f6ff3a0000000000000000000000003afff6f6f6f6ffff00ff000000fff6f6f6f6ff3a0000000000000000000000003afff6f6f6f6ff00f6ff000000fff6f6f6f6ff3a0000ffffffff00ffffff00003afff6f6f6f6f6f6f6ff000000fff6f6f6f6ff3a0000000000000000000000003afff6f6f6f6f6f6f6ff000000fff6f6f6f6ff3a0000ffff00ffffffffff00003afff6f6f6f6f6f6f6ff000000fff6f6f6f6ff3a0000000000000000000000003afff6f6f6f6f6f6f6ff000000fff6f6f6f6ff3a0000ffffff00ff00ffff00003afff6f6f6f6f6f6f6ff000000fff6f6f6f6ff3a0000000000000000000000003afff6f6f6f6f6f6f6ff000000fff6f6f6f6ff3a0000ffffff00ffff00ff00003afff6f6f6f6f6f6f6ff000000fff6f6f6f6ff3a0000000000000000000000003afff6f6f6f6f6f6f6ff000000fff6f6f6f6ff3a0000ff00ffffff00ffff00003afff6f6f6f6fff6f6ffff0000fff6f6f6f6ff3a0000000000000000000000003afff6f6f6f6fffff6ffffff00fff6f6f6f6ff3a0000000000000000000000003afff6f6f6f6ff00ff00ff00ff00f6f6f6f6ff3a0000000000000000000000003afff6f6f6f6ff000000ff00f6f6f6f6f6f6ff3a0000000000000000000000003afff6f6f6f6ff000000ff00f6f6f6f6f6f6ff3a0000000000000000000000003afff6f6f6f6ff000000ff00f6f6f6f6f6f6ff3a3a3a3a3a3a3a3a3a3a3a3a3a3afff6f6f6f6ff000000ff00f6f6f6f6f6f6ff3a3a3a3a3a3a3a3a3a3a3a3a3a3afff6f6f6f6ff000000ff00f6f6f6f6f6f6f6fffffffffffffffffffffffffffff6f6f6f6f6ff000000ff00f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6ff000000ff00f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6ff00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000"
+      }
+    },
+    {
+      "type": "ics#",
+      "id": 128,
+      "symbol": "CLIPBOARD_ICON_SMALL",
+      "payload": {
+        "format": "hex",
+        "hex": "7ffe800283c284228ff2c8134bd148114b5148114ad3881288128ff280027ffc7ffefffefffefffefffeffff7fff7fff7fff7fff7ffffffefffefffefffe7ffc"
+      }
+    },
+    {
+      "type": "ics8",
+      "id": 128,
+      "symbol": "CLIPBOARD_ICON_SMALL_COLOR",
+      "payload": {
+        "format": "hex",
+        "hex": "00ffffffffffffffffffffffffffff00ff00000000000000000000000000ff00ff00f6f6f6f6fffffffff6f6f6f6ff00ff00f6f6f6fff7f7f7f7fff6f6f6ff00ff00f6f6fffffffffffffffff6f6ff00ffff00f6ff3af6f6f6f63afff6f6ffff00ff00f6ff3af9f9f9f93afff6f6f6ff00ff00f6ff3af6f6f6f63afff6f6f6ff00ff00f6ff3af9f9f6f93afff6f6f6ff00ff00f6ff3af6f6f6f63afff6f6f6ff00fff6f6ff3af9f6f9f93afff6f6ffffff00f6f6ff3af6f6f6f63afff6f6ff00ff00f6f6ff3a3a3a3a3a3afff6f6ff00ff00f6f6fffffffffffffffff6f6ff00ff00f6f6f6f6f6f6f6f6f6f6f6f6ff0000ffffffffffffffffffffffffff0000"
       }
     }
   ]
