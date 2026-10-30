@@ -38,6 +38,7 @@ fn publish(content: &mut [Content], controls: &mut Manager, window: u64, mut pre
         controls.commit_layout(prepared);
         return Ok(damage);
     }
+    let limited_damage = prepared.limited_damage;
     let drawings = &mut prepared.drawings;
     let content =
         content.iter_mut().find(|c| c.id == SceneTarget::from(window)).ok_or(NOT_FOUND)?;
@@ -51,6 +52,9 @@ fn publish(content: &mut [Content], controls: &mut Manager, window: u64, mut pre
             removed_count += 1;
         }
     }
+    // A missing retained control needs its complete first drawing, even if
+    // the state transition itself changed only a scrollbar highlight.
+    let limited_damage = limited_damage.filter(|_| removed_count != 0);
     let mut next_bytes = used.checked_sub(removed_bytes).ok_or(CORRUPT_DATA)?;
     for d in drawings.iter()
     {
@@ -80,15 +84,25 @@ fn publish(content: &mut [Content], controls: &mut Manager, window: u64, mut pre
                if let RenderCommand::Control(d) = command
                   && drawings.iter().any(|new| new.id == d.id)
                {
-                   damage.push(d.visible_bounds());
+                   if limited_damage.is_none()
+                   {
+                       damage.push(d.visible_bounds());
+                   }
                    return false;
                }
                true
            });
     for d in drawings.drain(..)
     {
-        damage.push(d.visible_bounds());
+        if limited_damage.is_none()
+        {
+            damage.push(d.visible_bounds());
+        }
         content.commands.push(RenderCommand::Control(d));
+    }
+    if let Some(rect) = limited_damage
+    {
+        damage.push(rect);
     }
     controls.commit_layout(prepared);
     let mut changed_clip = None;

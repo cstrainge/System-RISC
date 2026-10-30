@@ -47,19 +47,39 @@ pub struct Drawing
     damage:    [Rect; 2],
     reflow:    u32,
     visible:   Option<Rect>,
-    grid:      Option<Arc<snapshot::Grid>>
+    grid:      Option<Arc<snapshot::Grid>>,
+    bars:      Option<alloc::boxed::Box<snapshot::Bars>>
 }
 impl Drawing
 {
     /// Clear a retained capture highlight without executing a definition.
     pub fn cancel_tracking(&mut self) -> bool
     {
-        match &mut self.state
+        let mut changed = false;
+        if let Some(bars) = &mut self.bars
+        {
+            for bar in bars.bars.iter_mut().flatten()
+            {
+                changed |= core::mem::replace(&mut bar.highlighted, 0) != 0;
+            }
+        }
+        changed
+        | match &mut self.state
         {
             State::Standard(state) => state.clear_highlight(),
             State::Scrollbar(state) => core::mem::replace(&mut state.highlighted, 0) != 0,
             State::Progress { .. } => false
         }
+    }
+
+    pub(crate) fn capture_bounds(&self) -> Rect
+    {
+        let bounds =
+            self.bars
+                .as_ref()
+                .and_then(|bars| bars.bars.iter().flatten().find(|bar| bar.highlighted != 0))
+                .map_or(self.bounds(), |bar| bar.bounds);
+        self.visible.map_or(bounds, |clip| intersection(bounds, clip))
     }
 
     pub(crate) fn visible_bounds(&self) -> Rect
@@ -143,7 +163,10 @@ impl Drawing
         + self.grid.as_ref().map_or(0, |grid| {
                                 core::mem::size_of::<snapshot::Grid>()
                                 + grid.cells.len() * core::mem::size_of::<Rect>()
+                                + grid.logical.len()
+                                  * core::mem::size_of::<mac_abi::controls::reflow::LogicalRect>()
                             })
+        + self.bars.as_ref().map_or(0, |_| core::mem::size_of::<snapshot::Bars>())
         + match &self.state
         {
             State::Standard(state) => state.storage(),
@@ -177,8 +200,58 @@ impl Drawing
 
     fn paint_checked(&self, canvas: &mut Canvas) -> Result<(), Status>
     {
+        let Some(bars) = &self.bars
+        else
+        {
+            return self.paint_content(canvas, None, false);
+        };
+        let previous = canvas.clip();
+        let mut previous_local = previous;
+        previous_local.offset(-canvas.origin().h, -canvas.origin().v);
+        canvas.set_clip(intersection(previous_local, bars.viewport));
+        let result = self.paint_content(canvas, Some(bars.viewport), false);
+        canvas.set_clip(previous_local);
+        result?;
+        for state in bars.bars.iter().flatten()
+        {
+            let drawing = Drawing { id:        self.id,
+                                    state:     State::Scrollbar(*state),
+                                    entry:     bars.entry,
+                                    gate:      self.gate,
+                                    variation: 0,
+                                    damage:    [Rect::ZERO; 2],
+                                    reflow:    1,
+                                    visible:   self.visible,
+                                    grid:      None,
+                                    bars:      None };
+            drawing.paint_clipped(canvas)?;
+        }
+        if bars.bars.iter().all(Option::is_some)
+        {
+            let bounds = self.bounds();
+            let corner =
+                Rect::new(bars.viewport.right, bars.viewport.bottom, bounds.right, bounds.bottom);
+            canvas.set_clip(intersection(previous_local, corner));
+            let result = self.paint_content(canvas, Some(corner), true);
+            canvas.set_clip(previous_local);
+            result?;
+        }
+        Ok(())
+    }
+
+    fn paint_content(&self, canvas: &mut Canvas, bounds: Option<Rect>, corner: bool)
+                     -> Result<(), Status>
+    {
         let mut surface = Surface::from_canvas(canvas);
         let mut standard = self.state.standard();
+        if let (Some(state), Some(bounds)) = (&mut standard, bounds)
+        {
+            state.bounds = bounds;
+            if corner
+            {
+                state.flags = TABLE_LINE_FLAGS;
+            }
+        }
         let mut scrollbar = match &self.state
         {
             State::Scrollbar(s) => Some(*s),
@@ -198,7 +271,7 @@ impl Drawing
             (1, (scrollbar as *mut ScrollbarState).cast())
         };
         let grid =
-            self.grid.as_ref().map(|g| {
+            self.grid.as_ref().filter(|_| !corner).map(|g| {
                                   mac_abi::controls::reflow::GridPaint { cells: g.cells.as_ptr(),
                                                                          count: g.cells.len() }
                               });
@@ -342,6 +415,7 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionEntry, gate: Trap
                                  reflow: call.reflow,
                                  visible: None,
                                  grid: None,
+                                 bars: None,
                                  state: if id == 1
                                  {
                                      State::Scrollbar(call.scrollbar)

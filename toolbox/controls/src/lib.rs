@@ -185,4 +185,5 @@ pub use passive::{Progress, ProgressBar, ProgressStyle, StaticText, StaticTextRe
                   TextAlignment, TextLayout};
 
 mod table;
-pub use table::{AdoptionError, Cell, Child, ChildHit, Children, GridLines, Table, TableRef};
+pub use table::{AdoptionError, Cell, Child, ChildHit, Children, ContentRect, GridLines,
+                ScrollInfo, ScrollPosition, Scrolling, Table, TableRef};

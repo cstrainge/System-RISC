@@ -1210,7 +1210,8 @@ impl Desktop
                 {
                     RenderCommand::Control(drawing) if !scroll_box && drawing.id == id =>
                     {
-                        drawing.cancel_tracking().then(|| drawing.bounds())
+                        let damage = drawing.capture_bounds();
+                        drawing.cancel_tracking().then_some(damage)
                     }
                     RenderCommand::ScrollBox(drawing) if scroll_box && drawing.id == id =>
                     {
@@ -1288,16 +1289,21 @@ impl Desktop
         {
             let definitions = &mut self.definitions;
             let (child, part) =
-                self.controls.hit_children(call.id, owner, call.point, |state| {
-                                  let id = super::controls::definition_id(state)?;
-                                  let entry = definitions.resolve(*b"CDEF", id)
-                                                         .map_err(crate::loader::status)?;
-                                  let mut state = *state;
-                                  super::controls::prepare(&mut state,
+                self.controls.hit_children(call.id,
+                                            owner,
+                                            call.point,
+                                            crate::machine::traps::gateway,
+                                            |state| {
+                                                let id = super::controls::definition_id(state)?;
+                                                let entry =
+                                                    definitions.resolve(*b"CDEF", id)
+                                                               .map_err(crate::loader::status)?;
+                                                let mut state = *state;
+                                                super::controls::prepare(&mut state,
                                                            entry,
                                                            crate::machine::traps::gateway)?;
-                                  Ok(state.result as i16)
-                              })?;
+                                                Ok(state.result as i16)
+                                            })?;
             call.layout.child = child;
             call.result = i32::from(part);
             return Ok(());
@@ -1319,6 +1325,30 @@ impl Desktop
                 self.sync_control_tree(window);
             }
             return Ok(());
+        }
+        if call.operation == REFLOW_OBJECT
+           && matches!(call.layout.message, reflow::GET_SCROLLING | reflow::GET_LOGICAL_RECT)
+        {
+            return self.controls.scroll_query(call, owner);
+        }
+        if (call.operation == REFLOW_OBJECT
+            && matches!(call.layout.message,
+                        reflow::SET_SCROLLING | reflow::SCROLL_TO | reflow::REVEAL_CHILD))
+           || (matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
+               && self.controls.scrolling(call.id, owner)?)
+        {
+            let pending = self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let prepared = self.controls.prepare_scroll(call,
+                                                         owner,
+                                                         pending,
+                                                         crate::machine::traps::gateway,
+                                                         |id| {
+                                                             self.definitions
+                                                                 .resolve(*b"CDEF", id)
+                                                                 .map_err(crate::loader::status)
+                                                         })?;
+            let (used, limit) = self.retained_admission(SceneTarget::from(window));
+            return self.publish_control_layout(window, prepared, used, limit);
         }
         if call.operation == REFLOW_OBJECT
            && matches!(call.layout.message, reflow::SET_GRID_TRACK | reflow::GET_GRID_TRACK)

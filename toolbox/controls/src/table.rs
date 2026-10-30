@@ -5,6 +5,61 @@ use mac_abi::controls::{self as wire, reflow};
 
 use super::*;
 
+/// Fixed content keeps finite preferred track sizes when the viewport changes.
+/// Fill tracks use their preferred size. Disabled axes clip without scrolling.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scrolling
+{
+    #[default]
+    Disabled,
+    Fixed
+    {
+        horizontal: bool, vertical: bool
+    }
+}
+impl Scrolling
+{
+    fn encode(self) -> Result<u32>
+    {
+        match self
+        {
+            Self::Disabled => Ok(0),
+            Self::Fixed { horizontal,
+                          vertical }
+                if horizontal || vertical =>
+            {
+                Ok(u32::from(horizontal) | u32::from(vertical) << 1)
+            }
+            _ => Err(Error::BadArgument)
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScrollPosition
+{
+    pub x: i64,
+    pub y: i64
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ContentRect
+{
+    pub left:   i64,
+    pub top:    i64,
+    pub right:  i64,
+    pub bottom: i64
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrollInfo
+{
+    pub scrolling:      Scrolling,
+    pub position:       ScrollPosition,
+    pub content_width:  i64,
+    pub content_height: i64,
+    pub viewport:       Rect,
+    pub horizontal_bar: bool,
+    pub vertical_bar:   bool
+}
+
 /// Independent Table decoration switches. These do not affect layout or hit
 /// testing. Defaults retain all lines; NONE hides all line decoration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,6 +229,86 @@ impl<'a> Table<'a>
 }
 impl<'a> TableRef<'a>
 {
+    /// Arrange and publish the mode change atomically. Capture or pending paint
+    /// refuses with ServiceBusy; any refusal preserves the old mode and scene.
+    pub fn set_scrolling(self, mode: Scrolling) -> Result<()>
+    {
+        self.control
+            .layout(reflow::Payload { message: reflow::SET_SCROLLING,
+                                      scroll: reflow::Scroll { axes: mode.encode()?,
+                                                               ..Default::default() },
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    pub fn scroll_info(self) -> Result<ScrollInfo>
+    {
+        let s = self.control
+                    .layout(reflow::Payload { message: reflow::GET_SCROLLING,
+                                              ..Default::default() })?
+                    .scroll;
+        if s.axes & !3 != 0 || s.bars & !s.axes != 0
+        {
+            return Err(Error::BadAbi);
+        }
+        Ok(ScrollInfo { scrolling:      if s.axes == 0
+                        {
+                            Scrolling::Disabled
+                        }
+                        else
+                        {
+                            Scrolling::Fixed { horizontal: s.axes & 1 != 0,
+                                               vertical:   s.axes & 2 != 0 }
+                        },
+                        position:       ScrollPosition { x: s.x,
+                                                         y: s.y },
+                        content_width:  s.width,
+                        content_height: s.height,
+                        viewport:       s.viewport,
+                        horizontal_bar: s.bars & 1 != 0,
+                        vertical_bar:   s.bars & 2 != 0 })
+    }
+
+    /// Negative positions refuse; positions beyond the current extent clamp.
+    /// A clean layout scroll translates/clips without measuring the children.
+    pub fn scroll_to(self, position: ScrollPosition) -> Result<()>
+    {
+        self.control
+            .layout(reflow::Payload { message: reflow::SCROLL_TO,
+                                      scroll: reflow::Scroll { x: position.x,
+                                                               y: position.y,
+                                                               ..Default::default() },
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    /// Minimally reveal a direct child. Oversize children align their leading
+    /// edge. Layout runs only when already dirty.
+    pub fn reveal(self, child: ControlRef<'a>) -> Result<()>
+    {
+        self.control
+            .layout(reflow::Payload { message: reflow::REVEAL_CHILD,
+                                      child: child.id().0,
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    /// The child's established rectangle relative to this Table's content
+    /// origin, independent of its current scroll translation or visibility.
+    pub fn content_rect(self, child: ControlRef<'a>) -> Result<ContentRect>
+    {
+        let r = self.control
+                    .layout(reflow::Payload { message: reflow::GET_LOGICAL_RECT,
+                                              child: child.id().0,
+                                              ..Default::default() })?
+                    .scroll
+                    .logical;
+        Ok(ContentRect { left:   r.left,
+                         top:    r.top,
+                         right:  r.right,
+                         bottom: r.bottom })
+    }
+
     pub fn control(self) -> ControlRef<'a>
     {
         self.control
@@ -322,8 +457,8 @@ impl<'a> TableRef<'a>
                    finished: false }
     }
 
-    /// Query the frontmost interactive descendant using the same tree order and
-    /// ancestor clipping as retained drawing. Coordinates are window-local.
+    /// Query the frontmost interactive descendant or the Table's own scrollbars,
+    /// using retained tree order and ancestor clipping. Coordinates are window-local.
     pub fn hit_test(self, point: Point) -> Result<Option<ChildHit<'a>>>
     {
         let mut call = wire::ControlCall { id: self.control.id().0,

@@ -15,6 +15,7 @@ mod reflow_window;
 mod table_lines;
 mod reflow_automatic;
 mod reflow_wrapped;
+mod reflow_scroll;
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 struct LogBuffer
 {
@@ -74,6 +75,7 @@ fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::
     table_lines::run(system)?;
     reflow_automatic::run(system)?;
     reflow_wrapped::run(system)?;
+    reflow_scroll::run(system)?;
     Ok(())
 }
 #[cfg(feature = "textedit-clipboard")]

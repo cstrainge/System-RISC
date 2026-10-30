@@ -219,3 +219,54 @@ Recorded artifact, configuration, runtime observations and remaining gaps belong
 in `status.txt`. A compile or a successful bounded run is not whole-OS, race,
 physical-hardware or Windows qualification. The repository remains unvalidated
 outside its specifically recorded observations.
+
+### Fixed-content Table scrolling
+
+`TableRef::set_scrolling(Scrolling::Fixed { horizontal, vertical })` opts into a
+viewport whose content keeps its finite preferred track sizes. Fill and Percent
+tracks use preferred sizes in this policy. At least one axis must be enabled;
+`Scrolling::Disabled` restores the fitting policy. A disabled axis clips with
+position zero. The scrolling viewport reports its own minimum and creation-size
+preference instead of the document's total dimensions. Explicit size overrides
+continue to apply.
+
+Bars appear only on overflow. System evaluates the four possible bar sets
+against the reduced viewport, selecting the least consistent set in stable
+horizontal-before-vertical order. A vertical bar can induce a horizontal bar.
+This calculation does not remeasure fixed content. Tiny viewports clip safely;
+scrollbars too small for the loaded CDEF's geometry are noninteractive.
+
+`scroll_info()` reports the accepted viewport, wide content extent, bar visibility
+and position. `scroll_to(ScrollPosition { x, y })` rejects negative positions and
+clamps positions beyond the content. `reveal(child)` minimally exposes a direct
+child, aligning its leading edge if the child is larger than the viewport.
+`content_rect(child)` returns the last accepted rectangle in parent-content
+coordinates; pending content changes have not yet changed that rectangle.
+
+A clean scroll only translates and clips cached child geometry. It does not ask
+children to measure again or change their logical arrangement. Content edits
+still use ordinary automatic reflow; scrolling a dirty Table first prepares its
+layout. This fixed-content policy does not automatically wrap content to the
+viewport width. A width-following scrolling policy is not implemented.
+
+Content positions and summed extents use signed 64-bit coordinates. Individual
+CDEF sizes and partially visible drawing rectangles must still fit the native
+QuickDraw coordinate contract. System refuses an unrepresentable visible
+rectangle with `BadArgument` before publication. Fully offscreen controls retain
+finite local geometry and an empty clip; their logical rectangle remains
+available through `content_rect`, while ordinary `ControlInfo` bounds describe
+the current drawing representation. Assign a rectangle to a removed offscreen
+child before using it independently. Reparenting preserves accepted screen
+placement until the destination's pending layout commits, including a nested
+Table scrolled before that event boundary.
+
+Mode changes, scrolling and capture transitions stage state and retained output
+before publishing. Refusal preserves accepted geometry, position and capture.
+Pending window painting or another captured child returns `ServiceBusy`; retained
+or scratch allocation refusal returns `NoMemory`. Complete painting or cancel
+capture before retrying. Capture and highlight cleanup allocate no memory; existing damage collection
+can attempt allocation and falls back on refusal. Bars use the
+standard loaded scrollbar CDEF and resident tracking state machine. Hit testing
+may return the Table itself for a bar, and its ordinary managed `track` method
+performs the scroll. Arrow steps are 16 pixels, pages overlap by 16 pixels, and
+thumb positions map the CDEF's bounded range onto the wide content range.

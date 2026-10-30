@@ -100,5 +100,13 @@ impl Standard
 /// interior divider is drawn through a span. Empty cells need no stored object.
 pub(super) struct Grid
 {
-    pub cells: alloc::vec::Vec<Rect>
+    pub cells:   alloc::vec::Vec<Rect>,
+    pub logical: alloc::vec::Vec<mac_abi::controls::reflow::LogicalRect>
+}
+
+pub(super) struct Bars
+{
+    pub bars:     [Option<mac_abi::controls::ScrollbarState>; 2],
+    pub entry:    mac_abi::DefinitionEntry,
+    pub viewport: Rect
 }

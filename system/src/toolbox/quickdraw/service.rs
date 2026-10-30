@@ -116,8 +116,36 @@ impl Drawing
         result.map_err(super::regions_service::graphics_status)
     }
 }
+/// Retained commands are validated without assuming a particular future clip.
 pub fn graphics(port: &mut Port, call: &mut abi::GraphicsCall, points: &[Point], bytes: &[u8])
                 -> Result<Option<Drawing>, Status>
+{
+    let drawing = decode_graphics(port, call, points, bytes)?;
+    if let Some(geometry) = drawing.as_ref().and_then(|d| d.geometry.as_ref())
+       && !matches!(geometry, Geometry::Rect(_))
+    {
+        port::shape_region(geometry.shape()).map_err(super::regions_service::graphics_status)?;
+    }
+    Ok(drawing)
+}
+
+/// An immediate surface has a fixed visibility clip. The real rasterizer
+/// validates and allocates its clipped region before touching pixels; building
+/// an additional unbounded region here would reject large scrolled controls
+/// and repeat scan conversion for pixels that cannot be displayed.
+pub fn paint_graphics(port: &mut Port, call: &mut abi::GraphicsCall, points: &[Point],
+                      bytes: &[u8], canvas: &mut Canvas<'_>)
+                      -> Result<(), Status>
+{
+    if let Some(drawing) = decode_graphics(port, call, points, bytes)?
+    {
+        drawing.paint(canvas)?;
+    }
+    Ok(())
+}
+
+fn decode_graphics(port: &mut Port, call: &mut abi::GraphicsCall, points: &[Point], bytes: &[u8])
+                   -> Result<Option<Drawing>, Status>
 {
     use abi::*;
     let result = match call.operation
@@ -236,11 +264,6 @@ pub fn graphics(port: &mut Port, call: &mut abi::GraphicsCall, points: &[Point],
                 VERB_FILL => Verb::Fill(call.state.pattern),
                 _ => return Err(NOT_SUPPORTED)
             };
-            // Reject invalid/oversized shape data before retaining a command.
-            if !matches!(geometry, Geometry::Rect(_))
-            {
-                port::shape_region(geometry.shape()).map_err(super::regions_service::graphics_status)?;
-            }
             Some(Drawing { port: port.clone(),
                            geometry: Some(geometry),
                            verb,

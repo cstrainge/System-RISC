@@ -167,7 +167,7 @@ impl Manager
             }
             REFLOW_OBJECT if call.layout.message == wire::SET_VISIBLE_RECT =>
             {
-                object.state.layout.as_ref().and_then(|l| l.visible) != Some(call.layout.rect)
+                object.state.layout.as_ref().and_then(Layout::clip) != Some(call.layout.rect)
             }
             _ => false
         };
@@ -217,7 +217,7 @@ impl Manager
             }
             REFLOW_OBJECT if call.layout.message == wire::SET_VISIBLE_RECT =>
             {
-                o.state.layout.as_ref().and_then(|l| l.visible) != Some(call.layout.rect)
+                o.state.layout.as_ref().and_then(Layout::clip) != Some(call.layout.rect)
             }
             _ => false
         })
@@ -407,7 +407,31 @@ impl Manager
                 self.get(parent, owner)?.tree.revision.checked_add(1).ok_or(NO_MEMORY)?;
             }
         }
+        // Preserve the accepted screen position until the new parent's layout
+        // commits. Content coordinates must follow the new canonical edge even
+        // when a nested Table is scrolled before its parent processes reflow.
+        let mut logical = self.screen_rect(payload.child, owner)?;
+        if new != 0
+        {
+            let parent = self.get(new, owner)?;
+            let base = self.screen_rect(new, owner)?;
+            let (sx, sy) = parent.state
+                                 .layout
+                                 .as_ref()
+                                 .and_then(|l| l.scroll.as_ref())
+                                 .map_or((0, 0), |s| (s.data.x, s.data.y));
+            let x = base.left.checked_sub(sx).ok_or(BAD_ARGUMENT)?;
+            let y = base.top.checked_sub(sy).ok_or(BAD_ARGUMENT)?;
+            logical.left = logical.left.checked_sub(x).ok_or(BAD_ARGUMENT)?;
+            logical.right = logical.right.checked_sub(x).ok_or(BAD_ARGUMENT)?;
+            logical.top = logical.top.checked_sub(y).ok_or(BAD_ARGUMENT)?;
+            logical.bottom = logical.bottom.checked_sub(y).ok_or(BAD_ARGUMENT)?;
+        }
         self.detach(payload.child);
+        if let Some(l) = self.objects.get_mut(payload.child).and_then(|o| o.state.layout.as_mut())
+        {
+            l.logical = logical;
+        }
         if new != 0
         {
             if let Some(o) = self.objects.get_mut(payload.child)
@@ -589,8 +613,11 @@ impl Manager
         let mut visible = None;
         while let Some(o) = self.objects.get(parent)
         {
-            visible = clip(visible, Some(o.state.spec.bounds()));
-            visible = clip(visible, o.state.layout.as_ref().and_then(|l| l.visible));
+            visible = clip(visible,
+                           Some(o.state.layout.as_ref().map_or(o.state.spec.bounds(), |l| {
+                                                           l.viewport(o.state.spec.bounds())
+                                                       })));
+            visible = clip(visible, o.state.layout.as_ref().and_then(Layout::clip));
             parent = o.tree.parent;
         }
         visible
@@ -598,7 +625,7 @@ impl Manager
 
     pub(crate) fn visible_clip(&self, id: u64) -> Option<Rect>
     {
-        let local = self.objects.get(id)?.state.layout.as_ref().and_then(|l| l.visible);
+        let local = self.objects.get(id)?.state.layout.as_ref().and_then(Layout::clip);
         clip(local, self.inherited_clip(id))
     }
 
@@ -675,7 +702,7 @@ impl Manager
         core::cmp::Ordering::Equal
     }
 
-    pub(crate) fn hit_children(&self, root: u64, owner: u64, point: Point,
+    pub(crate) fn hit_children(&self, root: u64, owner: u64, point: Point, gate: TrapGate,
                                mut hit: impl FnMut(&ControlCall) -> Result<i16, Status>)
                                -> Result<(u64, i16), Status>
     {
@@ -694,6 +721,10 @@ impl Manager
             let o = self.get(id, owner)?;
             if self.visible_clip(id).is_none_or(|clip| clip.contains(point))
             {
+                if let Some((_, part)) = o.state.scroll_hit(point, gate)?
+                {
+                    return Ok((id, part));
+                }
                 let mut call = o.state.spec.draw();
                 call.operation =
                     if o.state.spec.scrollbar().is_some() { HIT_SCROLLBAR } else { HIT_STANDARD };
@@ -721,6 +752,11 @@ impl Manager
             {
                 id = o.tree.parent;
             }
+        }
+        if self.visible_clip(root).is_none_or(|c| c.contains(point))
+           && let Some((_, part)) = self.get(root, owner)?.state.scroll_hit(point, gate)?
+        {
+            return Ok((root, part));
         }
         Ok((0, 0))
     }

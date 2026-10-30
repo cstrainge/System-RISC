@@ -139,11 +139,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 }?;
                 let mut canvas = unsafe { surface.canvas() }.ok_or(BAD_ARGUMENT)?;
                 let mut port = service::Port::from_wire(call.state)?;
-                if let Some(drawing) = service::graphics(&mut port, call, points, region)?
-                {
-                    drawing.paint(&mut canvas)?;
-                }
-                Ok(())
+                service::paint_graphics(&mut port, call, points, region, &mut canvas)
             }
             FONT =>
             {

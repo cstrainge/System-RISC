@@ -67,10 +67,12 @@ struct Object
 #[derive(Clone)]
 struct State
 {
-    spec:     Spec,
-    title:    Option<Arc<super::snapshot::Title>>,
-    tracking: Option<Tracking>,
-    layout:   Option<Layout>
+    spec:             Spec,
+    title:            Option<Arc<super::snapshot::Title>>,
+    tracking:         Option<Tracking>,
+    scroll_axis:      Option<usize>,
+    scroll_highlight: i16,
+    layout:           Option<Layout>
 }
 #[derive(Clone)]
 struct Layout
@@ -84,6 +86,9 @@ struct Layout
     intrinsic:           Option<layout::Measurement>,
     grid:                Option<Arc<grid::Configuration>>,
     outlines:            Option<Arc<super::snapshot::Grid>>,
+    scroll:              Option<Arc<scrolling::Scroll>>,
+    logical:             mac_abi::controls::reflow::LogicalRect,
+    hidden:              bool,
     arrangement_pending: bool
 }
 impl Layout
@@ -100,6 +105,9 @@ impl Layout
                   intrinsic:           None,
                   grid:                None,
                   outlines:            None,
+                  scroll:              None,
+                  logical:             Default::default(),
+                  hidden:              false,
                   arrangement_pending: true })
     }
 
@@ -385,6 +393,9 @@ impl Manager
         let object = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
         let state = &mut object.state;
         let handled = state.tracking.take().is_some();
+        let old_scroll_highlight = state.scroll_highlight;
+        state.scroll_highlight = 0;
+        state.scroll_axis = None;
         let old = state.spec.highlight();
         state.highlight(0);
         call.window = object.window;
@@ -396,8 +407,9 @@ impl Manager
         call.layout.invalidation = state.layout.as_ref().map_or(0, Layout::pending);
         call.layout.status = layout_status;
         call.result = 0;
-        call.flags =
-            u32::from(handled) * HANDLED | u32::from(old != state.spec.highlight()) * CHANGED;
+        call.flags = u32::from(handled) * HANDLED
+                     | u32::from(old != state.spec.highlight() || old_scroll_highlight != 0)
+                       * CHANGED;
         self.wake_capture(call.id);
         Ok(())
     }
@@ -574,10 +586,13 @@ impl Manager
                                           call.window,
                                       recipient:                                          owner,
                                       state:
-                                          State { spec:     Spec::from_call(&spec, scrollbar),
-                                                  title:    admitted_title.clone(),
-                                                  tracking: None,
-                                                  layout:   if call.reflow == 1
+                                          State { spec:             Spec::from_call(&spec,
+                                                                                    scrollbar),
+                                                  title:            admitted_title.clone(),
+                                                  tracking:         None,
+                                                  scroll_axis:      None,
+                                                  scroll_highlight: 0,
+                                                  layout:           if call.reflow == 1
                                                   {
                                                       Some(Layout::new(Spec::from_call(&spec, scrollbar).bounds())?)
                                                   }
@@ -655,7 +670,7 @@ impl Manager
         let previous_visible =
             o.layout
              .as_ref()
-             .and_then(|layout| layout.visible)
+             .and_then(Layout::clip)
              .map_or(previous.bounds(), |clip| super::intersection(previous.bounds(), clip));
         let mut action = false;
         let mut handled = false;
@@ -666,7 +681,13 @@ impl Manager
             CREATE_STANDARD | CREATE_SCROLLBAR | INFO_OBJECT | DRAW_OBJECT => (),
             REFLOW_OBJECT =>
             {
-                visibility_changed = o.reflow(&mut call.layout, entry, gate)?;
+                let assigned_hidden = call.layout.message == mac_abi::controls::reflow::ASSIGN_RECT
+                                      && o.layout.as_ref().is_some_and(|l| l.hidden);
+                if assigned_hidden && let Some(l) = &mut o.layout
+                {
+                    l.hidden = false;
+                }
+                visibility_changed = o.reflow(&mut call.layout, entry, gate)? || assigned_hidden;
             }
             SET_TABLE_LINES_OBJECT =>
             {
@@ -690,9 +711,16 @@ impl Manager
                 let cancel = o.spec.cancels_capture(next, o.tracking);
                 let highlight = if cancel { 0 } else { o.spec.highlight() };
                 o.spec = next;
+                if previous.bounds() != o.spec.bounds()
+                   && let Some(l) = &mut o.layout
+                {
+                    l.hidden = false;
+                }
                 if cancel
                 {
                     o.tracking = None;
+                    o.scroll_axis = None;
+                    o.scroll_highlight = 0;
                 }
                 o.spec.set_highlight(highlight);
                 if previous != o.spec
@@ -804,6 +832,7 @@ impl Manager
             let mut drawing = super::prepare_with_title(&mut state, entry, gate, o.title.as_ref())?.ok_or(BAD_ARGUMENT)?;
             drawing.id = call.id;
             drawing.grid = o.layout.as_ref().and_then(|l| l.outlines.clone());
+            Self::scroll_drawing(o, &mut drawing)?;
             if changed
                && operation == CONFIGURE_OBJECT
                && let (Spec::Standard { state: before,
@@ -815,7 +844,7 @@ impl Manager
             {
                 drawing.change_from(before)?;
             }
-            drawing.set_visible(tree::clip(o.layout.as_ref().and_then(|layout| layout.visible),
+            drawing.set_visible(tree::clip(o.layout.as_ref().and_then(Layout::clip),
                                            inherited_clip));
             if visibility_changed
             {
@@ -890,10 +919,7 @@ impl State
                                       {
                                           HIT_STANDARD
                                       });
-        if self.layout
-               .as_ref()
-               .and_then(|layout| layout.visible)
-               .is_some_and(|clip| !clip.contains(point))
+        if self.layout.as_ref().and_then(Layout::clip).is_some_and(|clip| !clip.contains(point))
         {
             return Ok(0);
         }
@@ -927,3 +953,4 @@ mod grid;
 pub(crate) use grid::Prepared;
 mod window;
 mod automatic;
+mod scrolling;

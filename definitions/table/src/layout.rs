@@ -96,7 +96,17 @@ pub fn calculate(c: &mut AxisCalculation<'_>) -> Result<()>
         AxisConstraint::AtMost(v) => preferred.min(i64::from(v.pixels())),
         AxisConstraint::Exact(v) => i64::from(v.pixels())
     };
-    if budget < minimum
+    if matches!(c.constraint(), AxisConstraint::Unbounded)
+    {
+        // Fixed content has no offered surplus to divide. Every track retains
+        // its finite preferred size, including Fill and Percent tracks.
+        for i in 0..c.track_count()
+        {
+            let t = c.track(i)?;
+            c.set_track(i, t.minimum, t.preferred, t.preferred)?;
+        }
+    }
+    else if budget < minimum
     {
         // Explicit forced-size policy: scale minima, retaining the true minimum
         // in the reply. Children safely degrade, even to zero-area rectangles.

@@ -126,7 +126,8 @@ pub struct Payload
     pub span:          Span,
     pub anchors:       u32,
     pub track:         TrackSetting,
-    pub window_border: BorderOffsets
+    pub window_border: BorderOffsets,
+    pub scroll:        Scroll
 }
 
 /// A live tree cursor is invalidated by a membership change of its parent.
@@ -250,3 +251,38 @@ pub struct BorderOffsets
     pub bottom: i16
 }
 pub const SET_WINDOW_BORDER: i16 = 47;
+
+pub const SET_SCROLLING: i16 = 48;
+pub const GET_SCROLLING: i16 = 49;
+pub const SCROLL_TO: i16 = 50;
+pub const REVEAL_CHILD: i16 = 51;
+pub const GET_LOGICAL_RECT: i16 = 52;
+pub const SCROLL_HORIZONTAL: u32 = 1;
+pub const SCROLL_VERTICAL: u32 = 2;
+
+/// Wide, parent-content coordinates. Leaf dimensions still obey the native
+/// CDEF size contract; summing many tracks need not fit a QuickDraw Rect.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LogicalRect
+{
+    pub left:   i64,
+    pub top:    i64,
+    pub right:  i64,
+    pub bottom: i64
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Scroll
+{
+    /// Zero disables scrolling; enabled axes use fixed-content layout.
+    pub axes:     u32,
+    pub bars:     u32,
+    pub x:        i64,
+    pub y:        i64,
+    pub width:    i64,
+    pub height:   i64,
+    pub viewport: crate::Rect,
+    pub logical:  LogicalRect
+}
