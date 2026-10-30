@@ -6,7 +6,7 @@ use std::{env, fs,
 use mac_formats::{elf,
                   macbinary::{self, MacFile},
                   native::{Descriptor, Role, image},
-                  resource, text};
+                  requirements, resource, text};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -66,12 +66,19 @@ pub fn inspect(bytes: &[u8]) -> Result<Value>
         (Descriptor::decode(&find(*b"NABI")?.data)?, &find(*b"RV64")?.data)
     };
     let image = image::decode(code, &descriptor)?;
+    if descriptor.role != Role::Application
+       && resources.iter().any(|row| row.kind == requirements::RESOURCE_KIND)
+    {
+        return Err(error("NREQ requires a native application image"));
+    }
+    let required_services = requirements::Requirements::from_resources(&resources)?;
     Ok(json!({
         "name": text::decode(&file.name), "file_type": text::decode(&file.file_type), "creator": text::decode(&file.creator),
         "created": file.created, "modified": file.modified,
         "role": match descriptor.role { Role::System => "system", Role::Application => "application", Role::CodeResource => "code_resource" },
         "abi_version": descriptor.abi_version, "load_base": descriptor.load_base, "load_limit": descriptor.load_limit,
         "format_version": mac_formats::native::FORMAT_VERSION, "entry": descriptor.entry, "code_sha256": sha256(code), "resource_fork_sha256": sha256(&file.resources), "macbinary_sha256": sha256(bytes),
+        "required_services": required_services.iter().map(|item| json!({"class": text::decode(&item.class.0), "version": item.version})).collect::<Vec<_>>(),
         "segments": image.segments.iter().map(|s| json!({"address": descriptor.load_base + s.offset, "offset": s.offset, "length": s.length, "memory_length": s.memory_length, "flags": s.flags})).collect::<Vec<_>>(),
         "resources": resources.iter().map(|r| json!({"type": text::decode(&r.kind), "id": r.id, "name": r.name.as_deref().map(text::decode), "attributes": r.attributes, "size": r.data.len(), "sha256": sha256(&r.data)})).collect::<Vec<_>>()
         ,"extension_parts": if file.file_type == *b"INIT" { modules.iter().map(|module| json!({

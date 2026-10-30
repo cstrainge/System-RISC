@@ -3,6 +3,7 @@ use std::{collections::BTreeSet,
           path::{Path, PathBuf}};
 
 use mac_formats::{native::{Descriptor, Role},
+                  requirements::{self, Requirement},
                   resource::Resource,
                   text};
 use mac_module::{ExtensionTarget, PackageKind};
@@ -17,42 +18,53 @@ pub struct Manifest
     /// Lossless resource archive: preserve every supplied resource verbatim.
     /// Build manifests keep automatic NABI/RV64/vers generation.
     #[serde(default)]
-    pub archive:          bool,
+    pub archive:           bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resource_format:  Option<ResourceFormat>,
+    pub resource_format:   Option<ResourceFormat>,
     #[serde(default)]
-    pub data_fork:        Option<Payload>,
+    pub data_fork:         Option<Payload>,
     #[serde(default)]
-    pub file_flags:       u16,
+    pub file_flags:        u16,
     #[serde(default)]
     /// Microseconds since 1904-01-01, matching native catalog metadata.
-    pub created:          u64,
+    pub created:           u64,
     #[serde(default)]
-    pub modified:         u64,
-    pub name:             String,
+    pub modified:          u64,
+    pub name:              String,
     /// Cargo executable name, when the Macintosh filename contains spaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binary_name:      Option<String>,
-    pub file_type:        String,
+    pub binary_name:       Option<String>,
+    pub file_type:         String,
     /// INIT execution part. Resource names remain optional metadata; this target
     /// chooses the RV64/EABI resource ID emitted by the module packager.
     #[serde(default,
             skip_serializing_if = "Option::is_none",
             serialize_with = "serialize_extension_target",
             deserialize_with = "deserialize_extension_target")]
-    pub extension_target: Option<ExtensionTarget>,
-    pub creator:          String,
-    pub role:             String,
-    pub abi_version:      u32,
+    pub extension_target:  Option<ExtensionTarget>,
+    pub creator:           String,
+    pub role:              String,
+    pub abi_version:       u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub load_base:        Option<String>,
+    pub load_base:         Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub load_limit:       Option<String>,
+    pub load_limit:        Option<String>,
     #[serde(skip)]
-    pub cargo_version:    String,
-    pub description:      String,
+    pub cargo_version:     String,
+    pub description:       String,
+    /// Required provider interfaces for native application launch admission.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_services: Vec<RequiredService>,
     #[serde(default)]
-    pub resources:        Vec<Definition>
+    pub resources:         Vec<Definition>
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequiredService
+{
+    pub class:   String,
+    pub version: u32
 }
 
 fn serialize_extension_target<S: serde::Serializer>(value: &Option<ExtensionTarget>, serializer: S)
@@ -400,6 +412,7 @@ impl Manifest
         {
             return Err(error("lossless archives require raw hex payloads"));
         }
+        self.service_requirements()?;
         let mut keys = BTreeSet::from([(*b"RV64", 0), (*b"NABI", 0), (*b"RLOC", 0), (*b"vers", 1)]);
         if let Some(kind) = crate::module::kind(self)
         {
@@ -414,6 +427,11 @@ impl Manifest
         }
         for definition in &self.resources
         {
+            if !self.archive && definition.kind == "NREQ"
+            {
+                return Err(error("NREQ is generated from required_services; remove the \
+                                  explicit resource"));
+            }
             if let Payload::NativeCode { artifact, .. } = &definition.payload
                 && (artifact.is_empty() || !artifact.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
             {
@@ -447,6 +465,43 @@ impl Manifest
     pub fn binary_name(&self) -> &str
     {
         self.binary_name.as_deref().unwrap_or(&self.name)
+    }
+
+    fn service_requirements(&self) -> Result<Vec<u8>>
+    {
+        if self.required_services.is_empty()
+        {
+            return Ok(Vec::new());
+        }
+        if self.archive || self.role != "application" || self.file_type != "APPL"
+        {
+            return Err(error("required_services is only valid for a built native APPL \
+                              application"));
+        }
+        if self.required_services.len() > requirements::MAX_RECORDS
+        {
+            return Err(requirements::Error::Limit.into());
+        }
+        let mut records = Vec::with_capacity(self.required_services.len());
+        for (index, service) in self.required_services.iter().enumerate()
+        {
+            let class = mac_module::ClassId(fourcc(&service.class).map_err(|cause| {
+                                                error(format!("required_services[{index}].class: \
+                                                               {cause}"))
+                                            })?);
+            if let Some(previous) =
+                records.iter().position(|record: &Requirement| record.class == class)
+            {
+                return Err(error(format!("required_services[{index}] duplicates or conflicts \
+                                          with class {:?} in required_services[{previous}]",
+                                         service.class)));
+            }
+            records.push(Requirement { class,
+                                       version: service.version });
+        }
+        let mut bytes = [0; requirements::MAX_BYTES];
+        let length = requirements::encode(&records, &mut bytes)?;
+        Ok(bytes[..length].to_vec())
     }
 
     pub fn descriptor(&self) -> Result<Descriptor>
@@ -586,6 +641,15 @@ impl Manifest
                                       name:       None,
                                       attributes: 0,
                                       data:       version });
+            let requirements = self.service_requirements()?;
+            if !requirements.is_empty()
+            {
+                resources.push(Resource { kind:       requirements::RESOURCE_KIND,
+                                          id:         requirements::RESOURCE_ID,
+                                          name:       Some(b"Required services".to_vec()),
+                                          attributes: 0,
+                                          data:       requirements });
+            }
         }
         for definition in &self.resources
         {

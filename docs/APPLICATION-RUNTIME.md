@@ -54,6 +54,42 @@ author code does not wait on the viewer. Early/recursive failures use the shared
 core-only emergency Abort transport. See [current std evidence and remaining
 gates](RUST-STD.md#current-evidence-and-gaps) for the bounded native observations.
 
+## Required provider services
+
+Native APPL build manifests can declare exact provider requirements separately
+from NABI's executable/ABI description:
+
+```json
+"required_services": [{ "class": "ENTR", "version": 1 }]
+```
+
+The compiler emits one `NREQ` resource with ID 0 and zero attributes. An absent
+or empty manifest list emits no resource. `mac-formats::requirements` owns the
+allocation-free decoder and encoder used by the packager and inspector. A class
+is the existing four-byte `mac_module::ClassId`; a version is an exact nonzero
+`u32`, not a range. Unknown nonzero classes remain valid metadata for external
+providers. Duplicate classes, including conflicting versions, are refused.
+
+Schema 1 uses a 16-byte header: `NREQ`, big-endian `u16` schema, big-endian `u16`
+record count, and eight zero reserved bytes. Each eight-byte record contains the
+four class bytes followed by a big-endian `u32` version. There are at most 32
+records (272 bytes total); length must match the count exactly. Unsupported
+schemas, zero class/version, nonzero reserved fields, duplicate resources or an
+NREQ under another resource ID are errors. Build manifests must use the declared
+list rather than supplying raw NREQ resources. Lossless resource archives still
+preserve their original bytes, including malformed metadata.
+
+This format and host inspection are staged infrastructure. The resident launch
+gate is not implemented yet: no installed application currently relies on NREQ
+for admission, and it does not establish std entropy readiness. Normal launch,
+initial Finder and copy/restart must eventually validate the same requirements
+and retain genuine provider/dependency ownership through author publication.
+Provider callbacks or readiness waits must occur outside Desktop/image/manager
+guards. A decoded record or interface lookup is not a lease; runtime requests
+must still handle provider loss after launch.
+
+## Heap admission
+
 The loader prepares an empty canonical application heap root before entry.
 This admits its real owner/lifetime metadata, not an initial payload extent.
 The SDK validates and installs the permanent service table before calling author
