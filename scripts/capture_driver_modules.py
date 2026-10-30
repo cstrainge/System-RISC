@@ -153,7 +153,7 @@ def prepare_pressure(output):
     (output / 'pressure-cases.json').write_text(json.dumps([case], indent=2) + '\n')
     (output / 'pressure-fixtures.json').write_text(json.dumps({
         'artifacts': artifacts, 'worker_count': 44, 'holder_payload_bytes': [4194304, 4194304, 3145728],
-        'finisher_max_payload_bytes': 4194304, 'module_load_bytes': module_load_bytes,
+        'finisher_max_payload_bytes': 8388608, 'module_load_bytes': module_load_bytes,
         'arena_limit_bytes': 8388608, 'installed_driver_bytes_not_included': True, 'clock': 'QEMU rdtime 10MHz',
         'many_runnable_workers': True, 'timing_qualified': False,
         'inspection_grant': 'private exact-image INSPECT_DOMAINS; existing grants preserved',

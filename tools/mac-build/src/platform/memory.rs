@@ -406,6 +406,14 @@ impl Checked
         Ok(())
     }
 
+    /// Uniform build origin/capacity for independently placed native code.
+    /// This names link geometry only; actual runtime storage is admitted by
+    /// the System module/definition allocators.
+    pub fn code_link_range(&self) -> Range<u64>
+    {
+        self.definitions.clone()
+    }
+
     /// Capacity of the pinned, relocatable resident module code reservation.
     /// This is separate from every module's declared or charged heap policy.
     pub fn module_capacity(&self) -> u64

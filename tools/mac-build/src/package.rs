@@ -106,8 +106,11 @@ pub fn build(manifest_path: &Path, elf_path: &Path, out: &Path) -> Result<Value>
     if matches!(descriptor.role, Role::Application | Role::CodeResource)
     {
         let image = elf::decode(&debug_elf, descriptor.load_base, descriptor.load_limit)?;
-        let data = elf::relocation::extract(&debug_elf, &image, descriptor.load_base)?
-            .ok_or_else(|| error("native modules require relocation-capable linking"))?;
+        let data = elf::relocation::extract(&debug_elf, &image, descriptor.load_base,
+                                            descriptor.role)?.ok_or_else(|| {
+                                                                 error("native modules require \
+                                                                        relocation-capable linking")
+                                                             })?;
         {
             compiled.push(resource::Resource { kind: *b"RLOC",
                                                id: 0,

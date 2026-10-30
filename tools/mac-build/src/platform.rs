@@ -83,9 +83,50 @@ pub fn configure_for(platform: &Platform, command: &mut Command)
     {
         flags.push('\u{1f}');
     }
-    flags.push_str(&format!("-C\u{1f}target-feature=+{}", platform.llvm_profile));
+    flags.push_str(&format!("-C\u{1f}target-feature=+{}\u{1f}-C\u{1f}relocation-model=pic",
+                            platform.llvm_profile));
     command.env(PLATFORM_ENV, &platform.name);
     command.env("CARGO_ENCODED_RUSTFLAGS", flags);
+}
+/// The compiler flag covers every Cargo-built target dependency, not just the
+/// final executable. Refuse conflicting overrides instead of last-flag-wins.
+pub fn validate_pic_flags() -> Result<()>
+{
+    let flags = env::var("CARGO_ENCODED_RUSTFLAGS").map_err(|_| {
+                                                       error("native builds require encoded \
+                                                              relocation-model=pic flags across \
+                                                              all target dependencies; use cargo \
+                                                              xtask image")
+                                                   })?;
+    let flags: Vec<_> = flags.split('\u{1f}').collect();
+    let mut found = false;
+    for (index, flag) in flags.iter().enumerate()
+    {
+        let option = if matches!(*flag, "-C" | "--codegen")
+        {
+            flags.get(index + 1).copied()
+        }
+        else
+        {
+            flag.strip_prefix("-C").or_else(|| flag.strip_prefix("--codegen="))
+        };
+        if let Some(value) = option.and_then(|option| option.strip_prefix("relocation-model="))
+        {
+            if value != "pic"
+            {
+                return Err(error(format!("native code requires relocation-model=pic for every \
+                                          target dependency; remove conflicting {value:?} \
+                                          override and rebuild with cargo xtask image")));
+            }
+            found = true;
+        }
+    }
+    if !found
+    {
+        return Err(error("native code lacks relocation-model=pic across target dependencies; \
+                          rebuild using cargo xtask image"));
+    }
+    Ok(())
 }
 fn features(text: &str) -> BTreeSet<&str>
 {
@@ -203,6 +244,22 @@ impl Platform
         self.memory.check()
     }
 
+    /// Build-time origins are not runtime destinations. Every independently
+    /// loadable definition/driver/extension shares the same checked link range.
+    pub fn link_range(&self, role: mac_formats::native::Role) -> Result<std::ops::Range<u64>>
+    {
+        match role
+        {
+            mac_formats::native::Role::System => Ok(self.virtual_memory()?.system_image_range()),
+            mac_formats::native::Role::CodeResource => Ok(self.memory()?.code_link_range()),
+            mac_formats::native::Role::Application =>
+            {
+                Err(error("application link range still comes from its manifest until private \
+                           mappings are active"))
+            }
+        }
+    }
+
     /// Link/execute policy differs from physical System storage. The checked
     /// virtual record derives the System extent from its physical reservation.
     pub fn validate_image(&self, role: mac_formats::native::Role, base: u64, limit: u64)
@@ -218,6 +275,16 @@ impl Platform
                                           platform image symbols and rebuild ROM/System \
                                           together",
                                          expected.start, expected.end)));
+            }
+            Ok(())
+        }
+        else if role == mac_formats::native::Role::CodeResource
+        {
+            let expected = self.link_range(role)?;
+            if base != expected.start || limit != expected.end
+            {
+                return Err(error("code-resource link geometry differs from selected platform \
+                                  policy; rebuild all modules and definitions"));
             }
             Ok(())
         }

@@ -200,6 +200,49 @@ pub(crate) struct Loaded
     entry:      usize,
     _execution: Execution
 }
+
+/// The registered alias reserves the real destination before this owner leaves
+/// the manager. Loading drops before Read's final activity signal on refusal;
+/// an interrupted write can never make its reservation look reclaimable.
+/// No entry or execution pin exists until the writer has completed publication.
+#[must_use = "finish the prepared write or leave its original alias to the owner walk"]
+pub(crate) struct PreparedLoad
+{
+    loading: mac_kernel_model::image::Loading,
+    read:    Read
+}
+impl PreparedLoad
+{
+    /// Run the byte initialization/relocation/instruction-publication boundary
+    /// without borrowing the image manager. The writer owns no alias ticket;
+    /// the existing registered owner walk retains all published metadata even
+    /// if writing or a concurrent owner stop refuses this load.
+    pub(crate) fn write<E>(self,
+                           write: impl FnOnce(&[mac_formats::resource::Resource],
+                                  u64) -> Result<usize, E>)
+                           -> Result<Loaded, LoadError<E>>
+    {
+        if !self.read.instance.owner.accepting()
+        {
+            return Err(LoadError::Admission(SERVICE_BUSY));
+        }
+        let entry =
+            write(&self.read.source.resources, self.read.instance.base).map_err(LoadError::Write)?;
+        // This avoids finishing a load already known to be stopped. It is not
+        // atomic execution admission: normal spawn/module entry still checks
+        // genuine authority, and the retained pin protects a later stop race.
+        if !self.read.instance.owner.accepting()
+        {
+            return Err(LoadError::Admission(SERVICE_BUSY));
+        }
+        let Self { loading,
+                   read } = self;
+        Ok(Loaded { binding: read.binding,
+                    entry,
+                    _execution: Execution { _execution: loading.finish(),
+                                            _source:    read } })
+    }
+}
 impl Loaded
 {
     pub(crate) fn into_module(self) -> Result<ModuleExecution, Status>
@@ -265,12 +308,10 @@ impl Manager
 
     /// Caller owns a genuine child ledger before any source is admitted. All
     /// fallible metadata allocation precedes executable-memory writes.
-    pub(crate) fn load<E>(&mut self, owner: &OwnerRef, source: Arc<Source>, preferred: u64,
-                          extent: u64, relocation_base: u64, limit: u64,
-                          executable: Vec<core::ops::Range<u64>>,
-                          write: impl FnOnce(&[mac_formats::resource::Resource],
-                                 u64) -> Result<usize, E>)
-                          -> Result<Loaded, LoadError<E>>
+    pub(crate) fn prepare_load(&mut self, owner: &OwnerRef, source: Arc<Source>, preferred: u64,
+                               extent: u64, relocation_base: u64, limit: u64,
+                               executable: Vec<core::ops::Range<u64>>)
+                               -> Result<PreparedLoad, Status>
     {
         let role_matches_owner =
             matches!((&source.role, owner.owner().kind()),
@@ -278,11 +319,11 @@ impl Manager
                      | (Role::Module, mac_object_table::domain::DomainKind::Module));
         if !role_matches_owner
         {
-            return Err(LoadError::Admission(ACCESS_DENIED));
+            return Err(ACCESS_DENIED);
         }
         if !owner.accepting()
         {
-            return Err(LoadError::Admission(SERVICE_BUSY));
+            return Err(SERVICE_BUSY);
         }
         let free = |base: u64| {
             base.checked_add(extent).is_some_and(|end| {
@@ -330,18 +371,15 @@ impl Manager
                                .into_parts();
         let binding = Binding(receipt);
         instance.binding.call_once(|| binding);
-        let result = (|| {
-            let read = self.read(binding)?;
-            let loading = read.instance.execution.begin_load().map_err(|_| SERVICE_BUSY)?;
-            let entry = write(&read.source.resources, base).map_err(LoadError::Write)?;
-            Ok(Loaded { binding,
-                        entry,
-                        _execution: Execution { _execution: loading.finish(),
-                                                _source:    read } })
-        })();
+        let read = self.read(binding)?;
+        let loading = read.instance.execution.begin_load().map_err(|_| SERVICE_BUSY)?;
         // The process owns every published resource, including refused loads.
-        // Its common walk retains the real alias/backing and completes cleanup.
-        result
+        // retained() includes live/pending/deferred aliases, so another load
+        // still sees this destination while its writer is outside the manager.
+        // Read/activity and Loading block actual reclamation/execution until
+        // the preparation finishes or drops into that same owner-walk barrier.
+        Ok(PreparedLoad { loading,
+                          read })
     }
 
     pub(crate) fn read(&self, binding: Binding) -> Result<Read, Status>

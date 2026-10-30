@@ -5,12 +5,14 @@ RVA23 floor is live. Process identity/directory, owner-walk cleanup and growable
 native scheduler records are resident. Original-account allocation headers and
 scoped resident metadata routing now extend stack/CPU charges. Selected optimized
 native lifecycle/storage/recovery observations and their limits are recorded below. A fixed512 MiB page-backed System heap
-is split into480 MiB ordinary and32 MiB protected storage. Independent application
-heaps, image-page charges and private process mappings remain pending. Module
+is split into480 MiB ordinary and32 MiB protected storage. Process-owned
+page-backed application heaps and shared application startup/allocation are
+implemented; bounded native observations are recorded below. Image-page charges
+and private process mappings remain pending. Module
 allocation forwarding, genuine invocation/resource scopes and module-owned
 workers are implemented; bounded native observations are recorded below. The
-Host Clipboard development prerequisites are published; complete recovery-service
-and cross-CPU policy activation qualification remain separate gates.
+Host Clipboard and SMP development prerequisites are published; complete
+recovery-service qualification and broader SMP stress/timing remain open.
 Kernel self-virtualization uses owned Sv39 roots and a guarded
 System stack. Graphical boot now pins an independent terminal panic/OOM kit;
 complete Save/Alert/Finder recovery kits and module/privilege gates remain open.
@@ -3425,5 +3427,44 @@ Once applications are completely isolated in private address spaces, remove
 their manifest `load_base` and `load_limit` fields. The build and loader must
 derive application placement from the checked platform policy and actual image
 segments, updating all application producers and consumers together. Shared
-supervisor mappings still require explicit placement today; independently
-loadable definitions and modules keep their separate relocation contracts.
+supervisor application mappings still require explicit placement today. System,
+drivers, extensions and every native definition family instead derive link
+geometry from the checked platform; their manifests and embedded native-code
+payloads do not supply addresses. Runtime placement remains System's decision.
+Position-independent executable text and checked prepublication pointer-data
+relocation are required for independently loadable code, including WDEF, CDEF,
+MDEF, LDEF and future registered families.
+
+The image manager now prepares the actual registered destination, source Read
+and loading exclusion before releasing its metadata guard. Application/module
+byte initialization, relocation and instruction publication run through that
+owning preparation outside IMAGES. A refusal retains the original alias for
+the owner walk; only successful publication produces a retained execution pin.
+This does not remove callers' outer Runtime/Desktop guards or their interrupt
+discipline, add executable page ownership, or qualify latency.
+
+### PIC and recovery observations — 2026-10-29
+
+The optimized RV64 QEMU virt build (8 GiB RAM, 800×600, tracing disabled)
+used System resource fork SHA-256
+`b6dac84ff40e70968eab297ffa9a7d886274aa64a3d65f28177649e322696a90`
+and ROM SHA-256
+`c0a0d27c26a6f3288a10f2ba01b2d0a9feb46955b7c52feb3e8c2c6994f71ea0`.
+Four-CPU runs exercised bundled application entry/quit, SDK panic reporting,
+actual application/worker body migration, worker rollback/reclamation and
+scheduler-policy drain. A cursor-only move left both the backbuffer and
+composition count unchanged; this does not measure input latency.
+
+A one-CPU native workload used 44 independently packaged allocation workers,
+ordinary allocation refusal with caller budget headroom, and the public SDK.
+It observed protected modal creation/disposal, exact readback of a 1 MiB crash
+report, all 44 worker records reclaimed after controller disposal, and a
+subsequent Finder Get Info open/close. Its private System package changed only
+the inspection-permission resource, retaining identical executable code.
+The renderer now captures recovery admission before suppressing allocation
+authority and retains damage-buffer capacity across cursor-only presentations.
+
+These finite scenarios do not qualify full Save/Save As interaction under
+exhaustion, Finder OOM restart, high-address module execution, private process
+isolation, or absence of races. Earlier pressure runs and their failures remain
+recorded; a returned worker body alone is not final controller disposal.

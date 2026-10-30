@@ -117,22 +117,25 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
     let extent =
         crate::loader::application_extent(&source.resources)
             .map_err(|cause| crate::images::LoadError::Write(cause.into()))?;
-    IMAGES.with(|images| {
-              images.load(owner,
-                          source,
-                          preferred,
-                          extent,
-                          crate::machine::memory::APPLICATION_RELOCATION_BASE,
-                          crate::machine::memory::IMAGE_LIMIT,
-                          alloc::vec::Vec::new(),
-                          |resources, base| {
-                              crate::loader::application_at(resources, base).map_err(|error| {
-                                  serial!("APPLICATION_IMAGE_REFUSED: {error}");
-                                  error
-                              })
-                          })
-          })
-          .map_err(|cause| crate::images::LoadError::Admission(cause.status()))?
+    let prepared = IMAGES.with(|images| {
+                             images.prepare_load(owner,
+                                           source,
+                                           preferred,
+                                           extent,
+                                           crate::machine::memory::APPLICATION_RELOCATION_BASE,
+                                           crate::machine::memory::IMAGE_LIMIT,
+                                           alloc::vec::Vec::new())
+                         })
+                         .map_err(|cause| crate::images::LoadError::Admission(cause.status()))??;
+    // The original alias already reserves its destination and retains its
+    // source/loading ownership. Long byte writes and monitor waits borrow no
+    // IMAGES guard. Outer process/Desktop scopes remain their callers' contract.
+    prepared.write(|resources, base| {
+                crate::loader::application_at(resources, base).map_err(|error| {
+                    serial!("APPLICATION_IMAGE_REFUSED: {error}");
+                    error
+                })
+            })
 }
 /// Module packages use the same immutable source and owner-alias registry as
 /// applications, with their own role and the exact permanent module RAM range.
@@ -149,24 +152,25 @@ pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,
     {
         return Err(ACCESS_DENIED);
     }
-    IMAGES.with(|images| {
-              images.load(owner,
-                          source,
-                          base,
-                          extent,
-                          base,
-                          base.checked_add(extent).ok_or(NO_MEMORY)?,
-                          executable,
-                          write)
-          })
-          .map_err(AccessError::status)?
-          .map_err(|cause| {
-              match cause
-              {
-                  crate::images::LoadError::Admission(status)
-                  | crate::images::LoadError::Write(status) => status
-              }
-          })
+    let prepared = IMAGES.with(|images| {
+                             images.prepare_load(owner,
+                                                 source,
+                                                 base,
+                                                 extent,
+                                                 base,
+                                                 base.checked_add(extent).ok_or(NO_MEMORY)?,
+                                                 executable)
+                         })
+                         .map_err(AccessError::status)??;
+    // Only IMAGES ownership is absent here. The module caller's Runtime/IRQ
+    // scopes are unchanged; this split alone does not shorten those lifetimes.
+    prepared.write(write).map_err(|cause| {
+                             match cause
+                             {
+                                 crate::images::LoadError::Admission(status)
+                                 | crate::images::LoadError::Write(status) => status
+                             }
+                         })
 }
 pub(crate) fn module_execution(binding: crate::images::Binding)
                                -> Result<crate::images::ModuleExecution, Status>

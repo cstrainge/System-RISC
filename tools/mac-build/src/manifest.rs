@@ -44,8 +44,10 @@ pub struct Manifest
     pub creator:          String,
     pub role:             String,
     pub abi_version:      u32,
-    pub load_base:        String,
-    pub load_limit:       String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_base:        Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_limit:       Option<String>,
     #[serde(skip)]
     pub cargo_version:    String,
     pub description:      String,
@@ -133,7 +135,7 @@ pub enum Payload
     },
     NativeCode
     {
-        artifact: String, load_base: String, load_limit: String
+        artifact: String
     }
 }
 
@@ -147,24 +149,10 @@ pub fn fourcc(text: &str) -> Result<[u8; 4]>
 
 fn address(value: &str) -> Result<u64>
 {
-    match value
-    {
-        "@system_image_base" =>
-        {
-            return Ok(crate::platform::current().virtual_memory()?.system_image_range().start);
-        }
-        "@system_image_limit" =>
-        {
-            return Ok(crate::platform::current().virtual_memory()?.system_image_range().end);
-        }
-        _ => ()
-    }
-    Ok(u64::from_str_radix(value.strip_prefix("0x").ok_or_else(|| {
-                                                        error("addresses must start with 0x or \
-                                                               name a known \
-                                                               @system_image_base/@\
-                                                               system_image_limit platform symbol")
-                                                    })?,
+    Ok(u64::from_str_radix(value.strip_prefix("0x")
+                                .ok_or_else(|| {
+                                    error("application link addresses must start with 0x")
+                                })?,
                            16)?)
 }
 
@@ -470,11 +458,37 @@ impl Manifest
             "code_resource" => Role::CodeResource,
             _ => return Err(error("role must be system, application or code_resource"))
         };
+        let range = match role
+        {
+            Role::Application =>
+            {
+                let base = self.load_base.as_deref().ok_or_else(|| {
+                                                         error("application placement requires \
+                                                                load_base until private process \
+                                                                mappings are active")
+                                                     })?;
+                let limit = self.load_limit.as_deref().ok_or_else(|| {
+                                                           error("application placement requires \
+                                                                  load_limit until private \
+                                                                  process mappings are active")
+                                                       })?;
+                address(base)?..address(limit)?
+            }
+            Role::System | Role::CodeResource =>
+            {
+                if self.load_base.is_some() || self.load_limit.is_some()
+                {
+                    return Err(error("System/modules/definitions derive link geometry from the \
+                                      checked platform; remove load_base/load_limit and rebuild"));
+                }
+                crate::platform::current().link_range(role)?
+            }
+        };
         let d = Descriptor { role,
                              abi_version: self.abi_version,
-                             load_base: address(&self.load_base)?,
-                             load_limit: address(&self.load_limit)?,
-                             entry: address(&self.load_base)? };
+                             load_base: range.start,
+                             load_limit: range.end,
+                             entry: range.start };
         if d.load_base & 4095 != 0 || d.load_limit & 4095 != 0
         {
             return Err(error("load reservations must be page aligned"));
@@ -549,6 +563,10 @@ impl Manifest
             let mut descriptor = self.descriptor()?;
             let image = mac_formats::elf::decode(elf, descriptor.load_base, descriptor.load_limit)?;
             descriptor.entry = image.entry;
+            if descriptor.role == Role::CodeResource
+            {
+                descriptor.load_limit = descriptor.load_base.checked_add(mac_formats::elf::relocation::span(&image, descriptor.load_base)?).ok_or_else(|| error("native code extent overflows"))?;
+            }
             let code = compact_code(elf, &image, &descriptor)?;
             resources.extend([Resource { kind:       *b"RV64",
                                          id:         0,
@@ -667,9 +685,7 @@ impl Manifest
                                   .collect::<Result<Vec<u8>>>()?
                 }
                 Payload::File { path: source } => fs::read(path.parent().unwrap().join(source))?,
-                Payload::NativeCode { artifact,
-                                      load_base,
-                                      load_limit } =>
+                Payload::NativeCode { artifact } =>
                 {
                     let source = artifacts.ok_or_else(|| {
                                               error("native_code requires this build's artifact \
@@ -677,15 +693,17 @@ impl Manifest
                                           })?
                                           .join(artifact);
                     let elf = fs::read(&source)?;
+                    let range = crate::platform::current().link_range(Role::CodeResource)?;
                     let mut descriptor = Descriptor { role:        Role::CodeResource,
                                                       abi_version: self.abi_version,
-                                                      load_base:   address(load_base)?,
-                                                      load_limit:  address(load_limit)?,
-                                                      entry:       address(load_base)? };
+                                                      load_base:   range.start,
+                                                      load_limit:  range.end,
+                                                      entry:       range.start };
                     let image = mac_formats::elf::decode(&elf, descriptor.load_base,
                                                          descriptor.load_limit)?;
                     descriptor.entry = image.entry;
-                    let relocations = mac_formats::elf::relocation::extract(&elf, &image, descriptor.load_base)?
+                    descriptor.load_limit = descriptor.load_base.checked_add(mac_formats::elf::relocation::span(&image, descriptor.load_base)?).ok_or_else(|| error("definition extent overflows"))?;
+                    let relocations = mac_formats::elf::relocation::extract(&elf, &image, descriptor.load_base, descriptor.role)?
                         .ok_or_else(|| error("definition requires relocation-capable linking"))?;
                     let mut payload = descriptor.encode()?.to_vec();
                     payload.extend(compact_code(&elf, &image, &descriptor)?);

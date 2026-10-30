@@ -389,11 +389,9 @@ impl Desktop
         }
         else
         {
-            if self.content_damage.capacity().saturating_sub(self.content_damage.len())
-               <= self.scene_spare()
-               && shared_scene_allocation(|| {
-                      self.content_damage.try_reserve(1 + self.scene_spare())
-                  }).is_err()
+            let spare = self.scene_spare();
+            if self.content_damage.capacity().saturating_sub(self.content_damage.len()) <= spare
+               && shared_scene_allocation(|| self.content_damage.try_reserve(1 + spare)).is_err()
             {
                 // Full composition is an explicit last resort when bounded
                 // damage bookkeeping cannot be admitted; painting never panics.
@@ -635,14 +633,18 @@ impl Desktop
                     Ok(entry) => entry,
                     Err(error) => return crate::loader::status(error)
                 };
+                // Capture logical reservation use before the shared allocator
+                // suppresses recovery authority. The real modal may consume its
+                // admitted slots; ordinary publishers must preserve that spare.
+                let spare = self.scene_spare();
                 if shared_scene_allocation(|| {
-                       self.content.try_reserve(1 + self.scene_spare()).map_err(|_| NO_MEMORY)?;
+                       self.content.try_reserve(1 + spare).map_err(|_| NO_MEMORY)?;
                        self.ordinary_underlay
                            .prepare_scenes(self.content.capacity().saturating_add(1))?;
                        self.content_damage
                            .try_reserve(self.content
                                             .len()
-                                            .saturating_add(2 + self.scene_spare())
+                                            .saturating_add(2 + spare)
                                             .saturating_sub(self.content_damage.len()))
                            .map_err(|_| NO_MEMORY)
                    }).is_err()
@@ -918,9 +920,8 @@ impl Desktop
                 {
                     return BAD_ARGUMENT;
                 }
-                if shared_scene_allocation(|| {
-                       self.pending_content.try_reserve(1 + self.scene_spare())
-                   }).is_err()
+                let spare = self.scene_spare();
+                if shared_scene_allocation(|| self.pending_content.try_reserve(1 + spare)).is_err()
                 {
                     return NO_MEMORY;
                 }
@@ -1431,8 +1432,9 @@ impl Desktop
             {
                 return Err(BAD_ARGUMENT);
             }
+            let spare = self.scene_spare();
             shared_scene_allocation(|| {
-                self.pending_content.try_reserve(1 + self.scene_spare())
+                self.pending_content.try_reserve(1 + spare)
             }).map_err(|_| NO_MEMORY)?;
             let content = self.content.iter().find(|c| c.id == id).ok_or(NOT_FOUND)?;
             let pending = Content::pending_patch(id, content.port.clone(), mask);
@@ -2375,13 +2377,15 @@ impl Desktop
             self.enter(self.foreground);
         }
         let full = self.redraw;
-        let mut damage = core::mem::take(&mut self.content_damage);
         let mut damaged = core::mem::take(&mut self.presentation_damage);
         let mut copy_full = core::mem::take(&mut self.presentation_copy_full);
-        let ordinary_damage = damage.iter().any(|(id, _)| !self.system_scene(*id));
-        let compose = full || !damage.is_empty() || retry_ordinary;
+        let compose = full || !self.content_damage.is_empty() || retry_ordinary;
         if compose
         {
+            // Cursor/feedback-only presentation must leave the admitted damage
+            // queue and its capacity in place. Every take below has a restore.
+            let mut damage = core::mem::take(&mut self.content_damage);
+            let ordinary_damage = damage.iter().any(|(id, _)| !self.system_scene(*id));
             let started = crate::trace::clock();
             self.revision = self.revision.wrapping_add(1);
             self.compositions = self.compositions.wrapping_add(1);

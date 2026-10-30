@@ -119,8 +119,7 @@ pub fn export(system: &System<'_>, file: &ResourceFile<'_>, catalog: &CatalogInf
     fourcc(out, catalog.creator.as_bytes())?;
     write!(out,
            ",\"file_flags\":{},\"created\":{},\"modified\":{},\"role\":\"application\",\"\
-            abi_version\":{},\"load_base\":\"0x83000000\",\"load_limit\":\"0x84000000\",\"\
-            description\":\"Lossless ResEdit \
+            abi_version\":{},\"description\":\"Lossless ResEdit \
             archive\",\"data_fork\":{{\"format\":\"hex\",\"hex\":\"",
            catalog.finder_flags().bits(),
            catalog.created.mac_microseconds().ok_or(mac_toolbox::Error::BadAbi)?,

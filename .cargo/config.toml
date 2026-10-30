@@ -6,4 +6,4 @@ target-dir = "../build/system7/host"
 
 # The target name selects the LP64 ABI; the complete profile selects the ISA.
 [target.riscv64imac-unknown-none-elf]
-rustflags = ["-C", "target-feature=+rva23u64"]
+rustflags = ["-C", "target-feature=+rva23u64", "-C", "relocation-model=pic"]
