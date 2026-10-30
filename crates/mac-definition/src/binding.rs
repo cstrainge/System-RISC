@@ -84,7 +84,8 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
         }
         F::variation(call.variation)?;
         let reflow = crate::Reflow::try_from(call.reflow).map_err(|_| Error::BadArgument)?;
-        let layout = (30..=42).contains(&call.message);
+        let grid = call.message == controls::reflow::CALCULATE_GRID_AXIS;
+        let layout = (30..=42).contains(&call.message) || grid;
         if layout && reflow != crate::Reflow::Yes
         {
             return Err(Error::NotSupported);
@@ -97,6 +98,53 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
         if call.object.is_null()
         {
             return Err(Error::BadArgument);
+        }
+        if grid
+        {
+            let pointer = call.param as usize as *mut controls::reflow::GridAxisCall;
+            if F::ID != controls::CDEF_TABLE
+               || !call.surface.is_null()
+               || pointer.is_null()
+               || pointer.addr() % align_of::<controls::reflow::GridAxisCall>() != 0
+            {
+                return Err(Error::BadArgument);
+            }
+            // SAFETY: only the resident manager invokes this internal operation.
+            // It lends exclusive, disjoint scratch arrays for one call. Counts,
+            // alignment and byte ranges are checked before forming the borrows.
+            let axis = unsafe { &mut *pointer };
+            fn range<T>(p: *mut T, count: usize) -> Result<(usize, usize)>
+            {
+                let bytes =
+                    count.checked_mul(core::mem::size_of::<T>()).ok_or(Error::BadArgument)?;
+                if p.is_null() || p.addr() % align_of::<T>() != 0 || bytes > isize::MAX as usize
+                {
+                    return Err(Error::BadArgument);
+                }
+                Ok((p.addr(), p.addr().checked_add(bytes).ok_or(Error::BadArgument)?))
+            }
+            let a = range(axis.tracks, axis.track_count)?;
+            let b = range(axis.items, axis.item_count)?;
+            let c = (pointer.addr(),
+                     pointer.addr()
+                            .checked_add(core::mem::size_of::<controls::reflow::GridAxisCall>())
+                            .ok_or(Error::BadArgument)?);
+            for (x, y) in [(a, b), (a, c), (b, c)]
+            {
+                if x.0 < y.1 && y.0 < x.1
+                {
+                    return Err(Error::BadArgument);
+                }
+            }
+            let tracks = unsafe { core::slice::from_raw_parts_mut(axis.tracks, axis.track_count) };
+            let items = unsafe { core::slice::from_raw_parts_mut(axis.items, axis.item_count) };
+            let request = crate::reflow::grid::AxisCalculation::decode(axis.constraint, tracks, items,
+                &mut axis.minimum, &mut axis.preferred).map_err(|e| Error::from_status(e.status()))?;
+            return match handler(Message::CalculateGridAxis(request), services)?
+            {
+                Reply::Done => Ok(0),
+                _ => Err(Error::BadAbi)
+            };
         }
         if layout
         {
@@ -135,6 +183,38 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
                 _ => Err(Error::BadAbi)
             };
         }
+        let grid_cells = if F::ID == controls::CDEF_TABLE
+                            && matches!(operation, Operation::Draw)
+                            && call.param != 0
+        {
+            let pointer = call.param as usize as *const controls::reflow::GridPaint;
+            if pointer.addr() % align_of::<controls::reflow::GridPaint>() != 0
+               || call.object.addr() % align_of::<F::Wire>() != 0
+            {
+                return Err(Error::BadArgument);
+            }
+            // SAFETY: resident retained snapshot owns immutable rectangles for this
+            // paint. Neither its slice nor the separately borrowed surface escapes.
+            let grid = unsafe { &*pointer };
+            if grid.cells.is_null()
+               || grid.cells.addr() % align_of::<mac_abi::Rect>() != 0
+               || grid.count
+                      .checked_mul(core::mem::size_of::<mac_abi::Rect>())
+                      .is_none_or(|n| n > isize::MAX as usize)
+            {
+                return Err(Error::BadArgument);
+            }
+            let cells = unsafe { core::slice::from_raw_parts(grid.cells, grid.count) };
+            for rect in cells
+            {
+                crate::reflow::LayoutRect::try_from(*rect).map_err(|_| Error::BadArgument)?;
+            }
+            Some(cells)
+        }
+        else
+        {
+            None
+        };
         let reply = if matches!(operation, Operation::Change)
         {
             if call.object.addr() % align_of::<ControlChange>() != 0
@@ -195,8 +275,18 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
                     let connection =
                         unsafe { mac_traps::SurfaceConnection::new(clipped.surface, call.gate) };
                     return encode(operation,
-                                  handler(Message::Draw { state,
-                                                          port: SurfacePort::new(connection) },
+                                  handler(if let Some(cells) = grid_cells
+                                          {
+                                              Message::DrawGrid { state,
+                                                                  port:
+                                                                      SurfacePort::new(connection),
+                                                                  cells }
+                                          }
+                                          else
+                                          {
+                                              Message::Draw { state,
+                                                              port: SurfacePort::new(connection) }
+                                          },
                                           services)?);
                 }
                 Operation::Hit =>

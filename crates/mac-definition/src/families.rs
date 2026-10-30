@@ -57,7 +57,7 @@ pub struct Progress
     pub progress: ProgressRange,
     pub style:    ProgressStyle
 }
-/// Table frame state. Rows, columns and interaction are not implemented yet.
+/// Table frame state. Grid calculation and immutable cell outlines are separate borrowed messages.
 #[derive(Clone, Copy, Debug)]
 pub struct Table
 {

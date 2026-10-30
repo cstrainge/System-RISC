@@ -3,8 +3,9 @@
 #![forbid(unsafe_code)]
 pub use mac_abi::{Point, Rect, WindowId, controls::ScrollbarState,
                   definitions::ControlDefinitionState as StandardState, quickdraw::FontSelection};
-pub use sr_control_reflow_handling::{Constraints, Invalidation, LayoutRect, Measurement, Reflow,
-                                     Size, SizePreferences};
+pub use sr_control_reflow_handling::{Anchors, AxisConstraint, Constraints, Error as LayoutError,
+                                     Extent, Invalidation, LayoutRect, Measurement, Reflow,
+                                     Requirements, Size, SizePreferences, Span, TrackSize};
 #[repr(i16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StandardKind
@@ -20,7 +21,7 @@ pub enum StandardKind
     MonochromeProgressBar = mac_abi::controls::MONOCHROME_PROGRESS_BAR_PROCEDURE,
     /// Prefer the typed StaticText owner for UTF-8 text and justification.
     StaticText            = mac_abi::controls::STATIC_TEXT_PROCEDURE,
-    /// Empty table frame; rows, columns and input are not implemented yet.
+    /// Grid container; prefer the typed Table owner for child placement.
     Table                 = mac_abi::controls::TABLE_PROCEDURE
 }
 #[repr(i16)]

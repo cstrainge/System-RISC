@@ -96,8 +96,9 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
     system.log("REFLOW_TREE ownership=adopt,collision-return,reparent-rollback \
                 cursor=noop,stale\n")?;
 
-    require(matches!(table.control().ask_size(Default::default()), Err(Error::NotSupported)),
-            "populated Table reported a fake aggregate size")?;
+    let aggregate = table.control().ask_size(Default::default())?;
+    require(aggregate.intrinsic.preferred().width().pixels() == 200,
+            "populated Table omitted child creation-width preferences")?;
     let staged = button(system, window.id(), "Paint transaction")?;
     system.windows().begin_update(window.id())?;
     let refused = parent.set_child(Cell { row:    3,

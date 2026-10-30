@@ -44,6 +44,14 @@ pub struct StaticText<'a>
 /// Adding a supported message requires every author to answer it explicitly.
 pub enum Message<'a, S>
 {
+    /// Container-only pure calculation over resident-admitted scratch storage.
+    CalculateGridAxis(reflow::grid::AxisCalculation<'a>),
+    DrawGrid
+    {
+        state: S,
+        port:  SurfacePort<'a>,
+        cells: &'a [Rect]
+    },
     Reflow
     {
         state:    S,

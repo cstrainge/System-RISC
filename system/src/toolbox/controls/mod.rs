@@ -46,7 +46,8 @@ pub struct Drawing
     variation: i16,
     damage:    [Rect; 2],
     reflow:    u32,
-    visible:   Option<Rect>
+    visible:   Option<Rect>,
+    grid:      Option<Arc<snapshot::Grid>>
 }
 impl Drawing
 {
@@ -139,6 +140,10 @@ impl Drawing
     pub fn storage(&self) -> usize
     {
         core::mem::size_of::<Self>()
+        + self.grid.as_ref().map_or(0, |grid| {
+                                core::mem::size_of::<snapshot::Grid>()
+                                + grid.cells.len() * core::mem::size_of::<Rect>()
+                            })
         + match &self.state
         {
             State::Standard(state) => state.storage(),
@@ -192,17 +197,28 @@ impl Drawing
             };
             (1, (scrollbar as *mut ScrollbarState).cast())
         };
-        let mut call = DefinitionCall { reflow: self.reflow,
-                                        header: Header::for_type::<DefinitionCall>(),
-                                        kind: CDEF,
-                                        id,
-                                        variation: variation(self.variation, id),
-                                        message: 0,
-                                        reserved: 0,
-                                        param: 0,
-                                        object,
-                                        gate: self.gate,
-                                        surface: &mut surface };
+        let grid =
+            self.grid.as_ref().map(|g| {
+                                  mac_abi::controls::reflow::GridPaint { cells: g.cells.as_ptr(),
+                                                                         count: g.cells.len() }
+                              });
+        let mut call =
+            DefinitionCall { reflow: self.reflow,
+                             header: Header::for_type::<DefinitionCall>(),
+                             kind: CDEF,
+                             id,
+                             variation: variation(self.variation, id),
+                             message: 0,
+                             reserved: 0,
+                             param:
+                                 grid.as_ref().map_or(0, |g| {
+                                                  (g as *const mac_abi::controls::reflow::GridPaint)
+                                                  as usize
+                                                  as i64
+                                              }),
+                             object,
+                             gate: self.gate,
+                             surface: &mut surface };
         let result = super::resources::definitions::invoke(self.entry, &mut call);
         if result < 0 { Err(result as Status) } else { Ok(()) }
     }
@@ -325,6 +341,7 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionEntry, gate: Trap
         return Ok(Some(Drawing { id: 0,
                                  reflow: call.reflow,
                                  visible: None,
+                                 grid: None,
                                  state: if id == 1
                                  {
                                      State::Scrollbar(call.scrollbar)

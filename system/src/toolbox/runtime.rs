@@ -1316,6 +1316,72 @@ impl Desktop
             }
             return Ok(());
         }
+        if call.operation == REFLOW_OBJECT
+           && matches!(call.layout.message, reflow::SET_GRID_TRACK | reflow::GET_GRID_TRACK)
+        {
+            return self.controls.grid_configuration(call, owner);
+        }
+        if call.operation == REFLOW_OBJECT
+           && matches!(call.layout.message, reflow::ASK_SIZE | reflow::ASSIGN_RECT)
+           && self.controls.is_table(call.id, owner)?
+        {
+            let paint_pending =
+                self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let (used, limit) = self.retained_admission(SceneTarget::from(window));
+            let definitions = &mut self.definitions;
+            let mut content = self.content.iter_mut().find(|c| c.id == SceneTarget::from(window));
+            let mut damage = Vec::new();
+            let changed = self.controls.request_grid(call, owner, paint_pending, crate::machine::traps::gateway,
+                |id| definitions.resolve(*b"CDEF", id).map_err(crate::loader::status), |drawings| {
+                    if drawings.is_empty() { return Ok(()); }
+                    let content = content.as_deref_mut().ok_or(NOT_FOUND)?;
+                    let mut removed_bytes = 0usize;
+                    let mut removed_count = 0usize;
+                    for command in content.iter_commands() {
+                        if matches!(command, RenderCommand::Control(d) if drawings.iter().any(|new| new.id == d.id)) {
+                            removed_bytes = removed_bytes.checked_add(command.storage()).ok_or(NO_MEMORY)?;
+                            removed_count += 1;
+                        }
+                    }
+                    let mut next_bytes = used.checked_sub(removed_bytes).ok_or(CORRUPT_DATA)?;
+                    for d in drawings.iter() { next_bytes = next_bytes.checked_add(d.storage()).ok_or(NO_MEMORY)?; }
+                    let count = content.iter_commands().count().checked_sub(removed_count).and_then(|n| n.checked_add(drawings.len())).ok_or(NO_MEMORY)?;
+                    if next_bytes > limit || count > 512 { return Err(NO_MEMORY); }
+                    content.commands.try_reserve(drawings.len()).map_err(|_| NO_MEMORY)?;
+                    damage.try_reserve_exact(removed_count.checked_add(drawings.len()).ok_or(NO_MEMORY)?).map_err(|_| NO_MEMORY)?;
+                    // No fallible work below: old fragments and current commands
+                    // lose all superseded snapshots, then receive one new snapshot.
+                    content.retain_commands(|command| {
+                        if let RenderCommand::Control(d) = command
+                            && drawings.iter().any(|new| new.id == d.id) {
+                            damage.push(d.visible_bounds()); return false;
+                        }
+                        true
+                    });
+                    for d in drawings.drain(..) {
+                        damage.push(d.visible_bounds());
+                        content.commands.push(RenderCommand::Control(d));
+                    }
+                    Ok(())
+                })?;
+            let mut coalesced = None;
+            if changed
+            {
+                if let Some(content) =
+                    self.content.iter_mut().find(|c| c.id == SceneTarget::from(window))
+                {
+                    content.sync_control_tree(&self.controls, |r| {
+                               accumulate_removed_damage(&mut damage, &mut coalesced, r)
+                           });
+                }
+                for r in damage.into_iter().chain(coalesced).filter(|r| !r.is_empty())
+                {
+                    self.content_changed_rect(window, r);
+                }
+                self.present();
+            }
+            return Ok(());
+        }
         if self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
            && self.controls.changes_tree_geometry(call, owner)?
         {

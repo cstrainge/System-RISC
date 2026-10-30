@@ -8,14 +8,15 @@ use super::*;
 #[derive(Clone, Copy)]
 pub(super) struct Node
 {
-    pub parent: u64,
-    first:      u64,
-    last:       u64,
-    previous:   u64,
-    next:       u64,
-    revision:   u64,
-    order:      u64,
-    cell:       wire::Cell
+    pub parent:       u64,
+    pub(super) first: u64,
+    last:             u64,
+    previous:         u64,
+    pub(super) next:  u64,
+    revision:         u64,
+    order:            u64,
+    pub(super) cell:  wire::Cell,
+    pub(super) span:  wire::Span
 }
 impl Node
 {
@@ -28,7 +29,8 @@ impl Node
                next: 0,
                revision: 1,
                order,
-               cell: Default::default() }
+               cell: Default::default(),
+               span: Default::default() }
     }
 
     pub(super) fn relation(self) -> wire::Relation
@@ -36,7 +38,8 @@ impl Node
         wire::Relation { parent:   self.parent,
                          revision: self.revision,
                          child:    self.first,
-                         cell:     self.cell }
+                         cell:     self.cell,
+                         span:     self.span }
     }
 }
 
@@ -127,7 +130,7 @@ impl Manager
         self.remove_tree(id)
     }
 
-    fn table(&self, id: u64, owner: u64) -> Result<&Object, Status>
+    pub(super) fn table(&self, id: u64, owner: u64) -> Result<&Object, Status>
     {
         let object = self.get(id, owner)?;
         if object.state.layout.is_none()
@@ -147,14 +150,6 @@ impl Manager
         if object.tree.first == 0
         {
             return Ok(());
-        }
-        // A populated Table must eventually measure/arrange its children. Until
-        // that policy is implemented, never advertise the empty-frame fallback
-        // as an aggregate size or pretend that a leaf assignment laid them out.
-        if call.operation == REFLOW_OBJECT
-           && matches!(call.layout.message, wire::ASK_SIZE | wire::ASSIGN_RECT)
-        {
-            return Err(NOT_SUPPORTED);
         }
         let geometry_changes = match call.operation
         {
@@ -187,6 +182,12 @@ impl Manager
                 }
                 id = self.next_in(call.id, id);
             }
+        }
+        // Populated geometry goes through the subtree transaction, never a raw
+        // leaf configuration that would leave child rectangles behind.
+        if call.operation == CONFIGURE_OBJECT && call.standard.bounds != object.state.spec.bounds()
+        {
+            return Err(NOT_SUPPORTED);
         }
         Ok(())
     }
@@ -256,6 +257,14 @@ impl Manager
                                          else
                                          {
                                              self.get(next, owner)?.tree.cell
+                                         },
+                                         span:     if next == 0
+                                         {
+                                             Default::default()
+                                         }
+                                         else
+                                         {
+                                             self.get(next, owner)?.tree.span
                                          } };
         Ok(())
     }
@@ -309,6 +318,10 @@ impl Manager
         let mut next = 0;
         if new != 0
         {
+            let end_row = payload.cell.row.checked_add(payload.span.rows).ok_or(BAD_ARGUMENT)?;
+            let end_col =
+                payload.cell.column.checked_add(payload.span.columns).ok_or(BAD_ARGUMENT)?;
+            layout::Span::try_from(payload.span).map_err(|e| e.status())?;
             let parent = self.table(new, owner)?;
             if parent.window == 0 || parent.window != child.window
             {
@@ -329,21 +342,35 @@ impl Manager
                 let row = self.get(at, owner)?;
                 if at != payload.child
                 {
-                    if row.tree.cell == payload.cell
+                    if row.tree.cell.row < end_row
+                       && row.tree.cell.column < end_col
+                       && payload.cell.row
+                          < row.tree.cell.row.checked_add(row.tree.span.rows).ok_or(CORRUPT_DATA)?
+                       && payload.cell.column
+                          < row.tree
+                               .cell
+                               .column
+                               .checked_add(row.tree.span.columns)
+                               .ok_or(CORRUPT_DATA)?
                     {
                         return Err(ALREADY_EXISTS);
                     }
                     if row.tree.cell > payload.cell
                     {
-                        next = at;
-                        break;
+                        if next == 0
+                        {
+                            next = at;
+                        }
                     }
-                    previous = at;
+                    else
+                    {
+                        previous = at;
+                    }
                 }
                 at = row.tree.next;
             }
         }
-        if old == new && child.tree.cell == payload.cell
+        if old == new && child.tree.cell == payload.cell && child.tree.span == payload.span
         {
             return Ok(false);
         }
@@ -383,6 +410,7 @@ impl Manager
             {
                 o.tree.parent = new;
                 o.tree.cell = payload.cell;
+                o.tree.span = payload.span;
                 o.tree.previous = previous;
                 o.tree.next = next;
             }
@@ -460,6 +488,19 @@ impl Manager
             o.tree.previous = 0;
             o.tree.next = 0;
             o.tree.cell = Default::default();
+            o.tree.span = Default::default();
+        }
+    }
+
+    pub(super) fn invalidate_arrangement_ancestors(&mut self, mut id: u64)
+    {
+        while let Some(o) = self.objects.get_mut(id)
+        {
+            if let Some(layout) = &mut o.state.layout
+            {
+                layout.arrangement_pending = true;
+            }
+            id = o.tree.parent;
         }
     }
 
@@ -470,6 +511,7 @@ impl Manager
             if let Some(layout) = &mut o.state.layout
             {
                 layout.measured = None;
+                layout.intrinsic = None;
                 layout.arrangement_pending = true;
             }
             id = o.tree.parent;

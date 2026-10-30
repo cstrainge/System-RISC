@@ -75,8 +75,12 @@ struct State
 struct Layout
 {
     sizing:              layout::SizingState,
+    anchors:             layout::Anchors,
     visible:             Option<Rect>,
     measured:            Option<(layout::Constraints, layout::Measurement)>,
+    intrinsic:           Option<layout::Measurement>,
+    grid:                Option<Arc<grid::Configuration>>,
+    outlines:            Option<Arc<super::snapshot::Grid>>,
     arrangement_pending: bool
 }
 impl Layout
@@ -84,9 +88,13 @@ impl Layout
     fn new(bounds: Rect) -> Result<Self, Status>
     {
         let bounds = layout::LayoutRect::try_from(bounds).map_err(|e| e.status())?;
-        Ok(Self { sizing:              layout::SizingState::new(bounds.size()),
+        Ok(Self { anchors:             layout::Anchors::NONE,
+                  sizing:              layout::SizingState::new(bounds.size()),
                   visible:             None,
                   measured:            None,
+                  intrinsic:           None,
+                  grid:                None,
+                  outlines:            None,
                   arrangement_pending: true })
     }
 
@@ -376,6 +384,7 @@ impl Manager
         call.window = object.window;
         state.spec.write(call);
         call.reflow = u32::from(state.layout.is_some());
+        call.layout.anchors = state.layout.as_ref().map_or(0, |l| l.anchors.into());
         call.layout.invalidation = state.layout.as_ref().map_or(0, Layout::pending);
         call.result = 0;
         call.flags =
@@ -624,6 +633,7 @@ impl Manager
                    && let Some(layout) = &mut o.layout
                 {
                     layout.measured = None;
+                    layout.intrinsic = None;
                     layout.arrangement_pending = true;
                 }
             }
@@ -711,6 +721,7 @@ impl Manager
         call.relation = object.tree.relation();
         o.spec.write(call);
         call.reflow = u32::from(o.layout.is_some());
+        call.layout.anchors = o.layout.as_ref().map_or(0, |l| l.anchors.into());
         call.layout.invalidation = o.layout.as_ref().map_or(0, Layout::pending);
         call.result = i32::from(part);
         call.flags = (u32::from(o.tracking.is_some()) * TRACKING)
@@ -723,6 +734,7 @@ impl Manager
             state.reflow = u32::from(o.layout.is_some());
             let mut drawing = super::prepare_with_title(&mut state, entry, gate, o.title.as_ref())?.ok_or(BAD_ARGUMENT)?;
             drawing.id = call.id;
+            drawing.grid = o.layout.as_ref().and_then(|l| l.outlines.clone());
             if changed
                && operation == CONFIGURE_OBJECT
                && let (Spec::Standard { state: before,
@@ -749,12 +761,25 @@ impl Manager
         // No fallible work after publication. A refusal above drops only staging.
         let parent = object.tree.parent;
         let changed_requirements =
-            object.state.layout.as_ref().map(|v| (v.sizing.requirements(), v.measured.is_none()))
-            != next.layout.as_ref().map(|v| (v.sizing.requirements(), v.measured.is_none()));
+            object.state.layout.as_ref().map(|v| {
+                                            (v.sizing.requirements(),
+                                             v.measured.is_none(),
+                                             v.anchors)
+                                        })
+            != next.layout
+                   .as_ref()
+                   .map(|v| (v.sizing.requirements(), v.measured.is_none(), v.anchors));
+        let changed_geometry = object.state.spec.bounds() != next.spec.bounds();
+        let newly_pending = next.layout.as_ref().is_some_and(|l| l.arrangement_pending)
+                            && object.state.layout.as_ref().is_some_and(|l| !l.arrangement_pending);
         object.state = next;
         if changed_requirements
         {
             self.invalidate_ancestors(parent);
+        }
+        else if changed_geometry || newly_pending
+        {
+            self.invalidate_arrangement_ancestors(parent);
         }
         Ok(drawing)
     }
@@ -808,3 +833,5 @@ fn publication_status(error: mac_object_table::store::PublicationError) -> Statu
 mod reflow;
 
 mod tree;
+
+mod grid;

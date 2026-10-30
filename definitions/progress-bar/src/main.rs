@@ -73,6 +73,10 @@ fn main<'a>(message: Message<'a, Progress>, services: Services<'a>) -> Result<Re
 {
     match message
     {
+        Message::DrawGrid { .. } | Message::CalculateGridAxis(_) =>
+        {
+            return Err(Error::NotSupported);
+        }
         Message::Reflow { request,
                           creation,
                           .. } =>

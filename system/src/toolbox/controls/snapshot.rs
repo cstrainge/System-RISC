@@ -95,3 +95,10 @@ impl Standard
         core::mem::size_of::<Title>()
     }
 }
+
+/// Immutable occupied-cell outlines, including complete merged regions. No
+/// interior divider is drawn through a span. Empty cells need no stored object.
+pub(super) struct Grid
+{
+    pub cells: alloc::vec::Vec<Rect>
+}

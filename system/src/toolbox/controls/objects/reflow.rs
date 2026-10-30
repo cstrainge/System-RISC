@@ -10,13 +10,23 @@ impl State
     {
         let request = layout::decode_leaf(payload).map_err(|e| e.status())?;
         let layout = self.layout.as_mut().ok_or(NOT_SUPPORTED)?;
+        if let layout::Message::SetAnchors(anchors) = request
+        {
+            if layout.anchors != anchors
+            {
+                layout.anchors = anchors;
+                layout.arrangement_pending = true;
+            }
+            return Ok(false);
+        }
         payload.creation = layout.sizing.creation().into();
         let request = match layout.sizing.prepare_message(request)
         {
             layout::Outcome::Handled { reply,
                                        effects } =>
             {
-                // Scalar effects need no queue allocation: this leaf has no parent.
+                // Scalar effects need no queue allocation. The manager propagates
+                // changed requirements and arrangement dirtiness to the parent.
                 // The root/container scheduler will consume pending arrangement.
                 reply.commit();
                 layout.arrangement_pending |= effects.arrangement;
@@ -28,8 +38,13 @@ impl State
         };
         if let layout::Message::AskSize(constraints) = request
         {
-            let measured = if let Some((key, measured)) = layout.measured
-                              && key == constraints
+            let measured = if constraints == layout::Constraints::default()
+                              && layout.intrinsic.is_some()
+            {
+                layout.intrinsic.ok_or(CORRUPT_DATA)?
+            }
+            else if let Some((key, measured)) = layout.measured
+                      && key == constraints
             {
                 measured
             }
@@ -44,6 +59,10 @@ impl State
                 }).commit();
                 layout.arrangement_pending |= change.effects.arrangement;
                 layout.measured = Some((constraints, measured));
+                if constraints == layout::Constraints::default()
+                {
+                    layout.intrinsic = Some(measured);
+                }
                 measured
             };
             payload.measurement = layout::Measurement {
@@ -88,6 +107,7 @@ impl State
                 if bits & wire::INVALIDATE_MEASUREMENT != 0
                 {
                     layout.measured = None;
+                    layout.intrinsic = None;
                 }
                 layout.arrangement_pending |= bits & wire::INVALIDATE_ARRANGEMENT != 0;
                 Ok(false)

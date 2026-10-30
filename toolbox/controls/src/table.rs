@@ -1,6 +1,6 @@
 //! A Table owns a sparse grid of actual controls. Cells are stable row/column
-//! addresses, not data-list rows. Membership does not assign new geometry;
-//! automatic grid sizing and splitter controls are separate facilities.
+//! addresses, not data-list rows. Configuration is deferred until assignment.
+//! Grid layout supports explicit non-overlapping spans; Splitter is separate.
 use mac_abi::controls::{self as wire, reflow};
 
 use super::*;
@@ -46,7 +46,24 @@ impl core::fmt::Display for AdoptionError<'_>
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
     {
-        write!(f, "table child adoption failed: {}; ownership retained", self.cause)
+        match self.cause
+        {
+            Error::AlreadyExists =>
+            {
+                f.write_str("table child region overlaps an existing child; ownership retained")
+            }
+            Error::ServiceBusy =>
+            {
+                f.write_str("table child adoption requires capture cancellation or paint \
+                             completion; ownership retained")
+            }
+            Error::BadArgument =>
+            {
+                f.write_str("invalid table cell, span or ownership relationship; ownership \
+                             retained")
+            }
+            _ => write!(f, "table child adoption failed: {}; ownership retained", self.cause)
+        }
     }
 }
 impl core::fmt::Debug for AdoptionError<'_>
@@ -62,6 +79,7 @@ impl core::fmt::Debug for AdoptionError<'_>
 pub struct Child<'a>
 {
     pub cell:    Cell,
+    pub span:    Span,
     pub control: ControlRef<'a>
 }
 pub struct ChildHit<'a>
@@ -116,10 +134,19 @@ impl<'a> TableRef<'a>
     pub fn set_child(self, cell: Cell, child: Control<'a>)
                      -> core::result::Result<ControlRef<'a>, AdoptionError<'a>>
     {
+        self.set_child_spanning(cell, Span::ONE, child)
+    }
+
+    /// Adopt one control covering a rectangular region. Every covered cell must
+    /// be free. A refused span leaves the owner and previous layout intact.
+    pub fn set_child_spanning(self, cell: Cell, span: Span, child: Control<'a>)
+                              -> core::result::Result<ControlRef<'a>, AdoptionError<'a>>
+    {
         let control = child.control();
         match self.control.layout(reflow::Payload { message: reflow::SET_CHILD_INDEXED,
                                                     child: child.id().0,
                                                     cell: cell.into(),
+                                                    span: span.into(),
                                                     ..Default::default() })
         {
             Ok(_) =>
@@ -147,13 +174,68 @@ impl<'a> TableRef<'a>
     pub fn reparent(self, child: ControlRef<'a>, destination: TableRef<'a>, cell: Cell)
                     -> Result<()>
     {
+        self.reparent_spanning(child, destination, cell, Span::ONE)
+    }
+
+    /// Also updates a span in place when destination is this Table. Overlap
+    /// refusal preserves the previous region and every child's ownership.
+    pub fn reparent_spanning(self, child: ControlRef<'a>, destination: TableRef<'a>, cell: Cell,
+                             span: Span)
+                             -> Result<()>
+    {
         self.control
             .layout(reflow::Payload { message: reflow::REPARENT,
                                       child: child.id().0,
                                       parent: destination.control.id().0,
                                       cell: cell.into(),
+                                      span: span.into(),
                                       ..Default::default() })
             .map(|_| ())
+    }
+
+    fn set_track(self, axis: u32, index: u32, size: TrackSize) -> Result<()>
+    {
+        let (mode, percent) = size.encode().map_err(|_| Error::BadArgument)?;
+        self.control
+            .layout(reflow::Payload { message: reflow::SET_GRID_TRACK,
+                                      track: reflow::TrackSetting { axis,
+                                                                    index,
+                                                                    mode,
+                                                                    percent },
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    fn track(self, axis: u32, index: u32) -> Result<TrackSize>
+    {
+        let t = self.control
+                    .layout(reflow::Payload { message: reflow::GET_GRID_TRACK,
+                                              track: reflow::TrackSetting { axis,
+                                                                            index,
+                                                                            ..Default::default() },
+                                              ..Default::default() })?
+                    .track;
+        TrackSize::decode(t.mode, t.percent).map_err(|_| Error::BadAbi)
+    }
+
+    pub fn set_column(self, index: u32, size: TrackSize) -> Result<()>
+    {
+        self.set_track(0, index, size)
+    }
+
+    pub fn set_row(self, index: u32, size: TrackSize) -> Result<()>
+    {
+        self.set_track(1, index, size)
+    }
+
+    pub fn column(self, index: u32) -> Result<TrackSize>
+    {
+        self.track(0, index)
+    }
+
+    pub fn row(self, index: u32) -> Result<TrackSize>
+    {
+        self.track(1, index)
     }
 
     /// Row-major, depth-one enumeration. Changes to membership invalidate this
@@ -210,6 +292,7 @@ impl<'a> Iterator for Children<'a>
             return None;
         }
         Some(Ok(Child { cell: call.relation.cell.into(),
+            span: match call.relation.span.try_into() { Ok(span) => span, Err(_) => { self.finished = true; return Some(Err(Error::BadAbi)); } },
             control: Controls::new(self.table.control.client()).control(ControlId(call.relation.child)) }))
     }
 }

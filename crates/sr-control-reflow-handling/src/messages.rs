@@ -19,7 +19,8 @@ pub enum Operation
     ClearMinimum       = wire::CLEAR_MINIMUM,
     SetPreferred       = wire::SET_PREFERRED,
     ClearPreferred     = wire::CLEAR_PREFERRED,
-    SetSizePreferences = wire::SET_SIZE_PREFERENCES
+    SetSizePreferences = wire::SET_SIZE_PREFERENCES,
+    SetAnchors         = wire::SET_ANCHORS
 }
 impl TryFrom<i16> for Operation
 {
@@ -42,6 +43,7 @@ impl TryFrom<i16> for Operation
             wire::SET_PREFERRED => Ok(Self::SetPreferred),
             wire::CLEAR_PREFERRED => Ok(Self::ClearPreferred),
             wire::SET_SIZE_PREFERENCES => Ok(Self::SetSizePreferences),
+            wire::SET_ANCHORS => Ok(Self::SetAnchors),
             _ => Err(Error::UnsupportedMessage(value))
         }
     }
@@ -125,7 +127,8 @@ pub enum Message<O = core::convert::Infallible,
     ClearMinimum,
     SetPreferred(Size),
     ClearPreferred,
-    SetSizePreferences(SizePreferences)
+    SetSizePreferences(SizePreferences),
+    SetAnchors(crate::Anchors)
 }
 impl<O, R, S> Message<O, R, S>
 {
@@ -145,7 +148,8 @@ impl<O, R, S> Message<O, R, S>
             Self::ClearMinimum => Operation::ClearMinimum,
             Self::SetPreferred(_) => Operation::SetPreferred,
             Self::ClearPreferred => Operation::ClearPreferred,
-            Self::SetSizePreferences(_) => Operation::SetSizePreferences
+            Self::SetSizePreferences(_) => Operation::SetSizePreferences,
+            Self::SetAnchors(_) => Operation::SetAnchors
         }
     }
 }
@@ -198,6 +202,7 @@ pub fn decode_leaf(payload: &wire::Payload) -> Result<Message>
         Operation::SetVisibleRect => Message::SetVisibleRect(payload.rect.try_into()?),
         Operation::InvalidateLayout => Message::InvalidateLayout(payload.invalidation.try_into()?),
         Operation::SetMinimum => Message::SetMinimum(payload.size.try_into()?),
+        Operation::SetAnchors => Message::SetAnchors(payload.anchors.try_into()?),
         Operation::ClearMinimum => Message::ClearMinimum,
         Operation::SetPreferred => Message::SetPreferred(payload.size.try_into()?),
         Operation::ClearPreferred => Message::ClearPreferred,

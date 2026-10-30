@@ -10,6 +10,7 @@ use mac_toolbox::{System, SystemServices};
 mod conformance;
 mod reflow;
 mod reflow_tree;
+mod reflow_grid;
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 struct LogBuffer
 {
@@ -64,6 +65,7 @@ fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::
     // Preserve the earlier sole-slot control reuse scenario before this grid
     // deliberately grows the registered pool's permanent generation history.
     reflow_tree::run(system)?;
+    reflow_grid::run(system)?;
     Ok(())
 }
 #[cfg(feature = "textedit-clipboard")]

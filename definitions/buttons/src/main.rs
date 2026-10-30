@@ -56,6 +56,10 @@ fn main<'a>(message: Message<'a, Button<'a>>, services: Services<'a>) -> Result<
 {
     match message
     {
+        Message::DrawGrid { .. } | Message::CalculateGridAxis(_) =>
+        {
+            return Err(Error::NotSupported);
+        }
         Message::Reflow { request,
                           creation,
                           .. } =>

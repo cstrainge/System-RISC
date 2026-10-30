@@ -23,6 +23,7 @@ pub struct ControlInfo
     pub window:              WindowId,
     pub parent:              Option<ControlId>,
     pub reflow:              super::Reflow,
+    pub anchors:             super::Anchors,
     /// Leaf state waiting for explicit measurement/assignment. Container/root
     /// scheduling is not enabled by this API foundation.
     pub measurement_pending: bool,
@@ -45,6 +46,10 @@ impl TryFrom<ControlCall> for ControlInfo
                   parent:              (c.relation.parent != 0).then_some(ControlId(c.relation
                                                                                      .parent)),
                   reflow:              c.reflow.try_into().map_err(|_| super::Error::BadAbi)?,
+                  anchors:             c.layout
+                                        .anchors
+                                        .try_into()
+                                        .map_err(|_| super::Error::BadAbi)?,
                   measurement_pending: c.layout.invalidation & reflow::INVALIDATE_MEASUREMENT != 0,
                   arrangement_pending: c.layout.invalidation & reflow::INVALIDATE_ARRANGEMENT != 0,
                   standard:            c.standard,
@@ -156,6 +161,16 @@ impl ControlRef<'_>
                                      ..Default::default() };
         self.client.control(&mut call)?;
         Ok(call.layout)
+    }
+
+    /// Defer rearrangement of this control in its parent's cell. Empty anchors
+    /// center; opposite edges stretch. This does not assign a rectangle itself.
+    pub fn set_anchors(self, anchors: super::Anchors) -> Result<()>
+    {
+        self.layout(reflow::Payload { message: reflow::SET_ANCHORS,
+                                      anchors: anchors.into(),
+                                      ..Default::default() })
+            .map(|_| ())
     }
 
     pub fn ask_size(self, constraints: super::Constraints) -> Result<super::Measurement>

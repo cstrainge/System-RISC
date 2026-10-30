@@ -243,6 +243,10 @@ fn main<'a>(message: Message<'a, Scrollbar>, services: Services<'a>) -> Result<R
 {
     match message
     {
+        Message::DrawGrid { .. } | Message::CalculateGridAxis(_) =>
+        {
+            return Err(Error::NotSupported);
+        }
         Message::Reflow { request,
                           creation,
                           .. } =>
