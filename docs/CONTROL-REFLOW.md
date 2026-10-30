@@ -66,6 +66,21 @@ within the rectangle it receives. Drawing and hit testing use the resulting
 resident tree geometry and ancestor clipping. Dotted outlines show occupied cell
 regions, including merged regions without internal dividers.
 
+`table.table().set_grid_lines(GridLines { rows, columns, border })` independently
+controls horizontal row separators, vertical column separators and the outer
+Table border. `GridLines::ALL` is the default; `GridLines::NONE` hides all three.
+`grid_lines()` reads the current setting. The background and hosted controls
+remain visible. This property also works on non-reflow Tables (which have only
+an outer border). Merged cells never gain lines through their interior, and cell
+edges along the Table perimeter do not recreate a disabled outer border.
+
+Changing these switches atomically redraws the Table using its existing cell
+geometry. It does not measure or arrange children, dirty layout caches, change
+hit testing or cancel a child's capture. Repeating the current setting does no
+drawing work. An admission failure retains the prior settings and snapshot;
+the caller can release pressure and retry. During an open window update, the
+new snapshot participates in that existing paint transaction.
+
 ## Owning-window borders
 
 On a top-level `Reflow::Yes` control, `set_anchors` uses its owning window's

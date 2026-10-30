@@ -55,19 +55,68 @@ fn draw(state: Table, mut port: mac_definition::SurfacePort<'_>, cells: &[Rect],
     let color = if state.enabled { theme.control_outline } else { theme.separator };
     let dots = [0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55];
     port.paint_rect(state.bounds, theme.content)?;
-    for bounds in core::iter::once(&state.bounds).chain(cells)
+    if state.lines.border && !state.bounds.is_empty()
+    {
+        let b = state.bounds;
+        for line in [Rect::new(b.left, b.top, b.right, b.top + 1),
+                     Rect::new(b.left, b.bottom - 1, b.right, b.bottom),
+                     Rect::new(b.left, b.top, b.left + 1, b.bottom),
+                     Rect::new(b.right - 1, b.top, b.right, b.bottom)]
+        {
+            port.fill_rect(line, dots, color, theme.content)?;
+        }
+    }
+    if !state.lines.rows && !state.lines.columns
+    {
+        return Ok(());
+    }
+    for bounds in cells
     {
         if bounds.is_empty()
         {
             continue;
         }
-        // Valid nonempty endpoints make each +/-1 safe, including edge pixels.
-        for line in [Rect::new(bounds.left, bounds.top, bounds.right, bounds.top + 1),
-                     Rect::new(bounds.left, bounds.bottom - 1, bounds.right, bounds.bottom),
-                     Rect::new(bounds.left, bounds.top, bounds.left + 1, bounds.bottom),
-                     Rect::new(bounds.right - 1, bounds.top, bounds.right, bounds.bottom)]
+        // Outer cell edges must not recreate a disabled Table border. Complete
+        // merged regions have no interior edges, so no line crosses a span.
+        if state.lines.rows
         {
-            port.fill_rect(line, dots, color, theme.content)?;
+            if bounds.top > state.bounds.top
+            {
+                port.fill_rect(Rect::new(bounds.left, bounds.top, bounds.right, bounds.top + 1),
+                               dots,
+                               color,
+                               theme.content)?;
+            }
+            if bounds.bottom < state.bounds.bottom
+            {
+                port.fill_rect(Rect::new(bounds.left,
+                                         bounds.bottom - 1,
+                                         bounds.right,
+                                         bounds.bottom),
+                               dots,
+                               color,
+                               theme.content)?;
+            }
+        }
+        if state.lines.columns
+        {
+            if bounds.left > state.bounds.left
+            {
+                port.fill_rect(Rect::new(bounds.left, bounds.top, bounds.left + 1, bounds.bottom),
+                               dots,
+                               color,
+                               theme.content)?;
+            }
+            if bounds.right < state.bounds.right
+            {
+                port.fill_rect(Rect::new(bounds.right - 1,
+                                         bounds.top,
+                                         bounds.right,
+                                         bounds.bottom),
+                               dots,
+                               color,
+                               theme.content)?;
+            }
         }
     }
     Ok(())

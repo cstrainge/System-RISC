@@ -62,7 +62,8 @@ pub struct Progress
 pub struct Table
 {
     pub bounds:  Rect,
-    pub enabled: bool
+    pub enabled: bool,
+    pub lines:   toolbox_controls::GridLines
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Scrollbar
@@ -130,12 +131,13 @@ impl Family for TableFamily
 
     fn decode<'a>(wire: &'a Self::Wire, _: i16) -> Result<Self::View<'a>>
     {
-        if wire.flags != 0 || wire.highlighted != 0
+        if wire.highlighted != 0
         {
             return Err(Error::BadArgument);
         }
         Ok(Table { bounds:  wire.bounds,
-                   enabled: wire.enabled != 0 })
+                   enabled: wire.enabled != 0,
+                   lines:   wire.flags.try_into()? })
     }
 
     fn bounds(state: &Self::View<'_>) -> Rect

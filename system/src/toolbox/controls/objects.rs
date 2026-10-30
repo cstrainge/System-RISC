@@ -622,6 +622,20 @@ impl Manager
             {
                 visibility_changed = o.reflow(&mut call.layout, entry, gate)?;
             }
+            SET_TABLE_LINES_OBJECT =>
+            {
+                if call.standard.flags & !TABLE_LINE_FLAGS != 0
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                let Spec::Standard { state,
+                                     procedure: TABLE_PROCEDURE } = &mut o.spec
+                else
+                {
+                    return Err(NOT_SUPPORTED);
+                };
+                state.flags = call.standard.flags;
+            }
             CONFIGURE_OBJECT =>
             {
                 // New title backing was admitted before any state/capture mutation.

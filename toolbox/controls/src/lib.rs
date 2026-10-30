@@ -184,4 +184,4 @@ mod passive;
 pub use passive::{Progress, ProgressBar, ProgressStyle, StaticText, TextAlignment};
 
 mod table;
-pub use table::{AdoptionError, Cell, Child, ChildHit, Children, Table, TableRef};
+pub use table::{AdoptionError, Cell, Child, ChildHit, Children, GridLines, Table, TableRef};

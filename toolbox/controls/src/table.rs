@@ -5,6 +5,56 @@ use mac_abi::controls::{self as wire, reflow};
 
 use super::*;
 
+/// Independent Table decoration switches. These do not affect layout or hit
+/// testing. Defaults retain all lines; NONE hides all line decoration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridLines
+{
+    pub rows:    bool,
+    pub columns: bool,
+    pub border:  bool
+}
+impl GridLines
+{
+    pub const ALL: Self = Self { rows:    true,
+                                 columns: true,
+                                 border:  true };
+    pub const NONE: Self = Self { rows:    false,
+                                  columns: false,
+                                  border:  false };
+}
+impl Default for GridLines
+{
+    fn default() -> Self
+    {
+        Self::ALL
+    }
+}
+impl From<GridLines> for i16
+{
+    fn from(v: GridLines) -> Self
+    {
+        i16::from(!v.rows) * wire::TABLE_HIDE_ROWS
+        | i16::from(!v.columns) * wire::TABLE_HIDE_COLUMNS
+        | i16::from(!v.border) * wire::TABLE_HIDE_BORDER
+    }
+}
+impl TryFrom<i16> for GridLines
+{
+    type Error = Error;
+
+    fn try_from(bits: i16) -> Result<Self>
+    {
+        if bits & !wire::TABLE_LINE_FLAGS != 0
+        {
+            return Err(Error::BadArgument);
+        }
+        Ok(Self { rows:    bits & wire::TABLE_HIDE_ROWS == 0,
+                  columns: bits & wire::TABLE_HIDE_COLUMNS == 0,
+                  border:  bits & wire::TABLE_HIDE_BORDER == 0 })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cell
 {
@@ -127,6 +177,31 @@ impl<'a> TableRef<'a>
     pub fn control(self) -> ControlRef<'a>
     {
         self.control
+    }
+
+    /// Atomically change row/column separators and the outer border. Redraws
+    /// only this Table, without changing geometry, layout caches or capture.
+    /// An admission failure preserves the previous decoration settings.
+    pub fn set_grid_lines(self, lines: GridLines) -> Result<()>
+    {
+        let mut call = wire::ControlCall { id: self.control.id().0,
+                                           operation: wire::SET_TABLE_LINES_OBJECT,
+                                           ..Default::default() };
+        call.standard.flags = lines.into();
+        self.control.client().control(&mut call)
+    }
+
+    pub fn grid_lines(self) -> Result<GridLines>
+    {
+        let mut call = wire::ControlCall { id: self.control.id().0,
+                                           operation: wire::INFO_OBJECT,
+                                           ..Default::default() };
+        self.control.client().control(&mut call)?;
+        if call.procedure != wire::TABLE_PROCEDURE
+        {
+            return Err(Error::NotSupported);
+        }
+        call.standard.flags.try_into().map_err(|_| Error::BadAbi)
     }
 
     /// Success consumes the owner. Failure returns it intact. Occupied cells

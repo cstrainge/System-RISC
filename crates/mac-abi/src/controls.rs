@@ -19,6 +19,13 @@ pub const REFLOW_OBJECT: u32 = 19;
 /// Resident tree cursor and reverse-paint-order hit query. Never sent to CDEFs.
 pub const NEXT_CHILD_OBJECT: u32 = 20;
 pub const HIT_CHILDREN_OBJECT: u32 = 21;
+/// Atomic Table appearance update; standard.flags contains TABLE_HIDE_* bits.
+pub const SET_TABLE_LINES_OBJECT: u32 = 22;
+/// Zero retains visible row/column separators and the outer Table border.
+pub const TABLE_HIDE_ROWS: i16 = 1;
+pub const TABLE_HIDE_COLUMNS: i16 = 2;
+pub const TABLE_HIDE_BORDER: i16 = 4;
+pub const TABLE_LINE_FLAGS: i16 = TABLE_HIDE_ROWS | TABLE_HIDE_COLUMNS | TABLE_HIDE_BORDER;
 pub const BUTTON_DOWN: u32 = 1;
 pub const TRACKING: u32 = 2;
 pub const HANDLED: u32 = 4;
