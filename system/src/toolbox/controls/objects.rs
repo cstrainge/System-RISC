@@ -56,6 +56,7 @@ struct Object
     window:             u64,
     recipient:          u64,
     state:              State,
+    tree:               tree::Node,
     // Last: registered removal must finish payload destruction before the
     // protected modal service can become available to another recipient.
     #[cfg(target_arch = "riscv64")]
@@ -296,6 +297,7 @@ impl Spec
 pub struct Manager
 {
     objects: Store<Object>,
+    next_order: u64,
     publications: Vec<mac_object_table::store::PublicationReservation<crate::toolbox::handles::InvocationGate>>
 }
 impl Manager
@@ -303,7 +305,8 @@ impl Manager
     pub(crate) fn new((kind, storage): (KindLease, KindLease)) -> Result<Self, Status>
     {
         Ok(Self { objects:      Store::owned(kind, storage).map_err(|_| BAD_ARGUMENT)?,
-                  publications: Vec::new() })
+                  publications: Vec::new(),
+                  next_order:   1 })
     }
 }
 impl Manager
@@ -454,6 +457,10 @@ impl Manager
         {
             return Err(BAD_ARGUMENT);
         }
+        if !matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
+        {
+            self.preflight_tree_configuration(call, owner)?;
+        }
         let mut admitted_title = None;
         if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR | CONFIGURE_OBJECT)
         {
@@ -501,7 +508,10 @@ impl Manager
             }
             if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
             {
-                let object = Object { window:
+                let next_order = self.next_order.checked_add(1).ok_or(NO_MEMORY)?;
+                let object = Object { tree:
+                                          tree::Node::new(self.next_order),
+                                      window:
                                           call.window,
                                       recipient:                                          owner,
                                       state:
@@ -550,6 +560,7 @@ impl Manager
                 {
                     self.objects.insert(storage, object).map_err(pool_status)?
                 };
+                self.next_order = next_order;
             }
         }
         let object = self.get(call.id, owner)?;
@@ -559,7 +570,11 @@ impl Manager
         }
         if operation == DISPOSE_OBJECT
         {
-            self.objects.remove(call.id);
+            if object.tree.parent != 0
+            {
+                return Err(ACCESS_DENIED);
+            }
+            self.remove_tree(call.id)?;
             return Ok(None);
         }
         if operation == BEGIN_TRACKING
@@ -571,6 +586,7 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
+        let inherited_clip = self.inherited_clip(call.id);
         let object = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
         let mut next = object.state.clone();
         let o = &mut next;
@@ -617,7 +633,14 @@ impl Manager
                 {
                     return Err(SERVICE_BUSY);
                 }
-                part = o.hit(call.point, entry, gate)?;
+                part = if inherited_clip.is_some_and(|clip| !clip.contains(call.point))
+                {
+                    0
+                }
+                else
+                {
+                    o.hit(call.point, entry, gate)?
+                };
                 if matches!(part,
                             BUTTON_PART
                             | CHECKBOX_PART
@@ -653,7 +676,18 @@ impl Manager
                                                    u32::from(o.layout.is_some()),
                                                    entry,
                                                    gate,
-                                                   |point| o.hit(point, entry, gate))?;
+                                                   |point| {
+                                                       if inherited_clip.is_some_and(|clip| {
+                                                                            !clip.contains(point)
+                                                                        })
+                                                       {
+                                                           Ok(0)
+                                                       }
+                                                       else
+                                                       {
+                                                           o.hit(point, entry, gate)
+                                                       }
+                                                   })?;
                     action = match transition.action
                     {
                         Action::None => false,
@@ -674,6 +708,7 @@ impl Manager
         }
         let changed = visibility_changed || !previous.appearance_matches(o.spec);
         call.window = object.window;
+        call.relation = object.tree.relation();
         o.spec.write(call);
         call.reflow = u32::from(o.layout.is_some());
         call.layout.invalidation = o.layout.as_ref().map_or(0, Layout::pending);
@@ -699,7 +734,8 @@ impl Manager
             {
                 drawing.change_from(before)?;
             }
-            drawing.set_visible(o.layout.as_ref().and_then(|layout| layout.visible));
+            drawing.set_visible(tree::clip(o.layout.as_ref().and_then(|layout| layout.visible),
+                                           inherited_clip));
             if visibility_changed
             {
                 drawing.damage = [previous_visible, drawing.visible_bounds()];
@@ -711,7 +747,15 @@ impl Manager
             None
         };
         // No fallible work after publication. A refusal above drops only staging.
+        let parent = object.tree.parent;
+        let changed_requirements =
+            object.state.layout.as_ref().map(|v| (v.sizing.requirements(), v.measured.is_none()))
+            != next.layout.as_ref().map(|v| (v.sizing.requirements(), v.measured.is_none()));
         object.state = next;
+        if changed_requirements
+        {
+            self.invalidate_ancestors(parent);
+        }
         Ok(drawing)
     }
 }
@@ -762,3 +806,5 @@ fn publication_status(error: mac_object_table::store::PublicationError) -> Statu
 }
 
 mod reflow;
+
+mod tree;

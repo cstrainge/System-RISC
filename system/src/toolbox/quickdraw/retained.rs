@@ -373,6 +373,78 @@ impl Content
         self.commands.retain(keep);
     }
 
+    /// Refresh retained tree projections only when membership/geometry/drawing
+    /// changes. No ownership lives here: order and clipping come from CTRL.
+    /// Fragment masks are unchanged, preserving partial-update isolation.
+    pub(crate) fn sync_control_tree(&mut self,
+                                    controls: &crate::toolbox::controls::objects::Manager,
+                                    mut damage: impl FnMut(Rect))
+    {
+        fn sync(commands: &mut [RenderCommand],
+                controls: &crate::toolbox::controls::objects::Manager,
+                damage: &mut impl FnMut(Rect))
+        {
+            for command in commands.iter_mut()
+            {
+                if let RenderCommand::Control(d) = command
+                {
+                    if d.id == 0 || !controls.live(d.id)
+                    {
+                        continue;
+                    }
+                    let before = d.visible_bounds();
+                    d.set_visible(controls.visible_clip(d.id));
+                    let after = d.visible_bounds();
+                    if before != after
+                    {
+                        damage(before);
+                        damage(after);
+                    }
+                }
+            }
+            // In-place insertion order over tree-control command slots only.
+            // Raw drawing and non-tree controls keep their original slots.
+            for index in 0..commands.len()
+            {
+                let RenderCommand::Control(d) = &commands[index]
+                else
+                {
+                    continue;
+                };
+                if !controls.in_tree(d.id)
+                {
+                    continue;
+                }
+                let mut current = index;
+                loop
+                {
+                    let Some(previous) = (0..current).rev().find(|i| {
+                        matches!(&commands[*i], RenderCommand::Control(d) if controls.in_tree(d.id))
+                    }) else { break; };
+                    let (RenderCommand::Control(a), RenderCommand::Control(b)) =
+                        (&commands[previous], &commands[current])
+                    else
+                    {
+                        break;
+                    };
+                    if !controls.paint_order(a.id, b.id).is_gt()
+                    {
+                        break;
+                    }
+                    damage(a.visible_bounds());
+                    damage(b.visible_bounds());
+                    commands.swap(previous, current);
+                    current = previous;
+                }
+            }
+        }
+        for fragment in &mut self.fragments
+        {
+            sync(&mut fragment.commands, controls, &mut damage);
+        }
+        sync(&mut self.commands, controls, &mut damage);
+    }
+
     /// Prepare every allocation and budget check before publishing any scene
     /// change. A later patch subtracts its mask from prior fragments, so repeated
     /// selection changes replace pixels rather than accumulating a paint history.

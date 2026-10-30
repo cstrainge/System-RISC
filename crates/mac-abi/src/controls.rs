@@ -16,19 +16,25 @@ pub const BEGIN_TRACKING: u32 = 16;
 pub const POLL_TRACKING: u32 = 17;
 pub const CANCEL_TRACKING: u32 = 18;
 pub const REFLOW_OBJECT: u32 = 19;
+/// Resident tree cursor and reverse-paint-order hit query. Never sent to CDEFs.
+pub const NEXT_CHILD_OBJECT: u32 = 20;
+pub const HIT_CHILDREN_OBJECT: u32 = 21;
 pub const BUTTON_DOWN: u32 = 1;
 pub const TRACKING: u32 = 2;
 pub const HANDLED: u32 = 4;
 pub const ACTION: u32 = 8;
 pub const CHANGED: u32 = 16;
+
 /// Native CDEF state validation before retained drawing; no surface required.
 pub const VALIDATE_DEFINITION: i16 = 5;
 /// Native-only passive control procedures. These are not classic procIDs.
 pub const PROGRESS_BAR_PROCEDURE: i16 = i16::MIN;
 pub const STATIC_TEXT_PROCEDURE: i16 = i16::MIN + 1;
 pub const MONOCHROME_PROGRESS_BAR_PROCEDURE: i16 = i16::MIN + 2;
+pub const TABLE_PROCEDURE: i16 = i16::MIN + 3;
 pub const CDEF_PROGRESS_BAR: i16 = -32760;
 pub const CDEF_STATIC_TEXT: i16 = -32759;
+pub const CDEF_TABLE: i16 = -32758;
 /// Ask a passive CDEF for the exact changed pixels between two states.
 pub const CHANGE_BOUNDS_DEFINITION: i16 = 6;
 /// Full-precision passive progress state. Scalar button/scroll values are not
@@ -75,6 +81,8 @@ pub struct ScrollbarState
 pub struct ControlCall
 {
     pub id:        u64,
+    /// Resident relationship snapshot; output only except for child iteration.
+    pub relation:  reflow::Relation,
     /// Native creation choice: 0 = no reflow, 1 = reflow. Read back by INFO_OBJECT.
     /// Non-creation requests must leave this zero; configuration cannot change it.
     pub reflow:    u32,

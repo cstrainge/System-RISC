@@ -98,6 +98,7 @@ fn expand(function: ItemFn) -> syn::Result<proc_macro2::TokenStream>
                                         "Scrollbar" => Some(quote!(scrollbar_entry)),
                                         "Progress" => Some(quote!(progress_entry)),
                                         "StaticText" => Some(quote!(static_text_entry)),
+                                        "Table" => Some(quote!(table_entry)),
                                         _ => None
                                     }
                                 })
@@ -108,7 +109,7 @@ fn expand(function: ItemFn) -> syn::Result<proc_macro2::TokenStream>
                   }.ok_or_else(|| {
                        syn::Error::new(state.span(),
                                        format!("unsupported CDEF state type `{}`; expected \
-                                                Button, Scrollbar, Progress or StaticText",
+                                                Button, Scrollbar, Progress, StaticText or Table",
                                                quote!(#state)))
                    })?;
     Ok(quote! {

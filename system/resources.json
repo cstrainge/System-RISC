@@ -293,6 +293,18 @@
       }
     },
     {
+      "type": "CDEF",
+      "id": -32758,
+      "symbol": "CDEF_TABLE",
+      "name": "Table",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_TABLE",
+        "load_base": "0x82600000",
+        "load_limit": "0x82700000"
+      }
+    },
+    {
       "type": "FOND",
       "id": 0,
       "symbol": "FONT_BUNDLE_FOND_0",

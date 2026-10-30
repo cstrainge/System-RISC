@@ -61,13 +61,13 @@ impl Drawing
         }
     }
 
-    fn visible_bounds(&self) -> Rect
+    pub(crate) fn visible_bounds(&self) -> Rect
     {
         let bounds = self.bounds();
         self.visible.map_or(bounds, |visible| intersection(bounds, visible))
     }
 
-    fn set_visible(&mut self, visible: Option<Rect>)
+    pub(crate) fn set_visible(&mut self, visible: Option<Rect>)
     {
         self.visible = visible;
         let clip = self.visible_bounds();
@@ -214,6 +214,7 @@ fn standard_definition(procedure: i16) -> Result<i16, Status>
         0..=2 | 8..=10 => Ok(0),
         PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE => Ok(CDEF_PROGRESS_BAR),
         STATIC_TEXT_PROCEDURE => Ok(CDEF_STATIC_TEXT),
+        TABLE_PROCEDURE => Ok(CDEF_TABLE),
         _ => Err(NOT_SUPPORTED)
     }
 }

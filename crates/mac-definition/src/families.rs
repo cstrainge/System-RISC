@@ -57,6 +57,13 @@ pub struct Progress
     pub progress: ProgressRange,
     pub style:    ProgressStyle
 }
+/// Table frame state. Rows, columns and interaction are not implemented yet.
+#[derive(Clone, Copy, Debug)]
+pub struct Table
+{
+    pub bounds:  Rect,
+    pub enabled: bool
+}
 #[derive(Clone, Copy, Debug)]
 pub struct Scrollbar
 {
@@ -107,6 +114,35 @@ pub(crate) struct StaticFamily;
 pub(crate) struct ButtonFamily;
 pub(crate) struct ProgressFamily;
 pub(crate) struct ScrollbarFamily;
+pub(crate) struct TableFamily;
+
+impl Family for TableFamily
+{
+    type View<'a> = Table;
+    type Wire = ControlDefinitionState;
+
+    const ID: i16 = controls::CDEF_TABLE;
+
+    fn variation(value: i16) -> Result<()>
+    {
+        if value == 0 { Ok(()) } else { Err(Error::NotSupported) }
+    }
+
+    fn decode<'a>(wire: &'a Self::Wire, _: i16) -> Result<Self::View<'a>>
+    {
+        if wire.flags != 0 || wire.highlighted != 0
+        {
+            return Err(Error::BadArgument);
+        }
+        Ok(Table { bounds:  wire.bounds,
+                   enabled: wire.enabled != 0 })
+    }
+
+    fn bounds(state: &Self::View<'_>) -> Rect
+    {
+        state.bounds
+    }
+}
 fn title(wire: &ControlDefinitionState) -> Result<&str>
 {
     core::str::from_utf8(wire.title.get(..wire.title_length as usize).ok_or(Error::BadArgument)?).map_err(|_|Error::BadArgument)

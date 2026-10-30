@@ -42,11 +42,20 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
                  StandardKind::WindowFontRadio,
                  StandardKind::ProgressBar,
                  StandardKind::MonochromeProgressBar,
-                 StandardKind::StaticText]
+                 StandardKind::StaticText,
+                 StandardKind::Table]
     {
         let passive_progress =
             matches!(kind, StandardKind::ProgressBar | StandardKind::MonochromeProgressBar);
-        let mut state = StandardState::new(original, if passive_progress { "" } else { "Leaf" });
+        let mut state = StandardState::new(original,
+                                           if passive_progress || kind == StandardKind::Table
+                                           {
+                                               ""
+                                           }
+                                           else
+                                           {
+                                               "Leaf"
+                                           });
         if kind == StandardKind::StaticText
         {
             state.maximum = 0;
@@ -69,7 +78,7 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
                                         Reflow::Yes)?;
     exercise(system, owned.control(), scrollbar_bounds)?;
     drop(owned);
-    system.log("REFLOW_NATIVE leaves=buttons,window-font,progress,static,scrollbar \
+    system.log("REFLOW_NATIVE leaves=buttons,window-font,progress,static,table,scrollbar \
                 assignment=normal,tiny,empty cache=invalidate settings=set,clear,pair\n")?;
     let owned = system.controls().create_standard(window.id(),
                                                    StandardKind::Button,

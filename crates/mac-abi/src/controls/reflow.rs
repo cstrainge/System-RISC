@@ -115,5 +115,32 @@ pub struct Payload
     pub preferences:  SizePreferences,
     pub measurement:  Measurement,
     /// Resident-captured original size; callers cannot replace it.
-    pub creation:     Dimensions
+    pub creation:     Dimensions,
+    /// Relationship requests name existing generational Control Manager IDs.
+    /// `ControlCall.id` is the current parent; REPARENT names its destination here.
+    pub child:        u64,
+    pub parent:       u64,
+    pub cell:         Cell
+}
+
+/// A live tree cursor is invalidated by a membership change of its parent.
+/// These are ordinary Control Manager identities, not a second handle registry.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Relation
+{
+    pub parent:   u64,
+    pub revision: u64,
+    pub child:    u64,
+    pub cell:     Cell
+}
+
+/// Row/column placement in a sparse grid of actual child controls. No data rows
+/// or renderer descriptors are implied; geometry is assigned separately.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Cell
+{
+    pub row:    u32,
+    pub column: u32
 }

@@ -1234,6 +1234,13 @@ impl Desktop
     fn managed_control(&mut self, call: &mut mac_abi::controls::ControlCall) -> Result<(), Status>
     {
         use mac_abi::controls::*;
+        if !call.surface.is_null()
+           || call.reserved != 0
+           || call.reflow > 1
+           || (call.reflow != 0 && !matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR))
+        {
+            return Err(BAD_ARGUMENT);
+        }
         let (recipient, storage) = self.service_owners()?;
         let owner = recipient.owner().incarnation();
         let window = if matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
@@ -1267,6 +1274,57 @@ impl Desktop
         {
             self.controls.cancel(call, owner)?;
             self.clear_control_highlight(window, call.id, false);
+            return Ok(());
+        }
+        if call.operation == NEXT_CHILD_OBJECT
+        {
+            return self.controls.next_child(call, owner);
+        }
+        if call.operation == HIT_CHILDREN_OBJECT
+        {
+            let definitions = &mut self.definitions;
+            let (child, part) =
+                self.controls.hit_children(call.id, owner, call.point, |state| {
+                                  let id = super::controls::definition_id(state)?;
+                                  let entry = definitions.resolve(*b"CDEF", id)
+                                                         .map_err(crate::loader::status)?;
+                                  let mut state = *state;
+                                  super::controls::prepare(&mut state,
+                                                           entry,
+                                                           crate::machine::traps::gateway)?;
+                                  Ok(state.result as i16)
+                              })?;
+            call.layout.child = child;
+            call.result = i32::from(part);
+            return Ok(());
+        }
+        if call.operation == REFLOW_OBJECT
+           && matches!(call.layout.message,
+                       reflow::SET_CHILD
+                       | reflow::SET_CHILD_INDEXED
+                       | reflow::REMOVE_CHILD
+                       | reflow::REPARENT)
+        {
+            // Membership publication cannot straddle an unfinished window paint
+            // transaction. Refuse before consuming the child's owner; retry after
+            // EndUpdate. No old scene is re-clipped against a half-built new one.
+            let paint_pending =
+                self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            if self.controls.change_parent(call, owner, paint_pending)?
+            {
+                self.sync_control_tree(window);
+            }
+            return Ok(());
+        }
+        if self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+           && self.controls.changes_tree_geometry(call, owner)?
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if call.operation == DISPOSE_OBJECT
+        {
+            self.controls.dispose(call.id, owner)?;
+            self.remove_dead_control_drawings(window);
             return Ok(());
         }
         let definition = self.controls.definition(call, owner)?;
@@ -1314,29 +1372,12 @@ impl Desktop
             };
             Ok((bounds, damage, old_bounds))
         })?;
-        if call.operation == DISPOSE_OBJECT
+        if self.controls.in_tree(call.id)
+           && (drawing.as_ref().is_some_and(|(bounds, _, old)| *old != Some(*bounds))
+               || (call.operation == REFLOW_OBJECT
+                   && call.layout.message == reflow::SET_VISIBLE_RECT))
         {
-            let mut removed = Vec::new();
-            let mut coalesced = None;
-            for content in self.content
-                               .iter_mut()
-                               .chain(self.pending_content.iter_mut())
-                               .filter(|c| c.id == SceneTarget::from(window))
-            {
-                content.retain_commands(|command| {
-                           if let RenderCommand::Control(d) = command
-                              && d.id == call.id
-                           {
-                               accumulate_removed_damage(&mut removed, &mut coalesced, d.bounds());
-                               return false;
-                           }
-                           true
-                       });
-            }
-            for bounds in removed.into_iter().chain(coalesced)
-            {
-                self.content_changed_rect(window, bounds);
-            }
+            self.sync_control_tree(window);
         }
         if let Some((bounds, damage, old_bounds)) = drawing
         {
@@ -1358,6 +1399,61 @@ impl Desktop
             }
         }
         Ok(())
+    }
+
+    fn remove_dead_control_drawings(&mut self, window: u64)
+    {
+        let mut removed = Vec::new();
+        let mut coalesced = None;
+        for content in self.content
+                           .iter_mut()
+                           .chain(self.pending_content.iter_mut())
+                           .filter(|c| c.id == SceneTarget::from(window))
+        {
+            content.retain_commands(|command| {
+                       if let RenderCommand::Control(d) = command
+                          && d.id != 0
+                          && !self.controls.live(d.id)
+                       {
+                           accumulate_removed_damage(&mut removed, &mut coalesced, d.bounds());
+                           return false;
+                       }
+                       true
+                   });
+        }
+        let changed = !removed.is_empty() || coalesced.is_some();
+        for bounds in removed.into_iter().chain(coalesced)
+        {
+            self.content_changed_rect(window, bounds);
+        }
+        if changed && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        {
+            self.present();
+        }
+    }
+
+    fn sync_control_tree(&mut self, window: u64)
+    {
+        let mut damage = Vec::new();
+        let mut coalesced = None;
+        if let Some(content) = self.pending_content
+                                   .iter_mut()
+                                   .chain(&mut self.content)
+                                   .find(|c| c.id == SceneTarget::from(window))
+        {
+            content.sync_control_tree(&self.controls, |bounds| {
+                       accumulate_removed_damage(&mut damage, &mut coalesced, bounds);
+                   });
+        }
+        let changed = !damage.is_empty() || coalesced.is_some();
+        for bounds in damage.into_iter().chain(coalesced)
+        {
+            self.content_changed_rect(window, bounds);
+        }
+        if changed && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        {
+            self.present();
+        }
     }
 
     pub fn control(&mut self, call: &mut mac_abi::controls::ControlCall) -> Status

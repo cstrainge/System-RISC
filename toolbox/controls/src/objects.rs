@@ -21,6 +21,7 @@ pub struct Control<'a>
 pub struct ControlInfo
 {
     pub window:              WindowId,
+    pub parent:              Option<ControlId>,
     pub reflow:              super::Reflow,
     /// Leaf state waiting for explicit measurement/assignment. Container/root
     /// scheduling is not enabled by this API foundation.
@@ -41,6 +42,8 @@ impl TryFrom<ControlCall> for ControlInfo
     fn try_from(c: ControlCall) -> Result<Self>
     {
         Ok(Self { window:              WindowId(c.window),
+                  parent:              (c.relation.parent != 0).then_some(ControlId(c.relation
+                                                                                     .parent)),
                   reflow:              c.reflow.try_into().map_err(|_| super::Error::BadAbi)?,
                   measurement_pending: c.layout.invalidation & reflow::INVALIDATE_MEASUREMENT != 0,
                   arrangement_pending: c.layout.invalidation & reflow::INVALIDATE_ARRANGEMENT != 0,
@@ -145,7 +148,7 @@ impl ControlRef<'_>
         Ok(self.info()?.reflow)
     }
 
-    fn layout(self, layout: reflow::Payload) -> Result<reflow::Payload>
+    pub(super) fn layout(self, layout: reflow::Payload) -> Result<reflow::Payload>
     {
         let mut call = ControlCall { id: self.id.0,
                                      operation: REFLOW_OBJECT,
@@ -384,5 +387,20 @@ impl crate::capture::Cancel for ControlRef<'_>
     fn cancel(self) -> Result<()>
     {
         ControlRef::cancel(self)
+    }
+}
+
+impl<'a> Control<'a>
+{
+    pub(super) fn from_ref(control: ControlRef<'a>) -> Self
+    {
+        Self { control }
+    }
+}
+impl<'a> ControlRef<'a>
+{
+    pub(super) fn client(self) -> Client<'a>
+    {
+        self.client
     }
 }

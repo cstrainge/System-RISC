@@ -19,7 +19,9 @@ pub enum StandardKind
     ProgressBar           = mac_abi::controls::PROGRESS_BAR_PROCEDURE,
     MonochromeProgressBar = mac_abi::controls::MONOCHROME_PROGRESS_BAR_PROCEDURE,
     /// Prefer the typed StaticText owner for UTF-8 text and justification.
-    StaticText            = mac_abi::controls::STATIC_TEXT_PROCEDURE
+    StaticText            = mac_abi::controls::STATIC_TEXT_PROCEDURE,
+    /// Empty table frame; rows, columns and input are not implemented yet.
+    Table                 = mac_abi::controls::TABLE_PROCEDURE
 }
 #[repr(i16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,3 +180,6 @@ pub mod objects;
 pub use objects::{Control, ControlId, ControlInfo, ControlRef};
 mod passive;
 pub use passive::{Progress, ProgressBar, ProgressStyle, StaticText, TextAlignment};
+
+mod table;
+pub use table::{AdoptionError, Cell, Child, ChildHit, Children, Table, TableRef};

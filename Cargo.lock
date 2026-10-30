@@ -794,6 +794,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "native-table-cdef"
+version = "0.1.0"
+dependencies = [
+ "mac-build",
+ "mac-definition",
+]
+
+[[package]]
 name = "native-wdef"
 version = "0.1.0"
 dependencies = [

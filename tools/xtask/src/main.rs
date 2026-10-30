@@ -112,6 +112,7 @@ impl Workspace
                         | "native-scrollbar-cdef"
                         | "native-progress-bar-cdef"
                         | "native-static-text-cdef"
+                        | "native-table-cdef"
                         | "native-mdef")
                || matches!(*package,
                            "vhost-transport"
@@ -142,7 +143,8 @@ impl Workspace
     fn build(&self) -> Result<Vec<Value>>
     {
         self.guest_build(&["native-wdef", "native-buttons-cdef", "native-scrollbar-cdef",
-                           "native-mdef", "native-progress-bar-cdef", "native-static-text-cdef"])?;
+                           "native-mdef", "native-progress-bar-cdef", "native-static-text-cdef",
+                           "native-table-cdef"])?;
         self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "cursor-test",
                            "panic-test", "resedit", "reactor", "bootrom", "vhost-transport",
                            "vhost-filesystem", "stuffit-filesystem", "qemu-power-device",

@@ -246,3 +246,4 @@ adapter!(static_text_entry, StaticFamily, crate::StaticText<'a>);
 adapter!(buttons_entry, ButtonFamily, crate::Button<'a>);
 adapter!(progress_entry, ProgressFamily, crate::Progress);
 adapter!(scrollbar_entry, ScrollbarFamily, crate::Scrollbar);
+adapter!(table_entry, TableFamily, crate::Table);
