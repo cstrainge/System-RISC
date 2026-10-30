@@ -5,6 +5,8 @@
 *.md text eol=lf
 *.py text eol=lf
 *.json text eol=lf
+# Unified diffs use a single context-prefix space for an empty source line.
+platforms/rust/patches/*.patch text eol=lf whitespace=-blank-at-eol
 *.bin binary
 *.png binary
 *.font binary
