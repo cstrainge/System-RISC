@@ -15,6 +15,9 @@ unsafe extern "C" {
                                   -> !;
     // Explicit abort/custom-hook completion does not run the default hook again.
     pub fn __system_risc_abort_v1() -> !;
+    // Infallible allocation refusal retains its exact layout and NO_MEMORY
+    // cause through the System report path, without invoking a user panic hook.
+    pub fn __system_risc_oom_v1(size: usize, alignment: usize) -> !;
 
     // TLS keys identify process-owned, generational Thread Manager records.
     // Adapters terminate on failure where std's internal interface is infallible.

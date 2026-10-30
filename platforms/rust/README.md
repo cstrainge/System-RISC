@@ -65,6 +65,12 @@ separate terminal bridge and do not call the default hook again. The CRT bridge
 and concurrent process-failure ownership still need native implementation and
 qualification; compiling this hook does not establish a functioning bomb dialog.
 
+The actual default allocation-error hook also uses a dedicated CRT report bridge,
+preserving the refused size/alignment and `NO_MEMORY` cause. It does not invoke
+a user panic hook or format through allocating stdio/backtrace code. Fallible
+allocation still returns refusal normally. Custom allocation-error hooks retain
+their upstream semantics. Native OOM reporting remains a separate runtime gate.
+
 Files, launch environment, clock adapters and process streams still require their
 named implementations. Existing upstream unsupported backends remain unsupported
 while this stage is developed. Neither linking std nor resolving one of its

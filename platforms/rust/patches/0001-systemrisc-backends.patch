@@ -32,6 +32,24 @@
          || target_os == "android"
          || target_os == "netbsd"
          || target_os == "dragonfly"
+--- a/library/std/src/alloc.rs
++++ b/library/std/src/alloc.rs
+@@ -371,6 +371,15 @@
+     if hook.is_null() { default_alloc_error_hook } else { unsafe { mem::transmute(hook) } }
+ }
+ 
++// The default must retain the refused layout without formatting into an
++// allocating buffer or invoking a user panic hook during allocation failure.
++#[cfg(target_os = "systemrisc")]
++#[optimize(size)]
++fn default_alloc_error_hook(layout: Layout) {
++    unsafe { crate::sys::runtime::__system_risc_oom_v1(layout.size(), layout.align()) }
++}
++
++#[cfg(not(target_os = "systemrisc"))]
+ #[optimize(size)]
+ fn default_alloc_error_hook(layout: Layout) {
+     if cfg!(panic = "immediate-abort") {
 --- a/library/std/src/lib.rs
 +++ b/library/std/src/lib.rs
 @@ -473,7 +473,7 @@
