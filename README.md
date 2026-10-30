@@ -491,7 +491,7 @@ The packager reserves:
 
 | Resource | Meaning |
 | --- | --- |
-| `'RV64'` ID 0 | Version-1 header and initialized R/W/X segment records; no ELF container |
+| `'RV64'` ID 0 | Version-1 header and R/W/X segments with initialized bytes and explicit memory extents; no ELF container |
 | `'NABI'` ID 0 | Native format version, role, service ABI, reserved memory range and entry point |
 | `'RLOC'` ID 0 | Relocation patches for applications; definitions carry the table inline |
 | `'vers'` ID 1 | Generated classic version resource from Cargo package version |

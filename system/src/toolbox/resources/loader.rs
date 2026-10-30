@@ -98,29 +98,46 @@ fn application_parts(resources: &[Resource]) -> Result<(Descriptor, &[u8], image
     let image = image::decode(&code.data, &descriptor)?;
     Ok((descriptor, &code.data, image))
 }
-pub fn application_extent(resources: &[Resource]) -> Result<u64>
+/// Range identity is derived once from the checked segment stream. Executable
+/// callbacks need file bytes; atomic data may also occupy actual writable BSS.
+/// The registry rebases these ranges once with the actual image placement.
+pub(crate) struct ApplicationLayout
 {
-    let (descriptor, _, _) = application_parts(resources)?;
-    Ok(descriptor.load_limit - descriptor.load_base)
+    pub(crate) preferred:  u64,
+    pub(crate) extent:     u64,
+    pub(crate) executable: Vec<core::ops::Range<u64>>,
+    pub(crate) writable:   Vec<core::ops::Range<u64>>
 }
-/// Checked initialized executable ranges at the package's preferred origin.
-/// The registry rebases them together with the actual image placement.
-pub(crate) fn application_executable(resources: &[Resource])
-                                     -> Result<alloc::vec::Vec<core::ops::Range<u64>>>
+pub(crate) fn application_layout(resources: &[Resource]) -> Result<ApplicationLayout>
 {
     let (descriptor, _, image) = application_parts(resources)?;
-    let mut ranges = alloc::vec::Vec::new();
-    ranges.try_reserve_exact(image.segments.len()).map_err(|_| {
-                                                       Error::AllocationFailed("application \
-                                                                                executable range \
-                                                                                allocation failed")
-                                                   })?;
-    for segment in image.segments.iter().filter(|s| s.flags & image::EXECUTE != 0)
+    let mut executable = Vec::new();
+    let mut writable = Vec::new();
+    for ranges in [&mut executable, &mut writable]
+    {
+        ranges.try_reserve_exact(image.segments.len()).map_err(|_| {
+                                                           Error::AllocationFailed("application \
+                                                                                    image range \
+                                                                                    allocation \
+                                                                                    failed")
+                                                       })?;
+    }
+    for segment in &image.segments
     {
         let start = descriptor.load_base + segment.offset;
-        ranges.push(start..start + segment.length as u64);
+        if segment.flags & image::EXECUTE != 0 && segment.length != 0
+        {
+            executable.push(start..start + segment.length as u64);
+        }
+        if segment.flags & image::WRITE != 0
+        {
+            writable.push(start..start + segment.memory_length);
+        }
     }
-    Ok(ranges)
+    Ok(ApplicationLayout { preferred: descriptor.load_base,
+                           extent: descriptor.load_limit - descriptor.load_base,
+                           executable,
+                           writable })
 }
 pub(crate) fn application_at(resources: &[Resource], destination: u64) -> LoadResult<usize>
 {
@@ -308,16 +325,4 @@ pub(crate) fn status(error: impl Into<LoadError>) -> Status
 pub fn application_region(base: u64, limit: u64) -> bool
 {
     crate::machine::memory::application_region(base, limit)
-}
-pub fn reservation(resources: &[Resource]) -> Result<(u64, u64)>
-{
-    let resource = resources.iter()
-                            .find(|r| r.kind == *b"NABI" && r.id == 0)
-                            .ok_or(Error::Missing("application ABI resource is missing"))?;
-    let d = Descriptor::decode(&resource.data)?;
-    if d.role != Role::Application || !application_region(d.load_base, d.load_limit)
-    {
-        return Err(Error::Malformed("application reservation overlaps resident images"));
-    }
-    Ok((d.load_base, d.load_limit))
 }

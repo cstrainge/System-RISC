@@ -204,3 +204,43 @@ pub(crate) fn prepare_application_extent(owner: &OwnerRef,
                 _backing:Backing{pages:failure.backing,cpu_base},_charge:failure.charge}})
     }
 }
+
+/// Bounded buddy-base probes in physical coordinates. The DirectMap offset is
+/// only page-aligned; aligning a CPU alias at larger orders is not valid.
+/// The callback must authenticate the actual retained extent and its length.
+pub(crate) fn application_wait_extent<T>(address: usize,
+                                         mut visit: impl FnMut(usize, u64) -> Option<T>)
+                                         -> Result<Option<T>, super::Error>
+{
+    use mac_kernel_model::pages::{PhysicalAddress, VirtualAddress};
+    let pools = super::POOLS.get().ok_or(super::Error::Unavailable)?;
+    let width = core::mem::size_of::<core::sync::atomic::AtomicU32>() as u64;
+    let physical = match pools.ram.physical_address(VirtualAddress(address as u64), width)
+    {
+        Ok(address) => address.0,
+        // Another genuine region resolver may own a non-direct-map address.
+        Err(super::MapError::OutsideWindow { .. } | super::MapError::UnmappedRam { .. }) =>
+        {
+            return Ok(None);
+        }
+        Err(cause) => return Err(super::Error::Mapping(cause))
+    };
+    let mut bytes = crate::machine::memory::PAGE_BYTES;
+    loop
+    {
+        let base = physical & !(bytes - 1);
+        if let Ok(cpu) = pools.ram.virtual_address(PhysicalAddress(base), 1)
+           && let Ok(cpu) = usize::try_from(cpu.0)
+           && let Some(found) = visit(cpu, bytes)
+        {
+            return Ok(Some(found));
+        }
+        let Some(next) = bytes.checked_mul(2)
+        else
+        {
+            break;
+        };
+        bytes = next;
+    }
+    Ok(None)
+}

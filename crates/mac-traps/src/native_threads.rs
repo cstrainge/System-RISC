@@ -43,7 +43,7 @@ impl core::error::Error for Failure
 {
 }
 pub type Result<T> = core::result::Result<T, Failure>;
-fn result(status: i64, bytes: [u8; 192], length: u32) -> Result<()>
+pub(crate) fn result(status: i64, bytes: [u8; 192], length: u32) -> Result<()>
 {
     let status: mac_abi::Status =
         status.try_into().map_err(|_| Failure::Protocol("status exceeds Status width"))?;

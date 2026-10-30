@@ -132,15 +132,28 @@ Each record has this layout, relative to its start:
 | --- | --- | --- |
 | 0 | 8 | Destination offset from NABI load base |
 | 8 | 8 | Length of initialized bytes |
-| 16 | 4 | Permissions: R = 4, W = 2, X = 1 |
-| 20 | length | Raw initialized bytes |
+| 16 | 8 | Full memory length, including zero-filled trailing storage (`p_memsz`) |
+| 24 | 4 | Permissions: R = 4, W = 2, X = 1 |
+| 28 | initialized length | Raw initialized bytes |
 
-The next record begins at `20 + length`, without padding. Records are ordered by
-increasing destination offset, nonempty, nonoverlapping and entirely inside the
-NABI reservation. Unknown flag bits and W+X are rejected. Permissions describe
-intent; enforcing them awaits memory protection. BSS-only segments are omitted.
-Every byte of the reservation not supplied by a record is implicitly zero,
-including inter-segment gaps and trailing BSS through the reservation limit.
+The next record begins at `28 + initialized length`, without padding. Every
+record has a nonzero memory length; initialized length may be zero but cannot
+exceed memory length. Records are ordered by increasing destination offset,
+nonoverlapping in their **memory extents**, and entirely inside the NABI
+reservation. Checked addition rejects offset/length overflow. Unknown flag bits
+and W+X are rejected. An entry point and every RLOC source must still lie within
+initialized bytes, never merely within BSS or another zero-filled memory tail.
+
+BSS-only PT_LOAD segments are retained with initialized length zero and their
+actual memory length and permissions. The record explicitly distinguishes file
+bytes from owned memory; consumers must not infer BSS from the next segment or
+the reservation limit. Uninitialized memory is zero-filled before publication.
+An image's reserved virtual extent may include holes or page-rounding padding;
+that reservation does not by itself grant a mapping or an executable page.
+
+The record size is part of the native development layout fingerprint. ABI and
+format remain 1; stale 20-byte-record packages are rejected by the fingerprint
+and require a whole-world rebuild. No old record decoder is retained.
 
 The loader validates the entire stream and all relocation patches before writing
 RAM. It reserves the full declared span at a disjoint actual base, zeros that
@@ -153,7 +166,14 @@ reservation; applications and definitions are independently relocatable.
 The build links RVA23U64-profile RV64 ELF64 System V `ET_EXEC` binaries using
 the LP64 calling convention (the Rust target name remains
 `riscv64imac-unknown-none-elf`, with full `+rva23u64`). It validates them
-with `elf::decode`, and extracts only initialized PT_LOAD bytes. Dynamic linking,
+with `elf::decode`, and retains both `p_filesz` and `p_memsz` for every nonempty-memory
+PT_LOAD. Only initialized bytes are serialized. Native build admission requires
+page-aligned segment starts and rejects overlapping page-rounded memory extents
+with a named segment/range diagnostic; it never merges conflicting permissions
+or creates W+X. ROM System mappings cover each explicit page-rounded memory
+extent, including BSS-only records, while inter-segment holes and reservation
+padding remain unmapped. BootInfo still retains physical reservation ownership
+independently of those mappings. Dynamic linking,
 interpreters, TLS, unsupported machine/ABI flags, bad alignment and overlapping
 ELF segments fail packaging. Link relaxation remains disabled. Full debug ELFs
 and stripped host artifacts can remain in build output; none is stored in a

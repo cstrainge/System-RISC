@@ -411,6 +411,12 @@ impl Checked
         Ok(())
     }
 
+    /// The platform's checked hardware mapping granularity.
+    pub fn page_bytes(&self) -> u64
+    {
+        self.page_bytes
+    }
+
     /// Uniform build origin/capacity for independently placed native code.
     /// This names link geometry only; actual runtime storage is admitted by
     /// the System module/definition allocators.

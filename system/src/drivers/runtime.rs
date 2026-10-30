@@ -374,7 +374,7 @@ pub(crate) fn load(resources: Vec<Resource>, file_type: [u8; 4], directory: Pack
                        }, || {
                            let mut executable = Vec::new();
                            executable.try_reserve_exact(decoded.segments.len()).map_err(|_| NO_MEMORY)?;
-                           executable.extend(decoded.segments.iter().filter(|s| s.flags & image::EXECUTE != 0)
+                           executable.extend(decoded.segments.iter().filter(|s| s.flags & image::EXECUTE != 0 && s.length != 0)
                                .map(|s| base + s.offset .. base + s.offset + s.length as u64));
                            crate::kernel::load_module(&owner, source.clone(), base, extent, executable, |_, _| {
                                // Exact disjoint RAM remains reserved until reset. No reclamation is claimed.

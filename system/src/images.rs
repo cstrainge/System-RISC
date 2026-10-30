@@ -45,7 +45,7 @@ impl Source
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Binding(CompletionKey);
 impl Binding
 {
@@ -90,14 +90,16 @@ impl Drop for Use
 }
 struct Instance
 {
-    owner:      OwnerRef,
-    module:     bool,
-    executable: Vec<core::ops::Range<u64>>,
-    base:       u64,
-    limit:      u64,
-    execution:  mac_kernel_model::image::ExecutionGate,
-    activity:   Arc<Activity>,
-    binding:    spin::Once<Binding>
+    owner:       OwnerRef,
+    module:      bool,
+    executable:  Vec<core::ops::Range<u64>>,
+    writable:    Vec<core::ops::Range<u64>>,
+    initialized: AtomicBool,
+    base:        u64,
+    limit:       u64,
+    execution:   mac_kernel_model::image::ExecutionGate,
+    activity:    Arc<Activity>,
+    binding:     spin::Once<Binding>
 }
 
 /// Fields destroy source/instance payload references before the final use signal.
@@ -212,6 +214,46 @@ impl ApplicationExecution
         Ok(())
     }
 }
+/// An atomic wait key identifies one real image instance and byte offset. Its
+/// fields cannot be assembled from a caller's numbers or a reused CPU address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ApplicationAtomic32Key
+{
+    image:  Binding,
+    offset: u64
+}
+/// Owns initialized execution backing until the scheduler releases the wait.
+/// Permission admission concerns the actual segment, not reservation padding,
+/// package bytes, or a claim of process-private page-table enforcement.
+#[must_use = "retain the initialized image pin until atomic wait access ends"]
+pub(crate) struct ApplicationAtomic32
+{
+    execution: ApplicationExecution,
+    key:       ApplicationAtomic32Key,
+    address:   usize
+}
+impl ApplicationAtomic32
+{
+    pub(crate) fn key(&self) -> ApplicationAtomic32Key
+    {
+        self.key
+    }
+
+    /// The architecture atomic-access boundary may use only this admitted
+    /// aligned whole-word address while retaining this guard.
+    pub(crate) fn address(&self) -> usize
+    {
+        self.address
+    }
+
+    /// Recheck at the scheduler turn. The wait service must independently
+    /// check its own root closing state before parking or accessing the word.
+    pub(crate) fn still_admitted(&self) -> bool
+    {
+        let instance = &self.execution.0._source.instance;
+        instance.owner.accepting() && !instance.activity.retiring.load(Ordering::Acquire)
+    }
+}
 pub(crate) struct Loaded
 {
     binding:    Binding,
@@ -255,9 +297,15 @@ impl PreparedLoad
         }
         let Self { loading,
                    read } = self;
+        let execution = loading.finish();
+        // A count-zero execution gate also follows a refused write. Source
+        // registration alone must never authorize execution of those bytes.
+        // Publish readiness only after complete writes/relocations/instructions
+        // and the first actual execution pin have both succeeded.
+        read.instance.initialized.store(true, Ordering::Release);
         Ok(Loaded { binding: read.binding,
                     entry,
-                    _execution: Execution { _execution: loading.finish(),
+                    _execution: Execution { _execution: execution,
                                             _source:    read } })
     }
 }
@@ -328,7 +376,8 @@ impl Manager
     /// fallible metadata allocation precedes executable-memory writes.
     pub(crate) fn prepare_load(&mut self, owner: &OwnerRef, source: Arc<Source>, preferred: u64,
                                extent: u64, relocation_base: u64, limit: u64,
-                               mut executable: Vec<core::ops::Range<u64>>)
+                               mut executable: Vec<core::ops::Range<u64>>,
+                               mut writable: Vec<core::ops::Range<u64>>)
                                -> Result<PreparedLoad, Status>
     {
         let role_matches_owner =
@@ -376,21 +425,25 @@ impl Manager
                 }
             }
         };
-        for range in &mut executable
+        for ranges in [&mut executable, &mut writable]
         {
-            let start = range.start.checked_sub(preferred).ok_or(BAD_ABI)?;
-            let end = range.end.checked_sub(preferred).ok_or(BAD_ABI)?;
-            if start >= end || end > extent
+            for range in ranges
             {
-                return Err(BAD_ABI);
+                let start = range.start.checked_sub(preferred).ok_or(BAD_ABI)?;
+                let end = range.end.checked_sub(preferred).ok_or(BAD_ABI)?;
+                if start >= end || end > extent
+                {
+                    return Err(BAD_ABI);
+                }
+                *range = base.checked_add(start).ok_or(BAD_ABI)?
+                         ..base.checked_add(end).ok_or(BAD_ABI)?;
             }
-            *range =
-                base.checked_add(start).ok_or(BAD_ABI)?..base.checked_add(end).ok_or(BAD_ABI)?;
         }
         let activity =
             Arc::try_new(Activity { readers:  AtomicUsize::new(0),
                                     retiring: AtomicBool::new(false) }).map_err(|_| NO_MEMORY)?;
-        let instance = Arc::try_new(Instance { owner: owner.clone(), module: source.role == Role::Module, executable, base,
+        let instance = Arc::try_new(Instance { owner: owner.clone(), module: source.role == Role::Module, executable, writable,
+            initialized: AtomicBool::new(false), base,
             limit: base.checked_add(extent).ok_or(NO_MEMORY)?,
             execution: mac_kernel_model::image::ExecutionGate::try_new().map_err(|_| NO_MEMORY)?, activity,
             binding: spin::Once::new() }).map_err(|_| NO_MEMORY)?;
@@ -455,9 +508,41 @@ impl Manager
         {
             return Err(ACCESS_DENIED);
         }
+        // SERVICE_BUSY is an unpublished/loading image, never a code pointer
+        // validation failure. A refused writer cannot reopen execution.
+        if !read.instance.initialized.load(Ordering::Acquire)
+        {
+            return Err(SERVICE_BUSY);
+        }
         let pin = read.instance.execution.pin().map_err(|_| SERVICE_BUSY)?;
         Ok(ApplicationExecution(Execution { _execution: pin,
                                             _source:    read }))
+    }
+
+    pub(crate) fn pin_application_atomic32(&self, owner: &OwnerRef, binding: Binding,
+                                           address: usize)
+                                           -> Result<ApplicationAtomic32, Status>
+    {
+        if address == 0
+           || !address.is_multiple_of(core::mem::align_of::<core::sync::atomic::AtomicU32>())
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let start = address as u64;
+        let end = address.checked_add(core::mem::size_of::<u32>()).ok_or(BAD_ARGUMENT)? as u64;
+        let execution = self.execute_application(owner, binding)?;
+        let instance = &execution.0._source.instance;
+        if !instance.writable.iter().any(|range| start >= range.start && end <= range.end)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let offset = start.checked_sub(instance.base).ok_or(BAD_ABI)?;
+        Ok(ApplicationAtomic32 { key: ApplicationAtomic32Key { image: execution.0
+                                                                               ._source
+                                                                               .binding,
+                                                               offset },
+                                 execution,
+                                 address })
     }
 
     pub(crate) fn execute_module(&self, binding: Binding) -> Result<ModuleExecution, Status>
@@ -467,6 +552,10 @@ impl Manager
            || read.instance.owner.owner().kind() != mac_object_table::domain::DomainKind::Module
         {
             return Err(ACCESS_DENIED);
+        }
+        if !read.instance.initialized.load(Ordering::Acquire)
+        {
+            return Err(SERVICE_BUSY);
         }
         let pin = read.instance.execution.pin().map_err(|_| SERVICE_BUSY)?;
         Ok(ModuleExecution(Execution { _execution: pin,
@@ -522,7 +611,13 @@ impl Manager
             {
                 if let Some((_, instance)) = self.sources.releasing(&ticket)
                 {
-                    instance.activity.retiring.store(true, Ordering::SeqCst);
+                    if !instance.activity.retiring.swap(true, Ordering::AcqRel)
+                    {
+                        // Publish invalidity before the coalesced, lock-free
+                        // scheduler notification. Wait maintenance owns the
+                        // actual wake/cancel decision and heavy pin release.
+                        crate::machine::scheduler::address_wait_changed();
+                    }
                 }
                 self.sources.defer_alias(ticket)
             }

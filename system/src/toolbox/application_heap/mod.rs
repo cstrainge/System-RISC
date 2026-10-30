@@ -18,6 +18,7 @@ use crate::{machine::{interrupts::{self, NativeInvocationGate},
 mod allocation;
 mod storage;
 mod native;
+pub(crate) mod wait;
 pub(crate) mod lifetime;
 use allocation::Allocation;
 pub(crate) use lifetime::CleanupCause;

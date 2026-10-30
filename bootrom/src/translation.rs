@@ -92,8 +92,9 @@ impl core::error::Error for Error
 }
 
 /// Derive the same System page records for the disk ROM and native ABI probe.
-/// Initialized segments retain their permissions; zero-only tail pages are RW,
-/// never executable. Linkers keep BSS on its own page even with empty .data.
+/// Each actual segment memory extent retains its permissions, including an
+/// explicit BSS-only segment. Reservation padding and inter-segment holes do not
+/// become mappings. Physical reservation ownership remains in BootInfo.
 pub fn system_regions(image: &mac_formats::native::image::Image,
                       descriptor: &mac_formats::native::Descriptor, physical_base: u64, page: u64)
                       -> Result<Vec<mac_abi::boot::execution::Region>, Error>
@@ -121,17 +122,21 @@ pub fn system_regions(image: &mac_formats::native::image::Image,
         return Err(invalid());
     }
     let mut regions = Vec::new();
-    regions.try_reserve_exact(image.segments.len()+1)
+    regions.try_reserve_exact(image.segments.len())
         .map_err(|_|Error::Image(FormatError::AllocationFailed("System mapping record allocation failed")))?;
     let mut last = 0;
     for segment in &image.segments
     {
         let end = segment.offset
-                         .checked_add(segment.length as u64)
+                         .checked_add(segment.memory_length)
                          .and_then(|end| end.checked_add(page - 1))
                          .map(|end| end / page * page)
                          .ok_or_else(invalid)?;
-        if !segment.offset.is_multiple_of(page)
+        if segment.memory_length == 0
+           || segment.length as u64 > segment.memory_length
+           || segment.flags & !7 != 0
+           || segment.flags & 3 == 3
+           || !segment.offset.is_multiple_of(page)
            || segment.offset < last
            || end > extent
            || end <= segment.offset
@@ -152,16 +157,6 @@ pub fn system_regions(image: &mac_formats::native::image::Image,
                               flags,
                               reserved: 0 });
         last = end;
-    }
-    if last < extent
-    {
-        regions.push(Region { physical:
-                                  BootMemoryRange { base:   physical_base.checked_add(last)
-                                                                         .ok_or_else(invalid)?,
-                                                    length: extent - last },
-                              virtual_base: descriptor.load_base + last,
-                              flags:        READ | WRITE,
-                              reserved:     0 });
     }
     Ok(regions)
 }
@@ -312,21 +307,29 @@ mod tests
                       load_base:   0xffffffd000200000,
                       load_limit:  0xffffffd000205000,
                       entry:       0xffffffd000200000 },
-         Image { segments: alloc::vec![Segment { offset:      0,
-                                                 length:      32,
-                                                 flags:       5,
-                                                 data_offset: 0 },
-                                       Segment { offset:      4096,
-                                                 length:      19,
-                                                 flags:       4,
-                                                 data_offset: 32 },
-                                       Segment { offset:      8192,
-                                                 length:      11,
-                                                 flags:       6,
-                                                 data_offset: 51 }] })
+         Image { segments: alloc::vec![Segment { offset:        0,
+                                                 length:        32,
+                                                 memory_length: 32,
+                                                 flags:         5,
+                                                 data_offset:   0 },
+                                       Segment { offset:        4096,
+                                                 length:        19,
+                                                 memory_length: 19,
+                                                 flags:         4,
+                                                 data_offset:   32 },
+                                       Segment { offset:        8192,
+                                                 length:        11,
+                                                 memory_length: 11,
+                                                 flags:         6,
+                                                 data_offset:   51 },
+                                       Segment { offset:        12288,
+                                                 length:        0,
+                                                 memory_length: 8192,
+                                                 flags:         6,
+                                                 data_offset:   62 }] })
     }
     #[test]
-    fn system_pages_preserve_segment_permissions_and_map_only_bss_tail_writable()
+    fn system_pages_preserve_explicit_segment_memory_permissions()
     {
         use mac_abi::boot::execution::{EXECUTE, READ, WRITE};
         let (descriptor, image) = system_image();

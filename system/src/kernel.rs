@@ -111,22 +111,17 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
     {
         return Err(crate::images::LoadError::Admission(ACCESS_DENIED));
     }
-    let (preferred, _) =
-        crate::loader::reservation(&source.resources)
-            .map_err(|cause| crate::images::LoadError::Write(cause.into()))?;
-    let extent =
-        crate::loader::application_extent(&source.resources)
-            .map_err(|cause| crate::images::LoadError::Write(cause.into()))?;
-    let executable = crate::loader::application_executable(&source.resources)
+    let layout = crate::loader::application_layout(&source.resources)
         .map_err(|cause| crate::images::LoadError::Write(cause.into()))?;
     let prepared = IMAGES.with(|images| {
                              images.prepare_load(owner,
                                            source,
-                                           preferred,
-                                           extent,
+                                           layout.preferred,
+                                           layout.extent,
                                            crate::machine::memory::APPLICATION_RELOCATION_BASE,
                                            crate::machine::memory::IMAGE_LIMIT,
-                                           executable)
+                                           layout.executable,
+                                           layout.writable)
                          })
                          .map_err(|cause| crate::images::LoadError::Admission(cause.status()))??;
     // The original alias already reserves its destination and retains its
@@ -161,7 +156,8 @@ pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,
                                                  extent,
                                                  base,
                                                  base.checked_add(extent).ok_or(NO_MEMORY)?,
-                                                 executable)
+                                                 executable,
+                                                 alloc::vec::Vec::new())
                          })
                          .map_err(AccessError::status)??;
     // Only IMAGES ownership is absent here. The module caller's Runtime/IRQ
@@ -194,6 +190,18 @@ pub(crate) fn application_execution(owner: &crate::toolbox::handles::OwnerRef,
     use mac_object_table::shared::InvocationGate as _;
     crate::toolbox::handles::InvocationGate::run(|| {
         IMAGES.with(|images| images.execute_application(owner, binding))
+              .map_err(AccessError::status)?
+    })
+}
+/// Caller supplies the genuine Process executor's owner/image, never raw app
+/// IDs. The returned guard owns initialized backing beyond this metadata turn.
+pub(crate) fn application_atomic32_pin(owner: &crate::toolbox::handles::OwnerRef,
+                                       binding: crate::images::Binding, address: usize)
+                                       -> Result<crate::images::ApplicationAtomic32, Status>
+{
+    use mac_object_table::shared::InvocationGate as _;
+    crate::toolbox::handles::InvocationGate::run(|| {
+        IMAGES.with(|images| images.pin_application_atomic32(owner, binding, address))
               .map_err(AccessError::status)?
     })
 }

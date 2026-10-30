@@ -2,16 +2,35 @@
 #![no_std]
 #![forbid(unsafe_code)]
 pub mod application_heap;
+pub mod address_wait;
 pub mod native_threads;
 pub mod tls;
 pub mod power;
 
 pub const ABI_VERSION: u32 = 1;
+/// RV64 native segment wire record: offset, initialized length, memory length
+/// and permissions. Included in the whole-world development layout fingerprint.
+pub const NATIVE_SEGMENT_RECORD_BYTES: usize = 28;
+
 /// Compile-time layout contract, independent of the unreleased ABI version.
 /// Native descriptors carry this fingerprint so stale packages fail before
 /// entry rather than interpreting new payloads with an older struct layout.
 pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
-    let words = [core::mem::align_of::<native_threads::Call>(),
+    let words = [core::mem::size_of::<address_wait::Call>(),
+                 core::mem::align_of::<address_wait::Call>(),
+                 core::mem::offset_of!(address_wait::Call, address),
+                 core::mem::offset_of!(address_wait::Call, outcome),
+                 core::mem::offset_of!(address_wait::Call, detail),
+                 address_wait::WAIT32 as usize,
+                 address_wait::WAKE32 as usize,
+                 address_wait::FINITE as usize,
+                 address_wait::WAKE_ALL as usize,
+                 address_wait::WOKEN as usize,
+                 address_wait::VALUE_CHANGED as usize,
+                 address_wait::TIMED_OUT as usize,
+                 traps::ADDRESS_WAIT as usize,
+                 NATIVE_SEGMENT_RECORD_BYTES,
+                 core::mem::align_of::<native_threads::Call>(),
                  core::mem::align_of::<tls::Call>(),
                  core::mem::offset_of!(native_threads::Call, detail),
                  core::mem::offset_of!(tls::Call, value),

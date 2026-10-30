@@ -333,17 +333,27 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     {
         Ok(())
     };
-    let result = if let Err(status) = admission
+    let (result, action) = if let Err(status) = admission
     {
-        status as i64
+        (status as i64, super::scheduler::service::RequestAction::Return)
     }
     else if matches!(number, WAIT_EVENT | POSITIONED_EVENT) && physical_depth != 1
     {
-        WRONG_THREAD as i64
+        (WRONG_THREAD as i64, super::scheduler::service::RequestAction::Return)
+    }
+    else if matches!(number, NATIVE_THREAD | ADDRESS_WAIT)
+    {
+        let identity = super::scheduler::service::request_identity(frame);
+        let suspension = super::scheduler::service::request_suspension_allowed(frame);
+        let response = hart::service_scope(physical_depth == 1, || unsafe {
+            dispatch_native_request(number, request, size, identity, suspension)
+        });
+        (i64::from(response.status), response.action)
     }
     else
     {
-        hart::service_scope(physical_depth == 1, || unsafe { dispatch(number, request, size) })
+        (hart::service_scope(physical_depth == 1, || unsafe { dispatch(number, request, size) }),
+         super::scheduler::service::RequestAction::Return)
     };
     #[cfg(feature = "event-trace")]
     {
@@ -396,6 +406,12 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
                 return Dispatch::Resume;
             }
         }
+    }
+    if action == super::scheduler::service::RequestAction::Replay
+    {
+        // Every Call/executor/manager borrow has ended. The original PC and
+        // request identity remain owned by this same canonical continuation.
+        return Dispatch::Schedule;
     }
     finish_service(frame, completion, result);
     if physical_depth == 1 && super::scheduler::retired()
@@ -548,6 +564,40 @@ fn application_heap_refusal(call: &mut application_heap::Call, status: Status,
     status
 }
 
+/// Actual action-bearing native families. Each request borrow ends before the
+/// caller commits its saved frame or schedules a different continuation.
+unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
+                                  identity: super::scheduler::service::RequestIdentity,
+                                  suspension: Result<(), Status>)
+                                  -> super::scheduler::service::RequestResult
+{
+    use super::scheduler::service::RequestResult;
+    match number
+    {
+        NATIVE_THREAD =>
+        {
+            match unsafe { request::<mac_abi::native_threads::Call>(pointer, size) }
+            {
+                Some(call) => RequestResult::done(toolbox::native_threads::native::current(call)),
+                None => RequestResult::done(BAD_ARGUMENT)
+            }
+        }
+        ADDRESS_WAIT =>
+        {
+            match unsafe { request::<mac_abi::address_wait::Call>(pointer, size) }
+            {
+                Some(call) => super::scheduler::address::request(call, identity, suspension),
+                None =>
+                {
+                    super::scheduler::address::cancel_current();
+                    RequestResult::done(BAD_ARGUMENT)
+                }
+            }
+        }
+        _ => RequestResult::done(NOT_SUPPORTED)
+    }
+}
+
 /// Native modules still share trusted supervisor mappings. Size/alignment are checked here;
 /// valid live pointees remain the calling module's ABI contract, not an MMU guarantee.
 unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
@@ -569,11 +619,6 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
     }
     match number
     {
-        NATIVE_THREAD =>
-        {
-            let call = read_request!(mac_abi::native_threads::Call);
-            toolbox::native_threads::native::current(call) as i64
-        }
         TLS =>
         {
             let call = read_request!(mac_abi::tls::Call);

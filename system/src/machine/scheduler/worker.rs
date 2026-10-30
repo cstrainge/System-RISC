@@ -176,10 +176,12 @@ pub(crate) fn prepare_worker(launch: crate::drivers::WorkerLaunch)
                                      })
                                      .map_err(|error| error.status())?;
         let top = stack.top();
+        let stack = super::stack::StackBacking::prepare(&owner, stack)?;
         let backing = ThreadBacking { cpu,
                                       stack,
                                       loaded: None };
-        let core = ThreadCore { backing: Mutex::new(Some(backing)),
+        let core = ThreadCore { address: Mutex::new(None),
+                                backing: Mutex::new(Some(backing)),
                                 launch: Mutex::new(None),
                                 context,
                                 release: Mutex::new(None),

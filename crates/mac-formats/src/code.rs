@@ -192,7 +192,7 @@ mod tests
                                           entry:       0x82000000 };
             let mut bytes = descriptor.encode()?.to_vec();
             bytes.extend(crate::native::image::encode(&descriptor,
-                                                      [(0, 5, [0x82, 0x80].as_slice())])?);
+                                                      [(0, 2, 5, [0x82, 0x80].as_slice())])?);
             bytes.extend_from_slice(b"RLC1\0\0\0\0");
             Ok(bytes)
         }
