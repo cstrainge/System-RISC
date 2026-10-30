@@ -582,6 +582,7 @@ name = "mac-system"
 version = "0.1.0"
 dependencies = [
  "ab_glyph_rasterizer",
+ "hashbrown",
  "libm",
  "linked_list_allocator",
  "mac-abi",

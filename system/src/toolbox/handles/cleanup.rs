@@ -7,6 +7,8 @@ use mac_object_table::{domain::{CompletionError, PoolError, ReleasedResource},
 pub(crate) enum Cause
 {
     #[cfg(target_arch = "riscv64")]
+    ApplicationHeap(crate::toolbox::application_heap::CleanupCause),
+    #[cfg(target_arch = "riscv64")]
     RequestRegistryUnavailable(crate::state::AccessError),
     #[cfg(target_arch = "riscv64")]
     ScrapManagerUnavailable(crate::state::AccessError),
@@ -96,6 +98,8 @@ impl core::fmt::Display for Cause
         match self
         {
             #[cfg(target_arch = "riscv64")]
+            Self::ApplicationHeap(cause) => cause.fmt(f),
+            #[cfg(target_arch = "riscv64")]
             Self::RequestRegistryUnavailable(cause) =>
             {
                 write!(f,
@@ -120,7 +124,7 @@ impl core::fmt::Display for Cause
             {
                 write!(f,
                        "scheduler registration {generation} awaits actual callback and \
-                        primary-only quiescence; original payload and cleanup ticket retained")
+                        target-owned quiescence; original payload and cleanup ticket retained")
             }
             #[cfg(target_arch = "riscv64")]
             Self::SchedulerUnavailable(cause) =>
@@ -256,6 +260,15 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn application_heap(ticket: ReleasedResource,
+                                   cause: crate::toolbox::application_heap::CleanupCause)
+                                   -> Self
+    {
+        Self { ticket,
+               cause: Cause::ApplicationHeap(cause) }
+    }
+
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn scheduler_pending(ticket: ReleasedResource, generation: u64) -> Self
     {

@@ -81,6 +81,9 @@
       "kernel_bytes": "0x1000000",
       "worker_stack_bytes": "0x400000"
     },
+    "application_heap": {
+      "minimum_extent_bytes": "0x10000"
+    },
     "process_accounts": {
       "kernel_bytes": "0x1000000",
       "application_bytes": "0x4000000"

@@ -1,6 +1,7 @@
 //! Native RV64 service ABI. This is separate from the future 32-bit 68k ABI.
 #![no_std]
 #![forbid(unsafe_code)]
+pub mod application_heap;
 pub mod power;
 
 pub const ABI_VERSION: u32 = 1;
@@ -66,6 +67,23 @@ pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
                  inspection::cpus::ACTIVITY_STOPPED as usize,
                  inspection::cpus::ACTIVITY_CLOCK_REGRESSED as usize,
                  inspection::cpus::ACTIVITY_OVERFLOW as usize,
+                 traps::APPLICATION_HEAP as usize,
+                 core::mem::size_of::<application_heap::Call>(),
+                 core::mem::align_of::<application_heap::Call>(),
+                 core::mem::offset_of!(application_heap::Call, pointer),
+                 core::mem::offset_of!(application_heap::Call, old_size),
+                 core::mem::offset_of!(application_heap::Call, alignment),
+                 core::mem::offset_of!(application_heap::Call, new_size),
+                 core::mem::offset_of!(application_heap::Call, result),
+                 core::mem::offset_of!(application_heap::Call, detail_length),
+                 core::mem::offset_of!(application_heap::Call, reserved2),
+                 core::mem::offset_of!(application_heap::Call, detail),
+                 application_heap::DETAIL_BYTES,
+                 application_heap::ALLOCATE as usize,
+                 application_heap::DEALLOCATE as usize,
+                 application_heap::REALLOCATE as usize,
+                 application_heap::ALLOCATE_ZEROED as usize,
+                 inspection::ACCOUNT_EXECUTION_OWNED_MEMORY as usize,
                  resources::SYSTEM.kind as usize,
                  resources::CHAIN.kind as usize,
                  resources::APPLICATION.kind as usize,

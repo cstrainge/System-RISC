@@ -121,8 +121,8 @@ fn finisher(system: &System<'_>) -> Result<(u64, u64, u64), Error>
             };
             if domain.name.as_str() == "Pressure Holder 43"
             {
-                if let MemoryAccounting::ExecutionAndResidentHeap { kernel,
-                                                                    .. } = domain.accounting
+                if let MemoryAccounting::ExecutionAndOwnedMemory { kernel,
+                                                                   .. } = domain.accounting
                 {
                     return Ok((kernel.limit, kernel.committed, kernel.reserved));
                 }

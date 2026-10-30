@@ -4,7 +4,6 @@
 
 use mac_toolbox::{quickdraw::fonts::FontSelection, *};
 
-mac_toolbox::panic_handler!();
 
 const PANIC_NOW: u32 = u32::from_be_bytes(*b"pnow");
 const LONG_PANIC: u32 = u32::from_be_bytes(*b"plng");
@@ -174,28 +173,4 @@ fn run(system: &System<'_>) -> Result<(), Error>
     }
 }
 
-/// # Safety
-/// The native loader supplies initialized segments and a live service table.
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
-{
-    if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
-    {
-        return status;
-    }
-    let system = match unsafe { System::from_raw(services) }
-    {
-        Ok(system) => system,
-        Err(status) => return status.status()
-    };
-    match run(&system)
-    {
-        Ok(()) => mac_toolbox::abi::OK,
-        Err(status) =>
-        {
-            let _ = system.log("PANIC_TEST_ERROR\n");
-            status.status()
-        }
-    }
-}
+mac_toolbox::application!(run);

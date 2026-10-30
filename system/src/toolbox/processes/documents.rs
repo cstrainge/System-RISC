@@ -468,10 +468,10 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                         }
                     };
                     let actual = declarations(loaded.catalog.creator, &loaded.resources)?;
-                    desktop(|d| {
+                    let launch_needed = desktop(|d| {
                         if activate_existing(d, owner, call.handle, &mut launch)?
                         {
-                            return Ok(());
+                            return Ok(false);
                         }
                         let batch = owned(&mut d.processes, owner, call.handle)?;
                         if batch.documents
@@ -480,8 +480,12 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                         {
                             return Err(NOT_SUPPORTED);
                         }
-                        d.launch_application(&mut launch, *loaded)
+                        Ok(true)
                     })?;
+                    if launch_needed
+                    {
+                        super::launch_application(&mut launch, *loaded)?;
+                    }
                 }
                 desktop(|d| {
                     d.processes.get(launch.info.id)?;

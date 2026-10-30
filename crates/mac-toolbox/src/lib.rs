@@ -1,5 +1,6 @@
 //! Rust Toolbox facade over the resident System trap gate.
 #![no_std]
+#![cfg_attr(all(feature = "application", target_arch = "riscv64"), feature(alloc_error_handler))]
 /// Explicit wire/entry-point escape hatch. Ordinary applications use decoded
 /// native services, typed identities and Error rather than numeric statuses.
 pub use mac_abi as abi;
@@ -15,6 +16,9 @@ pub use toolbox_drag as drag;
 pub use toolbox_events::{Event, EventMask, Modifiers};
 pub use toolbox_inspection as inspection;
 pub mod panic;
+/// Native application entry, allocator and failure scaffold.
+#[cfg(target_arch = "riscv64")]
+pub mod application;
 pub use toolbox_controls as controls;
 pub use toolbox_crashes as crashes;
 pub use toolbox_dialogs as dialogs;
@@ -280,4 +284,28 @@ mod tests
         assert!(matches!(unsafe { System::from_raw((&short as *const Header).cast()) },
                          Err(Error::BadAbi)));
     }
+}
+
+/// Supply the platform entry for a safe native `run(&System) -> ToolboxResult<()>`.
+///
+/// Enable the `application` feature. Current native applications are no_std and
+/// may use `alloc`; this does not provide a Rust std platform implementation.
+/// The SDK owns service installation, GlobalAlloc, panic and allocation failure.
+#[cfg(feature = "application")]
+#[macro_export]
+macro_rules! application {
+    ($run:path) => {
+        #[cfg(not(target_arch = "riscv64"))]
+        compile_error!("System RISC application runtime currently requires its native RV64 target");
+        #[cfg(target_arch = "riscv64")]
+        #[unsafe(no_mangle)]
+        #[unsafe(link_section = ".text.entry")]
+        pub unsafe extern "C" fn _start(services: *const $crate::SystemServices)
+                                        -> $crate::abi::Status
+        {
+            // SAFETY: the real native loader owns this entry's live table,
+            // initialized image and permanent service callbacks.
+            unsafe { $crate::application::enter(services, $run) }
+        }
+    };
 }

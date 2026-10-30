@@ -9,6 +9,7 @@ build = "build.rs"
 
 [features]
 smp = []
+heap = ["mac-toolbox/application"]
 
 [[bin]]
 name = "ProcessSpinner"

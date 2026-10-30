@@ -34,3 +34,6 @@ pub(crate) mod test_application_menu;
 #[cfg(all(test, feature = "test-support", not(target_arch = "riscv64")))]
 #[path = "processes/presentation.rs"]
 pub(crate) mod test_process_presentation;
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) mod application_heap;

@@ -86,6 +86,11 @@ fn open_about(system: &System<'_>, id: &mut WindowId) -> Result<(), Error>
 }
 fn finder(system: &System<'_>) -> Result<(), Error>
 {
+    system.log("Finder: native application entry reached\n")?;
+    if system.capabilities() & CAP_GRAPHICS == 0
+    {
+        return Ok(());
+    }
     let mut browser = browser::Browser::default();
     let mut dragging = browser::dragging::Controller::default();
     let mut watches = watches::Controller::default();
@@ -563,40 +568,4 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     }
 }
 
-/// # Safety
-/// Loader supplies initialized ELF segments and resident System services.
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
-{
-    if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
-    {
-        return status;
-    }
-    let system = match unsafe { System::from_raw(services) }
-    {
-        Ok(system) => system,
-        Err(status) => return status.status()
-    };
-    if let Err(status) = system.log("Finder: native application entry reached\n")
-    {
-        return status.status();
-    }
-    if system.capabilities() & CAP_GRAPHICS == 0
-    {
-        return mac_toolbox::abi::OK;
-    }
-    match finder(&system)
-    {
-        Ok(()) => mac_toolbox::abi::OK,
-        Err(status) =>
-        {
-            use core::fmt::Write;
-            let mut line = browser::Text::<160>::default();
-            let _ = writeln!(&mut line, "FINDER_ERROR status={} error={status:?}", status.status());
-            let _ = system.log(line.as_str());
-            status.status()
-        }
-    }
-}
-mac_toolbox::panic_handler!();
+mac_toolbox::application!(finder);

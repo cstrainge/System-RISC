@@ -20,3 +20,6 @@ pub mod image;
 pub mod text;
 pub mod zone;
 pub mod emergency;
+
+/// Buddy-backed Application heap spans with external owned metadata.
+pub mod heap;

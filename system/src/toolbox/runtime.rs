@@ -739,6 +739,19 @@ impl Desktop
                             {
                                 i32::try_from(reply).unwrap_or(BAD_ABI)
                             }
+                            #[cfg(target_arch = "riscv64")]
+                            super::handles::cleanup::Cause::ApplicationHeap(cause) =>
+                            {
+                                match cause
+                                {
+                                    super::application_heap::CleanupCause::Unavailable => NOT_SUPPORTED,
+                                    super::application_heap::CleanupCause::Fault(_) => BAD_ABI,
+                                    super::application_heap::CleanupCause::Threads
+                                    | super::application_heap::CleanupCause::Readers { .. }
+                                    | super::application_heap::CleanupCause::Mutation
+                                    | super::application_heap::CleanupCause::Remaining { .. } => SERVICE_BUSY
+                                }
+                            }
                             super::handles::cleanup::Cause::Facility(_) => BAD_ARGUMENT,
                             super::handles::cleanup::Cause::Alias(_)
                             | super::handles::cleanup::Cause::ContextUnavailable { .. }

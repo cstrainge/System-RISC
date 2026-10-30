@@ -7,6 +7,7 @@ use crate::{Result, error};
 mod stacks;
 mod io;
 mod accounts;
+mod application_heap;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -98,6 +99,7 @@ pub(super) struct Definition
     system_heap_bytes:           String,
     system_recovery_bytes:       String,
     stacks:                      stacks::Definition,
+    application_heap:            application_heap::Definition,
     process_accounts:            accounts::Definition,
     module_accounts:             accounts::ModuleDefinition
 }
@@ -126,6 +128,7 @@ pub struct Checked
     pub(super) system_heap_bytes:           u64,
     system_recovery_bytes:                  u64,
     stacks:                                 stacks::Checked,
+    application_heap:                       application_heap::Checked,
     process_accounts:                       accounts::Checked,
     module_accounts:                        accounts::ModuleChecked
 }
@@ -303,6 +306,7 @@ impl Definition
             return Err(error("platform memory system_recovery_bytes cannot hold the terminal \
                               framebuffer and independent System stack"));
         }
+        let application_heap = self.application_heap.check(page)?;
         let process_accounts = self.process_accounts.check(page, stacks.application_default())?;
         let module_accounts = self.module_accounts.check(page)?;
         Ok(Checked { page_bytes: page,
@@ -326,6 +330,7 @@ impl Definition
                      system_heap_bytes,
                      system_recovery_bytes,
                      stacks,
+                     application_heap,
                      process_accounts,
                      module_accounts })
     }
@@ -481,6 +486,7 @@ impl Checked
              ("IMAGE_LIMIT", self.images.end)].into_iter()
                                               .chain(self.display_buffers())
                                               .chain(self.stacks.constants())
+                                              .chain(self.application_heap.constants())
                                               .chain(self.process_accounts.constants())
                                               .chain(self.module_accounts.constants())
                                               .chain(self.bootstrap_io.constants())

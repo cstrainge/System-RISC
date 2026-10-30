@@ -425,6 +425,8 @@ pub struct DomainSlots
     value_storage:         bool,
     registration:          Option<u64>
 }
+mod prepared;
+pub(crate) use prepared::{LedgerCapacityPlan, PoolRequest, PreparedLedgerCapacity};
 impl DomainSlots
 {
     fn new(owner: DomainId, kind: KindCode, policy: CapacityPolicy) -> Result<Self, PoolError>

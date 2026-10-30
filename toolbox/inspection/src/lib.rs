@@ -60,12 +60,13 @@ pub struct AccountUsage
 pub enum MemoryAccounting
 {
     Unavailable,
-    /// Actual stack/CPU backing and resident heap blocks attributed to this
-    /// domain, including allocation headers and backend alignment. Application
-    /// private allocators, independent module heaps and executable image pages
-    /// are not covered. Shared System caches and authority roots are charged
-    /// separately; the protected recovery partition is excluded.
-    ExecutionAndResidentHeap
+    /// Actual execution backing, resident allocations/metadata and application
+    /// heap extents charged to this domain's original accounts. Heap charges
+    /// describe owned extents, not just live payload; do not count suballocations
+    /// again. Executable images, unreceipted storage and CPU time are not covered.
+    /// Shared System foundation/recovery storage is separate. This does not
+    /// establish private application mappings or an all-System memory total.
+    ExecutionAndOwnedMemory
     {
         kernel:      AccountUsage,
         application: AccountUsage,
@@ -78,7 +79,7 @@ fn accounting(value: wire::Account) -> Option<MemoryAccounting>
     {
         return (value == wire::Account::default()).then_some(MemoryAccounting::Unavailable);
     }
-    if value.coverage != wire::ACCOUNT_EXECUTION_RESIDENT_HEAP || value.closing > 1
+    if value.coverage != wire::ACCOUNT_EXECUTION_OWNED_MEMORY || value.closing > 1
     {
         return None;
     }
@@ -86,9 +87,9 @@ fn accounting(value: wire::Account) -> Option<MemoryAccounting>
         value.reserved.checked_add(value.committed).filter(|&used| used <= value.limit)
             .map(|_| AccountUsage { limit: value.limit, reserved: value.reserved, committed: value.committed })
     };
-    Some(MemoryAccounting::ExecutionAndResidentHeap { kernel:      usage(value.kernel)?,
-                                                      application: usage(value.application)?,
-                                                      closing:     value.closing != 0 })
+    Some(MemoryAccounting::ExecutionAndOwnedMemory { kernel:      usage(value.kernel)?,
+                                                     application: usage(value.application)?,
+                                                     closing:     value.closing != 0 })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -562,12 +563,12 @@ mod account_tests
     fn accounting_wire_rejects_unknown_coverage_bad_flags_overflow_and_hidden_counters()
     {
         assert_eq!(accounting(wire::Account::default()), Some(MemoryAccounting::Unavailable));
-        let mut value = wire::Account { coverage: wire::ACCOUNT_EXECUTION_RESIDENT_HEAP,
+        let mut value = wire::Account { coverage: wire::ACCOUNT_EXECUTION_OWNED_MEMORY,
                                         ..Default::default() };
         value.kernel.limit = 4096;
         value.kernel.committed = 4096;
         assert!(matches!(accounting(value),
-                         Some(MemoryAccounting::ExecutionAndResidentHeap { .. })));
+                         Some(MemoryAccounting::ExecutionAndOwnedMemory { .. })));
         value.closing = 2;
         assert_eq!(accounting(value), None);
         value.closing = 0;

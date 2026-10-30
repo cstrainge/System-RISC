@@ -633,6 +633,10 @@ fn launch(info: &BootInfo) -> Result<(), crate::machine::scheduler::StartError>
                                                                                    failed")
                                                 })?;
     crate::drivers::file_sources::runtime::initialize().map_err(|_| mac_formats::Error::Malformed("backing-file service initialization failed"))?;
+    crate::toolbox::application_heap::initialize().map_err(|cause| {
+        serial!("APPLICATION_HEAP_INITIALIZATION_FAILED: {cause}");
+        recovery_boot_error("application heap manager initialization refused", cause.status())
+    })?;
     let system = crate::loader::read_startup("System")?;
     let finder = crate::loader::read_startup("Finder")?;
     let mut processes = crate::toolbox::processes::Manager::new();
@@ -658,6 +662,32 @@ fn launch(info: &BootInfo) -> Result<(), crate::machine::scheduler::StartError>
                  .map_err(|_| {
                      mac_formats::Error::Malformed("Finder allocation authority unavailable")
                  })?;
+    // The local boot directory already retains this genuine provisional owner
+    // and checkpoint. Complete heap preparation occurs with no manager guard;
+    // no application can enter before its own canonical root is attached.
+    let heap_prepared = crate::toolbox::application_heap::prepare_root(
+        finder_owner.clone(), finder_allocation.clone()).map_err(|cause| {
+            serial!("FINDER_HEAP_PREPARATION_FAILED: {cause}");
+            recovery_boot_error("Finder heap root preparation refused", cause.status())
+        })?;
+    let heap = match crate::toolbox::application_heap::publish_root(heap_prepared)
+    {
+        Ok(heap) => heap,
+        Err(failure) =>
+        {
+            let crate::toolbox::application_heap::RootPublicationFailure { cause,
+                                                                           prepared } = failure;
+            serial!("FINDER_HEAP_PUBLICATION_FAILED: {cause}");
+            prepared.dispose();
+            return Err(recovery_boot_error("Finder heap root publication refused",
+                                           cause.status()).into());
+        }
+    };
+    processes.bind_heap(&finder_owner, heap).map_err(|status| {
+                                                 recovery_boot_error("Finder heap root attachment \
+                                                                      refused",
+                                                                     status)
+                                             })?;
     let finder_loaded = crate::allocator::with_target(crate::allocator::Target::Owner {
         account: finder_allocation, class: mac_kernel_model::policy::MemoryClass::Kernel
     }, || admit_image(&finder_owner,
@@ -883,7 +913,8 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     drop(boot_screen);
     let allocations = crate::allocator::statistics();
     serial!("RESIDENT_ALLOCATION_READY capacity={} admitted={} foundation={} system={} \
-             domains={} header_bytes={} private_app_and_module_heaps=false",
+             domains={} header_bytes={} owned_app_heap=true module_heap=false \
+             process_isolation=false",
             allocations.capacity,
             allocations.admitted,
             allocations.foundation,

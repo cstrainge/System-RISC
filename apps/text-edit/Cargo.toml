@@ -14,7 +14,7 @@ test = false
 bench = false
 
 [dependencies]
-mac-toolbox.workspace = true
+mac-toolbox = { workspace = true, features = ["application"] }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde-json-core = { version = "=0.6.0", default-features = false }
 

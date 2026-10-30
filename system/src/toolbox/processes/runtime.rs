@@ -132,7 +132,11 @@ impl Drop for FinderAdmission
     {
         if self.active
         {
-            self.owner.stop_admission();
+            use mac_object_table::shared::InvocationGate as _;
+            crate::toolbox::handles::InvocationGate::run(|| {
+                self.owner.stop_admission();
+                crate::machine::scheduler::retire_owner(self.id());
+            });
             crate::toolbox::processes::retirement::resources_released();
         }
     }
@@ -360,7 +364,10 @@ impl Desktop
                                 -> Result<u64, Status>
     {
         let charges = self.processes.thread_charges(id)?;
-        crate::machine::scheduler::spawn(self.processes.ledger(id)?, loaded, charges)
+        crate::machine::scheduler::spawn(self.processes.ledger(id)?,
+                                         loaded,
+                                         charges,
+                                         self.processes.heap(id)?)
     }
 
     pub(super) fn post_drag_notice(&mut self, notice: crate::toolbox::drag::Notice)
@@ -917,28 +924,54 @@ impl Desktop
         // Reload would overwrite the old process's writable image. Refuse
         // while its stack or quarantined callbacks still retain that image.
         if self.processes.file_stopping(call.volume, call.cnid)
+           || self.processes.file_starting(call.volume, call.cnid)
         {
             return Err(SERVICE_BUSY);
         }
         Ok(false)
     }
 
-    pub(crate) fn launch_application(&mut self, call: &mut ProcessCall,
-                                     loaded: crate::toolbox::files::application::Loaded)
-                                     -> Result<(), Status>
+    /// Only provisional directory/account/checkpoint publication is performed
+    /// here. The caller prepares its heap after releasing Desktop.
+    pub(crate) fn reserve_application(
+        &mut self, call: &mut ProcessCall, name: &str)
+        -> Result<Option<crate::toolbox::processes::LaunchAdmission>, Status>
     {
-        crate::context::without_recovery(|| self.launch_application_inner(call, loaded))
-    }
-
-    fn launch_application_inner(&mut self, call: &mut ProcessCall,
-                                loaded: crate::toolbox::files::application::Loaded)
-                                -> Result<(), Status>
-    {
-        // Another caller may have launched this file while its fork was read.
         if self.activate_existing_application(call)?
         {
-            return Ok(());
+            return Ok(None);
         }
+        let id = self.processes.provision(name, call.volume, call.cnid)?;
+        let capture = self.processes.launch_admission(id);
+        match capture
+        {
+            Ok(admission) => Ok(Some(admission)),
+            Err(status) =>
+            {
+                if let Err(cleanup) = self.retire_unstarted(id)
+                {
+                    serial!("PROCESS_ADMISSION_RETIRE_RETAINED app={id} original={status} \
+                             cleanup={cleanup}");
+                }
+                crate::toolbox::processes::retirement::resources_released();
+                Err(status)
+            }
+        }
+    }
+
+    pub(crate) fn finish_application_launch(&mut self, call: &mut ProcessCall,
+                                            loaded: crate::toolbox::files::application::Loaded,
+                                            admission: &mut crate::toolbox::processes::LaunchAdmission)
+                                            -> Result<(), Status>
+    {
+        let id = admission.id();
+        if self.processes.ledger(id)?.owner() != admission.owner().owner()
+           || self.processes.heap(id)?.owner() != admission.owner().owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        // Other launches may use saved-manager capacity while this process
+        // prepares its heap outside Desktop. Reserve at the actual push stage.
         {
             use mac_object_table::shared::InvocationGate as _;
             crate::toolbox::handles::InvocationGate::with_system_allocation(|| {
@@ -947,10 +980,6 @@ impl Desktop
         }
         let crate::toolbox::files::application::Loaded { catalog,
                                                          resources } = loaded;
-        // Storage reads finish before provisioning: a deferred I/O replay must
-        // not create another child. Image admission now has a genuine subject
-        // domain ready for its registered aliases and future account charges.
-        let id = self.processes.provision(catalog.name(), call.volume, call.cnid)?;
         let prepared = (|| {
             let authority = self.processes.ledger(id)?;
             let loaded = crate::allocator::with_target(crate::allocator::Target::Owner {
@@ -963,15 +992,7 @@ impl Desktop
                 Saved::try_new(authority.clone(), self.mdef, self.processes.allocation(id)?)?;
             Ok::<_, Status>((loaded, local, authority))
         })();
-        let (loaded, local, authority) = match prepared
-        {
-            Ok(local) => local,
-            Err(error) =>
-            {
-                self.retire_unstarted(id)?;
-                return Err(error);
-            }
-        };
+        let (loaded, local, authority) = prepared?;
         // RAM-only pin admission closes launch-vs-transfer races. No storage
         // operation or provider callback runs under this desktop guard.
         let pinned = crate::allocator::with_target(crate::allocator::Target::Owner {
@@ -983,7 +1004,6 @@ impl Desktop
         if let Err(error) = pinned
         {
             self.locals.push(local);
-            self.retire_unstarted(id)?;
             return Err(error);
         }
         let thread = match self.spawn_process(id, loaded)
@@ -994,7 +1014,6 @@ impl Desktop
                 // Keep saved managers reachable for the same owner walk used
                 // by EXIT. A refused cleanup retains its domain for retry.
                 self.locals.push(local);
-                self.retire_unstarted(id)?;
                 return Err(e);
             }
         };
@@ -1004,10 +1023,11 @@ impl Desktop
         call.info = self.processes.snapshot(id)?;
         self.notify_finder_file_state(call.volume, call.cnid, true);
         serial!("PROCESS_LAUNCHED app={} thread={} name={}", id, thread, catalog.name());
+        admission.started();
         Ok(())
     }
 
-    fn retire_unstarted(&mut self, owner: u64) -> Result<(), Status>
+    pub(crate) fn retire_unstarted(&mut self, owner: u64) -> Result<(), Status>
     {
         let ledger = self.processes.ledger(owner)?;
         ledger.stop_admission();

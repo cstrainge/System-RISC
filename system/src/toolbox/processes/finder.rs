@@ -27,6 +27,12 @@ enum Work
         permit:   crate::allocator::recovery::Permit,
         activity: crate::recovery::Activity
     },
+    Heap
+    {
+        old:       ResourceBinding,
+        admission: FinderAdmission,
+        heap:      Option<crate::toolbox::application_heap::RootBinding>
+    },
     Image
     {
         old: ResourceBinding, admission: FinderAdmission
@@ -187,7 +193,9 @@ fn step(work: Work) -> Option<Work>
         | Work::Failure { permit,
                         activity,
                         .. } => (permit.clone(), activity.clone()),
-        Work::Image { admission,
+        Work::Heap { admission,
+                     .. }
+        | Work::Image { admission,
                       .. }
         | Work::Prepare { admission,
                         .. }
@@ -225,8 +233,9 @@ fn step_inner(work: Work) -> Option<Work>
             {
                 Ok(admission) =>
                 {
-                    Some(Work::Image { old,
-                                       admission })
+                    Some(Work::Heap { old,
+                                      admission,
+                                      heap: None })
                 }
                 Err(SERVICE_BUSY) =>
                 {
@@ -240,6 +249,87 @@ fn step_inner(work: Work) -> Option<Work>
                                          status,
                                          permit,
                                          activity })
+                }
+            }
+        }
+        Work::Heap { old,
+                     admission,
+                     heap } =>
+        {
+            if !admission.owner().accepting()
+            {
+                return Some(Work::Failure { target:   old,
+                                            status:   SERVICE_BUSY,
+                                            permit:   admission.permit(),
+                                            activity: admission.activity() });
+            }
+            // This stage runs after Desktop has released the real provisional
+            // directory entry. The trusted recovery activity/permit remains
+            // scoped by step(); the account is the NEW Finder's genuine one.
+            let heap = match heap
+            {
+                Some(heap) => heap,
+                None =>
+                {
+                    let preparation =
+                        crate::toolbox::application_heap::prepare_root(admission.owner().clone(),
+                                                                       admission.allocation());
+                    let published = match preparation
+                    {
+                        Ok(prepared) => crate::toolbox::application_heap::publish_root(prepared)
+                            .map_err(|failure| {
+                                let status = failure.cause.status();
+                                serial!("FINDER_HEAP_PUBLICATION_REFUSED app={} {}",
+                                        admission.id(), failure.cause);
+                                failure.prepared.dispose();
+                                status
+                            }),
+                        Err(cause) =>
+                        {
+                            serial!("FINDER_HEAP_PREPARATION_REFUSED app={} {cause}", admission.id());
+                            Err(cause.status())
+                        }
+                    };
+                    match published
+                    {
+                        Ok(heap) => heap,
+                        Err(SERVICE_BUSY) =>
+                        {
+                            return Some(Work::Heap { old,
+                                                     admission,
+                                                     heap: None });
+                        }
+                        Err(status) =>
+                        {
+                            return Some(Work::Failure { target: old,
+                                                        status,
+                                                        permit: admission.permit(),
+                                                        activity: admission.activity() });
+                        }
+                    }
+                }
+            };
+            match desktop(&old, |desktop| {
+                      desktop.processes.bind_heap(admission.owner(), heap.clone())
+                  })
+            {
+                Ok(()) =>
+                {
+                    Some(Work::Image { old,
+                                       admission })
+                }
+                Err(SERVICE_BUSY) =>
+                {
+                    Some(Work::Heap { old,
+                                      admission,
+                                      heap: Some(heap) })
+                }
+                Err(status) =>
+                {
+                    Some(Work::Failure { target: old,
+                                         status,
+                                         permit: admission.permit(),
+                                         activity: admission.activity() })
                 }
             }
         }
@@ -365,20 +455,26 @@ fn step_inner(work: Work) -> Option<Work>
                 }
             };
             WAITING_FOR_STACK.store(false, Ordering::Release);
-            let charges =
-                match desktop(&next, |desktop| desktop.processes.thread_charges(admission.id()))
+            let (charges, heap) = match desktop(&next, |desktop| {
+                      Ok((desktop.processes.thread_charges(admission.id())?,
+                          desktop.processes.heap(admission.id())?))
+                  })
+            {
+                Ok(admission) => admission,
+                Err(status) =>
                 {
-                    Ok(charges) => charges,
-                    Err(status) =>
-                    {
-                        return Some(Work::BackingPaused { next,
-                                                          admission,
-                                                          loaded,
-                                                          status,
-                                                          attempted: false });
-                    }
-                };
-            match scheduler::prepare_recovery(admission.owner().clone(), loaded, charges, loan)
+                    return Some(Work::BackingPaused { next,
+                                                      admission,
+                                                      loaded,
+                                                      status,
+                                                      attempted: false });
+                }
+            };
+            match scheduler::prepare_recovery(admission.owner().clone(),
+                                              loaded,
+                                              charges,
+                                              loan,
+                                              heap)
             {
                 Ok(prepared) =>
                 {

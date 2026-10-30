@@ -2288,19 +2288,27 @@ qualify host clipboard interoperability.
 
 ## Resident allocation/account coverage
 
-Domain account coverage1 means execution backing plus attributed resident heap.
-Each native resident allocation privately retains its original account/class and
-exact backend Layout, including header/alignment cost. A surviving admitted I/O
-root can continue within that original budget after ordinary owner stop; closed
-roots/accounts cannot supply new authority. Realloc preserves original account,
-class and refunds, including when a later genuine same-account root supplies
-continuation after an earlier root closes. Account observations do
-not include independent application/module heaps or executable-image physical
-pages. The ordinary heap is480 MiB within one512 MiB backing; protected32 MiB is
-excluded. Foundation/System/domain totals are categories of that same ordinary
-storage, not additive physical capacities. The checked platform module account
-policy selects16 MiB kernel admission and a4 MiB future worker stack; it does not
-activate workers. Rebuild all consumers together when changing these contracts.
+Domain account coverage1 (`ACCOUNT_EXECUTION_OWNED_MEMORY`) means charged execution
+backing, resident allocations/metadata and application-heap extents. The Rust
+view is `MemoryAccounting::ExecutionAndOwnedMemory`. Each resident heap allocation
+retains its original account/class and exact backend Layout, including header
+and alignment cost. Application payload extents instead retain their real
+page-pool lease and original Application-class receipt; do not add their internal
+suballocation payload bytes again. Heap metadata remains charged through its
+actual resident allocations. Executable images, unreceipted independent storage
+and CPU time remain outside this coverage.
+
+A surviving admitted I/O root can continue within its original resident budget
+after ordinary owner stop; closed roots/accounts cannot supply new authority.
+Resident realloc preserves account/class/refunds, including when a later genuine
+same-account root supplies continuation after an earlier root closes. The
+ordinary resident heap is480 MiB within one512 MiB backing; protected32 MiB is
+excluded. Foundation/System/domain categories partition that ordinary resident
+heap observation. Page-backed application payloads and execution backing are
+separate physical owners, not extra ordinary-heap occupancy or an all-System
+sum. The checked module policy selects16 MiB kernel admission and4 MiB worker
+stacks; those limits do not grant execution or an Application heap to a module.
+Rebuild all consumers together when changing these contracts.
 
 The System memory-inspection summary separates
 `ordinary_foundation_heap_bytes` from `tracked_foundation_physical_bytes`.
@@ -2321,6 +2329,59 @@ memory total or a synthetic System domain account. Mapping revision does not
 claim that heap, physical attribution and page-pool counters were sampled
 simultaneously. ABI remains version1; the native layout fingerprint changes
 with the summary layout and all producers/consumers rebuild together.
+
+
+## Native application heap (development ABI 1)
+
+`APPLICATION_HEAP` (`0x10028`) addresses the authenticated application's real
+page-backed heap. It is separate from classic Memory Manager handles. The loader
+admits an empty canonical heap root before entry; the first allocation admits
+payload backing under the selected platform growth policy. No initialization
+operation, caller-supplied application/account/heap ID or System-heap fallback
+exists. Applications remain in trusted shared supervisor mappings; this ownership
+contract does not establish user-mode or private-root isolation.
+
+The RV64 `mac_abi::application_heap::Call` has exact size248/alignment8:
+
+| Offset | Field |
+| --- | --- |
+|0|operation, u32: ALLOCATE0, DEALLOCATE1, REALLOCATE2, ALLOCATE_ZEROED3|
+|4|reserved, u32=0|
+|8|pointer, native mutable byte pointer|
+|16|old_size, usize|
+|24|alignment, usize|
+|32|new_size, usize|
+|40|result, output-only native mutable byte pointer|
+|48|detail_length, output-only u32|
+|52|reserved2, u32=0|
+|56|detail, output-only192-byte bounded UTF-8 failure text|
+
+Allocation uses null pointer, old_size0 and nonzero new_size. Disposal supplies
+its exact live pointer/original nonzero Layout and new_size0. Reallocation supplies
+its exact live pointer/old Layout and nonzero new_size at the same alignment.
+Sizes/alignment, arithmetic, actual owner and exact original allocation are
+validated before memory access or mutation. Result/detail input contents are not
+authority and are not scanned as zero-filled input. The resident initializes
+result=null and detail_length0 before effects. Success returns no detail and
+publishes a nonnull aligned result only after allocation/reallocation commits;
+disposal returns no allocation. Failure returns no allocation and its actual
+negative status with bounded UTF-8 cause. Requests whose envelope cannot be
+safely borrowed may refuse before writing a reply.
+
+ALLOCATE_ZEROED clears the requested bytes before publishing success. Failed
+reallocation preserves old ownership, layout and data. Failed disposal retains
+the original record/backing for genuine cleanup; request, Drop or process
+termination does not manufacture an acknowledgment. Internal ownership uses the
+shared facility; raw pointer reuse is still governed by Rust's unsafe allocation
+contract and is not a stale-handle guarantee.
+
+The platform SDK's GlobalAlloc returns null only for a well-formed native
+NO_MEMORY response. Other statuses and malformed results preserve their local
+per-call cause and use nonallocating System-owned application failure reporting;
+no racy shared last-error field or fallback allocator is involved. The ABI stays
+at1 and all native producers/consumers rebuild together with the checked layout
+fingerprint. See [application runtime](docs/APPLICATION-RUNTIME.md) for startup,
+failure and qualification limits.
 
 ## Public CPU information
 
