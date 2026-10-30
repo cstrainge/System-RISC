@@ -727,10 +727,39 @@ impl Manifest
 fn compact_code(bytes: &[u8], image: &mac_formats::elf::Image, descriptor: &Descriptor)
                 -> Result<Vec<u8>>
 {
+    let page = crate::platform::current().memory()?.page_bytes();
+    let mut previous_end = descriptor.load_base;
+    for (index, segment) in image.segments.iter().enumerate()
+    {
+        let end = segment.address
+                         .checked_add(segment.memory_size)
+                         .and_then(|end| end.checked_add(page - 1))
+                         .map(|end| end / page * page)
+                         .ok_or_else(|| {
+                             error(format!("native segment {index} memory extent or page \
+                                            rounding overflows"))
+                         })?;
+        if !segment.address.is_multiple_of(page)
+           || segment.address < previous_end
+           || end > descriptor.load_limit
+        {
+            return Err(error(format!("native segment {index} at {:#x}+{:#x} cannot map \
+                                      {page}-byte pages: start must be page aligned, rounded \
+                                      memory must not overlap the preceding segment ending \
+                                      {previous_end:#x}, and end {end:#x} must fit image \
+                                      limit {:#x}; correct the native linker script and \
+                                      rebuild",
+                                     segment.address,
+                                     segment.memory_size,
+                                     descriptor.load_limit)));
+        }
+        previous_end = end;
+    }
     Ok(mac_formats::native::image::encode(descriptor,
                                           image.segments.iter().map(|s| {
                                                                    (s.address
                                                                     - descriptor.load_base,
+                                                                    s.memory_size,
                                                                     s.flags,
                                                                     &bytes[s.offset as usize
                                                                            ..(s.offset

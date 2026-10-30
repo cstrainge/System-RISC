@@ -14,6 +14,10 @@ use super::traps::TrapFrame;
 use crate::{context::{EventWaiter, ThreadContext},
             toolbox::handles::{OwnerRef, Store}};
 mod lifetime;
+pub(crate) mod address;
+pub(crate) use address::changed as address_wait_changed;
+mod stack;
+pub(crate) use stack::{StackPinError, StackWaitPin, pin_application_stack};
 mod worker;
 pub(crate) mod service;
 pub(crate) mod wake;
@@ -315,7 +319,15 @@ impl Thread
     {
         let mut state = self.state.get();
         let was_ready = state.ready();
+        let was_retired = state.retired;
         change(&mut state);
+        if !was_retired && state.retired
+        {
+            if let Some(backing) = self.core.backing.lock().as_ref()
+            {
+                backing.stack.close();
+            }
+        }
         if !state.ready()
         {
             state.ready_since = None;
@@ -394,6 +406,10 @@ impl Thread
 #[derive(Clone, Copy)]
 enum Wait
 {
+    Address
+    {
+        deadline: Option<u64>
+    },
     Worker
     {
         deadline: Option<u64>
@@ -497,11 +513,12 @@ struct ThreadBacking
 {
     // CPU/stack disappear before code-dependent launch/image pins.
     cpu:    accounting::Charged<super::traps::SavedState>,
-    stack:  accounting::Charged<super::pages::Stack>,
+    stack:  Arc<stack::StackBacking>,
     loaded: Option<crate::kernel::LoadedImage>
 }
 struct ThreadCore
 {
+    address:            Mutex<Option<address::Pending>>,
     backing:            Mutex<Option<ThreadBacking>>,
     launch:             Mutex<Option<crate::drivers::WorkerLaunch>>,
     context:            Arc<ThreadContext>,
@@ -601,7 +618,9 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                                   error.status()
                                               })?;
         let top = stack.top();
-        let core = Arc::try_new(ThreadCore { backing:
+        let stack = stack::StackBacking::prepare(&owner, stack)?;
+        let core = Arc::try_new(ThreadCore { address: Mutex::new(None),
+                                             backing:
                                                  Mutex::new(Some(ThreadBacking { cpu,
                                                                                  stack,
                                                                                  loaded: None })),
@@ -688,7 +707,9 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
                                            cause.status()
                                        })?;
             context.install_recovery_default(permit.clone());
-            let core = ThreadCore { backing: Mutex::new(None),
+            let stack_preparation = stack::StackBacking::prepay(&owner)?;
+            let core = ThreadCore { address: Mutex::new(None),
+                                    backing: Mutex::new(None),
                                     launch: Mutex::new(None),
                                     context,
                                     release: Mutex::new(None),
@@ -697,10 +718,11 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
                                     cleanup_refusal: Mutex::new(None),
                                     service_quarantine: spin::Once::new(),
                                     name: None };
-            Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)
+            let core = Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)?;
+            Ok::<_, mac_abi::Status>((core, stack_preparation))
         })
     });
-    let mut core = match metadata
+    let (mut core, stack_preparation) = match metadata
     {
         Ok(core) => core,
         Err(status) =>
@@ -736,6 +758,7 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
         }
     };
     storage.top = stack.top();
+    let stack = stack_preparation.finish(stack);
     *storage.backing.get_mut() = Some(ThreadBacking { cpu,
                                                       stack,
                                                       loaded: Some(loaded) });
@@ -795,11 +818,18 @@ fn spawn_prepared_inner(prepared: PreparedThread, runnable: bool) -> Result<u64,
         // Publication's receipt remains valid if a stopping walk has already
         // invalidated ordinary lookup. An unstarted refusal retains the same
         // preparation; its stack/image pins are never dropped under this lock.
-        let assigned = prepared.core.context.assign(prepared.owner.clone(),
-                                                    id,
-                                                    prepared.core.binding,
-                                                    &prepared.allocation,
-                                                    &prepared.heap);
+        let stack_binding = prepared.core.backing.lock().as_ref().map_or(Err(mac_abi::BAD_ABI),
+                                                                         |backing| {
+                                                                             backing.stack
+                                                                                    .bind(receipt)
+                                                                         });
+        let assigned = stack_binding.and_then(|()| {
+                                        prepared.core.context.assign(prepared.owner.clone(),
+                                                                     id,
+                                                                     prepared.core.binding,
+                                                                     &prepared.allocation,
+                                                                     &prepared.heap)
+                                    });
         if let Err(status) = assigned
         {
             let removed = scheduler.records.as_mut().and_then(|store| store.remove(id));
@@ -1302,6 +1332,7 @@ fn retire(thread: &Thread)
 /// retains its original job cancellation owner, including after invalidation.
 pub(crate) fn retire_owner(owner: u64)
 {
+    address::cancel_owner(owner);
     let mut after = 0;
     loop
     {
@@ -1340,6 +1371,7 @@ pub(crate) fn reclaim_retired()
     {
         return;
     }
+    address::release_retired();
     let mut after = 0;
     loop
     {
@@ -1361,6 +1393,13 @@ pub(crate) fn reclaim_retired()
                                             }
                                             if Arc::strong_count(&thread.core) != 1
                                                || Arc::strong_count(&thread.core.context) != 1
+                                               || thread.core
+                                                        .backing
+                                                        .lock()
+                                                        .as_ref()
+                                                        .is_none_or(|backing| {
+                                                            Arc::strong_count(&backing.stack) != 1
+                                                        })
                                             {
                                                 return None;
                                             }
@@ -1584,6 +1623,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
                 crate::toolbox::crashes::pump_reports();
                 crate::toolbox::processes::documents::pump();
                 crate::toolbox::native_threads::pump();
+                crate::toolbox::application_heap::wait::pump();
                 crate::toolbox::processes::retirement::pump();
                 crate::toolbox::processes::finder::pump();
             }
@@ -1592,7 +1632,8 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
     let mut scheduler = SCHEDULER.lock();
     validate_capture(&scheduler, &capture);
     scheduler.ticks += 1;
-    wake_deadlines(&scheduler, crate::platform::ticks());
+    let now = crate::platform::ticks();
+    wake_deadlines(&scheduler, now);
     // Deadline/wake edits above precede Round.now. No scheduler guard or
     // mutable frame borrow may cross foreign policy entry.
     let preferred = if hart.dispatch_eligible() && crate::drivers::scheduler::configured()
@@ -1706,8 +1747,10 @@ fn commit_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture, in
 
 fn wake_deadlines(scheduler: &Scheduler, now: u64)
 {
+    let invalidated = address::take_invalidations();
     for (_, thread) in scheduler.iter()
     {
+        address::observe(thread, now, invalidated);
         if matches!(thread.state.get().waiting,
             Some(Wait::Events { deadline, .. } | Wait::Worker { deadline: Some(deadline) }) if now >= deadline)
         {

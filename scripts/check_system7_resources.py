@@ -87,10 +87,10 @@ def main():
             phoff=struct.unpack_from('<Q',elf,32)[0];count=struct.unpack_from('<H',elf,56)[0]
             segments=[]
             for i in range(count):
-                kind,flags,offset,address,_,size,_,_=struct.unpack_from('<IIQQQQQQ',elf,phoff+i*56)
-                if kind==1 and size:segments.append((address-int(manifest['load_base'],16),flags,elf[offset:offset+size]))
+                kind,flags,offset,address,_,size,memory,_=struct.unpack_from('<IIQQQQQQ',elf,phoff+i*56)
+                if kind==1 and memory:segments.append((address-int(manifest['load_base'],16),memory,flags,elf[offset:offset+size]))
             segments.sort()
-            expected=b'RV64'+struct.pack('>HH',1,len(segments))+b''.join(struct.pack('>QQI',offset,len(data),flags)+data for offset,flags,data in segments)
+            expected=b'RV64'+struct.pack('>HH',1,len(segments))+b''.join(struct.pack('>QQQI',offset,len(data),memory,flags)+data for offset,memory,flags,data in segments)
             assert packed['RV64',0][2]==expected, f'application segment fork differs: {name}'
             inventory=json.loads((dist_dir()/(name+'.json')).read_text())
             for entry in inventory['resources']:

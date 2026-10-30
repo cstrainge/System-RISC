@@ -38,7 +38,8 @@ this build's target/profile directory. Build-script dependency tracking uses the
 same selected directory; private checks never read a regular desktop artifact.
 Each payload is a 40-byte `RVN1` descriptor
 ([FORMAT.md](FORMAT.md)) with role 3, followed by the minimal RV64 segment stream
-and its mandatory RLOC table. Complete
+whose 28-byte records carry both initialized and full memory lengths (including
+BSS-only segments), and its mandatory RLOC table. Complete
 debug executables stay outside the resource fork. The loader validates both
 descriptor and segment stream, rejects relocation slots in executable bytes,
 copies segments, clears BSS and publishes instructions to all admitted CPUs.

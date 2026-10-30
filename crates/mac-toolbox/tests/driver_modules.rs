@@ -340,7 +340,7 @@ fn budget_package(heap_bytes: u32, stack_bytes: u32, reservation: u64) -> Vec<re
                                           load_limit:  0x82000000 + reservation,
                                           entry:       0x82000000 };
     let mut code = descriptor.encode().unwrap().to_vec();
-    code.extend(native::image::encode(&descriptor, [(0, 5, [0x82, 0x80].as_slice())]).unwrap());
+    code.extend(native::image::encode(&descriptor, [(0, 2, 5, [0x82, 0x80].as_slice())]).unwrap());
     code.extend_from_slice(b"RLC1\0\0\0\0");
     let spec = mac_module::Spec { kind: mac_module::PackageKind::Driver,
                                   kernel_abi: native::ABI_VERSION,

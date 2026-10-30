@@ -531,6 +531,18 @@ pub(crate) fn event_ticks_to_ticks(ticks: u32) -> Result<u64, Error>
     u64::try_from(duration).map_err(|_| Error::ClockOverflow)
 }
 
+/// Whole seconds plus a checked fractional nanosecond interval. Rounding up
+/// cannot shorten a requested native thread/address-wait deadline.
+pub(crate) fn seconds_nanos_to_ticks_ceil(seconds: u64, nanoseconds: u32) -> Result<u64, Error>
+{
+    let transport = MONITOR.get().ok_or(Error::Missing)?;
+    let whole = u128::from(seconds) * u128::from(transport.timebase_hz);
+    let fraction =
+        (u128::from(nanoseconds) * u128::from(transport.timebase_hz)).div_ceil(1_000_000_000);
+    let ticks = whole.checked_add(fraction).ok_or(Error::ClockOverflow)?;
+    u64::try_from(ticks).map_err(|_| Error::ClockOverflow)
+}
+
 /// A measured callback duration rounds upward for its strict time budget; a
 /// fractional microsecond beyond that budget cannot disappear by flooring.
 pub(crate) fn ticks_to_microseconds_ceil(ticks: u64) -> Result<u64, Error>

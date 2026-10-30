@@ -435,10 +435,11 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
     regions.try_reserve_exact(3).map_err(|_|mac_formats::Error::AllocationFailed("firmware mapping-record allocation failed"))?;
     for segment in &startup.image.segments
     {
-        serial!("LOAD: virtual={:#x} physical={:#x} bytes={} flags={}",
+        serial!("LOAD: virtual={:#x} physical={:#x} bytes={} memory_bytes={} flags={}",
                 descriptor.load_base + segment.offset,
                 memory::IMAGE_BASE + segment.offset,
                 segment.length,
+                segment.memory_length,
                 segment.flags);
     }
     let [boot, firmware, _, _] = memory::BOOT_RESERVED;

@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 use alloc::{boxed::Box, sync::Arc};
 use core::{alloc::Layout,
-           sync::atomic::{AtomicBool, Ordering}};
+           sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 
 use hashbrown::HashMap;
 use spinning_top::Spinlock;
@@ -21,7 +21,8 @@ pub(super) enum Work
     Retiring
     {
         extent:   Empty,
-        detached: Option<Arc<Extent>>
+        detached: Option<Arc<Extent>>,
+        region:   Option<Arc<super::wait::Region>>
     },
     Quarantined
     {
@@ -55,7 +56,8 @@ impl Deferred
 struct ExtentEntry
 {
     extent: Arc<Extent>,
-    anchor: Box<Deferred>
+    anchor: Box<Deferred>,
+    region: Arc<super::wait::Region>
 }
 pub(super) struct State
 {
@@ -73,7 +75,10 @@ pub(super) struct Heap
     pub(super) state:      Spinlock<State>,
     pub(super) closing:    AtomicBool,
     pending_retirement:    AtomicBool,
-    unused_extent:         AtomicBool
+    unused_extent:         AtomicBool,
+    reap_running:          AtomicBool,
+    pub(super) wait_dirty: AtomicBool,
+    retiring_count:        AtomicUsize
 }
 impl Heap
 {
@@ -89,7 +94,52 @@ impl Heap
                                             fault:      None }),
                closing: AtomicBool::new(false),
                pending_retirement: AtomicBool::new(false),
-               unused_extent: AtomicBool::new(false) }
+               unused_extent: AtomicBool::new(false),
+               reap_running: AtomicBool::new(false),
+               wait_dirty: AtomicBool::new(false),
+               retiring_count: AtomicUsize::new(0) }
+    }
+
+    /// Actual extent lookup; no pointer or allocation-liveness grant is made.
+    pub(super) fn wait_extent(this: &Arc<Self>, address: usize)
+                              -> Result<Option<(Arc<Extent>, Arc<super::wait::Region>)>, Error>
+    {
+        this.admission()?;
+        this.with(|state| {
+            if !this.owner.accepting() || this.closing.load(Ordering::Acquire)
+            {
+                return Err(Error::Account(account::Error::Closed { owner: this.owner.owner() }));
+            }
+            if let Some(cause) = state.fault
+            {
+                return Err(Error::Span(cause));
+            }
+            pages::application_wait_extent(address, |base, bytes| {
+                let entry = state.extents.get(&base)?;
+                let end =
+                    address.checked_add(core::mem::size_of::<core::sync::atomic::AtomicU32>())?;
+                let limit = base.checked_add(usize::try_from(bytes).ok()?)?;
+                (entry.region.bytes() == bytes
+                 && address >= base
+                 && end <= limit
+                 && entry.region.accepting()).then(|| (entry.extent.clone(), entry.region.clone()))
+            }).map_err(|cause| Error::Extent(pages::ApplicationExtentError::Pages(cause)))
+        })
+    }
+
+    pub(super) fn wait_accepting(&self) -> bool
+    {
+        self.owner.accepting() && !self.closing.load(Ordering::Acquire)
+    }
+
+    /// Mark only real deferred physical retirement; never scan/reap in Drop.
+    pub(super) fn notify_wait_release(&self)
+    {
+        if self.retiring_count.load(Ordering::Acquire) != 0
+        {
+            self.wait_dirty.store(true, Ordering::Release);
+            super::wait::request_reap();
+        }
     }
 
     pub(super) fn kernel<R>(&self, operation: impl FnOnce() -> R) -> R
@@ -269,6 +319,7 @@ impl Heap
                                                                                     "extent owner",
                                                                                 requested: 1 }
                                                           })?;
+        let region = this.kernel(|| super::wait::Region::prepare(bytes))?;
         let mut spare = HashMap::new();
         loop
         {
@@ -298,7 +349,8 @@ impl Heap
                                  };
                                  state.extents.insert(extent.base(),
                                                       ExtentEntry { extent: extent.clone(),
-                                                                    anchor });
+                                                                    anchor,
+                                                                    region: region.clone() });
                                  this.unused_extent.store(true, Ordering::Release);
                                  Ok(Ok(()))
                              })?;
@@ -337,11 +389,15 @@ impl Heap
                     hashbrown::hash_map::Entry::Occupied(entry) =>
                     {
                         let ExtentEntry { extent,
-                                          mut anchor } = entry.remove();
+                                          mut anchor,
+                                          region } = entry.remove();
+                        region.close();
                         anchor.work = Work::Retiring { extent:   empty,
-                                                       detached: Some(extent) };
+                                                       detached: Some(extent),
+                                                       region:   Some(region) };
                         anchor.next = state.retiring.take();
                         state.retiring = Some(anchor);
+                        self.retiring_count.fetch_add(1, Ordering::AcqRel);
                         self.pending_retirement.store(true, Ordering::Release);
                         Ok(())
                     }
@@ -371,11 +427,15 @@ impl Heap
             Ok(heap::Released::Empty(empty)) =>
             {
                 let ExtentEntry { extent,
-                                  mut anchor } = entry.remove();
+                                  mut anchor,
+                                  region } = entry.remove();
+                region.close();
                 anchor.work = Work::Retiring { extent:   empty,
-                                               detached: Some(extent) };
+                                               detached: Some(extent),
+                                               region:   Some(region) };
                 anchor.next = state.retiring.take();
                 state.retiring = Some(anchor);
+                self.retiring_count.fetch_add(1, Ordering::AcqRel);
                 self.pending_retirement.store(true, Ordering::Release);
                 Ok(())
             }
@@ -405,6 +465,24 @@ impl Heap
 
     pub(super) fn reap(&self)
     {
+        if self.reap_running
+               .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+               .is_err()
+        {
+            // A concurrent turn owns the detached list. Preserve this real
+            // release's notification until that turn has returned its owners.
+            self.notify_wait_release();
+            return;
+        }
+        struct Turn<'a>(&'a AtomicBool);
+        impl Drop for Turn<'_>
+        {
+            fn drop(&mut self)
+            {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        let _turn = Turn(&self.reap_running);
         if self.unused_extent.load(Ordering::Acquire)
            && self.unused_extent.swap(false, Ordering::AcqRel)
         {
@@ -417,14 +495,16 @@ impl Heap
                                 .. } = state;
                     for (_,
                          ExtentEntry { extent,
-                                       mut anchor }) in
+                                       mut anchor,
+                                       region }) in
                         extents.extract_if(|_, entry| {
                                    match Extent::retire_empty(&entry.extent)
                                    {
                                        Ok(empty) =>
                                        {
                                            entry.anchor.work = Work::Retiring { extent:   empty,
-                                                                                detached: None };
+                                                                                detached: None,
+                                                                                region:   None };
                                            true
                                        }
                                        Err(heap::Error::NotEmpty | heap::Error::Retiring) => false,
@@ -436,13 +516,17 @@ impl Heap
                                    }
                                })
                     {
+                        region.close();
                         if let Work::Retiring { detached,
+                                                region: held_region,
                                                 .. } = &mut anchor.work
                         {
                             *detached = Some(extent);
+                            *held_region = Some(region);
                         }
                         anchor.next = retiring.take();
                         *retiring = Some(anchor);
+                        self.retiring_count.fetch_add(1, Ordering::AcqRel);
                         self.pending_retirement.store(true, Ordering::Release);
                     }
                 });
@@ -458,10 +542,11 @@ impl Heap
         while let Some(mut node) = nodes
         {
             nodes = node.next.take();
-            let (extent, detached) = match core::mem::replace(&mut node.work, Work::Empty)
+            let (extent, detached, region) = match core::mem::replace(&mut node.work, Work::Empty)
             {
                 Work::Retiring { extent,
-                                 detached } => (extent, detached),
+                                 detached,
+                                 region } => (extent, detached, region),
                 other =>
                 {
                     node.work = other;
@@ -478,12 +563,15 @@ impl Heap
                 Ok(retired) =>
                 {
                     drop(retired);
+                    drop(region);
+                    self.retiring_count.fetch_sub(1, Ordering::AcqRel);
                     drop(node)
                 }
                 Err(extent) =>
                 {
                     node.work = Work::Retiring { extent,
-                                                 detached: None };
+                                                 detached: None,
+                                                 region };
                     self.with(|state| {
                             node.next = state.retiring.take();
                             state.retiring = Some(node);

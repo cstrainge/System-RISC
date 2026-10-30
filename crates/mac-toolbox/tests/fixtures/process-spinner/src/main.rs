@@ -23,6 +23,8 @@ mod heap;
 #[cfg(feature = "tls")]
 mod tls;
 #[cfg(feature = "tls")]
+mod address_wait;
+#[cfg(feature = "tls")]
 mac_toolbox::application!(tls::run);
 #[cfg(any(all(feature = "tls", feature = "heap"), all(feature = "tls", feature = "smp")))]
 compile_error!("tls, heap and smp are distinct native workloads; choose one");

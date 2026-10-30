@@ -103,8 +103,8 @@ fn browser_roundtrip(native_fork: bool)
                                           load_base:   0x82000000,
                                           load_limit:  0x82100000,
                                           entry:       0x82000000 };
-    let native =
-        mac_formats::native::image::encode(&descriptor, [(0, 5, [0x82, 0x80].as_slice())]).unwrap();
+    let native = mac_formats::native::image::encode(&descriptor,
+                                                    [(0, 2, 5, [0x82, 0x80].as_slice())]).unwrap();
     let mut envelope = descriptor.encode().unwrap().to_vec();
     envelope.extend(native);
     envelope.extend_from_slice(b"RLC1\0\0\0\0");
@@ -875,9 +875,9 @@ fn sample_code() -> Vec<u8>
     }
     instructions.push(0xff);
     mac_formats::native::image::encode(&sample_descriptor(),
-                                       [(0, 5, instructions.as_slice()),
-                                        (0x1f000, 6, [0xff; 16].as_slice()),
-                                        (0x20000, 5, [0x73, 0, 0, 0].as_slice())]).unwrap()
+                                       [(0, instructions.len() as u64, 5, instructions.as_slice()),
+                                        (0x1f000, 16, 6, [0xff; 16].as_slice()),
+                                        (0x20000, 4, 5, [0x73, 0, 0, 0].as_slice())]).unwrap()
 }
 #[test]
 fn code_view_rejects_bad_segments_and_scrollbars_cover_large_resources()

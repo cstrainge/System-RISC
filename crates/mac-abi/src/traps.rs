@@ -196,3 +196,5 @@ pub const PROCESS: u32 = 0x1001c;
 /// Native application Thread Manager (separate from classic co-operative threads).
 pub const NATIVE_THREAD: u32 = 0x1002a;
 pub const TLS: u32 = 0x1002b;
+
+pub const ADDRESS_WAIT: u32 = 0x1002c;

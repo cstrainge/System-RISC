@@ -36,7 +36,7 @@ fn native_reader_retains_each_typed_cause_through_the_wire_codec_adapter()
     {
         assert_eq!(image::inspect(8, &descriptor, |_, _| Err(error), |_| {}), Err(error));
     }
-    let bytes = image::encode(&descriptor, [(0, 5, [0x82, 0x80].as_slice())]).unwrap();
+    let bytes = image::encode(&descriptor, [(0, 2, 5, [0x82, 0x80].as_slice())]).unwrap();
     let error=image::LoadPlan::new(&bytes,&descriptor,None,descriptor.load_base)
         .err().expect("definition without relocation metadata must fail");
     assert!(matches!(error, Error::Missing(_)));

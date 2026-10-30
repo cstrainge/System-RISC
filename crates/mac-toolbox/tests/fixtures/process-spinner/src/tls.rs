@@ -90,6 +90,7 @@ unsafe extern "C" fn destructor(value: *mut u8)
 }
 pub fn run(system: &System<'static>) -> ToolboxResult<()>
 {
+    crate::address_wait::run(system)?;
     invalid_callback_requests();
     let client = system.client();
     let actual = client.current_native_thread().map_err(|cause| cause.cause())?;

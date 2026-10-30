@@ -985,3 +985,67 @@ OOM recovery, or std execution. Deferred deletion now receives coalesced actual
 reader-release notifications; its serialized pump disposes code/root owners
 outside TLS context and manager guards. Those synchronization rules still need
 multi-thread native qualification when child-thread support lands.
+
+Image-backed atomic wait admission retains a sealed same-Process initialized
+execution pin and an immutable key made from the genuine image binding plus
+image-relative offset. The entire aligned word must fit one actual writable
+segment memory extent; writable BSS is included, while readonly bytes,
+executable bytes, holes and reservation padding are refused. Executable callback
+ranges remain limited to initialized bytes. Both sets of ranges are derived
+together at load and rebased once with the actual execution destination.
+
+Successful byte initialization and instruction publication precede the image's
+initialized marker. An unpublished or refused load returns `SERVICE_BUSY` from
+application/module execution admission even after its loading gate is released.
+Image retirement publishes invalidity before the common coalesced address-wait
+notification. The wait service also checks its own root closing state; its
+scheduler turn rechecks the retained image's admission before accessing or
+parking, and releases heavy pins outside scheduler guards. This lifetime and
+range contract does not establish private page-table isolation, native WAIT32
+behavior, or runtime qualification of the new segment format.
+# Native atomic-address waits
+
+The native wait service compares an aligned `AtomicU32` and queues the actual
+application thread under the same scheduler admission lock used by wake. Its
+result distinguishes a changed value, a wake (which may be spurious), and a
+deadline. Only the deadline outcome means timeout. Invalid storage, malformed
+requests, unsupported invocation contexts and cancellation remain typed errors
+with bounded diagnostic text. A relative timeout is checked against the admitted
+clock and rounded up; overflow is refused rather than wrapped.
+
+An outstanding wait retains its actual process heap extent, an independently
+owned same-process stack, or the initialized image's writable segment. Writable
+image ranges include explicit BSS and exclude holes and reservation padding.
+Wait identity includes the genuine backing incarnation and atomic's offset.
+Retirement closes admission and notifies the scheduler; pending owners leave
+scheduler guards before physical retirement runs. Individual thread retirement
+also detaches pending waits before checking stack-reader barriers.
+
+Backing retention does **not** establish Rust object lifetime. Native runtime
+callers must keep an initialized atomic alive, with no non-atomic conflicting
+access, for the complete wait/wake operation. Reallocation at the same address
+within one retained heap extent is not distinguished as a new object. These
+checks are not private address-space or U-mode isolation. Callers must recheck
+their own synchronization predicate after every return and use their protocol's
+required atomic memory ordering.
+
+A release/LTO QEMU build has exercised one-thread application waits on stack,
+heap, initialized-data and BSS storage with one and four configured CPUs. The
+native probe observed changed-value, zero-time and finite-deadline outcomes,
+malformed request refusals with diagnostics, subsequent reuse, TLS callback
+teardown, actual thread reclamation and process/account closure. Bundled native
+application launch/quit and long panic-report checks also ran on that image.
+This finite scenario does not qualify concurrent wake/deadline races, child-thread
+stack independence, cancellation under overlapping workloads or timing bounds.
+Subsequent integration changes require their own artifact-bound observations.
+
+The publication-candidate four-CPU finite-wait run used optimized release/LTO,
+debug information level 1, 8 GiB RAM, 800×600 display, and event tracing disabled.
+System resource SHA-256: `2e3dae1bf00db54db1d2d685aab32d794c60076378a92ece8eeea35074954cb8`.
+Boot ROM SHA-256: `693f6f1358d141028947222f5587053f7b0d47818f2c3161d3a4799fc0a78479`.
+That run also observed original TLS/process cleanup. On that same image, Res Edit
+opened QuickDraw Test's new segment records, displayed separate file/memory sizes
+and RV64 disassembly, scrolled to the final instructions and quit. The earlier
+one/four-CPU and bundled-app observations above used the preceding integration
+build, before removal of unused continuation variants and wake-count preflight.
+Neither image establishes concurrent child-thread or full recovery correctness.

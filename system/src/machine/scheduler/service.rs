@@ -11,7 +11,7 @@ use mac_abi::{ACCESS_DENIED, CORRUPT_DATA, OPERATION_CANCELLED, SERVICE_BUSY, St
 
 use super::{HartKey, IDLE, SCHEDULER, Thread, ThreadCore, TrapFrame, current, selected_hart};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Call
 {
     pc:       usize,
@@ -515,4 +515,98 @@ impl Drop for ServiceLease
             // reclamation; normal services do not generate cleanup storms.
         });
     }
+}
+
+/// Explicit outer-trap continuation. The dispatcher ends every request/manager
+/// borrow before acting; Replay alone keeps the original PC/ecall obligation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RequestAction
+{
+    Return,
+    Replay
+}
+#[derive(Clone, Copy)]
+pub(crate) struct RequestResult
+{
+    pub(crate) status: Status,
+    pub(crate) action: RequestAction
+}
+impl RequestResult
+{
+    pub(crate) fn done(status: Status) -> Self
+    {
+        Self { status,
+               action: RequestAction::Return }
+    }
+}
+#[derive(Debug)]
+pub(crate) enum DeadlineError
+{
+    Nanoseconds(u32),
+    Clock(super::super::monitor::Error)
+}
+impl DeadlineError
+{
+    pub(crate) fn status(&self) -> Status
+    {
+        match self
+        {
+            Self::Nanoseconds(_) | Self::Clock(super::super::monitor::Error::ClockOverflow) =>
+            {
+                mac_abi::BAD_ARGUMENT
+            }
+            Self::Clock(cause) => cause.status()
+        }
+    }
+}
+impl core::fmt::Display for DeadlineError
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Nanoseconds(value) =>
+            {
+                write!(out, "native duration nanoseconds {value} must be below 1000000000")
+            }
+            Self::Clock(cause) => cause.fmt(out)
+        }
+    }
+}
+pub(crate) fn relative_deadline(seconds: u64, nanoseconds: u32) -> Result<u64, DeadlineError>
+{
+    if nanoseconds >= 1_000_000_000
+    {
+        return Err(DeadlineError::Nanoseconds(nanoseconds));
+    }
+    let interval=super::super::monitor::seconds_nanos_to_ticks_ceil(seconds,nanoseconds).map_err(DeadlineError::Clock)?;
+    crate::platform::ticks().checked_add(interval).ok_or(DeadlineError::Clock(super::super::monitor::Error::ClockOverflow))
+}
+
+/// Scalar identity of the actual routed saved frame. It grants no Process or
+/// buffer authority; a pending operation compares it before replaying effects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RequestIdentity(Call);
+pub(crate) fn request_identity(frame: &TrapFrame) -> RequestIdentity
+{
+    RequestIdentity(Call::new(frame))
+}
+/// New blocking native calls may not suspend a nested/critical/nonpreemptible
+/// frame or abandon an outstanding Host lease. Existing I/O Host rules remain.
+pub(crate) fn request_suspension_allowed(frame: &TrapFrame) -> Result<(), Status>
+{
+    if frame.prior_depth != 0
+       || frame.status & (1 << 5) == 0
+       || super::critical_active()
+       || super::in_io()
+    {
+        return Err(WRONG_THREAD);
+    }
+    let scheduler = SCHEDULER.lock();
+    let thread = scheduler.thread(current()).ok_or(WRONG_THREAD)?;
+    if thread.state.get().service.host_depth != 0
+    {
+        return Err(SERVICE_BUSY);
+    }
+    suspension_allowed(thread.state.get())
 }
