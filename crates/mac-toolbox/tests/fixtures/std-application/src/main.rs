@@ -3,6 +3,7 @@
 use std::{cell::RefCell,
           error::Error,
           hint::black_box,
+          sync::{Condvar, Mutex, OnceLock, TryLockError},
           time::{Duration, Instant, SystemTime}};
 
 use mac_toolbox::{Rect, System, windows::WindowSpec};
@@ -56,6 +57,22 @@ fn main() -> Result<(), Box<dyn Error>>
     assert!(SystemTime::UNIX_EPOCH.checked_sub(Duration::MAX).is_none());
     assert!(Instant::now() >= before, "native monotonic clock went backwards");
     system.log("STD_PROBE_CLOCKS_OBSERVED\n")?;
+
+    let mutex = Mutex::new(7usize);
+    let held = mutex.lock().unwrap();
+    assert!(matches!(mutex.try_lock(), Err(TryLockError::WouldBlock)));
+    drop(held);
+    let condition = Condvar::new();
+    let (held, timeout) = condition.wait_timeout_while(mutex.lock().unwrap(),
+                                                       Duration::from_millis(10),
+                                                       |value| *value == 7)
+                                   .unwrap();
+    assert!(timeout.timed_out(), "condition timeout did not reach its deadline");
+    drop(held);
+    let once = OnceLock::new();
+    assert_eq!(*once.get_or_init(|| 13), 13);
+    assert_eq!(*once.get_or_init(|| panic!("OnceLock initialized twice")), 13);
+    system.log("STD_PROBE_SYNC_TIMEOUT_OBSERVED\n")?;
 
     let window =
         system.windows().create(WindowSpec::new(Rect::new(60, 80, 290, 440), "Std Probe"))?;

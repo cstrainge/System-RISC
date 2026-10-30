@@ -61,7 +61,9 @@ TLS, waits, entropy and exit through private CRT symbols declared in
 service table once inside std before entering the compiler's main wrapper. The
 Toolbox reads that same installation through a C-layout getter. Canonical current
 thread and OS-key TLS bind the published native traps; std and no_std startup
-share the real teardown protocol in mac-traps. Child threads, waits, entropy and
+share the real teardown protocol in mac-traps. Atomic wait/wake now bind the
+published scheduler compare-and-park transport; only timeout returns false,
+while typed refusals retain their resident diagnostic. Child threads, entropy and
 process exit still need native adapters: missing symbols must fail final linkage.
 There is no no_threads implementation, static TLS, zero-seed generator or host
 allocator substituted to get an executable to link.

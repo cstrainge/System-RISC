@@ -63,13 +63,6 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
 }
 
 unsafe extern "C" {
-    // Wait comparison/enqueue is atomic with wake; return false only on timeout.
-    // The relative duration is split, preserving the full Rust Duration range.
-    pub fn __system_risc_wait_u32_v1(address: *const u32, expected: u32, timed: bool,
-                                     seconds: u64, nanoseconds: u32)
-                                     -> bool;
-    pub fn __system_risc_wake_u32_v1(address: *const u32, all: bool) -> bool;
-
     // Creation consumes data iff it returns OK, and invokes start exactly once.
     // join/detach consume a join right only after their successful native turn.
     pub fn __system_risc_thread_create_v1(stack: usize, start: unsafe extern "C" fn(*mut u8),
@@ -111,4 +104,5 @@ pub fn failure(status: Status, message: &[u8]) -> !
 pub use super::{failure::{__system_risc_abort_v1, __system_risc_oom_v1, __system_risc_panic_v1},
                 native_tls::{__system_risc_thread_id_v1, __system_risc_tls_create_v1,
                              __system_risc_tls_delete_v1, __system_risc_tls_get_v1,
-                             __system_risc_tls_set_v1, __system_risc_tls_teardown_v1}};
+                             __system_risc_tls_set_v1, __system_risc_tls_teardown_v1},
+                native_wait::{__system_risc_wait_u32_v1, __system_risc_wake_u32_v1}};
