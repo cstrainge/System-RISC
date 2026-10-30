@@ -763,6 +763,9 @@ impl Desktop
                                 }
                             }
                             super::handles::cleanup::Cause::Facility(_) => BAD_ARGUMENT,
+                            #[cfg(target_arch = "riscv64")]
+                            super::handles::cleanup::Cause::ThreadPreparations { .. }
+                            | super::handles::cleanup::Cause::NativeJoin { .. } => SERVICE_BUSY,
                             super::handles::cleanup::Cause::Alias(_)
                             | super::handles::cleanup::Cause::ContextUnavailable { .. }
                             | super::handles::cleanup::Cause::DriverInterfaceBusy { .. }

@@ -7,6 +7,17 @@ use mac_object_table::{domain::{CompletionError, PoolError, ReleasedResource},
 pub(crate) enum Cause
 {
     #[cfg(target_arch = "riscv64")]
+    ThreadPreparations
+    {
+        preparing: usize
+    },
+    #[cfg(target_arch = "riscv64")]
+    NativeJoin
+    {
+        readers:      usize,
+        preparations: usize
+    },
+    #[cfg(target_arch = "riscv64")]
     ApplicationHeap(crate::toolbox::application_heap::CleanupCause),
     #[cfg(target_arch = "riscv64")]
     NativeTls(crate::toolbox::native_threads::CleanupCause),
@@ -99,6 +110,21 @@ impl core::fmt::Display for Cause
     {
         match self
         {
+            #[cfg(target_arch = "riscv64")]
+            Self::ThreadPreparations { preparing } =>
+            {
+                write!(f,
+                       "native thread backing retains {preparing} actual prepared publications; \
+                        original THST ticket retained")
+            }
+            #[cfg(target_arch = "riscv64")]
+            Self::NativeJoin { readers,
+                               preparations } =>
+            {
+                write!(f,
+                       "native join right retains {readers} actual readers and {preparations} \
+                        prepared publications; original ticket retained")
+            }
             #[cfg(target_arch = "riscv64")]
             Self::ApplicationHeap(cause) => cause.fmt(f),
             #[cfg(target_arch = "riscv64")]
@@ -264,6 +290,22 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn thread_preparations(ticket: ReleasedResource, preparing: usize) -> Self
+    {
+        Self { ticket,
+               cause: Cause::ThreadPreparations { preparing } }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn native_join(ticket: ReleasedResource, readers: usize, preparations: usize)
+                              -> Self
+    {
+        Self { ticket,
+               cause: Cause::NativeJoin { readers,
+                                          preparations } }
+    }
+
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn native_tls(ticket: ReleasedResource,
                              cause: crate::toolbox::native_threads::CleanupCause)

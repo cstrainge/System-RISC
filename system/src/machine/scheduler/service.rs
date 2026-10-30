@@ -523,6 +523,7 @@ impl Drop for ServiceLease
 pub(crate) enum RequestAction
 {
     Return,
+    Yield,
     Replay,
     Exit
 }

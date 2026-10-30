@@ -16,6 +16,7 @@ mod slots;
 mod keys;
 pub(crate) mod lifetime;
 pub(crate) mod native;
+pub(crate) mod thread_request;
 pub(crate) use lifetime::CleanupCause;
 pub(crate) use slots::{ThreadSlots, prepare_slots};
 type Store<T> = mac_object_table::store::Store<T, InvocationGate>;
@@ -56,6 +57,15 @@ impl RuntimeAdmission
     pub(crate) fn close(&self)
     {
         self.root.closing.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn prepare_slots(&self) -> Result<ThreadSlots, Error>
+    {
+        if !self.accepting()
+        {
+            return Err(Error::Finished);
+        }
+        slots::prepare_from_root(&self.root)
     }
 }
 pub(crate) fn runtime_admission(binding: &RootBinding, owner: &OwnerRef)
@@ -229,7 +239,7 @@ impl Error
         match self {
             Self::Authority => ACCESS_DENIED,
             Self::Context(cause) => cause.status(),
-            Self::Runtime(cause)=>cause.status(), Self::Missing => NOT_FOUND,
+            Self::Runtime(cause) => cause.status(), Self::Missing => NOT_FOUND,
             Self::Busy => SERVICE_BUSY, Self::Finished => OPERATION_CANCELLED,
             Self::Metadata(_) | Self::Capacity { .. } => NO_MEMORY,
             Self::Pool(cause) => crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(*cause)),

@@ -434,6 +434,14 @@ enum Wait
     {
         deadline: Option<u64>
     },
+    NativeJoin
+    {
+        request: u64
+    },
+    Sleep
+    {
+        deadline: u64
+    },
     Worker
     {
         deadline: Option<u64>
@@ -471,12 +479,7 @@ impl Scheduler
 
     fn prepare_records(&mut self) -> Result<(), mac_abi::Status>
     {
-        if self.records.is_none()
-        {
-            let (objects, backing) = crate::toolbox::handles::thread_kinds()?;
-            self.records = Some(Store::owned(objects, backing).map_err(lifetime::pool_status)?);
-        }
-        Ok(())
+        if self.records.is_none() { Err(mac_abi::BAD_ABI) } else { Ok(()) }
     }
 
     fn prepare(&mut self) -> Result<usize, mac_abi::Status>
@@ -501,6 +504,29 @@ static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler { records:        None
                                                             waiters:        Vec::new(),
                                                             waiters_leased: false,
                                                             ticks:          0 });
+pub(crate) fn initialize_records() -> Result<(), mac_abi::Status>
+{
+    if !crate::context::current_thread_context().is_bootstrap()
+    {
+        return Err(mac_abi::ACCESS_DENIED);
+    }
+    let (objects, backing) = crate::toolbox::handles::thread_kinds()?;
+    let mut prepared =
+        Some(crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                 Store::owned_prepared(objects, backing).map_err(lifetime::pool_status)
+             })?);
+    let result = super::interrupts::with_masked(|| {
+        let mut scheduler = SCHEDULER.lock();
+        if scheduler.records.is_some()
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        scheduler.records = prepared.take();
+        Ok(())
+    });
+    drop(prepared);
+    result
+}
 unsafe extern "C" {
     fn __system_start_frame(frame: *mut TrapFrame) -> !;
 }
@@ -536,9 +562,14 @@ pub(crate) fn has_threads(app: u64) -> bool
 struct ThreadBacking
 {
     // CPU/stack disappear before code-dependent launch/image pins.
-    cpu:    accounting::Charged<super::traps::SavedState>,
-    stack:  Arc<stack::StackBacking>,
-    loaded: Option<crate::kernel::LoadedImage>
+    cpu:   accounting::Charged<super::traps::SavedState>,
+    stack: Arc<stack::StackBacking>,
+    image: Option<ApplicationImageUse>
+}
+enum ApplicationImageUse
+{
+    Main(crate::kernel::LoadedImage),
+    Child(crate::images::ApplicationExecution)
 }
 struct ThreadCore
 {
@@ -553,7 +584,9 @@ struct ThreadCore
     // Only impossible service binding uncertainty fills this prepaid slot.
     // It intentionally retains the original core/ticket until reset.
     service_quarantine: spin::Once<(Arc<ThreadCore>, mac_abi::Status)>,
-    name:               Option<ThreadName>
+    name:               Mutex<Option<ThreadName>>,
+    application:        Option<Arc<application::Completion>>,
+    pending_join:       Mutex<Option<application::PendingJoin>>
 }
 impl ThreadCore
 {
@@ -647,7 +680,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                              backing:
                                                  Mutex::new(Some(ThreadBacking { cpu,
                                                                                  stack,
-                                                                                 loaded: None })),
+                                                                                 image: None })),
                                              launch: Mutex::new(None),
                                              context,
                                              release: Mutex::new(None),
@@ -655,7 +688,11 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                              top,
                                              cleanup_refusal: Mutex::new(None),
                                              service_quarantine: spin::Once::new(),
-                                             name: None }).map_err(|_| mac_abi::NO_MEMORY)?;
+                                             name: Mutex::new(None),
+                                             application: None,
+                                             pending_join: Mutex::new(None) }).map_err(|_| {
+                                                                                  mac_abi::NO_MEMORY
+                                                                              })?;
         Ok((core, allocation))
     });
     match prepared
@@ -671,7 +708,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
             };
             match storage.backing.get_mut().as_mut()
             {
-                Some(backing) => backing.loaded = Some(loaded),
+                Some(backing) => backing.image = Some(ApplicationImageUse::Main(loaded)),
                 None =>
                 {
                     return Err(PrepareFailure { status: mac_abi::BAD_ABI,
@@ -741,7 +778,9 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
                                     top: 0,
                                     cleanup_refusal: Mutex::new(None),
                                     service_quarantine: spin::Once::new(),
-                                    name: None };
+                                    name: Mutex::new(None),
+                                    application: None,
+                                    pending_join: Mutex::new(None) };
             let core = Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)?;
             Ok::<_, mac_abi::Status>((core, stack_preparation))
         })
@@ -785,7 +824,8 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
     let stack = stack_preparation.finish(stack);
     *storage.backing.get_mut() = Some(ThreadBacking { cpu,
                                                       stack,
-                                                      loaded: Some(loaded) });
+                                                      image:
+                                                          Some(ApplicationImageUse::Main(loaded)) });
     Ok(PreparedThread { owner,
                         core: mac_object_table::retained::Read::new(core, context_released),
                         allocation,
@@ -1359,6 +1399,10 @@ fn retire(thread: &Thread)
                   state.retired = true;
                   state.service.retire_committed();
               });
+        if let Some(completion) = thread.core.application.as_ref()
+        {
+            completion.retire();
+        }
         RETIRED_COUNT.fetch_add(1, Ordering::AcqRel);
     }
     RECLAIM_PENDING.store(true, Ordering::Release);
@@ -1368,6 +1412,7 @@ fn retire(thread: &Thread)
 pub(crate) fn retire_owner(owner: u64)
 {
     address::cancel_owner(owner);
+    application::cancel_owner(owner);
     let mut after = 0;
     loop
     {
@@ -1574,6 +1619,7 @@ fn release_claim(scheduler: &Scheduler, slot: usize, hart: HartKey)
         RECLAIM_PENDING.store(true, Ordering::Release);
     }
     worker::execution_released(thread);
+    application::execution_released(&scheduler, thread);
     if thread.state.get().failure_pending
     {
         crate::toolbox::processes::termination::progress();
@@ -1666,6 +1712,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
                 crate::toolbox::processes::retirement::pump();
                 crate::toolbox::processes::finder::pump();
                 crate::toolbox::processes::termination::pump();
+                application::pump_rights();
             }
         });
     }
@@ -1788,7 +1835,7 @@ fn wake_deadlines(scheduler: &Scheduler, now: u64)
     {
         address::observe(thread, now, invalidated);
         if matches!(thread.state.get().waiting,
-            Some(Wait::Events { deadline, .. } | Wait::Worker { deadline: Some(deadline) }) if now >= deadline)
+            Some(Wait::Events { deadline, .. } | Wait::Worker { deadline: Some(deadline) } | Wait::Sleep { deadline }) if now >= deadline)
         {
             thread.update(|state| state.waiting = None);
             if let Some(worker) = &thread.worker

@@ -247,6 +247,16 @@ impl<G: InvocationGate> Drop for PublicationReleased<G>
         }
     }
 }
+impl<G: InvocationGate> PublicationPermit<G>
+{
+    /// Identity already issued by this exact canonical preparation. Observing
+    /// it grants no publication or lookup authority; only consuming this permit
+    /// can publish its associated object. Useful for an object's own immutable ID.
+    pub fn id(&self) -> u64
+    {
+        self.id
+    }
+}
 impl<G: InvocationGate> Drop for PublicationPermit<G>
 {
     fn drop(&mut self)

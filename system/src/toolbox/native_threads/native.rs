@@ -2,7 +2,7 @@
 //! run here; NEXT returns one actual-thread-owned callback receipt to CRT.
 use core::fmt::Write;
 
-use mac_abi::{native_threads as threads, tls as wire};
+use mac_abi::tls as wire;
 
 use super::*;
 struct Detail<'a>
@@ -32,35 +32,6 @@ fn detail(cause: Error, bytes: &mut [u8], length: &mut u32) -> Status
     let _ = write!(out, "{cause}");
     *length = out.length as u32;
     status
-}
-pub(crate) fn current(call: &mut threads::Call) -> Status
-{
-    call.thread = 0;
-    call.detail_length = 0;
-    let result = crate::context::without_recovery(|| {
-        if call.operation != threads::CURRENT || call.reserved != 0 || call.reserved2 != 0
-        {
-            return Err(Error::Invalid);
-        }
-        crate::context::with_application_executor(|executor| {
-            executor.with_tls(|slots| {
-                        if slots.owner() != executor.owner().owner()
-                        {
-                            return Err(Error::Authority);
-                        }
-                        Ok(executor.thread())
-                    })?
-        }).map_err(Error::Context)?
-    });
-    match result
-    {
-        Ok(thread) =>
-        {
-            call.thread = thread;
-            OK
-        }
-        Err(cause) => detail(cause, &mut call.detail, &mut call.detail_length)
-    }
 }
 pub(crate) fn request(call: &mut wire::Call) -> Status
 {

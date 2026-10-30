@@ -666,6 +666,15 @@ fn launch(info: &BootInfo) -> Result<(), crate::machine::scheduler::StartError>
                                                                          initialization refused",
                                                                         cause.status())
                                                 })?;
+    crate::machine::scheduler::initialize_records().map_err(|status| {
+                                                       recovery_boot_error("canonical thread \
+                                                                            Store initialization \
+                                                                            refused",
+                                                                           status)
+                                                   })?;
+    crate::machine::scheduler::application::initialize().map_err(|cause| {
+        recovery_boot_error("native child manager initialization refused", cause.status())
+    })?;
     let system = crate::loader::read_startup("System")?;
     let finder = crate::loader::read_startup("Finder")?;
     let mut processes = crate::toolbox::processes::Manager::new();
