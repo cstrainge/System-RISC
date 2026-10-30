@@ -13,6 +13,14 @@ state attached to the application/context, not global scheduler state. Native
 module workers use the separate contract below. General native application-thread
 creation remains open.
 
+The staged std runtime now consumes canonical CURRENT, OS-key TLS, address waits
+and signed process termination. Its optimized native probe has bounded
+main-thread observations for TLS destruction, Condvar timeout, normal return,
+explicit exit and System-owned panic/OOM termination. These do not qualify
+`std::thread` creation/join/detach, concurrent wakes or cross-CPU std migration.
+Normal return performs the shared TLS drain before Normal exit; explicit exit
+and Abort run no user TLS callbacks. See [the std status](docs/RUST-STD.md).
+
 The RV64 implementation schedules Finder, separately loaded APPLs and native
 module workers on the core-admitted eligible CPUs. The normal QemuRISC-V image
 has four physical CPUs and installs Multi-Scheduler; without an active policy,

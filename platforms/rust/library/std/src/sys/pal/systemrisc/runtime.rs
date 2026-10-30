@@ -75,7 +75,26 @@ unsafe extern "C" {
     pub fn __system_risc_thread_sleep_v1(seconds: u64, nanoseconds: u32);
     pub fn __system_risc_parallelism_v1(count: *mut usize) -> Status;
     pub fn __system_risc_entropy_v1(bytes: *mut u8, length: usize) -> Status;
-    pub fn __system_risc_exit_v1(code: i32) -> !;
+}
+
+/// Explicit process exit skips user TLS destructors. The startup return path
+/// performs its own teardown before entering this same signed exit boundary.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __system_risc_exit_v1(code: i32) -> !
+{
+    terminate(code, mac_traps::native_exit::ExitKind::Normal)
+}
+
+pub(super) fn terminate(code: i32, kind: mac_traps::native_exit::ExitKind) -> !
+{
+    match client().native_exit(code, kind)
+    {
+        Ok(never) => match never {},
+        Err(cause) =>
+        {
+            mac_traps::emergency::abort(format_args!("STD_EXIT_CONTRACT_FAILURE: {cause}"))
+        }
+    }
 }
 
 pub fn client() -> Client<'static>

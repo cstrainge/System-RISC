@@ -63,8 +63,10 @@ Toolbox reads that same installation through a C-layout getter. Canonical curren
 thread and OS-key TLS bind the published native traps; std and no_std startup
 share the real teardown protocol in mac-traps. Atomic wait/wake now bind the
 published scheduler compare-and-park transport; only timeout returns false,
-while typed refusals retain their resident diagnostic. Child threads, entropy and
-process exit still need native adapters: missing symbols must fail final linkage.
+while typed refusals retain their resident diagnostic. Signed process exit binds
+the native termination service. Main return runs current-thread TLS teardown;
+explicit process exit skips it. Child threads and entropy still need native
+adapters: missing symbols must fail final linkage.
 There is no no_threads implementation, static TLS, zero-seed generator or host
 allocator substituted to get an executable to link.
 
@@ -75,9 +77,11 @@ no allocation, stdio lock, thread-name/TLS lookup or backtrace lock. This does n
 remove TLS/synchronization used earlier by std's panic machinery. Custom hooks
 remain upstream behavior; explicit abort and abort after a custom hook use a
 separate terminal bridge and do not call the default hook again. The CRT report
-bridge now uses the existing CRASH begin/append/show service and its resident
-viewer; early failure uses the shared core-only emergency transport. Native std
-reporting and concurrent process-failure ownership remain unqualified; compiling
+bridge uses the existing CRASH begin/append/show service, then immediately asks
+System to Abort. System owns report retention and dismissal; the failed author
+never polls the viewer. Early failure uses the shared core-only emergency Abort
+transport. Native std reporting and concurrent process-failure ownership require
+their own matching-artifact evidence; compiling
 this hook does not establish a functioning bomb dialog.
 
 The actual default allocation-error hook also uses a dedicated CRT report bridge,
@@ -88,8 +92,11 @@ their upstream semantics. Native OOM reporting remains a separate runtime gate.
 
 Instant and SystemTime now bind the published native clocks, with checked signed
 Unix-epoch arithmetic and nanosecond calculations. Their std execution remains
-unqualified. Files, launch environment and process streams still require their
-named implementations. Existing upstream unsupported backends remain unsupported
+subject to matching-artifact observations. Files, launch environment and process
+streams still require their named implementations. The temporary stdio backend
+returns explicit Unsupported errors for unavailable reads, writes and flushing;
+it does not discard output as successful writes or fabricate input EOF. Existing
+upstream unsupported backends remain unsupported
 while this stage is developed. Neither linking std nor resolving one of its
 private symbols qualifies a service.
 

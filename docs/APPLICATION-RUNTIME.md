@@ -1,6 +1,6 @@
 # Native application runtime and allocation
 
-Native RV64 applications use the `mac-toolbox` application feature and one safe
+The installed no_std RV64 applications use the `mac-toolbox` application feature and one safe
 entry declaration. The SDK owns service installation, the Rust global allocator,
 panic reporting and allocation-failure reporting. Drivers, extensions and
 WDEF/CDEF definitions retain their own runtimes; an application runtime is not a
@@ -37,6 +37,22 @@ than acquiring a host allocator or replacement service gate. Application source
 needs no raw entry pointer, unsafe allocator implementation or panic handler.
 
 ## Startup and ownership
+
+The staged std application target uses a platform-owned startup instead of the
+application feature. Authors provide ordinary `fn main()` and acquire the same
+services with `mac_toolbox::System::new()`. Do not combine that target with the
+old application entry/allocator/panic macros. Build it with the pinned private
+[std SDK](../platforms/rust/README.md); this is not yet the installed-app default.
+
+Std startup publishes its validated service table before Rust initialization,
+checks the actual canonical current thread, and enters the compiler's main
+wrapper. Main return runs shared native TLS teardown then signed Normal exit.
+Explicit process exit skips user TLS destructors. The default panic and allocation
+error hooks report through System independently of stdio, then request Abort
+immediately. System owns dismissal and actual quiescence/reclamation; failed
+author code does not wait on the viewer. Early/recursive failures use the shared
+core-only emergency Abort transport. See [current std evidence and remaining
+gates](RUST-STD.md#current-evidence-and-gaps) for the bounded native observations.
 
 The loader prepares an empty canonical application heap root before entry.
 This admits its real owner/lifetime metadata, not an initial payload extent.

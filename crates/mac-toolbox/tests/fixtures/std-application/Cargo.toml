@@ -6,6 +6,11 @@ publish = false
 
 [workspace]
 
+[features]
+exit = []
+panic = []
+oom = []
+
 [[bin]]
 name = "StdProbe"
 path = "src/main.rs"

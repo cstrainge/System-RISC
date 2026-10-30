@@ -103,26 +103,9 @@ pub(super) fn report(arguments: fmt::Arguments<'_>) -> !
         mac_traps::emergency::abort(format_args!("STD_REPORT_UNAVAILABLE: {cause}; see serial \
                                                   diagnostic"));
     }
-    loop
-    {
-        let mut info = CrashCall { operation: crashes::INFO,
-                                   ..Default::default() };
-        if let Err(cause) = client.crash(&mut info, "", &mut [])
-        {
-            mac_traps::emergency::abort(format_args!("STD_REPORT_QUERY_REFUSED: {cause}"));
-        }
-        if info.info.dismissed != 0
-        {
-            // Abnormal termination does not run user TLS or stack destructors.
-            unsafe { runtime::__system_risc_exit_v1(101) }
-        }
-        // This is the existing panic viewer wait, not a std synchronization
-        // substitute. It invokes no application paint/input callbacks.
-        if let Err(cause) = client.wait_event(0, 60)
-        {
-            mac_traps::emergency::abort(format_args!("STD_REPORT_WAIT_REFUSED: {cause}"));
-        }
-    }
+    // System retains the report and owns dismissal and reclamation. The failed
+    // author stops immediately and never runs user TLS or stack destructors.
+    runtime::terminate(101, mac_traps::native_exit::ExitKind::Abort)
 }
 
 /// # Safety

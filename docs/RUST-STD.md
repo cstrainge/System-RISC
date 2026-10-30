@@ -1,12 +1,13 @@
 # Rust standard library bring-up
 
-Status: design/backlog, tracked as [platform workstream P8](CORE-TOOLBOX-ROADMAP.md#p8--rust-standard-library).
+Status: incremental implementation, tracked as [platform workstream P8](CORE-TOOLBOX-ROADMAP.md#p8--rust-standard-library).
 The goal is ordinary `std` for every native userspace application, including
 Finder and all `apps/*`; userspace applications must no longer need `#![no_std]`,
 `#![no_main]`, a handwritten `_start` or a panic-handler macro. Toolbox libraries
 remain usable without std. Kernel, machine adapters, resource definitions and the
-minimal ABI/transport remain `no_std`. This plan does not install a new toolchain
-or implement a std backend.
+minimal ABI/transport remain `no_std`. The private development SDK and a native
+ordinary-main probe now exist; the installed application set still uses no_std
+until the remaining adoption gates below are met.
 
 The application policy includes [P11 CLAP commands](TERMINAL.md), hosted by
 Terminal with preference-defined base environments and checked session identity.
@@ -15,10 +16,9 @@ adds hardware process protection. Ordinary CLI/std support does not establish
 either compiler hosting or memory isolation.
 
 [P15 HFS-B](CORE-TOOLBOX-ROADMAP.md#p15--hfs-b-and-early-system-migration) is the
-immediate implementation priority, before the P8 application/sysroot migration.
-Use the current no_std apps to establish its boot/launch gate; do not make P15
-depend on std support. HFS-B is the boot/system/workspace target. After its
-formatter/boot/write-integrity gate, normal builds require HFS-B startup media.
+current boot/system/workspace target. The normal image's no_std application
+startup does not depend on the staged std SDK. Continue qualifying actual
+formatter/boot/write behavior on HFS-B startup media.
 Keep mounted classic HFS behavior unchanged; validate the new format's full-name,
 64-bit size/time and dual-fork services instead of extending HFS storage limits.
 Audit the existing 4 MiB resource-loading and staged-write ceilings early as part
@@ -28,20 +28,39 @@ with bounded memory use before making std the application build default.
 
 ## Current evidence and gaps
 
-At this planning checkpoint the host has rustc nightly 1.101.0, commit
-`28221559263a3976766cf305940e80e30cf9ba8a`, and rust-src installed. This is an
-observed toolchain, not a selected release requirement. Guest builds explicitly
-require `riscv64imac-unknown-none-elf`; they use `_start(SystemServices)`, compact
-native resource packaging and `panic = "abort"`. The linker drops `.eh_frame`.
+The development SDK pins rustc commit
+`28221559263a3976766cf305940e80e30cf9ba8a` and its matching rust-src, with custom
+target `riscv64-unknown-systemrisc`, PIC and `panic = "abort"`. The reproducible
+private-source builder is documented in [platforms/rust](../platforms/rust/README.md).
+Kernel and independent low-level modules keep their no_std target. An application
+supplies normal `main`; the platform supplies native entry and shared services.
 
-The one-hart scheduler supplies separate application threads, preemption, trusted
-identities and event-specific blocking/wakeup. This is not worker-thread spawning,
-general park/wake, TLS or a std runtime. Memory handles are generation checked
-but do not expose a stable-pointer allocator. File reads/catalog operations and
-bounded transactional data-file creation exist; generic writable file streams,
-pipes and std descriptors do not. Monotonic nanoseconds and signed Unix wall
-seconds exist, with finer wall-clock precision still to define. Networking is
-[P7](NETWORKING.md), not an existing socket backend.
+Finite optimized four-CPU QEMU runs of the real packaged `Std Probe` exercised
+ordinary main, Vec/String/Box allocation, repeated `System::new()`, native TLS and
+its destructor, clocks, a scheduler-backed Condvar timeout, and window create/close.
+Matching terminal variants observed normal return with code0, explicit
+`std::process::exit(-23)` without user TLS cleanup, the default System panic report,
+and a real 512MiB allocation refusal against the 64MiB process account. Panic and
+OOM submit Abort immediately after reporting. System owns the report, dismissal,
+thread/process reclamation and subsequent input; these were observed in each
+applicable case. The panic dispatcher must not skip the System hook merely because
+stderr has no panic-output endpoint.
+
+These are bounded main-thread cases, not complete S1 or std adoption acceptance.
+They do not qualify concurrent application children, cross-CPU std execution,
+early-startup failures, custom hooks, full memory exhaustion, Finder OOM recovery,
+Windows or other hardware. Non-ASCII bytes reached the report transport; glyph
+availability is a separate font/rendering concern. Existing native scheduler and
+module-worker evidence does not substitute for std child-thread observations.
+
+Native writable files, process streams, launch data and entropy remain required.
+The current stdio backend reports Unsupported on unavailable I/O and flushing;
+it does not silently discard output or fabricate stdin EOF. Buffered Rust writes
+can defer that error until flushing. `println!` is not supported by an emergency
+serial log. Child-thread and entropy adapters remain unresolved when used, rather
+than substituting workers or deterministic seeds. File catalog/read and staged
+save services are not ordinary writable `File` descriptions. Networking remains
+[P7](NETWORKING.md).
 
 ## Application build and default panic contract
 
