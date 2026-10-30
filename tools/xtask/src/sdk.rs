@@ -46,15 +46,47 @@ pub(super) fn compiler_proxy() -> Option<ExitCode>
          })
 }
 
-pub(super) fn run(workspace: &Workspace, action: &str) -> Result<()>
+pub(super) fn run(workspace: &Workspace, action: &str, manifest: Option<&str>) -> Result<()>
 {
-    crate::run(workspace.command("python3")
-                        .arg(workspace.root.join("scripts/system7_sdk.py"))
-                        .arg(action)
-                        .arg("--build-dir")
-                        .arg(&workspace.build)
-                        .arg("--compiler-proxy")
-                        .arg(env::current_exe()?)
-                        .arg("--llvm-profile")
-                        .arg(&workspace.platform.llvm_profile))
+    let mut command = workspace.command("python3");
+    command.arg(workspace.root.join("scripts/system7_sdk.py"))
+           .arg(action)
+           .arg("--build-dir")
+           .arg(&workspace.build)
+           .arg("--compiler-proxy")
+           .arg(env::current_exe()?)
+           .arg("--llvm-profile")
+           .arg(&workspace.platform.llvm_profile);
+    if let Some(path) = manifest
+    {
+        command.arg("--manifest-path").arg(path);
+    }
+    crate::run(&mut command)?;
+    if action == "app"
+    {
+        let receipt = workspace.build.join("sdk/application.json");
+        let mut result: serde_json::Value = serde_json::from_slice(&std::fs::read(&receipt)?)?;
+        let path = |name: &str| -> Result<&Path> {
+            result[name].as_str().map(Path::new).ok_or_else(|| error("SDK app receipt lacks paths"))
+        };
+        let packaged =
+            mac_build::package::build(path("resource_manifest")?, path("elf")?, path("output")?);
+        match packaged
+        {
+            Ok(package) =>
+            {
+                result["package"] = package;
+                result["state"] = "packaged-not-executed".into();
+            }
+            Err(cause) =>
+            {
+                result["package_error"] = cause.to_string().into();
+                crate::write_json(&receipt, &result)?;
+                return Err(cause);
+            }
+        }
+        crate::write_json(&receipt, &result)?;
+        println!("Packaged std application. Native execution has not been observed.");
+    }
+    Ok(())
 }

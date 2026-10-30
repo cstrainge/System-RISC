@@ -4,6 +4,8 @@ use mac_abi::{traps::*, *};
 
 pub mod application_heap;
 pub mod native_threads;
+#[cfg(target_arch = "riscv64")]
+pub mod emergency;
 mod error;
 pub mod types;
 pub mod coordinates;

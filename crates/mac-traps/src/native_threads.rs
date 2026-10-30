@@ -112,3 +112,46 @@ impl Client<'_>
         result(status, call.detail, call.detail_length)
     }
 }
+
+/// # Safety
+/// The actual native application thread owns teardown. Resident validates each
+/// callback against its pinned Process executable and retains it until ACK.
+pub unsafe fn teardown_tls(client: Client<'_>) -> Result<()>
+{
+    use mac_abi::tls as wire;
+    let mut begin = wire::Call { operation: wire::BEGIN,
+                                 ..Default::default() };
+    unsafe {
+        client.tls(&mut begin)?;
+    }
+    loop
+    {
+        let mut next = wire::Call { operation: wire::NEXT,
+                                    ..Default::default() };
+        unsafe {
+            client.tls(&mut next)?;
+        }
+        if next.present == 0
+        {
+            break;
+        }
+        if next.destructor == 0 || next.ticket == 0
+        {
+            return Err(Failure::Protocol("NEXT omitted callback receipt"));
+        }
+        let callback: unsafe extern "C" fn(*mut u8) =
+            unsafe { core::mem::transmute(next.destructor) };
+        unsafe {
+            callback(next.value as *mut u8);
+        }
+        let mut ack = wire::Call { operation: wire::ACK,
+                                   ticket: next.ticket,
+                                   ..Default::default() };
+        unsafe {
+            client.tls(&mut ack)?;
+        }
+    }
+    let mut finish = wire::Call { operation: wire::FINISH,
+                                  ..Default::default() };
+    unsafe { client.tls(&mut finish) }
+}

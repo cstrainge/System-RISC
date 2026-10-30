@@ -505,7 +505,11 @@ fn execute() -> Result<()>
     {
         [command, action] if command == "sdk" && matches!(action.as_str(), "prepare" | "build") =>
         {
-            sdk::run(&workspace, action)?;
+            sdk::run(&workspace, action, None)?;
+        }
+        [command, action, path] if command == "sdk" && action == "app" =>
+        {
+            sdk::run(&workspace, action, Some(path))?;
         }
         [command, path] if command == "resource-map" =>
         {
@@ -585,6 +589,7 @@ fn help()
 {
     println!("  cargo xtask sdk prepare    Materialize the pinned private Rust application SDK");
     println!("  cargo xtask sdk build      Compile the staged System RISC standard library");
+    println!("  cargo xtask sdk app Cargo.toml  Build a std application with the private SDK");
     println!("  cargo xtask doc            Generate Rust library documentation in docs/api");
     println!("  cargo xtask resource-map FILE  Inspect checked resource metadata as JSON");
     println!("System7 build tools\n\n  cargo xtask rebuild MANIFEST OUT  Rebuild a ResEdit \

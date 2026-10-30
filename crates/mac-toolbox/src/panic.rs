@@ -1,13 +1,15 @@
 //! Shared native application panic handler. System owns the report window and
 //! its input handling; the failed application only streams text and sleeps.
-use core::{fmt::{self, Write},
-           sync::atomic::{AtomicPtr, Ordering}};
+use core::fmt::{self, Write};
+#[cfg(not(target_os = "systemrisc"))]
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::{Client, SystemServices,
             crashes::{self, Crashes}};
 
+#[cfg(not(target_os = "systemrisc"))]
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
 static PANICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Install the loader's service table before executing application code.
@@ -15,6 +17,7 @@ static PANICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBoo
 /// # Safety
 /// The table and callbacks must remain valid until every application thread has
 /// terminated, including while its panic handler is running.
+#[cfg(not(target_os = "systemrisc"))]
 pub unsafe fn install(services: *const SystemServices) -> Result<(), crate::abi::Status>
 {
     if !services.addr().is_multiple_of(core::mem::align_of::<SystemServices>())
@@ -35,7 +38,17 @@ pub unsafe fn install(services: *const SystemServices) -> Result<(), crate::abi:
 /// or synthetic current application exists in the SDK.
 pub(crate) fn installed_client() -> Option<Client<'static>>
 {
+    #[cfg(not(target_os = "systemrisc"))]
     let pointer = SERVICES.load(Ordering::Acquire);
+    #[cfg(target_os = "systemrisc")]
+    let pointer = unsafe {
+        // std's platform entry owns the one installation for a std process.
+        // Only the C-layout service table crosses the sysroot/Cargo boundary.
+        unsafe extern "C" {
+            fn __system_risc_services_v1() -> *const SystemServices;
+        }
+        __system_risc_services_v1()
+    };
     // SAFETY: install requires permanent immutable table/callback lifetime.
     unsafe { Client::from_raw(pointer) }.ok()
 }
@@ -91,7 +104,7 @@ impl Write for Writer<'_>
     }
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
 pub(crate) fn diagnostic(client: Client<'_>, arguments: fmt::Arguments<'_>)
 {
     let mut writer = Writer { client,
@@ -141,7 +154,7 @@ pub fn report(client: Client<'_>, arguments: fmt::Arguments<'_>)
 
 /// Called by the application's single panic handler. No application events or
 /// drawing callbacks run after a panic; native event waits park the OS thread.
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
 pub fn handle(info: &core::panic::PanicInfo<'_>) -> !
 {
     fail(format_args!("{info}"))
@@ -150,7 +163,7 @@ pub fn handle(info: &core::panic::PanicInfo<'_>) -> !
 /// Nonallocating common path for panic, OOM and allocator protocol failures.
 /// Current applications have one scheduled author thread; this does not claim
 /// a future concurrent application-failure coordinator or arbitrary unwind.
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
 pub(crate) fn fail(arguments: fmt::Arguments<'_>) -> !
 {
     let Some(client) = installed_client()
@@ -179,7 +192,7 @@ pub(crate) fn fail(arguments: fmt::Arguments<'_>) -> !
     park(client, shown)
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
 fn park(client: Client<'_>, shown: bool) -> !
 {
     loop

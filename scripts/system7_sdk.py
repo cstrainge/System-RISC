@@ -230,16 +230,88 @@ def build_std(args, sdk: dict) -> None:
     print("Target std library compiled. Application startup and native services are not yet qualified.")
 
 
+def built_sdk(sdk: dict) -> bool:
+    root = Path(sdk["root"])
+    receipt = root / "build.json"
+    if not receipt.is_file():
+        return False
+    result = json.loads(receipt.read_text())
+    if result.get("returncode") != 0 or not result.get("libraries"):
+        return False
+    return all((root / path).is_file() and
+               hashlib.sha256((root / path).read_bytes()).hexdigest() == digest
+               for path, digest in result["libraries"].items())
+
+
+def build_app(args, sdk: dict) -> None:
+    if args.manifest_path is None:
+        raise RuntimeError("sdk app requires --manifest-path Cargo.toml")
+    manifest = args.manifest_path.resolve()
+    cargo = tomllib.loads(manifest.read_text())
+    resources = manifest.parent / "resources.json"
+    resource_data = json.loads(resources.read_text())
+    if resource_data.get("role") != "application" or resource_data.get("file_type") != "APPL":
+        raise RuntimeError("sdk app requires an ordinary native APPL application manifest")
+    binary = resource_data.get("binary_name", cargo["package"]["name"])
+    identity = hashlib.sha256(str(manifest).encode()).hexdigest()
+    output = args.build_dir.resolve() / "applications" / identity[:16]
+    output.mkdir(parents=True, exist_ok=True)
+    target = output / sdk["key"][:16]
+    env = dict(os.environ)
+    for name in list(env):
+        if name.startswith("CARGO_PROFILE_") or name in (
+                "RUSTFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
+                "CARGO_BUILD_BUILD_DIR", "SYSTEM7_CARGO_ARTIFACT_DIR"):
+            env.pop(name, None)
+    env.update(RUSTC=str(args.compiler_proxy.resolve()),
+               SYSTEM7_SDK_COMPILER=sdk["rustc"], SYSTEM7_SDK_SYSROOT=sdk["sysroot"],
+               RUST_TARGET_PATH=sdk["root"], CARGO_ENCODED_RUSTFLAGS="-C\x1frelocation-model=pic")
+    command = [sdk["cargo"], "build", "--release", "--locked", "--manifest-path", str(manifest),
+               "--bin", binary, "--target", sdk["target"], "--target-dir", str(target),
+               "--message-format=json-render-diagnostics", "-Zjson-target-spec"]
+    profile = tomllib.loads((SOURCE / "Cargo.toml").read_text())["profile"]["release"]
+    for name in ("panic", "opt-level", "lto", "codegen-units", "debug", "strip"):
+        command.extend(["--config", f"profile.release.{name}={json.dumps(profile[name])}"])
+    completed = subprocess.run(command, cwd=manifest.parent, env=env, stdout=subprocess.PIPE, text=True)
+    (output / "cargo-messages.jsonl").write_text(completed.stdout, encoding="utf-8")
+    binaries = []
+    for line in completed.stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (message.get("reason") == "compiler-artifact" and
+                message.get("target", {}).get("name") == binary and message.get("executable")):
+            binaries.append(message["executable"])
+    report = {"sdk_key": sdk["key"], "command": command, "returncode": completed.returncode,
+              "resource_manifest": str(resources), "output": str(output / "package"),
+              "cargo_manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+              "resource_manifest_sha256": hashlib.sha256(resources.read_bytes()).hexdigest(),
+              "state": "compile-failed", "native_execution_observed": False}
+    if completed.returncode == 0:
+        if len(binaries) != 1 or not Path(binaries[0]).is_file():
+            raise RuntimeError("Cargo did not report exactly one compiled application executable")
+        report.update(elf=binaries[0], state="compiled-only",
+                      elf_sha256=hashlib.sha256(Path(binaries[0]).read_bytes()).hexdigest())
+    write_json(args.build_dir.resolve() / "sdk/application.json", report)
+    completed.check_returncode()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "build"))
+    parser.add_argument("action", choices=("prepare", "build", "app"))
     parser.add_argument("--build-dir", required=True, type=Path)
     parser.add_argument("--compiler-proxy", required=True, type=Path)
     parser.add_argument("--llvm-profile", required=True)
+    parser.add_argument("--manifest-path", type=Path)
     args = parser.parse_args()
     sdk = prepare(args)
     if args.action == "build":
         build_std(args, sdk)
+    elif args.action == "app":
+        if not built_sdk(sdk):
+            build_std(args, sdk)
+        build_app(args, sdk)
 
 
 if __name__ == "__main__":
