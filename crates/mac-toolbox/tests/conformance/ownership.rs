@@ -684,10 +684,16 @@ fn alerts(system: &System<'_>) -> Result<(), Failure>
     let refused = reports.dismiss().unwrap_err();
     assert_eq!(refused, Error::AccessDenied);
     system.windows().info(report.window)?;
-    system.windows().close(report.window)?;
+    // A report window belongs to System's recovery session. The recipient may
+    // inspect it, but ordinary Window Manager calls cannot close it.
+    assert_eq!(system.windows().close(report.window), Err(Error::AccessDenied));
+    system.windows().info(report.window)?;
+    // Reset through the crash service, which owns the recovery capability and
+    // waits for the window's actual cleanup acknowledgement.
     reports.begin()?;
+    assert_eq!(system.windows().info(report.window), Err(Error::NotFound));
     system.log("ALERT_LEDGER_USERSPACE_PASS managed_buttons=2 stale=passed \
-                external_close=passed reserved=passed\n")?;
+                external_close=passed reserved=passed recovery_reset=passed\n")?;
     Ok(())
 }
 
