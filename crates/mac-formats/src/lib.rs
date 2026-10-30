@@ -11,6 +11,7 @@ pub mod native;
 pub mod module;
 pub mod open_types;
 pub mod resource;
+pub mod requirements;
 pub mod text;
 
 /// Semantic error identity shared by OS loaders and host tools. Diagnostic
