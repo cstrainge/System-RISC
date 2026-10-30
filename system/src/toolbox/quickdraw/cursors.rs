@@ -231,7 +231,7 @@ impl Cursors
             }
             CURSOR_RESOURCE_BUILTIN =>
             {
-                if call.builtin > 4
+                if !matches!(call.builtin, 0..=4 | 17 | 21)
                 {
                     return Err(BAD_ARGUMENT);
                 }

@@ -1,0 +1,12 @@
+
+{
+  "name": "CDEF_SPLITTER",
+  "file_type": "rsrc",
+  "creator": "MACS",
+  "role": "code_resource",
+  "abi_version": 1,
+  "load_base": "0x82700000",
+  "load_limit": "0x82800000",
+  "description": "Splitter control definition",
+  "resources": []
+}

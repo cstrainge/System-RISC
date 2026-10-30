@@ -12,7 +12,34 @@ use super::*;
 
 pub(super) struct Configuration
 {
-    tracks: Vec<wire::TrackSetting>
+    tracks:     Vec<wire::TrackSetting>,
+    boundaries: Vec<wire::SplitterSetting>,
+    manual:     [Option<Arc<Vec<i64>>>; 2]
+}
+impl Configuration
+{
+    fn percent_axis(&self, axis: u32) -> bool
+    {
+        self.tracks
+            .iter()
+            .any(|t| t.axis == axis && (t.bounds.min.kind == 2 || t.bounds.max.kind == 2))
+    }
+
+    fn copy(old: Option<&Self>) -> Result<Self, Status>
+    {
+        let mut tracks = Vec::new();
+        let mut boundaries = Vec::new();
+        if let Some(old) = old
+        {
+            tracks.try_reserve_exact(old.tracks.len()).map_err(|_| NO_MEMORY)?;
+            boundaries.try_reserve_exact(old.boundaries.len()).map_err(|_| NO_MEMORY)?;
+            tracks.extend_from_slice(&old.tracks);
+            boundaries.extend_from_slice(&old.boundaries);
+        }
+        Ok(Self { tracks,
+                  boundaries,
+                  manual: old.map_or([None, None], |c| c.manual.clone()) })
+    }
 }
 #[derive(Default)]
 struct Axis
@@ -48,11 +75,36 @@ pub(crate) struct Prepared
     pub(crate) drawings:       Vec<super::super::Drawing>,
     pub(crate) measurement:    wire::Measurement,
     pub(crate) limited_damage: Option<Rect>,
+    pub(crate) feedback:       Option<Option<Rect>>,
     parent:                    u64,
     assign:                    bool
 }
 impl Prepared
 {
+    pub(super) fn state(&self, id: u64) -> Option<&State>
+    {
+        self.items.iter().find(|i| i.id == id).map(|i| &i.state).or_else(|| {
+                                                                    self.metadata
+                                                                        .as_ref()
+                                                                        .filter(|(key, _)| {
+                                                                            *key == id
+                                                                        })
+                                                                        .map(|(_, s)| s)
+                                                                })
+    }
+
+    pub(super) fn set_state(&mut self, id: u64, state: State)
+    {
+        if let Some(i) = self.items.iter_mut().find(|i| i.id == id)
+        {
+            i.state = state;
+        }
+        else
+        {
+            self.metadata = Some((id, state));
+        }
+    }
+
     pub(super) fn empty() -> Self
     {
         Self { metadata:       None,
@@ -60,6 +112,7 @@ impl Prepared
                drawings:       Vec::new(),
                measurement:    Default::default(),
                limited_damage: None,
+               feedback:       None,
                parent:         0,
                assign:         false }
     }
@@ -169,41 +222,25 @@ impl Manager
         {
             return Err(NOT_SUPPORTED);
         }
-        layout::TrackSize::decode(requested.mode, requested.percent).map_err(|e| e.status())?;
-        if requested == previous
+        layout::SizeBounds::decode(requested.bounds).map_err(|e| e.status())?;
+        if requested == previous && old.is_none_or(|c| c.manual[requested.axis as usize].is_none())
         {
             return Ok(());
         }
-        let old_tracks = old.map_or(&[][..], |c| c.tracks.as_slice());
-        let mut percent = requested.percent;
-        for t in
-            old_tracks.iter().filter(|t| t.axis == requested.axis && t.index != requested.index)
+        if o.state.tracking.is_some()
         {
-            percent = percent.checked_add(t.percent).ok_or(BAD_ARGUMENT)?;
+            return Err(SERVICE_BUSY);
         }
-        if percent > 10_000
+        let mut config = Configuration::copy(old.map(|c| c.as_ref()))?;
+        config.tracks.retain(|t| t.axis != requested.axis || t.index != requested.index);
+        if requested.bounds != wire::SizeBounds::default()
         {
-            return Err(BAD_ARGUMENT);
+            config.tracks.try_reserve(1).map_err(|_| NO_MEMORY)?;
+            config.tracks.push(requested);
         }
-        let mut tracks = Vec::new();
-        tracks.try_reserve_exact(old_tracks.len().checked_add(1).ok_or(NO_MEMORY)?)
-              .map_err(|_| NO_MEMORY)?;
-        tracks.extend(old_tracks.iter()
-                                .filter(|t| t.axis != requested.axis || t.index != requested.index)
-                                .copied());
-        if requested.mode != wire::TRACK_FIT
-        {
-            tracks.push(requested);
-        }
-        tracks.sort_unstable_by_key(|t| (t.axis, t.index));
-        let next = if tracks.is_empty()
-        {
-            None
-        }
-        else
-        {
-            Some(Arc::try_new(Configuration { tracks }).map_err(|_| NO_MEMORY)?)
-        };
+        config.tracks.sort_unstable_by_key(|t| (t.axis, t.index));
+        config.manual[requested.axis as usize] = None;
+        let next = Some(Arc::try_new(config).map_err(|_| NO_MEMORY)?);
         self.objects
             .get_mut(call.id)
             .ok_or(NOT_FOUND)?
@@ -212,6 +249,91 @@ impl Manager
             .as_mut()
             .ok_or(NOT_SUPPORTED)?
             .grid = next;
+        self.invalidate_ancestors(call.id);
+        Ok(())
+    }
+
+    pub(crate) fn splitter_configuration(&mut self, call: &mut ControlCall, owner: u64)
+                                         -> Result<(), Status>
+    {
+        let setting = call.layout.splitter;
+        if setting.axis > 1
+           || setting.index >= u32::MAX - 1
+           || setting.enabled > 1
+           || setting.reserved != 0
+           || call.layout.reserved != 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let root = self.table(call.id, owner)?;
+        let old = root.state.layout.as_ref().ok_or(NOT_SUPPORTED)?.grid.as_deref();
+        let enabled =
+            old.is_some_and(|c| {
+                   c.boundaries.iter().any(|b| b.axis == setting.axis && b.index == setting.index)
+               });
+        if call.layout.message == wire::GET_SPLITTER
+        {
+            call.layout.splitter.enabled = u32::from(enabled);
+            return Ok(());
+        }
+        if root.state.tracking.is_some()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if call.layout.message == wire::SET_SPLITTER && enabled == (setting.enabled != 0)
+        {
+            return Ok(());
+        }
+        if call.layout.message == wire::RESET_SPLIT_SIZES
+           && old.is_none_or(|c| c.manual[setting.axis as usize].is_none())
+           && setting.index == 0
+           && setting.enabled == 0
+        {
+            return Ok(());
+        }
+        let mut config = Configuration::copy(old)?;
+        if call.layout.message == wire::RESET_SPLIT_SIZES
+        {
+            if setting.index != 0 || setting.enabled != 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            if config.manual[setting.axis as usize].is_none()
+            {
+                return Ok(());
+            }
+            config.manual[setting.axis as usize] = None;
+        }
+        else if call.layout.message == wire::SET_SPLITTER
+        {
+            if enabled == (setting.enabled != 0)
+            {
+                return Ok(());
+            }
+            if setting.enabled != 0
+            {
+                config.boundaries.try_reserve(1).map_err(|_| NO_MEMORY)?;
+                config.boundaries.push(setting);
+                config.boundaries.sort_unstable_by_key(|b| (b.axis, b.index));
+            }
+            else
+            {
+                config.boundaries.retain(|b| b.axis != setting.axis || b.index != setting.index);
+            }
+        }
+        else
+        {
+            return Err(NOT_SUPPORTED);
+        }
+        let config = Arc::try_new(config).map_err(|_| NO_MEMORY)?;
+        self.objects
+            .get_mut(call.id)
+            .ok_or(NOT_FOUND)?
+            .state
+            .layout
+            .as_mut()
+            .ok_or(NOT_SUPPORTED)?
+            .grid = Some(config);
         self.invalidate_ancestors(call.id);
         Ok(())
     }
@@ -231,7 +353,7 @@ impl Manager
                                  window: Option<(Rect, layout::Anchors, layout::BorderOffsets)>)
                                  -> Result<Prepared, Status>
     {
-        self.prepare_layout_change(call, owner, paint_pending, gate, resolve, window, None)
+        self.prepare_layout_change(call, owner, paint_pending, gate, resolve, window, None, None)
     }
 
     /// Prepare with cloned state only. The caller admits all retained output
@@ -240,7 +362,8 @@ impl Manager
                              gate: TrapGate,
                              mut resolve: impl FnMut(i16) -> Result<DefinitionEntry, Status>,
                              window: Option<(Rect, layout::Anchors, layout::BorderOffsets)>,
-                             scroll_change: Option<Option<Arc<scrolling::Scroll>>>)
+                             scroll_change: Option<Option<Arc<scrolling::Scroll>>>,
+                             root_change: Option<State>)
                              -> Result<Prepared, Status>
     {
         if call.layout.reserved != 0
@@ -266,6 +389,7 @@ impl Manager
         let root_layout = root.state.layout.as_ref().ok_or(NOT_SUPPORTED)?;
         if window.is_none()
            && scroll_change.is_none()
+           && root_change.is_none()
            && assign
            && root.state.spec.bounds() == call.layout.rect
            && !root_layout.arrangement_pending
@@ -295,6 +419,11 @@ impl Manager
         }
         let mut plan = Vec::new();
         self.append_plan(&mut plan, call.id, owner, &mut resolve)?;
+        if let Some(state) = root_change
+        {
+            plan[0].state = state;
+            plan[0].outline_changed = true;
+        }
         if let Some(scroll) = scroll_change
         {
             let l = plan[0].state.layout.as_mut().ok_or(NOT_SUPPORTED)?;
@@ -354,9 +483,15 @@ impl Manager
                                    false,
                                    false,
                                    layout::AxisConstraint::Unbounded,
+                                   None,
                                    gate)?;
-                let y =
-                    Self::axis(&mut plan, i, true, false, layout::AxisConstraint::Unbounded, gate)?;
+                let y = Self::axis(&mut plan,
+                                   i,
+                                   true,
+                                   false,
+                                   layout::AxisConstraint::Unbounded,
+                                   None,
+                                   gate)?;
                 let raw = if let Some(l) =
                     plan[i].state.layout.as_ref().filter(|l| l.scroll.is_some())
                 {
@@ -418,13 +553,31 @@ impl Manager
                            .layout
                            .as_ref()
                            .is_some_and(|l| !l.arrangement_pending && l.outlines.is_some())
-                    && (plan[i].state.layout.as_ref().is_some_and(|l| l.scroll.is_some())
+                    && (plan[i].state.layout.as_ref().is_some_and(|l| {
+                                                         l.scroll.is_some()
+                                                         && !l.grid
+                                                              .as_ref()
+                                                              .is_some_and(|c| c.percent_axis(0))
+                                                     })
                         || i32::from(plan[i].before.bounds().right)
                            - i32::from(plan[i].before.bounds().left)
                            == i32::from(plan[i].width));
                 plan[i].columns_cached = can_reuse;
                 if can_reuse
                 {
+                    if let Some(d) = plan[i].state
+                                            .layout
+                                            .as_ref()
+                                            .and_then(|l| l.outlines.as_ref())
+                                            .and_then(|g| g.dividers.as_ref())
+                    {
+                        if d.tracks[0].len() != plan[i].columns.tracks.len()
+                        {
+                            return Err(CORRUPT_DATA);
+                        }
+                        let tracks = d.tracks[0].clone();
+                        plan[i].columns.tracks.copy_from_slice(&tracks);
+                    }
                     for (offset, child) in plan[i].children.clone().enumerate()
                     {
                         let old = plan[child].state.layout.as_ref().ok_or(CORRUPT_DATA)?.logical;
@@ -442,7 +595,8 @@ impl Manager
                     {
                         exact(plan[i].width)?
                     };
-                    Self::axis(&mut plan, i, false, false, width, gate)?;
+                    let basis = Some(i64::from(plan[i].width));
+                    Self::axis(&mut plan, i, false, false, width, basis, gate)?;
                 }
                 for (offset, child) in plan[i].children.clone().enumerate()
                 {
@@ -470,8 +624,13 @@ impl Manager
                                               constrained: l.sizing.resolve(raw.constrained) };
                     continue;
                 }
-                let y =
-                    Self::axis(&mut plan, i, true, true, layout::AxisConstraint::Unbounded, gate)?;
+                let y = Self::axis(&mut plan,
+                                   i,
+                                   true,
+                                   true,
+                                   layout::AxisConstraint::Unbounded,
+                                   None,
+                                   gate)?;
                 let intrinsic = plan[i].intrinsic.intrinsic;
                 let raw_intrinsic = plan[i].state
                                            .layout
@@ -549,12 +708,30 @@ impl Manager
                 if !plan[i].children.is_empty()
                 {
                     plan[i].rows_cached = plan[i].columns_cached
-                                          && (scrolling
+                                          && ((scrolling
+                                               && !plan[i].state
+                                                          .layout
+                                                          .as_ref()
+                                                          .and_then(|l| l.grid.as_ref())
+                                                          .is_some_and(|c| c.percent_axis(1)))
                                               || i32::from(plan[i].before.bounds().bottom)
                                                  - i32::from(plan[i].before.bounds().top)
                                                  == i32::from(height));
                     if plan[i].rows_cached
                     {
+                        if let Some(d) = plan[i].state
+                                                .layout
+                                                .as_ref()
+                                                .and_then(|l| l.outlines.as_ref())
+                                                .and_then(|g| g.dividers.as_ref())
+                        {
+                            if d.tracks[1].len() != plan[i].rows.tracks.len()
+                            {
+                                return Err(CORRUPT_DATA);
+                            }
+                            let tracks = d.tracks[1].clone();
+                            plan[i].rows.tracks.copy_from_slice(&tracks);
+                        }
                         for (offset, child) in plan[i].children.clone().enumerate()
                         {
                             let old =
@@ -573,7 +750,13 @@ impl Manager
                         {
                             exact(height)?
                         };
-                        Self::axis(&mut plan, i, true, true, constraint, gate)?;
+                        Self::axis(&mut plan,
+                                   i,
+                                   true,
+                                   true,
+                                   constraint,
+                                   Some(i64::from(height)),
+                                   gate)?;
                     }
                 }
                 if let Some(old) = plan[i].state.layout.as_ref().and_then(|l| l.scroll.as_ref())
@@ -669,13 +852,41 @@ impl Manager
                     cells.push(Self::outline(screen, viewport));
                     logical_cells.push(logical);
                 }
+                let dividers = if plan[i].state
+                                         .layout
+                                         .as_ref()
+                                         .and_then(|l| l.grid.as_ref())
+                                         .is_some_and(|c| !c.boundaries.is_empty())
+                {
+                    let clone_tracks =
+                        |source: &[wire::GridTrack]| -> Result<Arc<Vec<wire::GridTrack>>, Status> {
+                            let mut v = Vec::new();
+                            v.try_reserve_exact(source.len()).map_err(|_| NO_MEMORY)?;
+                            v.extend_from_slice(source);
+                            Arc::try_new(v).map_err(|_| NO_MEMORY)
+                        };
+                    let tracks = [clone_tracks(&plan[i].columns.tracks)?,
+                                  clone_tracks(&plan[i].rows.tracks)?];
+                    Some(Self::divider_snapshot(&plan[i],
+                                                &plan,
+                                                &logical_cells,
+                                                tracks,
+                                                resolve(CDEF_SPLITTER)?)?)
+                }
+                else
+                {
+                    None
+                };
                 let l = plan[i].state.layout.as_mut().ok_or(CORRUPT_DATA)?;
-                if l.outlines.as_ref().map_or(&[][..], |g| g.cells.as_slice()) != cells.as_slice()
+                if dividers.is_some()
+                   || l.outlines.as_ref().is_some_and(|g| g.dividers.is_some())
+                   || l.outlines.as_ref().map_or(&[][..], |g| g.cells.as_slice())
+                      != cells.as_slice()
                    || l.outlines.as_ref().map_or(&[][..], |g| g.logical.as_slice())
                       != logical_cells.as_slice()
                 {
                     l.outlines =
-                        Some(Arc::try_new(super::super::snapshot::Grid { cells, logical: logical_cells }).map_err(|_| {
+                        Some(Arc::try_new(super::super::snapshot::Grid { cells, logical: logical_cells, dividers }).map_err(|_| {
                                                                                      NO_MEMORY
                                                                                  })?);
                     plan[i].outline_changed = true;
@@ -719,6 +930,7 @@ impl Manager
                       drawings,
                       measurement: answer.into(),
                       limited_damage: None,
+                      feedback: None,
                       parent,
                       assign })
     }
@@ -872,7 +1084,8 @@ impl Manager
         }
         else
         {
-            self.prepare_layout_change(&assignment, owner, false, gate, &mut resolve, None, change)?
+            self.prepare_layout_change(&assignment, owner, false, gate, &mut resolve, None,
+                                       change, None)?
         };
         if let Some(l) = prepared.items.first().and_then(|i| i.state.layout.as_ref())
         {
@@ -1007,11 +1220,30 @@ impl Manager
                 }
                 if cells != old.cells
                 {
-                    l.outlines = Some(Arc::try_new(super::super::snapshot::Grid { cells, logical }).map_err(|_| NO_MEMORY)?);
+                    l.outlines = Some(Arc::try_new(super::super::snapshot::Grid { cells, logical, dividers:old.dividers.clone() }).map_err(|_| NO_MEMORY)?);
                 }
             }
             let local_clip = l.clip();
             let viewport = l.viewport(rect);
+            if let Some(old) = plan[i].state.layout.as_ref().and_then(|l| l.outlines.clone())
+               && let Some(d) = &old.dividers
+            {
+                let next = Self::divider_snapshot(&plan[i],
+                                                  plan,
+                                                  &old.logical,
+                                                  d.tracks.clone(),
+                                                  d.entry)?;
+                if next.segments != d.segments || next.viewport != d.viewport
+                {
+                    let mut cells = Vec::new();
+                    let mut logical = Vec::new();
+                    cells.try_reserve_exact(old.cells.len()).map_err(|_| NO_MEMORY)?;
+                    logical.try_reserve_exact(old.logical.len()).map_err(|_| NO_MEMORY)?;
+                    cells.extend_from_slice(&old.cells);
+                    logical.extend_from_slice(&old.logical);
+                    plan[i].state.layout.as_mut().ok_or(CORRUPT_DATA)?.outlines=Some(Arc::try_new(super::super::snapshot::Grid {cells,logical,dividers:Some(next)}).map_err(|_|NO_MEMORY)?);
+                }
+            }
             let clip = tree::clip(tree::clip(plan[i].clip, local_clip), Some(viewport));
             for child in plan[i].children.clone()
             {
@@ -1209,7 +1441,7 @@ impl Manager
     }
 
     fn axis(plan: &mut [Item], index: usize, vertical: bool, constrained: bool,
-            constraint: layout::AxisConstraint, gate: TrapGate)
+            constraint: layout::AxisConstraint, basis: Option<i64>, gate: TrapGate)
             -> Result<(i64, i64), Status>
     {
         let entry = plan[index].entry;
@@ -1258,14 +1490,193 @@ impl Manager
             for t in config.tracks.iter().filter(|t| (t.axis == 1) == vertical)
             {
                 let track = axis.tracks.get_mut(t.index as usize).ok_or(CORRUPT_DATA)?;
-                track.mode = t.mode;
-                track.percent = t.percent;
+                track.bounds = t.bounds;
+            }
+        }
+        if let Some(config) = item.state.layout.as_ref().and_then(|l| l.grid.as_ref())
+        {
+            for b in config.boundaries.iter().filter(|b| (b.axis == 1) == vertical)
+            {
+                if (b.index as usize) + 1 < axis.tracks.len()
+                {
+                    axis.tracks[b.index as usize].gap = 4;
+                }
+            }
+            if let Some(manual) = &config.manual[usize::from(vertical)]
+            {
+                for (t, value) in axis.tracks.iter_mut().zip(manual.iter())
+                {
+                    t.manual = 1;
+                    t.requested = *value;
+                }
             }
         }
         super::super::reflow::grid_axis(entry,
                                         gate,
                                         constraint.into(),
+                                        basis,
                                         &mut axis.tracks,
                                         &mut axis.items)
+    }
+}
+
+impl Manager
+{
+    fn divider_snapshot(item: &Item, plan: &[Item], logical: &[wire::LogicalRect],
+                        tracks: [Arc<Vec<wire::GridTrack>>; 2], entry: DefinitionEntry)
+                        -> Result<Arc<super::super::snapshot::Dividers>, Status>
+    {
+        use super::super::snapshot::{Divider, Dividers};
+        let l = item.state.layout.as_ref().ok_or(CORRUPT_DATA)?;
+        let config = l.grid.as_ref().ok_or(CORRUPT_DATA)?;
+        let viewport = l.viewport(item.rect);
+        let (sx, sy) = l.scroll.as_ref().map_or((0, 0), |s| (s.data.x, s.data.y));
+        let mut segments = Vec::new();
+        for b in config.boundaries.iter().filter(|_| !l.hidden)
+        {
+            let axis = &tracks[b.axis as usize];
+            let Some(a) = axis.get(b.index as usize)
+            else
+            {
+                continue;
+            };
+            let Some(z) = axis.get(b.index as usize + 1)
+            else
+            {
+                continue;
+            };
+            if a.assigned_gap == 0
+            {
+                continue;
+            }
+            let origin = if b.axis == 0 { item.screen.left - sx } else { item.screen.top - sy };
+            let value = origin.checked_add(a.position)
+                              .and_then(|v| v.checked_add(a.assigned))
+                              .ok_or(BAD_ARGUMENT)?;
+            let finish = value.checked_add(a.assigned_gap).ok_or(BAD_ARGUMENT)?;
+            let (near, far) = if b.axis == 0
+            {
+                (viewport.left, viewport.right)
+            }
+            else
+            {
+                (viewport.top, viewport.bottom)
+            };
+            if value < i64::from(near) || finish > i64::from(far)
+            {
+                continue;
+            }
+            let min = origin.checked_add(a.position)
+                            .and_then(|v| v.checked_add(a.minimum.min(a.assigned)))
+                            .ok_or(BAD_ARGUMENT)?
+                            .max(value.saturating_sub(z.maximum.saturating_sub(z.assigned)));
+            let max = origin.checked_add(z.position)
+                            .and_then(|v| v.checked_add(z.assigned - z.minimum.min(z.assigned)))
+                            .and_then(|v| v.checked_sub(a.assigned_gap))
+                            .ok_or(BAD_ARGUMENT)?
+                            .min(value.saturating_add(a.maximum.saturating_sub(a.assigned)));
+            let clamp = |n: i64| n.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16;
+            let (cross_start, cross_end) = if b.axis == 0
+            {
+                (viewport.top, viewport.bottom)
+            }
+            else
+            {
+                (viewport.left, viewport.right)
+            };
+            let mut blocked = Vec::new();
+            blocked.try_reserve_exact(item.children.len()).map_err(|_| NO_MEMORY)?;
+            for (offset, child) in item.children.clone().enumerate()
+            {
+                let n = plan[child].node;
+                let (start, count) = if b.axis == 0
+                {
+                    (n.cell.column, n.span.columns)
+                }
+                else
+                {
+                    (n.cell.row, n.span.rows)
+                };
+                if start <= b.index && start.checked_add(count).ok_or(CORRUPT_DATA)? > b.index + 1
+                {
+                    let r = *logical.get(offset).ok_or(CORRUPT_DATA)?;
+                    let (lo, hi) = if b.axis == 0
+                    {
+                        (item.screen.top - sy + r.top, item.screen.top - sy + r.bottom)
+                    }
+                    else
+                    {
+                        (item.screen.left - sx + r.left, item.screen.left - sx + r.right)
+                    };
+                    let lo = clamp(lo).max(cross_start);
+                    let hi = clamp(hi).min(cross_end);
+                    if lo < hi
+                    {
+                        blocked.push((lo, hi));
+                    }
+                }
+            }
+            blocked.sort_unstable();
+            let mut start = cross_start;
+            for (lo, hi) in blocked.into_iter().chain(core::iter::once((cross_end, cross_end)))
+            {
+                if lo > start
+                {
+                    segments.try_reserve(1).map_err(|_| NO_MEMORY)?;
+                    let bounds = if b.axis == 0
+                    {
+                        Rect::new(value as i16, start, finish as i16, lo)
+                    }
+                    else
+                    {
+                        Rect::new(start, value as i16, lo, finish as i16)
+                    };
+                    segments.push(Divider { axis: b.axis,
+                                            index: b.index,
+                                            bounds,
+                                            minimum: clamp(min),
+                                            maximum: clamp(max),
+                                            position: value as i16 });
+                }
+                start = start.max(hi);
+            }
+        }
+        Arc::try_new(Dividers { entry,
+                                viewport,
+                                segments,
+                                tracks }).map_err(|_| NO_MEMORY)
+    }
+}
+
+impl Manager
+{
+    pub(super) fn prepare_split_release(&self, id: u64, owner: u64, mut state: State, axis: u32,
+                                        index: u32, delta: i64, gate: TrapGate,
+                                        resolve: impl FnMut(i16) -> Result<DefinitionEntry, Status>)
+                                        -> Result<Prepared, Status>
+    {
+        let l = state.layout.as_mut().ok_or(NOT_SUPPORTED)?;
+        let d = l.outlines.as_ref().and_then(|g| g.dividers.as_ref()).ok_or(CORRUPT_DATA)?;
+        let tracks = &d.tracks[axis as usize];
+        let mut sizes = Vec::new();
+        sizes.try_reserve_exact(tracks.len()).map_err(|_| NO_MEMORY)?;
+        sizes.extend(tracks.iter().map(|t| t.assigned));
+        let a = sizes.get_mut(index as usize).ok_or(CORRUPT_DATA)?;
+        *a = a.checked_add(delta).filter(|v| *v >= 0).ok_or(BAD_ARGUMENT)?;
+        let b = sizes.get_mut(index as usize + 1).ok_or(CORRUPT_DATA)?;
+        *b = b.checked_sub(delta).filter(|v| *v >= 0).ok_or(BAD_ARGUMENT)?;
+        let mut config = Configuration::copy(l.grid.as_deref())?;
+        config.manual[axis as usize] = Some(Arc::try_new(sizes).map_err(|_| NO_MEMORY)?);
+        l.grid = Some(Arc::try_new(config).map_err(|_| NO_MEMORY)?);
+        l.intrinsic = None;
+        l.measured = None;
+        l.arrangement_pending = true;
+        let call = ControlCall { id,
+                                 operation: REFLOW_OBJECT,
+                                 layout: wire::Payload { message: wire::ASSIGN_RECT,
+                                                         rect: state.spec.bounds(),
+                                                         ..Default::default() },
+                                 ..Default::default() };
+        self.prepare_layout_change(&call, owner, false, gate, resolve, None, None, Some(state))
     }
 }

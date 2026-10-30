@@ -3,16 +3,20 @@
 //! The CDEF owns policy. This adapter validates wire input before author access.
 use mac_abi::controls::reflow as wire;
 
-use crate::{AxisConstraint, Error, Result, TrackSize};
+use crate::{AxisConstraint, Error, Result, SizeBounds};
 
 #[derive(Clone, Copy)]
 pub struct Track
 {
-    pub size:      TrackSize,
-    pub minimum:   i64,
-    pub preferred: i64,
-    pub assigned:  i64,
-    pub position:  i64
+    pub bounds:       SizeBounds,
+    pub gap:          i64,
+    pub assigned_gap: i64,
+    pub requested:    Option<i64>,
+    pub minimum:      i64,
+    pub maximum:      i64,
+    pub preferred:    i64,
+    pub assigned:     i64,
+    pub position:     i64
 }
 #[derive(Clone, Copy)]
 pub struct Item
@@ -28,28 +32,32 @@ pub struct Item
 /// is one synchronous invocation and outputs remain private until admission.
 pub struct AxisCalculation<'a>
 {
-    constraint: AxisConstraint,
-    tracks:     &'a mut [wire::GridTrack],
-    items:      &'a mut [wire::GridItem],
-    minimum:    &'a mut i64,
-    preferred:  &'a mut i64
+    constraint:    AxisConstraint,
+    percent_basis: Option<i64>,
+    tracks:        &'a mut [wire::GridTrack],
+    items:         &'a mut [wire::GridItem],
+    minimum:       &'a mut i64,
+    preferred:     &'a mut i64
 }
 impl<'a> AxisCalculation<'a>
 {
-    pub fn decode(constraint: wire::AxisConstraint, tracks: &'a mut [wire::GridTrack],
-                  items: &'a mut [wire::GridItem], minimum: &'a mut i64, preferred: &'a mut i64)
+    pub fn decode(constraint: wire::AxisConstraint, percent_basis: i64,
+                  tracks: &'a mut [wire::GridTrack], items: &'a mut [wire::GridItem],
+                  minimum: &'a mut i64, preferred: &'a mut i64)
                   -> Result<Self>
     {
         let constraint = constraint.try_into()?;
-        let mut percent = 0u32;
-        for t in &*tracks
-        {
-            TrackSize::decode(t.mode, t.percent)?;
-            percent = percent.checked_add(t.percent).ok_or(Error::ExtentOverflow)?;
-        }
-        if percent > 10_000
+        if percent_basis < -1
         {
             return Err(Error::InvalidEncoding);
+        }
+        for t in &*tracks
+        {
+            SizeBounds::decode(t.bounds)?;
+            if t.gap < 0 || t.gap > 4 || t.manual > 1 || t.reserved != 0 || t.requested < 0
+            {
+                return Err(Error::InvalidEncoding);
+            }
         }
         for item in &*items
         {
@@ -64,10 +72,16 @@ impl<'a> AxisCalculation<'a>
             }
         }
         Ok(Self { constraint,
+                  percent_basis: (percent_basis >= 0).then_some(percent_basis),
                   tracks,
                   items,
                   minimum,
                   preferred })
+    }
+
+    pub fn percent_basis(&self) -> Option<i64>
+    {
+        self.percent_basis
     }
 
     pub fn constraint(&self) -> AxisConstraint
@@ -88,11 +102,15 @@ impl<'a> AxisCalculation<'a>
     pub fn track(&self, index: usize) -> Result<Track>
     {
         let t = self.tracks.get(index).ok_or(Error::InvalidEncoding)?;
-        Ok(Track { size:      TrackSize::decode(t.mode, t.percent)?,
-                   minimum:   t.minimum,
-                   preferred: t.preferred,
-                   assigned:  t.assigned,
-                   position:  t.position })
+        Ok(Track { bounds:       SizeBounds::decode(t.bounds)?,
+                   maximum:      t.maximum,
+                   gap:          t.gap,
+                   assigned_gap: t.assigned_gap,
+                   requested:    (t.manual != 0).then_some(t.requested),
+                   minimum:      t.minimum,
+                   preferred:    t.preferred,
+                   assigned:     t.assigned,
+                   position:     t.position })
     }
 
     pub fn item(&self, index: usize) -> Result<Item>
@@ -117,6 +135,27 @@ impl<'a> AxisCalculation<'a>
         t.minimum = minimum;
         t.preferred = preferred;
         t.assigned = assigned;
+        Ok(())
+    }
+
+    pub fn set_maximum(&mut self, index: usize, maximum: i64) -> Result<()>
+    {
+        if maximum < 0
+        {
+            return Err(Error::InvalidRequirements);
+        }
+        self.tracks.get_mut(index).ok_or(Error::InvalidEncoding)?.maximum = maximum;
+        Ok(())
+    }
+
+    pub fn set_gap(&mut self, index: usize, assigned: i64) -> Result<()>
+    {
+        let t = self.tracks.get_mut(index).ok_or(Error::InvalidEncoding)?;
+        if assigned < 0 || assigned > t.gap
+        {
+            return Err(Error::InvalidEncoding);
+        }
+        t.assigned_gap = assigned;
         Ok(())
     }
 

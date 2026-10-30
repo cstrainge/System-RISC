@@ -113,6 +113,7 @@ impl Workspace
                         | "native-progress-bar-cdef"
                         | "native-static-text-cdef"
                         | "native-table-cdef"
+                        | "native-splitter-cdef"
                         | "native-mdef")
                || matches!(*package,
                            "vhost-transport"
@@ -144,12 +145,12 @@ impl Workspace
     {
         self.guest_build(&["native-wdef", "native-buttons-cdef", "native-scrollbar-cdef",
                            "native-mdef", "native-progress-bar-cdef", "native-static-text-cdef",
-                           "native-table-cdef"])?;
+                           "native-table-cdef", "native-splitter-cdef"])?;
         self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "cursor-test",
                            "panic-test", "resedit", "reactor", "bootrom", "vhost-transport",
                            "vhost-filesystem", "stuffit-filesystem", "qemu-power-device",
                            "vdagent-channel", "host-clipboard-extension",
-                           "multi-scheduler-extension"])?;
+                           "multi-scheduler-extension", "control-suite"])?;
         // Keep userspace's allocation-free serde graph independent of the
         // resident System's alloc-enabled serde. Cargo feature unification
         // across the kernel and an app must not impose a userspace heap.
@@ -171,7 +172,8 @@ impl Workspace
              ("extensions/multi-scheduler", "Multi-Scheduler", "MultiScheduler"),
              ("drivers/vhost-filesystem", "Host Filesystem", "HostFilesystem"),
              ("drivers/stuffit-filesystem", "StuffIt Filesystem", "StuffItFilesystem"),
-             ("drivers/qemu-power-device", "Qemu Power Device", "QemuPowerDevice")]
+             ("drivers/qemu-power-device", "Qemu Power Device", "QemuPowerDevice"),
+             ("apps/control-suite", "Control Suite", "ControlSuite")]
         {
             let report = package::build(&self.root.join(directory).join("resources.json"),
                                         &self.build

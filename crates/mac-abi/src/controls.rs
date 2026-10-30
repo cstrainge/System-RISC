@@ -4,6 +4,7 @@ use crate::Rect;
 pub const DRAW_SCROLLBAR: u32 = 0;
 pub const HIT_SCROLLBAR: u32 = 1;
 pub const TRACK_SCROLLBAR: u32 = 2;
+pub const TRACK_SPLITTER: u32 = 5;
 pub const DRAW_STANDARD: u32 = 3;
 pub const HIT_STANDARD: u32 = 4;
 pub const CREATE_STANDARD: u32 = 10;
@@ -53,6 +54,13 @@ pub const TABLE_PROCEDURE: i16 = i16::MIN + 3;
 pub const CDEF_PROGRESS_BAR: i16 = -32760;
 pub const CDEF_STATIC_TEXT: i16 = -32759;
 pub const CDEF_TABLE: i16 = -32758;
+pub const SPLITTER_PROCEDURE: i16 = i16::MIN + 4;
+pub const CDEF_SPLITTER: i16 = -32757;
+pub const SPLITTER_PART: i16 = 130;
+pub const SPLITTER_HORIZONTAL: i16 = 1;
+pub const SPLITTER_RANGE: i16 = 2;
+pub const SPLITTER_PARENT: i16 = 4;
+
 /// Ask a passive CDEF for the exact changed pixels between two states.
 pub const CHANGE_BOUNDS_DEFINITION: i16 = 6;
 /// Full-precision passive progress state. Scalar button/scroll values are not

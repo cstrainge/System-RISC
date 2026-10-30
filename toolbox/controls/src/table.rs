@@ -403,20 +403,19 @@ impl<'a> TableRef<'a>
             .map(|_| ())
     }
 
-    fn set_track(self, axis: u32, index: u32, size: TrackSize) -> Result<()>
+    fn set_track(self, axis: u32, index: u32, size: SizeBounds) -> Result<()>
     {
-        let (mode, percent) = size.encode().map_err(|_| Error::BadArgument)?;
+        let bounds = size.encode().map_err(|_| Error::BadArgument)?;
         self.control
             .layout(reflow::Payload { message: reflow::SET_GRID_TRACK,
                                       track: reflow::TrackSetting { axis,
                                                                     index,
-                                                                    mode,
-                                                                    percent },
+                                                                    bounds },
                                       ..Default::default() })
             .map(|_| ())
     }
 
-    fn track(self, axis: u32, index: u32) -> Result<TrackSize>
+    fn track(self, axis: u32, index: u32) -> Result<SizeBounds>
     {
         let t = self.control
                     .layout(reflow::Payload { message: reflow::GET_GRID_TRACK,
@@ -425,25 +424,25 @@ impl<'a> TableRef<'a>
                                                                             ..Default::default() },
                                               ..Default::default() })?
                     .track;
-        TrackSize::decode(t.mode, t.percent).map_err(|_| Error::BadAbi)
+        SizeBounds::decode(t.bounds).map_err(|_| Error::BadAbi)
     }
 
-    pub fn set_column(self, index: u32, size: TrackSize) -> Result<()>
+    pub fn set_column(self, index: u32, size: SizeBounds) -> Result<()>
     {
         self.set_track(0, index, size)
     }
 
-    pub fn set_row(self, index: u32, size: TrackSize) -> Result<()>
+    pub fn set_row(self, index: u32, size: SizeBounds) -> Result<()>
     {
         self.set_track(1, index, size)
     }
 
-    pub fn column(self, index: u32) -> Result<TrackSize>
+    pub fn column(self, index: u32) -> Result<SizeBounds>
     {
         self.track(0, index)
     }
 
-    pub fn row(self, index: u32) -> Result<TrackSize>
+    pub fn row(self, index: u32) -> Result<SizeBounds>
     {
         self.track(1, index)
     }
@@ -504,5 +503,76 @@ impl<'a> Iterator for Children<'a>
         Some(Ok(Child { cell: call.relation.cell.into(),
             span: match call.relation.span.try_into() { Ok(span) => span, Err(_) => { self.finished = true; return Some(Err(Error::BadAbi)); } },
             control: Controls::new(self.table.control.client()).control(ControlId(call.relation.child)) }))
+    }
+}
+
+impl TableRef<'_>
+{
+    /// Enable the divider after one zero-based column. Boundaries are independent.
+    pub fn set_column_splitter(self, after: u32, enabled: bool) -> Result<()>
+    {
+        self.set_splitter(0, after, enabled)
+    }
+
+    pub fn set_row_splitter(self, after: u32, enabled: bool) -> Result<()>
+    {
+        self.set_splitter(1, after, enabled)
+    }
+
+    fn set_splitter(self, axis: u32, index: u32, enabled: bool) -> Result<()>
+    {
+        self.control
+            .layout(reflow::Payload { message: reflow::SET_SPLITTER,
+                                      splitter: reflow::SplitterSetting { axis,
+                                                                          index,
+                                                                          enabled:
+                                                                              u32::from(enabled),
+                                                                          reserved: 0 },
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    pub fn column_splitter(self, after: u32) -> Result<bool>
+    {
+        self.splitter_enabled(0, after)
+    }
+
+    pub fn row_splitter(self, after: u32) -> Result<bool>
+    {
+        self.splitter_enabled(1, after)
+    }
+
+    fn splitter_enabled(self, axis: u32, index: u32) -> Result<bool>
+    {
+        Ok(self.control
+               .layout(reflow::Payload { message: reflow::GET_SPLITTER,
+                                         splitter: reflow::SplitterSetting { axis,
+                                                                             index,
+                                                                             ..Default::default() },
+                                         ..Default::default() })?
+               .splitter
+               .enabled
+           != 0)
+    }
+
+    /// Restore the configured Fit/Fill/Percent policy after manual dragging.
+    pub fn reset_column_split_sizes(self) -> Result<()>
+    {
+        self.reset_split_sizes(0)
+    }
+
+    pub fn reset_row_split_sizes(self) -> Result<()>
+    {
+        self.reset_split_sizes(1)
+    }
+
+    fn reset_split_sizes(self, axis: u32) -> Result<()>
+    {
+        self.control
+            .layout(reflow::Payload { message: reflow::RESET_SPLIT_SIZES,
+                                      splitter: reflow::SplitterSetting { axis,
+                                                                          ..Default::default() },
+                                      ..Default::default() })
+            .map(|_| ())
     }
 }

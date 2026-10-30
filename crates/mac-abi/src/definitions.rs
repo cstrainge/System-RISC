@@ -63,33 +63,36 @@ pub const DEFAULT_BUTTON: i16 = 1;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ControlDefinitionState
 {
-    pub bounds:       Rect,
-    pub title:        [u8; crate::INLINE_STRING_BYTES],
-    pub title_length: u32,
-    pub enabled:      u32,
-    pub highlighted:  u32,
-    pub value:        i16,
-    pub minimum:      i16,
-    pub maximum:      i16,
-    pub flags:        i16,
-    pub font:         crate::quickdraw::FontSelection,
-    pub progress:     crate::controls::ProgressRange
+    pub bounds:          Rect,
+    pub title:           [u8; crate::INLINE_STRING_BYTES],
+    pub title_length:    u32,
+    pub enabled:         u32,
+    pub highlighted:     u32,
+    pub value:           i16,
+    pub minimum:         i16,
+    pub maximum:         i16,
+    pub flags:           i16,
+    pub font:            crate::quickdraw::FontSelection,
+    pub progress:        crate::controls::ProgressRange,
+    /// Optional parent geometry for a Splitter drag outline; SPLITTER_PARENT selects it.
+    pub splitter_parent: Rect
 }
 impl Default for ControlDefinitionState
 {
     fn default() -> Self
     {
-        Self { bounds:       Rect::ZERO,
-               title:        [0; crate::WINDOW_TITLE_BYTES],
-               title_length: 0,
-               enabled:      1,
-               highlighted:  0,
-               value:        0,
-               minimum:      0,
-               maximum:      1,
-               flags:        0,
-               font:         Default::default(),
-               progress:     Default::default() }
+        Self { bounds:          Rect::ZERO,
+               title:           [0; crate::WINDOW_TITLE_BYTES],
+               title_length:    0,
+               enabled:         1,
+               highlighted:     0,
+               value:           0,
+               minimum:         0,
+               maximum:         1,
+               flags:           0,
+               font:            Default::default(),
+               progress:        Default::default(),
+               splitter_parent: Rect::ZERO }
     }
 }
 impl ControlDefinitionState

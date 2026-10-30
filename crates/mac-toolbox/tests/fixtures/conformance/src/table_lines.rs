@@ -1,6 +1,6 @@
 //! Native decoration toggles on the real resident Table and loaded CDEF.
-use mac_toolbox::{controls::{self, Cell, GridLines, Reflow, Span, StandardKind, StandardState,
-                             TrackSize},
+use mac_toolbox::{controls::{self, Cell, GridLines, Reflow, SizeBounds, Span, StandardKind,
+                             StandardState},
                   *};
 
 use super::conformance::Failure;
@@ -157,8 +157,8 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
         }
         for index in [0, 1]
         {
-            table.table().set_column(index, TrackSize::Fill)?;
-            table.table().set_row(index, TrackSize::Fill)?;
+            table.table().set_column(index, SizeBounds::FILL)?;
+            table.table().set_row(index, SizeBounds::FILL)?;
         }
         table.control().assign_rect(rect(area))?;
         *slot = Some(table);

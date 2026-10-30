@@ -49,6 +49,7 @@ fn encode(operation: Operation, reply: Reply) -> Result<i64>
     match (operation, reply)
     {
         (Operation::Hit, Reply::Hit(part)) => Ok(part as i64),
+        (Operation::Track, Reply::Position(value)) => Ok(i64::from(value as u16)),
         (Operation::Track, Reply::Value(value)) if value <= i16::MAX as u16 => Ok(i64::from(value)),
         (Operation::Draw
          | Operation::Calculate
@@ -138,7 +139,7 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
             }
             let tracks = unsafe { core::slice::from_raw_parts_mut(axis.tracks, axis.track_count) };
             let items = unsafe { core::slice::from_raw_parts_mut(axis.items, axis.item_count) };
-            let request = crate::reflow::grid::AxisCalculation::decode(axis.constraint, tracks, items,
+            let request = crate::reflow::grid::AxisCalculation::decode(axis.constraint, axis.percent_basis, tracks, items,
                 &mut axis.minimum, &mut axis.preferred).map_err(|e| Error::from_status(e.status()))?;
             return match handler(Message::CalculateGridAxis(request), services)?
             {
@@ -337,3 +338,5 @@ adapter!(buttons_entry, ButtonFamily, crate::Button<'a>);
 adapter!(progress_entry, ProgressFamily, crate::Progress);
 adapter!(scrollbar_entry, ScrollbarFamily, crate::Scrollbar);
 adapter!(table_entry, TableFamily, crate::Table);
+
+adapter!(splitter_entry, SplitterFamily, crate::Splitter);

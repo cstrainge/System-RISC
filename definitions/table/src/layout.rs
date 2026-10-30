@@ -1,10 +1,18 @@
 //! Deterministic one-axis grid policy. Two such calculations resolve columns
 //! before width-dependent row measurement. No service calls or allocation.
-use mac_definition::reflow::{AxisConstraint, Error, Result, TrackSize, grid::AxisCalculation};
+use mac_definition::reflow::{AxisConstraint, Error, Fill, Result, grid::AxisCalculation};
+
+
+
+
+
 fn add(a: i64, b: i64) -> Result<i64>
 {
     a.checked_add(b).ok_or(Error::ExtentOverflow)
 }
+
+
+
 fn fraction(total: i64, part: i64, whole: i64) -> Result<i64>
 {
     if whole == 0
@@ -15,6 +23,9 @@ fn fraction(total: i64, part: i64, whole: i64) -> Result<i64>
                                                                                Error::ExtentOverflow
                                                                            })
 }
+
+
+
 fn total(c: &AxisCalculation<'_>, field: impl Fn(mac_definition::reflow::grid::Track) -> i64)
          -> Result<i64>
 {
@@ -25,6 +36,9 @@ fn total(c: &AxisCalculation<'_>, field: impl Fn(mac_definition::reflow::grid::T
     }
     Ok(sum)
 }
+
+
+
 /// Single-track requirements first, then spans in stable cell order. A span's
 /// deficit is split evenly, with earlier tracks receiving remainder pixels.
 fn requirements(c: &mut AxisCalculation<'_>, preferred: bool) -> Result<()>
@@ -43,6 +57,10 @@ fn requirements(c: &mut AxisCalculation<'_>, preferred: bool) -> Result<()>
             {
                 let t = c.track(j)?;
                 sum = add(sum, if preferred { t.preferred } else { t.minimum })?;
+                if j + 1 < item.start + item.span
+                {
+                    sum = add(sum, t.gap)?;
+                }
             }
             let need = if preferred { item.preferred } else { item.minimum };
             let deficit = (need - sum).max(0);
@@ -60,6 +78,9 @@ fn requirements(c: &mut AxisCalculation<'_>, preferred: bool) -> Result<()>
     }
     Ok(())
 }
+
+
+
 /// Proportional allocation with cumulative rounding spends exactly the admitted
 /// budget. It needs one pass, including shortage and uneven pixel budgets.
 fn grow(c: &mut AxisCalculation<'_>, budget: i64,
@@ -80,36 +101,129 @@ fn grow(c: &mut AxisCalculation<'_>, budget: i64,
     }
     Ok(budget - spend)
 }
+
+
+
+/// Capped equal fill. Binary search needs at most 63 scans, normally 15 for a
+/// native finite viewport; it avoids one redistribution pass per saturated track.
+fn fill(c: &mut AxisCalculation<'_>, left: i64) -> Result<()>
+{
+    if left == 0
+    {
+        return Ok(());
+    }
+    let capacity = |t: mac_definition::reflow::grid::Track| {
+        if t.bounds.fill() == Fill::Fill { (t.maximum - t.assigned).min(left) } else { 0 }
+    };
+    let mut low = 0;
+    let mut high = left;
+    while low < high
+    {
+        let mid = low + (high - low) / 2 + 1;
+        let mut spent = 0i128;
+        for i in 0..c.track_count()
+        {
+            spent += i128::from(capacity(c.track(i)?).min(mid));
+        }
+        if spent <= i128::from(left)
+        {
+            low = mid;
+        }
+        else
+        {
+            high = mid - 1;
+        }
+    }
+    let mut remaining = left;
+    for i in 0..c.track_count()
+    {
+        let t = c.track(i)?;
+        let add = capacity(t).min(low);
+        c.set_track(i, t.minimum, t.preferred, t.assigned + add)?;
+        remaining -= add;
+    }
+    for i in 0..c.track_count()
+    {
+        if remaining == 0
+        {
+            break;
+        }
+        let t = c.track(i)?;
+        if t.bounds.fill() == Fill::Fill && t.assigned < t.maximum
+        {
+            c.set_track(i, t.minimum, t.preferred, t.assigned + 1)?;
+            remaining -= 1;
+        }
+    }
+    Ok(())
+}
+
 pub fn calculate(c: &mut AxisCalculation<'_>) -> Result<()>
 {
     for i in 0..c.track_count()
     {
         c.set_track(i, 0, 0, 0)?;
+        c.set_maximum(i, i64::MAX)?;
     }
     requirements(c, false)?;
     requirements(c, true)?;
-    let minimum = total(c, |t| t.minimum)?;
-    let preferred = total(c, |t| t.preferred)?;
+    let gaps = total(c, |t| t.gap)?;
+    let basis = c.percent_basis().map(|v| v.saturating_sub(gaps));
+    let mut manual = false;
+    for i in 0..c.track_count()
+    {
+        let t = c.track(i)?;
+        let maximum = match t.bounds.maximum()
+        {
+            Some(v) => v.resolve(basis)?.unwrap_or(i64::MAX),
+            None => i64::MAX
+        };
+        let explicit_minimum = match t.bounds.minimum()
+        {
+            Some(v) => v.resolve(basis)?,
+            None => None
+        };
+        let minimum = explicit_minimum.unwrap_or(t.minimum.min(maximum));
+        if minimum > maximum
+        {
+            return Err(Error::InvalidRequirements);
+        }
+        let preferred = t.requested.unwrap_or(t.preferred).clamp(minimum, maximum);
+        manual |= t.requested.is_some();
+        c.set_track(i, minimum, preferred, 0)?;
+        c.set_maximum(i, maximum)?;
+    }
+    let minimum = add(total(c, |t| t.minimum)?, gaps)?;
+    let preferred = add(total(c, |t| t.preferred)?, gaps)?;
     let budget = match c.constraint()
     {
         AxisConstraint::Unbounded => preferred,
         AxisConstraint::AtMost(v) => preferred.min(i64::from(v.pixels())),
         AxisConstraint::Exact(v) => i64::from(v.pixels())
     };
+    let gap_budget = gaps.min(budget);
+    let mut prefix = 0;
+    let mut previous = 0;
+    for i in 0..c.track_count()
+    {
+        prefix = add(prefix, c.track(i)?.gap)?;
+        let end = fraction(gap_budget, prefix, gaps)?;
+        c.set_gap(i, end - previous)?;
+        previous = end;
+    }
+    let budget = budget - gap_budget;
     if matches!(c.constraint(), AxisConstraint::Unbounded)
     {
-        // Fixed content has no offered surplus to divide. Every track retains
-        // its finite preferred size, including Fill and Percent tracks.
         for i in 0..c.track_count()
         {
             let t = c.track(i)?;
             c.set_track(i, t.minimum, t.preferred, t.preferred)?;
         }
     }
-    else if budget < minimum
+    else if budget < minimum - gaps
     {
-        // Explicit forced-size policy: scale minima, retaining the true minimum
-        // in the reply. Children safely degrade, even to zero-area rectangles.
+        // Explicit forced-size policy: insufficient room scales minima. Maxima
+        // still hold; child controls degrade safely, including zero-area cells.
         grow(c, budget, |t| t.minimum)?;
     }
     else
@@ -119,48 +233,23 @@ pub fn calculate(c: &mut AxisCalculation<'_>) -> Result<()>
             let t = c.track(i)?;
             c.set_track(i, t.minimum, t.preferred, t.minimum)?;
         }
-        let mut left = budget - minimum;
-        // Percent is a target of the offered budget, never a replacement for a
-        // minimum. Competing percent deficits share remaining space fairly.
-        left = grow(c, left, |t| {
-            match t.size
+        let left = grow(c, budget - (minimum - gaps), |t| {
+            if manual || t.bounds.fill() == Fill::None
             {
-                TrackSize::Percent(p) =>
-                {
-                    // Validated p <= 10_000 keeps the result within budget;
-                    // multiply in i128 before the proven nonnegative narrowing.
-                    let target = (i128::from(budget) * i128::from(p) / 10_000) as i64;
-                    (target - t.assigned).max(0)
-                }
-                _ => 0
+                (t.preferred - t.assigned).max(0)
+            }
+            else
+            {
+                0
             }
         })?;
-        left = grow(c, left, |t| {
-            if t.size == TrackSize::Fit { (t.preferred - t.assigned).max(0) } else { 0 }
-        })?;
-        let fills = total(c, |t| i64::from(t.size == TrackSize::Fill))?;
-        if fills > 0
-        {
-            let mut ordinal = 0;
-            let mut previous = 0;
-            for i in 0..c.track_count()
-            {
-                let t = c.track(i)?;
-                if t.size == TrackSize::Fill
-                {
-                    ordinal += 1;
-                    let end = fraction(left, ordinal, fills)?;
-                    c.set_track(i, t.minimum, t.preferred, add(t.assigned, end - previous)?)?;
-                    previous = end;
-                }
-            }
-        }
+        fill(c, left)?;
     }
     let mut position = 0;
     for i in 0..c.track_count()
     {
         c.set_position(i, position)?;
-        position = add(position, c.track(i)?.assigned)?;
+        position = add(position, add(c.track(i)?.assigned, c.track(i)?.assigned_gap)?)?;
     }
     for i in 0..c.item_count()
     {

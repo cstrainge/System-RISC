@@ -1,5 +1,5 @@
 //! Event-boundary layout through real services and disk-loaded definitions.
-use mac_toolbox::{controls::{self, Anchors, Cell, Reflow, StandardKind, StandardState, TrackSize},
+use mac_toolbox::{controls::{self, Anchors, Cell, Reflow, SizeBounds, StandardKind, StandardState},
                   *};
 
 use super::conformance::Failure;
@@ -88,7 +88,7 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
                  .map_err(|e| Failure::Service(e.cause.status()))?;
     a.set_anchors(Anchors::ALL)?;
     n.set_anchors(Anchors::ALL)?;
-    table.table().set_column(1, TrackSize::Fill)?;
+    table.table().set_column(1, SizeBounds::FILL)?;
     let other = s.controls().create_table(w.id(), Rect::new(330, 10, 620, 150), Reflow::Yes)?;
     let c = other.table()
                  .set_child(Cell { row:    0,
@@ -207,11 +207,11 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
     require(width(a)? == 170 && table.control().info()?.layout_error.is_none(),
             "released retained pressure did not resume automatic layout")?;
     // Scratch admission failure and correction use the same public track setter.
-    table.table().set_column(1_000_000_000, TrackSize::Fill)?;
+    table.table().set_column(1_000_000_000, SizeBounds::FILL)?;
     poll(s)?;
     require(table.control().info()?.layout_error == Some(Error::NoMemory) && width(a)? == 170,
             "automatic scratch refusal changed geometry")?;
-    table.table().set_column(1_000_000_000, TrackSize::Fit)?;
+    table.table().set_column(1_000_000_000, SizeBounds::CONTENT)?;
     poll(s)?;
     require(table.control().info()?.layout_error.is_none(), "automatic scratch retry failed")?;
     // Removing/reparenting pending controls consumes only their current tree.
@@ -244,7 +244,7 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
     // Dispose a queued root before the poll, then reuse storage for a new root.
     let temporary = s.controls().create_table(w.id(), Rect::new(10, 200, 200, 260), Reflow::Yes)?;
     let old_id = temporary.control().id();
-    temporary.table().set_column(0, TrackSize::Fill)?;
+    temporary.table().set_column(0, SizeBounds::FILL)?;
     drop(temporary);
     let replacement =
         s.controls().create_table(w.id(), Rect::new(10, 200, 200, 260), Reflow::Yes)?;

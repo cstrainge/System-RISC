@@ -123,8 +123,13 @@ impl Desktop
                                          limit: usize)
                                          -> Result<(), Status>
     {
+        let feedback = prepared.feedback;
         let damage = publish(&mut self.content, &mut self.controls, window, prepared, used, limit)?;
-        let changed = !damage.is_empty();
+        let changed = !damage.is_empty() || feedback.is_some();
+        if let Some(feedback) = feedback
+        {
+            self.apply_control_outline(window, feedback)?;
+        }
         for rect in damage.into_iter().filter(|r| !r.is_empty())
         {
             self.content_changed_rect(window, rect);

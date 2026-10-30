@@ -18,7 +18,9 @@ fn main<'a>(message: Message<'a, Button<'a>>, services: Services<'a>) -> Result<
 ```
 
 The attribute takes no arguments. The state in `Message` selects the shared
-binding: `Button`, `Scrollbar`, `Progress` or `StaticText`. Use the family name
+binding: `Button`, `Scrollbar`, `Progress`, `StaticText` or `Table`. The table
+family currently draws an empty frame; rows, columns and input remain unimplemented.
+Use the family name
 directly rather than a local type alias; an unsupported name produces a compile
 error naming the state. The shared binding type-checks the handler and owns all
 wire validation, message decoding, clipping and reply encoding.

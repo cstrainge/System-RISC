@@ -45,12 +45,14 @@ pub(super) fn invoke(state: &mut ControlCall, payload: &mut mac_abi::controls::r
 /// borrows. The loaded image remains owned by the definition cache throughout.
 pub(super) fn grid_axis(entry: DefinitionEntry, gate: TrapGate,
                         constraint: mac_abi::controls::reflow::AxisConstraint,
+                        percent_basis: Option<i64>,
                         tracks: &mut [mac_abi::controls::reflow::GridTrack],
                         items: &mut [mac_abi::controls::reflow::GridItem])
                         -> Result<(i64, i64), Status>
 {
     use mac_abi::controls::reflow as wire;
     let mut axis = wire::GridAxisCall { constraint,
+                                        percent_basis: percent_basis.unwrap_or(-1),
                                         tracks: tracks.as_mut_ptr(),
                                         track_count: tracks.len(),
                                         items: items.as_mut_ptr(),
@@ -86,14 +88,25 @@ pub(super) fn grid_axis(entry: DefinitionEntry, gate: TrapGate,
     {
         if track.position != end
            || track.assigned < 0
+           || track.assigned_gap < 0
+           || track.assigned_gap > track.gap
+           || track.maximum < track.minimum
+           || track.assigned > track.maximum
+           || track.preferred > track.maximum
            || track.minimum < 0
            || track.preferred < track.minimum
         {
             return Err(BAD_ABI);
         }
-        end = end.checked_add(track.assigned).ok_or(BAD_ABI)?;
-        minimum = minimum.checked_add(track.minimum).ok_or(BAD_ABI)?;
-        preferred = preferred.checked_add(track.preferred).ok_or(BAD_ABI)?;
+        end = end.checked_add(track.assigned)
+                 .and_then(|n| n.checked_add(track.assigned_gap))
+                 .ok_or(BAD_ABI)?;
+        minimum = minimum.checked_add(track.minimum)
+                         .and_then(|n| n.checked_add(track.gap))
+                         .ok_or(BAD_ABI)?;
+        preferred = preferred.checked_add(track.preferred)
+                             .and_then(|n| n.checked_add(track.gap))
+                             .ok_or(BAD_ABI)?;
     }
     if (minimum, preferred) != (axis.minimum, axis.preferred)
     {

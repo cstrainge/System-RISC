@@ -1,7 +1,7 @@
 //! Real window-root layout through public SDK calls and optional physical-input
 //! replay. No host implementation substitutes for Window Manager/CDEF execution.
-use mac_toolbox::{controls::{self, Anchors, BorderOffsets, Cell, Reflow, StandardKind,
-                             StandardState, TrackSize},
+use mac_toolbox::{controls::{self, Anchors, BorderOffsets, Cell, Reflow, SizeBounds,
+                             StandardKind, StandardState},
                   *};
 
 use super::conformance::Failure;
@@ -112,8 +112,8 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
                                 child)
                      .map_err(|e| Failure::Service(e.cause.status()))?;
     child.set_anchors(Anchors::ALL)?;
-    table.table().set_column(0, TrackSize::Fill)?;
-    table.table().set_row(0, TrackSize::Fill)?;
+    table.table().set_column(0, SizeBounds::FILL)?;
+    table.table().set_row(0, SizeBounds::FILL)?;
     let t = table.control();
     t.set_anchors(Anchors::ALL)?;
     require(bounds(t)? == Rect::new(0, 0, 320, 240) && bounds(child)? == bounds(t)?,

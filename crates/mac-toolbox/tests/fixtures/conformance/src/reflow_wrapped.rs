@@ -1,6 +1,6 @@
 //! Native font-derived sizing and text publication through the public SDK.
-use mac_toolbox::{controls::{self, Anchors, Cell, Reflow, Span, StaticTextSpec, TextAlignment,
-                             TextLayout, TrackSize},
+use mac_toolbox::{controls::{self, Anchors, Cell, Reflow, SizeBounds, Span, StaticTextSpec,
+                             TextAlignment, TextLayout},
                   *};
 
 use super::conformance::Failure;
@@ -155,8 +155,8 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
                                                            "Wrapped Table text"))?;
     w.select()?;
     let table = s.controls().create_table(w.id(), Rect::new(10, 10, 130, 300), Reflow::Yes)?;
-    table.table().set_column(0, TrackSize::Fill)?;
-    table.table().set_column(1, TrackSize::Fill)?;
+    table.table().set_column(0, SizeBounds::FILL)?;
+    table.table().set_column(1, SizeBounds::FILL)?;
     let text = "Alpha beta gamma delta epsilon zeta eta theta.";
     let owned =
         s.controls().create_static_text_with(w.id(),
@@ -178,7 +178,7 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
                             top:    true,
                             bottom: false })?;
     let nested = s.controls().create_table(w.id(), Rect::new(0, 0, 100, 30), Reflow::Yes)?;
-    nested.table().set_column(0, TrackSize::Fill)?;
+    nested.table().set_column(0, SizeBounds::FILL)?;
     let nested_text =
         s.controls().create_static_text_with(w.id(),
                                               StaticTextSpec { bounds: Rect::new(0, 0, 250,

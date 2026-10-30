@@ -126,6 +126,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                       (applications, "Applications", "Panic Test"),
                                       (applications, "Applications", "Res Edit"),
                                       (applications, "Applications", "Reactor Room"),
+                                      (applications, "Applications", "Control Suite"),
                                       (drivers, "System Folder/Drivers", "Host Transport"),
                                       (drivers, "System Folder/Drivers", "VDAgent Channel"),
                                       (extensions, "System Folder/Extensions", "Host Clipboard"),

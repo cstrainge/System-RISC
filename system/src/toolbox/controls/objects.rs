@@ -70,6 +70,7 @@ struct State
     spec:             Spec,
     title:            Option<Arc<super::snapshot::Title>>,
     tracking:         Option<Tracking>,
+    splitter:         Option<splitter::Capture>,
     scroll_axis:      Option<usize>,
     scroll_highlight: i16,
     layout:           Option<Layout>
@@ -264,7 +265,15 @@ impl Spec
              Self::Standard { state: b,
                               procedure: q }) =>
             {
-                a.bounds != b.bounds || a.enabled != b.enabled || p != q
+                a.bounds != b.bounds
+                || a.enabled != b.enabled
+                || p != q
+                || (p == SPLITTER_PROCEDURE
+                    && (a.flags != b.flags
+                        || a.minimum != b.minimum
+                        || a.maximum != b.maximum
+                        || a.value != b.value
+                        || a.splitter_parent != b.splitter_parent))
             }
             (Self::Scrollbar { state: a,
                                .. },
@@ -396,6 +405,7 @@ impl Manager
         let old_scroll_highlight = state.scroll_highlight;
         state.scroll_highlight = 0;
         state.scroll_axis = None;
+        state.splitter = None;
         let old = state.spec.highlight();
         state.highlight(0);
         call.window = object.window;
@@ -590,6 +600,7 @@ impl Manager
                                                                                     scrollbar),
                                                   title:            admitted_title.clone(),
                                                   tracking:         None,
+                                                  splitter:         None,
                                                   scroll_axis:      None,
                                                   scroll_highlight: 0,
                                                   layout:           if call.reflow == 1
@@ -720,6 +731,7 @@ impl Manager
                 {
                     o.tracking = None;
                     o.scroll_axis = None;
+                    o.splitter = None;
                     o.scroll_highlight = 0;
                 }
                 o.spec.set_highlight(highlight);
@@ -954,3 +966,5 @@ pub(crate) use grid::Prepared;
 mod window;
 mod automatic;
 mod scrolling;
+
+mod splitter;

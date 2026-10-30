@@ -1,6 +1,6 @@
 //! Bounded native scrolling scenarios through the actual public CTRL transport.
-use mac_toolbox::{controls::{self, Anchors, Cell, Reflow, ScrollPosition, Scrolling,
-                             StandardKind, StandardState, TrackSize},
+use mac_toolbox::{controls::{self, Anchors, Cell, Reflow, ScrollPosition, Scrolling, SizeBounds,
+                             StandardKind, StandardState},
                   *};
 
 use super::conformance::Failure;
@@ -121,8 +121,8 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
     let b = add(t, 1, 1, button(s, w.id(), Rect::new(0, 0, 20000, 20000), "Wide last")?)?;
     a.set_anchors(Anchors::ALL)?;
     b.set_anchors(Anchors::ALL)?;
-    t.set_column(0, TrackSize::Fill)?;
-    t.set_column(1, TrackSize::Fill)?;
+    t.set_column(0, SizeBounds::FILL)?;
+    t.set_column(1, SizeBounds::FILL)?;
     assign(c, Rect::new(10, 10, 330, 190))?;
     let info = t.scroll_info()?;
     require(info.content_width == 40000

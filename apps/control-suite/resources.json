@@ -1,0 +1,57 @@
+
+{
+    "name": "Control Suite",
+    "binary_name": "ControlSuite",
+    "file_type": "APPL",
+    "creator": "CSTA",
+    "role": "application",
+    "abi_version": 1,
+    "load_base": "0x83000000",
+    "load_limit": "0x83800000",
+    "description": "System RISC Control Suite Test",
+
+    "resources":
+    [
+        {
+            "type": "MENU",
+            "id": 128,
+            "symbol": "FILE_MENU",
+            "payload":
+            {
+                "format": "menu",
+                "title": "File",
+                "items":
+                [
+                    {
+                        "text": "Quit",
+                        "command": "quit",
+                        "enabled": true,
+                        "key": "Q"
+                    }
+                ]
+            }
+        },
+
+        {
+            "type": "STR ",
+            "id": 128,
+            "symbol": "PRODUCT_NAME",
+            "payload":
+            {
+                "format": "pstring",
+                "text": "Control Suite Tester"
+            }
+        },
+
+        {
+            "type": "WIND",
+            "id": 128,
+            "symbol": "WINDOW_LAYOUT",
+            "payload":
+            {
+                "format": "hex",
+                "hex": "004b002801b90258000801000100000000000000"
+            }
+        }
+    ]
+}

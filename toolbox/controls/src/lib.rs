@@ -4,9 +4,9 @@
 pub use mac_abi::{Point, Rect, WindowId, controls::ScrollbarState,
                   definitions::ControlDefinitionState as StandardState, quickdraw::FontSelection};
 pub use sr_control_reflow_handling::{Anchors, AxisConstraint, BorderOffsets, Constraints,
-                                     Error as LayoutError, Extent, Invalidation, LayoutRect,
-                                     Measurement, Reflow, Requirements, Size, SizePreferences,
-                                     Span, TrackSize};
+                                     Error as LayoutError, Extent, Fill, Invalidation, LayoutRect,
+                                     Measurement, Reflow, Requirements, Size, SizeBounds,
+                                     SizePreferences, SizeUnit, Span};
 #[repr(i16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StandardKind
@@ -23,7 +23,8 @@ pub enum StandardKind
     /// Prefer the typed StaticText owner for UTF-8 text and justification.
     StaticText            = mac_abi::controls::STATIC_TEXT_PROCEDURE,
     /// Grid container; prefer the typed Table owner for child placement.
-    Table                 = mac_abi::controls::TABLE_PROCEDURE
+    Table                 = mac_abi::controls::TABLE_PROCEDURE,
+    Splitter              = mac_abi::controls::SPLITTER_PROCEDURE
 }
 #[repr(i16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +38,7 @@ pub enum Part
     PageUp   = 22,
     PageDown = 23,
     Thumb    = 129,
+    Splitter = 130,
     Inactive = 254
 }
 impl Part
@@ -53,6 +55,7 @@ impl Part
             22 => Ok(Self::PageUp),
             23 => Ok(Self::PageDown),
             129 => Ok(Self::Thumb),
+            130 => Ok(Self::Splitter),
             254 => Ok(Self::Inactive),
             _ => Err(Error::BadArgument)
         }
@@ -180,6 +183,8 @@ pub use scrollbox::{ScrollBox, ScrollBoxId, ScrollBoxRef, ScrollBoxSpec};
 mod capture;
 pub mod objects;
 pub use objects::{Control, ControlId, ControlInfo, ControlRef};
+mod splitter;
+pub use splitter::{Splitter, SplitterOrientation, SplitterRef, SplitterSpec};
 mod passive;
 pub use passive::{Progress, ProgressBar, ProgressStyle, StaticText, StaticTextRef, StaticTextSpec,
                   TextAlignment, TextLayout};

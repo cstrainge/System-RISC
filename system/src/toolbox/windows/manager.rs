@@ -103,6 +103,7 @@ pub struct Window
     standard_bounds:     Option<Rect>,
     grow_icon_clip:      Option<Rect>,
     content_outline:     Option<Rect>,
+    control_outline:     Option<Rect>,
     close_deferred:      bool,
     damage:              Option<Rect>,
     hidden:              bool,
@@ -152,7 +153,7 @@ impl Window
 
     pub(crate) fn outline_rect(&self) -> Option<Rect>
     {
-        self.content_outline
+        self.control_outline.or(self.content_outline)
     }
 
     pub fn procedure(&self) -> i16
@@ -1104,6 +1105,7 @@ impl WindowManager
                                   standard_bounds: None,
                                   grow_icon_clip: None,
                                   content_outline: None,
+                                  control_outline: None,
                                   close_deferred: false,
                                   damage: Some(Rect::new(0,
                                                          0,
@@ -1703,6 +1705,14 @@ impl WindowManager
         }
         window.content_outline = next;
         Ok(true)
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn control_outline(&mut self, id: WindowId, next: Option<Rect>)
+                                  -> Result<bool, mac_abi::Status>
+    {
+        let window = self.window_mut(id).ok_or(mac_abi::NOT_FOUND)?;
+        Ok(core::mem::replace(&mut window.control_outline, next) != next)
     }
 
     pub fn find_window(&self, point: Point) -> Hit

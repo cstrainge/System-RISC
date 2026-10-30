@@ -83,6 +83,8 @@ pub struct Desktop
     busy_cursor:                      super::quickdraw::cursors::Cursors,
     responsiveness:                   super::quickdraw::responsiveness::Responsiveness,
     text_cursor:                      mac_abi::quickdraw::MonoCursor,
+    resize_cursors:                   [mac_abi::quickdraw::MonoCursor; 2],
+    automatic_cursor:                 Option<u32>,
     worlds:                           super::quickdraw::worlds::Worlds,
     classic_font:                     mac_abi::quickdraw::FontSelection,
     pub windows:                      WindowManager,
@@ -427,6 +429,12 @@ impl Desktop
         Ok(())
     }
 
+    fn apply_control_outline(&mut self, window: u64, next: Option<Rect>) -> Result<(), Status>
+    {
+        self.feedback_dirty |= self.windows.control_outline(WindowId(window), next)?;
+        Ok(())
+    }
+
     pub(crate) fn new(mut definitions: Definitions, processes: super::processes::Manager,
                       finder_owner: super::handles::OwnerRef,
                       controls: super::controls::objects::Manager)
@@ -451,6 +459,13 @@ impl Desktop
                                                                  .1
                                                                  .data)
             }).ok_or(NOT_SUPPORTED)??;
+        let mut resize_cursors = [mac_abi::quickdraw::MonoCursor::default(); 2];
+        for (slot, id) in resize_cursors.iter_mut().zip([17, 21])
+        {
+            *slot=crate::kernel::with_resources(|resources| {
+                super::quickdraw::cursors::decode_mono(&resources.get(mac_abi::resources::SYSTEM,ResourceKey {kind:*b"CURS",id})?.1.data)
+            }).ok_or(NOT_SUPPORTED)??;
+        }
         let mut busy_cursor = super::quickdraw::cursors::Cursors::default();
         busy_cursor.resource_request(&mut mac_abi::quickdraw::CursorResourceCall {
             operation: mac_abi::quickdraw::CURSOR_RESOURCE_ANIMATE,
@@ -504,6 +519,8 @@ impl Desktop
                   busy_cursor,
                   responsiveness: Default::default(),
                   text_cursor,
+                  resize_cursors,
+                  automatic_cursor:None,
                   worlds: super::quickdraw::worlds::Worlds::new(super::handles::world_kinds()?)?,
                   classic_font: Default::default(),
                   windows: WindowManager::with_kinds(super::handles::window_kinds()?, crate::machine::traps::gateway)?,
@@ -1277,9 +1294,31 @@ impl Desktop
         }
         if call.operation == CANCEL_TRACKING
         {
+            let split = self.controls.splitter_capture(call.id, owner)?;
             self.controls.cancel(call, owner)?;
+            if split
+            {
+                self.apply_control_outline(window, None)?;
+                self.present();
+            }
             self.clear_control_highlight(window, call.id, false);
             return Ok(());
+        }
+        if matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
+           && self.controls.splitter_request(call, owner, crate::machine::traps::gateway)?
+        {
+            let pending = self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let prepared = self.controls.prepare_splitter(call,
+                                                           owner,
+                                                           pending,
+                                                           crate::machine::traps::gateway,
+                                                           |id| {
+                                                               self.definitions
+                                                                   .resolve(*b"CDEF", id)
+                                                                   .map_err(crate::loader::status)
+                                                           })?;
+            let (used, limit) = self.retained_admission(SceneTarget::from(window));
+            return self.publish_control_layout(window, prepared, used, limit);
         }
         if call.operation == NEXT_CHILD_OBJECT
         {
@@ -1351,6 +1390,12 @@ impl Desktop
             return self.publish_control_layout(window, prepared, used, limit);
         }
         if call.operation == REFLOW_OBJECT
+           && matches!(call.layout.message,
+                       reflow::SET_SPLITTER | reflow::GET_SPLITTER | reflow::RESET_SPLIT_SIZES)
+        {
+            return self.controls.splitter_configuration(call, owner);
+        }
+        if call.operation == REFLOW_OBJECT
            && matches!(call.layout.message, reflow::SET_GRID_TRACK | reflow::GET_GRID_TRACK)
         {
             return self.controls.grid_configuration(call, owner);
@@ -1407,10 +1452,18 @@ impl Desktop
         }
         if call.operation == DISPOSE_OBJECT
         {
+            let split_before = self.controls.window_splitter_capture(window);
             self.controls.dispose(call.id, owner)?;
+            if split_before && !self.controls.window_splitter_capture(window)
+            {
+                self.apply_control_outline(window, None)?;
+                self.present();
+            }
             self.remove_dead_control_drawings(window);
             return Ok(());
         }
+        let split_before = !matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
+                           && self.controls.splitter_capture(call.id, owner)?;
         let definition = self.controls.definition(call, owner)?;
         let entry = self.control_definition(definition)?;
         let (used, limit) = self.retained_admission(SceneTarget::from(window));
@@ -1456,6 +1509,11 @@ impl Desktop
             };
             Ok((bounds, damage, old_bounds))
         })?;
+        if split_before && !self.controls.splitter_capture(call.id, owner)?
+        {
+            self.apply_control_outline(window, None)?;
+            self.present();
+        }
         if self.controls.in_tree(call.id)
            && (drawing.as_ref().is_some_and(|(bounds, _, old)| *old != Some(*bounds))
                || (call.operation == REFLOW_OBJECT
@@ -1936,7 +1994,7 @@ impl Desktop
     /// The foreground application owns cursor policy; only an exposed editor
     /// content region can request an automatic I-beam. WDEF hit-testing excludes
     /// chrome and covered windows, while TextEdit accounts for its port clip.
-    fn text_cursor_at_mouse(&self) -> bool
+    fn automatic_cursor_at_mouse(&self) -> Option<u32>
     {
         if !self.cursors.is_automatic()
            || self.menus.is_tracking()
@@ -1944,29 +2002,35 @@ impl Desktop
            || self.app_menu.is_tracking()
            || self.windows.is_tracking()
         {
-            return false;
+            return None;
         }
-        let hit = self.windows.find_window(self.events.mouse);
-        if hit.part != WindowPart::Content
+        let id = self.windows.active_window()?;
+        if !self.owns(id)
         {
-            return false;
+            return None;
         }
-        hit.window
-           .filter(|id| self.owns(*id))
-           .and_then(|id| self.windows.window(id).map(|window| (id, window)))
-           .is_some_and(|(id, window)| {
-               let local = window.global_to_local(self.events.mouse);
-               self.textedit.cursor_hit(id, local)
-               || self.standard_file
-                      .active(self.owner)
-                      .and_then(|key| self.standard_file.get(self.owner, key).ok())
-                      .is_some_and(|d| {
-                          d.window == id
-                          && d.mode == mac_abi::standard_file::PUT
-                          && d.sheet == super::standard_file::Sheet::Main
-                          && d.editor.info().view.contains(local)
-                      })
-           })
+        let window = self.windows.window(id)?;
+        let local = window.global_to_local(self.events.mouse);
+        let hit = self.windows.find_window(self.events.mouse);
+        let hover = hit.part == WindowPart::Content && hit.window == Some(id);
+        if let Some(axis) = self.controls.splitter_axis_at(id.0, local, hover)
+        {
+            return Some(if axis == 0 { 17 } else { 21 });
+        }
+        if !hover
+        {
+            return None;
+        }
+        (self.textedit.cursor_hit(id, local)
+         || self.standard_file
+                .active(self.owner)
+                .and_then(|key| self.standard_file.get(self.owner, key).ok())
+                .is_some_and(|d| {
+                    d.window == id
+                    && d.mode == mac_abi::standard_file::PUT
+                    && d.sheet == super::standard_file::Sheet::Main
+                    && d.editor.info().view.contains(local)
+                })).then_some(1)
     }
 
     pub fn world(&mut self, call: &mut mac_abi::quickdraw::WorldCall, pixels: &mut [u32])
@@ -2955,8 +3019,18 @@ impl Desktop
     fn compose_cursor(&mut self, full: bool, mut damaged: Vec<Rect>, copy_full: bool)
     {
         let feedback = self.prepare_feedback(full);
-        let cursor_changed = self.cursor_dirty;
-        let text_cursor = self.text_cursor_at_mouse().then_some(self.text_cursor);
+        let automatic =
+            if self.responsiveness.active() { None } else { self.automatic_cursor_at_mouse() };
+        let cursor_changed = self.cursor_dirty || self.automatic_cursor != automatic;
+        self.automatic_cursor = automatic;
+        let text_cursor = automatic.map(|id| {
+                                       match id
+                                       {
+                                           17 => self.resize_cursors[0],
+                                           21 => self.resize_cursors[1],
+                                           _ => self.text_cursor
+                                       }
+                                   });
         let cursor =
             if self.responsiveness.active() { &mut self.busy_cursor } else { &mut self.cursors };
         let text_cursor = if self.responsiveness.active() { None } else { text_cursor };

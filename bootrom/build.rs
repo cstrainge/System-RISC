@@ -18,17 +18,19 @@ fn main()
     let (_, constants) = mac_build::platform::memory_artifacts().expect("checked boot memory map");
     let out = env::var("OUT_DIR").unwrap();
     let out = Path::new(&out);
-    fs::write(out.join("platform-memory.rs"), constants).unwrap();
-    fs::write(out.join("platform.rs"), platform_constants).unwrap();
-    fs::write(out.join("platform-virtual.rs"),
-              platform.virtual_memory()
-                      .expect("checked virtual map")
-                      .rust_constants_for(&["VM_SYSTEM_IMAGE_BASE", "VM_SYSTEM_IMAGE_LIMIT",
-                                            "VM_PHYSMAP_START", "VM_PHYSMAP_END",
-                                            "VM_PHYSMAP_PHYSICAL_BASE"])
-                      .expect("checked bootstrap virtual symbols")).unwrap();
+    mac_build::write_if_changed(out.join("platform-memory.rs"), constants).unwrap();
+    mac_build::write_if_changed(out.join("platform.rs"), platform_constants).unwrap();
+    mac_build::write_if_changed(out.join("platform-virtual.rs"),
+                                platform.virtual_memory()
+                                        .expect("checked virtual map")
+                                        .rust_constants_for(&["VM_SYSTEM_IMAGE_BASE",
+                                                              "VM_SYSTEM_IMAGE_LIMIT",
+                                                              "VM_PHYSMAP_START",
+                                                              "VM_PHYSMAP_END",
+                                                              "VM_PHYSMAP_PHYSICAL_BASE"])
+                                        .expect("checked bootstrap virtual symbols")).unwrap();
     let script = out.join("boot.ld");
-    fs::write(&script, symbols + &fs::read_to_string(template).unwrap()).unwrap();
+    mac_build::write_if_changed(&script, symbols + &fs::read_to_string(template).unwrap()).unwrap();
     println!("cargo:rustc-link-arg-bin=bootrom=-T{}", script.display());
     println!("cargo:rustc-link-arg-bin=bootrom=--no-relax");
 }

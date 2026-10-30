@@ -1,6 +1,6 @@
 //! Target-only scenarios through public SDK, real loaded definitions and ECALLs.
-use mac_toolbox::{controls::{self, Anchors, Cell, Reflow, Span, StandardKind, StandardState,
-                             TrackSize},
+use mac_toolbox::{controls::{self, Anchors, Cell, Reflow, SizeBounds, Span, StandardKind,
+                             StandardState},
                   *};
 
 use super::conformance::Failure;
@@ -92,9 +92,9 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
                   button(s, window.id(), "Fill", (150, 20), (200, 28))?)?;
     a.set_anchors(Anchors::ALL)?;
     b.set_anchors(Anchors::ALL)?;
-    table.set_column(1, TrackSize::Fill)?;
-    table.set_row(0, TrackSize::Fill)?;
-    require(table.column(0)? == TrackSize::Fit && table.column(1)? == TrackSize::Fill,
+    table.set_column(1, SizeBounds::FILL)?;
+    table.set_row(0, SizeBounds::FILL)?;
+    require(table.column(0)? == SizeBounds::CONTENT && table.column(1)? == SizeBounds::FILL,
             "track configuration not retained")?;
     let req = t.control().ask_size(Default::default())?;
     require(req.intrinsic.minimum() == size(270, 20)
@@ -171,12 +171,15 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
     t.control().clear_preferred()?;
     require(t.control().ask_size(constrained)?.constrained.preferred() == size(400, 28),
             "cleared override survived in constrained cache")?;
-    table.set_column(0, TrackSize::Percent(6000))?;
+    table.set_column(0,
+                     SizeBounds::new(Some(controls::SizeUnit::Percentage(60.0)),
+                                     Some(controls::SizeUnit::Percentage(60.0)),
+                                     controls::Fill::None).unwrap())?;
     t.control().assign_rect(rect(Rect::new(10, 10, 510, 70)))?;
     require(bounds(a)? == Rect::new(10, 10, 310, 70) && bounds(b)? == Rect::new(310, 10, 510, 70),
             "percent target did not precede Fill allocation")?;
-    table.set_column(0, TrackSize::Fit)?;
-    table.set_column(1, TrackSize::Fit)?;
+    table.set_column(0, SizeBounds::CONTENT)?;
+    table.set_column(1, SizeBounds::CONTENT)?;
     t.control().assign_rect(rect(Rect::new(10, 10, 310, 70)))?;
     require(bounds(a)? == Rect::new(10, 10, 170, 70) && bounds(b)? == Rect::new(170, 10, 310, 70),
             "multiple Fit tracks did not share their preferred deficits")?;
@@ -193,11 +196,11 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
     let g = grid.table();
     for col in 0..3
     {
-        g.set_column(col, TrackSize::Fill)?;
+        g.set_column(col, SizeBounds::FILL)?;
     }
     for row in 0..3
     {
-        g.set_row(row, TrackSize::Fill)?;
+        g.set_row(row, SizeBounds::FILL)?;
     }
     let spanning = adopt(g,
                          Cell { row:    0,
@@ -276,8 +279,8 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
     // its parent's resolved width before its own row and anchor allocation.
     drop(g.remove_child(right)?);
     let nested = s.controls().create_table(window.id(), Rect::new(0, 0, 100, 50), Reflow::Yes)?;
-    nested.table().set_column(0, TrackSize::Fill)?;
-    nested.table().set_row(0, TrackSize::Fill)?;
+    nested.table().set_column(0, SizeBounds::FILL)?;
+    nested.table().set_row(0, SizeBounds::FILL)?;
     let deep = adopt(nested.table(),
                      Cell { row:    0,
                             column: 0 },
@@ -332,11 +335,23 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
     call.layout.span.rows = 0;
     require(s.client().control(&mut call) == Err(Error::BadArgument) && bounds(spanning)? == sb,
             "zero span altered layout")?;
-    g.set_column(0, TrackSize::Percent(6000))?;
-    require(g.set_column(1, TrackSize::Percent(5000)) == Err(Error::BadArgument)
-            && g.column(1)? == TrackSize::Fill,
-            "percent overcommit not atomic")?;
-    g.set_column(0, TrackSize::Fill)?;
+    g.set_column(0,
+                 SizeBounds::new(Some(controls::SizeUnit::Percentage(60.0)),
+                                 Some(controls::SizeUnit::Percentage(60.0)),
+                                 controls::Fill::None).unwrap())?;
+    let malformed =
+        abi::controls::reflow::SizeBounds { min: abi::controls::reflow::SizeUnit { kind:  1,
+                                                                                   value: 100 },
+                                            max: abi::controls::reflow::SizeUnit { kind:  1,
+                                                                                   value: 50 },
+                                            ..Default::default() };
+    let mut bad=abi::controls::ControlCall {id:grid.control().id().0,operation:abi::controls::REFLOW_OBJECT,
+        layout:abi::controls::reflow::Payload {message:abi::controls::reflow::SET_GRID_TRACK,
+            track:abi::controls::reflow::TrackSetting {axis:0,index:1,bounds:malformed},..Default::default()},..Default::default()};
+    require(s.client().control(&mut bad) == Err(Error::BadArgument)
+            && g.column(1)? == SizeBounds::FILL,
+            "inverted track bounds were not refused atomically")?;
+    g.set_column(0, SizeBounds::FILL)?;
     // A clean identity assignment crosses no publication boundary.
     grid.control().assign_rect(rect(Rect::new(10, 100, 610, 400)))?;
     // Public window paint transaction excludes subtree publication.
@@ -385,7 +400,7 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
     require(bounds(deep)? != deep_old, "grid admission retry did not commit")?;
     // Geometry/track staging itself can be refused by the actual allocation
     // budget, without invoking an alternate allocator or fault-injection path.
-    g.set_column(1_000_000_000, TrackSize::Fill)?;
+    g.set_column(1_000_000_000, SizeBounds::FILL)?;
     let prior = bounds(grid.control())?;
     let staging_usage = usage(s)?;
     require(grid.control().assign_rect(rect(Rect::new(40, 110, 640, 410)))
@@ -393,7 +408,7 @@ pub fn run(s: &System<'_>) -> Result<(), Failure>
             "huge grid staging did not return NoMemory")?;
     require(bounds(grid.control())? == prior, "staging failure changed geometry")?;
     require(usage(s)? == staging_usage, "failed grid allocation retained resident heap charges")?;
-    g.set_column(1_000_000_000, TrackSize::Fit)?;
+    g.set_column(1_000_000_000, SizeBounds::CONTENT)?;
     grid.control().assign_rect(rect(Rect::new(40, 110, 640, 410)))?;
     drop(grid);
     require(matches!(deep.info(), Err(Error::NotFound)), "nested grid ref survived disposal")?;

@@ -16,6 +16,8 @@ mod table_lines;
 mod reflow_automatic;
 mod reflow_wrapped;
 mod reflow_scroll;
+#[cfg(feature = "window-anchors")]
+mod reflow_splitter;
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 struct LogBuffer
 {
@@ -76,6 +78,8 @@ fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::
     reflow_automatic::run(system)?;
     reflow_wrapped::run(system)?;
     reflow_scroll::run(system)?;
+    reflow_splitter::run(system)?;
+    reflow_splitter::control_suite(system)?;
     Ok(())
 }
 #[cfg(feature = "textedit-clipboard")]

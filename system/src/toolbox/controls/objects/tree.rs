@@ -721,6 +721,10 @@ impl Manager
             let o = self.get(id, owner)?;
             if self.visible_clip(id).is_none_or(|clip| clip.contains(point))
             {
+                if o.state.divider_hit(point, gate)?.is_some()
+                {
+                    return Ok((id, SPLITTER_PART));
+                }
                 if let Some((_, part)) = o.state.scroll_hit(point, gate)?
                 {
                     return Ok((id, part));
@@ -752,6 +756,11 @@ impl Manager
             {
                 id = o.tree.parent;
             }
+        }
+        if self.visible_clip(root).is_none_or(|c| c.contains(point))
+           && self.get(root, owner)?.state.divider_hit(point, gate)?.is_some()
+        {
+            return Ok((root, SPLITTER_PART));
         }
         if self.visible_clip(root).is_none_or(|c| c.contains(point))
            && let Some((_, part)) = self.get(root, owner)?.state.scroll_hit(point, gate)?

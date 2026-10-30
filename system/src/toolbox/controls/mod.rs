@@ -163,6 +163,7 @@ impl Drawing
         + self.grid.as_ref().map_or(0, |grid| {
                                 core::mem::size_of::<snapshot::Grid>()
                                 + grid.cells.len() * core::mem::size_of::<Rect>()
+                                + grid.dividers.as_ref().map_or(0, |d| d.storage())
                                 + grid.logical.len()
                                   * core::mem::size_of::<mac_abi::controls::reflow::LogicalRect>()
                             })
@@ -199,6 +200,38 @@ impl Drawing
     }
 
     fn paint_checked(&self, canvas: &mut Canvas) -> Result<(), Status>
+    {
+        self.paint_body(canvas)?;
+        if let Some(dividers) = self.grid.as_ref().and_then(|g| g.dividers.as_ref())
+        {
+            let enabled = self.state.standard().is_some_and(|s| s.enabled != 0);
+            for divider in &dividers.segments
+            {
+                let mut state = divider.state(dividers.viewport, enabled);
+                let mut surface = Surface::from_canvas(canvas);
+                let mut call =
+                    DefinitionCall { reflow:    1,
+                                     header:    Header::for_type::<DefinitionCall>(),
+                                     kind:      CDEF,
+                                     id:        CDEF_SPLITTER,
+                                     variation: 0,
+                                     message:   0,
+                                     reserved:  0,
+                                     param:     0,
+                                     object:    (&mut state as *mut ControlDefinitionState).cast(),
+                                     gate:      self.gate,
+                                     surface:   &mut surface };
+                let status = super::resources::definitions::invoke(dividers.entry, &mut call);
+                if status < 0
+                {
+                    return Err(status as Status);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn paint_body(&self, canvas: &mut Canvas) -> Result<(), Status>
     {
         let Some(bars) = &self.bars
         else
@@ -304,6 +337,7 @@ fn standard_definition(procedure: i16) -> Result<i16, Status>
         PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE => Ok(CDEF_PROGRESS_BAR),
         STATIC_TEXT_PROCEDURE => Ok(CDEF_STATIC_TEXT),
         TABLE_PROCEDURE => Ok(CDEF_TABLE),
+        SPLITTER_PROCEDURE => Ok(CDEF_SPLITTER),
         _ => Err(NOT_SUPPORTED)
     }
 }
@@ -328,6 +362,7 @@ pub fn definition_id(call: &ControlCall) -> Result<i16, Status>
     {
         DRAW_SCROLLBAR | HIT_SCROLLBAR | TRACK_SCROLLBAR => Ok(1),
         DRAW_STANDARD | HIT_STANDARD => standard_definition(call.procedure),
+        TRACK_SPLITTER if call.procedure == SPLITTER_PROCEDURE => Ok(CDEF_SPLITTER),
         _ => Err(NOT_SUPPORTED)
     }
 }
@@ -453,22 +488,29 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionEntry, gate: Trap
         (&mut call.standard as *mut ControlDefinitionState).cast()
     };
     let mut bits = (call.point.h as u16 as u64) | ((call.point.v as u16 as u64) << 16);
-    if call.operation == TRACK_SCROLLBAR
+    if matches!(call.operation, TRACK_SCROLLBAR | TRACK_SPLITTER)
     {
         bits |= ((call.anchor.h as u16 as u64) << 32) | ((call.anchor.v as u16 as u64) << 48);
     }
-    let mut definition =
-        DefinitionCall { reflow: call.reflow,
-                         header: Header::for_type::<DefinitionCall>(),
-                         kind: CDEF,
-                         id,
-                         variation: variation(call.procedure, id),
-                         message: if call.operation == TRACK_SCROLLBAR { 2 } else { 1 },
-                         reserved: 0,
-                         param: bits as i64,
-                         object,
-                         gate,
-                         surface: core::ptr::null_mut() };
+    let mut definition = DefinitionCall { reflow: call.reflow,
+                                          header: Header::for_type::<DefinitionCall>(),
+                                          kind: CDEF,
+                                          id,
+                                          variation: variation(call.procedure, id),
+                                          message: if matches!(call.operation,
+                                                               TRACK_SCROLLBAR | TRACK_SPLITTER)
+                                          {
+                                              2
+                                          }
+                                          else
+                                          {
+                                              1
+                                          },
+                                          reserved: 0,
+                                          param: bits as i64,
+                                          object,
+                                          gate,
+                                          surface: core::ptr::null_mut() };
     let result = super::resources::definitions::invoke(entry, &mut definition);
     if result < 0
     {

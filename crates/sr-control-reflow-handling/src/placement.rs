@@ -109,38 +109,168 @@ impl TryFrom<wire::Span> for Span
         Self::new(s.rows, s.columns)
     }
 }
-/// Percent targets are hundredths of a percent (10_000 = 100%). Minima take
-/// precedence; Fit grows toward preferred before Fill receives the remainder.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TrackSize
+/// A finite, nonnegative size. Percentages use 100.0 for the whole offered
+/// Table axis (after splitter gutters); resolved fractional pixels round down.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SizeUnit
 {
-    #[default]
-    Fit,
-    Fill,
-    Percent(u16)
+    Pixels(i16),
+    Percentage(f32)
 }
-impl TrackSize
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Fill
 {
-    pub fn encode(self) -> Result<(u32, u32)>
+    /// Content ideal clamped by minimum/maximum; receives no fill distribution.
+    #[default]
+    None,
+    /// Share remaining space, subject to minimum/maximum.
+    Fill
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SizeBounds
+{
+    min:  Option<SizeUnit>,
+    max:  Option<SizeUnit>,
+    fill: Fill
+}
+impl SizeUnit
+{
+    fn validate(self) -> Result<()>
     {
-        Ok(match self
+        match self
         {
-            Self::Fit => (wire::TRACK_FIT, 0),
-            Self::Fill => (wire::TRACK_FILL, 0),
-            Self::Percent(p) if p <= 10_000 => (wire::TRACK_PERCENT, u32::from(p)),
-            _ => return Err(Error::InvalidEncoding)
-        })
+            Self::Pixels(n) if n >= 0 => Ok(()),
+            Self::Percentage(p) if p.is_finite() && p >= 0.0 => Ok(()),
+            _ => Err(Error::InvalidRequirements)
+        }
     }
 
-    pub fn decode(mode: u32, percent: u32) -> Result<Self>
+    pub fn resolve(self, basis: Option<i64>) -> Result<Option<i64>>
     {
-        match (mode, percent)
+        self.validate()?;
+        match self
         {
-            (wire::TRACK_FIT, 0) => Ok(Self::Fit),
-            (wire::TRACK_FILL, 0) => Ok(Self::Fill),
-            (wire::TRACK_PERCENT, 0..=10_000) => Ok(Self::Percent(percent as u16)),
-            _ => Err(Error::InvalidEncoding)
+            Self::Pixels(n) => Ok(Some(i64::from(n))),
+            Self::Percentage(p) =>
+            {
+                let Some(basis) = basis
+                else
+                {
+                    return Ok(None);
+                };
+                if basis < 0
+                {
+                    return Err(Error::InvalidEncoding);
+                }
+                let value = basis as f64 * f64::from(p) / 100.0;
+                if !value.is_finite() || value >= i64::MAX as f64
+                {
+                    return Err(Error::ExtentOverflow);
+                }
+                Ok(Some(value as i64))
+            }
         }
+    }
+}
+impl SizeBounds
+{
+    pub const CONTENT: Self = Self { min:  None,
+                                     max:  None,
+                                     fill: Fill::None };
+    pub const FILL: Self = Self { min:  None,
+                                  max:  None,
+                                  fill: Fill::Fill };
+
+    pub fn new(min: Option<SizeUnit>, max: Option<SizeUnit>, fill: Fill) -> Result<Self>
+    {
+        let value = Self { min,
+                           max,
+                           fill };
+        value.validate()?;
+        Ok(value)
+    }
+
+    pub const fn minimum(self) -> Option<SizeUnit>
+    {
+        self.min
+    }
+
+    pub const fn maximum(self) -> Option<SizeUnit>
+    {
+        self.max
+    }
+
+    pub const fn fill(self) -> Fill
+    {
+        self.fill
+    }
+
+    pub const fn has_percentage(self) -> bool
+    {
+        matches!(self.min, Some(SizeUnit::Percentage(_)))
+        || matches!(self.max, Some(SizeUnit::Percentage(_)))
+    }
+
+    fn validate(self) -> Result<()>
+    {
+        if let Some(v) = self.min
+        {
+            v.validate()?;
+        }
+        if let Some(v) = self.max
+        {
+            v.validate()?;
+        }
+        if matches!((self.min,self.max),(Some(SizeUnit::Pixels(a)),Some(SizeUnit::Pixels(b))) if a>b)
+           || matches!((self.min,self.max),(Some(SizeUnit::Percentage(a)),Some(SizeUnit::Percentage(b))) if a>b)
+        {
+            return Err(Error::InvalidRequirements);
+        }
+        Ok(())
+    }
+
+    pub fn encode(self) -> Result<wire::SizeBounds>
+    {
+        self.validate()?;
+        let unit = |v: Option<SizeUnit>| {
+            match v
+            {
+                None => wire::SizeUnit::default(),
+                Some(SizeUnit::Pixels(n)) =>
+                {
+                    wire::SizeUnit { kind:  1,
+                                     value: n as u32 }
+                }
+                Some(SizeUnit::Percentage(p)) =>
+                {
+                    wire::SizeUnit { kind:  2,
+                                     value: if p == 0.0 { 0.0f32.to_bits() } else { p.to_bits() } }
+                }
+            }
+        };
+        Ok(wire::SizeBounds { min:      unit(self.min),
+                              max:      unit(self.max),
+                              fill:     u32::from(self.fill == Fill::Fill),
+                              reserved: 0 })
+    }
+
+    pub fn decode(v: wire::SizeBounds) -> Result<Self>
+    {
+        fn unit(v: wire::SizeUnit) -> Result<Option<SizeUnit>>
+        {
+            Ok(match (v.kind, v.value)
+            {
+                (0, 0) => None,
+                (1, 0..=32767) => Some(SizeUnit::Pixels(v.value as i16)),
+                (2, bits) => Some(SizeUnit::Percentage(f32::from_bits(bits))),
+                _ => return Err(Error::InvalidEncoding)
+            })
+        }
+        if v.fill > 1 || v.reserved != 0
+        {
+            return Err(Error::InvalidEncoding);
+        }
+        Self::new(unit(v.min)?, unit(v.max)?, if v.fill == 0 { Fill::None } else { Fill::Fill })
     }
 }
 

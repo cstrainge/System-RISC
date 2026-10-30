@@ -1,0 +1,41 @@
+{
+  "origin": "Original System RISC bitmap artwork; not extracted Apple cursors",
+  "horizontal_rows": [
+    "................",
+    "................",
+    "................",
+    ".....#....#.....",
+    "....##....##....",
+    "...###....###...",
+    "..############..",
+    "...###....###...",
+    "....##....##....",
+    ".....#....#.....",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................"
+  ],
+  "vertical": "transpose of horizontal",
+  "mask": "one-pixel dilation; white outline",
+  "assets": {
+    "resize-horizontal": {
+      "sha256": "3a291054d760fe27333f4bd68c2584280bf0435ce4d5ed19b706d21bf6b02f62",
+      "hotspot_vh": [
+        6,
+        7
+      ]
+    },
+    "resize-vertical": {
+      "sha256": "bec0c39125933af0fe614b95fab6381666e7d2e923cf32c991a052b8a08104f1",
+      "hotspot_vh": [
+        7,
+        6
+      ]
+    }
+  },
+  "identifiers": "Horizontal uses Appearance ThemeCursor 17; vertical uses later Carbon ThemeCursor 21. These native CURS resources are not claims about original System CURS resource numbers.",
+  "header_reference": "https://raw.githubusercontent.com/phracker/MacOSX-SDKs/master/MacOSX10.1.5.sdk/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/HIToolbox.framework/Versions/A/Headers/Appearance.h"
+}

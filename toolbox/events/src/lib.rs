@@ -1,7 +1,8 @@
 //! Event Manager client bindings; the event queue and input decoding are resident.
 #![no_std]
 #![forbid(unsafe_code)]
-use mac_abi::events::*;
+use mac_abi::events::{EventCall, EventKind, INPUT_STATE, NATIVE_FLUSH, NATIVE_PEEK, NATIVE_POST,
+                      OS_FLUSH, OS_GET, OS_GET_MASK, OS_PEEK, OS_POST, OS_SET_MASK, OS_STILL_DOWN};
 pub use mac_abi::{Point, events::KeyMap};
 mod decoded;
 mod positioned;

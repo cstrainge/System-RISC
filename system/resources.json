@@ -305,6 +305,18 @@
       }
     },
     {
+      "type": "CDEF",
+      "id": -32757,
+      "symbol": "CDEF_SPLITTER",
+      "name": "Splitter",
+      "payload": {
+        "format": "native_code",
+        "artifact": "CDEF_SPLITTER",
+        "load_base": "0x82700000",
+        "load_limit": "0x82800000"
+      }
+    },
+    {
       "type": "FOND",
       "id": 0,
       "symbol": "FONT_BUNDLE_FOND_0",
@@ -1698,6 +1710,26 @@
       "payload": {
         "format": "file",
         "path": "assets/visual/434e544c--4077.bin"
+      }
+    },
+    {
+      "type": "CURS",
+      "id": 17,
+      "symbol": "CURSOR_RESIZE_HORIZONTAL",
+      "name": "Resize Horizontal",
+      "payload": {
+        "format": "file",
+        "path": "assets/cursors/resize-horizontal.curs"
+      }
+    },
+    {
+      "type": "CURS",
+      "id": 21,
+      "symbol": "CURSOR_RESIZE_VERTICAL",
+      "name": "Resize Vertical",
+      "payload": {
+        "format": "file",
+        "path": "assets/cursors/resize-vertical.curs"
       }
     },
     {

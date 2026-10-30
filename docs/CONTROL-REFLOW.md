@@ -27,29 +27,55 @@ row-major and includes spans; relationship changes invalidate existing cursors.
 Children must opt into reflow and share the parent's window. Cycles, stale or
 foreign identities, unfinished paint transactions and captured subtrees are
 refused before relationship changes. Cancel capture or finish the paint
-transaction before retrying. Splitter controls and interactive divider resizing
-are separate, deferred facilities.
+transaction before retrying. Interactive dividers use the loaded Splitter CDEF
+and the same managed capture/publication boundaries.
 
 ## Tracks and anchors
 
-Rows and columns default to `TrackSize::Fit`. `set_column` and `set_row` select
-`Fit`, `Fill`, or `Percent(hundredths)`; 10,000 means 100%. Percentages on an axis
-must total at most 100%. Selecting Fit restores the implicit default. A
-configured nondefault track participates even if it currently has no child.
+Rows and columns default to `SizeBounds::CONTENT`: no explicit bounds and
+`Fill::None`. `set_column` and `set_row` accept `SizeBounds`; `column` and `row`
+return the accepted settings. `SizeBounds::FILL` is the unconstrained fill choice.
+`SizeBounds::new(min, max, fill)` validates the typed settings. Its fields are
+private; `minimum()`, `maximum()` and `fill()` return copied values.
+
+```rust
+let column = SizeBounds::new(
+    Some(SizeUnit::Pixels(80)),
+    Some(SizeUnit::Percentage(60.0)),
+    Fill::Fill,
+)?;
+table.set_column(0, column)?;
+```
+
+Pixel values must be nonnegative. Percentages are finite, nonnegative `f32`
+values, with `100.0` meaning the complete offered Table axis after splitter
+gutters; fractional pixels round down. Percentages are independent bounds,
+not shares whose sum must be at most 100%. The offered axis is the Table's
+assigned rectangle, before optional scrollbar chrome. Intrinsic measurement
+has no finite percentage basis, so relative bounds defer to finite assignment;
+pixel bounds still apply. Contradictory same-unit bounds refuse immediately;
+a mixed-unit contradiction or unrepresentable result refuses when resolved.
 
 Table's CDEF calculates each axis as follows:
 
-1. Aggregate single-track minima and preferred sizes, then the requirements of
-   spanning children in stable cell order. Split a span's unmet requirement
-   evenly across its tracks, giving remainder pixels to earlier tracks.
-2. Reserve minima. Grow percentage tracks toward their fraction of the offered
-   budget; minima take precedence and competing deficits share available space.
-3. Grow Fit tracks toward preferred. Give remaining space equally to Fill tracks.
-   Without Fill, unused space remains after the final track.
-4. When the assigned budget is below the combined minima, shrink proportionally
-   to those minima. Cumulative integer rounding spends the entire available
-   budget deterministically. Zero is a valid assigned extent. The measurement
-   reply still reports the true minima; shrinking does not rewrite them.
+1. Aggregate single-track content minima and ideals, then spanning requirements
+   in stable cell order. Internal splitter gutters count toward a span's space.
+2. Apply each track's bounds. An explicit minimum replaces its content minimum;
+   an absent minimum uses the content minimum capped by an explicit maximum.
+   Clamp the content ideal (or retained manual split size) to those bounds.
+3. Reserve minima. Grow `Fill::None` tracks toward their clamped ideals, then
+   share remaining space equally among `Fill::Fill` tracks without exceeding
+   maxima. Capped tracks leave the remaining distribution to eligible tracks.
+   If all tracks reach their maxima, unused space remains after the last track.
+4. When the budget cannot satisfy all minima, shrink them proportionally, as in
+   the existing forced-size policy. Integer rounding is deterministic and zero
+   is valid. The measurement reply still reports the true minima. Maxima remain
+   enforced. Under extreme shortage, the splitter gutters also shrink safely.
+
+Changing a row or column's bounds clears manual split sizes on that axis and
+schedules ordinary reflow. An unchanged request does no work unless it clears
+such manual sizing. A captured Table refuses a bounds change with `ServiceBusy`.
+Previously accepted geometry remains usable while new settings await layout.
 
 `ControlRef::set_anchors(Anchors { left, right, top, bottom })` is shared by all
 reflow controls. Anchors apply independently on each axis within the parent's
@@ -209,7 +235,7 @@ A pending paint transaction refuses subtree assignment until EndUpdate.
 Calculations use checked wide arithmetic, then validate conversion into local
 `Dimensions`/`Rect`. This API currently refuses aggregate requirements or local
 geometry outside their representable range; it does not truncate, wrap, or turn
-an overflow into apparent success. Wider logical scrolling extents and scrollbar coupling remain separate work.
+an overflow into apparent success. Scrolling retains wide logical extents while visible CDEF rectangles remain finite.
 
 ## Evidence boundary
 
@@ -223,8 +249,10 @@ outside its specifically recorded observations.
 ### Fixed-content Table scrolling
 
 `TableRef::set_scrolling(Scrolling::Fixed { horizontal, vertical })` opts into a
-viewport whose content keeps its finite preferred track sizes. Fill and Percent
-tracks use preferred sizes in this policy. At least one axis must be enabled;
+viewport whose content uses finite preferred track sizes, clamped by track
+bounds. Fill distribution does not expand this fixed content. Percentage bounds
+follow the offered Table dimension and therefore require recalculation when that
+dimension changes. At least one axis must be enabled;
 `Scrolling::Disabled` restores the fitting policy. A disabled axis clips with
 position zero. The scrolling viewport reports its own minimum and creation-size
 preference instead of the document's total dimensions. Explicit size overrides
@@ -270,3 +298,53 @@ standard loaded scrollbar CDEF and resident tracking state machine. Hit testing
 may return the Table itself for a bar, and its ordinary managed `track` method
 performs the scroll. Arrow steps are 16 pixels, pages overlap by 16 pixels, and
 thumb positions map the CDEF's bounded range onto the wide content range.
+
+### Splitters
+
+`Controls::create_splitter(window, SplitterSpec { .. })` creates an independent
+managed divider using `CDEF_SPLITTER`. A vertical divider moves horizontally;
+a horizontal divider moves vertically. The optional inclusive `range` limits
+its reported coordinate. `parent_bounds` optionally supplies the parent's
+window-local rectangle: a vertical drag outline spans that height, while a
+horizontal outline spans that width. This does not itself limit movement.
+Without parent bounds, the outline uses the divider's own length.
+
+During capture only the outline changes; the divider and panes retain accepted
+geometry. Release reports the final coordinate through the normal control action
+callback (`ControlInfo.standard.value`, or `SplitterRef::track`). The parent
+applies its own resize policy. Cancellation removes the outline without a CDEF
+call or drawing allocation. Accepted changes to bounds, orientation, parent
+bounds, range or enabled state cancel the old capture; refused changes preserve
+it. Automatic cursor selection uses the published divider geometry and normal
+window/control clipping. Explicit application cursor policy still takes priority.
+
+A Table independently enables `set_column_splitter(after, enabled)` and
+`set_row_splitter(after, enabled)` at zero-based boundaries; all default off.
+These are instances of the same loaded Splitter definition and resident capture
+mechanism, owned by the Table. They do not introduce another object-ID registry
+or application-side drag loop. Enabled interior boundaries reserve a four-pixel
+gutter. Spanned cells omit the divider segments crossing their merged region.
+The Table supplies its viewport as parent outline bounds and derives the drag
+range from both adjacent tracks' resolved minima and maxima.
+
+On release, the Table stages new track sizes, child geometry, clips and retained
+output together. Only accepted publication changes panes. `NoMemory` or other
+refusal preserves the old panes and capture for retry or cancellation. A drag
+retains explicit requested sizes for that axis; later changes clamp them to
+current bounds. `reset_column_split_sizes()` and `reset_row_split_sizes()` restore
+content/fill distribution. Editing track bounds also resets that axis. Clean
+scrolling translates the accepted splitters along with content without measuring
+again. Bounds changes, content changes and viewport-relative constraints use
+ordinary staged reflow.
+
+Control Suite uses two rows and two columns, with their middle boundaries enabled.
+Columns have an 80-pixel minimum and rows a 60-pixel minimum, with fill enabled.
+The root follows the window with a 12-pixel inset, and managed tracking applies
+both dividers without an application hit/press/release loop.
+
+The resize cursor resources are native monochrome artwork with editable provenance
+under `system/assets/cursors/resize-provenance.json`. Horizontal identity 17 is
+recorded in Apple's [Appearance header](https://raw.githubusercontent.com/phracker/MacOSX-SDKs/master/MacOSX10.1.5.sdk/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/HIToolbox.framework/Versions/A/Headers/Appearance.h);
+vertical identity 21 follows the later Carbon cursor. These are native resource
+choices, not claims that the original System CURS resource numbers matched those
+ThemeCursor identifiers. They remain replaceable assets.

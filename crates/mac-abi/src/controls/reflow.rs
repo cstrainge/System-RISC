@@ -127,7 +127,8 @@ pub struct Payload
     pub anchors:       u32,
     pub track:         TrackSetting,
     pub window_border: BorderOffsets,
-    pub scroll:        Scroll
+    pub scroll:        Scroll,
+    pub splitter:      SplitterSetting
 }
 
 /// A live tree cursor is invalidated by a membership change of its parent.
@@ -162,9 +163,22 @@ pub const ANCHOR_LEFT: u32 = 1;
 pub const ANCHOR_RIGHT: u32 = 2;
 pub const ANCHOR_TOP: u32 = 4;
 pub const ANCHOR_BOTTOM: u32 = 8;
-pub const TRACK_FIT: u32 = 0;
-pub const TRACK_FILL: u32 = 1;
-pub const TRACK_PERCENT: u32 = 2;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SizeUnit
+{
+    pub kind:  u32,
+    pub value: u32
+}
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SizeBounds
+{
+    pub min:      SizeUnit,
+    pub max:      SizeUnit,
+    pub fill:     u32,
+    pub reserved: u32
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,35 +200,40 @@ impl Default for Span
 pub struct TrackSetting
 {
     /// 0 = column, 1 = row.
-    pub axis:    u32,
-    pub index:   u32,
-    pub mode:    u32,
-    /// Hundredths of one percent; zero except in percent mode.
-    pub percent: u32
+    pub axis:   u32,
+    pub index:  u32,
+    pub bounds: SizeBounds
 }
 /// Separate immutable inputs and mutable outputs are lent only by System.
 /// Pointers never pass through the public Toolbox request transport.
 #[repr(C)]
 pub struct GridAxisCall
 {
-    pub constraint:  AxisConstraint,
-    pub tracks:      *mut GridTrack,
-    pub track_count: usize,
-    pub items:       *mut GridItem,
-    pub item_count:  usize,
-    pub minimum:     i64,
-    pub preferred:   i64
+    pub constraint:    AxisConstraint,
+    /// Offered axis length for percentage bounds; -1 for intrinsic/no finite offer.
+    pub percent_basis: i64,
+    pub tracks:        *mut GridTrack,
+    pub track_count:   usize,
+    pub items:         *mut GridItem,
+    pub item_count:    usize,
+    pub minimum:       i64,
+    pub preferred:     i64
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GridTrack
 {
-    pub mode:      u32,
-    pub percent:   u32,
-    pub minimum:   i64,
-    pub preferred: i64,
-    pub assigned:  i64,
-    pub position:  i64
+    pub bounds:       SizeBounds,
+    pub gap:          i64,
+    pub assigned_gap: i64,
+    pub manual:       u32,
+    pub reserved:     u32,
+    pub requested:    i64,
+    pub minimum:      i64,
+    pub maximum:      i64,
+    pub preferred:    i64,
+    pub assigned:     i64,
+    pub position:     i64
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -286,3 +305,17 @@ pub struct Scroll
     pub viewport: crate::Rect,
     pub logical:  LogicalRect
 }
+
+/// Individually enabled boundary after a zero-based column (axis 0) or row (1).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SplitterSetting
+{
+    pub axis:     u32,
+    pub index:    u32,
+    pub enabled:  u32,
+    pub reserved: u32
+}
+pub const SET_SPLITTER: i16 = 53;
+pub const GET_SPLITTER: i16 = 54;
+pub const RESET_SPLIT_SIZES: i16 = 55;

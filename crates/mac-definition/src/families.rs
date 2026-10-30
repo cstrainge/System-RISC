@@ -91,7 +91,9 @@ pub enum Reply
     Done,
     Measurement(crate::reflow::Measurement),
     Hit(Part),
-    Value(u16)
+    Value(u16),
+    /// Signed divider coordinate encoded independently of negative status values.
+    Position(i16)
 }
 
 pub(crate) trait Family
@@ -116,6 +118,61 @@ pub(crate) struct ButtonFamily;
 pub(crate) struct ProgressFamily;
 pub(crate) struct ScrollbarFamily;
 pub(crate) struct TableFamily;
+pub(crate) struct SplitterFamily;
+#[derive(Clone, Copy, Debug)]
+pub struct Splitter
+{
+    pub bounds:     Rect,
+    pub enabled:    bool,
+    pub horizontal: bool,
+    pub position:   i16,
+    pub range:      Option<(i16, i16)>
+}
+impl Family for SplitterFamily
+{
+    type View<'a> = Splitter;
+    type Wire = ControlDefinitionState;
+
+    const ID: i16 = controls::CDEF_SPLITTER;
+    const TRACK: bool = true;
+
+    fn variation(value: i16) -> Result<()>
+    {
+        if value == 0 { Ok(()) } else { Err(Error::NotSupported) }
+    }
+
+    fn decode<'a>(wire: &'a Self::Wire, _: i16) -> Result<Self::View<'a>>
+    {
+        if wire.flags
+           & !(controls::SPLITTER_HORIZONTAL | controls::SPLITTER_RANGE | controls::SPLITTER_PARENT)
+           != 0
+           || wire.title_length != 0
+           || wire.highlighted != 0
+           || (wire.flags & controls::SPLITTER_RANGE != 0 && wire.minimum > wire.maximum)
+        {
+            return Err(Error::BadArgument);
+        }
+        if wire.flags & controls::SPLITTER_PARENT != 0
+        {
+            crate::reflow::LayoutRect::try_from(wire.splitter_parent).map_err(|_| {
+                                                                         Error::BadArgument
+                                                                     })?;
+        }
+        Ok(Splitter { bounds:     wire.bounds,
+                      enabled:    wire.enabled != 0,
+                      horizontal: wire.flags & controls::SPLITTER_HORIZONTAL != 0,
+                      position:   wire.value,
+                      range:
+                          (wire.flags & controls::SPLITTER_RANGE != 0).then_some((wire.minimum,
+                                                                                  wire.maximum)) })
+    }
+
+    fn bounds(state: &Self::View<'_>) -> Rect
+    {
+        state.bounds
+    }
+}
+
 
 impl Family for TableFamily
 {

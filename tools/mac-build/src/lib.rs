@@ -16,6 +16,24 @@ pub fn error(message: impl Into<String>) -> Box<dyn std::error::Error>
     std::io::Error::other(message.into()).into()
 }
 
+/// Preserve unchanged generated files so editor watchers do not restart Cargo.
+/// Missing files are created; other read and write errors are propagated.
+pub fn write_if_changed(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> std::io::Result<()>
+{
+    let path = path.as_ref();
+    let contents = contents.as_ref();
+    match fs::read(path)
+    {
+        Ok(existing) if existing == contents => return Ok(()),
+        Ok(_) =>
+        {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
+        {}
+        Err(error) => return Err(error)
+    }
+    fs::write(path, contents)
+}
+
 /// Called by each guest crate's build.rs. The manifest is the single source
 /// for resource IDs, the ABI descriptor, and the linker memory reservation.
 pub fn build_guest() -> Result<()>
@@ -65,30 +83,31 @@ pub fn build_guest() -> Result<()>
     {
         println!("cargo:rerun-if-changed={}", source.display());
     }
-    fs::write(out.join("resource_ids.rs"), manifest.rust_ids())?;
+    write_if_changed(out.join("resource_ids.rs"), manifest.rust_ids())?;
     if module::kind(&manifest).is_some()
     {
         println!("cargo:rerun-if-changed={}", Path::new(&root).join("module.json").display());
-        fs::write(out.join("module_contract.bin"), module::declaration(&path, &manifest)?)?;
+        write_if_changed(out.join("module_contract.bin"), module::declaration(&path, &manifest)?)?;
     }
     let descriptor = manifest.descriptor()?;
     platform::current().validate_image(descriptor.role, descriptor.load_base,
                                        descriptor.load_limit)?;
     let (constants, platform_symbols) = platform::guest_artifacts()?;
-    fs::write(out.join("platform.rs"), constants)?;
+    write_if_changed(out.join("platform.rs"), constants)?;
     let (system_memory, _) = platform::memory_artifacts()?;
-    fs::write(out.join("platform-memory.rs"), system_memory)?;
-    fs::write(out.join("platform-virtual.rs"),
-              platform::current().virtual_memory()?
-                                 .rust_constants_for(&["VM_SYSTEM_IMAGE_BASE",
-                                                       "VM_SYSTEM_IMAGE_LIMIT",
-                                                       "VM_PHYSMAP_START", "VM_PHYSMAP_END",
-                                                       "VM_PHYSMAP_PHYSICAL_BASE",
-                                                       "VM_SYSTEM_STACKS_START",
-                                                       "VM_SYSTEM_STACKS_END",
-                                                       "VM_SYSTEM_STACK_STRIDE",
-                                                       "VM_SYSTEM_HEAP_BASE",
-                                                       "VM_SYSTEM_HEAP_LIMIT"])?)?;
+    write_if_changed(out.join("platform-memory.rs"), system_memory)?;
+    write_if_changed(out.join("platform-virtual.rs"),
+                     platform::current().virtual_memory()?
+                                        .rust_constants_for(&["VM_SYSTEM_IMAGE_BASE",
+                                                              "VM_SYSTEM_IMAGE_LIMIT",
+                                                              "VM_PHYSMAP_START",
+                                                              "VM_PHYSMAP_END",
+                                                              "VM_PHYSMAP_PHYSICAL_BASE",
+                                                              "VM_SYSTEM_STACKS_START",
+                                                              "VM_SYSTEM_STACKS_END",
+                                                              "VM_SYSTEM_STACK_STRIDE",
+                                                              "VM_SYSTEM_HEAP_BASE",
+                                                              "VM_SYSTEM_HEAP_LIMIT"])?)?;
     let mut script =
         include_str!("native.ld").replace("@BASE@", &format!("0x{:x}", descriptor.load_base))
                                  .replace("@LENGTH@",
@@ -96,7 +115,7 @@ pub fn build_guest() -> Result<()>
                                                    descriptor.load_limit - descriptor.load_base));
     script.push_str(&platform_symbols);
     let script_path = out.join("native.ld");
-    fs::write(&script_path, script)?;
+    write_if_changed(&script_path, script)?;
     println!("cargo:rustc-link-arg-bin={}=-T{}", manifest.binary_name(), script_path.display());
     // Module calls use PC-relative addressing, avoiding per-image gp state.
     println!("cargo:rustc-link-arg-bin={}=--no-relax", manifest.binary_name());

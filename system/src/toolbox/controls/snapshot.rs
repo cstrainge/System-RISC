@@ -45,7 +45,8 @@ pub(super) struct Standard
     maximum:           i16,
     flags:             i16,
     font:              FontSelection,
-    progress:          ProgressRange
+    progress:          ProgressRange,
+    splitter_parent:   Rect
 }
 impl Standard
 {
@@ -67,7 +68,8 @@ impl Standard
                   maximum: state.maximum,
                   flags: state.flags,
                   font: state.font,
-                  progress: state.progress })
+                  progress: state.progress,
+                  splitter_parent: state.splitter_parent })
     }
 
     pub(super) fn clear_highlight(&mut self) -> bool
@@ -77,17 +79,18 @@ impl Standard
 
     pub(super) fn wire(&self) -> ControlDefinitionState
     {
-        ControlDefinitionState { title:        self.title.bytes,
-                                 title_length: self.title.length,
-                                 bounds:       self.bounds,
-                                 enabled:      self.enabled,
-                                 highlighted:  self.highlighted,
-                                 value:        self.value,
-                                 minimum:      self.minimum,
-                                 maximum:      self.maximum,
-                                 flags:        self.flags,
-                                 font:         self.font,
-                                 progress:     self.progress }
+        ControlDefinitionState { title:           self.title.bytes,
+                                 title_length:    self.title.length,
+                                 bounds:          self.bounds,
+                                 enabled:         self.enabled,
+                                 highlighted:     self.highlighted,
+                                 value:           self.value,
+                                 minimum:         self.minimum,
+                                 maximum:         self.maximum,
+                                 flags:           self.flags,
+                                 font:            self.font,
+                                 progress:        self.progress,
+                                 splitter_parent: self.splitter_parent }
     }
 
     pub(super) fn storage(&self) -> usize
@@ -100,8 +103,9 @@ impl Standard
 /// interior divider is drawn through a span. Empty cells need no stored object.
 pub(super) struct Grid
 {
-    pub cells:   alloc::vec::Vec<Rect>,
-    pub logical: alloc::vec::Vec<mac_abi::controls::reflow::LogicalRect>
+    pub cells:    alloc::vec::Vec<Rect>,
+    pub logical:  alloc::vec::Vec<mac_abi::controls::reflow::LogicalRect>,
+    pub dividers: Option<Arc<Dividers>>
 }
 
 pub(super) struct Bars
@@ -109,4 +113,56 @@ pub(super) struct Bars
     pub bars:     [Option<mac_abi::controls::ScrollbarState>; 2],
     pub entry:    mac_abi::DefinitionEntry,
     pub viewport: Rect
+}
+
+/// Immutable Splitter instances owned by one Table's boundary configuration.
+/// Row/column indexes are geometry settings; the Table retains the CTRL identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Divider
+{
+    pub axis:     u32,
+    pub index:    u32,
+    pub bounds:   Rect,
+    pub minimum:  i16,
+    pub maximum:  i16,
+    pub position: i16
+}
+impl Divider
+{
+    pub fn state(self, parent: Rect, enabled: bool) -> ControlDefinitionState
+    {
+        use mac_abi::controls::*;
+        ControlDefinitionState { bounds: self.bounds,
+                                 value: self.position,
+                                 minimum: self.minimum,
+                                 maximum: self.maximum,
+                                 enabled: u32::from(enabled),
+                                 flags: SPLITTER_PARENT
+                                        | SPLITTER_RANGE
+                                        | if self.axis == 1 { SPLITTER_HORIZONTAL } else { 0 },
+                                 splitter_parent: parent,
+                                 ..Default::default() }
+    }
+}
+pub(super) struct Dividers
+{
+    pub entry:    mac_abi::DefinitionEntry,
+    pub viewport: Rect,
+    pub segments: alloc::vec::Vec<Divider>,
+    pub tracks:   [Arc<alloc::vec::Vec<mac_abi::controls::reflow::GridTrack>>; 2]
+}
+impl Dividers
+{
+    pub fn storage(&self) -> usize
+    {
+        core::mem::size_of::<Self>()
+        + self.segments.len() * core::mem::size_of::<Divider>()
+        + self.tracks
+              .iter()
+              .map(|t| {
+                  core::mem::size_of_val(t.as_ref())
+                  + t.len() * core::mem::size_of::<mac_abi::controls::reflow::GridTrack>()
+              })
+              .sum::<usize>()
+    }
 }
