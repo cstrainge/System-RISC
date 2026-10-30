@@ -405,12 +405,7 @@ impl Choice
 
 fn eligible(slot: usize, state: super::RunState, capture: &OuterCapture) -> bool
 {
-    state.live
-    && state.allows(capture.hart())
-    && !state.retired
-    && state.waiting.is_none()
-    && (state.claimed_by.is_none()
-        || (slot == capture.current() && state.claimed_by == Some(capture.hart())))
+    state.selectable(capture.hart(), slot == capture.current())
 }
 
 /// Complete copied facts and packet storage are prepaid by the registration.

@@ -6,10 +6,21 @@ use core::{alloc::{GlobalAlloc, Layout},
            ptr::{self, NonNull}};
 
 use mac_traps::emergency as machine;
-pub(crate) use machine::{abort, exit_returned};
+pub(crate) use machine::abort;
 
 #[cfg(feature = "application")]
 use crate::{Client, System, SystemServices, ToolboxResult, abi, panic};
+/// Terminate with an actual program result. Explicit exit skips user TLS
+/// destructors; a normal CRT must finish its teardown before calling this.
+#[cfg(feature = "application")]
+pub fn exit(code: i32) -> !
+{
+    match client().native_exit(code, mac_traps::native_exit::ExitKind::Normal)
+    {
+        Ok(never) => match never {},
+        Err(cause) => abort(format_args!("APPLICATION_EXIT_CONTRACT_FAILURE: {cause}"))
+    }
+}
 /// # Safety
 /// The native loader initialized this application image and supplies a readable,
 /// aligned service table/callbacks pinned through every application thread and

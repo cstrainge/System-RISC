@@ -5,21 +5,27 @@
 #![cfg_attr(feature = "heap", feature(allocator_ext, vec_fallible_shrink))]
 #[cfg(all(feature = "heap", feature = "smp"))]
 compile_error!("heap and smp are distinct native workloads; choose only one");
-#[cfg(any(feature = "heap", feature = "tls"))]
+#[cfg(any(feature = "heap", feature = "tls", feature = "exit"))]
 extern crate alloc;
 use core::fmt::{self, Write};
-#[cfg(not(any(feature = "heap", feature = "tls")))]
+#[cfg(not(any(feature = "heap", feature = "tls", feature = "exit")))]
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-#[cfg(not(any(feature = "heap", feature = "tls")))]
+#[cfg(not(any(feature = "heap", feature = "tls", feature = "exit")))]
 use mac_toolbox::{System, SystemServices};
-#[cfg(not(any(feature = "heap", feature = "tls")))]
+#[cfg(not(any(feature = "heap", feature = "tls", feature = "exit")))]
 #[path = "../../../process_cases.rs"]
 mod process_cases;
 #[cfg(feature = "smp")]
 mod smp;
 #[cfg(feature = "heap")]
 mod heap;
+#[cfg(feature = "exit")]
+mod exit;
+#[cfg(feature = "exit")]
+mac_toolbox::application!(exit::run);
+#[cfg(all(feature = "exit", any(feature = "tls", feature = "heap", feature = "smp")))]
+compile_error!("exit selects a distinct native workload");
 #[cfg(feature = "tls")]
 mod tls;
 #[cfg(feature = "tls")]
@@ -30,7 +36,7 @@ mac_toolbox::application!(tls::run);
 compile_error!("tls, heap and smp are distinct native workloads; choose one");
 #[cfg(feature = "heap")]
 mac_toolbox::application!(heap::run);
-#[cfg(not(any(feature = "heap", feature = "tls")))]
+#[cfg(not(any(feature = "heap", feature = "tls", feature = "exit")))]
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 pub struct LogBuffer
 {
@@ -71,7 +77,7 @@ impl Write for LogBuffer
         Ok(())
     }
 }
-#[cfg(not(any(feature = "heap", feature = "tls")))]
+#[cfg(not(any(feature = "heap", feature = "tls", feature = "exit")))]
 fn clock() -> u64
 {
     let ticks;
@@ -84,7 +90,7 @@ fn clock() -> u64
 
 /// # Safety
 /// The loader supplies a valid service table for this application's lifetime.
-#[cfg(not(any(feature = "heap", feature = "tls")))]
+#[cfg(not(any(feature = "heap", feature = "tls", feature = "exit")))]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
@@ -111,7 +117,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
         }
     }
 }
-#[cfg(not(any(feature = "heap", feature = "tls")))]
+#[cfg(not(any(feature = "heap", feature = "tls", feature = "exit")))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> !
 {

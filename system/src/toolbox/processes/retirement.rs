@@ -8,12 +8,14 @@ static CHANGED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn thread_reclaimed()
 {
+    super::termination::progress();
     super::finder::thread_reclaimed();
     CHANGED.store(true, Ordering::Release);
 }
 
 pub(crate) fn resources_released()
 {
+    super::termination::progress();
     CHANGED.store(true, Ordering::Release);
 }
 

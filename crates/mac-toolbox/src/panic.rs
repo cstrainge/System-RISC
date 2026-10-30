@@ -161,8 +161,9 @@ pub fn handle(info: &core::panic::PanicInfo<'_>) -> !
 }
 
 /// Nonallocating common path for panic, OOM and allocator protocol failures.
-/// Current applications have one scheduled author thread; this does not claim
-/// a future concurrent application-failure coordinator or arbitrary unwind.
+/// One caller attempts resident capture; secondary failures request the System
+/// termination protocol. Unsubmitted text can only be reported as a captured
+/// prefix or unavailable diagnostic, never as arbitrary fault recovery.
 #[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
 pub(crate) fn fail(arguments: fmt::Arguments<'_>) -> !
 {
@@ -174,44 +175,25 @@ pub(crate) fn fail(arguments: fmt::Arguments<'_>) -> !
     if PANICKING.swap(true, Ordering::AcqRel)
     {
         crate::application::abort(format_args!("APPLICATION_FAILURE_ALREADY_REPORTING; \
-                                                recursive/concurrent failure is uncontained"));
+                                                requesting System-owned abort; unsubmitted \
+                                                diagnostic text may be unavailable"));
     }
     let _ = client.log("APPLICATION_PANIC_BEGIN\n");
-    let shown = match report(client, arguments)
+    if let Err(cause) = report(client, arguments)
     {
-        Ok(_) => true,
+        diagnostic(client,
+                   format_args!("APPLICATION_PANIC_VIEWER_UNAVAILABLE status={} cause={cause}; \
+                                 see serial diagnostics\n",
+                                cause.status()));
+    }
+    // The System owns report retention, dismissal and recovery from here.
+    // No failed author continuation remains to poll or service events.
+    match client.native_exit(101, mac_traps::native_exit::ExitKind::Abort)
+    {
+        Ok(never) => match never {},
         Err(cause) =>
         {
-            diagnostic(client,
-                       format_args!("APPLICATION_PANIC_VIEWER_UNAVAILABLE status={} \
-                                     cause={cause}; see serial diagnostics\n",
-                                    cause.status()));
-            false
-        }
-    };
-    park(client, shown)
-}
-
-#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
-fn park(client: Client<'_>, shown: bool) -> !
-{
-    loop
-    {
-        let dismissed = !shown || Crashes::new(client).info().is_ok_and(|info| info.dismissed);
-        if dismissed
-        {
-            let mut call = mac_abi::processes::ProcessCall { operation: mac_abi::processes::EXIT,
-                                                             ..Default::default() };
-            let status =
-                client.process(&mut call).map_or_else(|error| error.status(), |_| crate::abi::OK);
-            crate::application::exit_returned(i64::from(status));
-        }
-        // System owns input and reporting. This wait invokes no app handlers.
-        if let Err(cause) = client.wait_event(0, 60)
-        {
-            crate::application::abort(format_args!("APPLICATION_FAILURE_WAIT_REFUSED status={} \
-                                                    cause={cause}",
-                                                   cause.status()));
+            crate::application::abort(format_args!("APPLICATION_EXIT_CONTRACT_FAILURE: {cause}"))
         }
     }
 }

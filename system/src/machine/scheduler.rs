@@ -14,6 +14,7 @@ use super::traps::TrapFrame;
 use crate::{context::{EventWaiter, ThreadContext},
             toolbox::handles::{OwnerRef, Store}};
 mod lifetime;
+pub(crate) mod application;
 pub(crate) mod address;
 pub(crate) use address::changed as address_wait_changed;
 mod stack;
@@ -210,17 +211,19 @@ struct RunState
 {
     // Scheduler-owned execution claim, retained across frame restore and body
     // execution. Only a complete outer-capture handoff may clear it.
-    affinity:    ThreadAffinity,
-    service:     service::State,
-    claimed_by:  Option<HartKey>,
-    live:        bool,
-    retired:     bool,
-    switches:    u64,
-    waiting:     Option<Wait>,
-    woken:       u8,
-    ready_since: Option<u64>,
-    last_hart:   Option<HartKey>,
-    at_handoff:  bool
+    affinity:        ThreadAffinity,
+    service:         service::State,
+    claimed_by:      Option<HartKey>,
+    live:            bool,
+    retired:         bool,
+    failure_pending: bool,
+    failure_parked:  bool,
+    switches:        u64,
+    waiting:         Option<Wait>,
+    woken:           u8,
+    ready_since:     Option<u64>,
+    last_hart:       Option<HartKey>,
+    at_handoff:      bool
 }
 /// Policy refusal preserves the actual missing/invalid clock or ready interval.
 /// This surface does not invent a CPU-time counter.
@@ -282,17 +285,19 @@ impl RunState
 
     const fn new() -> Self
     {
-        Self { affinity:    ThreadAffinity::Eligible,
-               service:     service::State::new(),
-               claimed_by:  None,
-               live:        false,
-               retired:     false,
-               switches:    0,
-               waiting:     None,
-               woken:       0,
-               ready_since: None,
-               last_hart:   None,
-               at_handoff:  false }
+        Self { affinity:        ThreadAffinity::Eligible,
+               service:         service::State::new(),
+               claimed_by:      None,
+               live:            false,
+               retired:         false,
+               failure_pending: false,
+               failure_parked:  false,
+               switches:        0,
+               waiting:         None,
+               woken:           0,
+               ready_since:     None,
+               last_hart:       None,
+               at_handoff:      false }
     }
 
     fn allows(&self, hart: HartKey) -> bool
@@ -300,12 +305,22 @@ impl RunState
         self.affinity.allows(hart) && (!self.service.primary() || hart.is_primary())
     }
 
+    fn runnable(&self) -> bool
+    {
+        self.live && !self.retired && !self.failure_parked && self.waiting.is_none()
+    }
+
+    /// Fresh dispatch admission, shared by policy, bootstrap and final commit.
+    fn selectable(&self, hart: HartKey, is_current: bool) -> bool
+    {
+        self.runnable()
+        && self.allows(hart)
+        && (self.claimed_by.is_none() || (is_current && self.claimed_by == Some(hart)))
+    }
+
     fn ready(&self) -> bool
     {
-        self.live
-        && !self.retired
-        && self.waiting.is_none()
-        && (self.claimed_by.is_none() || self.at_handoff)
+        self.runnable() && (self.claimed_by.is_none() || self.at_handoff)
     }
 }
 impl Thread
@@ -320,7 +335,16 @@ impl Thread
         let mut state = self.state.get();
         let was_ready = state.ready();
         let was_retired = state.retired;
+        let was_failure_parked = state.failure_parked;
         change(&mut state);
+        if state.failure_pending && state.service.quiescent()
+        {
+            state.failure_parked = true;
+        }
+        if !was_failure_parked && state.failure_parked
+        {
+            crate::toolbox::processes::termination::progress();
+        }
         if !was_retired && state.retired
         {
             if let Some(backing) = self.core.backing.lock().as_ref()
@@ -895,7 +919,7 @@ pub(crate) fn start_prepared(thread: u64, owner: &OwnerRef) -> Result<(), mac_ab
     {
         return Err(mac_abi::ACCESS_DENIED);
     }
-    if record.state.get().retired
+    if record.state.get().retired || record.state.get().failure_pending
     {
         return Err(mac_abi::SERVICE_BUSY);
     }
@@ -931,11 +955,23 @@ extern "C" fn app_start(entry: usize) -> !
         app_return_log(format_args!("APPLICATION_ENTRY_RETURNED entry={entry:#x} \
                                      status={status}\n"));
     }
-    let mut call = mac_abi::processes::ProcessCall { operation: mac_abi::processes::EXIT,
-                                                     ..Default::default() };
+    // Entry Status describes the CRT service contract, not the program's
+    // signed main result. A failed entry aborts with a distinct diagnostic;
+    // ordinary main/explicit exit carries its own result through NativeExitCall.
+    let mut call =
+        mac_abi::processes::NativeExitCall { code:     if status == mac_abi::OK { 0 } else { 101 },
+                                             flags:    if status == mac_abi::OK
+                                             {
+                                                 mac_abi::processes::NATIVE_EXIT_NORMAL
+                                             }
+                                             else
+                                             {
+                                                 mac_abi::processes::NATIVE_EXIT_ABORT
+                                             },
+                                             reserved: 0 };
     let exit_status = unsafe {
         super::traps::gateway(mac_abi::traps::PROCESS,
-                              (&mut call as *mut mac_abi::processes::ProcessCall).cast(),
+                              (&mut call as *mut mac_abi::processes::NativeExitCall).cast(),
                               core::mem::size_of_val(&call))
     };
     app_return_log(format_args!("APPLICATION_EXIT_RETURNED entry={entry:#x} \
@@ -1094,14 +1130,14 @@ pub(crate) fn start() -> Result<(), StartError>
     // Module preparations can precede Finder in the shared THRD store. Start
     // the genuine runnable Finder process, never an inert/armed module slot.
     let finder = crate::context::finder_app().0;
+    let hart = selected_hart();
     let (slot, t) =
         scheduler.iter()
                  .find(|(_, thread)| {
                      let state = thread.state.get();
                      thread.worker.is_none()
                      && thread.core.context.identity().app.0 == finder
-                     && state.live
-                     && !state.retired
+                     && state.selectable(hart, false)
                  })
                  .ok_or(mac_formats::Error::Malformed("scheduler bootstrap has no runnable \
                                                        Finder process"))?;
@@ -1109,7 +1145,6 @@ pub(crate) fn start() -> Result<(), StartError>
         t.core
          .cpu_frame()
          .ok_or(mac_formats::Error::Malformed("scheduler bootstrap Finder has no CPU backing"))?;
-    let hart = selected_hart();
     if !t.state.get().allows(hart)
     {
         return Err(mac_formats::Error::Malformed("scheduler bootstrap Finder violates actual \
@@ -1539,6 +1574,10 @@ fn release_claim(scheduler: &Scheduler, slot: usize, hart: HartKey)
         RECLAIM_PENDING.store(true, Ordering::Release);
     }
     worker::execution_released(thread);
+    if thread.state.get().failure_pending
+    {
+        crate::toolbox::processes::termination::progress();
+    }
     let released = thread.state.get();
     if released.ready()
     {
@@ -1626,6 +1665,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
                 crate::toolbox::application_heap::wait::pump();
                 crate::toolbox::processes::retirement::pump();
                 crate::toolbox::processes::finder::pump();
+                crate::toolbox::processes::termination::pump();
             }
         });
     }
@@ -1717,11 +1757,7 @@ fn commit_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture, in
     {
         let thread = scheduler.thread(index)?;
         let state = thread.state.get();
-        if !state.live
-           || state.retired
-           || state.waiting.is_some()
-           || !state.allows(hart)
-           || !(state.claimed_by.is_none() || (index == current && state.claimed_by == Some(hart)))
+        if !state.selectable(hart, index == current)
         {
             return None;
         }
@@ -1783,10 +1819,7 @@ fn bootstrap_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture)
     let priority = scheduler.iter()
                             .filter(|(slot, t)| {
                                 let state = t.state.get();
-                                state.live
-                                && state.allows(hart)
-                                && (state.claimed_by.is_none()
-                                    || (*slot == current && state.claimed_by == Some(hart)))
+                                state.selectable(hart, *slot == current)
                             })
                             .map(|(_, t)| t.state.get().woken)
                             .max()
@@ -1809,12 +1842,7 @@ fn bootstrap_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture)
                 continue;
             };
             let state = thread.state.get();
-            if state.live
-               && state.allows(hart)
-               && !state.retired
-               && (state.claimed_by.is_none()
-                   || (index == current && state.claimed_by == Some(hart)))
-               && if boosted { state.woken == priority } else { state.waiting.is_none() }
+            if state.selectable(hart, index == current) && (!boosted || state.woken == priority)
             {
                 if index == current || thread.core.cpu_frame().is_some()
                 {
@@ -1826,9 +1854,15 @@ fn bootstrap_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture)
     None
 }
 
-pub fn retired() -> bool
+/// Called only after the outer trap's service and frame borrows have ended.
+/// A pending failure may still drain genuine Host leases; only the actual
+/// quiescent park forbids resuming that author continuation.
+pub(crate) fn must_leave_current() -> bool
 {
-    SCHEDULER.lock().thread(current()).is_some_and(|t| t.state.get().retired)
+    SCHEDULER.lock().thread(current()).is_some_and(|thread| {
+                                          let state = thread.state.get();
+                                          state.retired || state.failure_parked
+                                      })
 }
 pub fn image_for(app: u64) -> Option<crate::images::Binding>
 {

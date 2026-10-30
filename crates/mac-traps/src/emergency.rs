@@ -47,8 +47,9 @@ pub fn abort(arguments: fmt::Arguments<'_>) -> !
                                         length: text.used };
     // SAFETY: fixed live stack buffers; no service-table or heap dependency.
     let _ = unsafe { invoke(abi::traps::LOG, &mut log) };
-    let mut exit = abi::processes::ProcessCall { operation: abi::processes::EXIT,
-                                                 ..Default::default() };
+    let mut exit = abi::processes::NativeExitCall { code:     101,
+                                                    flags:    abi::processes::NATIVE_EXIT_ABORT,
+                                                    reserved: 0 };
     let status = unsafe { invoke(abi::traps::PROCESS, &mut exit) };
     exit_returned(status)
 }

@@ -9,6 +9,19 @@ pub const HIDE: u32 = 5;
 pub const HIDE_OTHERS: u32 = 6;
 pub const SHOW_ALL: u32 = 7;
 pub const EXIT: u32 = 8;
+/// Size-distinct native termination. The result is a program's signed main/exit
+/// code, never a native entry service Status. Accepted calls do not resume the
+/// invoking author continuation; malformed or unauthenticated calls may refuse.
+pub const NATIVE_EXIT_NORMAL: u32 = 0;
+pub const NATIVE_EXIT_ABORT: u32 = 1;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NativeExitCall
+{
+    pub code:     i32,
+    pub flags:    u32,
+    pub reserved: u64
+}
 /// Exact mounted-volume/catalog identity, independent of path or creator code.
 pub const IS_RUNNING: u32 = 9;
 /// Native lifecycle notification: payload packs volume low/CNID high; message

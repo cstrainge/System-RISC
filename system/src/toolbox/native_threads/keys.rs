@@ -52,7 +52,13 @@ pub(super) fn create(owner: &OwnerRef, image: crate::images::Binding, root: &Arc
             {
                 return Err(Error::Unavailable);
             };
-            match interrupts::with_masked(|| manager.lock().keys.publish_prepared(permit, key))
+            // Gate close and final publication use the same SCHEDULER turn.
+            // All payload/capacity preparation above remains outside that turn.
+            let admission=RuntimeAdmission{root:root.clone()};
+            let turn=crate::machine::scheduler::application::runtime_turn(&admission).map_err(Error::Runtime)?;
+            let published=manager.lock().keys.publish_prepared(permit,key);
+            drop(turn);
+            match published
             {
                 Ok((publication, old)) =>
                 {

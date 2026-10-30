@@ -4,6 +4,7 @@ use mac_abi::{traps::*, *};
 
 pub mod application_heap;
 pub mod native_threads;
+pub mod native_exit;
 #[cfg(target_arch = "riscv64")]
 pub mod emergency;
 pub mod address_wait;

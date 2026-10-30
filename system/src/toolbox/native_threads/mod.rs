@@ -33,6 +33,36 @@ impl RootBinding
         self.owner
     }
 }
+/// A sealed pin to this registered Process runtime admission root. System
+/// failure closes new author/key admission while Finder's owner ledger remains
+/// accepting for its actual Activity recipient handoff. Existing TLS/report
+/// access is not revoked. Drop this temporary pin before the owner walk.
+pub(crate) struct RuntimeAdmission
+{
+    root: Arc<Root>
+}
+impl RuntimeAdmission
+{
+    pub(crate) fn owner(&self) -> &OwnerRef
+    {
+        &self.root.owner
+    }
+
+    pub(crate) fn accepting(&self) -> bool
+    {
+        self.root.owner.accepting() && !self.root.closing.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn close(&self)
+    {
+        self.root.closing.store(true, Ordering::Release);
+    }
+}
+pub(crate) fn runtime_admission(binding: &RootBinding, owner: &OwnerRef)
+                                -> Result<RuntimeAdmission, Error>
+{
+    Ok(RuntimeAdmission { root: root(binding, owner)? })
+}
 pub(super) struct Root
 {
     owner:      OwnerRef,
@@ -171,6 +201,7 @@ pub(crate) enum Error
 {
     Authority,
     Context(crate::context::ApplicationExecutorError),
+    Runtime(crate::machine::scheduler::application::RuntimeAdmissionError),
     Unavailable,
     Invalid,
     Missing,
@@ -197,7 +228,8 @@ impl Error
     {
         match self {
             Self::Authority => ACCESS_DENIED,
-            Self::Context(cause) => cause.status(), Self::Missing => NOT_FOUND,
+            Self::Context(cause) => cause.status(),
+            Self::Runtime(cause)=>cause.status(), Self::Missing => NOT_FOUND,
             Self::Busy => SERVICE_BUSY, Self::Finished => OPERATION_CANCELLED,
             Self::Metadata(_) | Self::Capacity { .. } => NO_MEMORY,
             Self::Pool(cause) => crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(*cause)),
@@ -220,6 +252,7 @@ impl fmt::Display for Error
                                root")
             }
             Self::Context(cause) => cause.fmt(out),
+            Self::Runtime(cause) => cause.fmt(out),
             Self::Unavailable =>
             {
                 out.write_str("native TLS manager has not been initialized by System")

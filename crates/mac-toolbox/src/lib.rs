@@ -2,7 +2,8 @@
 #![no_std]
 #![cfg_attr(all(feature = "application", target_arch = "riscv64"), feature(alloc_error_handler))]
 #[cfg(all(feature = "application", target_os = "systemrisc"))]
-compile_error!("the System RISC std target supplies startup; remove the no_std application feature");
+compile_error!("the System RISC std target supplies startup; remove the no_std application \
+                feature");
 /// Explicit wire/entry-point escape hatch. Ordinary applications use decoded
 /// native services, typed identities and Error rather than numeric statuses.
 pub use mac_abi as abi;

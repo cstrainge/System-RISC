@@ -221,7 +221,7 @@ pub(crate) fn enter_ecall(frame: &TrapFrame) -> Result<Entry, Status>
     {
         return Err(cause);
     }
-    if state.service.retire_pending
+    if (state.failure_pending || state.service.retire_pending)
        && matches!(frame.registers[15] as u32,
                    mac_abi::traps::WAIT_EVENT | mac_abi::traps::POSITIONED_EVENT)
     {
@@ -311,7 +311,7 @@ pub(super) fn defer_retire(thread: &Thread) -> bool
 
 pub(super) fn suspension_allowed(state: super::RunState) -> Result<(), Status>
 {
-    if state.service.retire_pending || state.service.fault.is_some()
+    if state.failure_pending || state.service.retire_pending || state.service.fault.is_some()
     {
         Err(OPERATION_CANCELLED)
     }
@@ -523,7 +523,8 @@ impl Drop for ServiceLease
 pub(crate) enum RequestAction
 {
     Return,
-    Replay
+    Replay,
+    Exit
 }
 #[derive(Clone, Copy)]
 pub(crate) struct RequestResult
