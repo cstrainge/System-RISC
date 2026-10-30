@@ -466,6 +466,44 @@ impl Manager
             #[cfg(not(target_arch = "riscv64"))]
             return Err(ACCESS_DENIED);
         }
+        if call.operation == SET_STATIC_TEXT_OBJECT
+        {
+            if call.flags == 0 || call.flags & !TEXT_PROPERTIES != 0 || call.reflow != 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let Spec::Standard { mut state,
+                                 procedure: STATIC_TEXT_PROCEDURE } =
+                self.get(call.id, owner)?.state.spec
+            else
+            {
+                return Err(NOT_SUPPORTED);
+            };
+            if call.flags & TEXT_CONTENT != 0
+            {
+                state.title = call.standard.title;
+                state.title_length = call.standard.title_length;
+            }
+            if call.flags & TEXT_FONT != 0
+            {
+                state.font = call.standard.font;
+            }
+            if call.flags & TEXT_ALIGNMENT != 0
+            {
+                state.value = call.standard.value;
+            }
+            if call.flags & TEXT_LAYOUT != 0
+            {
+                state.flags = call.standard.flags;
+            }
+            if call.flags & TEXT_BOUNDS != 0
+            {
+                state.bounds = call.standard.bounds;
+            }
+            call.standard = state;
+            call.procedure = STATIC_TEXT_PROCEDURE;
+            call.operation = CONFIGURE_OBJECT;
+        }
         let operation = call.operation;
         if !call.surface.is_null() || call.reserved != 0
         {

@@ -171,8 +171,26 @@ Assignment subsequently resolves heights top-down. These are bounded stages,
 not a negotiation loop. Cached leaf measurements and intrinsic container answers
 are reused. Clean nested grids also reuse assigned axes when their size is
 unchanged; moving a grid translates those results. Explicit child arrangement
-invalidation and manual child assignment mark ancestors pending. Current fixed-content leaf families do not implement wrapped text;
-the constrained protocol does not itself establish wrapping support.
+invalidation and manual child assignment mark ancestors pending. Static text derives natural requirements from the selected resident font.
+`StaticTextSpec` selects `TextLayout::Wrap` or the default `Ellipsis`, independently
+of the immutable `Reflow` choice. Wrap preserves CR, LF and CRLF hard breaks and
+blank lines, prefers whitespace breaks, and splits oversized tokens only at
+extended grapheme boundaries. NBSP and narrow NBSP do not form soft breaks.
+Nonempty static text reports an ellipsis-width, one-line minimum. Native
+state validation refuses font widths beyond the local coordinate range; classic font
+queries retain their saturating result. The constrained answer reports height at the resolved width; zero width still
+makes bounded progress. A height shortage clips output rather than changing
+requirements. Ellipsis preserves hard lines and fits a grapheme-safe prefix plus
+an ellipsis; if even the ellipsis cannot fit, that line paints no ink.
+
+`StaticText::into_control` transfers ownership for Table adoption. Borrowed
+`ControlRef::static_text()` setters update text, font, alignment, layout mode or
+bounds atomically in resident storage. Unselected properties retain their latest
+values; a text update never restores the creation rectangle. Unchanged updates
+avoid drawing publication. Invalid properties and retained admission failures
+preserve the prior complete state. Successful content/style changes invalidate
+measurement and schedule the existing event-boundary reflow. Other current leaf
+families retain their documented creation-size fallback.
 
 System stages the affected subtree while holding the existing desktop service
 guard. No object-store mutable borrow crosses a definition call. Definitions

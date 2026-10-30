@@ -202,6 +202,10 @@ impl Manager
         let o = self.get(call.id, owner)?;
         Ok(match call.operation
         {
+            SET_STATIC_TEXT_OBJECT if call.flags & TEXT_BOUNDS != 0 =>
+            {
+                call.standard.bounds != o.state.spec.bounds()
+            }
             CONFIGURE_OBJECT =>
             {
                 Spec::from_call(call, o.state.spec.scrollbar().is_some()).bounds()

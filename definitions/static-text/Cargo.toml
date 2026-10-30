@@ -13,5 +13,6 @@ test = false
 bench = false
 [dependencies]
 mac-definition.workspace = true
+unicode-segmentation = { version = "1.13.3", default-features = false }
 [build-dependencies]
 mac-build.workspace = true

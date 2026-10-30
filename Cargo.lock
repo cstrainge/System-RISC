@@ -791,6 +791,7 @@ version = "0.1.0"
 dependencies = [
  "mac-build",
  "mac-definition",
+ "unicode-segmentation",
 ]
 
 [[package]]

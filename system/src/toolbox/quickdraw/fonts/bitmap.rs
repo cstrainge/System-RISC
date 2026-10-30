@@ -17,7 +17,7 @@ pub(super) fn metrics(face: &Resolved<'_>) -> Result<FontMetrics, Status>
                          .clamp(0, i32::from(i16::MAX)) as i16 })
 }
 
-pub(super) fn width(face: &Resolved<'_>, text: &str) -> Result<i16, Status>
+pub(super) fn width(face: &Resolved<'_>, text: &str) -> Result<i32, Status>
 {
     let font = BitmapFont::parse(&face.resource.data).ok_or(BAD_ARGUMENT)?;
     let scale = f32::from(face.selection.size) / f32::from(face.size);
@@ -29,7 +29,7 @@ pub(super) fn width(face: &Resolved<'_>, text: &str) -> Result<i16, Status>
                                              * scale,
                                              face.synthetic));
     }
-    Ok(width.clamp(0, i32::from(i16::MAX)) as i16)
+    Ok(width.max(0))
 }
 
 pub(super) fn draw(face: &Resolved<'_>, canvas: &mut Canvas<'_>, baseline: Point, text: &str,

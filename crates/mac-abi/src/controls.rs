@@ -21,6 +21,17 @@ pub const NEXT_CHILD_OBJECT: u32 = 20;
 pub const HIT_CHILDREN_OBJECT: u32 = 21;
 /// Atomic Table appearance update; standard.flags contains TABLE_HIDE_* bits.
 pub const SET_TABLE_LINES_OBJECT: u32 = 22;
+/// Atomic selected-property update of a static-text object. Unselected fields,
+/// including its current layout rectangle, remain resident-owned.
+pub const SET_STATIC_TEXT_OBJECT: u32 = 23;
+pub const TEXT_CONTENT: u32 = 1;
+pub const TEXT_FONT: u32 = 2;
+pub const TEXT_ALIGNMENT: u32 = 4;
+pub const TEXT_LAYOUT: u32 = 8;
+pub const TEXT_BOUNDS: u32 = 16;
+pub const TEXT_PROPERTIES: u32 =
+    TEXT_CONTENT | TEXT_FONT | TEXT_ALIGNMENT | TEXT_LAYOUT | TEXT_BOUNDS;
+pub const TEXT_WRAP: i16 = 1;
 /// Zero retains visible row/column separators and the outer Table border.
 pub const TABLE_HIDE_ROWS: i16 = 1;
 pub const TABLE_HIDE_COLUMNS: i16 = 2;

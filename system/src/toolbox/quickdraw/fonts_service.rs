@@ -65,9 +65,17 @@ pub fn query(manager: &FontManager, call: &mut FontCall, text: &str) -> Status
                 Err(s) => s
             };
         }
-        FONT_WIDTH =>
+        FONT_WIDTH | FONT_WIDTH_CHECKED =>
         {
-            return match manager.text_width(selection(call.selection), text)
+            let result = if call.operation == FONT_WIDTH_CHECKED
+            {
+                manager.text_width_checked(selection(call.selection), text)
+            }
+            else
+            {
+                manager.text_width(selection(call.selection), text)
+            };
+            return match result
             {
                 Ok(w) =>
                 {

@@ -18,8 +18,9 @@ pub use toolbox_controls::Part;
 pub mod runtime;
 #[doc(hidden)]
 pub use binding::{buttons_entry, progress_entry, scrollbar_entry, static_text_entry, table_entry};
-pub use mac_abi::{quickdraw::FontSelection, theme::Palette as Theme};
+pub use mac_abi::{INLINE_STRING_BYTES, quickdraw::FontSelection, theme::Palette as Theme};
 pub use mac_traps::{Error, Result};
+pub use toolbox_controls::TextLayout;
 pub use toolbox_quickdraw::{Point, Rect, SurfacePort};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,7 +39,8 @@ pub struct StaticText<'a>
     pub text:      &'a str,
     pub font:      FontSelection,
     pub enabled:   bool,
-    pub alignment: Alignment
+    pub alignment: Alignment,
+    pub layout:    toolbox_controls::TextLayout
 }
 /// Exhaustive author dispatch. Unknown wire values never enter author code.
 /// Adding a supported message requires every author to answer it explicitly.
@@ -110,6 +112,12 @@ impl<'a> Services<'a>
     pub fn theme(self) -> Result<mac_abi::theme::Palette>
     {
         self.client.theme()
+    }
+
+    /// Measure with the same resident font service used by drawing.
+    pub fn font_width(self, font: FontSelection, text: &str) -> Result<i16>
+    {
+        Ok(self.client.font(mac_abi::quickdraw::FONT_WIDTH_CHECKED, font, text, 0)?.width)
     }
 
     pub fn font_metrics(self, font: FontSelection) -> Result<mac_abi::quickdraw::FontMetrics>

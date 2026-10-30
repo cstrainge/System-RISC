@@ -61,7 +61,7 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
             state.maximum = 0;
         }
         let owned = system.controls().create_standard(window.id(), kind, state, Reflow::Yes)?;
-        exercise(system, owned.control(), original)?;
+        exercise(system, owned.control(), original, kind == StandardKind::StaticText)?;
         require(owned.control().configure(kind, state)?.reflow == Reflow::Yes,
                 "configure changed opt-in")?;
         drop(owned);
@@ -76,7 +76,7 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
                                         1,
                                         10,
                                         Reflow::Yes)?;
-    exercise(system, owned.control(), scrollbar_bounds)?;
+    exercise(system, owned.control(), scrollbar_bounds, false)?;
     drop(owned);
     system.log("REFLOW_NATIVE leaves=buttons,window-font,progress,static,table,scrollbar \
                 assignment=normal,tiny,empty cache=invalidate settings=set,clear,pair\n")?;
@@ -121,14 +121,27 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
     system.log("REFLOW_NATIVE_DONE\n")?;
     Ok(())
 }
-fn exercise(system: &System<'_>, control: controls::ControlRef<'_>, original: Rect)
+fn exercise(system: &System<'_>, control: controls::ControlRef<'_>, original: Rect,
+            natural_text: bool)
             -> Result<(), Failure>
 {
     use abi::controls::{ControlCall, REFLOW_OBJECT, reflow as wire};
     require(control.reflow()? == Reflow::Yes, "owner query missed retained choice")?;
     let initial = control.ask_size(Default::default())?;
-    let creation = size(original.right - original.left, original.bottom - original.top);
-    require(initial.intrinsic.preferred() == creation, "CDEF missed creation size")?;
+    let creation = if natural_text
+    {
+        let font = control.info()?.standard.font;
+        let metrics = system.client().font(abi::quickdraw::FONT_METRICS, font, "", 0)?.metrics;
+        let text = system.client().font(abi::quickdraw::FONT_WIDTH, font, "Leaf", 0)?.width;
+        let dots = system.client().font(abi::quickdraw::FONT_WIDTH, font, "…", 0)?.width;
+        size(text.max(dots), (metrics.ascent + metrics.descent + metrics.leading).max(1))
+    }
+    else
+    {
+        size(original.right - original.left, original.bottom - original.top)
+    };
+    require(initial.intrinsic.preferred() == creation,
+            "CDEF missed natural text or creation size")?;
     for bounds in
         [Rect::new(12, 12, 172, 52), Rect::new(12, 12, 13, 13), Rect::new(12, 12, 12, 12), original]
     {
@@ -140,7 +153,7 @@ fn exercise(system: &System<'_>, control: controls::ControlRef<'_>, original: Re
                 "assignment lost metadata")?;
         control.draw()?;
         require(control.ask_size(Default::default())?.intrinsic.preferred() == creation,
-                "assignment overwrote creation fallback")?;
+                "assignment overwrote natural requirements")?;
     }
     control.set_preferred(size(40, 40))?;
     control.set_minimum(size(60, 60))?;

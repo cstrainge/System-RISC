@@ -90,25 +90,78 @@ pub enum TextAlignment
     Center = 1,
     Right  = -1
 }
+/// Ellipsis preserves explicit line breaks; Wrap additionally breaks at whitespace
+/// and, for overlong tokens, at extended grapheme boundaries. Neither mode edits text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextLayout
+{
+    #[default]
+    Ellipsis,
+    Wrap
+}
+impl From<TextLayout> for i16
+{
+    fn from(value: TextLayout) -> Self
+    {
+        if value == TextLayout::Wrap { mac_abi::controls::TEXT_WRAP } else { 0 }
+    }
+}
+impl TryFrom<i16> for TextLayout
+{
+    type Error = super::Error;
+
+    fn try_from(value: i16) -> Result<Self>
+    {
+        match value
+        {
+            0 => Ok(Self::Ellipsis),
+            mac_abi::controls::TEXT_WRAP => Ok(Self::Wrap),
+            _ => Err(super::Error::BadArgument)
+        }
+    }
+}
+#[derive(Clone, Copy)]
+pub struct StaticTextSpec<'a>
+{
+    pub bounds:    Rect,
+    pub text:      &'a str,
+    pub font:      FontSelection,
+    pub alignment: TextAlignment,
+    pub layout:    TextLayout,
+    pub reflow:    super::Reflow
+}
 pub struct StaticText<'a>
 {
-    control: Control<'a>,
-    state:   StandardState
+    control: Control<'a>
 }
-impl StaticText<'_>
+#[derive(Clone, Copy)]
+pub struct StaticTextRef<'a>
 {
-    /// Move/resize the existing managed object; keep identity and text storage.
-    pub fn set_bounds(&mut self, bounds: Rect) -> Result<()>
+    control: super::ControlRef<'a>
+}
+impl<'a> super::ControlRef<'a>
+{
+    /// Each operation checks the resident control family and ownership.
+    pub fn static_text(self) -> StaticTextRef<'a>
     {
-        if self.state.bounds == bounds
-        {
-            return Ok(());
-        }
-        let next = StandardState { bounds,
-                                   ..self.state };
-        self.control.control().configure(StandardKind::StaticText, next)?;
-        self.state = next;
-        Ok(())
+        StaticTextRef { control: self }
+    }
+}
+impl<'a> StaticText<'a>
+{
+    pub fn control(&self) -> super::ControlRef<'a>
+    {
+        self.control.control()
+    }
+
+    pub fn into_control(self) -> Control<'a>
+    {
+        self.control
+    }
+
+    pub fn text(&self) -> StaticTextRef<'a>
+    {
+        self.control().static_text()
     }
 
     pub fn id(&self) -> super::ControlId
@@ -116,21 +169,68 @@ impl StaticText<'_>
         self.control.id()
     }
 
+    pub fn set_bounds(&mut self, bounds: Rect) -> Result<()>
+    {
+        self.text().set_bounds(bounds)
+    }
+
     pub fn set(&mut self, text: &str) -> Result<()>
     {
-        let next = text_state(self.state.bounds, text, self.state.font, self.state.value)?;
-        if self.state == next
-        {
-            return Ok(());
-        }
-        self.control.control().configure(StandardKind::StaticText, next)?;
-        self.state = next;
-        Ok(())
+        self.text().set(text)
     }
 
     pub fn draw(&self) -> Result<()>
     {
-        self.control.control().draw()
+        self.control().draw()
+    }
+}
+impl StaticTextRef<'_>
+{
+    fn update(self, flags: u32, standard: StandardState) -> Result<()>
+    {
+        let mut call =
+            mac_abi::controls::ControlCall { operation:
+                                                 mac_abi::controls::SET_STATIC_TEXT_OBJECT,
+                                             id: self.control.id().0,
+                                             flags,
+                                             standard,
+                                             ..Default::default() };
+        self.control.client().control(&mut call)
+    }
+
+    /// Preserve the latest resident rectangle and all other properties.
+    pub fn set(self, text: &str) -> Result<()>
+    {
+        self.update(mac_abi::controls::TEXT_CONTENT,
+                    text_state(Rect::ZERO, text, FontSelection::default(), 0)?)
+    }
+
+    pub fn set_bounds(self, bounds: Rect) -> Result<()>
+    {
+        self.update(mac_abi::controls::TEXT_BOUNDS,
+                    StandardState { bounds,
+                                    ..Default::default() })
+    }
+
+    pub fn set_font(self, font: FontSelection) -> Result<()>
+    {
+        self.update(mac_abi::controls::TEXT_FONT,
+                    StandardState { font,
+                                    ..Default::default() })
+    }
+
+    pub fn set_alignment(self, alignment: TextAlignment) -> Result<()>
+    {
+        self.update(mac_abi::controls::TEXT_ALIGNMENT,
+                    StandardState { value: alignment as i16,
+                                    ..Default::default() })
+    }
+
+    pub fn set_layout(self, layout: TextLayout) -> Result<()>
+    {
+        self.update(mac_abi::controls::TEXT_LAYOUT,
+                    StandardState { flags: layout.into(),
+                                    ..Default::default() })
     }
 }
 fn text_state(bounds: Rect, text: &str, font: FontSelection, alignment: i16)
@@ -174,11 +274,24 @@ impl<'a> Controls<'a>
                               font: FontSelection, alignment: TextAlignment)
                               -> Result<StaticText<'a>>
     {
-        let state = text_state(bounds, text, font, alignment as i16)?;
+        self.create_static_text_with(window,
+                                     StaticTextSpec { bounds,
+                                                      text,
+                                                      font,
+                                                      alignment,
+                                                      layout: TextLayout::Ellipsis,
+                                                      reflow: crate::Reflow::No })
+    }
+
+    /// Opt-in wrapping and reflow with the same owned lifetime as other controls.
+    pub fn create_static_text_with(&self, window: WindowId, spec: StaticTextSpec<'_>)
+                                   -> Result<StaticText<'a>>
+    {
+        let mut state = text_state(spec.bounds, spec.text, spec.font, spec.alignment as i16)?;
+        state.flags = spec.layout.into();
         Ok(StaticText { control: self.create_standard(window,
                                                       StandardKind::StaticText,
                                                       state,
-                                                      crate::Reflow::No)?,
-                        state })
+                                                      spec.reflow)? })
     }
 }

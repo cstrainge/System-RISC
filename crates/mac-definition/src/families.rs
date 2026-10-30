@@ -163,7 +163,7 @@ impl Family for StaticFamily
 
     fn decode<'a>(wire: &'a Self::Wire, _: i16) -> Result<Self::View<'a>>
     {
-        if wire.flags != 0 || wire.highlighted != 0 || wire.minimum != 0 || wire.maximum != 0
+        if wire.highlighted != 0 || wire.minimum != 0 || wire.maximum != 0
         {
             return Err(Error::BadArgument);
         }
@@ -174,7 +174,8 @@ impl Family for StaticFamily
             1 => Alignment::Center,
             _ => return Err(Error::BadArgument)
         };
-        Ok(StaticText { bounds: wire.bounds,
+        Ok(StaticText { layout: wire.flags.try_into()?,
+                        bounds: wire.bounds,
                         text: title(wire)?,
                         font: wire.font,
                         enabled: wire.enabled != 0,

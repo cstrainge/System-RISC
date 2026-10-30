@@ -462,6 +462,20 @@ impl FontManager
                                       preference: FontPreference)
                                       -> Result<i16, Status>
     {
+        Ok(self.text_width_wide(selection, text, preference)?.min(i32::from(i16::MAX)) as i16)
+    }
+
+    /// Preserve the classic query's saturation separately from checked native
+    /// layout; both use the same font resolver and glyph advance calculation.
+    pub fn text_width_checked(&self, selection: FontSelection, text: &str) -> Result<i16, Status>
+    {
+        i16::try_from(self.text_width_wide(selection, text, FontPreference::BitmapPreferred)?)
+            .map_err(|_| mac_abi::BAD_ARGUMENT)
+    }
+
+    fn text_width_wide(&self, selection: FontSelection, text: &str, preference: FontPreference)
+                       -> Result<i32, Status>
+    {
         let face = self.resolve(selection, preference)?;
         if text.is_empty()
         {

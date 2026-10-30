@@ -142,6 +142,9 @@ pub const FONT_ID: u32 = 3;
 pub const FONT_METRICS: u32 = 4;
 pub const FONT_WIDTH: u32 = 5;
 pub const FONT_DRAW: u32 = 6;
+/// Native layout measurement: refuse an unrepresentable local width instead of
+/// using the classic FONT_WIDTH saturating i16 result.
+pub const FONT_WIDTH_CHECKED: u32 = 7;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct FontCall

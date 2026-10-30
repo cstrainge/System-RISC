@@ -51,7 +51,10 @@ pub(super) unsafe fn admit(invocation: &crate::context::DefinitionInvocations, n
             call.target == Target::default()
             && match call.operation
             {
-                FONT_METRICS | FONT_WIDTH => call.surface.is_null() || owns_surface(call.surface),
+                FONT_METRICS | FONT_WIDTH | FONT_WIDTH_CHECKED =>
+                {
+                    call.surface.is_null() || owns_surface(call.surface)
+                }
                 FONT_DRAW => owns_surface(call.surface),
                 _ => false
             }

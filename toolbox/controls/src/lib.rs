@@ -181,7 +181,8 @@ mod capture;
 pub mod objects;
 pub use objects::{Control, ControlId, ControlInfo, ControlRef};
 mod passive;
-pub use passive::{Progress, ProgressBar, ProgressStyle, StaticText, TextAlignment};
+pub use passive::{Progress, ProgressBar, ProgressStyle, StaticText, StaticTextRef, StaticTextSpec,
+                  TextAlignment, TextLayout};
 
 mod table;
 pub use table::{AdoptionError, Cell, Child, ChildHit, Children, GridLines, Table, TableRef};
