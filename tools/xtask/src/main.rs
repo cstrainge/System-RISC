@@ -189,7 +189,12 @@ impl Workspace
         {
             for b in &reports[index + 1..]
             {
-                if a["load_base"].as_u64() < b["load_limit"].as_u64()
+                // Relocatable modules/definitions share link origins, not
+                // execution storage. Only current flat application/System
+                // mappings still need pairwise preferred-placement exclusion.
+                if a["role"] != "code_resource"
+                   && b["role"] != "code_resource"
+                   && a["load_base"].as_u64() < b["load_limit"].as_u64()
                    && b["load_base"].as_u64() < a["load_limit"].as_u64()
                 {
                     return Err(error("native executable memory reservations overlap"));

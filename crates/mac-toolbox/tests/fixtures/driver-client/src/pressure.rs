@@ -9,6 +9,7 @@ use mac_driver_alloc::{Worker, WorkerContext, Workers};
 use crate::{Device, machine};
 const SECOND: u64 = 10_000_000;
 const COUNT: usize = 44;
+const FINISHER_PAYLOAD: usize = 8 * 1024 * 1024;
 static CONTROLLER: Mutex<Option<Worker>> = Mutex::new(None);
 static INITIALIZING: AtomicBool = AtomicBool::new(true);
 fn ordinal() -> usize
@@ -97,6 +98,31 @@ fn word(bytes: &[u8], offset: usize) -> u64
 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
 }
+fn fill_tail(chunks: &mut [Vec<u8>], used: &mut usize, bytes: &mut usize, refused: &mut usize,
+             ordinal: usize)
+             -> bool
+{
+    let mut request = 64 * 1024;
+    while *used < chunks.len() && *bytes < FINISHER_PAYLOAD
+    {
+        request = request.min(FINISHER_PAYLOAD - *bytes);
+        let chunk = &mut chunks[*used];
+        if chunk.try_reserve_exact(request).is_err()
+        {
+            *refused += 1;
+            if request == 1
+            {
+                return true;
+            }
+            request = (request / 16).max(1);
+            continue;
+        }
+        chunk.resize(request, ordinal as u8);
+        *bytes += chunk.capacity();
+        *used += 1;
+    }
+    false
+}
 fn run(context: WorkerContext, host: Client, provider: mac_driver::Provider) -> Result<()>
 {
     assert!(!INITIALIZING.load(Ordering::Acquire), "pressure worker entered before module commit");
@@ -152,26 +178,7 @@ fn run(context: WorkerContext, host: Client, provider: mac_driver::Provider) -> 
         {
             core::hint::spin_loop();
         }
-        let mut request = 64 * 1024;
-        while used < chunks.len() && bytes < 4 * 1024 * 1024
-        {
-            request = request.min(4 * 1024 * 1024 - bytes);
-            let chunk = &mut chunks[used];
-            if chunk.try_reserve_exact(request).is_err()
-            {
-                refused += 1;
-                if request == 1
-                {
-                    minimum_refused = true;
-                    break;
-                }
-                request = (request / 16).max(1);
-                continue;
-            }
-            chunk.resize(request, ordinal as u8);
-            bytes += chunk.capacity();
-            used += 1;
-        }
+        minimum_refused = fill_tail(&mut chunks, &mut used, &mut bytes, &mut refused, ordinal);
     }
     else
     {
@@ -193,8 +200,17 @@ fn run(context: WorkerContext, host: Client, provider: mac_driver::Provider) -> 
                                minimum_refused={minimum_refused} release={release}\n",
                               host.module()));
     let mut next_cancel = machine::now();
+    let mut next_fill = machine::now() + SECOND / 4;
     while machine::now() < release
     {
+        // Real recovery may release ordinary caches. Keep independent native
+        // demand active rather than require the OS to preserve those caches or
+        // serialize each allocation through a host acknowledgment.
+        if ordinal + 1 == COUNT && machine::now() >= next_fill
+        {
+            minimum_refused |= fill_tail(&mut chunks, &mut used, &mut bytes, &mut refused, ordinal);
+            next_fill = machine::now() + SECOND / 4;
+        }
         if machine::now() >= next_cancel
         {
             if context.cancelled()?
@@ -211,7 +227,13 @@ fn run(context: WorkerContext, host: Client, provider: mac_driver::Provider) -> 
                              });
     drop(chunks);
     machine::log(format_args!("PRESSURE_RELEASE module={} ordinal={ordinal} bytes={bytes} \
-                               checksum={checksum}\n",
+                               checksum={checksum} refused={refused} \
+                               minimum_refused={minimum_refused}\n",
                               host.module()));
+    // This fixture no longer needs a finished-worker status record. Release
+    // its real controller before returning; EXIT alone reclaims execution
+    // backing but deliberately preserves a controller's queryable identity.
+    let controller = CONTROLLER.with(Option::take)?;
+    drop(controller);
     Ok(())
 }

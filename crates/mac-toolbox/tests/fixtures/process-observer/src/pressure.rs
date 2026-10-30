@@ -137,6 +137,47 @@ fn finisher(system: &System<'_>) -> Result<(u64, u64, u64), Error>
     }
     Err(Error::ScanStale)
 }
+fn ordinary_refusal(system: &System<'_>, ordinary: &mac_toolbox::memory::Handle<'_>, phase: &str)
+                    -> Result<(), Error>
+{
+    let own = inspect(system, "own-pressure-account", || system.inspection().snapshot(Scope::Own))?;
+    require(own.count == 1)?;
+    let own = inspect(system, "own-pressure-row", || own.at(0))?;
+    let MemoryAccounting::ExecutionAndOwnedMemory { kernel,
+                                                    .. } = own.accounting
+    else
+    {
+        return Err(Error::BadAbi);
+    };
+    require(kernel.limit.saturating_sub(kernel.committed + kernel.reserved) > 2 * 1024 * 1024)?;
+    require(matches!(ordinary.resize(1024 * 1024), Err(Error::MemoryFull)))?;
+    require(ordinary.len()? == 16)?;
+    let mut retained = [0; 16];
+    require(ordinary.read(0, &mut retained)? == 16 && retained == [b'W'; 16])?;
+    log(system,
+        format_args!("PRESSURE_ORDINARY_REFUSAL phase={phase} bytes=1048576 cause=MemoryFull \
+                      retained_bytes=16 kernel_headroom={}\n",
+                     kernel.limit - kernel.committed - kernel.reserved))
+}
+fn await_pressure(system: &System<'_>, ordinary: &mac_toolbox::memory::Handle<'_>, phase: &str)
+                  -> Result<inspection::MemorySummary, Error>
+{
+    let limit = now(system)? + 15 * SECOND;
+    loop
+    {
+        let current = memory(system)?;
+        if current.heap_capacity - current.heap_used < 1024 * 1024
+        {
+            ordinary_refusal(system, ordinary, phase)?;
+            return Ok(current);
+        }
+        // Rendering may legitimately return ordinary cache backing. Independent
+        // native holders keep applying demand; do not disable real OS recovery
+        // merely to hold an assumed free-byte value constant for this workload.
+        require(now(system)? < limit)?;
+        wait(system)?;
+    }
+}
 fn modal(system: &System<'_>) -> Result<(), Error>
 {
     use mac_toolbox::standard_file::{Location, StandardFile};
@@ -217,6 +258,12 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     // Also exercise the preadmitted UI once while healthy, before collecting baseline.
     stage(system, "healthy-modal")?;
     modal(system)?;
+    // Admit this real handle while healthy. Resizing its existing payload later
+    // needs ordinary resident storage, rather than the new APPL page allocator.
+    // A valid 1 MiB request is below this zone's 4 MiB bound; its original owner
+    // must also retain genuine Kernel headroom when the request is refused.
+    let ordinary = system.memory().new_handle_clear(16)?;
+    ordinary.write(0, &[b'W'; 16])?;
     stage(system, "baseline-memory")?;
     let baseline = memory(system)?;
     stage(system, "trigger-common-deadlines")?;
@@ -231,17 +278,46 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
                      word(&deadlines, 24)))?;
     let limit = now(system)? + 75 * SECOND;
     stage(system, "await-ordinary-exhaustion")?;
+    let mut recorded_after_finish = false;
     let witness = loop
     {
         let memory = memory(system)?;
-        if now(system)? >= word(&deadlines, 16).saturating_mul(100) + SECOND
-           && memory.heap_capacity - memory.heap_used < 1024
+        let observed = now(system)?;
+        let finished = observed >= word(&deadlines, 16).saturating_mul(100) + SECOND;
+        if finished && !recorded_after_finish
+        {
+            let budget = finisher(system)?;
+            log(system,
+                format_args!("PRESSURE_AFTER_FINISH used={} capacity={} free={} \
+                              finisher_limit={} committed={} reserved={}\n",
+                             memory.heap_used,
+                             memory.heap_capacity,
+                             memory.heap_capacity - memory.heap_used,
+                             budget.0,
+                             budget.1,
+                             budget.2))?;
+            recorded_after_finish = true;
+        }
+        if finished && memory.heap_capacity - memory.heap_used < 1024 * 1024
         {
             let budget = finisher(system)?;
             require(budget.0.saturating_sub(budget.1 + budget.2) > 1024 * 1024)?;
+            // A real valid request, preserved old data and owner headroom
+            // establish this bounded refusal; total unused bytes alone do not.
+            ordinary_refusal(system, &ordinary, "before-modal")?;
             break (memory, budget);
         }
-        require(now(system)? < limit)?;
+        if observed >= limit
+        {
+            log(system,
+                format_args!("PRESSURE_WITNESS_TIMEOUT used={} capacity={} free={} \
+                              finished={}\n",
+                             memory.heap_used,
+                             memory.heap_capacity,
+                             memory.heap_capacity - memory.heap_used,
+                             finished))?;
+            require(false)?;
+        }
         wait(system)?;
     };
     log(system,
@@ -257,8 +333,7 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     require(witness.0.free_pages > 1024)?;
     stage(system, "pressured-modal")?;
     modal(system)?;
-    let after_modal = memory(system)?;
-    require(after_modal.heap_capacity - after_modal.heap_used < 1024)?;
+    let _after_modal = await_pressure(system, &ordinary, "before-report")?;
     // The immutable full payload uses existing report stock; no per-chunk serial logs.
     stage(system, "full-report")?;
     let crashes = system.crashes();
@@ -285,8 +360,7 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
         require(crashes.read(index * bytes.len(), &mut actual)? == bytes.len() && actual == bytes)?;
     }
     let _ = crashes.show(mac_toolbox::crashes::ReportFlags::NONE)?;
-    let after_report = memory(system)?;
-    require(after_report.heap_capacity - after_report.heap_used < 1024)?;
+    let _after_report = await_pressure(system, &ordinary, "after-report")?;
     system.log("PRESSURE_FULL_REPORT_PASS bytes=1048576 content=exact report=shown\n")?;
     crashes.dismiss()?;
     // Leave actual Finder foreground for independent physical menu/launch observations.

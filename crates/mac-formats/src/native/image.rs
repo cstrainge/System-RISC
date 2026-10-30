@@ -98,6 +98,11 @@ impl Image
                           .iter()
                           .find(|s| address >= s.offset && end <= s.offset + s.length as u64)
                           .ok_or(Error::Malformed("relocation outside initialized image"))?;
+        if segment.flags & EXECUTE != 0
+        {
+            return Err(Error::Malformed("native PIC contract forbids relocation slots in \
+                                         executable segments; rebuild the package"));
+        }
         Ok(segment.data_offset + (address - segment.offset) as usize)
     }
 }
@@ -140,6 +145,17 @@ impl<'a> LoadPlan<'a>
                                        extent,
                                        destination,
                                        |offset, width| {
+                                           if descriptor.role == super::Role::CodeResource
+                                              && width == 4
+                                           {
+                                               return Err(Error::Malformed("RV64 module/\
+                                                                            definition \
+                                                                            pointers require \
+                                                                            64-bit relocation \
+                                                                            slots; rebuild the \
+                                                                            package for \
+                                                                            arbitrary placement"));
+                                           }
                                            let at = image.source(offset, usize::from(width))?;
                                            let data = crate::slice(bytes, at, usize::from(width))?;
                                            Ok(if width == 4

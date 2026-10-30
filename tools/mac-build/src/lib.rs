@@ -27,6 +27,7 @@ pub fn build_guest() -> Result<()>
                                              .join(format!("{}.json", platform::current().name));
     println!("cargo:rerun-if-changed={}", definition.display());
     platform::validate_guest(&env::var("TARGET")?, &env::var("CARGO_CFG_TARGET_FEATURE")?)?;
+    platform::validate_pic_flags()?;
     let root = env::var("CARGO_MANIFEST_DIR")?;
     let path = Path::new(&root).join("resources.json");
     let manifest = Manifest::read(&path)?;

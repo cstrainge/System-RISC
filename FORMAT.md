@@ -98,11 +98,16 @@ code authentication or an execution permission.
 | 6 | 2 | Role: 1 = resident System, 2 = application, 3 = code resource |
 | 8 | 4 | Native System service ABI version: 1 until the first proper release |
 | 12 | 4 | Native ABI layout fingerprint (`mac-abi::NATIVE_LAYOUT_FINGERPRINT`) |
-| 16 | 8 | Inclusive preferred load reservation base |
-| 24 | 8 | Exclusive preferred load reservation limit |
+| 16 | 8 | Linked image base; System fixed, applications currently preferred |
+| 24 | 8 | Exclusive image span limit in linked coordinates |
 | 32 | 8 | Linked entry point |
 
-The role, ABI and reservation meanings are unchanged. Entry is explicit because
+System and independently loadable definitions/modules no longer declare address
+fields in build manifests. System uses the checked platform image mapping;
+code-resource artifacts share one checked link origin/capacity and package their
+actual page-rounded ELF memory extent. Runtime placement is System-owned and
+independent of that link origin. Applications retain their manifest placement
+until private process mappings replace the current flat layout. Entry is explicit because
 there is no ELF header at runtime. It must be even and lie inside initialized
 executable segment bytes. Versions, layout fingerprints, lengths, address overflows
 and roles are checked. The obsolete 32-byte NABI layout is rejected with a rebuild
@@ -193,11 +198,31 @@ three zero bytes. Count is bounded at 65,536. Records are ordered and
 nonoverlapping, patch sources must lie in initialized segment bytes, and linked
 pointer values must lie inside the declared reservation or equal its exclusive
 limit (a one-past-the-end pointer).
-Relocation changes absolute internal pointers; internal PC-relative references
-move unchanged. Invalid records reject the whole load before any writes.
+Relocation changes absolute internal data pointers; executable-segment slots
+are rejected both when packaging and when validating a runtime load. Internal
+PC-relative instructions move unchanged. Invalid records reject the whole load
+before any writes.
 
-The packager accepts internal R_RISCV_32/64 pointers and internal PC-relative
-calls/addressing/branches (16..19,23..25,44,45,57). Other relocation kinds fail.
+All Cargo-built target dependencies use `relocation-model=pic`; codegen overrides
+that conflict with that contract are refused. The packager accepts internal
+R_RISCV_32/64 data pointers and internal PC-relative calls/addressing/branches
+(16..19,23..25,44,45,57). Internal GOT_HI20 references require a matching
+PCREL_LO12_I AUIPC/LD register pair. The linked instructions must resolve an
+aligned initialized nonexecutable 64-bit cell containing the exact internal
+symbol plus addend. That cell receives one RLOC entry, including when several
+instructions use it. External imports, missing/ambiguous pairs, wrong
+instructions/registers, malformed cells and overlaps are rejected. No executable
+instruction is patched. Paired
+ADD32/SUB32 records (35/39) at one word with two allocated internal endpoints
+encode an invariant difference; missing/duplicate endpoints and overlap with
+rebased pointer words are refused. These difference pairs produce no RLOC
+patches. Unsupported relocations, undefined/external references and absolute
+pointer slots in executable segments fail packaging. Absolute data/GOT fixups
+remain necessary for Rust pointers/vtables; PIC does not imply an empty table.
+The generic RLOC wire retains both widths. RV64 code-resource modules and
+definitions require 64-bit internal pointer slots at packaging and runtime,
+so placement is not constrained to the low 4 GiB. Absolute numeric symbols and
+paired 32-bit differences are separate from these pointer slots.
 Application and code-resource builds emit relocations and the linker marker
 `__system_risc_relocation_v1=1`. RLOC is required for both, including an empty
 8-byte table when no absolute pointers need patching; there is no fixed-module

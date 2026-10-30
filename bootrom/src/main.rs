@@ -45,22 +45,24 @@ _start:
     mv s0, a1
     csrw mie, zero
     csrw satp, zero
-    la sp, __stack_top
-    la t0, trap
+    # Bootstrap must not read the RAM GOT before initialized data is copied.
+    # lla remains PC-relative even when all Rust dependencies are built PIC.
+    lla sp, __stack_top
+    lla t0, trap
     csrw mtvec, t0
     call __system_risc_enable_isa
     .option pop
-    la t0, __data_load
-    la t1, __data_start
-    la t2, __data_end
+    lla t0, __data_load
+    lla t1, __data_start
+    lla t2, __data_end
 1:  bgeu t1, t2, 2f
     ld t3, 0(t0)
     sd t3, 0(t1)
     addi t0, t0, 8
     addi t1, t1, 8
     j 1b
-2:  la t0, __bss_start
-    la t1, __bss_end
+2:  lla t0, __bss_start
+    lla t1, __bss_end
 3:  bgeu t0, t1, 4f
     sd zero, 0(t0)
     addi t0, t0, 8
@@ -73,7 +75,7 @@ parked:
 trap:
     # Never use an interrupted S-mode virtual stack in M mode. This terminal
     # path abandons the failed execution; no suspended frame is resumed.
-    la sp, __stack_top
+    lla sp, __stack_top
     li t0,0x6600
     csrs mstatus,t0
     csrw vstart,zero

@@ -1,1 +1,9 @@
-{"name":"MDEF","file_type":"rsrc","creator":"MACS","role":"code_resource","abi_version":1,"load_base":"0x82300000","load_limit":"0x82400000","description":"Native standard menu definition","resources":[]}
+{
+  "name": "MDEF",
+  "file_type": "rsrc",
+  "creator": "MACS",
+  "role": "code_resource",
+  "abi_version": 1,
+  "description": "Native standard menu definition",
+  "resources": []
+}

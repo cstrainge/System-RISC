@@ -4,8 +4,6 @@
   "creator": "MACS",
   "role": "code_resource",
   "abi_version": 1,
-  "load_base": "0x82400000",
-  "load_limit": "0x82500000",
   "description": "Progress Bar control definition",
   "resources": []
 }

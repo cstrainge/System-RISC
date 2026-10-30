@@ -182,7 +182,14 @@ impl super::Desktop
         self.standard_file
             .request(&ledger,
                      &crate::context::recovery_activity().ok_or(WRONG_THREAD)?.storage_owner(),
-                     call)?;
+                     call)
+            .map_err(|status| {
+                if status == NO_MEMORY
+                {
+                    serial!("STANDARD_FILE_REFUSED stage=protocol status={status}");
+                }
+                status
+            })?;
         if call.operation == BEGIN
         {
             self.standard_file.get_mut(self.owner, call.handle)?.subject = subject;
@@ -288,21 +295,55 @@ impl super::Desktop
         let mut window = request(WindowId(0));
         window.bounds = Rect::new(left, top, left + width, top + height);
         window.procedure = template.procedure;
-        checked(self.window(NEW_WINDOW, &mut window))?;
+        checked(self.window(NEW_WINDOW, &mut window)).map_err(|status| {
+                                                         if status == NO_MEMORY
+                                                         {
+                                                             serial!("STANDARD_FILE_REFUSED \
+                                                                      stage=window \
+                                                                      status={status}");
+                                                         }
+                                                         status
+                                                     })?;
         let dialog = self.standard_file.get_mut(self.owner, call.handle)?;
         dialog.window = WindowId(window.id);
         let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
-        dialog.editor.set_font(FontSelection::default(), fonts)?;
+        dialog.editor.set_font(FontSelection::default(), fonts).map_err(|status| {
+            if status == NO_MEMORY
+            {
+                serial!("STANDARD_FILE_REFUSED stage=font status={status}");
+            }
+            status
+        })?;
         let mut characters = Text::default();
         for byte in 32..=255
         {
             characters.push(mac_formats::text::character(byte).encode_utf8(&mut [0; 4]))?;
         }
-        dialog.editor.prepare_font_input(characters.text()?, fonts)?;
+        dialog.editor.prepare_font_input(characters.text()?, fonts).map_err(|status| {
+            if status == NO_MEMORY
+            {
+                serial!("STANDARD_FILE_REFUSED stage=font-input status={status}");
+            }
+            status
+        })?;
         checked(self.window(SET_GROW_ICON_CLIP, &mut request(WindowId(window.id))))?;
         checked(self.window(SELECT_WINDOW, &mut window))?;
-        self.sf_create_widgets(call.handle, Sheet::Main)?;
-        self.standard_file_draw(call.handle, Damage::full())?;
+        self.sf_create_widgets(call.handle, Sheet::Main).map_err(|status| {
+                                                             if status == NO_MEMORY
+                                                             {
+                                                                 serial!("STANDARD_FILE_REFUSED \
+                                                                          stage=controls \
+                                                                          status={status}");
+                                                             }
+                                                             status
+                                                         })?;
+        self.standard_file_draw(call.handle, Damage::full()).map_err(|status| {
+            if status == NO_MEMORY
+            {
+                serial!("STANDARD_FILE_REFUSED stage=draw status={status}");
+            }
+            status
+        })?;
         serial!("STANDARD_FILE_BEGIN app={} handle={} mode={} window={}", self.owner, call.handle,
                 call.mode, window.id);
         Ok(())
