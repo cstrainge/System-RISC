@@ -3380,8 +3380,50 @@ other hardware, arbitrary privileged-fault recovery or production clipboard
 sharing. The module image-pin lookup now protects its complete short registry
 borrow against local preemption; foreign dispatch remains outside it.
 
-Application page-backed heaps and platform application startup/allocation,
-private process roots and privilege separation, executable-image page charging,
+At this boundary, application page-backed heaps and platform application
+startup/allocation remained staged. Private process roots and privilege separation, executable-image page charging,
 full protected Save/Save As exhaustion and production Finder OOM restart remain
 separate work. TE2/common-control migration remains deferred. Public CPU activity
 is physical residency; per-domain CPU accounting is not inferred from it.
+
+### Owned application heaps and shared application runtime — 2026-10-29
+
+Each provisional process now admits its canonical heap root before a thread can
+enter the application. The root is bound to the actual process incarnation and
+original account; native requests use a borrowed genuine application executor,
+not caller-supplied IDs or an ambient module's subject. Ordinary launch, document
+launch, initial Finder and replacement Finder use the same owner/checkpoint
+contract. Refused publication retains its prepared value and original permit;
+launch rollback enters the existing owner walk.
+
+The safe shared extent allocator uses real buddy leases through one audited
+native mapping boundary. Application payloads are charged to the original
+Application account, metadata to its Kernel account, and shared indices to System
+foundation. The checked platform minimum extent is 64 KiB, configurable within
+16 KiB–2 MiB; larger allocations can acquire larger rounded extents. The 4 MiB
+application stack shares the initial 64 MiB Application budget. Failed reallocation
+retains the original allocation and contents. Retired heap backing waits for real
+thread/execution quiescence and exclusive payload ownership before cleanup can
+acknowledge it; uncertain reclamation keeps its ticket and backing.
+
+All seven bundled applications now use the common Toolbox application runtime
+for entry, service validation, GlobalAlloc, panic and allocation-failure reporting.
+They remain no_std plus alloc applications. This is not a Rust std port or user-
+mode isolation. Legacy Memory Manager handles retain their separate wire/API;
+raw allocator pointers do not acquire stale-handle ABA protection.
+
+[Application runtime](APPLICATION-RUNTIME.md#bounded-native-observations--2026-10-29)
+records the exact optimized System/ROM and finite native one/four-CPU heap,
+Reactor, normal application, SDK panic and scheduler/worker observations. Actual
+account settlement and an intentionally retained allocation's System-owned exit
+walk were observed. This is not all-path pressure, race or timing qualification.
+Private process roots/privilege separation, executable-image physical charging,
+full protected recovery services and application std remain open. TE2/common-
+control migration is still deferred.
+
+Once applications are completely isolated in private address spaces, remove
+their manifest `load_base` and `load_limit` fields. The build and loader must
+derive application placement from the checked platform policy and actual image
+segments, updating all application producers and consumers together. Shared
+supervisor mappings still require explicit placement today; independently
+loadable definitions and modules keep their separate relocation contracts.

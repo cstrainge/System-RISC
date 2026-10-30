@@ -329,8 +329,11 @@ thread-affinity rules and acceptance. Drag promises are the first slice; guest
 std/Tokio availability is not implied by that slice.
 
 
-Status: backlog; existing no_std apps, resident services and one-hart app/event
-wait scheduling provide foundations, not a std port. Inventory compiler/target
+Status: std remains backlog. Bundled no_std plus alloc applications now share
+platform entry, process-owned page-backed allocation and System-owned failure
+reporting through the [application runtime](APPLICATION-RUNTIME.md). Bounded
+native one/four-CPU heap and scheduler observations provide foundations, not a
+std port. Inventory compiler/target
 selection and all std platform backends, pin a maintained sysroot patch/build,
 and bridge normal Rust startup to resource-based loading.
 
@@ -339,7 +342,7 @@ build/runtime support: std becomes the default for
 every native userspace app, including Finder and all apps/*. Remove no_std,
 no_main, handwritten entry and panic-handler macros as each app migrates. The
 platform's default std panic hook calls the System-owned bomb dialog without
-app setup, including when take_hook restores the default. All six existing apps
+app setup, including when take_hook restores the default. All bundled apps
 must build/launch through that path; a single opt-in sample is insufficient.
 
 Deliver pointer allocation/runtime first, then worker threads/TLS/blocking,

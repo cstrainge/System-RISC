@@ -2,6 +2,7 @@
 #![no_std]
 use mac_abi::{traps::*, *};
 
+pub mod application_heap;
 mod error;
 pub mod types;
 pub mod coordinates;

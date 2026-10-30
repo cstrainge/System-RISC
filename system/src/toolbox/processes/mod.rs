@@ -60,9 +60,62 @@ pub struct Process
 {
     pub info:         ProcessInfo,
     pub(crate) image: Option<crate::images::Binding>,
+    heap:             Option<crate::toolbox::application_heap::RootBinding>,
     pub stamp:        u64,
     cleanup:          Option<crate::toolbox::handles::cleanup::Checkpoint>,
     account:          crate::machine::scheduler::accounting::ProcessAccount
+}
+
+/// Owns one genuine, directory-published provisional process across preparation
+/// outside Desktop. Its account comes from that same entry, never from IDs.
+pub(crate) struct LaunchAdmission
+{
+    owner:      crate::toolbox::handles::OwnerRef,
+    allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+    active:     bool
+}
+impl LaunchAdmission
+{
+    pub(crate) fn owner(&self) -> &crate::toolbox::handles::OwnerRef
+    {
+        &self.owner
+    }
+
+    pub(crate) fn id(&self) -> u64
+    {
+        self.owner.owner().incarnation()
+    }
+
+    pub(crate) fn allocation(&self) -> crate::machine::scheduler::accounting::AllocationAuthority
+    {
+        self.allocation.clone()
+    }
+
+    pub(crate) fn started(&mut self)
+    {
+        self.active = false;
+    }
+
+    fn stop(&mut self)
+    {
+        if self.active
+        {
+            use mac_object_table::shared::InvocationGate as _;
+            crate::toolbox::handles::InvocationGate::run(|| {
+                self.owner.stop_admission();
+                crate::machine::scheduler::retire_owner(self.id());
+            });
+            self.active = false;
+            retirement::resources_released();
+        }
+    }
+}
+impl Drop for LaunchAdmission
+{
+    fn drop(&mut self)
+    {
+        self.stop();
+    }
 }
 
 /// A cleanup resource context is minted from one directory entry, never from
@@ -239,6 +292,74 @@ impl Manager
         Ok(())
     }
 
+    pub(crate) fn launch_admission(&self, id: u64) -> Result<LaunchAdmission, Status>
+    {
+        let entry = self.entries.get(id).ok_or(NOT_FOUND)?;
+        if !entry.ledger().accepting()
+           || entry.value().info.thread != 0
+           || entry.value().heap.is_some()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        Ok(LaunchAdmission { owner: entry.ledger().clone(),
+                             allocation: entry.value().account.admit_use().map_err(|error| {
+                                 crate::machine::scheduler::accounting::account_status(&error)
+                             })?, active: true })
+    }
+
+    pub(super) fn file_starting(&self, volume: u32, cnid: u32) -> bool
+    {
+        self.entries.iter().any(|entry| {
+                               entry.ledger().accepting()
+                               && entry.value().info.thread == 0
+                               && entry.value().info.volume == volume
+                               && entry.value().info.cnid == cnid
+                           })
+    }
+
+    /// Checked attachment cannot substitute a different process incarnation.
+    /// The published heap remains in the owner's walk even if this refuses.
+    pub(crate) fn bind_heap(&mut self, owner: &OwnerRef,
+                            heap: crate::toolbox::application_heap::RootBinding)
+                            -> Result<(), Status>
+    {
+        if heap.owner() != owner.owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let entry = self.entries.get(owner.owner().incarnation()).ok_or(NOT_FOUND)?;
+        if entry.ledger().owner() != owner.owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        if !entry.ledger().accepting()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if entry.value().heap.is_some()
+        {
+            return Err(BAD_ABI);
+        }
+        self.get_mut(owner.owner().incarnation())?.heap = Some(heap);
+        Ok(())
+    }
+
+    pub(crate) fn heap(&self, id: u64)
+                       -> Result<crate::toolbox::application_heap::RootBinding, Status>
+    {
+        let entry = self.entries.get(id).ok_or(NOT_FOUND)?;
+        if !entry.ledger().accepting()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let heap = entry.value().heap.as_ref().ok_or(BAD_ABI)?;
+        if heap.owner() != entry.ledger().owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(heap.clone())
+    }
+
     pub(crate) fn provision(&mut self, name: &str, volume: u32, cnid: u32) -> Result<u64, Status>
     {
         let mut info = ProcessInfo { volume,
@@ -284,6 +405,7 @@ impl Manager
             .insert(ledger,
                     Process { info,
                               image: None,
+                              heap: None,
                               stamp: 0,
                               cleanup: Some(cleanup),
                               account })
@@ -472,13 +594,72 @@ pub(crate) fn request(call: &mut ProcessCall) -> Status
         }
             let owner = crate::context::current_thread_context().identity().app.0;
             let loaded = crate::toolbox::files::application::read(owner, call.volume, call.cnid)?;
-            crate::kernel::with_desktop(|d| d.launch_application(call, *loaded)).map_err(|e| {
-                                                                                    e.status()
-                                                                                })?
-                                                                                .map(|()| OK)
+            launch_application(call, *loaded).map(|()| OK)
         })
     })();
     result.unwrap_or_else(|error| error)
+}
+
+/// Both ordinary Open and document delivery pass through this coordinator after
+/// their resource-fork read finishes. No Desktop/ledger/store guard spans root
+/// preparation, publication, disposal, or destruction of its temporary owners.
+pub(crate) fn launch_application(call: &mut ProcessCall,
+                                 loaded: crate::toolbox::files::application::Loaded)
+                                 -> Result<(), Status>
+{
+    crate::context::without_recovery(|| {
+        let admission = crate::kernel::with_desktop(|desktop| {
+                            desktop.reserve_application(call, loaded.catalog.name())
+                        }).map_err(|error| error.status())??;
+        let Some(mut admission) = admission
+        else
+        {
+            return Ok(());
+        };
+        let result = (|| {
+            let prepared = crate::toolbox::application_heap::prepare_root(
+                admission.owner().clone(), admission.allocation()).map_err(|error| {
+                    serial!("PROCESS_HEAP_REFUSED app={} {error}", admission.id());
+                    error.status()
+                })?;
+            let heap =
+                crate::toolbox::application_heap::publish_root(prepared).map_err(|failure| {
+                    let status = failure.cause.status();
+                    serial!("PROCESS_HEAP_PUBLICATION_REFUSED app={} {}",
+                            admission.id(),
+                            failure.cause);
+                    failure.prepared.dispose();
+                    status
+                })?;
+            crate::kernel::with_desktop(|desktop| {
+                desktop.processes.bind_heap(admission.owner(), heap)?;
+                desktop.finish_application_launch(call, loaded, &mut admission)
+            }).map_err(|error| error.status())?
+        })();
+        if let Err(status) = result
+        {
+            // Stop before trying to acquire Desktop. If it is unavailable, the
+            // reachable directory checkpoint and common reaper retain the work.
+            admission.stop();
+            match crate::kernel::with_desktop(|desktop| desktop.retire_unstarted(admission.id()))
+            {
+                Ok(Ok(())) => (),
+                Ok(Err(cleanup)) =>
+                {
+                    serial!("PROCESS_LAUNCH_RETIRE_RETAINED app={} original={status} \
+                             cleanup={cleanup}",
+                            admission.id())
+                }
+                Err(error) =>
+                {
+                    serial!("PROCESS_LAUNCH_RETIRE_RETAINED app={} original={status} \
+                             desktop={error:?}",
+                            admission.id())
+                }
+            }
+        }
+        result
+    })
 }
 
 impl Default for Manager

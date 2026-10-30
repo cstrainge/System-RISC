@@ -136,7 +136,7 @@
         "strings": [
           "System + process + module domains; partial ledgers",
           "Select a lifetime domain.",
-          "Domain memory: execution backing + resident heap only.",
+          "Domain memory: execution + resident metadata + application heap.",
           "Other charges and CPU time are unavailable.",
           "Domains",
           "Ledger snapshot",

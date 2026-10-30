@@ -187,7 +187,9 @@ enum ThreadOwner
     },
     Process
     {
-        owner: crate::toolbox::handles::OwnerRef, image: crate::images::Binding
+        owner: crate::toolbox::handles::OwnerRef,
+        image: crate::images::Binding,
+        heap:  crate::toolbox::application_heap::RootBinding
     },
     Module
     {
@@ -296,7 +298,8 @@ impl ThreadContext
 
     pub(crate) fn assign(&self, owner: crate::toolbox::handles::OwnerRef, thread: u64,
                          image: crate::images::Binding,
-                         allocation: &crate::machine::scheduler::accounting::AllocationAuthority)
+                         allocation: &crate::machine::scheduler::accounting::AllocationAuthority,
+                         heap: &crate::toolbox::application_heap::RootBinding)
                          -> Result<(), mac_abi::Status>
     {
         use core::sync::atomic::Ordering::Relaxed;
@@ -304,6 +307,7 @@ impl ThreadContext
         use mac_object_table::shared::InvocationGate as _;
         if thread == 0
            || allocation.owner() != owner.owner()
+           || heap.owner() != owner.owner()
            || image.owner() != owner.owner().incarnation()
            || owner.owner().kind() != mac_object_table::domain::DomainKind::Process
         {
@@ -329,7 +333,8 @@ impl ThreadContext
             self.app.store(owner.owner().incarnation(), Relaxed);
             self.thread.store(thread, Relaxed);
             *binding = Some(ThreadOwner::Process { owner,
-                                                   image });
+                                                   image,
+                                                   heap: heap.clone() });
             Ok(())
         })
     }
@@ -642,6 +647,173 @@ impl ThreadContext
         })
     }
 }
+/// Why this actual executor cannot supply application-heap authority. These
+/// are diagnostic identities, not a way to select another account or process.
+#[cfg(target_arch = "riscv64")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ApplicationExecutorError
+{
+    Bootstrap,
+    SystemIdle,
+    Module,
+    Unassigned,
+    Invocation
+    {
+        module:     bool,
+        definition: Option<(u32, i16)>
+    },
+    BaselineMismatch
+}
+#[cfg(target_arch = "riscv64")]
+impl ApplicationExecutorError
+{
+    pub(crate) fn status(&self) -> mac_abi::Status
+    {
+        match self
+        {
+            Self::Bootstrap | Self::SystemIdle | Self::Module | Self::Unassigned =>
+            {
+                mac_abi::WRONG_THREAD
+            }
+            Self::Invocation { .. } => mac_abi::ACCESS_DENIED,
+            Self::BaselineMismatch => mac_abi::BAD_ABI
+        }
+    }
+}
+#[cfg(target_arch = "riscv64")]
+impl core::fmt::Display for ApplicationExecutorError
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Bootstrap =>
+            {
+                out.write_str("application heap requires a scheduled process; bootstrap/firmware \
+                               execution is not an application")
+            }
+            Self::SystemIdle =>
+            {
+                out.write_str("System idle execution cannot borrow an application's heap")
+            }
+            Self::Module =>
+            {
+                out.write_str("module worker execution cannot borrow an application's heap")
+            }
+            Self::Unassigned =>
+            {
+                out.write_str("application heap has no live assigned process-thread baseline")
+            }
+            Self::Invocation { module,
+                               definition } =>
+            {
+                write!(out,
+                       "application heap refused during invocation overlay: module={module}, \
+                        definition={definition:?}")
+            }
+            Self::BaselineMismatch =>
+            {
+                out.write_str("process baseline owner, account, image or canonical heap binding \
+                               do not match")
+            }
+        }
+    }
+}
+/// Temporary authority copied only from a genuinely pinned process baseline.
+/// Fields are private, non-Clone and CPU-affine; neither caller IDs nor ambient
+/// allocator/I/O/resource selections can construct this value. The original
+/// context pin outlives every owned clone and the complete request closure.
+#[cfg(target_arch = "riscv64")]
+pub(crate) struct ApplicationExecutor<'a>
+{
+    owner:      crate::toolbox::handles::OwnerRef,
+    allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+    heap:       crate::toolbox::application_heap::RootBinding,
+    _context:   &'a ContextRef,
+    _affine:    core::marker::PhantomData<*mut ()>
+}
+#[cfg(target_arch = "riscv64")]
+impl ApplicationExecutor<'_>
+{
+    pub(crate) fn owner(&self) -> &crate::toolbox::handles::OwnerRef
+    {
+        &self.owner
+    }
+
+    pub(crate) fn allocation(&self) -> &crate::machine::scheduler::accounting::AllocationAuthority
+    {
+        &self.allocation
+    }
+
+    pub(crate) fn heap(&self) -> &crate::toolbox::application_heap::RootBinding
+    {
+        &self.heap
+    }
+}
+/// Use only for the actual synchronous application-heap request. No author
+/// callback, yield or bootstrap-stack handoff belongs inside this closure.
+/// The higher-ranked boundary prevents its borrowed executor from escaping.
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_application_executor<R>(operation: impl for<'a> FnOnce(&ApplicationExecutor<'a>)
+                                                          -> R)
+                                           -> Result<R, ApplicationExecutorError>
+{
+    use mac_object_table::shared::InvocationGate as _;
+    let context = current_thread_context();
+    if context.is_bootstrap()
+    {
+        return Err(ApplicationExecutorError::Bootstrap);
+    }
+    let (owner, allocation, heap) = crate::toolbox::handles::InvocationGate::run(|| {
+        let module = context.module.borrow(|frame| frame.is_some());
+        let definition = context.definitions.current();
+        if module || definition.is_some()
+        {
+            return Err(ApplicationExecutorError::Invocation { module,
+                                                              definition });
+        }
+        let owner = context.owner.lock();
+        let (owner, image, heap) = match owner.as_ref()
+        {
+            Some(ThreadOwner::Process { owner,
+                                        image,
+                                        heap }) => (owner, image, heap),
+            Some(ThreadOwner::System { .. }) => return Err(ApplicationExecutorError::SystemIdle),
+            Some(ThreadOwner::Module { .. }) => return Err(ApplicationExecutorError::Module),
+            None => return Err(ApplicationExecutorError::Unassigned)
+        };
+        let allocation = context.allocation.lock();
+        let Some(DefaultAllocation::Account(allocation)) = allocation.as_ref()
+        else
+        {
+            return Err(ApplicationExecutorError::BaselineMismatch);
+        };
+        let identity = context.identity();
+        if owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+           || allocation.owner() != owner.owner()
+           || heap.owner() != owner.owner()
+           || image.owner() != owner.owner().incarnation()
+           || identity.app.0 != owner.owner().incarnation()
+           || identity.thread.0 == 0
+           || context.is_module_worker()
+        {
+            return Err(ApplicationExecutorError::BaselineMismatch);
+        }
+        // Clone existing admitted authority, never Account::admit_use. An
+        // ordinary owner stop still permits genuine disposal from the original
+        // record; new allocation is rechecked by the resident heap itself.
+        Ok((owner.clone(), allocation.clone(), heap.clone()))
+    })?;
+    // All selections/owner/default-allocation guards ended before page/metadata
+    // work can reenter the real allocator. The context reader remains pinned.
+    let executor = ApplicationExecutor { owner,
+                                         allocation,
+                                         heap,
+                                         _context: &context,
+                                         _affine: core::marker::PhantomData };
+    Ok(operation(&executor))
+}
+
 /// An owned pin, never a static reference to reclaimable scheduler storage.
 /// The static variant is reserved for the actual boot/firmware context.
 #[cfg(target_arch = "riscv64")]

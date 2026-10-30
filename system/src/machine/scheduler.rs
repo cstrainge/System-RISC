@@ -544,7 +544,8 @@ pub(crate) struct PreparedThread
     owner:      crate::toolbox::handles::OwnerRef,
     core:       mac_object_table::retained::Read<ThreadCore>,
     allocation: accounting::AllocationAuthority,
-    recovery:   Option<crate::allocator::recovery::Permit>
+    recovery:   Option<crate::allocator::recovery::Permit>,
+    heap:       crate::toolbox::application_heap::RootBinding
 }
 pub(crate) struct PrepareFailure
 {
@@ -557,7 +558,8 @@ pub(crate) struct SpawnFailure
     pub(crate) prepared: PreparedThread
 }
 pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
-                      loaded: crate::kernel::LoadedImage, charges: accounting::ThreadCharges)
+                      loaded: crate::kernel::LoadedImage, charges: accounting::ThreadCharges,
+                      heap: crate::toolbox::application_heap::RootBinding)
                       -> Result<PreparedThread, PrepareFailure>
 {
     let target = crate::allocator::Target::Owner { account: charges.allocation().clone(),
@@ -567,7 +569,11 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
     // borrowed until every fallible preparation has succeeded, so refusal can
     // return the original image use without publishing or losing it.
     let prepared = crate::context::with_allocation(target, || {
-        if !owner.accepting() || loaded.binding().owner() != owner.owner().incarnation()
+        if !owner.accepting()
+           || owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+           || loaded.binding().owner() != owner.owner().incarnation()
+           || heap.owner() != owner.owner()
+           || charges.allocation().owner() != owner.owner()
         {
             return Err(mac_abi::ACCESS_DENIED);
         }
@@ -625,7 +631,8 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                 core: mac_object_table::retained::Read::new(core,
                                                                             context_released),
                                 allocation,
-                                recovery: None })
+                                recovery: None,
+                                heap })
         }
         Err(status) =>
         {
@@ -643,7 +650,8 @@ pub(crate) struct RecoveryPrepareFailure
 /// The same process entry, CPU frame and THRD publication use boot-held native
 /// backing. All fallible control-block work precedes consumption of the loan.
 pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
-                               charges: accounting::ThreadCharges, loan: FinderBackingLoan)
+                               charges: accounting::ThreadCharges, loan: FinderBackingLoan,
+                               heap: crate::toolbox::application_heap::RootBinding)
                                -> Result<PreparedThread, RecoveryPrepareFailure>
 {
     let permit = loan.permit();
@@ -656,6 +664,8 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
                || owner.owner().kind() != mac_object_table::domain::DomainKind::Process
                || owner.owner().incarnation() != crate::context::finder_app().0
                || loaded.binding().owner() != owner.owner().incarnation()
+               || heap.owner() != owner.owner()
+               || charges.allocation().owner() != owner.owner()
             {
                 return Err(mac_abi::ACCESS_DENIED);
             }
@@ -715,7 +725,8 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
     Ok(PreparedThread { owner,
                         core: mac_object_table::retained::Read::new(core, context_released),
                         allocation,
-                        recovery: Some(permit) })
+                        recovery: Some(permit),
+                        heap })
 }
 
 pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
@@ -734,19 +745,19 @@ pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
 }
 fn spawn_prepared_inner(prepared: PreparedThread, runnable: bool) -> Result<u64, SpawnFailure>
 {
-    let published =
-        (|| {
-            let mut scheduler = SCHEDULER.lock();
-            let slot = crate::allocator::with_system(crate::allocator::SystemClass::Ordinary,
-                                                     || scheduler.prepare())?;
-            if !prepared.owner.accepting()
-            {
-                return Err(mac_abi::ACCESS_DENIED);
-            }
-            let store = scheduler.records.as_mut().ok_or(mac_abi::BAD_ABI)?;
-            // Shared Store indices grow under their narrow System hook. Its actual
-            // per-owner Claim, slots and completions belong to this admitted child.
-            let publication = crate::context::with_allocation(crate::allocator::Target::Owner {
+    let published = (|| {
+        let mut scheduler = SCHEDULER.lock();
+        let slot = crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+            scheduler.prepare()
+        })?;
+        if !prepared.owner.accepting()
+        {
+            return Err(mac_abi::ACCESS_DENIED);
+        }
+        let store = scheduler.records.as_mut().ok_or(mac_abi::BAD_ABI)?;
+        // Shared Store indices grow under their narrow System hook. Its actual
+        // per-owner Claim, slots and completions belong to this admitted child.
+        let publication = crate::context::with_allocation(crate::allocator::Target::Owner {
                 account: prepared.allocation.clone(),
                 class: mac_kernel_model::policy::MemoryClass::Kernel
             }, || store.insert_with_receipt(&prepared.owner, |id| {
@@ -755,43 +766,44 @@ fn spawn_prepared_inner(prepared: PreparedThread, runnable: bool) -> Result<u64,
                          worker: None, scope: None,
                          state: Cell::new(RunState::new()) })
             })).map_err(lifetime::pool_status)?;
-            let (id, receipt) = publication.into_parts();
-            if slot == scheduler.threads.len()
+        let (id, receipt) = publication.into_parts();
+        if slot == scheduler.threads.len()
+        {
+            scheduler.threads.push(Some(receipt));
+        }
+        else
+        {
+            scheduler.threads[slot] = Some(receipt);
+        }
+        // Publication's receipt remains valid if a stopping walk has already
+        // invalidated ordinary lookup. An unstarted refusal retains the same
+        // preparation; its stack/image pins are never dropped under this lock.
+        let assigned = prepared.core.context.assign(prepared.owner.clone(),
+                                                    id,
+                                                    prepared.core.binding,
+                                                    &prepared.allocation,
+                                                    &prepared.heap);
+        if let Err(status) = assigned
+        {
+            let removed = scheduler.records.as_mut().and_then(|store| store.remove(id));
+            if removed.is_some()
             {
-                scheduler.threads.push(Some(receipt));
+                scheduler.threads[slot] = None;
             }
-            else
+            else if let Some(thread) = scheduler.thread(slot)
             {
-                scheduler.threads[slot] = Some(receipt);
+                retire(thread);
             }
-            // Publication's receipt remains valid if a stopping walk has already
-            // invalidated ordinary lookup. An unstarted refusal retains the same
-            // preparation; its stack/image pins are never dropped under this lock.
-            let assigned = prepared.core.context.assign(prepared.owner.clone(),
-                                                        id,
-                                                        prepared.core.binding,
-                                                        &prepared.allocation);
-            if let Err(status) = assigned
-            {
-                let removed = scheduler.records.as_mut().and_then(|store| store.remove(id));
-                if removed.is_some()
-                {
-                    scheduler.threads[slot] = None;
-                }
-                else if let Some(thread) = scheduler.thread(slot)
-                {
-                    retire(thread);
-                }
-                drop(scheduler);
-                drop(removed);
-                return Err(status);
-            }
-            if let Some(thread) = scheduler.thread(slot)
-            {
-                thread.update(|state| state.live = runnable);
-            }
-            Ok(id)
-        })();
+            drop(scheduler);
+            drop(removed);
+            return Err(status);
+        }
+        if let Some(thread) = scheduler.thread(slot)
+        {
+            thread.update(|state| state.live = runnable);
+        }
+        Ok(id)
+    })();
     match published
     {
         Ok(id) =>
@@ -844,37 +856,88 @@ pub(crate) fn start_prepared(thread: u64, owner: &OwnerRef) -> Result<(), mac_ab
     Ok(())
 }
 pub(crate) fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
-                    charges: accounting::ThreadCharges)
+                    charges: accounting::ThreadCharges,
+                    heap: crate::toolbox::application_heap::RootBinding)
                     -> Result<u64, mac_abi::Status>
 {
-    let prepared = prepare(owner, loaded, charges).map_err(|failure| {
-                                                      let PrepareFailure { status,
-                                                                           loaded } = failure;
-                                                      // Failed preparation retains the unique image
-                                                      // until its caller accepts
-                                                      // the refusal; dispose that lease through its
-                                                      // ordinary owned path.
-                                                      drop(loaded);
-                                                      status
-                                                  })?;
+    let prepared =
+        prepare(owner, loaded, charges, heap).map_err(|failure| {
+                                                 let PrepareFailure { status,
+                                                                      loaded } = failure;
+                                                 // Failed preparation retains the unique image
+                                                 // until its caller accepts
+                                                 // the refusal; dispose that lease through its
+                                                 // ordinary owned path.
+                                                 drop(loaded);
+                                                 status
+                                             })?;
     spawn_prepared(prepared, true).map_err(|failure| failure.status)
 }
 
 extern "C" fn app_start(entry: usize) -> !
 {
     let function: mac_abi::ApplicationEntry = unsafe { core::mem::transmute(entry) };
-    let _status = unsafe { function(crate::kernel::services()) };
+    let status = unsafe { function(crate::kernel::services()) };
+    if status != mac_abi::OK
+    {
+        app_return_log(format_args!("APPLICATION_ENTRY_RETURNED entry={entry:#x} \
+                                     status={status}\n"));
+    }
     let mut call = mac_abi::processes::ProcessCall { operation: mac_abi::processes::EXIT,
                                                      ..Default::default() };
-    unsafe {
+    let exit_status = unsafe {
         super::traps::gateway(mac_abi::traps::PROCESS,
                               (&mut call as *mut mac_abi::processes::ProcessCall).cast(),
-                              core::mem::size_of_val(&call));
+                              core::mem::size_of_val(&call))
+    };
+    app_return_log(format_args!("APPLICATION_EXIT_RETURNED entry={entry:#x} \
+                                 status={exit_status}; nonreturning System contract lost\n"));
+    // EXIT must consume this canonical continuation. Its unexpected return is
+    // an unrecoverable platform contract failure, reported by the real trap's
+    // loud terminal path. Do not silently retain a spinning app (M-D04).
+    unsafe {
+        core::arch::asm!("unimp", options(noreturn, nostack));
     }
-    loop
+}
+
+fn app_return_log(arguments: core::fmt::Arguments<'_>)
+{
+    use core::fmt::Write;
+    struct Text
     {
-        core::hint::spin_loop();
+        bytes: [u8; 256],
+        used:  usize
     }
+    impl Write for Text
+    {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result
+        {
+            if text.len() > self.bytes.len() - self.used
+            {
+                return Err(core::fmt::Error);
+            }
+            self.bytes[self.used..self.used + text.len()].copy_from_slice(text.as_bytes());
+            self.used += text.len();
+            Ok(())
+        }
+    }
+    let mut text = Text { bytes: [0; 256],
+                          used:  0 };
+    if text.write_fmt(arguments).is_err()
+    {
+        let fallback = b"APPLICATION_RETURN_DIAGNOSTIC_OVERFLOW\n";
+        text.bytes[..fallback.len()].copy_from_slice(fallback);
+        text.used = fallback.len();
+    }
+    let mut call = mac_abi::traps::LogCall { bytes:  text.bytes.as_ptr(),
+                                             length: text.used };
+    // The returning app may be on a peer. The actual LOG trap routes the same
+    // continuation before touching fixed-owner firmware; no direct peer UART.
+    let _ = unsafe {
+        super::traps::gateway(mac_abi::traps::LOG,
+                              core::ptr::from_mut(&mut call).cast(),
+                              core::mem::size_of_val(&call))
+    };
 }
 fn arm()
 {

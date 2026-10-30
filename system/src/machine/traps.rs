@@ -514,6 +514,40 @@ unsafe fn request<'a, T>(pointer: *mut (), size: usize) -> Option<&'a mut T>
     }
 }
 
+/// Bounded, nonallocating per-call detail. Preserve UTF-8 boundaries and the
+/// original typed status; diagnostics never classify or replace the cause.
+fn application_heap_refusal(call: &mut application_heap::Call, status: Status,
+                            cause: &impl core::fmt::Display)
+                            -> Status
+{
+    use core::fmt::Write;
+    struct Detail<'a>
+    {
+        bytes: &'a mut [u8],
+        used:  usize
+    }
+    impl Write for Detail<'_>
+    {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result
+        {
+            let mut count = text.len().min(self.bytes.len() - self.used);
+            while !text.is_char_boundary(count)
+            {
+                count -= 1;
+            }
+            self.bytes[self.used..self.used + count].copy_from_slice(&text.as_bytes()[..count]);
+            self.used += count;
+            if count == text.len() { Ok(()) } else { Err(core::fmt::Error) }
+        }
+    }
+    call.result = core::ptr::null_mut();
+    let mut detail = Detail { bytes: &mut call.detail,
+                              used:  0 };
+    let _ = write!(&mut detail, "{cause}");
+    call.detail_length = detail.used as u32;
+    status
+}
+
 /// Native modules still share trusted supervisor mappings. Size/alignment are checked here;
 /// valid live pointees remain the calling module's ABI contract, not an MMU guarantee.
 unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
@@ -535,6 +569,22 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
     }
     match number
     {
+        APPLICATION_HEAP =>
+        {
+            let call = read_request!(application_heap::Call);
+            call.result = core::ptr::null_mut();
+            call.detail_length = 0;
+            // Only a borrowed, actual process baseline authorizes this heap.
+            // Service placement and ambient module/I/O selections grant none.
+            match crate::context::with_application_executor(|executor| unsafe {
+                      toolbox::application_heap::request(executor, call)
+                  })
+            {
+                Ok(Ok(())) => OK as i64,
+                Ok(Err(cause)) => application_heap_refusal(call, cause.status(), &cause) as i64,
+                Err(cause) => application_heap_refusal(call, cause.status(), &cause) as i64
+            }
+        }
         POWER =>
         {
             let call = read_request!(mac_abi::power::PowerCall);

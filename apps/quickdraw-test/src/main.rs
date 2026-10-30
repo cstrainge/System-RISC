@@ -17,6 +17,10 @@ const QUIT: u32 = u32::from_be_bytes(*b"quit");
 
 fn run(system: &System<'_>) -> Result<(), Error>
 {
+    if system.capabilities() & CAP_GRAPHICS == 0
+    {
+        return Err(Error::NotSupported);
+    }
     system.menus().clear()?;
     let _menus = [system.menus().install_owned(mac_toolbox::resources::APPLICATION, 128)?,
                   system.menus().install_owned(mac_toolbox::resources::APPLICATION, 129)?];
@@ -113,34 +117,4 @@ fn run(system: &System<'_>) -> Result<(), Error>
     }
 }
 
-/// # Safety
-/// The native loader supplies initialized segments and a live service table.
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
-{
-    if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
-    {
-        return status;
-    }
-    let system = match unsafe { System::from_raw(services) }
-    {
-        Ok(system) => system,
-        Err(status) => return status.status()
-    };
-    if system.capabilities() & CAP_GRAPHICS == 0
-    {
-        return mac_toolbox::abi::NOT_SUPPORTED;
-    }
-    match run(&system)
-    {
-        Ok(()) => mac_toolbox::abi::OK,
-        Err(status) =>
-        {
-            let _ = system.log("QUICKDRAW_TEST_ERROR\n");
-            status.status()
-        }
-    }
-}
-
-mac_toolbox::panic_handler!();
+mac_toolbox::application!(run);

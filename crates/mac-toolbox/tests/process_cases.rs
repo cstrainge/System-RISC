@@ -55,9 +55,9 @@ type Result<T> = core::result::Result<T, Failure>;
 fn execution_account(system: &System<'_>, row: mac_toolbox::inspection::Domain, actor: &str)
                      -> Result<(u64, u64)>
 {
-    let mac_toolbox::inspection::MemoryAccounting::ExecutionAndResidentHeap { kernel,
-                                                                              application,
-                                                                              closing } =
+    let mac_toolbox::inspection::MemoryAccounting::ExecutionAndOwnedMemory { kernel,
+                                                                             application,
+                                                                             closing } =
         row.accounting
     else
     {

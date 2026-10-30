@@ -1,14 +1,14 @@
 //! Shared native application panic handler. System owns the report window and
 //! its input handling; the failed application only streams text and sleeps.
 use core::{fmt::{self, Write},
-           panic::PanicInfo,
-           sync::atomic::{AtomicBool, AtomicPtr, Ordering}};
+           sync::atomic::{AtomicPtr, Ordering}};
 
 use crate::{Client, SystemServices,
             crashes::{self, Crashes}};
 
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
-static PANICKING: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "riscv64")]
+static PANICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Install the loader's service table before executing application code.
 ///
@@ -17,9 +17,28 @@ static PANICKING: AtomicBool = AtomicBool::new(false);
 /// terminated, including while its panic handler is running.
 pub unsafe fn install(services: *const SystemServices) -> Result<(), crate::abi::Status>
 {
+    if !services.addr().is_multiple_of(core::mem::align_of::<SystemServices>())
+    {
+        return Err(crate::abi::BAD_ARGUMENT);
+    }
     unsafe { Client::from_raw(services) }.map_err(|error| error.status())?;
-    SERVICES.store(services.cast_mut(), Ordering::Release);
+    SERVICES.compare_exchange(core::ptr::null_mut(),
+                              services.cast_mut(),
+                              Ordering::AcqRel,
+                              Ordering::Acquire)
+            .map_err(|_| crate::abi::BAD_ABI)?;
     Ok(())
+}
+
+/// Read only the table installed by the genuine entry contract. A nonnull
+/// pointer is published only after validation; no separate allocator selection
+/// or synthetic current application exists in the SDK.
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn installed_client() -> Option<Client<'static>>
+{
+    let pointer = SERVICES.load(Ordering::Acquire);
+    // SAFETY: install requires permanent immutable table/callback lifetime.
+    unsafe { Client::from_raw(pointer) }.ok()
 }
 
 struct Writer<'a>
@@ -73,6 +92,21 @@ impl Write for Writer<'_>
     }
 }
 
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn diagnostic(client: Client<'_>, arguments: fmt::Arguments<'_>)
+{
+    let mut writer = Writer { client,
+                              buffer: [0; crashes::MAX_APPEND_BYTES],
+                              used: 0,
+                              resident: false,
+                              flags: crashes::ReportFlags::NONE };
+    if writer.write_fmt(arguments).is_err()
+    {
+        let _ = writer.write_str("\n[Formatting the application diagnostic failed.]\n");
+    }
+    writer.flush();
+}
+
 /// Stream complete diagnostics without allocating in the application. All text
 /// also goes to the serial log. System retains up to1MiB and explicitly marks a
 /// retention/formatting failure instead of silently presenting a shortened report.
@@ -108,32 +142,45 @@ pub fn report(client: Client<'_>, arguments: fmt::Arguments<'_>)
 
 /// Called by the application's single panic handler. No application events or
 /// drawing callbacks run after a panic; native event waits park the OS thread.
-pub fn handle(info: &PanicInfo<'_>) -> !
+#[cfg(target_arch = "riscv64")]
+pub fn handle(info: &core::panic::PanicInfo<'_>) -> !
 {
-    let pointer = SERVICES.load(Ordering::Acquire);
-    // install's lifetime contract is stronger than this entire handler.
-    let Ok(client) = (unsafe { Client::from_raw(pointer) })
+    fail(format_args!("{info}"))
+}
+
+/// Nonallocating common path for panic, OOM and allocator protocol failures.
+/// Current applications have one scheduled author thread; this does not claim
+/// a future concurrent application-failure coordinator or arbitrary unwind.
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn fail(arguments: fmt::Arguments<'_>) -> !
+{
+    let Some(client) = installed_client()
     else
     {
-        loop
-        {
-            core::hint::spin_loop();
-        }
+        crate::application::abort(format_args!("APPLICATION_FAILURE_BEFORE_SERVICES: {arguments}"));
     };
     if PANICKING.swap(true, Ordering::AcqRel)
     {
-        let _ = client.log("APPLICATION_PANIC_RECURSIVE\n");
-        park(client, false);
+        crate::application::abort(format_args!("APPLICATION_FAILURE_ALREADY_REPORTING; \
+                                                recursive/concurrent failure is uncontained"));
     }
     let _ = client.log("APPLICATION_PANIC_BEGIN\n");
-    let shown = report(client, format_args!("{info}")).is_ok();
-    if !shown
+    let shown = match report(client, arguments)
     {
-        let _ = client.log("APPLICATION_PANIC_VIEWER_UNAVAILABLE; see serial diagnostics\n");
-    }
+        Ok(_) => true,
+        Err(cause) =>
+        {
+            diagnostic(client,
+                       format_args!("APPLICATION_PANIC_VIEWER_UNAVAILABLE status={} \
+                                     cause={cause}; see serial diagnostics\n",
+                                    cause.status()));
+            false
+        }
+    };
     park(client, shown)
 }
 
+#[cfg(target_arch = "riscv64")]
 fn park(client: Client<'_>, shown: bool) -> !
 {
     loop
@@ -143,11 +190,17 @@ fn park(client: Client<'_>, shown: bool) -> !
         {
             let mut call = mac_abi::processes::ProcessCall { operation: mac_abi::processes::EXIT,
                                                              ..Default::default() };
-            let _ = client.process(&mut call);
+            let status =
+                client.process(&mut call).map_or_else(|error| error.status(), |_| crate::abi::OK);
+            crate::application::exit_returned(i64::from(status));
         }
-        // A zero mask runs no app handlers. System services physical input and
-        // paints the report; waiting yields to other applications and the kernel.
-        let _ = client.wait_event(0, 60);
+        // System owns input and reporting. This wait invokes no app handlers.
+        if let Err(cause) = client.wait_event(0, 60)
+        {
+            crate::application::abort(format_args!("APPLICATION_FAILURE_WAIT_REFUSED status={} \
+                                                    cause={cause}",
+                                                   cause.status()));
+        }
     }
 }
 

@@ -16,9 +16,11 @@ use crate::{completion::{Completion, Reserve},
 
 struct Claim<G: InvocationGate>
 {
-    owner:  OwnerRef<G>,
-    kind:   KindCode,
-    active: bool
+    owner:     OwnerRef<G>,
+    kind:      KindCode,
+    active:    bool,
+    preparing: core::sync::atomic::AtomicUsize,
+    retiring:  core::sync::atomic::AtomicBool
 }
 impl<G: InvocationGate> Drop for Claim<G>
 {
@@ -30,6 +32,31 @@ impl<G: InvocationGate> Drop for Claim<G>
         }
     }
 }
+// A value-array Claim must be released inside the backing completion closure,
+// before ACK, rather than by Rust field Drop after that closure has returned.
+struct ClaimPin<G: InvocationGate>(Option<Arc<Claim<G>>>);
+impl<G: InvocationGate> ClaimPin<G>
+{
+    fn new(claim: Arc<Claim<G>>) -> Self
+    {
+        Self(Some(claim))
+    }
+
+    fn clone(&self) -> Arc<Claim<G>>
+    {
+        Arc::clone(self)
+    }
+}
+impl<G: InvocationGate> Deref for ClaimPin<G>
+{
+    type Target = Arc<Claim<G>>;
+
+    fn deref(&self) -> &Self::Target
+    {
+        self.0.as_ref().expect("live Store values retain their ledger Claim until destruction")
+    }
+}
+
 struct Entry<T, G: InvocationGate>
 {
     id:               u64,
@@ -43,7 +70,7 @@ struct Entry<T, G: InvocationGate>
 struct Values<T, G: InvocationGate, S>
 {
     slots:   Vec<Option<Entry<T, G>>>,
-    claim:   Arc<Claim<G>>,
+    claim:   ClaimPin<G>,
     stored:  usize,
     state:   Option<S>,
     storage: ManuallyDrop<Option<Storage<G>>>
@@ -66,13 +93,21 @@ impl<T, G: InvocationGate, S> Drop for Values<T, G, S>
     fn drop(&mut self)
     {
         let storage = core::mem::replace(&mut self.storage, ManuallyDrop::new(None));
+        let claim = self.claim.0.take();
+        let slots = core::mem::take(&mut self.slots);
         if let Some(mut storage) = ManuallyDrop::into_inner(storage)
         {
-            storage.completion.run(|| drop(self.state.take()));
+            storage.completion.run(|| {
+                                  drop(self.state.take());
+                                  drop(slots);
+                                  drop(claim);
+                              });
         }
         else
         {
             drop(self.state.take());
+            drop(slots);
+            drop(claim);
         }
     }
 }
@@ -106,9 +141,11 @@ impl<G: InvocationGate> Storage<G>
             owner.access(|index| {
                      index.attach_values_with(spec.code, spec.capacity, Some(kind.id()), scope)
                  })?;
-        let claim = Claim { owner:  owner.clone(),
-                            kind:   spec.code,
-                            active: true };
+        let claim = Claim { owner:     owner.clone(),
+                            kind:      spec.code,
+                            active:    true,
+                            preparing: core::sync::atomic::AtomicUsize::new(0),
+                            retiring:  core::sync::atomic::AtomicBool::new(false) };
         let key = owner.access(|index| {
                            if slots == 0
                            {
@@ -186,7 +223,7 @@ impl From<PoolError> for PublicationError
 /// from a live object; cannot be constructed from a caller's ID or ResourceKey.
 /// This does not acknowledge cleanup or pin pages by itself. The retained store
 /// or removal guard remains responsible for the real completion barrier.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompletionKey
 {
     id:  u64,
@@ -244,8 +281,14 @@ pub struct Store<T, G: InvocationGate, S = ()>
     reserved:             Vec<Weak<Reserved<G>>>,
     registration:         Option<KindLease<G>>,
     storage_registration: Option<KindLease<G>>,
-    make_state:           fn(DomainId) -> Result<S, PoolError>
+    make_state:           fn(DomainId) -> Result<S, PoolError>,
+    incarnation:          Option<Arc<prepared::Incarnation>>
 }
+
+mod prepared;
+pub use prepared::{AdmissionFailure, PreparedError, PreparedPublication, PublicationPermit,
+                   PublicationPlan, PublishFailure, Removal, RetiredCapacity, RetiredOwner,
+                   RetiredPublication};
 
 fn find_reserved<G: InvocationGate>(reserved: &[Weak<Reserved<G>>], id: u64)
                                     -> Option<ResourceKey>
@@ -293,7 +336,8 @@ impl<T, G: InvocationGate> Store<T, G>
                reserved: Vec::new(),
                registration: None,
                storage_registration: None,
-               make_state: |_| Ok(()) }
+               make_state: |_| Ok(()),
+               incarnation: None }
     }
 
     /// Resident stores bind policy and release identity to the registry's
@@ -339,7 +383,8 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                   reserved: Vec::new(),
                   registration: Some(registration),
                   storage_registration: Some(storage),
-                  make_state })
+                  make_state,
+                  incarnation: None })
     }
 
     pub fn kind(&self) -> KindCode
@@ -379,7 +424,8 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         G::with_system_allocation(|| self.owners.try_reserve(1)).map_err(|_| error)?;
         let mut claim = Arc::try_new(Claim { owner:  owner.clone(),
                                              kind:   self.kind,
-                                             active: false }).map_err(|_| error)?;
+                                             active: false, preparing: core::sync::atomic::AtomicUsize::new(0),
+                            retiring: core::sync::atomic::AtomicBool::new(false) }).map_err(|_| error)?;
         let registration = self.registration.as_ref().map(KindLease::id);
         let slots = owner.access(|index| {
                              index.attach_values_with(self.kind, self.policy, registration, scope)
@@ -394,10 +440,10 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                           .map(|kind| Storage::new(owner, kind, scope))
                           .transpose()?;
         self.owners.insert(at,
-                           Values { claim,
-                                    slots: values,
-                                    stored: 0,
-                                    state: Some(state),
+                           Values { claim:   ClaimPin::new(claim),
+                                    slots:   values,
+                                    stored:  0,
+                                    state:   Some(state),
                                     storage: ManuallyDrop::new(storage) });
         Ok(at)
     }
@@ -659,6 +705,9 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
 
     fn has_reservations(&self, owner: DomainId) -> bool
     {
+        if self.owner_index(owner).ok().is_some_and(|at| {
+            self.owners[at].claim.preparing.load(core::sync::atomic::Ordering::Acquire) != 0
+        }) { return true; }
         self.reserved
             .iter()
             .filter_map(Weak::upgrade)
@@ -671,13 +720,19 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                     mut binding: Option<crate::scope::Binding>, pin: Option<AcknowledgementPin>)
                     -> Result<Publication, PoolError>
     {
+        if self.incarnation.as_ref().is_some_and(|s| !s.live())
+        {
+            return Err(PoolError::InvalidGrowth);
+        }
         owner.access(|index| index.authorize(self.kind, scope))?;
         let mut registration_use =
             self.registration.as_ref().map(|kind| kind.acquire(true)).transpose()?;
         let at = self.attach_with(owner, scope)?;
         let error = self.storage_error(owner.owner(), self.ids.len().saturating_add(1));
         // The cross-owner identity index belongs to the resident store.
-        G::with_system_allocation(|| self.ids.try_reserve(1)).map_err(|_| error)?;
+        let credits = self.incarnation.as_ref().map_or(0, |state| state.credits());
+        let additional = credits.checked_add(1).ok_or(PoolError::InvalidGrowth)?;
+        G::with_system_allocation(|| self.ids.try_reserve(additional)).map_err(|_| error)?;
         let id = issue_native_identity().map_err(|_| PoolError::IdentityExhausted)?.get();
         let reserve = Reserve::try_new().map_err(|_| error)?
                                         .with_projection(projection)
@@ -858,11 +913,21 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
 
     pub fn remove(&mut self, id: u64) -> Option<Removed<T, G>>
     {
+        self.remove_with_backing(id).map(|removal| {
+                                        let prepared::Removal { object,
+                                                                backing } = removal;
+                                        drop(backing);
+                                        object
+                                    })
+    }
+
+    pub fn remove_with_backing(&mut self, id: u64) -> Option<prepared::Removal<T, G, S>>
+    {
         let (at, key) = self.locate(id)?;
         let entry = self.owners[at].slots.get_mut(key.slot())?.take()?;
         match self.owners[at].claim.owner.invalidate(key)
         {
-            Ok(released) => Some(self.take(at, released, entry)),
+            Ok(released) => Some(self.take_with_backing(at, released, entry)),
             Err(_) =>
             {
                 // The walk won invalidation; its ticket still owns this exact
@@ -873,7 +938,8 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         }
     }
 
-    fn take(&mut self, at: usize, released: ReleasedResource, entry: Entry<T, G>) -> Removed<T, G>
+    fn take_with_backing(&mut self, at: usize, released: ReleasedResource, entry: Entry<T, G>)
+                         -> prepared::Removal<T, G, S>
     {
         self.owners[at].stored -= 1;
         if let Some(reservation) = &entry.reservation
@@ -894,19 +960,31 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                           entry.reserve
                                .released(self.owners[at].claim.owner.clone(), released, usage),
                       _claim:       self.owners[at].claim.clone() };
-        if self.owners[at].stored == 0
-           && !self.has_reservations(self.owners[at].claim.owner.owner())
-           && self.owners[at].storage.as_ref().is_some_and(|state| state.released)
+        let backing = if self.owners[at].stored == 0
+                         && !self.has_reservations(self.owners[at].claim.owner.owner())
+                         && self.owners[at].storage.as_ref().is_some_and(|state| state.released)
         {
-            self.owners.remove(at);
+            Some(prepared::RetiredOwner { values: self.owners.remove(at) })
         }
-        removed
+        else
+        {
+            None
+        };
+        prepared::Removal { object: removed,
+                            backing }
     }
 
     /// Accept the backing's invalidate-first ticket. If payloads remain, the
     /// death barrier stays pending and the last payload removal frees backing.
     /// Quarantined payloads therefore retain the backing until a real retry.
     pub fn release_storage(&mut self, ticket: ReleasedResource) -> Result<(), CompletionError>
+    {
+        self.release_storage_with_backing(ticket).map(drop)
+    }
+
+    pub fn release_storage_with_backing(
+        &mut self, ticket: ReleasedResource)
+        -> Result<Option<prepared::RetiredOwner<T, G, S>>, CompletionError>
     {
         let key = ticket.key();
         if let Ok(at) = self.owner_index(key.owner())
@@ -917,11 +995,14 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                 {
                     state.completion.receive(ticket)?;
                     state.released = true;
+                    self.owners[at].claim
+                                   .retiring
+                                   .store(true, core::sync::atomic::Ordering::Release);
                     if self.owners[at].stored == 0 && !self.has_reservations(key.owner())
                     {
-                        self.owners.remove(at);
+                        return Ok(Some(prepared::RetiredOwner { values: self.owners.remove(at) }));
                     }
-                    return Ok(());
+                    return Ok(None);
                 }
             }
         }
@@ -973,6 +1054,17 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
     pub fn release(&mut self, released: ReleasedResource)
                    -> Result<Removed<T, G>, CompletionError>
     {
+        self.release_with_backing(released).map(|removal| {
+                                               let prepared::Removal { object,
+                                                                       backing } = removal;
+                                               drop(backing);
+                                               object
+                                           })
+    }
+
+    pub fn release_with_backing(&mut self, released: ReleasedResource)
+                                -> Result<prepared::Removal<T, G, S>, CompletionError>
+    {
         let key = released.key();
         if let Ok(at) = self.owner_index(key.owner())
         {
@@ -985,7 +1077,7 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                 if let Some(entry) =
                     self.owners[at].slots.get_mut(key.slot()).and_then(Option::take)
                 {
-                    return Ok(self.take(at, released, entry));
+                    return Ok(self.take_with_backing(at, released, entry));
                 }
             }
         }
@@ -1165,6 +1257,10 @@ impl<T, G: InvocationGate, S> Drop for Store<T, G, S>
 {
     fn drop(&mut self)
     {
+        if let Some(incarnation) = &self.incarnation
+        {
+            incarnation.close();
+        }
         self.remove_where(|_, _| true);
         for values in self.owners.drain(..)
         {
