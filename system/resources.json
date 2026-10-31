@@ -6579,6 +6579,16 @@
     },
     {
       "type": "ics#",
+      "id": -16387,
+      "symbol": "TRANS_FLAG_69637323_N16387",
+      "attributes": 96,
+      "payload": {
+        "format": "file",
+        "path": "assets/visual/69637323--16387.bin"
+      }
+    },
+    {
+      "type": "ics#",
       "id": -5696,
       "symbol": "ORIGINAL_VISUAL_69637323_N5696",
       "attributes": 96,
@@ -7149,6 +7159,16 @@
     },
     {
       "type": "ics4",
+      "id": -16387,
+      "symbol": "TRANS_FLAG_69637334_N16387",
+      "attributes": 96,
+      "payload": {
+        "format": "file",
+        "path": "assets/visual/69637334--16387.bin"
+      }
+    },
+    {
+      "type": "ics4",
       "id": -5696,
       "symbol": "ORIGINAL_VISUAL_69637334_N5696",
       "attributes": 96,
@@ -7705,6 +7725,16 @@
       "payload": {
         "format": "file",
         "path": "assets/visual/69637338--16386.bin"
+      }
+    },
+    {
+      "type": "ics8",
+      "id": -16387,
+      "symbol": "TRANS_FLAG_69637338_N16387",
+      "attributes": 96,
+      "payload": {
+        "format": "file",
+        "path": "assets/visual/69637338--16387.bin"
       }
     },
     {

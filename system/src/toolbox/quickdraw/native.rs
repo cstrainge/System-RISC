@@ -519,6 +519,15 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 }
                 #[cfg(target_arch = "riscv64")]
                 {
+                    if call.operation == ICON_APPLE_MENU_FLAG
+                    {
+                        if call.scope != resources::SYSTEM
+                        {
+                            return Err(BAD_ARGUMENT);
+                        }
+                        super::icons_service::set_apple_menu_icon_flag(call.id != 0);
+                        return Ok(());
+                    }
                     crate::kernel::with_resources_in(call.scope, |manager| {
                         if call.operation != ICON_PLOT
                         {

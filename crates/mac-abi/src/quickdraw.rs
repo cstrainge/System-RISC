@@ -372,6 +372,9 @@ pub const ICON_FILE: u32 = 3;
 pub const ICON_PLOT_FILE: u32 = 4;
 pub const ICON_PLOT_FILE_DEFAULT: u32 = 5;
 pub const ICON_LOAD_FILE: u32 = 6;
+/// Set the menubar icon switch without drawing. Scope must be SYSTEM;
+/// IconCall.id != 0 selects the flag, while 0 selects the standard R.
+pub const ICON_APPLE_MENU_FLAG: u32 = 7;
 /// Draw a registered type/extension default without doing catalog or fork I/O.
 #[repr(C)]
 pub struct DefaultFileIconCall

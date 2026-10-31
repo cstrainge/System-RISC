@@ -13,8 +13,59 @@ pub const SHOW_CLIPBOARD: u32 = u32::from_be_bytes(*b"shcl");
 pub const EMPTY: u32 = u32::from_be_bytes(*b"empt");
 pub const RESTART: u32 = u32::from_be_bytes(*b"rest");
 pub const SHUTDOWN: u32 = u32::from_be_bytes(*b"shut");
+fn apple_menu_icon_flag(system: &System<'_>) -> Result<bool, Error>
+{
+    let files = system.files();
+    let mut startup = None;
+    for index in 0..files.volume_count()?
+    {
+        let volume = files.volume_at(index)?;
+        if volume.startup
+        {
+            startup = Some(volume.id);
+            break;
+        }
+        if startup.is_none()
+        {
+            startup = Some(volume.id);
+        }
+    }
+    let Some(startup) = startup
+    else
+    {
+        return Ok(false);
+    };
+    match files.lookup(startup, files::ROOT_ID, "System Folder/Preferences/limit")
+    {
+        Ok(_) => Ok(true),
+        Err(Error::NotFound) => Ok(false),
+        Err(error) => Err(error)
+    }
+}
+
+fn report_icon_flag_error(system: &System<'_>, operation: &str, error: Error) -> Result<(), Error>
+{
+    use core::fmt::Write;
+    let mut line = crate::browser::Text::<256>::default();
+    let _ = writeln!(&mut line, "FINDER_APPLE_MENU_ICON_{operation}: {error}");
+    system.log(line.as_str())
+}
+
 pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 5], Error>
 {
+    let flag = match apple_menu_icon_flag(system)
+    {
+        Ok(flag) => flag,
+        Err(error) =>
+        {
+            report_icon_flag_error(system, "LOOKUP_FAILED", error)?;
+            false
+        }
+    };
+    if let Err(error) = system.quickdraw().icons().set_apple_menu_icon_flag(flag)
+    {
+        report_icon_flag_error(system, "SET_FAILED", error)?;
+    }
     let menus = system.menus();
     menus.clear()?;
     let installed = [menus.install_owned(resources::APPLICATION, 1252)?,
