@@ -1,6 +1,6 @@
 //! Explicit coordinate spaces for native input. Conversion to geometry is deliberate.
 #![forbid(unsafe_code)]
-use mac_abi::{Point, WindowId, events::EventPosition};
+use mac_abi::{geometry::Point, WindowId, events::EventPosition};
 
 use crate::{Error, Result};
 

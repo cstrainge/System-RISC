@@ -6,8 +6,10 @@ use alloc::vec::Vec;
 
 use mac_abi::*;
 
+use crate::toolbox::quickdraw::geometry::{sect_rect, union_rect};
+
 use super::{Canvas, Desktop, RenderCommand, SceneTarget, WHITE, background, paint};
-use crate::toolbox::quickdraw::{geometry,
+use crate::toolbox::quickdraw::{geometry::Rect,
                                 region::{BooleanOp, Region}};
 
 #[derive(Default)]
@@ -80,7 +82,7 @@ impl OrdinaryUnderlay
         // This is the same bounded metadata-refusal fallback as the ordinary
         // active damage queue. No successfully retained region is discarded.
         *previous = previous.combine(&region, BooleanOp::Union).unwrap_or_else(|_| {
-            Region::from_rect(geometry::union_rect(previous.bounds(), region.bounds()))
+            Region::from_rect(union_rect(previous.bounds(), region.bounds()))
         });
         Ok(())
     }
@@ -119,7 +121,7 @@ fn screen() -> Rect
 fn clip(rect: Rect) -> Rect
 {
     let mut result = Rect::ZERO;
-    geometry::sect_rect(rect, screen(), &mut result);
+    sect_rect(rect, screen(), &mut result);
     result
 }
 fn copy_rect(source: &[u32], destination: &mut [u32], rect: Rect)
@@ -309,7 +311,7 @@ impl Desktop
                     for band in region.bands() { for span in &band.spans {
                         if result.is_err() { continue; }
                         let mut rect = Rect::ZERO;
-                        if !geometry::sect_rect(Rect::new(span.left, band.top, span.right, band.bottom), visible, &mut rect)
+                        if !sect_rect(Rect::new(span.left, band.top, span.right, band.bottom), visible, &mut rect)
                         { continue; }
                         canvas.reset_port(); canvas.set_clip(rect); background(&mut canvas);
                         result = cache.try_paint(*id, self.desktop.bounds(), &mut canvas, |canvas| {
@@ -349,7 +351,7 @@ impl Desktop
                                             Rect::new(span.left, band.top, span.right, band.bottom);
                                         rect.offset(window.bounds.left, window.bounds.top);
                                         let mut hit = Rect::ZERO;
-                                        if !geometry::sect_rect(rect, visible, &mut hit)
+                                        if !sect_rect(rect, visible, &mut hit)
                                         {
                                             continue;
                                         }
@@ -608,7 +610,7 @@ impl Desktop
                                         Rect::new(span.left, band.top, span.right, band.bottom);
                                     rect.offset(window.bounds.left, window.bounds.top);
                                     let mut hit = Rect::ZERO;
-                                    if !geometry::sect_rect(rect, visible, &mut hit)
+                                    if !sect_rect(rect, visible, &mut hit)
                                     {
                                         continue;
                                     }

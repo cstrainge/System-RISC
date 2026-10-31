@@ -6,7 +6,7 @@ mod folders;
 mod stream;
 mod transfer;
 pub use folders::FolderState;
-use mac_abi::files::*;
+use mac_abi::{files::*};
 use mac_traps::types::{FileHandle, FileWriteHandle};
 pub use moves::{IconMove, IconMoveGroup, MoveProgress, Placement};
 pub use stream::{ForkAbort, ForkMetadata, ForkWriteSpec, ForkWriter};
@@ -181,14 +181,14 @@ impl<'a> Files<'a>
     /// Save Finder placement with this file/folder's persistent catalog identity.
     /// None clears placement. Object dates, forks and unrelated Finder metadata
     /// are preserved. Coordinates are the catalog's cell origin, not screen pixels.
-    pub fn set_icon_location(self, volume: VolumeId, cnid: Cnid, location: Option<mac_abi::Point>)
+    pub fn set_icon_location(self, volume: VolumeId, cnid: Cnid, location: Option<mac_abi::geometry::Point>)
                              -> Result<CatalogInfo>
     {
         self.set_icon_location_at(volume, cnid, location, self.client.now()?)
     }
 
     pub fn set_icon_location_at(self, volume: VolumeId, cnid: Cnid,
-                                location: Option<mac_abi::Point>, when: Timestamp)
+                                location: Option<mac_abi::geometry::Point>, when: Timestamp)
                                 -> Result<CatalogInfo>
     {
         if cnid.0 < ROOT_ID.0 || location.is_some_and(|p| p.h == -1 && p.v == -1)

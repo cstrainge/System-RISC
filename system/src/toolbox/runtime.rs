@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 use alloc::{boxed::Box, string::String, vec::Vec};
 
-use mac_abi::*;
+use mac_abi::{events::{CMD_KEY, Event, EventKind}, *, geometry::{Point, Rect}};
 use mac_object_table::shared::InvocationGate as _;
 
 use super::quickdraw::{SurfaceExt,

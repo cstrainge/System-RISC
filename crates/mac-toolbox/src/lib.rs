@@ -3,8 +3,8 @@
 /// Explicit wire/entry-point escape hatch. Ordinary applications use decoded
 /// native services, typed identities and Error rather than numeric statuses.
 pub use mac_abi as abi;
-pub use mac_abi::{ApplicationEntry, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_CLOCK, Point,
-                  Rect, SystemServices, WindowId, dates::Timestamp};
+pub use mac_abi::{ApplicationEntry, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_CLOCK,
+                  geometry::{Point, Rect}, SystemServices, WindowId, dates::Timestamp};
 /// Owned, bounded UTF-8 text returned by Toolbox snapshots.
 pub use mac_traps::types::InlineText;
 pub use mac_traps::{Client, Cnid, Error, MenuId, ProcessId, Result as ToolboxResult, ThreadId,
@@ -236,7 +236,7 @@ impl<'a> System<'a>
 #[cfg(test)]
 mod tests
 {
-    use mac_abi::{EventKind, Header, NEW_WINDOW, NOT_SUPPORTED, OK, traps};
+    use mac_abi::{events::{Event, EventKind}, Header, NEW_WINDOW, NOT_SUPPORTED, OK, traps};
 
     use super::*;
     unsafe extern "C" fn gate(number: u32, request: *mut (), size: usize) -> i64
@@ -263,7 +263,7 @@ mod tests
             {
                 assert_eq!(size, core::mem::size_of::<traps::NextEventCall>());
                 let r = unsafe { &mut *request.cast::<traps::NextEventCall>() };
-                r.event = mac_abi::Event { kind: EventKind::KeyDown,
+                r.event = Event { kind: EventKind::KeyDown,
                                            message: 65,
                                            ..Default::default() };
                 OK as i64

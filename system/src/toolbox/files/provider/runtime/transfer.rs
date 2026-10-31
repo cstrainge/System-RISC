@@ -2,6 +2,7 @@
 //! memory during admission. Every subsequent I/O and undo receipt is owned.
 #![forbid(unsafe_code)]
 use alloc::sync::Arc;
+use mac_abi::geometry::Point;
 
 use super::*;
 use crate::toolbox::handles::{InvocationGate, OwnerRef};

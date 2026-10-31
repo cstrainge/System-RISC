@@ -1,5 +1,5 @@
 //! Persisted directory-window geometry using the original Finder fields.
-use mac_abi::{Point, Rect, files::*};
+use mac_abi::{geometry::{Point, Rect}, files::*};
 
 use super::{CatalogInfo, Cnid, Error, Files, Result, Timestamp, VolumeId};
 

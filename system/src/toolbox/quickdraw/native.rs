@@ -1,5 +1,5 @@
 //! Native QuickDraw ABI boundary. Algorithms consume checked Rust slices below it.
-use mac_abi::{quickdraw::*, traps::*, *};
+use mac_abi::{geometry::Point, quickdraw::*, traps::*, *};
 
 use super::{SurfaceExt, fonts::FontManager, fonts_service, regions_service, service};
 unsafe fn request<'a, T>(pointer: *mut (), size: usize) -> Result<&'a mut T, Status>

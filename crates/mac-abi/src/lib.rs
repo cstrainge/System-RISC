@@ -128,8 +128,6 @@ pub mod textedit;
 pub mod menus;
 pub mod memory;
 pub mod images;
-pub use events::*;
-pub use geometry::{Dimensions, Point, Rect};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
@@ -303,7 +301,7 @@ pub const WINDOW_TITLE_BYTES: usize = INLINE_STRING_BYTES;
 pub struct WindowRequest
 {
     pub id:             u64,
-    pub bounds:         Rect,
+    pub bounds:         geometry::Rect,
     pub title:          [u8; WINDOW_TITLE_BYTES],
     pub title_length:   u32,
     pub procedure:      i16,
@@ -326,7 +324,7 @@ impl WindowRequest
 pub struct DrawCommand
 {
     pub kind:        u32,
-    pub bounds:      Rect,
+    pub bounds:      geometry::Rect,
     pub color:       u32,
     pub text_length: u32,
     pub text:        [u8; INLINE_STRING_BYTES]
@@ -342,8 +340,8 @@ pub struct Surface
     pub pixels: *mut u32,
     pub width:  u32,
     pub height: u32,
-    pub origin: Point,
-    pub clip:   Rect
+    pub origin: geometry::Point,
+    pub clip:   geometry::Rect
 }
 
 #[repr(C)]

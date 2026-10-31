@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 
-use mac_abi::{quickdraw::*, *};
+use mac_abi::{geometry::Point, quickdraw::*, *};
 
 use super::presentation::CursorSprite;
 

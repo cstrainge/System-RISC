@@ -4,6 +4,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use mac_abi::{controls::*,
+              geometry::{Point, Rect},
               scrollbox::{BUTTON_DOWN, CHANGED, TRACKING, *},
               *};
 

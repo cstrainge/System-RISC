@@ -10,7 +10,8 @@ use alloc::vec::Vec;
 
 use mac_abi::{files::{self, CatalogInfo, FileCall, ROOT_ID, VolumeInfo},
               standard_file::*,
-              *};
+              *,
+              geometry::Rect};
 use page::Page;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use templates::prepare as prepare_templates;

@@ -242,7 +242,7 @@ impl State
                 }
                 GroupPurpose::Unpublish =>
                 {
-                    (node.destination, root.target.id, self.destination_stage, 0, Point::default())
+                    (node.destination, root.target.id, self.destination_stage, 0, geometry::Point::default())
                 }
                 GroupPurpose::Restore =>
                 {
@@ -250,7 +250,7 @@ impl State
                     let point = source.icon_location();
                     let positioned = source.finder_flags() & 0x100 != 0
                                      && point
-                                        != (Point { h: -1,
+                                        != (geometry::Point { h: -1,
                                                     v: -1 });
                     (source.id,
                      if self.fast_move { root.target.id } else { stage()? },

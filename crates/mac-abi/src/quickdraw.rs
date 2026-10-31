@@ -1,5 +1,5 @@
 //! QuickDraw wire values. Drawing algorithms and font resources belong to System.
-use crate::{Point, Rect, Surface};
+use crate::{geometry::{Point, Rect}, Surface};
 mod target;
 pub use target::{DrawingTarget, TARGET_DESKTOP, TARGET_WINDOW, TARGET_WORLD, Target, TargetError,
                  WorldId};

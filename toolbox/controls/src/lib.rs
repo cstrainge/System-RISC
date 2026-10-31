@@ -1,7 +1,7 @@
 //! Control Manager client bindings; standard CDEF drawing lives in System.
 #![no_std]
 #![forbid(unsafe_code)]
-pub use mac_abi::{Point, Rect, WindowId, controls::ScrollbarState,
+pub use mac_abi::{geometry::{Point, Rect}, WindowId, controls::ScrollbarState,
                   definitions::ControlDefinitionState as StandardState, quickdraw::FontSelection};
 pub use sr_control_reflow_handling::{Anchors, AxisConstraint, BorderOffsets, Constraints,
                                      Error as LayoutError, Extent, Fill, Invalidation, LayoutRect,
@@ -96,7 +96,7 @@ impl<'a> Controls<'a>
 
     /// Resolve the CDEF hit part into the same vocabulary as standard controls.
     pub fn scrollbar_hit(&self, window: WindowId, bounds: Rect, value: i16, maximum: i16,
-                         active: bool, point: mac_abi::Point)
+                         active: bool, point: Point)
                          -> Result<Part>
     {
         let mut call=mac_abi::controls::ControlCall {operation:mac_abi::controls::HIT_SCROLLBAR,window:window.0,
@@ -108,7 +108,7 @@ impl<'a> Controls<'a>
     /// Map movement from a mouse-down anchor using CDEF-owned thumb geometry.
     /// Keep initial_value and anchor unchanged for the whole drag.
     pub fn scrollbar_track_value(&self, window: WindowId, bounds: Rect, initial_value: i16,
-                                 maximum: i16, anchor: mac_abi::Point, point: mac_abi::Point)
+                                 maximum: i16, anchor: Point, point: Point)
                                  -> Result<i16>
     {
         let mut call=mac_abi::controls::ControlCall {operation:mac_abi::controls::TRACK_SCROLLBAR,window:window.0,

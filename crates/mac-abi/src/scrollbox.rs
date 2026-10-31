@@ -1,5 +1,5 @@
 //! Native virtualized row viewport, composed with the standard CDEF scrollbar.
-use crate::{Point, Rect, Surface, quickdraw::FontSelection};
+use crate::{geometry::{Point, Rect}, Surface, quickdraw::FontSelection};
 pub const CREATE: u32 = 0;
 pub const DISPOSE: u32 = 1;
 pub const CONFIGURE: u32 = 2;

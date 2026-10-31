@@ -1,4 +1,5 @@
 //! Native Rust ownership contracts through the public Toolbox and real services.
+use mac_abi::{events::{Event as Record, EventKind}, geometry::Point};
 use mac_toolbox::{Error, Rect, System, ToolboxResult, WindowId,
                   abi::NOT_FOUND,
                   windows::{Window, WindowSpec}};
@@ -286,9 +287,9 @@ fn file_watches(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fail
 /// Public input projections remain fresh across front-window lifetime changes.
 fn front_projection(system: &System<'_>) -> Result<(), Failure>
 {
-    let key = mac_toolbox::Event::from(mac_abi::Event { kind: mac_abi::EventKind::KeyDown,
+    let key = mac_toolbox::Event::from(Record { kind: EventKind::KeyDown,
                                                         message: u32::from(b'a'),
-                                                        where_: mac_abi::Point { h: 127,
+                                                        where_: Point { h: 127,
                                                                                  v: 139 },
                                                         ..Default::default() });
     let locate =
@@ -327,7 +328,7 @@ fn front_projection(system: &System<'_>) -> Result<(), Failure>
     let current = locate(Some(replacement.id()))?;
     assert_ne!(replacement.id(), stale);
     assert_eq!(current.in_window(stale), Err(Error::NotFound));
-    let explicit = mac_toolbox::Event::from(mac_abi::Event { kind: mac_abi::EventKind::Update,
+    let explicit = mac_toolbox::Event::from(Record { kind: EventKind::Update,
                                                              window: stale.0,
                                                              ..Default::default() });
     assert!(system.events().locate(&explicit)?.window().is_none(),
@@ -786,7 +787,6 @@ pub fn alert_tracking(system: &System<'_>,
                       mut checkpoint: impl FnMut(&str, Rect) -> Result<(), Failure>)
                       -> Result<(), Failure>
 {
-    use mac_abi::{Event as Record, EventKind, Point};
     let alert =
         system.dialogs().alert_owned(mac_toolbox::ResourceScope::Application,
                                       6012,

@@ -1,5 +1,5 @@
 //! Native resource-based Menu Manager ABI. Classic MenuSelect remains separate.
-use crate::{INLINE_STRING_BYTES, Rect};
+use crate::{INLINE_STRING_BYTES, geometry::Rect};
 pub const INSTALL: u32 = 0;
 pub const CLEAR: u32 = 1;
 pub const SET_ENABLED: u32 = 2;

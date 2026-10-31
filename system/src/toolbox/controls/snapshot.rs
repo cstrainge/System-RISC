@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 use alloc::sync::Arc;
 
-use mac_abi::{BAD_ABI, BAD_ARGUMENT, NO_MEMORY, Rect, Status, controls::ProgressRange,
+use mac_abi::{BAD_ABI, BAD_ARGUMENT, NO_MEMORY, geometry::Rect, Status, controls::ProgressRange,
               definitions::ControlDefinitionState, quickdraw::FontSelection};
 
 pub(super) struct Title

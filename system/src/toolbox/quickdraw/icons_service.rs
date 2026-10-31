@@ -2,7 +2,8 @@
 #![forbid(unsafe_code)]
 use alloc::{sync::Arc, vec::Vec};
 
-use mac_abi::{quickdraw::*,
+use mac_abi::{geometry::Rect,
+              quickdraw::*,
               resources::{CHAIN, SYSTEM},
               *};
 use mac_formats::resource::ResourceRef;

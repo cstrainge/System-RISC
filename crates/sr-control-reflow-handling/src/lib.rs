@@ -46,7 +46,7 @@ pub use placement::{Anchors, BorderOffsets, Fill, SizeBounds, SizeUnit, Span};
 mod messages;
 mod sizing;
 pub use geometry::{AxisConstraint, Constraints, Extent, LayoutRect, Size};
-pub use mac_abi::{Dimensions, Point, Rect};
+pub use mac_abi::geometry::{Dimensions, Point, Rect};
 pub use messages::{Effects, Invalidation, Message, Operation, Outcome, decode_leaf};
 pub use sizing::{Measurement, PreparedSettings, Requirements, SettingsChange, SizePreferences,
                  SizingState};

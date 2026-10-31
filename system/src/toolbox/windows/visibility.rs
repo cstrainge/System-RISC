@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 
-use mac_abi::{NO_MEMORY, Rect, Status};
+use mac_abi::{NO_MEMORY, geometry::Rect, Status};
 
 use crate::toolbox::quickdraw::geometry::sect_rect;
 

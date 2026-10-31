@@ -1,5 +1,5 @@
 //! Native definition message/state layouts shared by managers and code resources.
-use crate::Rect;
+use crate::geometry::Rect;
 pub const WDEF: u32 = u32::from_be_bytes(*b"WDEF");
 pub const DRAW: i16 = 0;
 pub const HIT: i16 = 1;

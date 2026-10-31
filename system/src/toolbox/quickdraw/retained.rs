@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 use alloc::{string::String, sync::Arc, vec::Vec};
 
-use mac_abi::{BAD_ARGUMENT, DrawCommand, Point, Rect, Status, WindowId};
+use mac_abi::{BAD_ARGUMENT, DrawCommand, geometry::{Point, Rect}, Status, WindowId};
 
 use super::{Canvas,
             fonts::FontManager,

@@ -2,7 +2,7 @@
 //! threading extensions, distinct from the original cooperative scheduling model.
 #![cfg(target_arch = "riscv64")]
 use mac_toolbox::{Cnid, ProcessId, Rect, System, VolumeId, WindowId,
-                  abi::{ACCESS_DENIED, EventKind},
+                  abi::{ACCESS_DENIED, events::{ACTIVE_FLAG, EventKind}},
                   events::classic::{EVERY_EVENT, Event},
                   memory::Handle,
                   processes::ProcessInfo,
@@ -245,7 +245,7 @@ fn atomic_activation(system: &System<'_>, own: ProcessId, other: ProcessId, fron
                           .map(|event| (!event.is_idle()).then(|| event.into_record()))?
                           .ok_or(Failure::Contract("missing activation edge"))?;
         require(event.window == front.0
-                && (event.modifiers & mac_toolbox::abi::ACTIVE_FLAG != 0) == active,
+                && (event.modifiers & ACTIVE_FLAG != 0) == active,
                 "application activation selected an intermediate window")?;
     }
     require(events.next(mac_toolbox::events::EventMask::from_bits_retain(activate))
@@ -629,7 +629,7 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
                       .map(|event| (!event.is_idle()).then(|| event.into_record()))?
                       .ok_or(Failure::Contract("missing requested window activation"))?;
             require(event.window == selected.0
-                    && event.modifiers & mac_toolbox::abi::ACTIVE_FLAG != 0,
+                    && event.modifiers & ACTIVE_FLAG != 0,
                     "background select activated the previous front window")?;
             require(system.events()
                           .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))
@@ -712,7 +712,7 @@ pub fn observer(system: &System<'_>, mut reject_legacy: impl FnMut(ProcessId) ->
                   .map(|event| (!event.is_idle()).then(|| event.into_record()))?
                   .ok_or(Failure::Contract("missing final exit activation"))?;
         require(final_activation.window == own_front.0
-                && final_activation.modifiers & mac_toolbox::abi::ACTIVE_FLAG != 0,
+                && final_activation.modifiers & ACTIVE_FLAG != 0,
                 "multiwindow exit activated an intermediate window")?;
         require(system.events()
                       .next(mac_toolbox::events::EventMask::from_bits_retain(activation_mask))

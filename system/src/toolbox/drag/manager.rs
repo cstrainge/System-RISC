@@ -4,7 +4,7 @@
 mod classic;
 use alloc::{collections::VecDeque, vec::Vec};
 
-use mac_abi::{drag::*, *};
+use mac_abi::{drag::*, events::{Event, EventKind}, geometry::{Point, Rect}, *};
 use mac_object_table::{domain::ReleasedResource, projected::Store};
 
 use super::super::handles::{InvocationGate, Kind, KindLease, OwnerRef};

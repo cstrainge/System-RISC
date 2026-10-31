@@ -1,6 +1,6 @@
 //! Shared desktop integration. Pointer feedback never invalidates scene content.
 #![forbid(unsafe_code)]
-use mac_abi::{drag::*, *};
+use mac_abi::{drag::*, *, geometry::{Point, Rect}};
 
 use crate::toolbox::{events::input::Input,
                      windows::{WindowId, WindowPart}};

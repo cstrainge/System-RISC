@@ -2,7 +2,7 @@
 #![cfg(not(target_arch = "riscv64"))]
 #[path = "support/display.rs"]
 mod display;
-use mac_toolbox::{Event, System, abi::EventKind};
+use mac_toolbox::{Event, System, abi::events::{Event as Record, EventKind}};
 #[path = "conformance/menu_sizing.rs"]
 mod menu_sizing;
 #[test]
@@ -125,7 +125,7 @@ fn original_menu_records_install_and_mutate_through_public_sdk()
         api.set_item_enabled(mac_toolbox::MenuId(257), 1, true).unwrap();
         api.set_item_checked(mac_toolbox::MenuId(257), 1, true).unwrap();
         assert!(api.item(mac_toolbox::MenuId(257), 1).unwrap().checked);
-        let selection = api.selection(&mac_abi::Event { kind: EventKind::MenuCommand,
+        let selection = api.selection(&Record { kind: EventKind::MenuCommand,
                                                         message: (257u32 << 16) | 1,
                                                         ..Default::default() }.into())
                            .unwrap()
@@ -317,7 +317,7 @@ fn queued_command_keys_resolve_using_current_resource_menu_policy()
     let item =
         menu["items"].as_array().unwrap().iter().find(|i| i["key"].as_u64().unwrap() != 0).unwrap();
     let index = item["index"].as_u64().unwrap() as u16;
-    let event = mac_abi::Event { kind: EventKind::KeyDown,
+    let event = Record { kind: EventKind::KeyDown,
                                  message: item["key"].as_u64().unwrap() as u32,
                                  modifiers: mac_toolbox::events::classic::CMD_KEY,
                                  ..Default::default() };
@@ -332,11 +332,11 @@ fn queued_command_keys_resolve_using_current_resource_menu_policy()
         menus.set_item_enabled(mac_toolbox::MenuId(257), index, true).unwrap();
         let selected = menus.selection(&event.into()).unwrap().unwrap();
         assert_eq!((selected.menu_id, selected.item), (mac_toolbox::MenuId(257), index));
-        assert_eq!(menus.selection(&mac_abi::Event { kind: EventKind::KeyUp,
+        assert_eq!(menus.selection(&Record { kind: EventKind::KeyUp,
                                                      ..event }.into())
                         .unwrap(),
                    None);
-        assert_eq!(menus.selection(&mac_abi::Event { modifiers: 0,
+        assert_eq!(menus.selection(&Record { modifiers: 0,
                                                      ..event }.into())
                         .unwrap(),
                    None);

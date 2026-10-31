@@ -1,6 +1,6 @@
 //! Frontbuffer overlays. The retained scene is always read-only.
 #![forbid(unsafe_code)]
-use mac_abi::{Point, Rect, quickdraw::MonoCursor};
+use mac_abi::{geometry::{Point, Rect}, quickdraw::MonoCursor};
 
 use super::feedback::Feedback;
 

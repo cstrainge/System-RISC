@@ -1,5 +1,5 @@
 //! Shared resident capture transitions. CDEFs retain all hit/thumb geometry.
-use mac_abi::{DefinitionEntry, Point, Status, TrapGate, controls::*};
+use mac_abi::{DefinitionEntry, geometry::{Point}, Status, TrapGate, controls::*};
 
 #[derive(Clone, Copy)]
 pub(super) struct Tracking

@@ -1,6 +1,6 @@
 //! Native Control Manager requests. CDEF resources own control geometry and pixels.
 pub mod reflow;
-use crate::Rect;
+use crate::geometry::Rect;
 pub const DRAW_SCROLLBAR: u32 = 0;
 pub const HIT_SCROLLBAR: u32 = 1;
 pub const TRACK_SCROLLBAR: u32 = 2;
@@ -121,8 +121,8 @@ pub struct ControlCall
     pub window:    u64,
     pub scrollbar: ScrollbarState,
     /// Hit-test point, in window-local coordinates. Drawing ignores it.
-    pub point:     crate::Point,
-    pub anchor:    crate::Point,
+    pub point:     crate::geometry::Point,
+    pub anchor:    crate::geometry::Point,
     pub result:    i32,
     pub standard:  crate::definitions::ControlDefinitionState,
     pub procedure: i16,

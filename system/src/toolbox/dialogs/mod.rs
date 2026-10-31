@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 use alloc::{string::String, vec::Vec};
 
-use mac_abi::{dialogs::*, *};
+use mac_abi::{dialogs::*, *, geometry::Rect};
 
 use super::resources::manager::Manager;
 #[cfg(target_arch = "riscv64")]

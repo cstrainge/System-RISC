@@ -1,6 +1,7 @@
 use core::{future::Future,
            pin::Pin,
            task::{Context, Poll}};
+use mac_abi::events::{Event, EventKind};
 
 use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -611,7 +612,7 @@ pub enum DragEvent<'a>
 impl<'a> DragEvent<'a>
 {
     #[doc(hidden)]
-    pub fn decode(client: Client<'a>, event: mac_abi::Event) -> Option<Self>
+    pub fn decode(client: Client<'a>, event: Event) -> Option<Self>
     {
         let route = Route { client,
                             id: event.payload as u32 };
@@ -691,7 +692,7 @@ impl DragEvent<'_>
 {
     /// Explicit event transport conversion; ordinary clients use the enum.
     #[doc(hidden)]
-    pub fn as_record(&self, when: u32, modifiers: u16) -> mac_abi::Event
+    pub fn as_record(&self, when: u32, modifiers: u16) -> Event
     {
         let (message, id, window, at) = match self
         {
@@ -739,7 +740,7 @@ impl DragEvent<'_>
             Self::DataReady => (wire::DATA_READY_EVENT, 0, 0, Point::default()),
             Self::CancelRequested => (wire::CANCEL_REQUESTED_EVENT, 0, 0, Point::default())
         };
-        mac_abi::Event { kind: mac_abi::EventKind::OsEvent,
+        Event { kind: EventKind::OsEvent,
                          message,
                          payload: u64::from(id),
                          where_: at,

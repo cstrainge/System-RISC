@@ -4,7 +4,7 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use mac_abi::{controls::*, definitions::ControlDefinitionState, *};
+use mac_abi::{controls::*, definitions::ControlDefinitionState, *, geometry::{Point, Rect}};
 use sr_control_reflow_handling as layout;
 
 use super::tracking::{Action, Tracking};

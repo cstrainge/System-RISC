@@ -1,5 +1,5 @@
 //! Timer-driven menu acknowledgement. MDEF paints only the changed row/title.
-use mac_abi::{Point, Rect, menus::Selection};
+use mac_abi::{geometry::{Point, Rect}, menus::Selection};
 
 use super::{Desktop, Input};
 use crate::toolbox::{events::BTN_STATE, processes::menu::Action, quickdraw::Canvas};

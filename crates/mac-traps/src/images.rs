@@ -1,5 +1,5 @@
 //! Checked image transport; decoding and compositing are resident services.
-use mac_abi::{images::*, *};
+use mac_abi::{images::*, *, geometry::{ Rect, Point }};
 
 use crate::{Client, SurfaceConnection};
 fn reply(status: i64, call: &ImageCall) -> images::Result<ImageInfo>

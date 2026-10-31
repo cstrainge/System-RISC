@@ -2,7 +2,7 @@
 //! this independently loaded resource; System owns state and event routing.
 #![cfg_attr(target_arch = "riscv64", no_std)]
 #![cfg_attr(target_arch = "riscv64", no_main)]
-use mac_abi::{menus::*, *};
+use mac_abi::{menus::*, *, geometry::{Point, Rect}};
 use toolbox_quickdraw::SurfacePort;
 fn text(bytes: &[u8], length: u32) -> Result<&str, Status>
 {

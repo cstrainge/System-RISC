@@ -5,7 +5,7 @@ pub enum Placement
 {
     #[default]
     Keep,
-    At(mac_abi::Point),
+    At(mac_abi::geometry::Point),
     Clear
 }
 #[derive(Clone, Copy, Debug, Default)]
@@ -173,9 +173,9 @@ fn encode(entry: IconMove) -> mac_abi::files::IconMove
 {
     let (placement, point) = match entry.placement
     {
-        Placement::Keep => (0, mac_abi::Point::default()),
+        Placement::Keep => (0, mac_abi::geometry::Point::default()),
         Placement::At(point) => (1, point),
-        Placement::Clear => (2, mac_abi::Point::default())
+        Placement::Clear => (2, mac_abi::geometry::Point::default())
     };
     mac_abi::files::IconMove { cnid: entry.id.0,
                                expected_parent: entry.expected_parent.0,

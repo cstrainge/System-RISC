@@ -1,7 +1,7 @@
 //! One resident ownership tree. Its existing CTRL IDs also define child order,
 //! clipping, hit routing and disposal. Mutations run under the desktop guard;
 //! they never call a CDEF, borrow application memory or allocate after validation.
-use mac_abi::controls::reflow as wire;
+use mac_abi::{controls::reflow as wire, geometry::Rect};
 
 use super::*;
 

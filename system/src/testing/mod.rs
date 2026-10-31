@@ -22,7 +22,7 @@ mod textedit;
 use core::cell::RefCell;
 use std::vec::Vec;
 
-use mac_abi::{traps::*, *};
+use mac_abi::{events::EventKind, traps::*, *};
 
 struct Session
 {

@@ -2,7 +2,7 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::fmt::Write;
 
-use mac_abi::{quickdraw::*, textedit::*, *};
+use mac_abi::{quickdraw::*, textedit::*, *, geometry::{Point, Rect}};
 
 use crate::toolbox::quickdraw::{region::{BooleanOp, Region},
                                 retained::RenderCommand,

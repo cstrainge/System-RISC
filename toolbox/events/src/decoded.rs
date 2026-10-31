@@ -1,5 +1,5 @@
 //! Decoded native events. Classic EventRecords remain in `classic`.
-use mac_abi::{Point, WINDOW_CLOSE_REQUEST, WindowId, events as raw};
+use mac_abi::{geometry::Point, WINDOW_CLOSE_REQUEST, WindowId, events as raw};
 
 macro_rules! flags {
     ($name:ident) => {

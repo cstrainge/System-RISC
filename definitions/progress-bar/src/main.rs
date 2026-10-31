@@ -85,7 +85,7 @@ fn main<'a>(message: Message<'a, Progress>, services: Services<'a>) -> Result<Re
             {
                 return Err(Error::NotSupported);
             }
-            return mac_definition::leaf_reflow(request, creation, mac_definition::reflow::Size::try_from(mac_abi::Dimensions { width: 3, height: 3 }).map_err(|_| Error::BadAbi)?);
+            return mac_definition::leaf_reflow(request, creation, mac_definition::reflow::Size::try_from(mac_abi::geometry::Dimensions { width: 3, height: 3 }).map_err(|_| Error::BadAbi)?);
         }
         Message::Draw { state,
                         mut port } =>

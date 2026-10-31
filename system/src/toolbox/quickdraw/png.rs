@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 
-use mac_abi::{BAD_ARGUMENT, NO_MEMORY, NOT_SUPPORTED, Rect, images::*};
+use mac_abi::{BAD_ARGUMENT, NO_MEMORY, NOT_SUPPORTED, geometry::Rect, images::*};
 
 use super::{Canvas,
             service::{self, Port}};

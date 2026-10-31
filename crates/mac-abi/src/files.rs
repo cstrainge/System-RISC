@@ -69,7 +69,7 @@ pub struct IconMove
     pub parent:          u32,
     /// 0 keeps placement, 1 sets point, 2 clears placement.
     pub placement:       u32,
-    pub point:           crate::Point
+    pub point:           crate::geometry::Point
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -314,18 +314,18 @@ impl CatalogInfo
         u16::from_be_bytes([self.finder_info[8], self.finder_info[9]])
     }
 
-    pub fn icon_location(&self) -> crate::Point
+    pub fn icon_location(&self) -> crate::geometry::Point
     {
-        crate::Point { v: i16::from_be_bytes([self.finder_info[10], self.finder_info[11]]),
-                       h: i16::from_be_bytes([self.finder_info[12], self.finder_info[13]]) }
+        crate::geometry::Point { v: i16::from_be_bytes([self.finder_info[10], self.finder_info[11]]),
+                                 h: i16::from_be_bytes([self.finder_info[12], self.finder_info[13]]) }
     }
 
     /// Raw persisted DInfo.frRect for a directory. This does not imply the
     /// rectangle is initialized, visible, or valid for the current screen.
-    pub fn folder_window_bounds(&self) -> Option<crate::Rect>
+    pub fn folder_window_bounds(&self) -> Option<crate::geometry::Rect>
     {
         self.is_directory()
-            .then(|| crate::Rect::from_be_bytes(self.finder_info[..8].try_into().unwrap()))
+            .then(|| crate::geometry::Rect::from_be_bytes(self.finder_info[..8].try_into().unwrap()))
     }
 
     /// Raw persisted DInfo.frView word. Finder-specific view/flag interpretation
@@ -337,10 +337,10 @@ impl CatalogInfo
     }
 
     /// Raw persisted DXInfo.frScroll, without changing sign or coordinate origin.
-    pub fn folder_scroll(&self) -> Option<crate::Point>
+    pub fn folder_scroll(&self) -> Option<crate::geometry::Point>
     {
         self.is_directory().then(|| {
-                               crate::Point { v: i16::from_be_bytes([self.finder_info[16],
+                               crate::geometry::Point { v: i16::from_be_bytes([self.finder_info[16],
                                                                      self.finder_info[17]]),
                                               h: i16::from_be_bytes([self.finder_info[18],
                                                                      self.finder_info[19]]) }
@@ -524,7 +524,7 @@ pub struct FileTransferSource
     pub expected_parent: u32,
     /// 0 preserve copied placement; 1 place at point; 2 clear placement.
     pub placement:       u32,
-    pub point:           crate::Point,
+    pub point:           crate::geometry::Point,
     pub reserved:        u32
 }
 #[repr(C)]

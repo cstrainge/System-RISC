@@ -1,7 +1,7 @@
 //! System-owned dragging: one RAII source, borrowed offers and drop-only data.
 #![no_std]
 #![forbid(unsafe_code)]
-use mac_abi::{Point, Rect, WindowId, drag as wire};
+use mac_abi::{geometry::{Point, Rect}, WindowId, drag as wire};
 use mac_traps::{Client, Cnid, Error as ToolboxError, TypeCode, VolumeId};
 mod promise;
 mod wake;

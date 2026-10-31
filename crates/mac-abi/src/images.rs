@@ -1,5 +1,5 @@
 //! Bounded resident PNG decoding. Pointers are valid only for the synchronous call.
-use crate::{Rect, Status, Surface, quickdraw::Target};
+use crate::{geometry::Rect, Status, Surface, quickdraw::Target};
 pub const INFO: u32 = 0;
 pub const DRAW: u32 = 1;
 pub const HAS_ALPHA: u16 = 1;

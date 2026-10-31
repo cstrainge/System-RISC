@@ -1,5 +1,5 @@
 //! Checked ABI pointer boundary shared by native and host service gates.
-use mac_abi::{files::FileCall, *};
+use mac_abi::{files::FileCall, geometry::Rect, *};
 /// # Safety
 /// The request is a live, exclusively borrowed trap record of the declared size.
 #[cfg(target_arch = "riscv64")]

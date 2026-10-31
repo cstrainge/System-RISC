@@ -146,8 +146,8 @@ pub struct ItemInfo
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Layout
 {
-    pub title: mac_abi::Rect,
-    pub popup: mac_abi::Rect
+    pub title: mac_abi::geometry::Rect,
+    pub popup: mac_abi::geometry::Rect
 }
 
 #[derive(Clone, Copy)]

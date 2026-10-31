@@ -7,6 +7,7 @@ pub(crate) use resource::ModuleReadError;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod application;
 use alloc::{string::String, vec::Vec};
+use mac_abi::geometry::{Point, Rect};
 
 use mac_object_table::shared::InvocationGate as _;
 

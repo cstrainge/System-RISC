@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 use alloc::{boxed::Box, vec::Vec};
 
-use mac_abi::{menus::*, *};
+use mac_abi::{menus::*, *, geometry::{Point, Rect}};
 use mac_object_table::domain::{CompletionError, DomainId, PoolError, ReleasedResource};
 
 use crate::toolbox::{handles::{KindLease, OwnerRef, Store},

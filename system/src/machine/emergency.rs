@@ -261,8 +261,7 @@ unsafe extern "C" fn run(pointer: *const ()) -> !
         stop(format_args!("SYSTEM_EMERGENCY_PAINT_FAILED: {error}"));
     }
     if let Err(error) = state.cursor.move_to(pixels,
-                                             mac_abi::Point { h: 16,
-                                                              v: 444 })
+                                             mac_abi::geometry::Point { h: 16, v: 444 })
     {
         stop(format_args!("SYSTEM_EMERGENCY_CURSOR_FAILED: {error}"));
     }
@@ -362,7 +361,7 @@ unsafe extern "C" fn run(pointer: *const ()) -> !
 /// Preserve save-under while repainting only a changed terminal button. This
 /// never calls a service, allocates, or touches ordinary compositor state.
 fn paint_damage(screen: &Screen, cursor: &mut Cursor, record: &Record, pixels: &mut [u32],
-                damage: mac_abi::Rect)
+                damage: mac_abi::geometry::Rect)
                 -> Result<(), crate::emergency::GeometryError>
 {
     let point = cursor.position();

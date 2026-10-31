@@ -1,6 +1,6 @@
 //! Real userspace work deliberately stops pumping events, with and without traps.
 #![cfg(target_arch = "riscv64")]
-use mac_toolbox::{abi::EventKind, events::classic::EVERY_EVENT,
+use mac_toolbox::{abi::events::EventKind, events::classic::EVERY_EVENT,
                   quickdraw::cursors::StandardCursor, *};
 
 fn checkpoint(system: &System<'_>, window: WindowId, marker: &str)

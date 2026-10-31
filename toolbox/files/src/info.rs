@@ -1,5 +1,5 @@
 //! Decoded native metadata. None of these snapshots is a trap request record.
-use mac_abi::{Point, Rect, files as wire};
+use mac_abi::{geometry::{Point, Rect}, files as wire};
 use mac_traps::{Error, Result, types::InlineText};
 
 use super::{Cnid, Filesystem, Timestamp, TypeCode, VolumeId};

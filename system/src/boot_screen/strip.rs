@@ -9,7 +9,7 @@
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::fmt;
 
-use mac_abi::{Status, *};
+use mac_abi::{Status, *, geometry::Rect};
 
 use crate::toolbox::quickdraw::{Canvas,
                                 icons::{IconError, IconFamily, IconFlags}};

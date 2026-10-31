@@ -255,7 +255,7 @@ fn main<'a>(message: Message<'a, Scrollbar>, services: Services<'a>) -> Result<R
             {
                 return Err(Error::NotSupported);
             }
-            return mac_definition::leaf_reflow(request, creation, mac_definition::reflow::Size::try_from(if creation.width() > creation.height() { mac_abi::Dimensions { width: 30, height: 15 } } else { mac_abi::Dimensions { width: 15, height: 30 } }).map_err(|_| Error::BadAbi)?);
+            return mac_definition::leaf_reflow(request, creation, mac_definition::reflow::Size::try_from(if creation.width() > creation.height() { mac_abi::geometry::Dimensions { width: 30, height: 15 } } else { mac_abi::geometry::Dimensions { width: 15, height: 30 } }).map_err(|_| Error::BadAbi)?);
         }
         Message::Draw { state,
                         mut port } =>

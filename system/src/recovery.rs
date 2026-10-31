@@ -641,7 +641,7 @@ pub(crate) fn pump()
                             if desktop.windows.window(id).is_some()
                             {
                                 let status = desktop.window(mac_abi::CLOSE_WINDOW,
-                                &mut mac_abi::WindowRequest { id: id.0, bounds: mac_abi::Rect::ZERO,
+                                &mut mac_abi::WindowRequest { id: id.0, bounds: mac_abi::geometry::Rect::ZERO,
                                     title: [0; mac_abi::WINDOW_TITLE_BYTES], title_length: 0,
                                     procedure: 0, minimum_width: 0, minimum_height: 0, reserved: 0 });
                                 if status != mac_abi::OK

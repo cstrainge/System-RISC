@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-use mac_abi::{Point, events::*};
+use mac_abi::{geometry::Point, events::*};
 
 pub struct EventManager
 {

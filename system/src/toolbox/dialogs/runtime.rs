@@ -1,5 +1,6 @@
 //! Desktop adapter; no application callbacks or recursive ECALLs under its guard.
-use mac_abi::{controls::*, dialogs::*, quickdraw::*, *};
+use mac_abi::{controls::*, dialogs::*, events::{ACTIVE_FLAG, Event, EventKind},
+              quickdraw::*, *, geometry::{Point, Rect}};
 
 use crate::toolbox::{dialogs,
                      quickdraw::{fonts_service, icons_service, service}};

@@ -2,7 +2,8 @@
 //! File/provider work is advanced only after dropping the Desktop guard.
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use mac_abi::{controls, quickdraw::*, scrollbox, standard_file::*, *};
+use mac_abi::{controls, events::{CMD_KEY, SHIFT_KEY},
+              quickdraw::*, scrollbox, standard_file::*, *, geometry::{Point, Rect}};
 use mac_object_table::shared::InvocationGate as _;
 use spinning_top::Spinlock;
 

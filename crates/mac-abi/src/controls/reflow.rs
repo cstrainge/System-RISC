@@ -7,7 +7,7 @@
 //! and the paired settings operation uses SizePreferences. Relationship
 //! payloads require the resident ownership transaction and family-specific slot
 //! adapter; their numbers do not authorize raw-handle adoption through a CDEF.
-use crate::Dimensions;
+use crate::geometry::Dimensions;
 
 pub const ASK_SIZE: i16 = 30;
 pub const ASSIGN_RECT: i16 = 31;
@@ -112,7 +112,7 @@ pub struct Payload
     /// Last automatic layout refusal of the owning root; zero after success.
     pub status:        crate::Status,
     pub constraints:   Constraints,
-    pub rect:          crate::Rect,
+    pub rect:          crate::geometry::Rect,
     pub size:          Dimensions,
     pub preferences:   SizePreferences,
     pub measurement:   Measurement,
@@ -255,7 +255,7 @@ pub struct GridItem
 #[repr(C)]
 pub struct GridPaint
 {
-    pub cells: *const crate::Rect,
+    pub cells: *const crate::geometry::Rect,
     pub count: usize
 }
 
@@ -302,7 +302,7 @@ pub struct Scroll
     pub y:        i64,
     pub width:    i64,
     pub height:   i64,
-    pub viewport: crate::Rect,
+    pub viewport: crate::geometry::Rect,
     pub logical:  LogicalRect
 }
 

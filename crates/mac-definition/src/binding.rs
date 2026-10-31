@@ -3,6 +3,7 @@ use core::mem::align_of;
 
 use mac_abi::{controls::{CHANGE_BOUNDS_DEFINITION, ControlChange, VALIDATE_DEFINITION},
               definitions::CDEF,
+              geometry::{Point, Rect},
               *};
 
 use crate::{Error, Message, Result, Services, SurfacePort, families::*};
@@ -198,9 +199,9 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
             // paint. Neither its slice nor the separately borrowed surface escapes.
             let grid = unsafe { &*pointer };
             if grid.cells.is_null()
-               || grid.cells.addr() % align_of::<mac_abi::Rect>() != 0
+               || grid.cells.addr() % align_of::<Rect>() != 0
                || grid.count
-                      .checked_mul(core::mem::size_of::<mac_abi::Rect>())
+                      .checked_mul(core::mem::size_of::<Rect>())
                       .is_none_or(|n| n > isize::MAX as usize)
             {
                 return Err(Error::BadArgument);

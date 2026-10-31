@@ -3,7 +3,7 @@
 
 use alloc::boxed::Box;
 
-use mac_abi::{menus::*, *};
+use mac_abi::{menus::*, *, geometry::{Point, Rect}};
 
 use crate::toolbox::{quickdraw::{Canvas, SurfaceExt},
                      resources::manager::Manager as Resources};

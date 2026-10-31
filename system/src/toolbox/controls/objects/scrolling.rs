@@ -1,6 +1,6 @@
 //! Fixed content scrolling shares the canonical CTRL tree and layout admission.
 //! Only viewport translation changes on a clean scroll; content remains cached.
-use mac_abi::controls::reflow as wire;
+use mac_abi::{controls::reflow as wire, geometry::Rect};
 
 use super::*;
 

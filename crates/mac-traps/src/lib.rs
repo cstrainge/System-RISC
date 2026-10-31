@@ -1,6 +1,6 @@
 //! Small native trap transport. There are no manager implementations in this crate.
 #![no_std]
-use mac_abi::{traps::*, *};
+use mac_abi::{ events::Event, geometry::{ Rect, Point }, traps::*, * };
 
 mod error;
 pub mod types;

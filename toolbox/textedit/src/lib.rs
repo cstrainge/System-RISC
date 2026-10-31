@@ -3,7 +3,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 use mac_abi::textedit::*;
-pub use mac_abi::{Point, Rect, WindowId,
+pub use mac_abi::{geometry::{Point, Rect}, WindowId,
                   quickdraw::FontSelection,
                   textedit::{CursorMovement, EditorId, MAX_BYTES}};
 pub use mac_traps::{Client, Error, Result};

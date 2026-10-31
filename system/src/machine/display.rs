@@ -145,12 +145,12 @@ pub fn ticks() -> u64
 pub fn present(back: &[u32])
 {
     present_rects(back,
-                  [mac_abi::Rect::new(0, 0, WIDTH as i16, HEIGHT as i16)],
+                  [mac_abi::geometry::Rect::new(0, 0, WIDTH as i16, HEIGHT as i16)],
                   Default::default());
 }
 
 /// Copy real scene damage and apply frontbuffer-only cursor/drag transitions.
-pub(crate) fn present_rects(back: &[u32], rects: impl IntoIterator<Item = mac_abi::Rect>,
+pub(crate) fn present_rects(back: &[u32], rects: impl IntoIterator<Item = mac_abi::geometry::Rect>,
                             overlays: crate::toolbox::quickdraw::presentation::Overlays<'_>)
 {
     use crate::toolbox::quickdraw::presentation::{PresentEvent, present_frame};

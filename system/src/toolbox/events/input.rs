@@ -1,6 +1,6 @@
 //! Virtio evdev packets become hardware-independent input, then classic events.
 #![forbid(unsafe_code)]
-use mac_abi::{Point, events::*};
+use mac_abi::{geometry::Point, events::*};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Input

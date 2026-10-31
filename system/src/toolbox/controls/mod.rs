@@ -5,7 +5,7 @@ mod reflow;
 use alloc::sync::Arc;
 
 pub use mac_abi::definitions::{CDEF, ControlDefinitionState};
-use mac_abi::{controls::*, *};
+use mac_abi::{controls::*, geometry::Rect, *};
 
 use crate::toolbox::quickdraw::{Canvas, SurfaceExt};
 enum State

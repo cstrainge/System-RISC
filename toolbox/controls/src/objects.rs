@@ -1,5 +1,6 @@
 //! Owned Control Manager objects. Tracking and pressed pixels belong to System.
 use mac_abi::{controls::*,
+              geometry::{Point, Rect},
               events::{BTN_STATE, EventCall, INPUT_STATE},
               *};
 

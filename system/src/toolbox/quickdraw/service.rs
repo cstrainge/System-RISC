@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 
-use mac_abi::{quickdraw as abi, *};
+use mac_abi::{quickdraw as abi, *, geometry::{Point, Rect}};
 
 use super::{Canvas,
             port::{self, Shape, Verb},
