@@ -11,7 +11,7 @@ pub mod address_wait;
 mod error;
 pub mod types;
 pub mod coordinates;
-pub use error::Error;
+pub use error::{Error, ServiceRequirementCause, ServiceRequirementFailure};
 pub use types::{Cnid, DocumentBatchId, FileTransferId, MenuId, ProcessId, ThreadId, TypeCode,
                 VolumeId};
 pub type Result<T> = core::result::Result<T, Error>;
@@ -1033,7 +1033,25 @@ impl Client<'_>
 
     pub fn process(self, call: &mut mac_abi::processes::ProcessCall) -> Result<()>
     {
-        status(self.invoke(PROCESS, call))
+        call.requirement_class = [0; 4];
+        call.requirement_version = 0;
+        let result = self.invoke(PROCESS, call);
+        if call.requirement_class != [0; 4] || call.requirement_version != 0
+        {
+            if result >= 0
+               || call.operation != mac_abi::processes::LAUNCH
+               || call.requirement_class == [0; 4]
+               || call.requirement_version == 0
+            {
+                return Err(Error::BadAbi);
+            }
+            let result = Status::try_from(result).map_err(|_| Error::BadAbi)?;
+            return Err(Error::ServiceRequirement(ServiceRequirementFailure {
+                class: call.requirement_class.into(), version: call.requirement_version,
+                cause: ServiceRequirementCause::from_status(result)
+            }));
+        }
+        status(result)
     }
 }
 

@@ -36,11 +36,9 @@ currently targets RV64; unsupported application targets fail compilation rather
 than acquiring a host allocator or replacement service gate. Application source
 needs no raw entry pointer, unsafe allocator implementation or panic handler.
 
-## Startup and ownership
-
 ## Required provider services
 
-Native APPL build manifests can declare exact provider requirements separately
+Native application build manifests (including Finder) can declare exact provider requirements separately
 from NABI's executable/ABI description:
 
 ```json
@@ -63,14 +61,43 @@ NREQ under another resource ID are errors. Build manifests must use the declared
 list rather than supplying raw NREQ resources. Lossless resource archives still
 preserve their original bytes, including malformed metadata.
 
-This format and host inspection are staged infrastructure. The resident launch
-gate is not implemented yet: no installed application currently relies on NREQ
-for admission, and it does not establish std entropy readiness. Normal launch,
-initial Finder and copy/restart must eventually validate the same requirements
-and retain genuine provider/dependency ownership through author publication.
-Provider callbacks or readiness waits must occur outside Desktop/image/manager
-guards. A decoded record or interface lookup is not a lease; runtime requests
-must still handle provider loss after launch.
+## Process-scoped provider admission
+
+Normal native launch, initial Finder and replacement Finder decode the same NREQ declarations before author entry. Selection and dependency publication happen in one provider-registry turn, binding an exact interface incarnation to the genuine Process TLRT scope. Repeated admission reuses that exact binding or refuses it; it never selects another provider after withdrawal. Dependencies are charged to the original Process Kernel account.
+
+The TLRT scope belongs to the actual runtime Root, not its long-lived directory selector. Real runtime use keeps it open; closing author admission alone does not acknowledge it. DDEP retains a scope lease without retaining Root, avoiding an account-close cycle. Cleanup keeps the unique dependency ticket while the scope remains open, and actual closure/removal wakes both Process retirement and dependent module recovery. Prepared-root publication binds its reservation in the canonical owner-ledger turn and returns redundant pins for disposal after manager guards.
+
+Provider selection establishes registration availability and exact-version agreement. It does not establish hardware readiness, entropy availability, successful future requests or arbitrary fault containment. Provider readiness callbacks must execute outside registry, image and Desktop guards and retain the genuine runtime admission pin and owned request while pending. That asynchronous launch coordinator remains separate work. No installed application currently declares NREQ.
+
+Direct Process launch refusals carry the required class/version through ProcessCall and the public typed ServiceRequirement error. Finder obtains its explanatory template from resources. Existing numeric status values and development ABI version1 remain; the changed record fingerprint requires rebuilding every client. Other Open/document transport surfaces do not yet promise the same structured requirement payload.
+
+### Bounded native observations — 2026-11-01
+
+The optimized release/LTO RV64 System resource
+`4fdee4dda1cb59b0f4c59a7f7e9c25e121e773cb7b2c053862f3aceeeb1cd5ff`
+with ROM `a85d5a5ce9b2de9c267493d87836aac580c8283de075ce6da90c7bb1ec324b60`
+ran in private 8 GiB, four-CPU QEMU guests with event/TextEdit tracing disabled.
+Real packaged no_std Thread Probe declared POWR1 and observed one TLRT root and
+one scoped DDEP through the public ledger surface, then exercised its existing
+child/TLS/heap/wait/join workload and actual THRD/Process/account closure.
+Separate partial POWR1 then MISS1 and wrong-version POWR2 packages each refused
+twice before author entry, reclaimed the unstarted Process, displayed the required
+class/version in the real Finder alert, and allowed dismissal/retry and input.
+
+A real Finder-role fixture declaring POWR1 completed initial entry and two SDK
+Abort/replacement cycles. Old scopes retained their DDEP cleanup tickets while
+threads were still alive, then actual THRD and Process/account closure completed.
+The replacement and independent survivor accepted input. This exercises the
+replacement coordinator, not production Finder OOM restart or complete report
+preservation under exhaustion. Source and base media stayed fixed during each
+capture; owned guests exited/reaped and cloned media were removed. An initial
+host collector failed on interleaved serial text despite the native refusal and
+reclamation; the failure is retained separately from the corrected capture.
+
+These are finite production-path scenarios. They do not qualify provider
+withdrawal races, asynchronous READY completion, resource exhaustion, all Open
+transports, race absence, SMP safety or latency. Guest assertions and logging
+perturb execution; no timing claim follows from these observations.
 
 ## Heap admission
 

@@ -13,8 +13,9 @@ pub use mac_abi::{ApplicationEntry, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_
 pub use mac_traps::address_wait;
 /// Owned, bounded UTF-8 text returned by Toolbox snapshots.
 pub use mac_traps::types::InlineText;
-pub use mac_traps::{Client, Cnid, Error, MenuId, ProcessId, Result as ToolboxResult, ThreadId,
-                    TypeCode, VolumeId,
+pub use mac_traps::{Client, Cnid, Error, MenuId, ProcessId, Result as ToolboxResult,
+                    ServiceRequirementCause, ServiceRequirementFailure, ThreadId, TypeCode,
+                    VolumeId,
                     coordinates::{PointerPosition, ScreenPoint, WindowPoint},
                     native_threads,
                     types::{ResourceKey, ResourceScope}};

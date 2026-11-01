@@ -9,6 +9,52 @@ use mac_toolbox::{Client, Error, ProcessId, System, ThreadId, ToolboxResult,
                   abi::{native_threads as thread, tls},
                   native_threads};
 
+#[path = "../../../support/inspection_read.rs"]
+mod inspection_read;
+
+fn inspect_runtime_dependency(system: &System<'_>) -> Result<(), Error>
+{
+    let declared = match system.resources()
+                               .application()
+                               .get(mac_toolbox::resources::ResourceKey { kind: (*b"NREQ").into(),
+                                                                          id:   0 })
+    {
+        Ok(_) => true,
+        Err(Error::NotFound) => false,
+        Err(cause) => return Err(cause)
+    };
+    // Before child/transfer work: observe the real public ledger without
+    // introducing a resident hook or serializing the subsequent workload.
+    let dependencies = inspection_read::own(system, |ledger| {
+        let mut roots = 0;
+        let mut dependencies = 0;
+        for index in 0..ledger.len()
+        {
+            let pool = ledger.at(index).map_err(|cause| cause.cause)?;
+            if pool.kind == *b"TLRT"
+            {
+                roots += pool.live;
+            }
+            if pool.kind == *b"DDEP"
+            {
+                assert_eq!(pool.live, pool.scoped_children);
+                assert_eq!(pool.pending, 0);
+                dependencies += pool.live;
+            }
+        }
+        assert_eq!(roots, 1, "one canonical process runtime root");
+        Ok(dependencies)
+    })?;
+    assert_eq!(dependencies,
+               u64::from(declared),
+               "single declared provider must have one real scoped claim");
+    let mut text = crate::LogBuffer::new();
+    writeln!(text,
+             "NATIVE_RUNTIME_DEPENDENCIES declared={} live={dependencies}",
+             u8::from(declared)).unwrap();
+    system.log(text.text())
+}
+
 const LIMIT: usize = 32;
 const ITERATIONS: u32 = 256;
 static INITIALIZED_GATE: AtomicU32 = AtomicU32::new(7);
@@ -178,6 +224,7 @@ unsafe extern "C" fn entry(data: *mut u8)
 
 pub fn run(system: &System<'static>) -> ToolboxResult<()>
 {
+    inspect_runtime_dependency(system)?;
     let client = system.client();
     let process = system.processes().current()?;
     let main = client.current_native_thread().map_err(|e| e.cause())?;

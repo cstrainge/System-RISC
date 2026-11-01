@@ -1218,9 +1218,13 @@ pub(crate) fn pump_jobs()
     retire_request_payload();
     recovery::pump();
     if DEPENDENCIES_CHANGED.swap(false, core::sync::atomic::Ordering::AcqRel)
-       && RUNTIME.with(|runtime| runtime.registry.reap_closed_dependencies()).is_err()
     {
-        DEPENDENCIES_CHANGED.store(true, core::sync::atomic::Ordering::Release);
+        match RUNTIME.with(|runtime| runtime.registry.reap_closed_dependencies())
+        {
+            Ok(true) => recovery::changed(),
+            Ok(false) => (),
+            Err(_) => DEPENDENCIES_CHANGED.store(true, core::sync::atomic::Ordering::Release)
+        }
     }
 
     if !JOBS.has_ready()
@@ -1457,4 +1461,83 @@ pub(crate) fn release_request(ticket: mac_object_table::domain::ReleasedResource
     use crate::toolbox::handles::cleanup::Failure;
     RUNTIME.with_owned(ticket, |ticket, runtime| runtime.registry.release_request(ticket, storage))
            .map_err(|(cause, ticket)| Failure::request_registry_unavailable(ticket, cause))?
+}
+
+/// Retains the original cleanup ticket if the registry is occupied. Process
+/// cleanup enters through Desktop, not a fabricated module Registry context.
+pub(crate) fn release_dependency(ticket: mac_object_table::domain::ReleasedResource, storage: bool)
+                                 -> Result<(), crate::toolbox::handles::cleanup::Failure>
+{
+    use crate::toolbox::handles::cleanup::Failure;
+    RUNTIME.with_owned(ticket, |ticket, runtime| {
+               runtime.registry.release_dependency(ticket, storage)
+           })
+           .map_err(|(_, ticket)| {
+               Failure::context_unavailable(ticket, "driver dependency registry")
+           })?
+}
+
+#[derive(Debug)]
+pub(crate) enum ProcessProviderError
+{
+    Missing,
+    Registry(super::registry::Error),
+    Access(crate::state::AccessError)
+}
+impl ProcessProviderError
+{
+    pub(crate) fn status(&self) -> Status
+    {
+        match self
+        {
+            Self::Missing => NOT_FOUND,
+            Self::Registry(cause) => status(*cause),
+            Self::Access(cause) => cause.status()
+        }
+    }
+}
+impl core::fmt::Display for ProcessProviderError
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Missing =>
+            {
+                out.write_str("no available provider is registered for the required service")
+            }
+            Self::Registry(cause) => cause.fmt(out),
+            Self::Access(cause) => write!(out, "provider registry is unavailable: {cause:?}")
+        }
+    }
+}
+
+/// Selection and the exact canonical dependency publication share one registry
+/// turn. Readiness callbacks must use this returned interface after the guard ends.
+pub(crate) fn admit_process_provider(owner: &crate::toolbox::handles::OwnerRef,
+                                     allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+                                     scope: &mac_object_table::scope::Lease<crate::toolbox::handles::InvocationGate>,
+                                     class: ClassId, version: u32)
+                                     -> Result<u64, ProcessProviderError>
+{
+    RUNTIME.with(|runtime| {
+               let interface = match runtime.registry
+                                            .process_provider(scope, class, version)
+                                            .map_err(ProcessProviderError::Registry)?
+               {
+                   Some(interface) => interface,
+                   None =>
+                   {
+                       runtime.registry
+                              .select(class, version, 0)
+                              .map_err(ProcessProviderError::Registry)?
+                              .ok_or(ProcessProviderError::Missing)?
+                   }
+               };
+               runtime.registry
+                      .pin_process_provider(owner, allocation, scope, interface, class, version)
+                      .map_err(ProcessProviderError::Registry)?;
+               Ok(interface)
+           })
+           .map_err(ProcessProviderError::Access)?
 }

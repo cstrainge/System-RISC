@@ -623,6 +623,8 @@ impl Manager
 /// across storage reads, provider callbacks or scheduler waits.
 pub(crate) fn request(call: &mut ProcessCall) -> Status
 {
+    call.requirement_class = [0; 4];
+    call.requirement_version = 0;
     let result = (|| {
         if call.operation != LAUNCH
         {
@@ -648,13 +650,104 @@ pub(crate) fn request(call: &mut ProcessCall) -> Status
     result.unwrap_or_else(|error| error)
 }
 
-/// Both ordinary Open and document delivery pass through this coordinator after
-/// their resource-fork read finishes. No Desktop/ledger/store guard spans root
-/// preparation, publication, disposal, or destruction of its temporary owners.
+#[derive(Debug)]
+pub(crate) enum ServiceAdmissionFailure
+{
+    Format(mac_formats::requirements::Error),
+    Runtime(crate::toolbox::native_threads::Error),
+    Provider
+    {
+        requirement: mac_formats::requirements::Requirement,
+        cause:       crate::drivers::ProcessProviderError
+    }
+}
+impl core::fmt::Display for ServiceAdmissionFailure
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Format(cause) => write!(out, "invalid provider requirements: {cause}"),
+            Self::Runtime(cause) => write!(out, "provider runtime scope: {cause}"),
+            Self::Provider { requirement,
+                             cause } =>
+            {
+                write!(out,
+                       "required service {:?} version {}: {cause}",
+                       requirement.class, requirement.version)
+            }
+        }
+    }
+}
+impl ServiceAdmissionFailure
+{
+    pub(crate) fn status(&self) -> Status
+    {
+        match self
+        {
+            Self::Format(_) => CORRUPT_DATA,
+            Self::Runtime(cause) => cause.status(),
+            Self::Provider { cause,
+                             .. } => cause.status()
+        }
+    }
+
+    fn reply(&self, call: &mut ProcessCall)
+    {
+        if let Self::Provider { requirement,
+                                .. } = self
+        {
+            call.requirement_class = requirement.class.0;
+            call.requirement_version = requirement.version;
+        }
+    }
+}
+
+/// Validate declarations and retain exact live registrations in the actual
+/// runtime scope. Lifetime retention does not promise permanent readiness.
+pub(crate) fn admit_required_services(resources: &[mac_formats::resource::Resource],
+                                      owner: &crate::toolbox::handles::OwnerRef,
+                                      allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+                                      tls: &crate::toolbox::native_threads::RootBinding)
+                                      -> Result<(), ServiceAdmissionFailure>
+{
+    let requirements =
+        mac_formats::requirements::Requirements::from_resources(resources).map_err(|cause| {
+            serial!("PROCESS_REQUIREMENTS_REFUSED app={} {cause}", owner.owner().incarnation());
+            ServiceAdmissionFailure::Format(cause)
+        })?;
+    if requirements.iter().len() == 0
+    {
+        return Ok(());
+    }
+    let scope = tls.service_scope(owner).map_err(ServiceAdmissionFailure::Runtime)?;
+    for requirement in requirements.iter()
+    {
+        crate::drivers::admit_process_provider(owner,
+                                               allocation.clone(),
+                                               &scope,
+                                               requirement.class,
+                                               requirement.version).map_err(|cause| {
+            serial!("PROCESS_SERVICE_REFUSED app={} class={:?} version={} status={}; {cause}",
+                    owner.owner().incarnation(),
+                    requirement.class,
+                    requirement.version,
+                    cause.status());
+            ServiceAdmissionFailure::Provider { requirement,
+                                                cause }
+        })?;
+    }
+    Ok(())
+}
+
+/// Ordinary Open and document delivery share this genuine launch coordinator.
+/// No Desktop guard spans root preparation or provider admission.
 pub(crate) fn launch_application(call: &mut ProcessCall,
                                  loaded: crate::toolbox::files::application::Loaded)
                                  -> Result<(), Status>
 {
+    call.requirement_class = [0; 4];
+    call.requirement_version = 0;
     crate::context::without_recovery(|| {
         let admission = crate::kernel::with_desktop(|desktop| {
                             desktop.reserve_application(call, loaded.catalog.name())
@@ -692,6 +785,15 @@ pub(crate) fn launch_application(call: &mut ProcessCall,
                     failure.prepared.dispose();
                     status
                 })?;
+            admit_required_services(&loaded.resources,
+                                    admission.owner(),
+                                    admission.allocation(),
+                                    &tls).map_err(|cause| {
+                                             serial!("PROCESS_ADMISSION_REFUSED app={} {cause}",
+                                                     admission.id());
+                                             cause.reply(call);
+                                             cause.status()
+                                         })?;
             crate::kernel::with_desktop(|desktop| {
                 desktop.processes.bind_heap(admission.owner(), heap)?;
                 desktop.processes.bind_tls(admission.owner(), tls)?;

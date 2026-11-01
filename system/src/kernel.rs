@@ -103,6 +103,20 @@ pub(crate) fn copy_application(owner: &crate::toolbox::handles::OwnerRef,
     admit_shared_image(owner, source).map_err(application_image_status)
 }
 
+/// Clone immutable package ownership under IMAGES, then admit dependencies
+/// without retaining its guard across registry or future provider calls.
+pub(crate) fn admit_application_services(owner: &crate::toolbox::handles::OwnerRef,
+                                         allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+                                         tls: &crate::toolbox::native_threads::RootBinding,
+                                         image: crate::images::Binding)
+                                         -> Result<(), Status>
+{
+    let source = IMAGES.with(|images| images.read(image).map(|read| read.shared_source()))
+                       .map_err(AccessError::status)??;
+    crate::toolbox::processes::admit_required_services(&source.resources, owner, allocation, tls)
+        .map_err(|cause| cause.status())
+}
+
 fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
                       source: alloc::sync::Arc<AppImage>)
                       -> Result<LoadedImage, ApplicationImageError>
@@ -876,6 +890,19 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     let finder_owner = processes.ledger(crate::context::finder_app().0).map_err(|_| {
         mac_formats::Error::Malformed("Finder bootstrap owner is unavailable")
     })?;
+    let finder_tls =
+        processes.tls(crate::context::finder_app().0).map_err(|status| {
+                                                          recovery_boot_error("Finder runtime \
+                                                                               dependency scope \
+                                                                               unavailable",
+                                                                              status)
+                                                      })?;
+    let finder_allocation = processes.allocation(crate::context::finder_app().0)
+                                     .map_err(|status| {
+                                         recovery_boot_error("Finder dependency account \
+                                                              unavailable",
+                                                             status)
+                                     })?;
     let fonts =
         crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
             crate::toolbox::quickdraw::fonts::FontManager::take_resources(&mut system)
@@ -937,15 +964,19 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     // stock before any installed module initializer can consume that heap.
     // BootScreen retains its Control identity without borrowing the manager;
     // move that manager once and keep the welcome panel until publication.
-    let mut runtime = crate::toolbox::runtime::Desktop::new(definitions, processes, finder_owner,
+    let mut runtime = crate::toolbox::runtime::Desktop::new(definitions,
+                                                            processes,
+                                                            finder_owner.clone(),
                                                             controls).map_err(|cause| {
-                          match cause
-                          {
-                              crate::toolbox::runtime::AdmissionError::Service(status) =>
-                                  recovery_boot_error("resident Desktop admission failed", status).into(),
-                              crate::toolbox::runtime::AdmissionError::Definition(cause) => cause
-                          }
-                      })?;
+                                                                         match cause
+            {
+                crate::toolbox::runtime::AdmissionError::Service(status) =>
+                {
+                    recovery_boot_error("resident Desktop admission failed", status).into()
+                }
+                crate::toolbox::runtime::AdmissionError::Definition(cause) => cause
+            }
+                                                                     })?;
     runtime.prepare_recovery_storage().map_err(|cause| {
                                            match cause
                                            {
@@ -989,6 +1020,15 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
             _ => mac_formats::Error::Malformed("module discovery failed; see recorded status")
         }
                                               })?;
+    admit_application_services(&finder_owner,
+                               finder_allocation,
+                               &finder_tls,
+                               finder_loaded.binding()).map_err(|status| {
+                                                           recovery_boot_error("Finder required \
+                                                                                provider admission \
+                                                                                refused",
+                                                                               status)
+                                                       })?;
     if let Err(status) = crate::toolbox::files::mount_startup_exports()
     {
         serial!("HOST_VOLUME_DISCOVERY_FAILED status={}", status);

@@ -195,17 +195,63 @@ pub struct PublishFailure<P, T>
     pub permit: P,
     pub value:  T
 }
+/// Refused scoped-root publication retains all original, unpublished owners.
+/// Retry with this reservation, or dispose the failure outside manager guards.
+pub struct RootPublicationFailure<T, G: InvocationGate>
+{
+    pub cause:       PreparedError,
+    pub permit:      PublicationPermit<G>,
+    pub reservation: crate::scope::Reservation<G>,
+    pub value:       T
+}
+
+// Both ordinary and scoped publication use the same canonical birth. This
+// private distinction only supplies root validation/binding; it cannot allocate
+// or execute an author callback after the ledger has accepted the object.
+trait PublicationRoot<G: InvocationGate>
+{
+    fn validate(&self, owner: DomainId, kind: KindCode) -> Result<(), PoolError>;
+    fn bind(self, key: ResourceKey) -> (Option<crate::scope::Owner<G>>, Option<OwnerRef<G>>);
+}
+impl<G: InvocationGate> PublicationRoot<G> for ()
+{
+    fn validate(&self, _: DomainId, _: KindCode) -> Result<(), PoolError>
+    {
+        Ok(())
+    }
+
+    fn bind(self, _: ResourceKey) -> (Option<crate::scope::Owner<G>>, Option<OwnerRef<G>>)
+    {
+        (None, None)
+    }
+}
+impl<G: InvocationGate> PublicationRoot<G> for crate::scope::Reservation<G>
+{
+    fn validate(&self, owner: DomainId, kind: KindCode) -> Result<(), PoolError>
+    {
+        self.validate_for(owner, kind)
+    }
+
+    fn bind(self, key: ResourceKey) -> (Option<crate::scope::Owner<G>>, Option<OwnerRef<G>>)
+    {
+        let (root, owner) = self.bind_prepared(key);
+        (Some(root), Some(owner))
+    }
+}
+
 /// Spent permit/provider pins; dispose only after the publication guard ends.
 #[must_use]
 pub struct RetiredPublication<G: InvocationGate>
 {
-    permit: PublicationPermit<G>
+    permit:     PublicationPermit<G>,
+    root_owner: Option<OwnerRef<G>>
 }
 impl<G: InvocationGate> RetiredPublication<G>
 {
     pub fn dispose(self)
     {
         drop(self.permit);
+        drop(self.root_owner);
     }
 }
 
@@ -586,12 +632,45 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
     }
 
     pub fn publish_prepared(
-        &mut self, mut permit: PublicationPermit<G>, value: T)
+        &mut self, permit: PublicationPermit<G>, value: T)
         -> Result<(Publication, RetiredPublication<G>), PublishFailure<PublicationPermit<G>, T>>
+    {
+        self.publish_prepared_with_root(permit, (), value).map_err(|failure| {
+                                                              let PublishFailure { cause,
+                                                                                   permit:
+                                                                                       (permit, ()),
+                                                                                   value } =
+                                                                  failure;
+                                                              PublishFailure { cause,
+                                                                               permit,
+                                                                               value }
+                                                          })
+    }
+
+    /// Publish an already-prepared canonical root and bind its original scope
+    /// in the same owner-ledger turn. No allocation follows canonical birth.
+    /// Every refusal returns the original unbound reservation, permit and value;
+    /// dispose either failure or retired publication outside manager guards.
+    pub fn publish_prepared_root(
+        &mut self, permit: PublicationPermit<G>, reservation: crate::scope::Reservation<G>,
+        value: T)
+        -> Result<(Publication, RetiredPublication<G>), RootPublicationFailure<T, G>>
+    {
+        self.publish_prepared_with_root(permit, reservation, value).map_err(|failure| {
+            let PublishFailure { cause, permit: (permit, reservation), value } = failure;
+            RootPublicationFailure { cause, permit, reservation, value }
+        })
+    }
+
+    fn publish_prepared_with_root<R: PublicationRoot<G>>(
+        &mut self, mut permit: PublicationPermit<G>, root: R, value: T)
+        -> Result<(Publication, RetiredPublication<G>),
+                  PublishFailure<(PublicationPermit<G>, R), T>>
     {
         // Observe every Store-side refusal while the original payload remains
         // owned separately. Only canonical admission below can consume it.
         let checked: Result<(usize, usize), PreparedError> = (|| {
+            root.validate(permit.claim.owner.owner(), self.kind)?;
             let incarnation = self.incarnation.as_ref().ok_or(PoolError::InvalidGrowth)?;
             if !incarnation.live()
             {
@@ -638,7 +717,7 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
             Err(cause) =>
             {
                 return Err(PublishFailure { cause,
-                                            permit,
+                                            permit: (permit, root),
                                             value });
             }
         };
@@ -646,7 +725,7 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         else
         {
             return Err(PublishFailure { cause: PoolError::InvalidGrowth.into(),
-                                        permit,
+                                        permit: (permit, root),
                                         value });
         };
         // The ledger turn returns the SAME payload and completion reserve on
@@ -656,32 +735,33 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                                              match index.allocate_reserved_value(self.kind, slot,
                                                                                  None)
                                              {
-                                                 Err(cause) => Err((cause, value, reserve)),
+                                                 Err(cause) => Err((cause, value, reserve, root)),
                                                  Ok(key) =>
                                                  {
+                                                     let (root, root_owner) = root.bind(key);
                                                      let entry = Entry { id: permit.id,
                                                                          key,
                                                                          value,
                                                                          reserve,
                                                                          reservation: None,
-                                                                         root: None,
+                                                                         root,
                                                                          registration_use: ManuallyDrop::new(permit.usage.take()) };
                                                      self.owners[at].slots[slot] = Some(entry);
                                                      self.ids.insert(permit.id, key);
                                                      self.owners[at].stored += 1;
                                                      index.unreserve_value_slot(self.kind, slot);
-                                                     Ok(key)
+                                                     Ok((key, root_owner))
                                                  }
                                              }
                                          });
-        let key = match admitted
+        let (key, root_owner) = match admitted
         {
-            Ok(key) => key,
-            Err((cause, value, reserve)) =>
+            Ok(result) => result,
+            Err((cause, value, reserve, root)) =>
             {
                 permit.reserve = Some(reserve);
                 return Err(PublishFailure { cause: cause.into(),
-                                            permit,
+                                            permit: (permit, root),
                                             value });
             }
         };
@@ -690,7 +770,9 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         permit.incarnation.release(&permit.claim);
         let publication = Publication { completion: CompletionKey { id: permit.id,
                                                                     key } };
-        Ok((publication, RetiredPublication { permit }))
+        Ok((publication,
+            RetiredPublication { permit,
+                                 root_owner }))
     }
 }
 

@@ -204,8 +204,8 @@ impl core::fmt::Display for Cause
                                                 dependent } =>
             {
                 write!(f,
-                       "module {dependent} still has an admitted backing operation using provider \
-                        {provider}; wait for actual close or cancellation acknowledgement; \
+                       "dependent domain {dependent} still has an active resource scope using \
+                        provider {provider}; wait for actual runtime or resource closure; \
                         dependency and original cleanup ticket remain retained")
             }
             Self::Facility(error) => error.fmt(f),

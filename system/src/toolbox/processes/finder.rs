@@ -431,6 +431,11 @@ fn step_inner(work: Work) -> Option<Work>
                                                   class:
                                                       mac_kernel_model::policy::MemoryClass::Kernel };
             match crate::allocator::with_target(target, || {
+                      let tls = desktop(&old, |desktop| desktop.processes.tls(admission.id()))?;
+                      crate::kernel::admit_application_services(admission.owner(),
+                                                                admission.allocation(),
+                                                                &tls,
+                                                                admission.original())?;
                       crate::kernel::copy_application(admission.owner(), admission.original())
                   })
             {
