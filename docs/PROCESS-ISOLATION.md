@@ -1,18 +1,20 @@
 # Process isolation
 
 Status: design/backlog, tracked as [P13](CORE-TOOLBOX-ROADMAP.md#p13--process-isolation).
-Current applications and System share trusted M-mode memory. Owner checks and
-generation-tagged IDs reject invalid service access, but do not stop arbitrary
-native loads/stores or machine code. This work establishes hardware-enforced
+Current applications and System share trusted supervisor-mode memory. Sv39 is
+active; application images have original-account physical backing and final
+supervisor segment permissions, but applications still enter in S-mode and both
+permanent System roots map them. Owner checks and generation-tagged IDs reject
+invalid service access, but do not stop arbitrary privileged native code. This work establishes hardware-enforced
 protection for APPLs and CLAPs, including Terminal and hosted development tools.
 
 ## Address spaces and privilege
 
 Use the RISC-V [supervisor and user privilege model](https://docs.riscv.org/reference/isa/priv/supervisor.html)
 with an Sv39 page-table implementation and a narrow machine-mode firmware layer.
-Move System execution and traps to the appropriate privileged kernel boundary;
-user apps run in U-mode. Simply setting satp while retaining today's M-mode app
-execution is not process isolation. Specify delegation, timer/interrupt entry,
+System already executes behind its supervisor trap boundary; isolated user apps
+must run in U-mode. Setting satp while retaining S-mode application execution is
+not process isolation. Specify delegation, timer/interrupt entry,
 kernel stacks and firmware calls together, following the
 [machine-level contract](https://docs.riscv.org/reference/isa/priv/machine.html).
 
@@ -36,6 +38,34 @@ Specify ASID/TLB reuse, unmapping and page reclamation ordering. Add cross-hart
 shootdowns and migration rules with P1; page reuse cannot precede outstanding
 translations or operations. Shared generation-tagged IDs and separate ownership
 checks remain required alongside the MMU.
+
+## Implementation sequence from the current supervisor runtime
+
+Admit a canonical, generation-scoped ProcessSpace before thread publication and
+retain genuine execution pins in thread state. Its tables and branch pages are
+owned independently; supervisor aliases retain the actual System/module backing,
+while application writable frames belong only to their Process. Modules need
+publication and retirement across all registered roots. Space teardown must
+release mapping pins and await real translation completion before returning table
+pages; it cannot wait for an image retirement gate that already waits for space
+resources to disappear.
+
+Final trap return must select the root belonging to the committed outgoing
+thread after Rust guards and borrows have ended. Restoring the interrupted root
+unconditionally would return a new thread through another Process's page tables.
+Internal firmware-call root scopes retain their separate caller restoration rule.
+An intermediate private-root stage may retain trusted S execution, but must be
+labelled accordingly and must refuse missing application space rather than
+falling back to the System root.
+
+Private user heaps and stacks require user virtual reservations separate from
+retained kernel aliases and physical receipts. Zero every newly exposed physical
+page before granting user access, including rounded heap extent bytes outside
+an individual allocation request. Address-wait authentication must follow the
+actual Process mapping instead of assuming every address is a physmap alias.
+User entry, child-thread startup and callbacks then need user CRT trampolines,
+a process-readable descriptor without resident callback pointers, and checked
+request/buffer copying. Clearing SPP alone is unsafe.
 
 ## Syscalls, resources and callbacks
 
@@ -89,8 +119,12 @@ hardware/IOMMU threat profiles are separate gates.
    with P1. Optional shared code/COW/lazy paging can follow; fork is not required
    for the first isolated Command/process API.
 
-Use private guest fault fixtures plus canonical public-SDK service assertions in
-`crates/mac-toolbox/tests`. Prove cross-app and kernel reads/writes, execute-data,
+Acceptance must execute actual target applications and the production kernel,
+including the real allocator, traps, loader, scheduling and paging configuration.
+A host-linked Rust suite does not qualify those paths. Existing finite native
+captures apply only to their recorded artifacts and scenarios; new diagnostic
+machinery follows the repository's agreed validation work order. Exercise
+cross-app and kernel reads/writes, execute-data,
 write-code, forged requests, stale IDs, wrapped/page-boundary pointers, unmap/I/O
 races and stack overflow cannot corrupt System or a surviving observer app.
 Verify dying parents/workers cannot leave DMA/IPC/callback references to freed
