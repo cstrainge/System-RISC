@@ -794,10 +794,17 @@ pub(crate) fn launch_application(call: &mut ProcessCall,
                                              cause.reply(call);
                                              cause.status()
                                          })?;
+            let crate::toolbox::files::application::Loaded { catalog,
+                                                             resources } = loaded;
+            let image = crate::allocator::with_target(crate::allocator::Target::Owner {
+                account: admission.allocation(),
+                class: mac_kernel_model::policy::MemoryClass::Kernel
+            }, || crate::kernel::load_application(admission.owner(), &admission.allocation(),
+                                                  catalog.creator, catalog.file_type, resources))?;
             crate::kernel::with_desktop(|desktop| {
                 desktop.processes.bind_heap(admission.owner(), heap)?;
                 desktop.processes.bind_tls(admission.owner(), tls)?;
-                desktop.finish_application_launch(call, loaded, &mut admission)
+                desktop.finish_application_launch(call, catalog, image, &mut admission)
             }).map_err(|error| error.status())?
         })();
         if let Err(status) = result

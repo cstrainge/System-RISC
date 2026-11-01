@@ -436,7 +436,9 @@ fn step_inner(work: Work) -> Option<Work>
                                                                 admission.allocation(),
                                                                 &tls,
                                                                 admission.original())?;
-                      crate::kernel::copy_application(admission.owner(), admission.original())
+                      crate::kernel::copy_application(admission.owner(),
+                                                      &admission.allocation(),
+                                                      admission.original())
                   })
             {
                 Ok(loaded) =>

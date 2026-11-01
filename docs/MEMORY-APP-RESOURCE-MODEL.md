@@ -3500,3 +3500,71 @@ privileged fault recovery, or race absence. Debugger reads pause execution and
 guest diagnostics also perturb timing; no latency result is claimed. Application
 and definition image backing, shared immutable frames, private process roots
 and user-mode isolation remain separate work.
+
+## Application image backing transition — bounded native observations
+
+Application admission now passes its genuine Process allocation authority to
+executable publication. The canonical IMAG alias retains the physical segment
+owners and their original Kernel-class charges. The same mapping implementation
+serves applications and resident modules: initialize segments and BSS through
+physical aliases, apply relocations, publish final RX/R/RW supervisor mappings
+in each permanent root, and await translation/instruction publication before
+exposing entry. Existing bootstrap table ancestors are reused only when their
+actual retained ownership and PTE encoding agree; conflicting leaves are refused.
+
+Retirement retains the original IMAG cleanup ticket until actual execution/read
+pins drain, exact PTE removal succeeds and the translation acknowledgment arrives.
+Definition-cache eviction considers quarantined original aliases as well as
+already-deferred aliases, so cached source pins cannot deadlock that drain.
+Uncertain removal keeps the backing and its charges retained. Branch pages are
+permanent System foundation storage, distinct from refundable image payloads.
+
+The flat application identity mapping and its identity DMA conversion are gone.
+Definitions alone still occupy the checked fixed definition identity arena and
+use their existing loader/cache lifetime. Their physical backing, source-owner
+accounting and guard-free publication require a separate migration. Application
+virtual placements remain explicit and globally nonoverlapping; both permanent
+roots still map each application as supervisor code. This is neither private
+process address spaces nor user-mode isolation. Existing reserved physical boot
+ranges have not yet been reclaimed by this transition.
+
+Static optimized RV64 compilation is not runtime acceptance. Boot, application
+launch/relaunch and same-address reuse, failed-load rollback, physical/account
+refund, module DMA regression, final permissions and actual instruction execution
+still require native qualification of the integrated artifact. Publication must
+run outside Desktop and image-manager guards, including ordinary launch and
+Finder restart.
+
+The integrated optimized release/LTO RV64 System resource
+`03dabd8bd0e0bcae6c83c0ee1700b58bcfb1ac862d22bc6a57d1323644fdaf0e`
+with ROM `a85d5a5ce9b2de9c267493d87836aac580c8283de075ce6da90c7bb1ec324b60`
+ran in private 8 GiB/four-CPU QEMU with event/TextEdit tracing disabled and
+checksum-based build freshness enabled. Read-only physical page-table walks
+observed Finder's nonidentity backing, final supervisor segment permissions and
+unmapped holes in both permanent roots, alongside three live resident modules.
+Six normal installed apps entered and quit; sampled segment endpoints mapped to
+nonidentity RAM while live and were absent in both roots after actual Process
+closure. Panic Test relaunched at its declared placement and completed its
+long report/scroll/dismissal and retirement path. These samples do not establish
+absence of every old mapping or an executed permission-fault result.
+
+A real Finder-role workload with POWR1 completed initial entry and two actual
+Abort/replacement cycles, old THRD/Process/account closure, and input in the
+replacement plus independent survivor. The first candidate failed initial
+Finder closure with zero bytes but one authority pin: bootstrap retained a
+cloned allocation authority on the nonreturning scheduler stack. Explicitly
+releasing that bootstrap authority fixed the recorded rerun; the failed artifact
+and result remain distinct. This is not production Finder OOM qualification.
+
+The existing native host-filesystem workload also reached its file/transfer/error
+and external-app completion marker, final external Process closure, and metadata
+restore after a second boot on this artifact. It exercises actual external module
+execution and DMA through the current mapper. Source/base media remained fixed
+for these captures; owned guests were reaped and cloned disks removed. An earlier
+candidate's Thread Probe additionally exercised child TLS/heap/wait/join and final
+account closure; that observation is not transferred to this later artifact.
+
+Private roots, user entry, shared immutable app frames, definition backing,
+failed-publication pressure, lost-ACK/foreign-PTE injection, full-range stale
+translation reuse and race absence remain unverified or unimplemented as stated
+above. QMP reads and guest diagnostics perturb execution; no latency claim follows.

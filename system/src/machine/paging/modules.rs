@@ -1,16 +1,17 @@
-//! Real module payload backing and the owning live supervisor PTE transaction.
-//! Both permanent roots share these retained branch pages. Payloads are private
-//! and charged to their original module Kernel account in this migration stage.
+//! Real executable payload backing and the owning supervisor PTE transaction.
+//! Each permanent root retains its own validated branch path. Application and
+//! module payloads are charged to their original Kernel account; no user-mode
+//! mapping or private application address space is implied.
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{fmt,
            sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}};
 
 use mac_abi::{BAD_ABI, BAD_ARGUMENT, NO_MEMORY, Status};
-use mac_formats::{code::NativeCode,
-                  native::image::{self, Destination}};
+use mac_formats::native::{Descriptor, Role,
+                          image::{self, Destination}};
 use mac_kernel_model::{account::{AccountUse, Committed},
                        pages::{Access, PageOwnership, Permissions, PhysicalAddress}};
-use mac_riscv_pages::{Entry, LeafSize, Sv39};
+use mac_riscv_pages::{Decoded, Entry, LeafSize, Sv39};
 use spinning_top::Spinlock as Mutex;
 
 use super::{BOOT, Backing, Foundation, SPACES, interrupts};
@@ -82,29 +83,31 @@ impl fmt::Display for Error
         {
             Self::Missing =>
             {
-                out.write_str("module execution mappings require the actual permanent supervisor \
-                               roots")
+                out.write_str("executable mappings require the actual permanent supervisor roots")
             }
             Self::Owner =>
             {
-                out.write_str("module image backing requires its original module owner/account")
+                out.write_str("executable backing requires its original matching owner/account")
             }
-            Self::Closed => out.write_str("module stopped before executable mapping publication"),
+            Self::Closed =>
+            {
+                out.write_str("image owner stopped before executable mapping publication")
+            }
             Self::State =>
             {
-                out.write_str("module mapping transition does not match its retained owner; \
+                out.write_str("executable mapping transition does not match its retained owner; \
                                backing retained")
             }
             Self::Metadata =>
             {
-                out.write_str("module mapping metadata allocation refused before publication")
+                out.write_str("executable mapping metadata allocation refused before publication")
             }
             Self::Extent { offset,
                            bytes } =>
             {
                 write!(out,
-                       "module memory span {offset:#x}+{bytes:#x} is unaligned, overlapping or \
-                        outside its execution reservation")
+                       "executable memory span {offset:#x}+{bytes:#x} is unaligned, overlapping \
+                        or outside its execution reservation")
             }
             Self::DmaSpan { address,
                             bytes } =>
@@ -123,7 +126,7 @@ impl fmt::Display for Error
                              observed } =>
             {
                 write!(out,
-                       "module PTE {address:#x} changed: expected {expected:#x}, observed \
+                       "executable PTE {address:#x} changed: expected {expected:#x}, observed \
                         {observed:#x}; original mapping/backing retained")
             }
             Self::Revision =>
@@ -202,7 +205,7 @@ impl fmt::Display for CleanupCause
             Self::Pending { base } =>
             {
                 write!(out,
-                       "module image {base:#x} awaits actual execution/readers or translation \
+                       "executable image {base:#x} awaits actual execution/readers or translation \
                         retirement")
             }
             Self::Pte { base,
@@ -211,22 +214,22 @@ impl fmt::Display for CleanupCause
                         observed } =>
             {
                 write!(out,
-                       "module image {base:#x} PTE {address:#x} differs: expected {expected:#x}, \
-                        observed {observed:#x}")
+                       "executable image {base:#x} PTE {address:#x} differs: expected \
+                        {expected:#x}, observed {observed:#x}")
             }
             Self::Revision { base } =>
             {
-                write!(out, "module image {base:#x} mapping revision exhausted")
+                write!(out, "executable image {base:#x} mapping revision exhausted")
             }
             Self::State { base } =>
             {
-                write!(out, "module image {base:#x} has an uncertain owning transition")
+                write!(out, "executable image {base:#x} has an uncertain owning transition")
             }
             Self::Monitor { base,
                             stage,
                             cause } =>
             {
-                write!(out, "module image {base:#x} {stage:?} failed: {cause:?}")
+                write!(out, "executable image {base:#x} {stage:?} failed: {cause:?}")
             }
         }?;
         out.write_str("; original backing/account/cleanup ticket retained; restart required for \
@@ -393,11 +396,14 @@ impl Mapping
     }
 
     pub(crate) fn prepare(owner: &OwnerRef, account: &AccountUse<NativeInvocationGate>,
-                          code: &NativeCode, base: u64)
+                          descriptor: &Descriptor, bytes: &[u8], relocations: &[u8], base: u64)
                           -> Result<Arc<Self>, Error>
     {
+        let module = owner.owner().kind() == mac_object_table::domain::DomainKind::Module;
+        let application = owner.owner().kind() == mac_object_table::domain::DomainKind::Process;
         if owner.owner() != account.owner()
-           || owner.owner().kind() != mac_object_table::domain::DomainKind::Module
+           || !(module && descriptor.role == Role::CodeResource
+                || application && descriptor.role == Role::Application)
         {
             return Err(Error::Owner);
         }
@@ -406,24 +412,28 @@ impl Mapping
             return Err(Error::Closed);
         }
         let extent =
-            code.descriptor
-                .load_limit
-                .checked_sub(code.descriptor.load_base)
-                .filter(|bytes| *bytes != 0)
-                .ok_or(Error::Format(mac_formats::Error::Malformed("invalid module execution \
-                                                                    reservation")))?;
-        if base < VM_MODULE_START
-           || base.checked_add(extent).is_none_or(|end| end > VM_MODULE_END)
-           || !base.is_multiple_of(PAGE_BYTES)
-           || !extent.is_multiple_of(PAGE_BYTES)
+            descriptor.load_limit
+                      .checked_sub(descriptor.load_base)
+                      .filter(|bytes| *bytes != 0)
+                      .ok_or(Error::Format(mac_formats::Error::Malformed("invalid executable \
+                                                                          reservation")))?;
+        let end = base.checked_add(extent).ok_or(Error::Extent { offset: base,
+                                                                  bytes:  extent })?;
+        let region = if module
+        {
+            base >= VM_MODULE_START && end <= VM_MODULE_END
+        }
+        else
+        {
+            super::super::memory::application_region(base, end)
+        };
+        if !region || !base.is_multiple_of(PAGE_BYTES) || !extent.is_multiple_of(PAGE_BYTES)
         {
             return Err(Error::Extent { offset: base,
                                        bytes:  extent });
         }
-        let plan = image::LoadPlan::new(&code.code,
-                                        &code.descriptor,
-                                        Some(&code.relocations),
-                                        base).map_err(Error::Format)?;
+        let plan = image::LoadPlan::new(bytes, descriptor, Some(relocations), base)
+            .map_err(Error::Format)?;
         let mut payload = Payload { extent:   plan.length(),
                                     segments: Vec::new() };
         let mut segments = Vec::new();
@@ -499,7 +509,7 @@ impl Mapping
                 Ok(())
             })?;
         // Actual payload allocation/initialization is already finished. The
-        // real command lease also excludes a competing module PTE publisher
+        // real command lease also excludes a competing executable PTE publisher
         // while private branch/rollback metadata is prepared; this avoids
         // treating a legitimate concurrently installed branch as corruption.
         let lease =
@@ -727,18 +737,24 @@ impl Mapping
                 }
             }
             let mut next = lower;
-            for entry in entries.leaves[first..].iter().take_while(|entry| entry.address < end)
+            let selected = &entries.leaves[first..];
+            let mut entries = selected.iter().take_while(|entry| entry.address < end);
+            while let Some(first) = entries.next()
             {
-                if entry.address != next
+                let second = entries.next().ok_or(Error::State)?;
+                if first.address != next || second.address != next
                 {
                     return Err(Error::State);
                 }
-                let observed = entry.load();
-                if observed != entry.bits
+                for entry in [first, second]
                 {
-                    return Err(Error::Conflict { address: entry.address,
-                                                 expected: entry.bits,
-                                                 observed });
+                    let observed = entry.load();
+                    if observed != entry.bits
+                    {
+                        return Err(Error::Conflict { address: entry.address,
+                                                     expected: entry.bits,
+                                                     observed });
+                    }
                 }
                 next += PAGE_BYTES;
             }
@@ -754,6 +770,7 @@ impl Mapping
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Key
 {
+    root:   u64,
     level:  u8,
     prefix: u64
 }
@@ -814,132 +831,169 @@ impl Plan
                               leaves:    Vec::new(),
                               checks:    Vec::new(),
                               ancestors: Vec::new() };
+        let spaces = SPACES.get().ok_or(Error::Missing)?;
+        let boot = BOOT.get().ok_or(Error::Missing)?;
         let pages = segments.iter()
                             .try_fold(0usize, |n, s| n.checked_add((s.bytes / PAGE_BYTES) as usize))
+                            .and_then(|n| n.checked_mul(2))
                             .ok_or(Error::Metadata)?;
         plan.leaves.try_reserve_exact(pages).map_err(|_| Error::Metadata)?;
         plan.edits.try_reserve_exact(pages).map_err(|_| Error::Metadata)?;
-        let mut l1_cache: Option<(u64, Table)> = None;
-        let mut l0_cache: Option<(u64, Table)> = None;
-        for segment in segments
+        for space in [&spaces.kernel, &spaces.firmware]
         {
-            let mut offset = 0;
-            while offset < segment.bytes
+            let root = space.owner.root_physical();
+            let root_table = Table { cpu:      boot.ram
+                                                   .virtual_address(root, PAGE_BYTES)
+                                                   .map_err(|_| Error::Missing)?
+                                                   .0
+                                               as usize,
+                                     physical: root };
+            let mut l1_cache: Option<(u64, Table)> = None;
+            let mut l0_cache: Option<(u64, Table)> = None;
+            for segment in segments
             {
-                let address = segment.virtual_base + offset;
-                let l1_prefix = address & !(LeafSize::Huge.bytes() - 1);
-                let l1 = match l1_cache
+                let mut offset = 0;
+                while offset < segment.bytes
                 {
-                    Some((prefix, table)) if prefix == l1_prefix => table,
-                    _ =>
+                    let address = segment.virtual_base + offset;
+                    let l1_prefix = address & !(LeafSize::Huge.bytes() - 1);
+                    let l1 = match l1_cache
                     {
-                        let table = plan.table(Key { level:  1,
-                                                     prefix: l1_prefix },
-                                               None,
-                                               address)?;
-                        l1_cache = Some((l1_prefix, table));
-                        table
-                    }
-                };
-                let l0_prefix = address & !(LeafSize::Large.bytes() - 1);
-                let l0 = match l0_cache
-                {
-                    Some((prefix, table)) if prefix == l0_prefix => table,
-                    _ =>
+                        Some((prefix, table)) if prefix == l1_prefix => table,
+                        _ =>
+                        {
+                            let table = plan.table(Key { root:   root.0,
+                                                         level:  1,
+                                                         prefix: l1_prefix },
+                                                   root_table,
+                                                   address,
+                                                   space)?;
+                            l1_cache = Some((l1_prefix, table));
+                            table
+                        }
+                    };
+                    let l0_prefix = address & !(LeafSize::Large.bytes() - 1);
+                    let l0 = match l0_cache
                     {
-                        let table = plan.table(Key { level:  0,
-                                                     prefix: l0_prefix },
-                                               Some(l1),
-                                               address)?;
-                        l0_cache = Some((l0_prefix, table));
-                        table
-                    }
-                };
-                let permissions = Permissions { read:    segment.flags & image::READ != 0,
-                                                write:   segment.flags & image::WRITE != 0,
-                                                execute: segment.flags & image::EXECUTE != 0,
-                                                access:  Access::Supervisor,
-                                                global:  false };
-                let bits = Entry::leaf(PhysicalAddress(segment.physical + offset),
-                                       LeafSize::Page,
-                                       permissions,
-                                       PageOwnership::Manual).map_err(Error::Encoding)?
-                                                             .bits();
-                let slot = Slot { cpu: l0.cpu,
-                                  index: Sv39::index(address, 0).map_err(Error::Encoding)?,
-                                  bits,
-                                  address };
-                plan.leaves.push(slot);
-                plan.edits.push(slot);
-                offset += PAGE_BYTES;
+                        Some((prefix, table)) if prefix == l0_prefix => table,
+                        _ =>
+                        {
+                            let table = plan.table(Key { root:   root.0,
+                                                         level:  0,
+                                                         prefix: l0_prefix },
+                                                   l1,
+                                                   address,
+                                                   space)?;
+                            l0_cache = Some((l0_prefix, table));
+                            table
+                        }
+                    };
+                    let permissions = Permissions { read:    segment.flags & image::READ != 0,
+                                                    write:   segment.flags & image::WRITE != 0,
+                                                    execute: segment.flags & image::EXECUTE != 0,
+                                                    access:  Access::Supervisor,
+                                                    global:  false };
+                    let bits = Entry::leaf(PhysicalAddress(segment.physical + offset),
+                                           LeafSize::Page,
+                                           permissions,
+                                           PageOwnership::Manual).map_err(Error::Encoding)?
+                                                                 .bits();
+                    let slot = Slot { cpu: l0.cpu,
+                                      index: Sv39::index(address, 0).map_err(Error::Encoding)?,
+                                      bits,
+                                      address };
+                    plan.leaves.push(slot);
+                    plan.edits.push(slot);
+                    offset += PAGE_BYTES;
+                }
             }
         }
         plan.leaves.sort_unstable_by_key(|leaf| leaf.address);
         Ok(plan)
     }
 
-    fn table(&mut self, key: Key, parent: Option<Table>, address: u64) -> Result<Table, Error>
+    fn table(&mut self, key: Key, parent: Table, address: u64, space: &super::Space)
+             -> Result<Table, Error>
     {
         if let Some(table) =
             self.branches.iter().find(|branch| branch.key == key).map(|branch| branch.reference())
         {
             return Ok(table);
         }
-        let existing = interrupts::with_masked(|| TABLES.lock().find(key));
-        let (table, branch) = if let Some(table) = existing
-        {
-            (table, None)
-        }
-        else
-        {
-            let branch = crate::allocator::with_system(crate::allocator::SystemClass::Foundation,
-                                                       || {
-                                                           let table=Foundation::<Backing>::allocate(PAGE_BYTES as usize).map_err(Error::Foundation)?;
-                                                           Box::try_new(Branch{key,table,next:None}).map_err(|_|Error::Metadata)
-                                                       })?;
-            (branch.reference(), Some(branch))
-        };
-        self.branches.try_reserve(1).map_err(|_| Error::Metadata)?;
-        self.edits.try_reserve(2).map_err(|_| Error::Metadata)?;
-        self.checks.try_reserve(2).map_err(|_| Error::Metadata)?;
-        self.ancestors.try_reserve(2).map_err(|_| Error::Metadata)?;
-        let bits =
-            Entry::table(table.physical, false, PageOwnership::Manual).map_err(Error::Encoding)?
-                                                                      .bits();
-        let mut add = |cpu, index| {
-            let slot = Slot { cpu,
+        let index = Sv39::index(address, key.level + 1).map_err(Error::Encoding)?;
+        let mut slot = Slot { cpu: parent.cpu,
                               index,
-                              bits,
+                              bits: 0,
                               address };
-            self.ancestors.push(slot);
-            if existing.is_some()
-            {
-                self.checks.push(slot);
-            }
+        let observed = slot.load();
+        self.ancestors.try_reserve(1).map_err(|_| Error::Metadata)?;
+        if observed != 0
+        {
+            // Existing bootstrap branches can cover neighboring System/firmware
+            // addresses. Reuse only a real retained table, never overwrite a
+            // large leaf or manufacture ownership from an arbitrary PPN.
+            let Decoded::Table { physical,
+                                 global: false,
+                                 ownership } =
+                Entry::decode_raw(observed, key.level + 1).map_err(Error::Encoding)?
             else
             {
-                self.edits.push(slot);
-            }
-        };
-        if let Some(parent) = parent
-        {
-            add(parent.cpu, Sv39::index(address, 1).map_err(Error::Encoding)?);
+                return Err(Error::Conflict { address,
+                                             expected: 0,
+                                             observed });
+            };
+            let cpu = interrupts::with_masked(|| {
+                          let managed = TABLES.lock().find(key);
+                          match managed
+                          {
+                              Some(table)
+                                  if table.physical == physical
+                                     && ownership == PageOwnership::Manual =>
+                              {
+                                  Some(table.cpu)
+                              }
+                              Some(_) => None,
+                              None if ownership == PageOwnership::Automatic =>
+                              {
+                                  space.tables.node(physical).ok().map(|node| node.cpu)
+                              }
+                              None => None
+                          }
+                      }).ok_or(Error::Conflict { address,
+                                                 expected: 0,
+                                                 observed })?;
+            self.checks.try_reserve(1).map_err(|_| Error::Metadata)?;
+            slot.bits = observed;
+            self.ancestors.push(slot);
+            self.checks.push(slot);
+            return Ok(Table { cpu,
+                              physical });
         }
-        else
+        // A managed table with an absent parent is not silently reattached.
+        // Its missing mapping is a conflict requiring the original owner.
+        if interrupts::with_masked(|| TABLES.lock().find(key).is_some())
         {
-            let spaces = SPACES.get().ok_or(Error::Missing)?;
-            let boot = BOOT.get().ok_or(Error::Missing)?;
-            for root in [spaces.kernel.owner.root_physical(), spaces.firmware.owner.root_physical()]
-            {
-                let cpu = boot.ram.virtual_address(root, PAGE_BYTES).map_err(|_| Error::Missing)?.0
-                          as usize;
-                add(cpu, Sv39::index(address, 2).map_err(Error::Encoding)?);
-            }
+            return Err(Error::Conflict { address,
+                                         expected: 1,
+                                         observed });
         }
-        if let Some(branch) = branch
-        {
-            self.branches.push(branch);
-        }
+        let branch =
+            crate::allocator::with_system(crate::allocator::SystemClass::Foundation, || {
+                let table = Foundation::<Backing>::allocate(PAGE_BYTES as usize)
+                .map_err(Error::Foundation)?;
+                Box::try_new(Branch { key,
+                                      table,
+                                      next: None }).map_err(|_| Error::Metadata)
+            })?;
+        self.branches.try_reserve(1).map_err(|_| Error::Metadata)?;
+        self.edits.try_reserve(1).map_err(|_| Error::Metadata)?;
+        let table = branch.reference();
+        slot.bits =
+            Entry::table(table.physical, false, PageOwnership::Manual).map_err(Error::Encoding)?
+                                                                      .bits();
+        self.ancestors.push(slot);
+        self.edits.push(slot);
+        self.branches.push(branch);
         Ok(table)
     }
 
