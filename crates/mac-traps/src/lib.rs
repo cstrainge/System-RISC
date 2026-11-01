@@ -1028,7 +1028,15 @@ impl Client<'_>
 {
     pub fn document(self, call: &mut mac_abi::processes::DocumentCall) -> Result<()>
     {
-        status(self.invoke(PROCESS, call))
+        call.requirement_class = [0; 4];
+        call.requirement_version = 0;
+        let result = self.invoke(PROCESS, call);
+        if (call.requirement_class != [0; 4] || call.requirement_version != 0)
+           && call.operation != mac_abi::processes::DOCUMENT_COMMIT
+        {
+            return Err(Error::BadAbi);
+        }
+        requirement_status(result, call.requirement_class, call.requirement_version)
     }
 
     pub fn process(self, call: &mut mac_abi::processes::ProcessCall) -> Result<()>
@@ -1036,23 +1044,32 @@ impl Client<'_>
         call.requirement_class = [0; 4];
         call.requirement_version = 0;
         let result = self.invoke(PROCESS, call);
-        if call.requirement_class != [0; 4] || call.requirement_version != 0
+        if (call.requirement_class != [0; 4] || call.requirement_version != 0)
+           && call.operation != mac_abi::processes::LAUNCH
         {
-            if result >= 0
-               || call.operation != mac_abi::processes::LAUNCH
-               || call.requirement_class == [0; 4]
-               || call.requirement_version == 0
-            {
-                return Err(Error::BadAbi);
-            }
-            let result = Status::try_from(result).map_err(|_| Error::BadAbi)?;
-            return Err(Error::ServiceRequirement(ServiceRequirementFailure {
-                class: call.requirement_class.into(), version: call.requirement_version,
-                cause: ServiceRequirementCause::from_status(result)
-            }));
+            return Err(Error::BadAbi);
         }
-        status(result)
+        requirement_status(result, call.requirement_class, call.requirement_version)
     }
+}
+
+/// One wire decoder for launch refusals on direct and document paths. The
+/// caller checks which operation may carry this failure-only payload.
+fn requirement_status(result: i64, class: [u8; 4], version: u32) -> Result<()>
+{
+    if class != [0; 4] || version != 0
+    {
+        if result >= 0 || class == [0; 4] || version == 0
+        {
+            return Err(Error::BadAbi);
+        }
+        let result = Status::try_from(result).map_err(|_| Error::BadAbi)?;
+        return Err(Error::ServiceRequirement(ServiceRequirementFailure {
+            class: class.into(), version,
+            cause: ServiceRequirementCause::from_status(result)
+        }));
+    }
+    status(result)
 }
 
 impl Client<'_>
