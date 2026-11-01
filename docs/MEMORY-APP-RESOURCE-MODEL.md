@@ -3203,6 +3203,13 @@ and primary resources belong to the module, while the original admitted request
 Subject and allocation target remain separate. Runtime binding metadata retains
 no permanent read/account pin that could prevent its own retirement.
 
+Retained VDEV claim aliases and DMA mapping metadata use the authenticated
+module's kernel account, including when an application request first opens the
+device. The allocation selection covers only the bounded claim/map publication;
+request buffers and provider callbacks retain their original I/O subject.
+Otherwise a persistent module device can retain the first application's account
+after that application's own resource ledger has drained.
+
 Direct Host callbacks authenticate the installed executor before using any copied
 context number. Allocation authentication borrows the active context without
 cloning retained readers or account authority. Shared image cleanup works from
