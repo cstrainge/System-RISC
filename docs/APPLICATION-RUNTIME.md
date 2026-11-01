@@ -69,7 +69,7 @@ The TLRT scope belongs to the actual runtime Root, not its long-lived directory 
 
 Provider selection establishes registration availability and exact-version agreement. It does not establish hardware readiness, entropy availability, successful future requests or arbitrary fault containment. Provider readiness callbacks must execute outside registry, image and Desktop guards and retain the genuine runtime admission pin and owned request while pending. That asynchronous launch coordinator remains separate work. No installed application currently declares NREQ.
 
-Direct Process launch refusals carry the required class/version through ProcessCall and the public typed ServiceRequirement error. Finder obtains its explanatory template from resources. Existing numeric status values and development ABI version1 remain; the changed record fingerprint requires rebuilding every client. Other Open/document transport surfaces do not yet promise the same structured requirement payload.
+Direct Process launch and document-commit refusals carry the required class/version through their respective call records and the public typed ServiceRequirement error. Finder obtains its explanatory template from resources. Existing numeric status values and development ABI version1 remain; the changed record fingerprint requires rebuilding every client. The DocumentCall adapter clears failure-only outputs before entry and accepts them only on a failed DOCUMENT_COMMIT. Both transports share the same checked payload decoder. Finder document associations and application drops use DocumentOpen::commit and retain the typed error through the existing resource-based alert. Other Open wrappers do not automatically gain this payload.
 
 ### Bounded native observations — 2026-11-01
 
@@ -232,3 +232,19 @@ In particular, allocation copying/zeroing is outside heap metadata locks but
 still inside the synchronous trap's interrupt discipline; large-operation input
 latency has not been measured. All owned guests were reaped and private cloned
 media removed; the user's installation was not replaced.
+
+### Document-commit requirement transport
+
+DocumentCall includes failure-only requirement_class (four bytes) and
+requirement_version (u32), both zero outside a declared-service launch refusal.
+The resident clears them before validation and copies actual Process launch
+failure identity into the commit reply. Native callers validate operation, failed
+status, nonzero class/version and status width before forming ServiceRequirement.
+Partial identities or success replies carrying error identity are BadAbi.
+
+The whole-world layout fingerprint includes DocumentCall size and both field
+offsets. Development ABI remains1; System, apps, modules, definitions and SDK
+clients must rebuild together. This source transport is not proof of asynchronous
+provider readiness or correct pending-document replay. Its updated native wire
+requires its own target-runtime evidence; previous artifact observations above
+remain scoped to their recorded earlier layouts.
