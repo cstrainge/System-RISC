@@ -71,19 +71,23 @@ fn application_image_status(error: ApplicationImageError) -> Status
     }
 }
 
-pub(crate) fn load_application(owner: &crate::toolbox::handles::OwnerRef, creator: [u8; 4],
-                               file_type: [u8; 4],
+pub(crate) fn load_application(owner: &crate::toolbox::handles::OwnerRef,
+                               account: &crate::machine::scheduler::accounting::AllocationAuthority,
+                               creator: [u8; 4], file_type: [u8; 4],
                                resources: alloc::vec::Vec<mac_formats::resource::Resource>)
                                -> Result<LoadedImage, Status>
 {
     let authority = application_authority(&resources)?;
     admit_image(owner,
+                account,
                 AppImage { role: crate::images::Role::Application { authority },
                            resources,
                            creator,
                            file_type }).map_err(application_image_status)
 }
-fn admit_image(owner: &crate::toolbox::handles::OwnerRef, source: AppImage)
+fn admit_image(owner: &crate::toolbox::handles::OwnerRef,
+               account: &crate::machine::scheduler::accounting::AllocationAuthority,
+               source: AppImage)
                -> Result<LoadedImage, ApplicationImageError>
 {
     // Immutable package sources are interned by the System image registry.
@@ -91,16 +95,17 @@ fn admit_image(owner: &crate::toolbox::handles::OwnerRef, source: AppImage)
     let source = crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
                      alloc::sync::Arc::try_new(source)
                  }).map_err(|_| NO_MEMORY)?;
-    admit_shared_image(owner, source)
+    admit_shared_image(owner, account, source)
 }
 
 pub(crate) fn copy_application(owner: &crate::toolbox::handles::OwnerRef,
+                               account: &crate::machine::scheduler::accounting::AllocationAuthority,
                                original: crate::images::Binding)
                                -> Result<LoadedImage, Status>
 {
     let source = IMAGES.with(|images| images.read(original).map(|read| read.shared_source()))
                        .map_err(AccessError::status)??;
-    admit_shared_image(owner, source).map_err(application_image_status)
+    admit_shared_image(owner, account, source).map_err(application_image_status)
 }
 
 /// Clone immutable package ownership under IMAGES, then admit dependencies
@@ -118,6 +123,7 @@ pub(crate) fn admit_application_services(owner: &crate::toolbox::handles::OwnerR
 }
 
 fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
+                      account: &crate::machine::scheduler::accounting::AllocationAuthority,
                       source: alloc::sync::Arc<AppImage>)
                       -> Result<LoadedImage, ApplicationImageError>
 {
@@ -141,13 +147,8 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
                          .map_err(|cause| crate::images::LoadError::Admission(cause.status()))??;
     // The original alias already reserves its destination and retains its
     // source/loading ownership. Long byte writes and monitor waits borrow no
-    // IMAGES guard. Outer process/Desktop scopes remain their callers' contract.
-    prepared.write(|resources, base| {
-                crate::loader::application_at(resources, base).map_err(|error| {
-                    serial!("APPLICATION_IMAGE_REFUSED: {error}");
-                    error
-                })
-            })
+    // IMAGES guard. Callers must also leave Desktop before this boundary.
+    prepared.write_application(account)
 }
 /// All resident DRVR/INIT code uses real page-backed supervisor mappings.
 pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,
@@ -225,7 +226,7 @@ pub(crate) fn pump_module_images()
     loop
     {
         let next = crate::machine::interrupts::with_masked(|| {
-            IMAGES.with(|images| images.module_retirement(after))
+            IMAGES.with(|images| images.mapping_retirement(after))
         });
         let claim = match next
         {
@@ -241,7 +242,7 @@ pub(crate) fn pump_module_images()
             }
             Err(cause) =>
             {
-                serial!("MODULE_MAPPING_RETIREMENT_RETAINED: image manager admission refused \
+                serial!("IMAGE_MAPPING_RETIREMENT_RETAINED: image manager admission refused \
                          ({cause:?}); original mapping and cleanup ticket remain retained");
                 break;
             }
@@ -252,7 +253,7 @@ pub(crate) fn pump_module_images()
             // Busy is rearmed by the actual monitor lease's release, not by
             // every input/frame. Other refusals retain their canonical cause.
             if !matches!(cause,crate::machine::paging::modules::Error::Monitor(crate::machine::monitor::Error::Busy)) {
-                serial!("MODULE_MAPPING_RETIREMENT_RETAINED owner={after} cause={cause}");
+                serial!("IMAGE_MAPPING_RETIREMENT_RETAINED owner={after} cause={cause}");
             }
         }
     }
@@ -824,8 +825,8 @@ fn launch() -> Result<(), crate::machine::scheduler::StartError>
                                                                    status)
                                            })?;
     let finder_loaded = crate::allocator::with_target(crate::allocator::Target::Owner {
-        account: finder_allocation, class: mac_kernel_model::policy::MemoryClass::Kernel
-    }, || admit_image(&finder_owner,
+        account: finder_allocation.clone(), class: mac_kernel_model::policy::MemoryClass::Kernel
+    }, || admit_image(&finder_owner, &finder_allocation,
                        AppImage { resources: finder,
                                   role: crate::images::Role::Application { authority },
                                   creator: *b"MACS",
@@ -842,6 +843,9 @@ fn launch() -> Result<(), crate::machine::scheduler::StartError>
     processes.bind_image(finder_id, finder_loaded.binding())
              .map_err(|_| mac_formats::Error::Malformed("Finder image binding failed"))?;
     drop(finder_owner);
+    // The scheduler never returns to this bootstrap stack. Only actual Process
+    // roots and image payloads may retain this allocation authority afterward.
+    drop(finder_allocation);
     processes.activate(finder_id)
              .map_err(|_| {
                  mac_formats::Error::Malformed("Finder lifetime domain could not become foreground")

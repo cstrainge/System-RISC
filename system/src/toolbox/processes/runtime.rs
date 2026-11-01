@@ -1005,7 +1005,8 @@ impl Desktop
     }
 
     pub(crate) fn finish_application_launch(&mut self, call: &mut ProcessCall,
-                                            loaded: crate::toolbox::files::application::Loaded,
+                                            catalog: mac_abi::files::CatalogInfo,
+                                            loaded: crate::kernel::LoadedImage,
                                             admission: &mut crate::toolbox::processes::LaunchAdmission)
                                             -> Result<(), Status>
     {
@@ -1023,15 +1024,8 @@ impl Desktop
                 self.locals.try_reserve(1)
             }).map_err(|_| NO_MEMORY)?;
         }
-        let crate::toolbox::files::application::Loaded { catalog,
-                                                         resources } = loaded;
         let prepared = (|| {
             let authority = self.processes.ledger(id)?;
-            let loaded = crate::allocator::with_target(crate::allocator::Target::Owner {
-                account: self.processes.allocation(id)?,
-                class: mac_kernel_model::policy::MemoryClass::Kernel
-            }, || crate::kernel::load_application(&authority, catalog.creator,
-                                                  catalog.file_type, resources))?;
             self.processes.bind_image(id, loaded.binding())?;
             let local =
                 Saved::try_new(authority.clone(), self.mdef, self.processes.allocation(id)?)?;

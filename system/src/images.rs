@@ -276,40 +276,18 @@ pub(crate) struct PreparedLoad
 }
 impl PreparedLoad
 {
-    /// Run the byte initialization/relocation/instruction-publication boundary
-    /// without borrowing the image manager. The writer owns no alias ticket;
-    /// the existing registered owner walk retains all published metadata even
-    /// if writing or a concurrent owner stop refuses this load.
-    pub(crate) fn write<E>(self,
-                           write: impl FnOnce(&[mac_formats::resource::Resource],
-                                  u64) -> Result<usize, E>)
-                           -> Result<Loaded, LoadError<E>>
+    pub(crate) fn write_application(
+        self, account: &crate::machine::scheduler::accounting::AllocationAuthority)
+        -> Result<Loaded, LoadError<crate::toolbox::resources::loader::LoadError>>
     {
-        if !self.read.instance.owner.accepting()
-        {
-            return Err(LoadError::Admission(SERVICE_BUSY));
-        }
-        let entry =
-            write(&self.read.source.resources, self.read.instance.base).map_err(LoadError::Write)?;
-        // This avoids finishing a load already known to be stopped. It is not
-        // atomic execution admission: normal spawn/module entry still checks
-        // genuine authority, and the retained pin protects a later stop race.
-        if !self.read.instance.owner.accepting()
-        {
-            return Err(LoadError::Admission(SERVICE_BUSY));
-        }
-        let Self { loading,
-                   read } = self;
-        let execution = loading.finish();
-        // A count-zero execution gate also follows a refused write. Source
-        // registration alone must never authorize execution of those bytes.
-        // Publish readiness only after complete writes/relocations/instructions
-        // and the first actual execution pin have both succeeded.
-        read.instance.initialized.store(true, Ordering::Release);
-        Ok(Loaded { binding: read.binding,
-                    entry,
-                    _execution: Execution { _execution: execution,
-                                            _source:    read } })
+        let (descriptor, bytes, relocations) =
+            crate::toolbox::resources::loader::application_code(&self.read.source.resources)
+                .map_err(|cause| LoadError::Write(cause.into()))?;
+        let mapping = crate::machine::paging::modules::Mapping::prepare(
+            &self.read.instance.owner, account, &descriptor, bytes, relocations,
+            self.read.instance.base)
+            .map_err(|cause| LoadError::Write(cause.into()))?;
+        self.publish_mapping(mapping, &descriptor).map_err(|cause| LoadError::Write(cause.into()))
     }
 
     /// The alias already reserves this execution VA. Initialize private real
@@ -325,8 +303,16 @@ impl PreparedLoad
         {
             return Err(Error::Owner);
         }
-        let mapping =
-            Mapping::prepare(&self.read.instance.owner, account, code, self.read.instance.base)?;
+        let mapping = Mapping::prepare(&self.read.instance.owner, account, &code.descriptor,
+                                       &code.code, &code.relocations, self.read.instance.base)?;
+        self.publish_mapping(mapping, &code.descriptor)
+    }
+
+    fn publish_mapping(self, mapping: Arc<crate::machine::paging::modules::Mapping>,
+                       descriptor: &mac_formats::native::Descriptor)
+                       -> Result<Loaded, crate::machine::paging::modules::Error>
+    {
+        use crate::machine::paging::modules::Error;
         if !Arc::ptr_eq(self.read.instance.mapping.call_once(|| mapping.clone()), &mapping)
         {
             return Err(Error::State);
@@ -356,7 +342,7 @@ impl PreparedLoad
         let entry = self.read
                         .instance
                         .base
-                        .checked_add(code.descriptor.entry - code.descriptor.load_base)
+                        .checked_add(descriptor.entry - descriptor.load_base)
                         .ok_or(Error::State)? as usize;
         let Self { loading,
                    read } = self;
@@ -627,14 +613,13 @@ impl Manager
                                        _source:    read }))
     }
 
-    pub(crate) fn module_retirement(&self, after: u64) -> Option<ModuleRetirement>
+    pub(crate) fn mapping_retirement(&self, after: u64) -> Option<MappingRetirement>
     {
         let instance = self.sources
                            .retained()
                            .map(|(_, instance)| instance)
                            .filter(|instance| {
-                               instance.module
-                               && instance.owner.owner().incarnation() > after
+                               instance.owner.owner().incarnation() > after
                                && !instance.owner.accepting()
                                && Self::root_only(&instance.owner)
                                && instance.activity.readers.load(Ordering::SeqCst) == 0
@@ -654,10 +639,10 @@ impl Manager
                 return None;
             }
         };
-        Some(ModuleRetirement { exclusion: Some(exclusion),
-                                owner:     instance.owner.owner().incarnation(),
-                                instance:  Some(instance.clone()),
-                                active:    true })
+        Some(MappingRetirement { exclusion: Some(exclusion),
+                                 owner:     instance.owner.owner().incarnation(),
+                                 instance:  Some(instance.clone()),
+                                 active:    true })
     }
 
     pub(crate) fn module_dma_address(&self, cpu: u64, bytes: u64)
@@ -690,28 +675,32 @@ impl Manager
 
     pub(crate) fn next_retiring(&self, after: u64) -> Option<(u64, u64)>
     {
+        // An original alias can be quarantined pending PTE retirement before
+        // defer_alias. Its cached definition pins must still be evicted, or
+        // reader drain and retirement would wait on each other indefinitely.
         self.sources
-            .deferred_tags()
-            .filter_map(|instance| {
+            .retained()
+            .filter_map(|(_, instance)| {
                 let owner = instance.owner.owner().incarnation();
-                (!instance.module
-                 && owner > after
-                 && !instance.owner.accepting()
-                 && Self::root_only(&instance.owner)).then_some(owner)
+                if instance.module
+                   || owner <= after
+                   || instance.owner.accepting()
+                   || !Self::root_only(&instance.owner)
+                {
+                    return None;
+                }
+                instance.binding.get().map(|binding| (owner, binding.id()))
             })
-            .min()
-            .and_then(|owner| {
-                self.sources.deferred_tags().find_map(|instance| {
-                                                (instance.owner.owner().incarnation() == owner)
-                .then(|| instance.binding.get().map(|binding| (owner, binding.id()))).flatten()
-                                            })
-            })
+            .min_by_key(|(owner, _)| *owner)
     }
 
     pub(crate) fn finish_retiring(&mut self) -> usize
     {
         self.sources.finish_deferred(|instance| {
                         !instance.module
+                        && Arc::strong_count(instance) == 1
+                        && !instance.retirement_claimed.load(Ordering::Acquire)
+                        && instance.mapping.get().is_none_or(|mapping| mapping.settled())
                         && !instance.owner.accepting()
                         && Self::root_only(&instance.owner)
                         && instance.activity.readers.load(Ordering::SeqCst) == 0
@@ -736,7 +725,6 @@ impl Manager
                     }
                 }
                 if let Some((_, instance)) = self.sources.releasing(&ticket)
-                   && instance.module
                    && let Some(mapping) = instance.mapping.get()
                    && (!mapping.settled()
                        || instance.retirement_claimed.load(Ordering::Acquire)
@@ -756,14 +744,14 @@ impl Manager
 
 /// One real exclusion/anchor claim; original cleanup ticket remains in the
 /// canonical walk. No physical owner is detached into a stack-only obligation.
-pub(crate) struct ModuleRetirement
+pub(crate) struct MappingRetirement
 {
     exclusion: Option<mac_kernel_model::image::Loading>,
     instance:  Option<Arc<Instance>>,
     owner:     u64,
     active:    bool
 }
-impl ModuleRetirement
+impl MappingRetirement
 {
     pub(crate) fn owner(&self) -> u64
     {
@@ -784,7 +772,7 @@ impl ModuleRetirement
         mapping.retire()
     }
 }
-impl Drop for ModuleRetirement
+impl Drop for MappingRetirement
 {
     fn drop(&mut self)
     {

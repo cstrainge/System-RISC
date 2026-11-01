@@ -16,7 +16,8 @@ use mac_formats::{Error, Result,
 pub(crate) enum LoadError
 {
     Format(Error),
-    Publication(crate::machine::monitor::Error)
+    Publication(crate::machine::monitor::Error),
+    Mapping(crate::machine::paging::modules::Error)
 }
 impl fmt::Display for LoadError
 {
@@ -25,6 +26,7 @@ impl fmt::Display for LoadError
         match self
         {
             Self::Format(cause) => cause.fmt(out),
+            Self::Mapping(cause) => cause.fmt(out),
             Self::Publication(cause) => write!(out, "executable publication refused: {cause}")
         }
     }
@@ -41,6 +43,13 @@ impl From<crate::machine::monitor::Error> for LoadError
     fn from(cause: crate::machine::monitor::Error) -> Self
     {
         Self::Publication(cause)
+    }
+}
+impl From<crate::machine::paging::modules::Error> for LoadError
+{
+    fn from(cause: crate::machine::paging::modules::Error) -> Self
+    {
+        Self::Mapping(cause)
     }
 }
 pub(crate) type LoadResult<T> = core::result::Result<T, LoadError>;
@@ -139,20 +148,13 @@ pub(crate) fn application_layout(resources: &[Resource]) -> Result<ApplicationLa
                            executable,
                            writable })
 }
-pub(crate) fn application_at(resources: &[Resource], destination: u64) -> LoadResult<usize>
+pub(crate) fn application_code(resources: &[Resource]) -> Result<(Descriptor, &[u8], &[u8])>
 {
     let (descriptor, bytes, _) = application_parts(resources)?;
-    let extent = descriptor.load_limit - descriptor.load_base;
-    let end = destination.checked_add(extent)
-                         .ok_or(Error::Malformed("application destination overflow"))?;
-    if destination & 4095 != 0 || !application_region(destination, end)
-    {
-        return Err(Error::Malformed("application destination overlaps resident images").into());
-    }
     let table = resources.iter()
                          .find(|r| r.kind == *b"RLOC" && r.id == 0)
                          .ok_or(Error::Missing("native relocation metadata is missing"))?;
-    load(&descriptor, bytes, Some(&table.data), destination)
+    Ok((descriptor, bytes, &table.data))
 }
 
 fn load(descriptor: &Descriptor, bytes: &[u8], relocations: Option<&[u8]>, destination: u64)
@@ -318,7 +320,12 @@ pub(crate) fn status(error: impl Into<LoadError>) -> Status
         LoadError::Format(Error::Missing(_)) => NOT_FOUND,
         LoadError::Format(Error::TranslationRequired(_)) => mac_abi::TRANSLATION_REQUIRED,
         LoadError::Format(Error::Malformed(_)) => BAD_ARGUMENT,
-        LoadError::Publication(cause) => cause.status()
+        LoadError::Publication(cause) => cause.status(),
+        LoadError::Mapping(crate::machine::paging::modules::Error::Format(cause)) =>
+        {
+            status(LoadError::Format(cause))
+        }
+        LoadError::Mapping(cause) => cause.status()
     }
 }
 

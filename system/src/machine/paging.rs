@@ -622,11 +622,13 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
                   VM_SYSTEM_HEAP_LIMIT - VM_SYSTEM_HEAP_BASE,
                   READ | WRITE,
                   true)?;
-    // Trusted flat application/definition arenas remain an explicit temporary gate.
+    // Definitions still use their explicit legacy loading path. Applications
+    // have independent physical payloads and sparse final-permission mappings.
+    // This remaining fixed definition arena is not userspace isolation.
     leaves += map(&mut mapper,
-                  APPLICATION_PRIMARY_BASE,
-                  APPLICATION_PRIMARY_BASE,
-                  IMAGE_LIMIT - APPLICATION_PRIMARY_BASE,
+                  DEFINITION_BASE,
+                  DEFINITION_BASE,
+                  DEFINITION_LIMIT - DEFINITION_BASE,
                   READ | WRITE | EXECUTE,
                   false)?;
     for &(base, end) in BOOT_MMIO_REGIONS
@@ -875,7 +877,7 @@ pub(crate) fn bus_address(cpu: u64, bytes: u64) -> Option<u64>
     {
         return Some(physical.0);
     }
-    if cpu >= APPLICATION_PRIMARY_BASE && end <= IMAGE_LIMIT
+    if cpu >= DEFINITION_BASE && end <= DEFINITION_LIMIT
     {
         boot.ram.virtual_address(PhysicalAddress(cpu), bytes).ok()?;
         return Some(cpu);
