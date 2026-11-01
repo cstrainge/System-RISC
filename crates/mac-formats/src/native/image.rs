@@ -120,6 +120,13 @@ impl<'a> LoadPlan<'a>
         self.entry
     }
 
+    /// Validated memory extents used by real segmented native destinations.
+    /// Metadata grants neither mapping ownership nor permission to execute.
+    pub fn segments(&self) -> &[Segment]
+    {
+        &self.image.segments
+    }
+
     pub fn length(&self) -> usize
     {
         self.length

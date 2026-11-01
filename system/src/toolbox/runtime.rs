@@ -742,6 +742,11 @@ impl Desktop
                                 i32::try_from(reply).unwrap_or(BAD_ABI)
                             }
                             #[cfg(target_arch = "riscv64")]
+                            super::handles::cleanup::Cause::ModuleMapping(cause) => match cause {
+                                crate::machine::paging::modules::CleanupCause::Pending { .. } => SERVICE_BUSY,
+                                _ => BAD_ABI,
+                            },
+                            #[cfg(target_arch = "riscv64")]
                             super::handles::cleanup::Cause::NativeTls(cause) => match cause {
                                 super::native_threads::CleanupCause::Contract => BAD_ABI,
                                 super::native_threads::CleanupCause::Unavailable => NOT_SUPPORTED,

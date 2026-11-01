@@ -85,21 +85,24 @@ impl Drop for Use
         {
             crate::toolbox::processes::retirement::resources_released();
             crate::drivers::recovery_changed();
+            crate::machine::paging::modules::changed();
         }
     }
 }
 struct Instance
 {
-    owner:       OwnerRef,
-    module:      bool,
-    executable:  Vec<core::ops::Range<u64>>,
-    writable:    Vec<core::ops::Range<u64>>,
-    initialized: AtomicBool,
-    base:        u64,
-    limit:       u64,
-    execution:   mac_kernel_model::image::ExecutionGate,
-    activity:    Arc<Activity>,
-    binding:     spin::Once<Binding>
+    owner:              OwnerRef,
+    module:             bool,
+    executable:         Vec<core::ops::Range<u64>>,
+    writable:           Vec<core::ops::Range<u64>>,
+    initialized:        AtomicBool,
+    mapping:            spin::Once<Arc<crate::machine::paging::modules::Mapping>>,
+    retirement_claimed: AtomicBool,
+    base:               u64,
+    limit:              u64,
+    execution:          mac_kernel_model::image::ExecutionGate,
+    activity:           Arc<Activity>,
+    binding:            spin::Once<Binding>
 }
 
 /// Fields destroy source/instance payload references before the final use signal.
@@ -308,6 +311,62 @@ impl PreparedLoad
                     _execution: Execution { _execution: execution,
                                             _source:    read } })
     }
+
+    /// The alias already reserves this execution VA. Initialize private real
+    /// pages, anchor their actual owner, then publish PTEs and both fences with
+    /// no IMAGES/Runtime guard held. Refusal leaves this same alias to its walk.
+    pub(crate) fn write_module(self,
+                               account:&crate::machine::scheduler::accounting::AllocationAuthority,
+                               code: &mac_formats::code::NativeCode)
+                               -> Result<Loaded, crate::machine::paging::modules::Error>
+    {
+        use crate::machine::paging::modules::{Error, Mapping};
+        if !self.read.instance.module
+        {
+            return Err(Error::Owner);
+        }
+        let mapping =
+            Mapping::prepare(&self.read.instance.owner, account, code, self.read.instance.base)?;
+        if !Arc::ptr_eq(self.read.instance.mapping.call_once(|| mapping.clone()), &mapping)
+        {
+            return Err(Error::State);
+        }
+        // A stopping walk may have deferred this alias before the mapping
+        // anchor existed. Arm the same retained owner when that race occurs;
+        // otherwise final Read release could leave physical backing with no
+        // retirement request, despite the original removal guard being held.
+        if self.read.instance.activity.retiring.load(Ordering::Acquire)
+           || !self.read.instance.owner.accepting()
+        {
+            mapping.request_retirement();
+            return Err(Error::Closed);
+        }
+        let published = mapping.publish();
+        if self.read.instance.activity.retiring.load(Ordering::Acquire)
+           || !self.read.instance.owner.accepting()
+        {
+            mapping.request_retirement();
+        }
+        published?;
+        if !self.read.instance.owner.accepting()
+        {
+            mapping.request_retirement();
+            return Err(Error::Closed);
+        }
+        let entry = self.read
+                        .instance
+                        .base
+                        .checked_add(code.descriptor.entry - code.descriptor.load_base)
+                        .ok_or(Error::State)? as usize;
+        let Self { loading,
+                   read } = self;
+        let execution = loading.finish();
+        read.instance.initialized.store(true, Ordering::Release);
+        Ok(Loaded { binding: read.binding,
+                    entry,
+                    _execution: Execution { _execution: execution,
+                                            _source:    read } })
+    }
 }
 impl Loaded
 {
@@ -320,6 +379,11 @@ impl Loaded
             return Err(ACCESS_DENIED);
         }
         Ok(ModuleExecution(self._execution))
+    }
+
+    pub(crate) fn range(&self) -> core::ops::Range<u64>
+    {
+        self._execution._source.instance.base..self._execution._source.instance.limit
     }
 
     pub(crate) fn binding(&self) -> Binding
@@ -374,8 +438,9 @@ impl Manager
 
     /// Caller owns a genuine child ledger before any source is admitted. All
     /// fallible metadata allocation precedes executable-memory writes.
-    pub(crate) fn prepare_load(&mut self, owner: &OwnerRef, source: Arc<Source>, preferred: u64,
-                               extent: u64, relocation_base: u64, limit: u64,
+    pub(crate) fn prepare_load(&mut self, owner: &OwnerRef, source: Arc<Source>,
+                               linked_origin: u64, preferred: u64, extent: u64,
+                               relocation_base: u64, limit: u64,
                                mut executable: Vec<core::ops::Range<u64>>,
                                mut writable: Vec<core::ops::Range<u64>>)
                                -> Result<PreparedLoad, Status>
@@ -429,8 +494,8 @@ impl Manager
         {
             for range in ranges
             {
-                let start = range.start.checked_sub(preferred).ok_or(BAD_ABI)?;
-                let end = range.end.checked_sub(preferred).ok_or(BAD_ABI)?;
+                let start = range.start.checked_sub(linked_origin).ok_or(BAD_ABI)?;
+                let end = range.end.checked_sub(linked_origin).ok_or(BAD_ABI)?;
                 if start >= end || end > extent
                 {
                     return Err(BAD_ABI);
@@ -443,7 +508,7 @@ impl Manager
             Arc::try_new(Activity { readers:  AtomicUsize::new(0),
                                     retiring: AtomicBool::new(false) }).map_err(|_| NO_MEMORY)?;
         let instance = Arc::try_new(Instance { owner: owner.clone(), module: source.role == Role::Module, executable, writable,
-            initialized: AtomicBool::new(false), base,
+            initialized: AtomicBool::new(false), mapping: spin::Once::new(), retirement_claimed:AtomicBool::new(false), base,
             limit: base.checked_add(extent).ok_or(NO_MEMORY)?,
             execution: mac_kernel_model::image::ExecutionGate::try_new().map_err(|_| NO_MEMORY)?, activity,
             binding: spin::Once::new() }).map_err(|_| NO_MEMORY)?;
@@ -562,10 +627,61 @@ impl Manager
                                        _source:    read }))
     }
 
+    pub(crate) fn module_retirement(&self, after: u64) -> Option<ModuleRetirement>
+    {
+        let instance = self.sources
+                           .retained()
+                           .map(|(_, instance)| instance)
+                           .filter(|instance| {
+                               instance.module
+                               && instance.owner.owner().incarnation() > after
+                               && !instance.owner.accepting()
+                               && Self::root_only(&instance.owner)
+                               && instance.activity.readers.load(Ordering::SeqCst) == 0
+                               && !instance.retirement_claimed.load(Ordering::Acquire)
+                               && instance.mapping.get().is_some_and(|mapping| mapping.ready())
+                           })
+                           .min_by_key(|instance| instance.owner.owner().incarnation())?;
+        instance.retirement_claimed
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .ok()?;
+        let exclusion = match instance.execution.begin_load()
+        {
+            Ok(exclusion) => exclusion,
+            Err(_) =>
+            {
+                instance.retirement_claimed.store(false, Ordering::Release);
+                return None;
+            }
+        };
+        Some(ModuleRetirement { exclusion: Some(exclusion),
+                                owner:     instance.owner.owner().incarnation(),
+                                instance:  Some(instance.clone()),
+                                active:    true })
+    }
+
+    pub(crate) fn module_dma_address(&self, cpu: u64, bytes: u64)
+                                     -> Result<u64, crate::machine::paging::modules::Error>
+    {
+        use crate::machine::paging::modules::Error;
+        let end = cpu.checked_add(bytes).ok_or(Error::DmaSpan { address: cpu,
+                                                                 bytes })?;
+        let instance =
+            self.sources
+                .retained()
+                .map(|(_, instance)| instance)
+                .find(|instance| instance.module && cpu >= instance.base && end <= instance.limit)
+                .ok_or(Error::Owner)?;
+        instance.mapping.get().ok_or(Error::State)?.dma_address(cpu, bytes)
+    }
+
     pub(crate) fn finish_module_retiring(&mut self) -> usize
     {
         self.sources.finish_deferred(|instance| {
                         instance.module
+                        && Arc::strong_count(instance) == 1
+                        && !instance.retirement_claimed.load(Ordering::Acquire)
+                        && instance.mapping.get().is_none_or(|mapping| mapping.settled())
                         && !instance.owner.accepting()
                         && Self::root_only(&instance.owner)
                         && instance.activity.readers.load(Ordering::SeqCst) == 0
@@ -619,12 +735,71 @@ impl Manager
                         crate::machine::scheduler::address_wait_changed();
                     }
                 }
+                if let Some((_, instance)) = self.sources.releasing(&ticket)
+                   && instance.module
+                   && let Some(mapping) = instance.mapping.get()
+                   && (!mapping.settled()
+                       || instance.retirement_claimed.load(Ordering::Acquire)
+                       || Arc::strong_count(instance) != 1)
+                {
+                    mapping.request_retirement();
+                    return Err(Failure::module_mapping(ticket, mapping.refusal()));
+                }
                 self.sources.defer_alias(ticket)
             }
             Registration::Backing => self.sources.release_alias_storage(ticket),
             Registration::Object => self.sources.release_object(ticket),
             Registration::ObjectBacking => self.sources.release_object_storage(ticket)
         }.map_err(Into::into)
+    }
+}
+
+/// One real exclusion/anchor claim; original cleanup ticket remains in the
+/// canonical walk. No physical owner is detached into a stack-only obligation.
+pub(crate) struct ModuleRetirement
+{
+    exclusion: Option<mac_kernel_model::image::Loading>,
+    instance:  Option<Arc<Instance>>,
+    owner:     u64,
+    active:    bool
+}
+impl ModuleRetirement
+{
+    pub(crate) fn owner(&self) -> u64
+    {
+        self.owner
+    }
+
+    pub(crate) fn run(mut self) -> Result<(), crate::machine::paging::modules::Error>
+    {
+        self.active = false;
+        let instance =
+            self.instance.as_ref().ok_or(crate::machine::paging::modules::Error::State)?;
+        let mapping =
+            instance.mapping.get().ok_or(crate::machine::paging::modules::Error::State)?;
+        // Actual execution exclusion is held and every non-image ledger item
+        // has drained. Cleanup callbacks remain possible before this point;
+        // after it no future gate may republish an unmapped/quarantined entry.
+        instance.initialized.store(false, Ordering::Release);
+        mapping.retire()
+    }
+}
+impl Drop for ModuleRetirement
+{
+    fn drop(&mut self)
+    {
+        drop(self.exclusion.take());
+        if let Some(instance) = self.instance.take()
+        {
+            instance.retirement_claimed.store(false, Ordering::Release);
+            drop(instance);
+        }
+        if self.active
+        {
+            crate::machine::paging::modules::changed();
+        }
+        crate::drivers::recovery_changed();
+        crate::toolbox::processes::retirement::resources_released();
     }
 }
 

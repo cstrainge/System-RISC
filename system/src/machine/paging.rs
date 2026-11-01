@@ -1,6 +1,7 @@
 //! RV64 supervisor bootstrap and permanently owned translation roots. No
 //! existing reference changes its address; every RAM view starts in physmap.
 pub(crate) mod inspection;
+pub(crate) mod modules;
 mod alias;
 mod heap_partition;
 use core::{arch::asm, fmt, marker::PhantomData, ptr};
@@ -387,7 +388,7 @@ impl Tables for Frames
             return Err(FrameError::Slot { index });
         }
         let node = self.node(table)?;
-        Ok(unsafe { ptr::read_volatile((node.cpu as *const u64).add(index)) })
+        Ok(unsafe { core::sync::atomic::AtomicU64::from_ptr((node.cpu as *mut u64).add(index)) }.load(core::sync::atomic::Ordering::Acquire))
     }
 
     fn store(&mut self, table: PhysicalAddress, index: usize, entry: Entry)
@@ -399,7 +400,7 @@ impl Tables for Frames
         }
         let node = self.node(table)?;
         unsafe {
-            ptr::write_volatile((node.cpu as *mut u64).add(index), entry.bits());
+            core::sync::atomic::AtomicU64::from_ptr((node.cpu as *mut u64).add(index)).store(entry.bits(), core::sync::atomic::Ordering::Release);
         }
         Ok(())
     }
@@ -621,17 +622,11 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
                   VM_SYSTEM_HEAP_LIMIT - VM_SYSTEM_HEAP_BASE,
                   READ | WRITE,
                   true)?;
-    // Trusted flat application/module arenas remain an explicit temporary gate.
+    // Trusted flat application/definition arenas remain an explicit temporary gate.
     leaves += map(&mut mapper,
                   APPLICATION_PRIMARY_BASE,
                   APPLICATION_PRIMARY_BASE,
                   IMAGE_LIMIT - APPLICATION_PRIMARY_BASE,
-                  READ | WRITE | EXECUTE,
-                  false)?;
-    leaves += map(&mut mapper,
-                  MODULE_BASE,
-                  MODULE_BASE,
-                  MODULE_LIMIT - MODULE_BASE,
                   READ | WRITE | EXECUTE,
                   false)?;
     for &(base, end) in BOOT_MMIO_REGIONS
@@ -880,8 +875,7 @@ pub(crate) fn bus_address(cpu: u64, bytes: u64) -> Option<u64>
     {
         return Some(physical.0);
     }
-    if (cpu >= MODULE_BASE && end <= MODULE_LIMIT)
-       || (cpu >= APPLICATION_PRIMARY_BASE && end <= IMAGE_LIMIT)
+    if cpu >= APPLICATION_PRIMARY_BASE && end <= IMAGE_LIMIT
     {
         boot.ram.virtual_address(PhysicalAddress(cpu), bytes).ok()?;
         return Some(cpu);

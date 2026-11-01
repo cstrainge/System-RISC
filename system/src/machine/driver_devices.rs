@@ -44,7 +44,7 @@ impl Bus for PlatformBus
 {
     fn dma_address(&self, cpu_address: u64, bytes: u64) -> Result<u64, Status>
     {
-        super::paging::bus_address(cpu_address, bytes).ok_or(mac_abi::ACCESS_DENIED)
+        crate::kernel::module_dma_address(cpu_address, bytes)
     }
 
     fn probe(&mut self, ordinal: u32) -> Result<Description, Status>

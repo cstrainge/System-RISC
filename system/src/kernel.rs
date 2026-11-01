@@ -117,6 +117,7 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
                              images.prepare_load(owner,
                                            source,
                                            layout.preferred,
+                                           layout.preferred,
                                            layout.extent,
                                            crate::machine::memory::APPLICATION_RELOCATION_BASE,
                                            crate::machine::memory::IMAGE_LIMIT,
@@ -134,41 +135,114 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
                 })
             })
 }
-/// Module packages use the same immutable source and owner-alias registry as
-/// applications, with their own role and the exact permanent module RAM range.
+/// All resident DRVR/INIT code uses real page-backed supervisor mappings.
 pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,
-                          source: alloc::sync::Arc<AppImage>, base: u64, extent: u64,
-                          executable: alloc::vec::Vec<core::ops::Range<u64>>,
-                          write: impl FnOnce(&[mac_formats::resource::Resource],
-                                 u64)
-                                 -> Result<usize, Status>)
+                          account: &crate::machine::scheduler::accounting::AllocationAuthority,
+                          source: alloc::sync::Arc<AppImage>, code: &mac_formats::code::NativeCode)
                           -> Result<LoadedImage, Status>
 {
     if source.role != crate::images::Role::Module
+       || owner.owner() != account.owner()
        || owner.owner().kind() != mac_object_table::domain::DomainKind::Module
     {
         return Err(ACCESS_DENIED);
     }
+    let decoded =
+        mac_formats::native::image::decode(&code.code, &code.descriptor).map_err(|_| BAD_ABI)?;
+    let extent = code.descriptor.load_limit - code.descriptor.load_base;
+    if !extent.is_multiple_of(crate::machine::memory::PAGE_BYTES)
+       || !code.descriptor.load_base.is_multiple_of(crate::machine::memory::PAGE_BYTES)
+    {
+        serial!("MODULE_MAPPING_REFUSED: native module link reservation is not page aligned; \
+                 rebuild the package");
+        return Err(BAD_ABI);
+    }
+    let mut executable = alloc::vec::Vec::new();
+    executable.try_reserve_exact(decoded.segments.len()).map_err(|_| NO_MEMORY)?;
+    executable.extend(decoded.segments
+                             .iter()
+                             .filter(|s| {
+                                 s.flags & mac_formats::native::image::EXECUTE != 0 && s.length != 0
+                             })
+                             .map(|s| {
+                                 code.descriptor.load_base + s.offset
+                                 ..code.descriptor.load_base + s.offset + s.length as u64
+                             }));
     let prepared = IMAGES.with(|images| {
                              images.prepare_load(owner,
                                                  source,
-                                                 base,
+                                                 code.descriptor.load_base,
+                                                 crate::machine::memory::VM_MODULE_START,
                                                  extent,
-                                                 base,
-                                                 base.checked_add(extent).ok_or(NO_MEMORY)?,
+                                                 crate::machine::memory::VM_MODULE_START,
+                                                 crate::machine::memory::VM_MODULE_END,
                                                  executable,
                                                  alloc::vec::Vec::new())
                          })
                          .map_err(AccessError::status)??;
-    // Only IMAGES ownership is absent here. The module caller's Runtime/IRQ
-    // scopes are unchanged; this split alone does not shorten those lifetimes.
-    prepared.write(write).map_err(|cause| {
-                             match cause
-                             {
-                                 crate::images::LoadError::Admission(status)
-                                 | crate::images::LoadError::Write(status) => status
-                             }
-                         })
+    prepared.write_module(account, code).map_err(|cause| {
+                                            serial!("MODULE_MAPPING_REFUSED: {cause}");
+                                            cause.status()
+                                        })
+}
+
+pub(crate) fn module_dma_address(cpu: u64, bytes: u64) -> Result<u64, Status>
+{
+    use mac_object_table::shared::InvocationGate as _;
+    crate::toolbox::handles::InvocationGate::run(|| {
+        IMAGES.with(|images| images.module_dma_address(cpu, bytes))
+              .map_err(AccessError::status)?
+              .map_err(|cause| {
+                  serial!("MODULE_DMA_REFUSED: {cause}");
+                  cause.status()
+              })
+    })
+}
+
+/// Canonical guard-free maintenance. Original alias tickets remain in their
+/// owner walk through PTE removal, genuine target ACK and physical refund.
+pub(crate) fn pump_module_images()
+{
+    if !crate::machine::paging::modules::take_pending()
+    {
+        return;
+    }
+    let mut after = 0;
+    loop
+    {
+        let next = crate::machine::interrupts::with_masked(|| {
+            IMAGES.with(|images| images.module_retirement(after))
+        });
+        let claim = match next
+        {
+            Ok(Some(claim)) => claim,
+            Ok(None) => break,
+            Err(AccessError::Busy) =>
+            {
+                // No claim consumed the real retirement notice. IMAGES is a
+                // bounded metadata turn; retry its actual contention instead
+                // of waiting for an unrelated reader/monitor event to wake us.
+                crate::machine::paging::modules::changed();
+                break;
+            }
+            Err(cause) =>
+            {
+                serial!("MODULE_MAPPING_RETIREMENT_RETAINED: image manager admission refused \
+                         ({cause:?}); original mapping and cleanup ticket remain retained");
+                break;
+            }
+        };
+        after = claim.owner();
+        if let Err(cause) = claim.run()
+        {
+            // Busy is rearmed by the actual monitor lease's release, not by
+            // every input/frame. Other refusals retain their canonical cause.
+            if !matches!(cause,crate::machine::paging::modules::Error::Monitor(crate::machine::monitor::Error::Busy)) {
+                serial!("MODULE_MAPPING_RETIREMENT_RETAINED owner={after} cause={cause}");
+            }
+        }
+    }
+    finish_module_images();
 }
 pub(crate) fn module_execution(binding: crate::images::Binding)
                                -> Result<crate::images::ModuleExecution, Status>
@@ -641,15 +715,9 @@ pub(crate) fn with_resources_in<R>(scope: mac_abi::resources::Scope,
         fonts().ok_or(NOT_SUPPORTED)?.resources()).with_images(&catalog, origin, primary.as_ref())))
 }
 
-fn launch(info: &BootInfo) -> Result<(), crate::machine::scheduler::StartError>
+fn launch() -> Result<(), crate::machine::scheduler::StartError>
 {
-    let ram_end = info.ram_base
-                      .checked_add(info.ram_size)
-                      .ok_or(mac_formats::Error::Malformed("RAM range overflow"))?;
-    let module_arena = crate::machine::memory::module_arena(ram_end).map_err(|_| {
-                           mac_formats::Error::Malformed("module RAM reservation unavailable")
-                       })?;
-    crate::drivers::initialize(module_arena,crate::machine::MODULE_TARGET).map_err(|_|mac_formats::Error::Malformed("module runtime initialization failed"))?;
+    crate::drivers::initialize(crate::machine::MODULE_TARGET).map_err(|_|mac_formats::Error::Malformed("module runtime initialization failed"))?;
     crate::toolbox::scrap::extension_runtime::initialize().map_err(|_| mac_formats::Error::Malformed("Scrap extension service initialization failed"))?;
     crate::machine::driver_devices::initialize().map_err(|_| {
                                                     mac_formats::Error::Malformed("device service \
@@ -1180,7 +1248,7 @@ unsafe fn start_services(info: &BootInfo) -> *const SystemServices
     {
         return &HEADLESS_SERVICES;
     }
-    if let Err(error) = launch(info)
+    if let Err(error) = launch()
     {
         serial!("SYSTEM_STARTUP_FAILED: {}", &error);
         // Boot admission cannot retry over published reset-lifetime state.

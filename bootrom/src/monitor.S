@@ -163,10 +163,19 @@ __monitor_vector:
     beq t2,t3,.Lmonitor_fence
     li t3,{start_command}
     beq t2,t3,.Lmonitor_start
+    li t3,{sfence_vma_all}
+    beq t2,t3,.Lmonitor_translation_fence
     li t4,{unsupported}
     j 7f
 .Lmonitor_fence:
     fence.i
+    li t4,0
+    j 7f
+.Lmonitor_translation_fence:
+    # The actual interrupted CPU drops all virtual-address/ASID translations,
+    # including global leaves. No S handler, caller root or synthetic wake ACK.
+    # STOP retains priority again at the common completion tail below.
+    sfence.vma zero,zero
     li t4,0
 7:  ld t2,{stop}(t0)
     fence r,rw

@@ -49,10 +49,6 @@
       "base": "0x80200000",
       "bytes": "0x6881000"
     },
-    "modules": {
-      "base": "0x87800000",
-      "bytes": "0x800000"
-    },
     "application_relocation_base": "0x83000000",
     "fdt_tail_bytes": "0x200000",
     "boot_stack_bytes": "0x40000",

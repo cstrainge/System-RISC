@@ -50,8 +50,8 @@ pub struct Summary
     pub region_count:                      u64,
     /// Foundation attribution within the ordinary heap, never extra capacity.
     pub ordinary_foundation_heap_bytes:    u64,
-    /// Selected CPU/service backing owned by unique physical receipts. Partial
-    /// coverage excludes old page tables, pool metadata, ROM reservations and
+    /// Selected CPU/service and dynamic module-table backing owned by unique physical receipts.
+    /// Partial coverage excludes old page tables, pool metadata, ROM reservations and
     /// the protected floor. Not extra heap use or a sum of mapping aliases.
     pub tracked_foundation_physical_bytes: u64,
     pub flags:                             u32,

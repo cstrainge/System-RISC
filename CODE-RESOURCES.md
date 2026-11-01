@@ -15,8 +15,13 @@ independently loadable definition, driver and extension uses the same platform-
 derived link origin/capacity, not a manifest-selected address. Packaging derives
 its actual page-rounded memory span from ELF, including BSS. System chooses the
 actual runtime destination; current definitions allocate top-down from their
-resident arena and modules allocate from their separate arena. These mappings
-are still shared supervisor mappings, and physical unloading remains future work.
+resident arena. Modules reserve supervisor execution VAs and own per-segment
+buddy-backed RX/R/RW mappings with original-account charges. Their original image
+cleanup ticket remains pending until owned PTE removal, real translation ACKs and
+physical refund. Bounded module observations and remaining gaps are recorded in
+[the memory model](docs/MEMORY-APP-RESOURCE-MODEL.md#module-mapping-observations--2026-11-01). Application and
+definition physical migration, immutable frame sharing and private application
+roots remain separate gates.
 Application placement fields remain transitional until private process spaces.
 
 ## Building a native definition
