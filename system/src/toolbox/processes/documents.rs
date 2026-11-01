@@ -249,6 +249,8 @@ fn dispose(manager: &mut super::Manager, owner: u64, handle: u64, preparing: boo
 }
 pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
 {
+    call.requirement_class = [0; 4];
+    call.requirement_version = 0;
     if call.reserved != [0; 2] || call.operation > DOCUMENT_ACCEPTS_DRAG
     {
         return BAD_ARGUMENT;
@@ -484,7 +486,11 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                     })?;
                     if launch_needed
                     {
-                        super::launch_application(&mut launch, *loaded)?;
+                        super::launch_application(&mut launch, *loaded).map_err(|status| {
+                            call.requirement_class = launch.requirement_class;
+                            call.requirement_version = launch.requirement_version;
+                            status
+                        })?;
                     }
                 }
                 desktop(|d| {

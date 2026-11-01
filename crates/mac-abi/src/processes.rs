@@ -98,20 +98,23 @@ pub const MAX_DOCUMENTS: usize = 1024;
 #[derive(Clone, Copy, Default)]
 pub struct DocumentCall
 {
-    pub drag:               u32,
-    pub operation:          u32,
-    pub handle:             u64,
-    pub application_volume: u32,
-    pub application_cnid:   u32,
-    pub volume:             u32,
-    pub cnid:               u32,
-    pub file_type:          [u8; 4],
-    pub index:              u32,
-    pub count:              u32,
-    pub present:            u32,
-    pub reserved:           [u32; 2],
-    pub entry:              crate::files::CatalogInfo,
-    pub process:            ProcessInfo
+    pub drag:                u32,
+    pub operation:           u32,
+    pub handle:              u64,
+    pub application_volume:  u32,
+    pub application_cnid:    u32,
+    pub volume:              u32,
+    pub cnid:                u32,
+    pub file_type:           [u8; 4],
+    pub index:               u32,
+    pub count:               u32,
+    pub present:             u32,
+    pub reserved:            [u32; 2],
+    pub entry:               crate::files::CatalogInfo,
+    pub process:             ProcessInfo,
+    /// Failure-only declared provider identity from document launch. Zero otherwise.
+    pub requirement_class:   [u8; 4],
+    pub requirement_version: u32
 }
 
 #[cfg(test)]
