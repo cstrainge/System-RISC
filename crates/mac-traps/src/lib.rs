@@ -630,8 +630,8 @@ impl SurfaceConnection<'_>
 
     /// Preserve the borrowed surface's global clip while limiting font ink to
     /// the requested horizontal span, including partially visible glyphs.
-    pub fn font_draw_clipped(&mut self, selection: quickdraw::FontSelection, baseline: Point,
-                             text: &str, limit: i16, color: u32)
+    pub fn font_draw_clipped(&mut self, selection: quickdraw::FontSelection,
+                             baseline: Point, text: &str, limit: i16, color: u32)
                              -> Result<i16>
     {
         let saved = self.surface.clip;

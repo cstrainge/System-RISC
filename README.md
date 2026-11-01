@@ -49,16 +49,17 @@ with the original bomb icon, scrollable diagnostics and clipboard copying.
 
 ## Build and check
 
-Run from this directory:
+Run from this directory with the nightly toolchain (required by the guest
+allocator and ROM features). If nightly is not your default, select it explicitly:
 
 ```sh
-cargo xtask build
-cargo xtask image
-cargo xtask boot
-cargo xtask boot-check
-cargo xtask inspect ../build/system7/dist/Finder.bin
-cargo xtask check
-cargo xtask doc
+cargo +nightly xtask build
+cargo +nightly xtask image
+cargo +nightly xtask boot
+cargo +nightly xtask boot-check
+cargo +nightly xtask inspect ../build/system7/dist/Finder.bin
+cargo +nightly xtask check
+cargo +nightly xtask doc
 ```
 
 For the graphical desktop:
@@ -85,6 +86,12 @@ Install Python 3.11 or newer, the nightly Rust MSVC toolchain with the
 Windows QEMU including `qemu-img.exe`. The launcher selects the nightly toolchain
 unless `RUSTUP_TOOLCHAIN` explicitly selects another one, and uses the same Python
 interpreter for build and saved-file preservation helpers. WSL is not required.
+
+Disk preservation refuses a live VM even when its monitor is unavailable. On
+Windows, the recorded PID is also checked against the recorded executable name
+so PID reuse by another process does not falsely block a stopped VM's restart.
+Unreadable process or command records still refuse replacement; do not remove
+the disk or terminate an unrelated process to bypass that protection.
 
 Windows QEMU is discovered on `PATH`, through `working/vm/windows-qemu.json`
 in the enclosing workspace, or in its standard Program Files location. For a

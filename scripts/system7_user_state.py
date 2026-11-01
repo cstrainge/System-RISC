@@ -18,7 +18,7 @@ import uuid
 from hfs_b_tool import tool
 from riscv_vm import qmp, image_executable
 from system7_paths import ROOT, build_dir
-from system7_host import exclusive_lock, process_exists, sync_directory, sync_file
+from system7_host import exclusive_lock, process_exists, sync_directory, sync_file, windows_process_name
 
 TREES = {'Preferences': ('/System Folder/Preferences', '/System Folder'),
          'Documents': ('/Documents', '/')}
@@ -57,9 +57,20 @@ def running(state):
     except (OSError, ValueError) as error:
         raise RuntimeError(f'Cannot determine VM ownership in {state}: {error}; stop the VM and repair its process record before replacing user files') from error
     try:
-        return process_exists(pid)
+        if not process_exists(pid):
+            return False
+        if os.name != 'nt':
+            return True
+        command = json.loads((state / 'command.json').read_text())
+        if not isinstance(command, list) or not command or not isinstance(command[0], str) \
+                or not Path(command[0]).name:
+            raise ValueError('command.json must record the VM executable')
+        actual = windows_process_name(pid)
+        return actual is not None and actual.casefold() == Path(command[0]).name.casefold()
     except OSError as error:
         raise RuntimeError(f'Cannot query VM process {pid}: {error}; user files were not replaced') from error
+    except ValueError as error:
+        raise RuntimeError(f'Cannot determine VM ownership in {state}: {error}; repair its command record before replacing user files') from error
 
 
 def default_state(build):
