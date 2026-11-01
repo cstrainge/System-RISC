@@ -176,6 +176,10 @@ validation. This is not permission to resume now or retain the old Rust suite.
   checks establish only their stated properties. Correct or withdraw unsupported
   completion claims; preserve historical evidence without presenting it as proof.
 - Keep reports in root `status.txt` and coordinate through root `comms.txt`.
+  Every new coordination entry must include its date and a consistent explicit
+  author tag (for example, `[Root / memory-model agent]` or
+  `[Extension / std agent]`). Prioritize concrete prerequisites blocking another
+  agent; publish the exact starting commit, interface and evidence limits.
   Clipboard development readiness requires the recorded native broker/worker
   evidence and exact published starting commit. Do not resume the external agent
   automatically or equate those prerequisites, heap capacity, retained account
