@@ -347,9 +347,16 @@ impl Client<'_>
     /// it with the caller. The entry must run `teardown_tls` on its actual thread
     /// before returning, and must not unwind across the C boundary. JOIN consumes
     /// its unique right on success; DETACH consumes it without cancelling work.
-    /// A retained join right may be dropped only from the creating native
-    /// application thread's ordinary context, outside module/definition/policy
-    /// callbacks, manual critical/IRQ-masked scopes and foreign Process execution.
+    /// The caller uniquely owns each retained join right. That ownership may be
+    /// transferred, with synchronization, to another ordinary native application
+    /// thread of the same Process; creation does not bind it to the creator.
+    /// QUERY borrows the right; JOIN or DETACH consumes it only on acceptance.
+    /// Do not concurrently consume, reuse after consumption, or transfer an
+    /// in-flight JOIN: its parked replay belongs to the actual joining thread.
+    /// These operations require ordinary application context, outside
+    /// module/definition/policy callbacks, manual critical/IRQ-masked scopes
+    /// and foreign Process execution. The higher-level NativeJoinRight remains
+    /// affine; this raw transport contract does not make that wrapper Send/Sync.
     /// NAME points at live readable UTF-8 until the call ends. EXIT is child-only,
     /// nonreturning after acceptance, and requires actual TLS FINISH first.
     pub unsafe fn native_thread(self, call: &mut thread::Call)
