@@ -422,7 +422,12 @@ Control/frame reference across assembly mutation.
 
 Joined1 denotes a peer receiver joined from M park; joined2 denotes the
 primary receiver. The joined field is not the current privilege/entry phase. FenceI=1
-ACKs actual remote fence.i. START=2 is a one-shot transition from the real M park:
+ACKs actual remote fence.i. SFENCE_VMA_ALL=3 executes a full local
+`sfence.vma zero,zero` on each frozen boot-admitted physical CPU, including
+parked participants, before its exact command-sequence ACK. System reserves the
+real command lease before module PTE effects; physical backing cannot be refunded
+until the corresponding non-cloneable completion is consumed. Instruction and
+translation publication remain distinct operations. START=2 is a one-shot transition from the real M park:
 M independently validates the selected CPU profile/root/physical permissions and
 reports Starting=1 or Refused=3. Real warm System initialization reports
 AdmittedIdle=2; the initial phase is Prepared=0. A separate nonzero wake epoch
@@ -1107,8 +1112,17 @@ application ACAP authority. Each invocation pins its real source and execution
 use, selects that module's resources, and separately retains the original I/O
 Subject and allocation target. Teardown waits for actual invocation readers and
 non-image cleanup before releasing image aliases and final account metadata.
-Physical module RAM remains reserved until reset; alias retirement alone does
-not claim physical code reclamation or arbitrary privileged-fault containment.
+The native module path uses private per-segment buddy backing charged to the
+original module Kernel account. Execution maps cover page-rounded explicit
+memory lengths with the resource's RX/R/RW permissions; holes stay unmapped.
+Each original IMAG instance anchors its actual backing and PTE expectations.
+Alias retirement retains its original cleanup ticket until execution/readers and
+non-image resources drain, owned PTEs are cleared, all actual monitor targets ACK
+translation invalidation, and physical pages and charges are released. Missing
+ACKs or foreign PTE state quarantine the same owners until restart. This is an
+implementation contract awaiting native qualification; it does not claim
+arbitrary privileged-fault containment, shared immutable image frames or private
+application address spaces.
 
 ### Native module worker and critical-section boundary
 
@@ -1376,9 +1390,12 @@ a late reset callback cannot reset or bind a replacement claim. Losing the
 manager quarantines its claims, maps and System targets; destruction is never
 a hardware acknowledgement. No operation spins waiting for hardware.
 
-RAM mappings are restricted to the caller's pinned native module reservation.
-The current QEMU virt bus uses coherent identity DMA; this is not physical-page
-pinning, IOMMU isolation, module-image reclamation or multi-hart qualification.
+DMA ranges remain restricted to the caller's retained native module image.
+The bus resolves actual segment physical backing and checks owned ancestor/leaf
+PTEs. A range must fit one contiguous physical segment; holes and unrepresentable
+spans fail. Device maps and their positive stop/reset barriers must drain before
+image retirement. This does not grant arbitrary heap DMA, an IOMMU or broader
+SMP qualification.
 
 The board bus class is `VMMI`; its match key is device ID u32, vendor ID u32,
 then eight zero bytes. Probe ordinals 0..7 describe the board's eight 4 KiB
@@ -1392,27 +1409,29 @@ locks and File Manager guards are released before any module callback. New
 requests are withdrawn before quiescing; pending requests prevent finalization
 until completed/cancelled. Module, interface and request identities use the shared
 generation-tagged facility, including rejection of foreign IDs and slot reuse.
-Code/host descriptors remain pinned after failure; hot unloading is not implemented.
+Code/backing and original cleanup tickets remain retained on uncertain failure.
+Hot replacement and arbitrary privileged fault recovery are not implemented.
 The admission profile fixes separate stored-code (2 MiB), runtime reservation
 (6 MiB), declared heap (4 MiB) and callback-stack (64 KiB) limits in mac-module.
 The packager/loader and resident registry use the same constants. In particular,
 a BSS-backed decoder workspace does not count as stored executable bytes.
 Alignment and each exhausted budget have distinct diagnostic errors. The machine
-adapter still admits modules only while their complete reservations fit its
-actual remaining arena. These checks are admission limits, not an MMU or quota.
+adapter reserves execution VAs from the checked supervisor module window.
+Package descriptor spans must fit that virtual window; actual rounded payload
+pages and metadata must separately fit the original module Kernel account and
+discovered RAM. Failure does not substitute System storage.
 
-The checked QEMU virt platform reserves `0x87800000..0x88000000` (8 MiB) for
-modules, separately from the ROM's live storage scratch heap at
-`0x87000000..0x87800000`. Its default RAM remains 8 GiB; the checked physical map
-requires at least 256 MiB so this reservation and the high 2 MiB device-tree tail
-are disjoint. Generated boot reservations, pager constants and linker symbols
-use this same record. Page metadata starts after the module reservation.
-The image builder sums complete installed System-module descriptor spans,
-including BSS/private heaps, and refuses an over-capacity installation with its
-package name and required bytes. Runtime admission independently reports the
-remaining reservation and requested extent. Code capacity does not grant a
-module worker, heap account or stack budget. These addresses belong to the
-machine adapter, not the class-neutral registry.
+`virtual_memory.modules` defines execution placement. There is no physical module
+arena reservation or identity map. The QemuRISC-V firmware heap remains reserved
+at `0x87000000..0x87800000`; module storage comes from the real page pool. Boot
+reservations, constants and linker symbols are generated from the same checked
+platform record. The image builder reports installed virtual spans, while the
+runtime admits actual backing. Lazy shared kernel/firmware module page-table
+branches belong to System Foundation and remain until reset; payload pages do
+not. The initial Sv39 module window must occupy whole 1 GiB root slots, checked
+at build time, so dynamic branches never replace a bootstrap System subtree. Applications and definitions retain their temporary physical image arena.
+The temporary private module code/data charge is not the final System-owned
+shared immutable image policy.
 
 ## Driver-owned file associations (FASS 0, version 1)
 
@@ -2281,10 +2300,13 @@ physical zero; a mapped physical address of zero remains valid. Direct-map rows
 are aliases, not additional physical charges. Code, read-only data, writable
 data, actual heap backing, System stack, temporary trusted application/module
 arenas and devices are distinguished. The native source walks the actual owned
-immutable root, caches contiguous matching spans once on explicit request and
-validates unmapped guards before publication. It does not report planned
-mappings as installed mappings. Failed allocation leaves initialization
-retryable. Private process maps and per-domain budget gauges remain later gates.
+root through atomic PTE cells and retains revisioned row snapshots. PTE changes
+invalidate the cached revision; a concurrent mutation returns SCAN_STALE. A
+snapshot describes stored PTEs, not a claim that a pending distributed TLB
+operation has already completed. Unmapped guards are validated before row
+publication. Planned mappings are never reported as installed. Failed allocation
+remains retryable. Private process maps and complete per-domain physical budget
+gauges remain later gates.
 
 
 ## Resident Scrap extension service (SCEX, version 1)

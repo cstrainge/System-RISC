@@ -156,6 +156,37 @@ impl<G: InvocationGate> Reservation<G>
         self.scope.lease()
     }
 
+    /// Prepared publication checks both capabilities before the canonical birth.
+    /// Failure borrows this reservation, preserving its original unbound scope.
+    pub(crate) fn validate_for(&self, owner: DomainId, kind: KindCode) -> Result<(), PoolError>
+    {
+        if self.owner.owner() != owner
+        {
+            return Err(PoolError::Scope { owner,
+                                          kind,
+                                          cause: Failure::ForeignOwner { expected: owner,
+                                                                         actual:   self.owner
+                                                                                       .owner() } });
+        }
+        if self.kind != kind
+        {
+            return Err(PoolError::Scope { owner,
+                                          kind,
+                                          cause: Failure::WrongKind { expected: self.kind,
+                                                                      actual:   kind } });
+        }
+        Ok(())
+    }
+
+    /// Only prepared Store publication calls this after matching owner/kind
+    /// validation and successful canonical allocation under the owner gate.
+    /// Return the redundant owner pin for disposal after that gate has ended.
+    pub(crate) fn bind_prepared(self, key: ResourceKey) -> (Owner<G>, OwnerRef<G>)
+    {
+        self.binding.publish(key);
+        (self.scope, self.owner)
+    }
+
     pub(crate) fn into_parts(self, kind: KindCode)
                              -> Result<(OwnerRef<G>, Owner<G>, Binding), PoolError>
     {

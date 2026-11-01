@@ -22,10 +22,20 @@ impl mac_object_table::shared::InvocationGate for NativeInvocationGate
 
     fn scope_closed(owner: mac_object_table::domain::DomainId)
     {
-        if owner.kind() == mac_object_table::domain::DomainKind::Module
+        use mac_object_table::domain::DomainKind;
+        match owner.kind()
         {
-            crate::drivers::dependencies_changed();
-            crate::drivers::recovery_changed();
+            DomainKind::Module =>
+            {
+                crate::drivers::dependencies_changed();
+                crate::drivers::recovery_changed();
+            }
+            DomainKind::Process =>
+            {
+                crate::drivers::dependencies_changed();
+                crate::toolbox::processes::retirement::resources_released();
+            }
+            DomainKind::System => ()
         }
     }
 

@@ -22,6 +22,8 @@ pub(crate) enum Cause
     #[cfg(target_arch = "riscv64")]
     NativeTls(crate::toolbox::native_threads::CleanupCause),
     #[cfg(target_arch = "riscv64")]
+    ModuleMapping(crate::machine::paging::modules::CleanupCause),
+    #[cfg(target_arch = "riscv64")]
     RequestRegistryUnavailable(crate::state::AccessError),
     #[cfg(target_arch = "riscv64")]
     ScrapManagerUnavailable(crate::state::AccessError),
@@ -130,6 +132,8 @@ impl core::fmt::Display for Cause
             #[cfg(target_arch = "riscv64")]
             Self::NativeTls(cause) => cause.fmt(f),
             #[cfg(target_arch = "riscv64")]
+            Self::ModuleMapping(cause) => cause.fmt(f),
+            #[cfg(target_arch = "riscv64")]
             Self::RequestRegistryUnavailable(cause) =>
             {
                 write!(f,
@@ -200,8 +204,8 @@ impl core::fmt::Display for Cause
                                                 dependent } =>
             {
                 write!(f,
-                       "module {dependent} still has an admitted backing operation using provider \
-                        {provider}; wait for actual close or cancellation acknowledgement; \
+                       "dependent domain {dependent} still has an active resource scope using \
+                        provider {provider}; wait for actual runtime or resource closure; \
                         dependency and original cleanup ticket remain retained")
             }
             Self::Facility(error) => error.fmt(f),
@@ -290,6 +294,15 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn module_mapping(ticket: ReleasedResource,
+                                 cause: crate::machine::paging::modules::CleanupCause)
+                                 -> Self
+    {
+        Self { ticket,
+               cause: Cause::ModuleMapping(cause) }
+    }
+
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn thread_preparations(ticket: ReleasedResource, preparing: usize) -> Self
     {

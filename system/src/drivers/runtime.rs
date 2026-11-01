@@ -60,9 +60,7 @@ struct Runtime
 {
     registry:  Registry,
     bindings:  Vec<Binding>,
-    residents: Vec<ResidentBinding>,
-    next:      u64,
-    limit:     u64
+    residents: Vec<ResidentBinding>
 }
 struct Binding
 {
@@ -245,12 +243,8 @@ pub(crate) fn owns_memory(module: u64, base: u64, length: u64) -> Result<(), Sta
            .map_err(crate::state::AccessError::status)?
 }
 
-pub(crate) fn initialize(arena: core::ops::Range<u64>, target: Target) -> Result<(), Status>
+pub(crate) fn initialize(target: Target) -> Result<(), Status>
 {
-    if arena.start >= arena.end || arena.start & 4095 != 0 || arena.end & 4095 != 0
-    {
-        return Err(BAD_ARGUMENT);
-    }
     let owner = crate::toolbox::handles::system_owner()?;
     let kinds = crate::toolbox::handles::registry(|registry| {
                     Ok([registry.get(crate::toolbox::handles::KindCode(*b"DIFC"))?,
@@ -263,9 +257,7 @@ pub(crate) fn initialize(arena: core::ops::Range<u64>, target: Target) -> Result
                   .map_err(|error| crate::toolbox::handles::registry_status(&error))?;
     RUNTIME.publish(Runtime { registry:  Registry::new(target, owner, kinds, crate::machine::memory::MODULE_KERNEL_BUDGET_BYTES).map_err(status)?,
                               bindings:  Vec::new(),
-                              residents: Vec::new(),
-                              next:      arena.start,
-                              limit:     arena.end })
+                              residents: Vec::new() })
            .map_err(crate::state::AccessError::status)?;
     lifecycle::install()?;
     preferences::install()?;
@@ -307,103 +299,88 @@ pub(crate) fn load(resources: Vec<Resource>, file_type: [u8; 4], directory: Pack
     let mut rules = Vec::new();
     rules.try_reserve_exact(handlers.len()).map_err(|_| NO_MEMORY)?;
     rules.extend(handlers.iter().map(|h| h.rule));
-    let (module, loaded, host, base, limit) =
+    // Only registry staging owns Runtime. Physical preparation, PTE effects
+    // and actual remote fences happen after this guard has ended.
+    let (module, owner, account) =
         RUNTIME.with(|runtime| {
-                   let extent =
-                       package.code.descriptor.load_limit - package.code.descriptor.load_base;
-                   let base = runtime.next;
-                   let limit = base.checked_add(extent).ok_or(NO_MEMORY)?;
-                   if limit > runtime.limit
-                   {
-                       serial!("MODULE_CAPACITY_REFUSED name={} requested={} available={} \
-                                next=0x{:x} limit=0x{:x} \
-                                action=rebuild_with_a_larger_checked_module_reservation",
-                               package.contract.name,
-                               extent,
-                               runtime.limit.saturating_sub(base),
-                               base,
-                               runtime.limit);
-                       return Err(NO_MEMORY);
-                   }
-                   let plan = image::LoadPlan::new(&package.code.code,
-                                                   &package.code.descriptor,
-                                                   Some(&package.code.relocations),
-                                                   base).map_err(|_| BAD_ABI)?;
-                   runtime.bindings.try_reserve(1).map_err(|_| NO_MEMORY)?;
-                   let decoded = image::decode(&package.code.code, &package.code.descriptor).map_err(|_| BAD_ABI)?;
                    let module = runtime.registry
                                        .stage(package.contract, directory, file_type)
                                        .map_err(status)?;
                    if let Err(error) = runtime.registry.install_file_handlers(module, &rules)
                    {
-                       if let Err(cleanup) = runtime.registry.rollback(module)
-                       {
-                           serial!("MODULE_INIT_CLEANUP_RETAINED module={} original={} cleanup={}",
-                                   module, error, cleanup);
-                           return Err(status(cleanup));
-                       }
+                       runtime.registry.rollback(module).map_err(status)?;
                        return Err(status(error));
                    }
-                   let host = Box::try_new(abi::Host { header: abi::Header::of::<abi::Host>(),
-                                                       module,
-                                                       reserved: 0,
-                                                       context: u64::from(module),
-                                                       call: Some(broker),
-                                                       resolve: Some(resolve),
-                                                       allocate: Some(allocation::allocate),
-                                                       deallocate: Some(allocation::deallocate),
-                                                       reallocate: Some(allocation::reallocate),
-                                                       with_module_allocation: Some(allocation::with_module_allocation),
-                                                       workers: Some(workers::control),
-                                                       critical_section: Some(critical::enter) });
-                   let host = match host
-                   {
-                       Ok(host) => host,
-                       Err(_) =>
-                       {
-                           runtime.registry.rollback(module).map_err(status)?;
-                           return Err(NO_MEMORY);
-                       }
-                   };
-                   let pointer = &*host as *const abi::Host;
-                   let loaded = (|| {
-                       let owner = runtime.registry.module_ledger(module).map_err(status)?;
-                       let account = runtime.registry.module_allocation(module).map_err(status)?;
-                       crate::allocator::with_target(crate::allocator::Target::Owner {
-                           account, class: mac_kernel_model::policy::MemoryClass::Kernel
-                       }, || {
-                           let mut executable = Vec::new();
-                           executable.try_reserve_exact(decoded.segments.len()).map_err(|_| NO_MEMORY)?;
-                           executable.extend(decoded.segments.iter().filter(|s| s.flags & image::EXECUTE != 0 && s.length != 0)
-                               .map(|s| base + s.offset .. base + s.offset + s.length as u64));
-                           crate::kernel::load_module(&owner, source.clone(), base, extent, executable, |_, _| {
-                               // Exact disjoint RAM remains reserved until reset. No reclamation is claimed.
-                               let output = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, plan.length()) };
-                               plan.write(output).map_err(|_| BAD_ABI)?;
-                               crate::machine::monitor::publish_instructions().map_err(|cause| {
-                                   serial!("MODULE_INSTRUCTION_PUBLICATION_REFUSED module={} base={:#x} cause={}",
-                                           module, base, cause);
-                                   cause.status()
-                               })?;
-                               Ok(plan.entry() as usize)
-                           })
-                       })
-                   })();
-                   let loaded = match loaded {
-                       Ok(loaded) => loaded,
-                       Err(error) => { runtime.registry.rollback(module).map_err(status)?; return Err(error); }
-                   };
-                   let image = loaded.binding();
-                   runtime.next = limit;
-                   runtime.bindings.push(Binding { module, image,
-                                                   base,
-                                                   limit,
-                                                   _host: host,
-                                                   instance: None,
-                                                   file_handlers: handlers });
-                   Ok((module, loaded, pointer, base, limit))
+                   let owner = runtime.registry.module_ledger(module).map_err(status)?;
+                   let account = runtime.registry.module_allocation(module).map_err(status)?;
+                   Ok::<_, Status>((module, owner, account))
                })
                .map_err(crate::state::AccessError::status)??;
+    let prepared=crate::allocator::with_target(crate::allocator::Target::Owner{
+        account:account.clone(),class:mac_kernel_model::policy::MemoryClass::Kernel
+    },|| {
+        let host=crate::allocator::with_system(crate::allocator::SystemClass::Foundation,||Box::try_new(abi::Host {header:abi::Header::of::<abi::Host>(),module,reserved:0,
+            context:u64::from(module),call:Some(broker),resolve:Some(resolve),allocate:Some(allocation::allocate),
+            deallocate:Some(allocation::deallocate),reallocate:Some(allocation::reallocate),
+            with_module_allocation:Some(allocation::with_module_allocation),workers:Some(workers::control),
+            critical_section:Some(critical::enter)})).map_err(|_|NO_MEMORY)?;
+        let loaded=crate::kernel::load_module(&owner,&account,source.clone(),&package.code)?;
+        Ok::<_,Status>((host,loaded))
+    });
+    drop(account); // original payload receipts now own all admitted page charges
+    let (host, loaded) = match prepared
+    {
+        Ok(prepared) => prepared,
+        Err(error) =>
+        {
+            RUNTIME.with(|runtime| runtime.registry.rollback(module).map_err(status))
+                   .map_err(crate::state::AccessError::status)??;
+            return Err(error);
+        }
+    };
+    let range = loaded.range();
+    let base = range.start;
+    let limit = range.end;
+    let pointer = &*host as *const abi::Host;
+    let image = loaded.binding();
+    let published = RUNTIME.with_owned((host, handlers), |(host, handlers), runtime| {
+                               if runtime.bindings.try_reserve(1).is_err()
+                               {
+                                   return Err((NO_MEMORY, host, handlers));
+                               }
+                               runtime.bindings.push(Binding { module,
+                                                               image,
+                                                               base,
+                                                               limit,
+                                                               _host: host,
+                                                               instance: None,
+                                                               file_handlers: handlers });
+                               Ok(())
+                           });
+    match published
+    {
+        Ok(Ok(())) =>
+        {}
+        Ok(Err((error, host, handlers))) =>
+        {
+            drop(host);
+            drop(handlers);
+            drop(loaded);
+            RUNTIME.with(|runtime| runtime.registry.rollback(module).map_err(status))
+                   .map_err(crate::state::AccessError::status)??;
+            return Err(error);
+        }
+        Err((error, (host, handlers))) =>
+        {
+            drop(host);
+            drop(handlers);
+            drop(loaded);
+            RUNTIME.with(|runtime| runtime.registry.rollback(module).map_err(status))
+                   .map_err(crate::state::AccessError::status)??;
+            return Err(error.status());
+        }
+    }
+    let host = pointer;
     let entry: abi::Entry = unsafe { core::mem::transmute(loaded.entry()) };
     let execution = match loaded.into_module()
     {
@@ -1241,9 +1218,13 @@ pub(crate) fn pump_jobs()
     retire_request_payload();
     recovery::pump();
     if DEPENDENCIES_CHANGED.swap(false, core::sync::atomic::Ordering::AcqRel)
-       && RUNTIME.with(|runtime| runtime.registry.reap_closed_dependencies()).is_err()
     {
-        DEPENDENCIES_CHANGED.store(true, core::sync::atomic::Ordering::Release);
+        match RUNTIME.with(|runtime| runtime.registry.reap_closed_dependencies())
+        {
+            Ok(true) => recovery::changed(),
+            Ok(false) => (),
+            Err(_) => DEPENDENCIES_CHANGED.store(true, core::sync::atomic::Ordering::Release)
+        }
     }
 
     if !JOBS.has_ready()
@@ -1480,4 +1461,83 @@ pub(crate) fn release_request(ticket: mac_object_table::domain::ReleasedResource
     use crate::toolbox::handles::cleanup::Failure;
     RUNTIME.with_owned(ticket, |ticket, runtime| runtime.registry.release_request(ticket, storage))
            .map_err(|(cause, ticket)| Failure::request_registry_unavailable(ticket, cause))?
+}
+
+/// Retains the original cleanup ticket if the registry is occupied. Process
+/// cleanup enters through Desktop, not a fabricated module Registry context.
+pub(crate) fn release_dependency(ticket: mac_object_table::domain::ReleasedResource, storage: bool)
+                                 -> Result<(), crate::toolbox::handles::cleanup::Failure>
+{
+    use crate::toolbox::handles::cleanup::Failure;
+    RUNTIME.with_owned(ticket, |ticket, runtime| {
+               runtime.registry.release_dependency(ticket, storage)
+           })
+           .map_err(|(_, ticket)| {
+               Failure::context_unavailable(ticket, "driver dependency registry")
+           })?
+}
+
+#[derive(Debug)]
+pub(crate) enum ProcessProviderError
+{
+    Missing,
+    Registry(super::registry::Error),
+    Access(crate::state::AccessError)
+}
+impl ProcessProviderError
+{
+    pub(crate) fn status(&self) -> Status
+    {
+        match self
+        {
+            Self::Missing => NOT_FOUND,
+            Self::Registry(cause) => status(*cause),
+            Self::Access(cause) => cause.status()
+        }
+    }
+}
+impl core::fmt::Display for ProcessProviderError
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Missing =>
+            {
+                out.write_str("no available provider is registered for the required service")
+            }
+            Self::Registry(cause) => cause.fmt(out),
+            Self::Access(cause) => write!(out, "provider registry is unavailable: {cause:?}")
+        }
+    }
+}
+
+/// Selection and the exact canonical dependency publication share one registry
+/// turn. Readiness callbacks must use this returned interface after the guard ends.
+pub(crate) fn admit_process_provider(owner: &crate::toolbox::handles::OwnerRef,
+                                     allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+                                     scope: &mac_object_table::scope::Lease<crate::toolbox::handles::InvocationGate>,
+                                     class: ClassId, version: u32)
+                                     -> Result<u64, ProcessProviderError>
+{
+    RUNTIME.with(|runtime| {
+               let interface = match runtime.registry
+                                            .process_provider(scope, class, version)
+                                            .map_err(ProcessProviderError::Registry)?
+               {
+                   Some(interface) => interface,
+                   None =>
+                   {
+                       runtime.registry
+                              .select(class, version, 0)
+                              .map_err(ProcessProviderError::Registry)?
+                              .ok_or(ProcessProviderError::Missing)?
+                   }
+               };
+               runtime.registry
+                      .pin_process_provider(owner, allocation, scope, interface, class, version)
+                      .map_err(ProcessProviderError::Registry)?;
+               Ok(interface)
+           })
+           .map_err(ProcessProviderError::Access)?
 }

@@ -33,6 +33,24 @@ impl RootBinding
     {
         self.owner
     }
+
+    /// Retains dependency lifetime through the genuine runtime root. This lease
+    /// does not retain Root itself or delay its final scope closure.
+    pub(crate) fn service_scope(&self, owner: &OwnerRef)
+                                -> Result<mac_object_table::scope::Lease<InvocationGate>, Error>
+    {
+        let actual = root(self, owner)?;
+        if !actual.owner.accepting() || actual.closing.load(Ordering::Acquire)
+        {
+            return Err(Error::Finished);
+        }
+        if actual.scope.subject() != owner.owner()
+        {
+            return Err(Error::Authority);
+        }
+        actual.scope.admitting().map_err(|_| Error::Finished)?;
+        Ok(actual.scope.clone())
+    }
 }
 /// A sealed pin to this registered Process runtime admission root. System
 /// failure closes new author/key admission while Finder's owner ledger remains
@@ -77,6 +95,7 @@ pub(super) struct Root
 {
     owner:      OwnerRef,
     allocation: AllocationAuthority,
+    scope:      mac_object_table::scope::Lease<InvocationGate>,
     positions:  Spinlock<Vec<bool>>,
     closing:    AtomicBool
 }
@@ -374,8 +393,9 @@ fn permit<T>(owner: &OwnerRef, select: impl Fn(&mut Manager) -> &mut Store<T>)
 }
 pub(crate) struct PreparedRoot
 {
-    root:   Arc<Root>,
-    permit: PublicationPermit<InvocationGate>
+    root:        Arc<Root>,
+    permit:      PublicationPermit<InvocationGate>,
+    reservation: mac_object_table::scope::Reservation<InvocationGate>
 }
 impl PreparedRoot
 {
@@ -401,6 +421,8 @@ pub(crate) fn prepare_root(owner: OwnerRef, allocation: AllocationAuthority)
                                                        mac_kernel_model::policy::MemoryClass::Kernel };
     crate::allocator::with_target(target, || {
         let permit = permit(&owner, |manager| &mut manager.roots)?;
+        let reservation = mac_object_table::scope::Reservation::try_new(
+            &owner, lifetime::Kind::Root.specification().kind).map_err(Error::Pool)?;
         let capacity = crate::machine::memory::TLS_KEY_CAPACITY as usize;
         let mut positions = Vec::new();
         positions.try_reserve_exact(capacity)
@@ -408,27 +430,33 @@ pub(crate) fn prepare_root(owner: OwnerRef, allocation: AllocationAuthority)
         positions.resize(capacity, false);
         let root = Arc::try_new(Root { owner,
                                        allocation,
+                                       scope: reservation.lease(),
                                        positions: Spinlock::new(positions),
                                        closing: AtomicBool::new(false) }).map_err(|_| {
                                                                              Error::Metadata("root")
                                                                          })?;
         Ok(PreparedRoot { root,
-                          permit })
+                          permit,
+                          reservation })
     })
 }
 pub(crate) fn publish_root(prepared: PreparedRoot) -> Result<RootBinding, RootFailure>
 {
     let PreparedRoot { root,
-                       permit } = prepared;
+                       permit,
+                       reservation } = prepared;
     let owner = root.owner.owner();
     let Some(manager) = MANAGER.get()
     else
     {
         return Err(RootFailure { cause:    Error::Unavailable,
                                  prepared: PreparedRoot { root,
-                                                          permit } });
+                                                          permit,
+                                                          reservation } });
     };
-    match interrupts::with_masked(|| manager.lock().roots.publish_prepared(permit, root))
+    match interrupts::with_masked(|| {
+              manager.lock().roots.publish_prepared_root(permit, reservation, root)
+          })
     {
         Ok((publication, old)) =>
         {
@@ -440,8 +468,9 @@ pub(crate) fn publish_root(prepared: PreparedRoot) -> Result<RootBinding, RootFa
         Err(failure) =>
         {
             Err(RootFailure { cause:    Error::Publication(failure.cause),
-                              prepared: PreparedRoot { root:   failure.value,
-                                                       permit: failure.permit } })
+                              prepared: PreparedRoot { root:        failure.value,
+                                                       permit:      failure.permit,
+                                                       reservation: failure.reservation } })
         }
     }
 }

@@ -288,7 +288,7 @@ pub struct Store<T, G: InvocationGate, S = ()>
 mod prepared;
 pub use prepared::{AdmissionFailure, PreparedError, PreparedPublication, PublicationPermit,
                    PublicationPlan, PublishFailure, Removal, RetiredCapacity, RetiredOwner,
-                   RetiredPublication};
+                   RetiredPublication, RootPublicationFailure};
 
 fn find_reserved<G: InvocationGate>(reserved: &[Weak<Reserved<G>>], id: u64)
                                     -> Option<ResourceKey>

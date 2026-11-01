@@ -5,7 +5,12 @@ use mac_toolbox::{Error, WindowId, *};
 pub fn error_text(system: &System<'_>, status: Error, operation: u32, subject: &str)
                   -> Result<crate::browser::Text<768>, Error>
 {
-    let index = match status
+    let requirement = match status
+    {
+        Error::ServiceRequirement(failure) => Some(failure),
+        _ => None
+    };
+    let index = match requirement.map_or(status, |failure| failure.cause.error())
     {
         Error::BadAbi => 0,
         Error::BadArgument => 1,
@@ -58,6 +63,15 @@ pub fn error_text(system: &System<'_>, status: Error, operation: u32, subject: &
     let cause = system.resources().application().indexed_string(20021, index, &mut b)?;
     let mut out = crate::browser::Text::default();
     write!(&mut out, "{operation}: {subject}\r").map_err(|_| Error::BadArgument)?;
+    if let Some(failure) = requirement
+    {
+        let mut template = [0; 256];
+        let template = system.resources().application().indexed_string(20021, 38, &mut template)?;
+        let (before, after) = template.split_once("^0").ok_or(Error::BadAbi)?;
+        let (middle, after) = after.split_once("^1").ok_or(Error::BadAbi)?;
+        write!(&mut out, "{before}{}{middle}{}{after}\r", failure.class, failure.version)
+            .map_err(|_| Error::BadArgument)?;
+    }
     if let Error::Archive(files::ArchiveError::Version(number)
                           | files::ArchiveError::Method(number)
                           | files::ArchiveError::EntryVersion(number)) = status

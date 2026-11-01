@@ -70,12 +70,15 @@ impl ProcessInfo
 #[derive(Default, Clone, Copy)]
 pub struct ProcessCall
 {
-    pub operation: u32,
-    pub index:     u32,
-    pub id:        u64,
-    pub volume:    u32,
-    pub cnid:      u32,
-    pub info:      ProcessInfo
+    pub operation:           u32,
+    pub index:               u32,
+    pub id:                  u64,
+    pub volume:              u32,
+    pub cnid:                u32,
+    pub info:                ProcessInfo,
+    /// Failure-only identity of a declared provider requirement. Zero otherwise.
+    pub requirement_class:   [u8; 4],
+    pub requirement_version: u32
 }
 
 /// Size-distinct native document delivery. Sender owns a preparing batch;

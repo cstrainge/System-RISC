@@ -89,6 +89,15 @@ impl Definition
         let app = region("application", &self.application, page)?;
         let process = region("process_kernel", &self.process_kernel, page)?;
         let modules = region("modules", &self.modules, page)?;
+        // The initial dynamic module mapper owns dedicated root slots in both
+        // System views. It never replaces an existing System/physmap subtree.
+        if !modules.start().is_multiple_of(Sv39::LEAF_BYTES[0])
+           || !modules.end().is_multiple_of(Sv39::LEAF_BYTES[0])
+        {
+            return Err(error("platform sv39 virtual_memory.modules must occupy whole 1 GiB \
+                              root slots; dynamic module branches cannot share a bootstrap \
+                              System subtree"));
+        }
         let system = region("system", &self.system, page)?;
         let physmap = region("physmap", &self.physmap, page)?;
         let image = address("application_image_base", &self.application_image_base)?;
@@ -184,6 +193,13 @@ impl Definition
 }
 impl Checked
 {
+    /// Execution VA capacity only. Actual module pages are admitted against
+    /// discovered RAM and their original module Kernel accounts at runtime.
+    pub fn module_capacity(&self) -> u64
+    {
+        self.layout.modules().end() - self.layout.modules().start()
+    }
+
     pub fn system_image_range(&self) -> core::ops::Range<u64>
     {
         self.system_image..self.system_image_limit

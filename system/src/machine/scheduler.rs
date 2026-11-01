@@ -1709,6 +1709,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
                 crate::toolbox::processes::documents::pump();
                 crate::toolbox::native_threads::pump();
                 crate::toolbox::application_heap::wait::pump();
+                crate::kernel::pump_module_images();
                 crate::toolbox::processes::retirement::pump();
                 crate::toolbox::processes::finder::pump();
                 crate::toolbox::processes::termination::pump();

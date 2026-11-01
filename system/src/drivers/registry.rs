@@ -1595,8 +1595,9 @@ impl Registry
         Ok(())
     }
 
-    /// Pin code until reboot even after failure. Outstanding requests require
-    /// terminal cancellation before failure is finalized.
+    /// Outstanding requests require terminal cancellation before finalization.
+    /// Native image backing follows its owning PTE/translation retirement;
+    /// uncertainty retains the original code/backing and cleanup ticket.
     pub fn finish_quiesce(&mut self, module: u64) -> Result<()>
     {
         self.reap_closed_dependencies();

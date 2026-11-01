@@ -7,9 +7,12 @@ scoped resident metadata routing now extend stack/CPU charges. Selected optimize
 native lifecycle/storage/recovery observations and their limits are recorded below. A fixed512 MiB page-backed System heap
 is split into480 MiB ordinary and32 MiB protected storage. Process-owned
 page-backed application heaps and shared application startup/allocation are
-implemented; bounded native observations are recorded below. Image-page charges
-and private process mappings remain pending. Module
-allocation forwarding, genuine invocation/resource scopes and module-owned
+implemented; bounded native observations are recorded below. The module-only
+page-backed mapping path now has private segment charges, owning atomic PTE
+transactions, actual translation receipts and original-ticket retirement; bounded
+native observations and outstanding qualification gaps are recorded below. Applications and definitions retain
+their temporary image arena. Shared immutable image frames and private process
+mappings remain pending. Module allocation forwarding, genuine invocation/resource scopes and module-owned
 workers are implemented; bounded native observations are recorded below. The
 Host Clipboard and SMP development prerequisites are published; complete
 recovery-service qualification and broader SMP stress/timing remain open.
@@ -3475,3 +3478,32 @@ These finite scenarios do not qualify full Save/Save As interaction under
 exhaustion, Finder OOM restart, high-address module execution, private process
 isolation, or absence of races. Earlier pressure runs and their failures remain
 recorded; a returned worker body alone is not final controller disposal.
+
+## Module mapping observations — 2026-11-01
+
+The optimized RV64 release/LTO System resource
+`e0774ad97ecc8f6b01c4990bc57d9a190901d539c1528c91ddf796b76f984892`
+and boot ROM
+`0944a164d63c71a2749b24191cf386ece35d68702f4052c3e7f04bf2bfeedbce`
+ran in private QEMU RVA23/Sv39 guests with 8 GiB RAM and one/four configured
+CPUs, event tracing disabled and debug information level 1. Actual module entries
+executed at the supervisor module addresses. Read-only physical page-table walks
+observed declared RX/R/RW supervisor permissions, matching physical backing in
+the kernel and firmware roots, and unmapped segment gaps. These are PTE
+observations, not executed permission-fault checks.
+
+Existing native worker packages exercised normal execution/cancellation and
+failed-entry rollback. After the failed module's three workers were reclaimed
+and its rollback completed, every original segment page was absent from both
+roots. The external host-filesystem workload subsequently completed its native
+file/transfer/application-exit assertions and metadata restoration after reboot,
+using the actual module DMA and provider path. An earlier run failed with
+`ScanStale` in the exit-worker scenario; that intermittent failure remains open
+and the successful rerun does not resolve it.
+
+These finite observations do not qualify lost translation acknowledgments,
+foreign-PTE interference, later reuse of the same VA/physical frames, arbitrary
+privileged fault recovery, or race absence. Debugger reads pause execution and
+guest diagnostics also perturb timing; no latency result is claimed. Application
+and definition image backing, shared immutable frames, private process roots
+and user-mode isolation remain separate work.

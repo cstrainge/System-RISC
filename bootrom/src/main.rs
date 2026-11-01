@@ -442,7 +442,7 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
                 segment.memory_length,
                 segment.flags);
     }
-    let [boot, firmware, _, _] = memory::BOOT_RESERVED;
+    let [boot, firmware, _] = memory::BOOT_RESERVED;
     for (base, end, permissions) in [(flash.base, flash.base + flash.length, READ | EXECUTE),
                                      (boot.0, boot.1, READ | WRITE),
                                      (firmware.0, firmware.1, READ | WRITE)]
@@ -463,7 +463,7 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
                                                              access:  Access::Supervisor,
                                                              global:  r.flags & FIRMWARE_ONLY == 0 } }
     };
-    // Temporary trusted flat app/definition/module mappings are a bootable
+    // Temporary trusted flat app/definition mappings are a bootable
     // self-virtualization step, not private process mappings or U-mode isolation.
     let identity = |base, end, execute| {
         translation::Region { virtual_address: VirtualAddress(base),
@@ -475,8 +475,7 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
                                                              access: Access::Supervisor,
                                                              global: false } }
     };
-    let fixed = [identity(memory::APPLICATION_PRIMARY_BASE, memory::IMAGE_LIMIT, true),
-                 identity(memory::BOOT_RESERVED[2].0, memory::BOOT_RESERVED[2].1, true)];
+    let fixed = [identity(memory::APPLICATION_PRIMARY_BASE, memory::IMAGE_LIMIT, true)];
     let io = memory::BOOT_MMIO_REGIONS.iter().map(|&(base, end)| identity(base, end, false));
     let devices = platform::PLATFORM_MMIO_DEVICES.iter().map(|&(_, _, base, bytes, _, _)| {
                                                             identity(base, base + bytes, false)

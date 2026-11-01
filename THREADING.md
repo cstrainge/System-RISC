@@ -181,8 +181,11 @@ module, with zero Application-class allowance. Page-rounded stack backing,
 complete saved CPU backing, Context/Core metadata and forwarded captured closure
 storage consume that original module Kernel account. Shared scheduler capacity
 belongs to System. These are shared per-module limits, not a separate 16 MiB
-allowance for each worker. The module's flat code arena remains reserved until
-reset; execution pins do not establish physical code-page reclamation.
+allowance for each worker. Private module payload pages also consume that
+original Kernel account in the current mapping stage. Actual invocation/worker
+execution pins delay owned PTE removal; real translation ACKs precede payload
+refund. Dynamic module mapping/reclamation qualification remains separate from
+previous worker observations.
 
 Preparation preflights fallible backing before publication. Failed CREATE leaves
 the SDK owning its original body; successful THRD publication is the single
@@ -488,8 +491,10 @@ The bounded SMP scenarios in [SCHEDULING.md](SCHEDULING.md) add body migration,
 register/service and target-drain observations. Sustained preservation stress,
 competing failures and arbitrary privileged recovery remain unqualified. Mapping
 mutation, ASID reuse and frame reclamation
-also require their remote TLB/lifetime contract. The current immutable boot roots
-do not imply that such a dynamic protocol exists. No SBI service is assumed.
+also require their remote TLB/lifetime contract. The module mapping path now
+owns atomic PTE transitions and genuine monitor SFENCE completions, with bounded native observations recorded in
+[the memory model](docs/MEMORY-APP-RESOURCE-MODEL.md#module-mapping-observations--2026-11-01); broader qualification remains open. Earlier immutable-root observations do not qualify that
+new dynamic path. No SBI service is assumed.
 Multi-Scheduler supplies placement and activation policy through those core
 admission and claim gates; it cannot bypass them.
 
@@ -532,7 +537,7 @@ privileged-fault containment is **unproven** and a **required future gate**.
 
 | Current state | Present assumption and required boundary |
 | --- | --- |
-| `kernel.rs` guarded managers and immutable images | One-shot startup and bounded guards remain. Shared IMAG sources/aliases distinguish application and module roles; execution instances retain actual source/code pins. Checked RV64 RLOC metadata permits independent copies with separate code/data/BSS spans. Module arena backing remains reserved until reset. General dynamic linking, hot replacement and physical code-page unloading remain unsupported. |
+| `kernel.rs` guarded managers and immutable images | One-shot startup and bounded guards remain. Shared IMAG sources/aliases distinguish application and module roles; execution instances retain actual source/code pins. Checked RV64 RLOC metadata permits independent copies with separate code/data/BSS spans. Module payloads now have actual buddy/PTE ownership with original-ticket retirement and real translation ACKs; bounded native observations are recorded in the memory model; broader qualification remains open. Application/definition physical migration, immutable frame sharing, general dynamic linking and hot replacement remain separate gates. |
 | `ThreadContext::traps` | The RV64 scheduler selects the running thread context; nested accounting belongs to that OS thread. A separate bootstrap context is used for synchronous firmware service execution. |
 | `Desktop` | The global compositor, physical input and window registry remain shared. Trusted app context selects saved events, menus, dialogs, cursors, worlds, font/legacy state and TextEdit managers at the masked service boundary. Windows carry an owner; background retained scenes are composed centrally. |
 | Application resources | Read-only application-to-System/font search selects the caller's immutable image. Retained content replay selects the owning image, so a background window does not resolve against whichever application invoked the compositor. General mutable Resource Manager chains remain open. |

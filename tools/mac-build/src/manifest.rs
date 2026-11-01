@@ -473,10 +473,10 @@ impl Manifest
         {
             return Ok(Vec::new());
         }
-        if self.archive || self.role != "application" || self.file_type != "APPL"
+        if self.archive || self.role != "application" || crate::module::kind(self).is_some()
         {
-            return Err(error("required_services is only valid for a built native APPL \
-                              application"));
+            return Err(error("required_services is only valid for a built native application \
+                              (including Finder), not a module or resource archive"));
         }
         if self.required_services.len() > requirements::MAX_RECORDS
         {

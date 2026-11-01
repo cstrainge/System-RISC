@@ -16,6 +16,10 @@ const WAKE_PRIMARY_JOIN_AND_TARGET_EPOCHS: usize = 1;
 pub const FENCE_I: u64 = 1;
 /// One-shot secondary transition; acknowledgment is M acceptance, not S readiness.
 pub const START: u64 = 2;
+/// Flush every virtual address and ASID, including global translations, on the
+/// actual target CPU. ACK follows its real SFENCE.VMA, not an S wake or FENCE.I.
+/// The command carries no root, address, callback or caller-selected CPU list.
+pub const SFENCE_VMA_ALL: u64 = 3;
 /// Current checked RVA23S64 major families; Z extensions remain a selected
 /// platform contract, never inferred from these MISA bits.
 pub const REQUIRED_ISA_BITS: u64 = (1 << 8)
@@ -403,6 +407,7 @@ const fn layout_fingerprint() -> u64
                  WAKE_PRIMARY_JOIN_AND_TARGET_EPOCHS,
                  FENCE_I as usize,
                  START as usize,
+                 SFENCE_VMA_ALL as usize,
                  ENTRY_PRIMARY as usize,
                  ENTRY_SECONDARY as usize,
                  START_PREPARED as usize,

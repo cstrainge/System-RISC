@@ -95,6 +95,7 @@ pub fn build_guest() -> Result<()>
               platform::current().virtual_memory()?
                                  .rust_constants_for(&["VM_SYSTEM_IMAGE_BASE",
                                                        "VM_SYSTEM_IMAGE_LIMIT",
+                                                       "VM_MODULE_START", "VM_MODULE_END",
                                                        "VM_PHYSMAP_START", "VM_PHYSMAP_END",
                                                        "VM_PHYSMAP_PHYSICAL_BASE",
                                                        "VM_SYSTEM_STACKS_START",

@@ -1,6 +1,67 @@
 //! Typed service failures. Numeric status codes belong to the trap contract.
 use mac_abi::{Status, *};
 
+/// The cause of a required-provider launch refusal, independent of its prose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceRequirementCause
+{
+    Missing,
+    Incompatible,
+    Busy,
+    NoMemory,
+    AccessDenied,
+    Cancelled,
+    OtherStatus(Status)
+}
+impl ServiceRequirementCause
+{
+    pub(crate) const fn from_status(status: Status) -> Self
+    {
+        match status
+        {
+            NOT_FOUND => Self::Missing,
+            BAD_ABI => Self::Incompatible,
+            SERVICE_BUSY => Self::Busy,
+            NO_MEMORY => Self::NoMemory,
+            ACCESS_DENIED => Self::AccessDenied,
+            OPERATION_CANCELLED => Self::Cancelled,
+            other => Self::OtherStatus(other)
+        }
+    }
+
+    pub const fn error(self) -> Error
+    {
+        match self
+        {
+            Self::Missing => Error::NotFound,
+            Self::Incompatible => Error::BadAbi,
+            Self::Busy => Error::ServiceBusy,
+            Self::NoMemory => Error::NoMemory,
+            Self::AccessDenied => Error::AccessDenied,
+            Self::Cancelled => Error::Cancelled,
+            Self::OtherStatus(status) => Error::from_status(status)
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServiceRequirementFailure
+{
+    pub class:   crate::TypeCode,
+    pub version: u32,
+    pub cause:   ServiceRequirementCause
+}
+impl core::fmt::Display for ServiceRequirementFailure
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        write!(out,
+               "required service '{}' version {}: {}",
+               self.class,
+               self.version,
+               self.cause.error())
+    }
+}
+
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error
@@ -26,6 +87,7 @@ pub enum Error
     CorruptData,
     StorageUnavailable,
     Archive(archive::ArchiveError),
+    ServiceRequirement(ServiceRequirementFailure),
     EventNotEnabled,
     ScrapTypeUnavailable,
     MemoryFull,
@@ -105,6 +167,7 @@ impl Error
             Self::CorruptData => CORRUPT_DATA,
             Self::StorageUnavailable => STORAGE_UNAVAILABLE,
             Self::Archive(error) => error.status(),
+            Self::ServiceRequirement(error) => error.cause.error().status(),
             Self::EventNotEnabled => events::EVENT_NOT_ENABLED,
             Self::ScrapTypeUnavailable => scrap::NO_TYPE_ERR,
             Self::MemoryFull => memory::MEM_FULL_ERR,
@@ -147,6 +210,7 @@ impl core::fmt::Display for Error
             Self::CorruptData => f.write_str("file or catalog data is damaged or malformed"),
             Self::StorageUnavailable => f.write_str("backing storage is unavailable"),
             Self::Archive(error) => core::fmt::Display::fmt(error, f),
+            Self::ServiceRequirement(error) => error.fmt(f),
             Self::EventNotEnabled => f.write_str("event type is disabled by the OS event mask"),
             Self::ScrapTypeUnavailable => f.write_str("clipboard flavor is unavailable"),
             Self::MemoryFull => f.write_str("Memory Manager allocation failed"),
