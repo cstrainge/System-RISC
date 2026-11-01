@@ -135,6 +135,7 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
         .map_err(|cause| crate::images::LoadError::Write(cause.into()))?;
     let prepared = IMAGES.with(|images| {
                              images.prepare_load(owner,
+                                           account,
                                            source,
                                            layout.preferred,
                                            layout.preferred,
@@ -185,6 +186,7 @@ pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,
                              }));
     let prepared = IMAGES.with(|images| {
                              images.prepare_load(owner,
+                                                 account,
                                                  source,
                                                  code.descriptor.load_base,
                                                  crate::machine::memory::VM_MODULE_START,
@@ -943,7 +945,7 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
                                         recovery_boot_error("System modal service admission failed",
                                                             status)
                                     })?;
-    let mut definitions = crate::loader::Definitions::new(files);
+    let mut definitions = crate::loader::Definitions::new(files)?;
     let mut controls = crate::toolbox::controls::objects::Manager::new(
         crate::toolbox::handles::controls_kinds().map_err(|status| recovery_boot_error("Control Manager kind admission failed", status))?)
         .map_err(|status| recovery_boot_error("Control Manager admission failed", status))?;

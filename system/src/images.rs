@@ -12,7 +12,8 @@ use mac_object_table::{aliases,
 use crate::toolbox::handles::{CapacityPolicy, InvocationGate, KindCode, KindLease, OwnerRef,
                               cleanup::Failure};
 
-pub(crate) const ROOT_KINDS: [KindCode; 2] = [KindCode(*b"IMAG"), KindCode(*b"IMST")];
+pub(crate) const ROOT_KINDS: [KindCode; 4] =
+    [KindCode(*b"IMAG"), KindCode(*b"IMST"), KindCode(*b"DDEF"), KindCode(*b"DSTA")];
 
 #[derive(PartialEq)]
 pub(crate) enum Role
@@ -102,7 +103,8 @@ struct Instance
     limit:              u64,
     execution:          mac_kernel_model::image::ExecutionGate,
     activity:           Arc<Activity>,
-    binding:            spin::Once<Binding>
+    binding:            spin::Once<Binding>,
+    allocation:         crate::machine::scheduler::accounting::AllocationAuthority
 }
 
 /// Fields destroy source/instance payload references before the final use signal.
@@ -119,6 +121,19 @@ impl Read
     pub(crate) fn source(&self) -> &Source
     {
         &self.source
+    }
+
+    /// Genuine source owner; a caller number cannot reconstruct this authority.
+    pub(crate) fn owner(&self) -> &OwnerRef
+    {
+        &self.instance.owner
+    }
+
+    /// Original admission capability, retained with this execution instance.
+    /// Resource consumers must not substitute the current drawing app's budget.
+    pub(crate) fn allocation(&self) -> &crate::machine::scheduler::accounting::AllocationAuthority
+    {
+        &self.instance.allocation
     }
 
     /// Immutable package bytes can outlive this execution instance. A restart
@@ -424,9 +439,10 @@ impl Manager
 
     /// Caller owns a genuine child ledger before any source is admitted. All
     /// fallible metadata allocation precedes executable-memory writes.
-    pub(crate) fn prepare_load(&mut self, owner: &OwnerRef, source: Arc<Source>,
-                               linked_origin: u64, preferred: u64, extent: u64,
-                               relocation_base: u64, limit: u64,
+    pub(crate) fn prepare_load(&mut self, owner: &OwnerRef,
+                               allocation: &crate::machine::scheduler::accounting::AllocationAuthority,
+                               source: Arc<Source>, linked_origin: u64, preferred: u64,
+                               extent: u64, relocation_base: u64, limit: u64,
                                mut executable: Vec<core::ops::Range<u64>>,
                                mut writable: Vec<core::ops::Range<u64>>)
                                -> Result<PreparedLoad, Status>
@@ -435,7 +451,7 @@ impl Manager
             matches!((&source.role, owner.owner().kind()),
                      (Role::Application { .. }, mac_object_table::domain::DomainKind::Process)
                      | (Role::Module, mac_object_table::domain::DomainKind::Module));
-        if !role_matches_owner
+        if !role_matches_owner || allocation.owner() != owner.owner()
         {
             return Err(ACCESS_DENIED);
         }
@@ -497,7 +513,7 @@ impl Manager
             initialized: AtomicBool::new(false), mapping: spin::Once::new(), retirement_claimed:AtomicBool::new(false), base,
             limit: base.checked_add(extent).ok_or(NO_MEMORY)?,
             execution: mac_kernel_model::image::ExecutionGate::try_new().map_err(|_| NO_MEMORY)?, activity,
-            binding: spin::Once::new() }).map_err(|_| NO_MEMORY)?;
+            binding: spin::Once::new(), allocation: allocation.clone() }).map_err(|_| NO_MEMORY)?;
         let (_, receipt) = self.sources
                                .insert_with_receipt(owner, source, instance.clone())
                                .map_err(status)?

@@ -1,6 +1,7 @@
 //! App-local state is swapped only at the interrupt-masked service boundary.
 //! The compositor/window registry are shared; applications never select identity.
 #![forbid(unsafe_code)]
+use crate::toolbox::resources::definitions::DefinitionRef;
 use alloc::boxed::Box;
 
 use mac_abi::{processes::*, *};
@@ -26,7 +27,7 @@ pub(super) struct Saved
 }
 impl Saved
 {
-    pub fn try_new(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionEntry,
+    pub fn try_new(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionRef,
                    allocation: crate::machine::scheduler::accounting::AllocationAuthority)
                    -> Result<Self, Status>
     {
@@ -44,7 +45,7 @@ impl Saved
 
     /// The active row holds the one empty swap placeholder. Its boxed queue
     /// travels between active rows and must never retain a process account.
-    pub fn try_placeholder(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionEntry)
+    pub fn try_placeholder(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionRef)
                            -> Result<Self, Status>
     {
         use mac_object_table::shared::InvocationGate as _;
@@ -56,7 +57,7 @@ impl Saved
         Self::construct(owner, mdef, events)
     }
 
-    fn construct(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionEntry,
+    fn construct(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionRef,
                  events: Box<EventManager>)
                  -> Result<Self, Status>
     {

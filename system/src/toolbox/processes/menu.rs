@@ -1,12 +1,11 @@
 //! System-owned application-menu policy. MDEF owns drawing and hit geometry.
 #![forbid(unsafe_code)]
-
 use alloc::boxed::Box;
 
 use mac_abi::{menus::*, *};
 
 use crate::toolbox::{quickdraw::{Canvas, SurfaceExt},
-                     resources::manager::Manager as Resources};
+                     resources::{definitions::DefinitionRef, manager::Manager as Resources}};
 
 pub const RESOURCE_ID: i16 = 32760;
 pub const MENU_ID: i16 = -16489;
@@ -40,7 +39,7 @@ pub struct ApplicationMenu
     actions:     [Option<Action>; MAX_ITEMS],
     labels:      [[u8; INLINE_STRING_BYTES]; 3],
     lengths:     [usize; 3],
-    definition:  DefinitionEntry,
+    definition:  DefinitionRef,
     gate:        TrapGate,
     tracking:    bool,
     highlighted: i16
@@ -50,8 +49,8 @@ impl ApplicationMenu
 {
     /// Labels are resident System resources, independent of the foreground app.
     /// STR# 32760: Hide prefix, Hide Others, Show All.
-    pub fn new(definition: DefinitionEntry, gate: TrapGate, resources: Resources<'_>)
-               -> Result<Self, Status>
+    pub(crate) fn new(definition: DefinitionRef, gate: TrapGate, resources: Resources<'_>)
+                      -> Result<Self, Status>
     {
         let mut labels = [[0; INLINE_STRING_BYTES]; 3];
         let mut lengths = [0; 3];
@@ -336,7 +335,7 @@ fn icon(icon: MenuIcon) -> MenuIcon
     }
 }
 
-fn invoke(definition: DefinitionEntry, gate: TrapGate, state: &mut MenuDefinitionState,
+fn invoke(definition: DefinitionRef, gate: TrapGate, state: &mut MenuDefinitionState,
           message: i16, param: i64, surface: *mut Surface)
           -> i64
 {

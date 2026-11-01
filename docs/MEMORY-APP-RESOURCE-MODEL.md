@@ -3568,3 +3568,72 @@ Private roots, user entry, shared immutable app frames, definition backing,
 failed-publication pressure, lost-ACK/foreign-PTE injection, full-range stale
 translation reuse and race absence remain unverified or unimplemented as stated
 above. QMP reads and guest diagnostics perturb execution; no latency claim follows.
+
+## Registered definition callables — implementation
+
+Window, control, menu, process-menu and boot-panel state retain opaque definition
+completion references rather than bare executable addresses. DDEF/DSTA use the
+shared registered Store; every invocation validates its original completion
+receipt, generation, owner and resource kind/ID, and obtains an execution pin
+plus the retained source before leaving the registry. Author code executes only
+after that guard is gone. New registrations refuse stopped sources; an existing
+private completion reference can still service an owned object's Dispose during
+teardown. No callable reference is exported to userspace.
+
+The canonical definition record owns its source pin and fixed execution-range
+reservation. Desktop's cache owns lookup rows only. Definition roots retire after
+all non-image/non-definition resources and actual threads drain, then acquire
+execution exclusion before removing the canonical record. A refusal retains its
+original cleanup ticket. Cache eviction cannot prematurely reuse an active range;
+a copied stale reference cannot invoke a replacement slot. Definition completion
+wakes retirement only when a retirement request is pending, not on every paint.
+Resident CDEF/MDEF defaults select the genuine System catalog, so a bootstrap
+Finder override cannot own globals that survive Finder restart.
+
+This slice deliberately retains the fixed definition identity arena and existing
+loader publication timing. Definition payload physical accounting and guard-free
+prepare/publish remain unimplemented. App-origin callable payloads, execution
+pins and per-owner registration growth use the original Process Kernel account
+retained at image admission. Shared Store indices keep their explicit System
+allocation scopes; genuine System definitions use System ordinary storage.
+An image retains its actual admission account alongside its original owner,
+validated before publication, and releases that authority with the Instance.
+Fresh cache resolution refuses a stopped definition owner even though an already
+issued private callable can still perform teardown. No additional executable
+IMAG instances are introduced. Before that next stage, image retirement must
+iterate multiple instances per owner and preserve application source origin
+separately from a definition's execution identity. Private process roots and
+user-mode isolation remain separate gates.
+
+Optimized RV64 compilation alone is static evidence. The observations below
+qualify only their stated artifact/scenarios; direct stale private-ref injection,
+concurrent cleanup and responsiveness remain separate runtime gates. Retained
+host-test substitutions were neither run nor adapted for this change.
+
+### Definition callable native observations — 2026-11-01
+
+The optimized release/LTO RV64 System resource
+`353e58c139e7669873a1370a7b06970b1b8704d825fec1f9e523787df6ce79d2`
+with ROM `a85d5a5ce9b2de9c267493d87836aac580c8283de075ce6da90c7bb1ec324b60`
+ran in private 8 GiB/four-CPU QEMU with event/TextEdit tracing disabled. Six
+installed applications entered, quit and closed their accounts, with sampled
+image mappings absent afterward; Panic Test relaunched and completed its report
+path. A real Finder-role fixture completed two Abort/replacement cycles with old
+thread/Process/account closure and replacement/survivor input.
+
+The existing no_std Image Probe packaged the real Static Text CDEF in its own
+application fork and invoked it through public controls. Three normal launches
+observed distinct source image IDs at the same reused definition VA and actual
+Process/account closure each time. An explicit native diagnostic variant panicked
+with its app-owned control still live; the System report was dismissed, DDEF's
+original ticket initially waited for actual objects, then the Process/account
+closed. This exercises real owner-stop cleanup, not arbitrary privileged-fault
+containment. Source/base media stayed fixed within each capture, owned guests
+were reaped and private disks pruned. The variant changes only the diagnostic
+application, not production kernel dispatch or definition code.
+
+Direct stale private-ref injection, concurrent invocation/cleanup races and timing
+remain unverified. Fixed definition payload backing/accounting and its identity
+mapping remain unchanged. Lazy loading still runs under Desktop; guard-free
+preflight and real physical definition ownership must land before that identity
+span is removed. No U-mode isolation follows from callable lifetime protection.

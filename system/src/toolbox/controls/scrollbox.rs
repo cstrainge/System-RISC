@@ -1,6 +1,7 @@
 //! Resident scroll boxes. Object identities, viewport pixels, dirty rows and
 //! tracking policy stay in System; CDEF1 owns the scrollbar's pixels and geometry.
 #![forbid(unsafe_code)]
+use crate::toolbox::resources::definitions::DefinitionRef;
 use alloc::{sync::Arc, vec::Vec};
 
 use mac_abi::{controls::*,
@@ -451,7 +452,7 @@ impl Manager
     }
 
     pub(crate) fn request(&mut self, recipient: &OwnerRef, storage: &OwnerRef, call: &mut Call,
-                          fonts: &FontManager, entry: DefinitionEntry, gate: TrapGate)
+                          fonts: &FontManager, entry: DefinitionRef, gate: TrapGate)
                           -> Result<Option<Drawing>, Status>
     {
         let owner = recipient.owner().incarnation();

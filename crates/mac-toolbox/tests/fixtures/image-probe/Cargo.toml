@@ -7,6 +7,9 @@ build = "build.rs"
 
 [workspace]
 
+[features]
+abort-live-definition = []
+
 [[bin]]
 name = "ImageProbe"
 path = "src/main.rs"

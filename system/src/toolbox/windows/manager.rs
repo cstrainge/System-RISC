@@ -1,13 +1,14 @@
 //! Rectangular document windows with stable IDs, z order, damage and tracking.
 //! Rust APIs implement a documented subset; no WindowRecord guest ABI is implied.
 #![cfg_attr(not(test), forbid(unsafe_code))]
+use crate::toolbox::resources::definitions::DefinitionRef;
 #[cfg(test)]
 use alloc::vec;
 use alloc::{collections::VecDeque, vec::Vec};
 use core::cell::{Cell, RefCell};
 
 pub use mac_abi::WindowId;
-use mac_abi::{BAD_ARGUMENT, DefinitionCall, DefinitionEntry, Header, NOT_FOUND, Status, Surface};
+use mac_abi::{BAD_ARGUMENT, DefinitionCall, Header, NOT_FOUND, Status, Surface};
 use mac_object_table::shared::InvocationGate as _;
 
 use super::definition::{self, WindowDefinitionState};
@@ -97,7 +98,7 @@ pub struct Window
     pub min_height:      i16,
     state:               WindowDefinitionState,
     procedure:           i16,
-    entry:               DefinitionEntry,
+    entry:               DefinitionRef,
     gate:                mac_abi::TrapGate,
     user_bounds:         Option<Rect>,
     standard_bounds:     Option<Rect>,
@@ -984,7 +985,7 @@ impl WindowManager
     #[allow(clippy::too_many_arguments)]
     #[cfg(test)]
     pub fn new_window_with_definition(&mut self, bounds: Rect, title: &str, owner: u64,
-                                      minimum: (i16, i16), procedure: i16, entry: DefinitionEntry,
+                                      minimum: (i16, i16), procedure: i16, entry: DefinitionRef,
                                       events: &mut EventManager, when: u32)
                                       -> Option<WindowId>
     {
@@ -998,7 +999,7 @@ impl WindowManager
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_window_with_activation(&mut self, bounds: Rect, title: &str,
                                              owner: &OwnerRef, minimum: (i16, i16),
-                                             procedure: i16, entry: DefinitionEntry,
+                                             procedure: i16, entry: DefinitionRef,
                                              events: &mut EventManager, when: u32, activate: bool)
                                              -> Result<WindowId, CreationError>
     {

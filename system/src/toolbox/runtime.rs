@@ -16,6 +16,7 @@ use crate::{loader::Definitions,
                                input::{Decoder, Input}},
                       handles::InvocationGate,
                       quickdraw::{Canvas, WHITE, font::GENEVA_9},
+                      resources::definitions::DefinitionRef,
                       windows::{Action, WindowId, WindowManager, WindowPart}},
             virtio_input};
 
@@ -109,9 +110,9 @@ pub struct Desktop
     last_observed:                    (u64, u32, u64),
     presentations:                    u64,
     compositions:                     u64,
-    cdef:                             DefinitionEntry,
-    system_cdef:                      DefinitionEntry,
-    mdef:                             DefinitionEntry,
+    cdef:                             DefinitionRef,
+    system_cdef:                      DefinitionRef,
+    mdef:                             DefinitionRef,
     owner:                            u64,
     foreground:                       u64,
     locals:                           Vec<local::Saved>,
@@ -429,11 +430,13 @@ impl Desktop
         {
             return Err(AdmissionError::Service(BAD_ABI));
         }
-        definitions.resolve(*b"WDEF", 0)?;
-        let cdef = definitions.resolve(*b"CDEF", 0)?;
         let system_source = crate::kernel::system_resources(&super::handles::system_owner()?)?;
-        let system_cdef = definitions.resolve_system(system_source, *b"CDEF", 0)?;
-        let mdef = definitions.resolve(*b"MDEF", 0)?;
+        // Resident defaults outlive Finder: never anchor them to its private
+        // resource override merely because it is the bootstrap caller.
+        definitions.resolve_system(system_source, *b"WDEF", 0)?;
+        let cdef = definitions.resolve_system(system_source, *b"CDEF", 0)?;
+        let system_cdef = cdef;
+        let mdef = definitions.resolve_system(system_source, *b"MDEF", 0)?;
         let text_cursor =
             crate::kernel::with_resources(|resources| {
                 super::quickdraw::cursors::decode_mono(&resources.get(mac_abi::resources::SYSTEM,
@@ -770,6 +773,7 @@ impl Desktop
                             super::handles::cleanup::Cause::Facility(_) => BAD_ARGUMENT,
                             #[cfg(target_arch = "riscv64")]
                             super::handles::cleanup::Cause::ThreadPreparations { .. }
+                            | super::handles::cleanup::Cause::DefinitionPending { .. }
                             | super::handles::cleanup::Cause::NativeJoin { .. } => SERVICE_BUSY,
                             super::handles::cleanup::Cause::Alias(_)
                             | super::handles::cleanup::Cause::ContextUnavailable { .. }
@@ -1041,7 +1045,7 @@ impl Desktop
         result
     }
 
-    pub fn control_definition(&mut self, id: i16) -> Result<DefinitionEntry, Status>
+    pub fn control_definition(&mut self, id: i16) -> Result<DefinitionRef, Status>
     {
         self.definitions.resolve(*b"CDEF", id).map_err(crate::loader::status)
     }
@@ -2670,7 +2674,7 @@ impl Desktop
     }
 }
 
-fn paint(canvas: &mut Canvas, command: &DrawCommand, cdef: DefinitionEntry)
+fn paint(canvas: &mut Canvas, command: &DrawCommand, cdef: DefinitionRef)
 {
     let text = core::str::from_utf8(&command.text[..command.text_length as usize]).unwrap_or("");
     match command.kind
