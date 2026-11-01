@@ -552,5 +552,68 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(vm.DIST, Path(folder).resolve() / 'check/dist')
 
 
+@unittest.skipUnless(os.name == 'nt', 'Windows VM process identity')
+class UserStateLivenessTests(unittest.TestCase):
+    def test_reused_pid_is_not_a_running_vm_but_matching_executable_is_protected(self):
+        import json
+        import system7_user_state as user_state
+        with tempfile.TemporaryDirectory() as folder:
+            state = Path(folder)
+            (state / 'pid').write_text('123')
+            (state / 'command.json').write_text(json.dumps([r'C:\QEMU\custom-qemu.exe']))
+            disk = state / 'system7.qcow2'
+            disk.write_bytes(b'unchanged private disk fixture')
+            for name, expected in [('TiWorker.exe', False), ('CUSTOM-QEMU.EXE', True), (None, False)]:
+                with self.subTest(name=name), \
+                        patch.object(user_state, 'process_exists', return_value=True), \
+                        patch.object(user_state, 'windows_process_name', return_value=name) as identity:
+                    self.assertEqual(user_state.running(state), expected)
+                    if expected:
+                        with self.assertRaisesRegex(RuntimeError, 'stop this VM first.*User files are unchanged'):
+                            user_state.mark_persistent(state, state)
+                    else:
+                        user_state.mark_persistent(state, state)
+                    identity.assert_called()
+                    self.assertEqual(disk.read_bytes(), b'unchanged private disk fixture')
+
+    def test_unavailable_or_malformed_identity_refuses_disk_replacement(self):
+        import json
+        import system7_user_state as user_state
+        with tempfile.TemporaryDirectory() as folder:
+            state = Path(folder)
+            (state / 'pid').write_text('123')
+            for command in ('invalid JSON', '[]', '{}', '[null]', '[""]'):
+                with self.subTest(command=command):
+                    (state / 'command.json').write_text(command)
+                    with patch.object(user_state, 'process_exists', return_value=True), \
+                            patch.object(user_state, 'windows_process_name') as identity:
+                        with self.assertRaisesRegex(RuntimeError, 'Cannot determine VM ownership'):
+                            user_state.mark_persistent(state, state)
+                        identity.assert_not_called()
+            (state / 'command.json').write_text(json.dumps(['qemu.exe']))
+            with patch.object(user_state, 'process_exists', return_value=True), \
+                    patch.object(user_state, 'windows_process_name', side_effect=OSError('snapshot access denied')):
+                with self.assertRaisesRegex(RuntimeError, 'snapshot access denied.*user files were not replaced'):
+                    user_state.mark_persistent(state, state)
+
+    def test_reachable_qmp_and_unreachable_owned_qemu_remain_protected(self):
+        import json
+        import system7_user_state as user_state
+        with tempfile.TemporaryDirectory() as folder:
+            state = Path(folder)
+            (state / 'qmp-endpoint.json').write_text(json.dumps({'transport': 'tcp'}))
+            with patch.object(user_state, 'qmp', return_value={'status': 'running'}), \
+                    patch.object(user_state, 'windows_process_name') as identity:
+                self.assertTrue(user_state.running(state))
+                identity.assert_not_called()
+            (state / 'pid').write_text('123')
+            (state / 'command.json').write_text(json.dumps(['qemu-system-riscv64.exe']))
+            with patch.object(user_state, 'qmp', side_effect=OSError('monitor unavailable')), \
+                    patch.object(user_state, 'process_exists', return_value=True), \
+                    patch.object(user_state, 'windows_process_name', return_value='qemu-system-riscv64.exe'):
+                with self.assertRaisesRegex(RuntimeError, 'stop this VM first'):
+                    user_state.mark_persistent(state, state)
+
+
 if __name__ == '__main__':
     unittest.main()
