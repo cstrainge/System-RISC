@@ -1248,10 +1248,10 @@ impl Browser
         }
         if matches!(self.startup_step, Initialization::Desktop)
         {
+            self.create_desktop_window(system)?;
             self.draw_startup_desktop(system)?;
             self.startup_step = Initialization::Root;
         }
-        self.create_desktop_window(system)?;
         if matches!(self.startup_step, Initialization::Root)
         {
             if self.startup != VolumeId::NONE
