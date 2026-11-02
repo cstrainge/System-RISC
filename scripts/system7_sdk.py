@@ -26,7 +26,7 @@ def capture(command: list[str], **kwargs) -> str:
 
 def digest_tree(path: Path) -> str:
     result = hashlib.sha256()
-    for item in sorted(path.rglob("*")):
+    for item in sorted(path.rglob("*"), key=lambda item: item.relative_to(path).parts):
         if item.is_file():
             relative = item.relative_to(path).as_posix().encode()
             data = item.read_bytes()
@@ -166,6 +166,14 @@ def prepare(args) -> dict:
         raise RuntimeError(f"private SDK sources changed at {copied}; refuse a stale cache receipt")
     if hashlib.sha256((root / (pin["target"] + ".json")).read_bytes()).hexdigest() != inputs["target_sha256"]:
         raise RuntimeError("private SDK target changed; refuse a stale cache receipt")
+    # Cargo build-std resolves package IDs using non-verbatim Windows paths.
+    sdk_root = str(root)
+    if os.name == "nt":
+        if sdk_root.startswith("\\\\?\\UNC\\"):
+            sdk_root = "\\\\" + sdk_root[8:]
+        elif sdk_root.startswith("\\\\?\\"):
+            sdk_root = sdk_root[4:]
+    root = Path(sdk_root)
     result = {"root": str(root), "sysroot": str(root / "sysroot"),
               "target": str(root / (pin["target"] + ".json")),
               "rustc": str(rustc), "cargo": str(cargo), "key": key}
