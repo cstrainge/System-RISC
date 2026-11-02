@@ -3644,3 +3644,96 @@ remain unverified. Fixed definition payload backing/accounting and its identity
 mapping remain unchanged. Lazy loading still runs under Desktop; guard-free
 preflight and real physical definition ownership must land before that identity
 span is removed. No U-mode isolation follows from callable lifetime protection.
+
+## Owned process supervisor roots — 2026-11-01
+
+Each genuine Process now owns a canonical SPCE root and SPST backing through the
+shared facility. Its original Kernel account pays for independent page-table
+and metadata pages. Normal and initial Finder admission prepares the space
+outside Desktop, then moves a sealed pin into actual THRD preparation/publication.
+Recovery likewise admits the root outside Desktop. A native child retains its
+actual parent's space through the authenticated ApplicationExecutor. Modules and
+System idle explicitly select the System root; a missing application space is an
+error, not a fallback to that root.
+
+The hierarchy copies actual System/module supervisor aliases and only its own
+application's low image leaves. Immutable physical code backing is not charged
+again for aliases. The physmap, System data and existing application heap/stack
+pointers remain supervisor accessible: this is trusted S-mode execution with
+separate table ownership, **not hardware application isolation**. Explicit app
+placements and global overlap checks remain. U-mode entry, private user heap and
+stack mappings, checked nested user-buffer access, service-descriptor cleanup
+and application fault containment are still required before removing them.
+
+The real translation command lease serializes root registration/removal with
+module publication and retirement. Publication plans and retirement snapshots
+retain actual root pins through translation/instruction acknowledgments. A
+mapping does not permanently retain private process table pointers. Stopping
+roots remain in retirement snapshots until unlinked. SPCE disposal closes
+admission, awaits actual thread/claim/pin quiescence, unlinks and receives full
+invalidation acknowledgment before destroying its tables. Refused or uncertain
+acknowledgments retain the original root, charge and cleanup ticket. SPCE does
+not wait for DDEF or IMAG: root disposal precedes definition source release and
+image retirement, preserving that dependency order.
+
+Scheduler commitment selects the retained space with the actual thread claim.
+Outer trap entry discards the interrupted root's restoration intent before any
+handoff can release that claim. Once service borrows/guards end, return restores
+only the selected hart's authenticated root. Process roots use explicit untagged
+hardware ASID0 and conservative local full translation flushes. No ASID lease
+or performance improvement is claimed. Fixed-owner firmware scopes preserve
+their distinct restoration rule.
+
+### Bounded native observations
+
+The checksum-fresh optimized whole-world QemuRISC-V build used four CPUs, 8 GiB
+RAM, an 800×600 display and disabled event/TextEdit input tracing. System resource
+SHA-256 was
+`4489143ae1b13e5b6c36e59d761b6de4468c78f93b55dd2c4386043a710d16c7`;
+System ELF was
+`bcb9f66e3d4a7c69d95e8c053d64798faa9ef7d7c5fd695fc1f58197900ef2bf`;
+boot ROM was
+`831c68a54582b71736b0b5f45853fc9c7311a1b958610614c5115088380e4708`.
+Private guests exercised ordinary Finder boot, six bundled app entries/own quits,
+System-owned panic reporting, native child TLS/heap/wait/join and budget refusal,
+and two Finder-role abort/replacement cycles with actual original account closure.
+The Finder-role diagnostic is not the production Finder or an exhaustion claim.
+Sampled app image leaves disappeared from the permanent roots after process close.
+
+Read-only paused CPU/PTE observations of two actual application bodies found
+roots at physical `0x8c996000` and `0x8c9d7000`. Both root and branch pages were
+independent from the permanent hierarchies. Each mapped its own body to the same
+physical code as the permanent roots, omitted the other live application's low
+code mapping and retained genuine shared module aliases. Both app bodies moved
+with the same stack between harts1/2/3; two worker bodies did so between
+harts0/1/2/3. Twenty paused snapshots showed overlapping bodies on different CPUs.
+Guest register/service checks, cancellation and actual worker/process retirement
+followed. The first, sparser capture failed to observe one app migrate; a denser
+finite capture retained the same assertions and recorded its host pause costs.
+These observations establish no latency bound, race absence or executed U-mode
+protection fault. Guest logs, input pacing and paused reads perturb execution.
+
+The broader host-filesystem scenario has **not passed on this artifact**. One
+run hit an actual one-second VirtIO FLUSH timeout and retained a poisoned queue.
+A later run reached the external exit worker, which returned ScanStale before
+its ownership-check marker. A repeat with failure-only context in the real native
+worker identified its own ledger's first pool read still returning ScanStale
+after the unchanged 64 coherent-snapshot attempts. The original public detail
+reported that the domain ledger changed while reading pools; lookup and transfer
+stepping had succeeded in that repeat. This does not establish the cause of the
+revision churn or repair the failed scenario. Source tracing finds inspection
+read-only while independent transfer pumping publishes/retires scoped jobs;
+coherence across these separate calls has no guaranteed quiet window within
+64 attempts. No kernel semantics, waits or transfer serialization were changed
+to force that diagnostic to pass. The full scenario and the disk-flush failure
+remain unqualified. An
+intermediate collector also ignored real Drop/Trash progress and stopped at its
+unchanged inactivity deadline; correcting that observer does not repair either
+native failure. No host Rust suite supplied evidence, no timeout was increased,
+and no full filesystem/DMA qualification follows. Source/base artifacts remained
+unchanged during captures; owned guests were reaped and cloned media pruned.
+
+Concurrent publication/retirement interleavings, uncertain-acknowledgment paths,
+private-root reuse, full-RAM recovery, native responsiveness and user isolation
+remain separate qualification gates. Guaranteed Finder OOM recovery additionally
+needs preadmitted root/table backing; ordinary buddy allocation is not its kit.

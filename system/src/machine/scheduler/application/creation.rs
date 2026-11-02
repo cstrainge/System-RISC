@@ -178,9 +178,13 @@ fn prepare_child(executor: &crate::context::ApplicationExecutor<'_>,
             Error::Admission { status,
                                stage: "child independent stack owner" }
         })?;
+    let space = super::super::application_space(executor).map_err(|status| {
+                                                             Error::Admission { status,
+                                       stage: "child canonical Process space" }
+                                                         })?;
     let core=Arc::try_new(ThreadCore{
         address:Mutex::new(None),backing:Mutex::new(Some(ThreadBacking{cpu,stack,image:Some(ApplicationImageUse::Child(code))})),
-        launch:Mutex::new(None),context,release:Mutex::new(None),binding:executor.image(),top,cleanup_refusal:Mutex::new(None),service_quarantine:spin::Once::new(),name:Mutex::new(None),
+        launch:Mutex::new(None),context,release:Mutex::new(None),binding:executor.image(),space:Some(space),top,cleanup_refusal:Mutex::new(None),service_quarantine:spin::Once::new(),name:Mutex::new(None),
         application:Some(completion),pending_join:Mutex::new(None)
     }).map_err(|_|Error::Metadata("child Core"))?;
     Ok(PreparedThread { owner: executor.owner().clone(),

@@ -801,10 +801,18 @@ pub(crate) fn launch_application(call: &mut ProcessCall,
                 class: mac_kernel_model::policy::MemoryClass::Kernel
             }, || crate::kernel::load_application(admission.owner(), &admission.allocation(),
                                                   catalog.creator, catalog.file_type, resources))?;
+            // Copy/admit the independently owned table hierarchy before
+            // re-entering Desktop. Only the genuine pin crosses that guard.
+            let space = crate::machine::paging::process::admit(admission.owner(),
+                                                               &admission.allocation(),
+                                                               &image).map_err(|cause| {
+                            serial!("PROCESS_SPACE_REFUSED owner={} {cause}", admission.id());
+                            cause.status()
+                        })?;
             crate::kernel::with_desktop(|desktop| {
                 desktop.processes.bind_heap(admission.owner(), heap)?;
                 desktop.processes.bind_tls(admission.owner(), tls)?;
-                desktop.finish_application_launch(call, catalog, image, &mut admission)
+                desktop.finish_application_launch(call, catalog, image, space, &mut admission)
             }).map_err(|error| error.status())?
         })();
         if let Err(status) = result

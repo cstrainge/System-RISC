@@ -184,6 +184,9 @@ impl<'pool, 'storage, T, G: InvocationGate> PageBox<'pool, 'storage, T, G>
 #[derive(Clone, Copy, Debug)]
 pub enum AsidTag
 {
+    /// No cache identity is retained across root changes. The native binding
+    /// must perform a full local translation invalidation on activation.
+    Untagged,
     /// Reset-lifetime System roots use permanently reserved hardware cache
     /// tags, not fabricated object generations or application admission slots.
     Permanent

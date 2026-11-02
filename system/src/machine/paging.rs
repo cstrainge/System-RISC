@@ -2,6 +2,7 @@
 //! existing reference changes its address; every RAM view starts in physmap.
 pub(crate) mod inspection;
 pub(crate) mod modules;
+pub(crate) mod process;
 mod alias;
 mod heap_partition;
 use core::{arch::asm, fmt, marker::PhantomData, ptr};
@@ -282,6 +283,7 @@ pub(crate) fn report_refusal(error: &impl fmt::Display)
 pub(crate) enum FrameError
 {
     Pages(super::pages::Error),
+    Account(mac_kernel_model::account::Error),
     Foreign
     {
         physical: u64
@@ -298,6 +300,7 @@ impl fmt::Display for FrameError
         match self
         {
             Self::Pages(e) => e.fmt(f),
+            Self::Account(e) => e.fmt(f),
             Self::Foreign { physical } =>
             {
                 write!(f, "page table {physical:#x} is not retained by this root")
@@ -308,11 +311,13 @@ impl fmt::Display for FrameError
 }
 struct Node
 {
-    table:    Option<RootPage>,
-    physical: PhysicalAddress,
-    cpu:      usize,
-    next:     usize,
-    _storage: Backing
+    table:           Option<RootPage>,
+    physical:        PhysicalAddress,
+    cpu:             usize,
+    next:            usize,
+    _storage:        Backing,
+    charge:          Option<mac_kernel_model::account::Committed<NativeInvocationGate>>,
+    _storage_charge: Option<mac_kernel_model::account::Committed<NativeInvocationGate>>
 }
 /// Nodes and tables own separate page leases, so root preparation cannot recurse
 /// into the not-yet-initialized heap. Raw node walks are confined to this binding.
@@ -320,8 +325,9 @@ struct Node
 /// in both roots. No unsafe Send/Sync implementation or pointer-mode flag exists.
 struct Frames
 {
-    head:  usize,
-    count: usize
+    head:    usize,
+    count:   usize,
+    account: Option<super::scheduler::accounting::AllocationAuthority>
 }
 impl Frames
 {
@@ -340,7 +346,10 @@ impl Frames
         Err(FrameError::Foreign { physical: physical.0 })
     }
 
-    fn take_root(&mut self, physical: PhysicalAddress) -> Result<RootPage, Error>
+    fn take_root(
+        &mut self, physical: PhysicalAddress)
+        -> Result<(RootPage, Option<mac_kernel_model::account::Committed<NativeInvocationGate>>),
+                  Error>
     {
         let mut next = self.head;
         while next != 0
@@ -348,7 +357,10 @@ impl Frames
             let node = unsafe { &mut *(next as *mut Node) };
             if node.physical == physical
             {
-                return node.table.take().ok_or(Error::ForeignRoot { physical: physical.0 });
+                return node.table
+                           .take()
+                           .map(|table| (table, node.charge.take()))
+                           .ok_or(Error::ForeignRoot { physical: physical.0 });
             }
             next = node.next;
         }
@@ -361,10 +373,16 @@ impl Tables for Frames
 
     fn allocate_zeroed(&mut self) -> Result<PhysicalAddress, FrameError>
     {
-        let backing = Backing::allocate(4096).map_err(FrameError::Pages)?;
+        let charge = self.account
+                         .as_ref()
+                         .map(|a| a.reserve_kernel(PAGE_BYTES))
+                         .transpose()
+                         .map_err(FrameError::Account)?;
+        let backing = Backing::allocate(PAGE_BYTES as usize).map_err(FrameError::Pages)?;
         let cpu = backing.cpu_base();
         let physical = backing.physical();
         let table = backing.into_table().map_err(FrameError::Pages)?;
+        let storage_charge = self.account.as_ref().map(|a| a.reserve_kernel(Backing::planned_bytes(size_of::<Node>()).map_err(FrameError::Pages)?).map_err(FrameError::Account)).transpose()?;
         let storage = Backing::allocate(size_of::<Node>()).map_err(FrameError::Pages)?;
         let pointer = storage.cpu_base();
         // SAFETY: exclusive aligned zeroed node storage is disjoint from table RAM;
@@ -374,7 +392,11 @@ impl Tables for Frames
                                                 physical,
                                                 cpu,
                                                 next: self.head,
-                                                _storage: storage });
+                                                _storage: storage,
+                                                charge: charge.map(|c| c.commit()),
+                                                _storage_charge: storage_charge.map(|c| {
+                                                                                   c.commit()
+                                                                               }) });
         }
         self.head = pointer;
         self.count += 1;
@@ -443,10 +465,11 @@ impl Architecture for Rva
 }
 struct Space
 {
-    owner:    AddressSpace<'static, 'static, Rva>,
-    tables:   Frames,
-    register: usize,
-    leaves:   u64
+    owner:        AddressSpace<'static, 'static, Rva>,
+    tables:       Frames,
+    register:     usize,
+    leaves:       u64,
+    _root_charge: Option<mac_kernel_model::account::Committed<NativeInvocationGate>>
 }
 struct Spaces
 {
@@ -583,8 +606,9 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
                  heap: PhysicalAddress, tag: usize)
                  -> Result<Space, Error>
 {
-    let mut mapper = Mapper::new(Frames { head:  0,
-                                          count: 0 }).map_err(Error::Tables)?;
+    let mut mapper = Mapper::new(Frames { head:    0,
+                                          count:   0,
+                                          account: None }).map_err(Error::Tables)?;
     let mut leaves = 0;
     for bank in boot.ram.banks()
     {
@@ -640,13 +664,14 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
         leaves += map(&mut mapper, base, base, bytes, READ | WRITE, true)?;
     }
     let (physical, mut tables) = mapper.into_tables();
-    let root = tables.take_root(physical)?;
+    let (root, root_charge) = tables.take_root(physical)?;
     let owner=AddressSpace::<Rva>::reserve(DomainId::SYSTEM,root,AsidTag::Permanent{hardware_value:tag as u64}).map_err(Error::Policy)?;
     let register = MODE | (tag << 44) | (owner.root_physical().0 as usize >> 12);
     Ok(Space { owner,
                tables,
                register,
-               leaves })
+               leaves,
+               _root_charge: root_charge })
 }
 /// # Safety
 /// Firmware's physmap is active before pool construction. Both prepared roots
@@ -779,11 +804,6 @@ struct RootScope
 }
 impl RootScope
 {
-    fn enter(register: usize, fence: bool) -> Self
-    {
-        Self::from_previous(register, fence, root_register())
-    }
-
     fn from_previous(register: usize, fence: bool, previous: usize) -> Self
     {
         let changed = previous != register;
@@ -827,10 +847,18 @@ pub(crate) fn with_firmware<R>(call: impl FnOnce() -> R) -> Result<R, Error>
         {
             return Err(Error::ForeignHart);
         }
-        let (register, fence) = SPACES.get().map_or((boot.root, true), |spaces| {
-                                                (spaces.firmware.register, !spaces.distinct_tags)
-                                            });
-        let _scope = RootScope::enter(register, fence);
+        let current = root_register();
+        let (register, fence) =
+            SPACES.get().map_or((boot.root, true), |spaces| {
+                            // Process roots share hardware ASID0 with firmware. A direct
+                            // trusted supervisor caller must flush both entry and restoration,
+                            // even when permanent Kernel/FW tags are otherwise distinct.
+                            (spaces.firmware.register,
+                             !spaces.distinct_tags
+                             || (current != spaces.kernel.register
+                                 && current != spaces.firmware.register))
+                        });
+        let _scope = RootScope::from_previous(register, fence, current);
         Ok(call())
     })
 }
@@ -838,18 +866,71 @@ pub(crate) fn with_firmware<R>(call: impl FnOnce() -> R) -> Result<R, Error>
 /// Called only by the saved native trap-entry boundary, with SIE already clear
 /// and common System stack/CPU backing active in either admitted root. No
 /// ordinary callback may enter here without that architecture admission.
-pub(crate) unsafe fn with_kernel<R>(call: impl FnOnce() -> R) -> Result<R, Error>
+pub(crate) unsafe fn with_kernel<R>(outer: bool, call: impl FnOnce() -> R) -> Result<R, Error>
 {
     let spaces = SPACES.get().ok_or(Error::Missing)?;
     let current = root_register();
-    // Ordinary application/interrupt entry already uses this root. Do not
-    // rewrite sstatus/satp or construct a restoration for a no-change call.
-    if current == spaces.kernel.register
+    let firmware_call = if outer && current == spaces.firmware.register
     {
-        return Ok(call());
+        Some(super::traps::execution::current())
     }
-    let _scope = RootScope::from_previous(spaces.kernel.register, !spaces.distinct_tags, current);
-    Ok(call())
+    else
+    {
+        None
+    };
+    // Every Process root uses ASID0 without retained translation identity.
+    // Firmware's fixed-owner scope remains independently restoring.
+    let fence = !spaces.distinct_tags
+                || (current != spaces.kernel.register && current != spaces.firmware.register);
+    let mut scope = RootScope::from_previous(spaces.kernel.register, fence, current);
+    if outer
+    {
+        // Before any scheduler handoff, discard the interrupted root's restore
+        // intent. Its actual claim may subsequently be released/reaped on a
+        // peer. No return path may resurrect that copied SATP afterwards.
+        scope.previous = spaces.kernel.register;
+        scope.changed = false;
+    }
+    let result = call();
+    if outer
+    {
+        let selected = super::traps::execution::return_root(spaces.kernel.register);
+        // Preserve a still-affine firmware/cold callback, including bootstrap
+        // calls outside I/O. A real outgoing claim change discards its old
+        // root intent; the abandoned stack must never restore that root.
+        let selected =
+            if firmware_call.is_some_and(|before| before == super::traps::execution::current())
+            {
+                current
+            }
+            else
+            {
+                selected
+            };
+        scope.previous = selected;
+        scope.changed = selected != spaces.kernel.register;
+        scope.fence = true;
+    }
+    // Every callback/guard/borrow from call has ended. Only the copied result
+    // and the actual selected claim survive the final SATP/flush turn.
+    drop(scope);
+    Ok(result)
+}
+/// # Safety
+/// Only initial scheduler commitment, with SIE clear and the genuine selected
+/// THRD claim already published, may enter this non-restoring root transition.
+pub(crate) unsafe fn activate_scheduled_root()
+{
+    let Some(spaces) = SPACES.get()
+    else
+    {
+        super::traps::entry_lost("scheduler root directory missing")
+    };
+    let selected = super::traps::execution::return_root(spaces.kernel.register);
+    if root_register() != selected
+    {
+        unsafe { asm!("csrw satp,{}","sfence.vma zero,zero",in(reg)selected,options(nostack)) }
+    }
 }
 
 pub(crate) fn bus_address(cpu: u64, bytes: u64) -> Option<u64>

@@ -746,6 +746,10 @@ fn launch() -> Result<(), crate::machine::scheduler::StartError>
         serial!("APPLICATION_HEAP_INITIALIZATION_FAILED: {cause}");
         recovery_boot_error("application heap manager initialization refused", cause.status())
     })?;
+    crate::machine::paging::process::initialize().map_err(|cause| {
+        serial!("PROCESS_SPACE_INITIALIZATION_REFUSED: {cause}");
+        mac_formats::Error::Malformed("Process space manager admission failed")
+    })?;
     crate::toolbox::native_threads::initialize().map_err(|cause| {
                                                     recovery_boot_error("native TLS manager \
                                                                          initialization refused",
@@ -1027,7 +1031,7 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
         }
                                               })?;
     admit_application_services(&finder_owner,
-                               finder_allocation,
+                               finder_allocation.clone(),
                                &finder_tls,
                                finder_loaded.binding()).map_err(|status| {
                                                            recovery_boot_error("Finder required \
@@ -1035,6 +1039,16 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
                                                                                 refused",
                                                                                status)
                                                        })?;
+    // Provider admission above and table preparation here run without a
+    // Desktop guard. Move the sole space pin into actual THRD preparation.
+    let finder_space = crate::machine::paging::process::admit(&finder_owner, &finder_allocation,
+                                                              &finder_loaded).map_err(|cause| {
+                           serial!("PROCESS_SPACE_REFUSED owner={} {cause}",
+                                   finder_owner.owner().incarnation());
+                           recovery_boot_error("Finder space admission refused", cause.status())
+                       })?;
+    drop(finder_allocation);
+    drop(finder_owner);
     if let Err(status) = crate::toolbox::files::mount_startup_exports()
     {
         serial!("HOST_VOLUME_DISCOVERY_FAILED status={}", status);
@@ -1060,7 +1074,7 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     serial!("SYSTEM_FINDER_LAUNCH entry=0x{:x}", finder_entry);
     let thread =
         with_desktop(|desktop| {
-            desktop.spawn_process(crate::context::finder_app().0, finder_loaded)
+            desktop.spawn_process(crate::context::finder_app().0, finder_loaded, finder_space)
         }).map_err(|_| mac_formats::Error::Malformed("Finder owner directory is unavailable"))?
           .map_err(|status| {
               serial!("FINDER_THREAD_CREATION_FAILED status={status}");

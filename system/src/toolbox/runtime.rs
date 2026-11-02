@@ -745,6 +745,8 @@ impl Desktop
                                 i32::try_from(reply).unwrap_or(BAD_ABI)
                             }
                             #[cfg(target_arch = "riscv64")]
+                            super::handles::cleanup::Cause::ProcessSpace(cause) => cause.status(),
+                            #[cfg(target_arch = "riscv64")]
                             super::handles::cleanup::Cause::ModuleMapping(cause) => match cause {
                                 crate::machine::paging::modules::CleanupCause::Pending { .. } => SERVICE_BUSY,
                                 _ => BAD_ABI,

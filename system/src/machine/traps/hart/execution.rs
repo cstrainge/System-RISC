@@ -193,6 +193,7 @@ pub(super) struct HartLocal
     pub(super) id: usize,
     active:        Spinlock<Option<Arc<ThreadContext>>>,
     current:       AtomicUsize,
+    return_root:   AtomicUsize,
     io:            AtomicBool,
     idle_claimed:  AtomicBool,
     idle:          Spinlock<Option<SystemIdle>>,
@@ -341,6 +342,7 @@ impl HartLocal
         let active_empty = self.active.lock().is_none();
         let idle_empty = self.idle.lock().is_none();
         self.current.load(Ordering::Relaxed) == IDLE
+        && self.return_root.load(Ordering::Relaxed) == 0
         && !self.io.load(Ordering::Relaxed)
         && !self.idle_claimed.load(Ordering::Acquire)
         && !self.policy.active()
@@ -353,6 +355,7 @@ impl HartLocal
         Self { id,
                active: Spinlock::new(None),
                current: AtomicUsize::new(IDLE),
+               return_root: AtomicUsize::new(0),
                io: AtomicBool::new(false),
                idle_claimed: AtomicBool::new(false),
                idle: Spinlock::new(None),
@@ -722,4 +725,28 @@ pub(super) fn admitted_idle_capture(local: &'static HartLocal, frame: *mut TrapF
     };
     let active = local.active.lock();
     active.as_ref().is_some_and(|context| Arc::as_ptr(context) == expected)
+}
+
+/// Only scheduler commitment supplies a genuine retained SPCE. Zero is the
+/// explicit affine System/idle/module selection, never a missing app fallback.
+pub(crate) fn select_space(space: Option<&crate::machine::paging::process::Root>)
+{
+    with_masked(|| {
+        required().return_root.store(space.map_or(0, |s| s.register()), Ordering::Relaxed)
+    });
+}
+pub(crate) fn return_root(kernel: usize) -> usize
+{
+    with_masked(|| {
+        let local = required();
+        if local.io.load(Ordering::Relaxed)
+        {
+            return kernel;
+        }
+        match local.return_root.load(Ordering::Relaxed)
+        {
+            0 => kernel,
+            root => root
+        }
+    })
 }

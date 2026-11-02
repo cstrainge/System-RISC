@@ -1,0 +1,589 @@
+//! Canonical, privately owned supervisor process roots. This is not U-mode
+//! isolation: payload pointers and the service ABI retain their trusted contract.
+use alloc::{sync::Arc, vec::Vec};
+use core::{fmt,
+           sync::atomic::{AtomicBool, Ordering}};
+
+use mac_kernel_model::pages::{AddressSpace, AsidTag, PhysicalAddress};
+use mac_object_table::{domain::{DomainId, DomainKind},
+                       store::PreparedError};
+use mac_riscv_pages::{Decoded, Entry, LeafSize, mapping::Tables};
+use spinning_top::Spinlock;
+
+use super::*;
+use crate::{machine::{interrupts, scheduler::accounting::AllocationAuthority},
+            toolbox::handles::{InvocationGate, OwnerRef}};
+pub(crate) mod lifetime;
+type Store = mac_object_table::store::Store<Arc<Root>, InvocationGate>;
+static MANAGER: spin::Once<Spinlock<Store>> = spin::Once::new();
+static ROOTS: Spinlock<Option<Arc<Root>>> = Spinlock::new(None);
+static WAITING_PINS: AtomicBool = AtomicBool::new(false);
+static WAITING_MONITOR: AtomicBool = AtomicBool::new(false);
+pub(super) fn monitor_released()
+{
+    if WAITING_MONITOR.swap(false, Ordering::AcqRel)
+    {
+        crate::toolbox::processes::retirement::resources_released();
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum Error
+{
+    Missing,
+    Authority,
+    Metadata,
+    Template
+    {
+        physical: u64
+    },
+    Threads,
+    Readers(usize),
+    Closed,
+    Tables(super::Error),
+    Encoding(mac_riscv_pages::Error),
+    Publication(PreparedError),
+    Pool(mac_object_table::domain::PoolError),
+    Monitor(crate::machine::monitor::Error),
+    Retirement(CleanupCause)
+}
+impl Error
+{
+    pub(crate) fn status(&self) -> mac_abi::Status
+    {
+        match self
+        {
+            Self::Metadata => mac_abi::NO_MEMORY,
+            Self::Authority => mac_abi::ACCESS_DENIED,
+            Self::Threads | Self::Readers(_) => mac_abi::SERVICE_BUSY,
+            Self::Closed => mac_abi::OPERATION_CANCELLED,
+            Self::Monitor(e) => e.status(),
+            Self::Retirement(cause)=>cause.status(),
+            Self::Pool(cause) | Self::Publication(PreparedError::Pool(cause)) =>crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(*cause)),
+            Self::Tables(super::Error::Tables(mac_riscv_pages::mapping::MapError::Storage(super::FrameError::Pages(e))))=>e.status(),
+            Self::Tables(super::Error::Tables(mac_riscv_pages::mapping::MapError::Storage(super::FrameError::Account(e))))=>crate::allocation::account_status(e),
+            _ => mac_abi::BAD_ABI
+        }
+    }
+}
+impl fmt::Display for Error
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        match self
+        {
+            Self::Missing => f.write_str("Process space manager/root is unavailable"),
+            Self::Authority =>
+            {
+                f.write_str("Process space does not match genuine Process/image/account")
+            }
+            Self::Metadata => f.write_str("Process page-table metadata admission refused"),
+            Self::Template { physical } =>
+            {
+                write!(f,
+                       "System template table {physical:#x} is not retained by its actual native \
+                        owner")
+            }
+            Self::Threads => f.write_str("Process space awaits actual THRD/claim quiescence"),
+            Self::Readers(n) => write!(f, "Process space retains {n} execution/publication pins"),
+            Self::Closed => f.write_str("Process space admission is closed"),
+            Self::Tables(e) => e.fmt(f),
+            Self::Encoding(e) => e.fmt(f),
+            Self::Publication(e) => write!(f, "Process space publication: {e:?}"),
+            Self::Pool(e) => e.fmt(f),
+            Self::Monitor(e) => e.fmt(f),
+            Self::Retirement(cause) => cause.fmt(f)
+        }
+    }
+}
+/// Copyable bounded cause retained with the canonical cleanup ticket. The
+/// full typed preparation error remains available before any publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CleanupCause
+{
+    Unavailable,
+    Contract,
+    Threads,
+    Readers(usize),
+    Monitor
+    {
+        status:   mac_abi::Status,
+        hart:     Option<u64>,
+        sequence: Option<u64>
+    }
+}
+impl From<Error> for CleanupCause
+{
+    fn from(cause: Error) -> Self
+    {
+        match cause
+        {
+            Error::Retirement(cause) => cause,
+            Error::Missing => Self::Unavailable,
+            Error::Threads => Self::Threads,
+            Error::Readers(n) => Self::Readers(n),
+            Error::Monitor(cause) =>
+            {
+                let (hart, sequence) = match &cause
+                {
+                    crate::machine::monitor::Error::Uncertain { hart,
+                                                                sequence } =>
+                    {
+                        (Some(*hart), Some(*sequence))
+                    }
+                    crate::machine::monitor::Error::Refused { hart,
+                                                              .. } => (Some(*hart), None),
+                    _ => (None, None)
+                };
+                Self::Monitor { status: cause.status(),
+                                hart,
+                                sequence }
+            }
+            _ => Self::Contract
+        }
+    }
+}
+impl CleanupCause
+{
+    pub(crate) fn status(self) -> mac_abi::Status
+    {
+        match self
+        {
+            Self::Unavailable => mac_abi::NOT_SUPPORTED,
+            Self::Contract => mac_abi::BAD_ABI,
+            Self::Threads | Self::Readers(_) => mac_abi::SERVICE_BUSY,
+            Self::Monitor { status,
+                            .. } => status
+        }
+    }
+}
+impl fmt::Display for CleanupCause
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        match self
+        {
+            Self::Unavailable =>
+            {
+                f.write_str("Process space manager unavailable; original ticket retained")
+            }
+            Self::Contract =>
+            {
+                f.write_str("Process space canonical cleanup binding mismatch; original ticket \
+                             retained")
+            }
+            Self::Threads => f.write_str("Process space awaits actual THRD/claim quiescence"),
+            Self::Readers(n) =>
+            {
+                write!(f, "Process space retains {n} actual execution/publication pins")
+            }
+            Self::Monitor { status,
+                            hart,
+                            sequence } =>
+            {
+                write!(f,
+                       "Process space translation invalidation refused: status={status} \
+                        hart={hart:?} sequence={sequence:?}; original root/ticket retained")
+            }
+        }
+    }
+}
+/// All physical owners precede the original account capability. Registry links
+/// are detached before disposal; neither Process nor IMAG holds this Arc.
+pub(crate) struct Root
+{
+    pub(super) space:      Space,
+    pub(super) owner:      OwnerRef,
+    pub(super) allocation: AllocationAuthority,
+    image:                 crate::images::Binding,
+    next:                  Spinlock<Option<Arc<Root>>>,
+    closing:               AtomicBool,
+    registered:            AtomicBool,
+    retired:               AtomicBool,
+    retirement_failure:    Spinlock<Option<CleanupCause>>
+}
+impl Root
+{
+    pub(crate) fn owner(&self) -> DomainId
+    {
+        self.owner.owner()
+    }
+
+    pub(crate) fn register(&self) -> usize
+    {
+        self.space.register
+    }
+
+    pub(crate) fn matches(&self, owner: &OwnerRef, image: crate::images::Binding) -> bool
+    {
+        self.owner.owner() == owner.owner() && self.image == image
+    }
+}
+/// One real execution/preparation/table-publication pin. Its marker runs
+/// AFTER the Arc is released; Store plus registry are two backing owners, so
+/// the generic one-backing-owner retained::Read checkpoint does not apply.
+pub(crate) struct Pin
+{
+    root:      Arc<Root>,
+    _released: PinReleased
+}
+struct PinReleased;
+impl Drop for PinReleased
+{
+    fn drop(&mut self)
+    {
+        if WAITING_PINS.swap(false, Ordering::AcqRel)
+        {
+            crate::toolbox::processes::retirement::resources_released();
+        }
+    }
+}
+impl Pin
+{
+    fn new(root: Arc<Root>) -> Self
+    {
+        Self { root,
+               _released: PinReleased }
+    }
+}
+impl Clone for Pin
+{
+    fn clone(&self) -> Self
+    {
+        Self::new(self.root.clone())
+    }
+}
+impl core::ops::Deref for Pin
+{
+    type Target = Root;
+
+    fn deref(&self) -> &Root
+    {
+        &self.root
+    }
+}
+/// A snapshot pins every table owner through the real command ACK. Capacity is
+/// prepared outside ROOTS; the locked turn only clones into admitted capacity.
+pub(super) fn snapshot(publication: bool) -> Result<Vec<Pin>, Error>
+{
+    let mut rows = Vec::new();
+    loop
+    {
+        let count = interrupts::with_masked(|| {
+            let head = ROOTS.lock();
+            let mut row = head.as_ref().cloned();
+            let mut n = 0;
+            while let Some(r) = row
+            {
+                n += 1;
+                row = r.next.lock().as_ref().cloned();
+            }
+            n
+        });
+        rows.try_reserve(count).map_err(|_| Error::Metadata)?;
+        let complete = interrupts::with_masked(|| {
+            let head = ROOTS.lock();
+            let mut row = head.as_ref().cloned();
+            while let Some(r) = row
+            {
+                row = r.next.lock().as_ref().cloned();
+                if !publication || (r.owner.accepting() && !r.closing.load(Ordering::Acquire))
+                {
+                    if rows.len() == rows.capacity()
+                    {
+                        return false;
+                    }
+                    rows.push(Pin::new(r));
+                }
+            }
+            true
+        });
+        if complete
+        {
+            return Ok(rows);
+        }
+        rows.clear();
+    }
+}
+fn link(root: &Arc<Root>)
+{
+    interrupts::with_masked(|| {
+        let mut head = ROOTS.lock();
+        *root.next.lock() = head.take();
+        *head = Some(root.clone());
+        root.registered.store(true, Ordering::Release);
+    });
+}
+fn unlink(root: &Arc<Root>) -> Result<(), Error>
+{
+    // Moving links never drops a Root or backing while ROOTS is held.
+    let removed = interrupts::with_masked(|| {
+        let mut head = ROOTS.lock();
+        if head.as_ref().is_some_and(|r| Arc::ptr_eq(r, root))
+        {
+            let old = head.take();
+            *head = root.next.lock().take();
+            return old;
+        }
+        let mut previous = head.as_ref().cloned();
+        while let Some(r) = previous
+        {
+            let mut next = r.next.lock();
+            if next.as_ref().is_some_and(|n| Arc::ptr_eq(n, root))
+            {
+                let old = next.take();
+                *next = root.next.lock().take();
+                return old;
+            }
+            previous = next.as_ref().cloned();
+        }
+        None
+    });
+    if removed.is_none()
+    {
+        return Err(Error::Authority);
+    }
+    root.registered.store(false, Ordering::Release);
+    drop(removed);
+    Ok(())
+}
+
+pub(crate) fn initialize() -> Result<(), Error>
+{
+    if !crate::context::current_thread_context().is_bootstrap() || MANAGER.get().is_some()
+    {
+        return Err(Error::Authority);
+    }
+    let kinds=crate::toolbox::handles::registry(|r|Ok::<_,mac_object_table::registry::Error>((r.get(lifetime::Kind::Root.specification().kind)?,r.get(lifetime::Kind::Storage.specification().kind)?))).map_err(|_|Error::Missing)?.map_err(|_|Error::Missing)?;
+    let store = crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                    Store::owned_prepared(kinds.0, kinds.1)
+                }).map_err(Error::Pool)?;
+    MANAGER.call_once(|| Spinlock::new(store));
+    Ok(())
+}
+fn permit(owner: &OwnerRef)
+          -> Result<mac_object_table::store::PublicationPermit<InvocationGate>, Error>
+{
+    let manager = MANAGER.get().ok_or(Error::Missing)?;
+    loop
+    {
+        let plan=interrupts::with_masked(||manager.lock().plan_publication(owner)).map_err(Error::Pool)?;
+        let prepared = plan.prepare().map_err(Error::Pool)?;
+        match interrupts::with_masked(|| manager.lock().admit_prepared(prepared))
+        {
+            Ok((permit, old)) =>
+            {
+                old.dispose();
+                return Ok(permit);
+            }
+            Err(failure) =>
+            {
+                let cause = failure.cause;
+                drop(failure.preparation);
+                if cause != PreparedError::CapacityChanged
+                {
+                    return Err(Error::Publication(cause));
+                }
+            }
+        }
+    }
+}
+/// The same real owner/image admitted to the initial THRD supplies this root.
+/// Publication precedes THRD publication, so every failure remains owner-walkable.
+pub(crate) fn admit(owner: &OwnerRef, allocation: &AllocationAuthority,
+                    image: &crate::kernel::LoadedImage)
+                    -> Result<Pin, Error>
+{
+    if owner.owner().kind() != DomainKind::Process
+       || allocation.owner() != owner.owner()
+       || image.binding().owner() != owner.owner().incarnation()
+    {
+        return Err(Error::Authority);
+    }
+    if !owner.accepting()
+    {
+        return Err(Error::Closed);
+    }
+    let manager = MANAGER.get().ok_or(Error::Missing)?;
+    let existing = interrupts::with_masked(|| {
+        manager.lock().retained_values().find(|r| r.owner.owner() == owner.owner()).cloned()
+    });
+    if let Some(root) = existing
+    {
+        let root = Pin::new(root);
+        if !root.matches(owner, image.binding())
+        {
+            return Err(Error::Authority);
+        }
+        return if root.registered.load(Ordering::Acquire) && !root.closing.load(Ordering::Acquire)
+        {
+            Ok(root)
+        }
+        else
+        {
+            Err(Error::Closed)
+        };
+    }
+    crate::allocator::with_target(crate::allocator::Target::Owner{account:allocation.clone(),class:mac_kernel_model::policy::MemoryClass::Kernel},|| {
+        let permit=permit(owner)?;
+        let lease=crate::machine::monitor::prepare_translation_invalidation().map_err(Error::Monitor)?;
+        let space=clone_space(owner,allocation,image.range())?;
+        let root=Arc::try_new(Root{space,owner:owner.clone(),allocation:allocation.clone(),image:image.binding(),next:Spinlock::new(None),closing:AtomicBool::new(false),registered:AtomicBool::new(false),retired:AtomicBool::new(false),retirement_failure:Spinlock::new(None)}).map_err(|_|Error::Metadata)?;
+        match interrupts::with_masked(||manager.lock().publish_prepared(permit,root.clone())) {
+            Ok((publication,old))=>{old.dispose();let _=publication.into_parts();link(&root);drop(lease);Ok(Pin::new(root))},
+            Err(failure)=>{let cause=failure.cause; drop(failure);Err(Error::Publication(cause))}
+        }
+    })
+}
+
+fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, image: core::ops::Range<u64>)
+               -> Result<Space, Error>
+{
+    let spaces = SPACES.get().ok_or(Error::Missing)?;
+    let mut tables = Frames { head:    0,
+                              count:   0,
+                              account: Some(allocation.clone()) };
+    let source = spaces.kernel.owner.root_physical();
+    let physical = copy_table(&mut tables, source, 2, 0, &image)?;
+    let (root, charge) = tables.take_root(physical).map_err(Error::Tables)?;
+    let owner=AddressSpace::<Rva>::reserve(owner.owner(),root,AsidTag::Untagged).map_err(|e|Error::Tables(super::Error::Policy(e)))?;
+    let register = MODE | (physical.0 as usize >> 12);
+    Ok(Space { owner,
+               tables,
+               register,
+               leaves: 0,
+               _root_charge: charge })
+}
+fn keep_low(base: u64, end: u64, image: &core::ops::Range<u64>, overlap: bool) -> bool
+{
+    let keep = |start: u64, limit: u64| {
+        if overlap { base < limit && start < end } else { base >= start && end <= limit }
+    };
+    keep(image.start, image.end)
+    || keep(DEFINITION_BASE, DEFINITION_LIMIT)
+    || BOOT_MMIO_REGIONS.iter().any(|&(start, limit)| keep(start, limit))
+    || crate::machine::power::platform::PLATFORM_MMIO_DEVICES.iter()
+                                                             .any(|&(_, _, start, bytes, _, _)| {
+                                                                 keep(start, start + bytes)
+                                                             })
+    || BOOT.get().is_some_and(|b| {
+                     b.regions.iter().any(|r| {
+                                         r.flags & FIRMWARE_ONLY == 0
+                                         && keep(r.virtual_base, r.virtual_base + r.physical.length)
+                                     })
+                 })
+}
+
+fn copy_table(tables: &mut Frames, source: PhysicalAddress, level: u8, prefix: u64,
+              image: &core::ops::Range<u64>)
+              -> Result<PhysicalAddress, Error>
+{
+    let target=tables.allocate_zeroed().map_err(|e|Error::Tables(super::Error::Tables(mac_riscv_pages::mapping::MapError::Storage(e))))?;
+    let entries =
+        modules::table_snapshot(source).map_err(|_| Error::Template { physical: source.0 })?;
+    for (index, bits) in entries.into_iter().enumerate()
+    {
+        let address = if level == 2
+        {
+            let a = (index as u64) << 30;
+            if a & (1 << 38) != 0 { a | (!0u64 << 39) } else { a }
+        }
+        else
+        {
+            prefix | ((index as u64) << (12 + 9 * level))
+        };
+        let entry = match Entry::decode_raw(bits, level).map_err(Error::Encoding)?
+        {
+            Decoded::Invalid => continue,
+            Decoded::Table { physical,
+                             global,
+                             .. } =>
+            {
+                let end =
+                    address.saturating_add(LeafSize::from_level(level).map_err(Error::Encoding)?
+                                                                      .bytes());
+                if address >= VM_APPLICATION_START
+                   && end <= VM_APPLICATION_END
+                   && !keep_low(address, end, image, true)
+                {
+                    continue;
+                }
+                let child = copy_table(tables, physical, level - 1, address, image)?;
+                Entry::table(child,global,mac_kernel_model::pages::PageOwnership::Automatic).map_err(Error::Encoding)?
+            }
+            Decoded::Leaf { physical,
+                            size,
+                            permissions,
+                            ownership } =>
+            {
+                let end = address.checked_add(size.bytes()).unwrap_or(u64::MAX);
+                let low = address < VM_APPLICATION_END && end > VM_APPLICATION_START;
+                if low && !keep_low(address, end, image, false)
+                {
+                    continue;
+                }
+                if permissions.access != mac_kernel_model::pages::Access::Supervisor
+                {
+                    return Err(Error::Authority);
+                }
+                Entry::leaf(physical, size, permissions, ownership).map_err(Error::Encoding)?
+            }
+        };
+        tables.store(target,index,entry).map_err(|e|Error::Tables(super::Error::Tables(mac_riscv_pages::mapping::MapError::Storage(e))))?;
+    }
+    Ok(target)
+}
+
+/// Reclamation is a command transaction: no root can join/publicize module
+/// aliases until this private hierarchy has left the registry and real peers ACK.
+fn retire(root: &Arc<Root>) -> Result<(), Error>
+{
+    if root.retired.load(Ordering::Acquire)
+    {
+        return Ok(());
+    }
+    if let Some(cause) = interrupts::with_masked(|| *root.retirement_failure.lock())
+    {
+        return Err(Error::Retirement(cause));
+    }
+    WAITING_MONITOR.store(true, Ordering::Release);
+    let lease = match crate::machine::monitor::prepare_translation_invalidation()
+    {
+        Ok(lease) => lease,
+        Err(cause) =>
+        {
+            if matches!(cause, crate::machine::monitor::Error::Busy)
+            {
+                return Err(Error::Monitor(cause));
+            }
+            return Err(quarantine(root, cause));
+        }
+    };
+    if let Err(cause) = unlink(root)
+    {
+        return Err(retain_failure(root, cause.into()));
+    }
+    match lease.finish()
+    {
+        Ok(receipt) =>
+        {
+            drop(receipt);
+            modules::retire_process_branches(root.space.owner.root_physical());
+            root.retired.store(true, Ordering::Release);
+            Ok(())
+        }
+        Err(cause) => Err(quarantine(root, cause))
+    }
+}
+fn quarantine(root: &Root, cause: crate::machine::monitor::Error) -> Error
+{
+    retain_failure(root, CleanupCause::from(Error::Monitor(cause)))
+}
+fn retain_failure(root: &Root, cause: CleanupCause) -> Error
+{
+    let retained = interrupts::with_masked(|| {
+        let mut held = root.retirement_failure.lock();
+        *held.get_or_insert(cause)
+    });
+    Error::Retirement(retained)
+}
