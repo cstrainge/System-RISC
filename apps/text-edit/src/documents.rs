@@ -3,6 +3,8 @@
 use core::fmt::Write;
 
 use super::*;
+// Runtime document slots supply their own commands; these are not static MCMD items.
+const WINDOW_COMMAND_BASE: u32 = u32::from_be_bytes(*b"win0");
 const MAX_DOCUMENTS: usize = 8;
 #[derive(Clone, Copy)]
 enum AlertPurpose
@@ -304,7 +306,7 @@ impl<'a> Application<'a>
                     count += 1;
                     menu.set_item(count,
                                   editor.name(system, &mut title)?,
-                                  u32::from_be_bytes(*b"win0") + index as u32,
+                                  WINDOW_COMMAND_BASE + index as u32,
                                   true,
                                   slot == Some(index))?;
                 }
@@ -460,7 +462,7 @@ impl<'a> Application<'a>
                && selection.menu_id == MenuId(133)
             {
                 let target = selection.command
-                                      .checked_sub(u32::from_be_bytes(*b"win0"))
+                                      .checked_sub(WINDOW_COMMAND_BASE)
                                       .and_then(|index| self.editors.get(index as usize))
                                       .and_then(Option::as_ref)
                                       .ok_or(Error::NotFound)?;
@@ -468,18 +470,18 @@ impl<'a> Application<'a>
                 self.update_front_menus(system)?;
                 return Ok(true);
             }
-            if command == Some(u32::from_be_bytes(*b"quit"))
+            if command == Some(crate::resources::commands::QUIT)
             {
                 self.quitting = true;
                 return self.continue_quit(system);
             }
-            if command == Some(u32::from_be_bytes(*b"new "))
+            if command == Some(crate::resources::commands::NEW_DOCUMENT)
             {
                 self.welcome = None;
                 self.new_document(system)?;
                 return Ok(true);
             }
-            if command == Some(u32::from_be_bytes(*b"open"))
+            if command == Some(crate::resources::commands::OPEN)
             {
                 if let Some(choice) = system.standard_file().standard_get_file(self.location, standard_file::TypeFilter::Types(&[TypeCode::new(*b"TEXT"), TypeCode::new(*b"JSON")]))? {
                     self.discard_welcome(system)?; self.location = choice.location();
@@ -489,7 +491,7 @@ impl<'a> Application<'a>
             }
             if let Some(slot) = slot
             {
-                if command == Some(u32::from_be_bytes(*b"opts"))
+                if command == Some(crate::resources::commands::OPTIONS)
                 {
                     let editor = self.editors[slot].as_ref().ok_or(Error::NotFound)?;
                     self.options = Some((slot,
@@ -499,11 +501,11 @@ impl<'a> Application<'a>
                     Self::modal_menus(system, false)?;
                     return Ok(true);
                 }
-                if matches!(command, Some(value) if value == u32::from_be_bytes(*b"wrap") || value == u32::from_be_bytes(*b"lnum"))
+                if matches!(command, Some(value) if value == crate::resources::commands::WRAP || value == crate::resources::commands::LINE_NUMBERS)
                 {
                     let editor = self.editors[slot].as_mut().ok_or(Error::NotFound)?;
                     let mut options = editor.options();
-                    if command == Some(u32::from_be_bytes(*b"wrap"))
+                    if command == Some(crate::resources::commands::WRAP)
                     {
                         options.wrap ^= true;
                     }
@@ -521,7 +523,7 @@ impl<'a> Application<'a>
                     return Ok(true);
                 }
             }
-            if command == Some(u32::from_be_bytes(*b"clos"))
+            if command == Some(crate::resources::commands::CLOSE)
                || matches!(event, Event::CloseRequested { .. })
             {
                 if let Some(slot) = slot
@@ -532,10 +534,12 @@ impl<'a> Application<'a>
             }
             if let Some(slot) = slot
             {
-                if command == Some(u32::from_be_bytes(*b"save"))
-                   || command == Some(u32::from_be_bytes(*b"svas"))
+                if command == Some(crate::resources::commands::SAVE)
+                   || command == Some(crate::resources::commands::SAVE_AS)
                 {
-                    self.save_slot(system, slot, command == Some(u32::from_be_bytes(*b"svas")))?;
+                    self.save_slot(system,
+                                   slot,
+                                   command == Some(crate::resources::commands::SAVE_AS))?;
                     self.update_menus(system, Some(slot))?;
                     return Ok(true);
                 }

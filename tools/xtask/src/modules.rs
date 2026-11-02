@@ -1,6 +1,6 @@
-//! Installation admission for the platform's pinned native module code area.
-//! Descriptor spans include zero-filled storage and private heaps, rather than
-//! just the much smaller serialized resource fork or executable segments.
+//! Installation geometry for the platform's supervisor module execution VAs.
+//! This is virtual reservation admission; real RAM and original module Kernel
+//! charges are admitted per actual memory segment at runtime.
 use mac_build::{Result, error};
 use serde_json::Value;
 
@@ -58,11 +58,11 @@ pub(super) fn footprint(reports: &[Value], capacity: u64) -> Result<u64>
                                       })?;
         if used > capacity
         {
-            return Err(error(format!("installed module code reservation is too small: \
+            return Err(error(format!("installed module execution VA range is too small: \
                                       '{name}' needs {span} bytes, total {used} exceeds \
                                       {capacity} by {} bytes; increase the checked platform \
-                                      modules reservation and rebuild System, ROM and every \
-                                      package",
+                                      virtual_memory.modules range and rebuild System, ROM \
+                                      and every package",
                                      used - capacity)));
         }
     }

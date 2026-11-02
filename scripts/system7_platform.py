@@ -32,7 +32,11 @@ def guest_env():
     env = dict(os.environ)
     flags = (env['CARGO_ENCODED_RUSTFLAGS'].split('\x1f') if 'CARGO_ENCODED_RUSTFLAGS' in env
              else shlex.split(env.get('RUSTFLAGS', '')))
-    flags.extend(['-C', 'target-feature=+' + PLATFORM['llvm_profile']])
+    for index, flag in enumerate(flags):
+        option = (flags[index + 1] if index + 1 < len(flags) else '') if flag in ('-C', '--codegen') else (flag[2:] if flag.startswith('-C') else flag.removeprefix('--codegen='))
+        if option.startswith('relocation-model=') and option != 'relocation-model=pic':
+            raise ValueError('Native dependencies require relocation-model=pic; remove the conflicting override and rebuild')
+    flags.extend(['-C', 'target-feature=+' + PLATFORM['llvm_profile'], '-C', 'relocation-model=pic'])
     env['CARGO_ENCODED_RUSTFLAGS'] = '\x1f'.join(flags)
     return env
 

@@ -7,7 +7,9 @@ Rust owns every compatibility assertion and the acceptance marker.
 """
 from hfs_b_tool import Image as NativeImage
 from system7_capture import OwnedProcesses
-from system7_fixture_build import guest_env as fixture_guest_env, host_env as fixture_host_env
+from system7_fixture_build import (build_application,
+                                  guest_env as fixture_guest_env,
+                                  host_env as fixture_host_env)
 import argparse
 import hashlib
 import json
@@ -30,17 +32,23 @@ def private_disk(output, fixture_name='conformance', *, features=(), package_arg
     fixture = vm.SOURCE / 'crates/mac-toolbox/tests/fixtures' / fixture_name
     target = vm.build_dir() / 'fixtures' / fixture_name
     manifest = fixture / 'Cargo.toml'
-    arguments = ['cargo', 'build', '--manifest-path', str(manifest), '--locked',
-                 '--release', '--target', 'riscv64imac-unknown-none-elf',
-                 '--bin', 'Finder', '--target-dir', str(target)]
-    if features:
-        arguments.extend(['--features', ','.join(features)])
-    subprocess.run(arguments, cwd=vm.ROOT, env=fixture_guest_env(target), check=True)
-    binary = target / 'riscv64imac-unknown-none-elf/release/Finder'
     packaged = output / 'package'
-    subprocess.run(['cargo', 'run', '--manifest-path', str(manifest), '--locked',
-                    '--bin', 'package', '--target-dir', str(target), '--', str(binary),
-                    str(packaged), *map(str, package_arguments)], cwd=vm.ROOT, env=fixture_host_env(target), check=True)
+    if fixture_name == 'finder-recovery':
+        if package_arguments or replace_system:
+            raise ValueError('Finder recovery uses its actual SDK application package')
+        receipt = build_application(manifest, packaged, features)
+        binary = packaged / (receipt['package']['name'] + '.elf')
+    else:
+        arguments = ['cargo', 'build', '--manifest-path', str(manifest), '--locked',
+                     '--release', '--target', 'riscv64imac-unknown-none-elf',
+                     '--bin', 'Finder', '--target-dir', str(target)]
+        if features:
+            arguments.extend(['--features', ','.join(features)])
+        subprocess.run(arguments, cwd=vm.ROOT, env=fixture_guest_env(target), check=True)
+        binary = target / 'riscv64imac-unknown-none-elf/release/Finder'
+        subprocess.run(['cargo', 'run', '--manifest-path', str(manifest), '--locked',
+                        '--bin', 'package', '--target-dir', str(target), '--', str(binary),
+                        str(packaged), *map(str, package_arguments)], cwd=vm.ROOT, env=fixture_host_env(target), check=True)
     private = output / 'dist'
     private.mkdir()
     raw = private / 'conformance.raw'

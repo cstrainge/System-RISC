@@ -22,16 +22,37 @@ impl mac_object_table::shared::InvocationGate for NativeInvocationGate
 
     fn scope_closed(owner: mac_object_table::domain::DomainId)
     {
-        if owner.kind() == mac_object_table::domain::DomainKind::Module
+        use mac_object_table::domain::DomainKind;
+        match owner.kind()
         {
-            crate::drivers::dependencies_changed();
-            crate::drivers::recovery_changed();
+            DomainKind::Module =>
+            {
+                crate::drivers::dependencies_changed();
+                crate::drivers::recovery_changed();
+            }
+            DomainKind::Process =>
+            {
+                crate::drivers::dependencies_changed();
+                crate::toolbox::processes::retirement::resources_released();
+            }
+            DomainKind::System => ()
         }
     }
 
     fn resource_released(_: mac_object_table::domain::DomainId)
     {
         crate::recovery::acknowledgement_changed();
+    }
+
+    fn publication_released(owner: mac_object_table::domain::DomainId)
+    {
+        use mac_object_table::domain::DomainKind;
+        match owner.kind()
+        {
+            DomainKind::Process => crate::toolbox::processes::retirement::resources_released(),
+            DomainKind::Module => crate::drivers::recovery_changed(),
+            DomainKind::System => crate::recovery::acknowledgement_changed()
+        }
     }
 
     fn released(owner: mac_object_table::domain::DomainId)
@@ -47,34 +68,42 @@ impl mac_object_table::shared::InvocationGate for NativeInvocationGate
     }
 }
 
-/// Keeps a bounded synchronous operation on this hart. Nested entry preserves
-/// an already-masked state. The guard and its restoration cannot escape.
-pub(crate) fn with_masked<R>(operation: impl FnOnce() -> R) -> R
+/// Affine ownership of this hart's prior SIE state. It is deliberately not
+/// Send/Sync; a scheduler/metadata guard must drop before interrupt restoration.
+pub(crate) struct InterruptMask
 {
-    const SIE: usize = 1 << 1;
-    struct Restore(usize);
-    impl Drop for Restore
+    previous: usize,
+    _affine:  core::marker::PhantomData<*mut ()>
+}
+impl Drop for InterruptMask
+{
+    fn drop(&mut self)
     {
-        fn drop(&mut self)
+        const SIE: usize = 1 << 1;
+        if self.previous & SIE != 0
         {
-            if self.0 & SIE != 0
-            {
-                // SAFETY: restores only this hart's previously enabled SIE bit.
-                // No nomem: the compiler must not move protected memory access
-                // beyond interrupt restoration.
-                unsafe {
-                    asm!("csrs sstatus, {mask}", mask = in(reg) SIE, options(nostack));
-                }
+            // SAFETY: restore only this hart's originally enabled SIE bit.
+            // No nomem: protected accesses cannot cross restoration.
+            unsafe {
+                asm!("csrs sstatus, {mask}",mask=in(reg)SIE,options(nostack));
             }
         }
     }
+}
+pub(crate) fn mask() -> InterruptMask
+{
+    const SIE: usize = 1 << 1;
     let previous;
-    // SAFETY: System executes in S mode. CSR read/clear is atomic w.r.t. local
-    // interrupt entry. The memory clobber prevents hoisting lock access before it.
+    // SAFETY: System executes in S mode; read/clear is atomic wrt local entry.
     unsafe {
-        asm!("csrrc {previous}, sstatus, {mask}", previous = out(reg) previous,
-                  mask = in(reg) SIE, options(nostack));
+        asm!("csrrc {previous}, sstatus, {mask}",previous=out(reg)previous,mask=in(reg)SIE,options(nostack));
     }
-    let _restore = Restore(previous);
+    InterruptMask { previous,
+                    _affine: core::marker::PhantomData }
+}
+/// The same RAII gate is used for bounded closures and guarded transactions.
+pub(crate) fn with_masked<R>(operation: impl FnOnce() -> R) -> R
+{
+    let _restore = mask();
     operation()
 }

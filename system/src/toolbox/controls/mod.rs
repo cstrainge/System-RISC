@@ -1,4 +1,5 @@
 //! Resident Control Manager. Each CDEF owns drawing, hit geometry and tracking math.
+use crate::toolbox::resources::definitions::DefinitionRef;
 mod snapshot;
 mod tracking;
 mod reflow;
@@ -41,7 +42,7 @@ pub struct Drawing
 {
     pub id:    u64,
     state:     State,
-    entry:     DefinitionEntry,
+    entry:     DefinitionRef,
     gate:      TrapGate,
     variation: i16,
     damage:    [Rect; 2],
@@ -221,7 +222,8 @@ impl Drawing
                                      object:    (&mut state as *mut ControlDefinitionState).cast(),
                                      gate:      self.gate,
                                      surface:   &mut surface };
-                let status = super::resources::definitions::invoke(dividers.entry, &mut call);
+                let status = super::resources::definitions::invoke(dividers.definition.reference(),
+                                                                   &mut call);
                 if status < 0
                 {
                     return Err(status as Status);
@@ -249,7 +251,7 @@ impl Drawing
         {
             let drawing = Drawing { id:        self.id,
                                     state:     State::Scrollbar(*state),
-                                    entry:     bars.entry,
+                                    entry:     bars.definition.reference(),
                                     gate:      self.gate,
                                     variation: 0,
                                     damage:    [Rect::ZERO; 2],
@@ -400,12 +402,32 @@ fn validate_state(call: &ControlCall, id: i16) -> Result<(), Status>
     }
     Ok(())
 }
-/// Validate CDEF state without allocating a retained drawing.
-pub fn validate(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
-                -> Result<(), Status>
+/// Validate wire/state structure without invoking a definition or allocating.
+/// Cold-load preflight and the actual callback path share these checks.
+pub(crate) fn preflight(call: &ControlCall) -> Result<i16, Status>
 {
+    if call.reserved != 0
+    {
+        return Err(BAD_ARGUMENT);
+    }
     let id = definition_id(call)?;
     validate_state(call, id)?;
+    if id == 1
+    {
+        mac_definition::validation::scrollbar(&call.scrollbar).map_err(|e| e.status())?;
+    }
+    else
+    {
+        mac_definition::validation::standard(id, variation(call.procedure, id), &call.standard)
+            .map_err(|e| e.status())?;
+    }
+    Ok(id)
+}
+/// Validate CDEF state without allocating a retained drawing.
+pub(crate) fn validate(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate)
+                       -> Result<(), Status>
+{
+    let id = preflight(call)?;
     let object = if id == 1
     {
         (&mut call.scrollbar as *mut ScrollbarState).cast()
@@ -433,16 +455,16 @@ pub fn validate(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
     Ok(())
 }
 /// Validate and resolve a typed request. No per-control geometry lives here.
-pub fn prepare(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
-               -> Result<Option<Drawing>, Status>
+pub(crate) fn prepare(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate)
+                      -> Result<Option<Drawing>, Status>
 {
     prepare_with_title(call, entry, gate, None)
 }
-fn prepare_with_title(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate,
+fn prepare_with_title(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate,
                       title: Option<&Arc<snapshot::Title>>)
                       -> Result<Option<Drawing>, Status>
 {
-    let id = definition_id(call)?;
+    let id = preflight(call)?;
     if matches!(call.operation, DRAW_SCROLLBAR | DRAW_STANDARD)
     {
         validate(call, entry, gate)?;
@@ -537,10 +559,10 @@ pub mod native
     /// Shared ABI adapter for offscreen control services, including loaded CDEF calls.
     /// # Safety
     /// Request/surface storage must be live and exclusively borrowed for this call.
-    pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
-                           mut resolve: impl FnMut(i16) -> Result<DefinitionEntry, Status>,
-                           gate: TrapGate)
-                           -> i64
+    pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
+                                  mut resolve: impl FnMut(i16) -> Result<DefinitionRef, Status>,
+                                  gate: TrapGate)
+                                  -> i64
     {
         let result = (|| -> Result<(), Status> {
             if number != mac_abi::traps::CONTROL
@@ -558,7 +580,19 @@ pub mod native
             {
                 return Err(BAD_ARGUMENT);
             }
-            let id = definition_id(call)?;
+            let id = preflight(call)?;
+            if matches!(call.operation, DRAW_SCROLLBAR | DRAW_STANDARD)
+            {
+                if call.surface.is_null()
+                   || !(call.surface as usize).is_multiple_of(core::mem::align_of::<Surface>())
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                // End the checked pixel borrow before cold executable loading.
+                // The real drawing path revalidates it before painting; no
+                // canvas or surface reference crosses allocation/publication.
+                unsafe { (&mut *call.surface).canvas() }.ok_or(BAD_ARGUMENT)?;
+            }
             let entry = resolve(id)?;
             if let Some(drawing) = prepare(call, entry, gate)?
             {

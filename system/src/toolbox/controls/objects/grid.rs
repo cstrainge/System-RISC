@@ -14,10 +14,16 @@ pub(super) struct Configuration
 {
     tracks:     Vec<wire::TrackSetting>,
     boundaries: Vec<wire::SplitterSetting>,
-    manual:     [Option<Arc<Vec<i64>>>; 2]
+    manual:     [Option<Arc<Vec<i64>>>; 2],
+    splitter:   Option<Arc<BoundDefinition>>
 }
 impl Configuration
 {
+    pub(super) fn has_splitters(&self) -> bool
+    {
+        self.splitter.is_some()
+    }
+
     fn percent_axis(&self, axis: u32) -> bool
     {
         self.tracks
@@ -38,7 +44,8 @@ impl Configuration
         }
         Ok(Self { tracks,
                   boundaries,
-                  manual: old.map_or([None, None], |c| c.manual.clone()) })
+                  manual: old.map_or([None, None], |c| c.manual.clone()),
+                  splitter: old.and_then(|c| c.splitter.clone()) })
     }
 }
 #[derive(Default)]
@@ -54,7 +61,7 @@ struct Item
     node:            tree::Node,
     state:           State,
     before:          Spec,
-    entry:           DefinitionEntry,
+    entry:           DefinitionRef,
     table:           bool,
     outline_changed: bool,
     columns_cached:  bool,
@@ -146,7 +153,7 @@ fn exact(width: i16) -> Result<layout::AxisConstraint, Status>
 {
     Ok(layout::AxisConstraint::Exact(layout::Extent::new(width).map_err(|e| e.status())?))
 }
-fn measure(state: &mut State, entry: DefinitionEntry, gate: TrapGate,
+fn measure(state: &mut State, entry: DefinitionRef, gate: TrapGate,
            constraints: layout::Constraints)
            -> Result<layout::Measurement, Status>
 {
@@ -312,6 +319,13 @@ impl Manager
             }
             if setting.enabled != 0
             {
+                if config.splitter.is_none()
+                {
+                    let entry =
+                        crate::toolbox::runtime::Toolbox::control_definition(CDEF_SPLITTER)?;
+                    config.splitter = Some(Arc::try_new(crate::toolbox::resources::definitions::bind(entry)?)
+                                               .map_err(|_| NO_MEMORY)?);
+                }
                 config.boundaries.try_reserve(1).map_err(|_| NO_MEMORY)?;
                 config.boundaries.push(setting);
                 config.boundaries.sort_unstable_by_key(|b| (b.axis, b.index));
@@ -319,6 +333,10 @@ impl Manager
             else
             {
                 config.boundaries.retain(|b| b.axis != setting.axis || b.index != setting.index);
+                if config.boundaries.is_empty()
+                {
+                    config.splitter = None;
+                }
             }
         }
         else
@@ -349,7 +367,7 @@ impl Manager
 
     pub(crate) fn prepare_layout(&self, call: &ControlCall, owner: u64, paint_pending: bool,
                                  gate: TrapGate,
-                                 resolve: impl FnMut(i16) -> Result<DefinitionEntry, Status>,
+                                 resolve: impl FnMut(i16) -> Result<DefinitionRef, Status>,
                                  window: Option<(Rect, layout::Anchors, layout::BorderOffsets)>)
                                  -> Result<Prepared, Status>
     {
@@ -360,7 +378,7 @@ impl Manager
     /// before committing; multiple roots can share one window transaction.
     fn prepare_layout_change(&self, call: &ControlCall, owner: u64, paint_pending: bool,
                              gate: TrapGate,
-                             mut resolve: impl FnMut(i16) -> Result<DefinitionEntry, Status>,
+                             mut resolve: impl FnMut(i16) -> Result<DefinitionRef, Status>,
                              window: Option<(Rect, layout::Anchors, layout::BorderOffsets)>,
                              scroll_change: Option<Option<Arc<scrolling::Scroll>>>,
                              root_change: Option<State>)
@@ -761,7 +779,7 @@ impl Manager
                 }
                 if let Some(old) = plan[i].state.layout.as_ref().and_then(|l| l.scroll.as_ref())
                 {
-                    let mut next = **old;
+                    let mut next = old.as_ref().clone();
                     let width = if plan[i].columns_cached
                     {
                         old.data.width
@@ -867,11 +885,7 @@ impl Manager
                         };
                     let tracks = [clone_tracks(&plan[i].columns.tracks)?,
                                   clone_tracks(&plan[i].rows.tracks)?];
-                    Some(Self::divider_snapshot(&plan[i],
-                                                &plan,
-                                                &logical_cells,
-                                                tracks,
-                                                resolve(CDEF_SPLITTER)?)?)
+                    Some(Self::divider_snapshot(&plan[i], &plan, &logical_cells, tracks)?)
                 }
                 else
                 {
@@ -937,7 +951,7 @@ impl Manager
 
     pub(crate) fn prepare_scroll(&self, call: &mut ControlCall, owner: u64, paint_pending: bool,
                                  gate: TrapGate,
-                                 mut resolve: impl FnMut(i16) -> Result<DefinitionEntry, Status>)
+                                 mut resolve: impl FnMut(i16) -> Result<DefinitionRef, Status>)
                                  -> Result<Prepared, Status>
     {
         let root = self.table(call.id, owner)?;
@@ -1013,8 +1027,8 @@ impl Manager
            && (!current.arrangement_pending || root.state.tracking.is_some())
         {
             let mut state = root.state.clone();
-            let old = **current.scroll.as_ref().ok_or(NOT_SUPPORTED)?;
-            let mut scroll = old;
+            let old = current.scroll.as_ref().ok_or(NOT_SUPPORTED)?.as_ref().clone();
+            let mut scroll = old.clone();
             let changed =
                 state.scroll_tracking(call, &mut scroll, self.visible_clip(call.id), gate)?;
             if scroll.data == old.data
@@ -1053,7 +1067,7 @@ impl Manager
            && change.is_none()
            && let Some(old) = &current.scroll
         {
-            let mut next = **old;
+            let mut next = old.as_ref().clone();
             if call.layout.message == wire::SCROLL_TO
             {
                 next.position(call.layout.scroll.x, call.layout.scroll.y)?;
@@ -1133,12 +1147,14 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        let old = **prepared.items[0].state
-                                     .layout
-                                     .as_ref()
-                                     .and_then(|l| l.scroll.as_ref())
-                                     .ok_or(NOT_SUPPORTED)?;
-        let mut next = old;
+        let old = prepared.items[0].state
+                                   .layout
+                                   .as_ref()
+                                   .and_then(|l| l.scroll.as_ref())
+                                   .ok_or(NOT_SUPPORTED)?
+                                   .as_ref()
+                                   .clone();
+        let mut next = old.clone();
         let tracking_changed = if let Some((state, scroll)) = capture
         {
             prepared.items[0].state = state;
@@ -1197,7 +1213,7 @@ impl Manager
             l.hidden = hidden;
             if let Some(old) = &l.scroll
             {
-                let mut next = **old;
+                let mut next = old.as_ref().clone();
                 next.arrange(rect, old.data.width, old.data.height)?;
                 if next.data != old.data
                 {
@@ -1228,11 +1244,7 @@ impl Manager
             if let Some(old) = plan[i].state.layout.as_ref().and_then(|l| l.outlines.clone())
                && let Some(d) = &old.dividers
             {
-                let next = Self::divider_snapshot(&plan[i],
-                                                  plan,
-                                                  &old.logical,
-                                                  d.tracks.clone(),
-                                                  d.entry)?;
+                let next = Self::divider_snapshot(&plan[i], plan, &old.logical, d.tracks.clone())?;
                 if next.segments != d.segments || next.viewport != d.viewport
                 {
                     let mut cells = Vec::new();
@@ -1324,7 +1336,7 @@ impl Manager
     }
 
     fn append_plan(&self, plan: &mut Vec<Item>, id: u64, owner: u64,
-                   resolve: &mut impl FnMut(i16) -> Result<DefinitionEntry, Status>)
+                   resolve: &mut impl FnMut(i16) -> Result<DefinitionRef, Status>)
                    -> Result<(), Status>
     {
         let o = self.get(id, owner)?;
@@ -1523,7 +1535,7 @@ impl Manager
 impl Manager
 {
     fn divider_snapshot(item: &Item, plan: &[Item], logical: &[wire::LogicalRect],
-                        tracks: [Arc<Vec<wire::GridTrack>>; 2], entry: DefinitionEntry)
+                        tracks: [Arc<Vec<wire::GridTrack>>; 2])
                         -> Result<Arc<super::super::snapshot::Dividers>, Status>
     {
         use super::super::snapshot::{Divider, Dividers};
@@ -1641,7 +1653,7 @@ impl Manager
                 start = start.max(hi);
             }
         }
-        Arc::try_new(Dividers { entry,
+        Arc::try_new(Dividers { definition: config.splitter.clone().ok_or(CORRUPT_DATA)?,
                                 viewport,
                                 segments,
                                 tracks }).map_err(|_| NO_MEMORY)
@@ -1652,7 +1664,7 @@ impl Manager
 {
     pub(super) fn prepare_split_release(&self, id: u64, owner: u64, mut state: State, axis: u32,
                                         index: u32, delta: i64, gate: TrapGate,
-                                        resolve: impl FnMut(i16) -> Result<DefinitionEntry, Status>)
+                                        resolve: impl FnMut(i16) -> Result<DefinitionRef, Status>)
                                         -> Result<Prepared, Status>
     {
         let l = state.layout.as_mut().ok_or(NOT_SUPPORTED)?;

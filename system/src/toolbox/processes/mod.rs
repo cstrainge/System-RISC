@@ -9,6 +9,9 @@ mod presentation;
 pub(crate) mod documents;
 pub(crate) mod retirement;
 pub(crate) mod finder;
+pub(crate) mod termination;
+pub(crate) mod launch;
+pub(crate) mod startup;
 pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
 {
     let caller = crate::context::current_thread_context().identity().app.0;
@@ -60,9 +63,197 @@ pub struct Process
 {
     pub info:         ProcessInfo,
     pub(crate) image: Option<crate::images::Binding>,
+    // Original executable context, captured at its real read. Not authority.
+    original_catalog: Option<mac_abi::files::CatalogInfo>,
+    heap:             Option<crate::toolbox::application_heap::RootBinding>,
+    tls:              Option<crate::toolbox::native_threads::RootBinding>,
     pub stamp:        u64,
     cleanup:          Option<crate::toolbox::handles::cleanup::Checkpoint>,
+    termination:      termination::State,
     account:          crate::machine::scheduler::accounting::ProcessAccount
+}
+
+/// Complete authentic Process backing before directory publication. No ID is
+/// reconstructed from a label; this owns the one issued ledger and account.
+/// It contains no registered object, executable or running thread.
+pub(crate) struct PreparedProcess
+{
+    ledger: OwnerRef,
+    value:  Process
+}
+impl PreparedProcess
+{
+    pub(crate) fn owner(&self) -> &OwnerRef
+    {
+        &self.ledger
+    }
+
+    pub(crate) fn allocation(
+        &self)
+        -> Result<crate::machine::scheduler::accounting::AllocationAuthority, Status>
+    {
+        self.value
+            .account
+            .admit_use()
+            .map_err(|cause| crate::machine::scheduler::accounting::account_status(&cause))
+    }
+
+    /// Set the original read's metadata before canonical recipient publication.
+    /// The genuine prepared owner/account are unchanged; this creates no lease.
+    pub(crate) fn bind_launch_catalog(&mut self, catalog: mac_abi::files::CatalogInfo)
+                                      -> Result<(), Status>
+    {
+        if let Some(original) = self.value.original_catalog
+        {
+            // A capacity-publication retry keeps the SAME original snapshot;
+            // it never refreshes metadata from a later filesystem lookup.
+            return if original.volume == catalog.volume
+                      && original.id == catalog.id
+                      && original.parent == catalog.parent
+            {
+                Ok(())
+            }
+            else
+            {
+                Err(BAD_ABI)
+            };
+        }
+        if (self.value.info.volume != 0 && self.value.info.volume != catalog.volume)
+           || (self.value.info.cnid != 0 && self.value.info.cnid != catalog.id)
+        {
+            return Err(BAD_ABI);
+        }
+        self.value.info.volume = catalog.volume;
+        self.value.info.cnid = catalog.id;
+        self.value.original_catalog = Some(catalog);
+        Ok(())
+    }
+
+    pub(crate) fn prepare(name: &str, volume: u32, cnid: u32) -> Result<Self, Status>
+    {
+        let mut info = ProcessInfo { volume,
+                                     cnid,
+                                     ..Default::default() };
+        if name.is_empty() || name.len() > info.name.len()
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        info.name[..name.len()].copy_from_slice(name.as_bytes());
+        info.name_length = name.len() as u32;
+        use mac_kernel_model::policy::ConfiguredRange;
+
+        use crate::machine::{memory,
+                             scheduler::accounting::{ProcessAccount, account_status}};
+        let ledger = OwnerRef::issue(DomainKind::Process).map_err(|error| {
+                                                             serial!("PROCESS_DOMAIN_REFUSED: \
+                                                                      {error}");
+                                                             NO_MEMORY
+                                                         })?;
+        let id = ledger.owner().incarnation();
+        info.id = id;
+        let kernel =
+            ConfiguredRange::new(0,
+                                 memory::PROCESS_KERNEL_BUDGET_BYTES,
+                                 memory::PROCESS_KERNEL_BUDGET_BYTES).map_err(|_| BAD_ABI)?;
+        let application =
+            ConfiguredRange::new(0,
+                                 memory::PROCESS_APPLICATION_BUDGET_BYTES,
+                                 memory::PROCESS_APPLICATION_BUDGET_BYTES).map_err(|_| BAD_ABI)?;
+        let account =
+            ProcessAccount::try_new(ledger.clone(), kernel, application).map_err(|error| {
+                serial!("PROCESS_ACCOUNT_REFUSED: {error}");
+                account_status(&error)
+            })?;
+        let allocation = account.admit_use().map_err(|error| account_status(&error))?;
+        let cleanup = crate::allocator::with_target(crate::allocator::Target::Owner {
+            account: allocation, class: mac_kernel_model::policy::MemoryClass::Kernel
+        }, || crate::toolbox::handles::cleanup::Checkpoint::try_new()).map_err(|_| NO_MEMORY)?;
+        Ok(Self { ledger,
+                  value: Process { info,
+                                   image: None,
+                                   original_catalog: None,
+                                   heap: None,
+                                   tls: None,
+                                   stamp: 0,
+                                   cleanup: Some(cleanup),
+                                   termination: Default::default(),
+                                   account } })
+    }
+}
+
+/// Owns one genuine, directory-published provisional process across preparation
+/// outside Desktop. Its account comes from that same entry, never from IDs.
+pub(crate) struct LaunchAdmission
+{
+    owner:            crate::toolbox::handles::OwnerRef,
+    allocation:       crate::machine::scheduler::accounting::AllocationAuthority,
+    active:           bool,
+    original_catalog: mac_abi::files::CatalogInfo
+}
+impl LaunchAdmission
+{
+    pub(crate) fn original_catalog(&self) -> mac_abi::files::CatalogInfo
+    {
+        self.original_catalog
+    }
+
+    pub(crate) fn owner(&self) -> &crate::toolbox::handles::OwnerRef
+    {
+        &self.owner
+    }
+
+    pub(crate) fn id(&self) -> u64
+    {
+        self.owner.owner().incarnation()
+    }
+
+    pub(crate) fn allocation(&self) -> crate::machine::scheduler::accounting::AllocationAuthority
+    {
+        self.allocation.clone()
+    }
+
+    pub(crate) fn started(&mut self)
+    {
+        self.active = false;
+    }
+
+    fn stop(&mut self)
+    {
+        if self.active
+        {
+            use mac_object_table::shared::InvocationGate as _;
+            crate::toolbox::handles::InvocationGate::run(|| {
+                self.owner.stop_admission();
+                crate::machine::scheduler::retire_owner(self.id());
+            });
+            self.active = false;
+            retirement::resources_released();
+        }
+    }
+}
+impl Drop for LaunchAdmission
+{
+    fn drop(&mut self)
+    {
+        self.stop();
+    }
+}
+
+/// Publish the real executable alias under the prospective process account.
+/// Startup and replacement call this once after READY/directory completion,
+/// outside Desktop, before publishing any author thread. Catalog IDs select
+/// the original read; only the captured owner supplies authority.
+fn pin_launch_executable(owner: &OwnerRef,
+                         allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+                         original: mac_abi::files::CatalogInfo)
+                         -> Result<(), Status>
+{
+    crate::allocator::with_target(crate::allocator::Target::Owner {
+        account: allocation,
+        class: mac_kernel_model::policy::MemoryClass::Kernel
+    }, || crate::kernel::with_files(|files| {
+        files.pin_executable(owner, original.volume, original.id)
+    })).map_err(crate::state::AccessError::status).and_then(|result| result)
 }
 
 /// A cleanup resource context is minted from one directory entry, never from
@@ -73,6 +264,32 @@ pub(crate) struct ResourceBinding
     owner: crate::toolbox::handles::OwnerRef,
     image: Option<crate::images::Binding>
 }
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RetirementCheckError
+{
+    AdmissionOpen,
+    BindingChanged
+}
+impl core::fmt::Display for RetirementCheckError
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        out.write_str(match self
+                      {
+                          Self::AdmissionOpen =>
+                          {
+                              "old Finder admission is still open after handoff; full retirement \
+                               is not established"
+                          }
+                          Self::BindingChanged =>
+                          {
+                              "old Finder directory binding differs from its retained owner/image; \
+                               full retirement cannot be authorized"
+                          }
+                      })
+    }
+}
+
 impl ResourceBinding
 {
     pub(crate) fn ledger(&self) -> &crate::toolbox::handles::OwnerRef
@@ -83,6 +300,12 @@ impl ResourceBinding
     pub(crate) fn owner(&self) -> u64
     {
         self.owner.owner().incarnation()
+    }
+
+    pub(crate) fn retain(&self) -> Self
+    {
+        Self { owner: self.owner.clone(),
+               image: self.image }
     }
 
     pub(crate) fn image(&self) -> Option<crate::images::Binding>
@@ -239,59 +462,184 @@ impl Manager
         Ok(())
     }
 
+    /// Retain only the original read's context metadata. Actual directory and
+    /// mount authority must still be admitted by Files using this process owner.
+    pub(crate) fn bind_launch_catalog(&mut self, id: u64, catalog: mac_abi::files::CatalogInfo)
+                                      -> Result<(), Status>
+    {
+        let process = self.get_mut(id)?;
+        if process.info.volume != catalog.volume
+           || process.info.cnid != catalog.id
+           || process.original_catalog.is_some()
+           || process.info.thread != 0
+        {
+            return Err(BAD_ABI);
+        }
+        process.original_catalog = Some(catalog);
+        Ok(())
+    }
+
+    pub(crate) fn original_catalog(&self, id: u64) -> Result<mac_abi::files::CatalogInfo, Status>
+    {
+        self.get(id)?.original_catalog.ok_or(BAD_ABI)
+    }
+
+    pub(crate) fn launch_admission(&self, id: u64) -> Result<LaunchAdmission, Status>
+    {
+        let entry = self.entries.get(id).ok_or(NOT_FOUND)?;
+        if !entry.ledger().accepting()
+           || entry.value().info.thread != 0
+           || entry.value().heap.is_some()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        Ok(LaunchAdmission { owner: entry.ledger().clone(),
+                             allocation: entry.value().account.admit_use().map_err(|error| {
+                                 crate::machine::scheduler::accounting::account_status(&error)
+                             })?, active: true,
+                             original_catalog: entry.value().original_catalog.ok_or(BAD_ABI)? })
+    }
+
+    pub(super) fn file_starting(&self, volume: u32, cnid: u32) -> bool
+    {
+        self.entries.iter().any(|entry| {
+                               entry.ledger().accepting()
+                               && entry.value().info.thread == 0
+                               && entry.value().info.volume == volume
+                               && entry.value().info.cnid == cnid
+                           })
+    }
+
+    /// Checked attachment cannot substitute a different process incarnation.
+    /// The published heap remains in the owner's walk even if this refuses.
+    pub(crate) fn bind_heap(&mut self, owner: &OwnerRef,
+                            heap: crate::toolbox::application_heap::RootBinding)
+                            -> Result<(), Status>
+    {
+        if heap.owner() != owner.owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let entry = self.entries.get(owner.owner().incarnation()).ok_or(NOT_FOUND)?;
+        if entry.ledger().owner() != owner.owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        if !entry.ledger().accepting()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if entry.value().heap.is_some()
+        {
+            return Err(BAD_ABI);
+        }
+        self.get_mut(owner.owner().incarnation())?.heap = Some(heap);
+        Ok(())
+    }
+
+    pub(crate) fn heap(&self, id: u64)
+                       -> Result<crate::toolbox::application_heap::RootBinding, Status>
+    {
+        let entry = self.entries.get(id).ok_or(NOT_FOUND)?;
+        if !entry.ledger().accepting()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let heap = entry.value().heap.as_ref().ok_or(BAD_ABI)?;
+        if heap.owner() != entry.ledger().owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(heap.clone())
+    }
+
+    pub(crate) fn bind_tls(&mut self, owner: &OwnerRef,
+                           tls: crate::toolbox::native_threads::RootBinding)
+                           -> Result<(), Status>
+    {
+        let entry = self.entries.get(owner.owner().incarnation()).ok_or(NOT_FOUND)?;
+        if entry.ledger().owner() != owner.owner() || tls.owner() != owner.owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        if !entry.ledger().accepting()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if entry.value().tls.is_some() || entry.value().info.thread != 0
+        {
+            return Err(BAD_ABI);
+        }
+        self.get_mut(owner.owner().incarnation())?.tls = Some(tls);
+        Ok(())
+    }
+
+    pub(crate) fn tls(&self, id: u64)
+                      -> Result<crate::toolbox::native_threads::RootBinding, Status>
+    {
+        let entry = self.entries.get(id).ok_or(NOT_FOUND)?;
+        if !entry.ledger().accepting()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let tls = entry.value().tls.as_ref().ok_or(BAD_ABI)?;
+        if tls.owner() != entry.ledger().owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(tls.clone())
+    }
+
+    pub(crate) fn plan_provision_capacity(
+        &self)
+        -> Result<super::handles::DirectoryCapacityPlan<Process>,
+                  super::handles::DirectoryCapacityError>
+    {
+        self.entries.plan_insert_capacity()
+    }
+
+    pub(crate) fn install_provision_capacity(
+        &mut self, prepared: &mut super::handles::PreparedDirectoryCapacity<Process>)
+        -> Result<(), super::handles::DirectoryCapacityError>
+    {
+        self.entries.install_insert_capacity(prepared)
+    }
+
     pub(crate) fn provision(&mut self, name: &str, volume: u32, cnid: u32) -> Result<u64, Status>
     {
-        let mut info = ProcessInfo { volume,
-                                     cnid,
-                                     ..Default::default() };
-        if name.is_empty() || name.len() > info.name.len()
-        {
-            return Err(BAD_ARGUMENT);
-        }
-        info.name[..name.len()].copy_from_slice(name.as_bytes());
-        info.name_length = name.len() as u32;
-        use mac_kernel_model::policy::ConfiguredRange;
-
-        use crate::machine::{memory,
-                             scheduler::accounting::{ProcessAccount, account_status}};
-        let ledger = OwnerRef::issue(DomainKind::Process).map_err(|error| {
-                                                             serial!("PROCESS_DOMAIN_REFUSED: \
-                                                                      {error}");
-                                                             NO_MEMORY
-                                                         })?;
-        let id = ledger.owner().incarnation();
-        info.id = id;
-        let kernel =
-            ConfiguredRange::new(0,
-                                 memory::PROCESS_KERNEL_BUDGET_BYTES,
-                                 memory::PROCESS_KERNEL_BUDGET_BYTES).map_err(|_| BAD_ABI)?;
-        let application =
-            ConfiguredRange::new(0,
-                                 memory::PROCESS_APPLICATION_BUDGET_BYTES,
-                                 memory::PROCESS_APPLICATION_BUDGET_BYTES).map_err(|_| BAD_ABI)?;
-        let account =
-            ProcessAccount::try_new(ledger.clone(), kernel, application).map_err(|error| {
-                serial!("PROCESS_ACCOUNT_REFUSED: {error}");
-                account_status(&error)
-            })?;
-        let allocation = account.admit_use().map_err(|error| account_status(&error))?;
-        let cleanup = crate::allocator::with_target(crate::allocator::Target::Owner {
-            account: allocation, class: mac_kernel_model::policy::MemoryClass::Kernel
-        }, || crate::toolbox::handles::cleanup::Checkpoint::try_new()).map_err(|_| NO_MEMORY)?;
-        // Only a fully constructed owner/account/checkpoint is published. The
-        // directory scopes its retained shared vector independently.
-        self.entries
-            .insert(ledger,
-                    Process { info,
-                              image: None,
-                              stamp: 0,
-                              cleanup: Some(cleanup),
-                              account })
-            .map_err(|error| {
-                serial!("PROCESS_DOMAIN_REFUSED: {error}");
-                NO_MEMORY
-            })?;
+        let prepared = PreparedProcess::prepare(name, volume, cnid)?;
+        let id = prepared.ledger.owner().incarnation();
+        self.entries.insert(prepared.ledger, prepared.value).map_err(|cause| {
+            serial!("PROCESS_DOMAIN_REFUSED: {cause}");
+            NO_MEMORY
+        })?;
         Ok(id)
+    }
+
+    /// No allocation or rejected-payload disposal in this publication turn.
+    pub(crate) fn provision_prepared(&mut self, prepared: PreparedProcess)
+                                     -> Result<u64, (Status, PreparedProcess)>
+    {
+        match self.entries.insert_prepared(prepared.ledger, prepared.value)
+        {
+            Ok(owner) => Ok(owner.incarnation()),
+            Err(failure) =>
+            {
+                let status = match failure.cause
+                {
+                    DirectoryError::Storage { .. } => SERVICE_BUSY,
+                    DirectoryError::Duplicate { .. }
+                    | DirectoryError::NotFound { .. }
+                    | DirectoryError::LiveResources { .. }
+                    | DirectoryError::PendingResources { .. }
+                    | DirectoryError::CompletionFaults { .. }
+                    | DirectoryError::AdmissionOpen { .. } => BAD_ABI
+                };
+                Err((status,
+                     PreparedProcess { ledger: failure.ledger,
+                                       value:  failure.value }))
+            }
+        }
     }
 
     pub fn get(&self, id: u64) -> Result<&Process, Status>
@@ -383,6 +731,30 @@ impl Manager
         Ok(())
     }
 
+    /// The retained genuine binding is correlation after handoff, not a Read
+    /// or account pin. Only actual directory absence establishes full removal;
+    /// empty THRD/image tables alone cannot establish that barrier.
+    pub(crate) fn retired_binding(&self, old: &ResourceBinding)
+                                  -> Result<bool, RetirementCheckError>
+    {
+        if old.ledger().accepting()
+        {
+            return Err(RetirementCheckError::AdmissionOpen);
+        }
+        let Some(process) = self.entries.get(old.owner())
+        else
+        {
+            return Ok(true);
+        };
+        if process.ledger().owner() != old.ledger().owner()
+           || process.value().image.map(crate::images::Binding::id)
+              != old.image().map(crate::images::Binding::id)
+        {
+            return Err(RetirementCheckError::BindingChanged);
+        }
+        Ok(false)
+    }
+
     pub fn remove(&mut self, id: u64) -> Result<(), Status>
     {
         // A retired thread still owns its context and stack until a different
@@ -449,16 +821,82 @@ impl Manager
         Ok(info)
     }
 }
+/// Acknowledgement belongs to the actual current Finder main, never a wire ID.
+/// The moved future-default capability leaves every critical turn before Drop.
+fn finder_desktop_ready() -> Result<(), Status>
+{
+    use mac_object_table::shared::InvocationGate as _;
+
+    let released = crate::context::with_application_executor(|executor| {
+                       crate::kernel::with_toolbox(|toolbox| {
+                           crate::toolbox::handles::InvocationGate::run(|| {
+                               let owner = executor.owner().owner();
+                               let id = owner.incarnation();
+                               if id != crate::context::finder_app().0
+                               {
+                                   return Err(ACCESS_DENIED);
+                               }
+                               let entry = toolbox.processes.entries.get(id).ok_or(NOT_FOUND)?;
+                               let process = entry.value();
+                               if entry.ledger().owner() != owner
+                                  || process.info.id != id
+                                  || process.image != Some(executor.image())
+                                  || process.account.owner() != owner
+                                  || !process.account.owns_use(executor.allocation())
+                               {
+                                   return Err(ACCESS_DENIED);
+                               }
+                               if !entry.ledger().accepting()
+                                  || process.info.thread == 0
+                                  || process.termination.record().is_some()
+                                  || process.account.snapshot().closing
+                               {
+                                   return Err(SERVICE_BUSY);
+                               }
+                               if process.info.thread != executor.thread()
+                               {
+                                   return Err(WRONG_THREAD);
+                               }
+                               // All fallible validation precedes this pointer transition.
+                               // Scoped service permits and original receipts are untouched.
+                               Ok(executor.take_recovery_default_after_desktop_ready())
+                           })
+                       }).map_err(|cause| cause.status())?
+                   }).map_err(|cause| cause.status())??;
+    drop(released);
+    Ok(())
+}
+
 /// Dispatch native and classic process requests without holding desktop state
 /// across storage reads, provider callbacks or scheduler waits.
 pub(crate) fn request(call: &mut ProcessCall) -> Status
 {
+    call.requirement_class = [0; 4];
+    call.requirement_version = 0;
     let result = (|| {
         if call.operation != LAUNCH
         {
+            if launch::pending()
+            {
+                launch::abandon_thread(crate::context::current_thread());
+                return Err(BAD_ABI);
+            }
+            if call.operation == FINDER_DESKTOP_READY
+            {
+                if call.id != 0 || call.index != 0 || call.volume != 0 || call.cnid != 0
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                finder_desktop_ready()?;
+                return Ok(OK);
+            }
             return crate::kernel::with_toolbox(|d| d.process(call)).map_err(|e| e.status());
         }
         crate::context::without_recovery(|| {
+            if launch::pending()
+            {
+                return launch::resume(call, launch::Origin::Process).map(|()| OK);
+            }
             // An app can quit and another launch it before the next timer tick.
             // This trap is already on the other app's stack: finish that real
             // checkpoint before deciding whether reloading the old image is safe.
@@ -472,13 +910,228 @@ pub(crate) fn request(call: &mut ProcessCall) -> Status
         }
             let owner = crate::context::current_thread_context().identity().app.0;
             let loaded = crate::toolbox::files::application::read(owner, call.volume, call.cnid)?;
-            crate::kernel::with_toolbox(|d| d.launch_application(call, *loaded)).map_err(|e| {
-                                                                                    e.status()
-                                                                                })?
-                                                                                .map(|()| OK)
+            launch_application(call, *loaded, launch::Origin::Process).map(|()| OK)
         })
     })();
     result.unwrap_or_else(|error| error)
+}
+
+#[derive(Debug)]
+pub(crate) enum ServiceAdmissionFailure
+{
+    Format(mac_formats::requirements::Error),
+    Runtime(crate::toolbox::native_threads::Error),
+    Provider
+    {
+        requirement: mac_formats::requirements::Requirement,
+        cause:       crate::drivers::ProcessProviderError
+    }
+}
+impl core::fmt::Display for ServiceAdmissionFailure
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Format(cause) => write!(out, "invalid provider requirements: {cause}"),
+            Self::Runtime(cause) => write!(out, "provider runtime scope: {cause}"),
+            Self::Provider { requirement,
+                             cause } =>
+            {
+                write!(out,
+                       "required service {:?} version {}: {cause}",
+                       requirement.class, requirement.version)
+            }
+        }
+    }
+}
+impl ServiceAdmissionFailure
+{
+    pub(crate) fn status(&self) -> Status
+    {
+        match self
+        {
+            Self::Format(_) => CORRUPT_DATA,
+            Self::Runtime(cause) => cause.status(),
+            Self::Provider { cause,
+                             .. } => cause.status()
+        }
+    }
+
+    fn reply(&self, call: &mut ProcessCall)
+    {
+        if let Self::Provider { requirement,
+                                .. } = self
+        {
+            call.requirement_class = requirement.class.0;
+            call.requirement_version = requirement.version;
+        }
+    }
+}
+
+/// Validate declarations and retain exact live registrations in the authentic
+/// Process runtime. The optional interface is the exact ENTR1 selection; all
+/// application paths must complete its READY before publishing author threads.
+pub(crate) fn select_required_services(resources: &[mac_formats::resource::Resource],
+                                       owner: &crate::toolbox::handles::OwnerRef,
+                                       allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+                                       tls: &crate::toolbox::native_threads::RootBinding)
+                                       -> Result<Option<u64>, ServiceAdmissionFailure>
+{
+    let requirements =
+        mac_formats::requirements::Requirements::from_resources(resources).map_err(|cause| {
+            serial!("PROCESS_REQUIREMENTS_REFUSED app={} {cause}", owner.owner().incarnation());
+            ServiceAdmissionFailure::Format(cause)
+        })?;
+    if requirements.iter().len() == 0
+    {
+        return Ok(None);
+    }
+    let scope = tls.service_scope(owner).map_err(ServiceAdmissionFailure::Runtime)?;
+    let mut entropy = None;
+    for requirement in requirements.iter()
+    {
+        let selected =
+            crate::drivers::admit_process_provider(owner,
+                                                   allocation.clone(),
+                                                   &scope,
+                                                   requirement.class,
+                                                   requirement.version).map_err(|cause| {
+                serial!("PROCESS_SERVICE_REFUSED app={} class={:?} version={} status={}; {cause}",
+                        owner.owner().incarnation(),
+                        requirement.class,
+                        requirement.version,
+                        cause.status());
+                ServiceAdmissionFailure::Provider { requirement,
+                                                    cause }
+            })?;
+        if requirement.class == mac_entropy_interface::CLASS
+           && requirement.version == mac_entropy_interface::VERSION
+        {
+            entropy = Some(selected);
+        }
+    }
+    Ok(entropy)
+}
+
+/// Ordinary Open and document delivery share this genuine launch coordinator.
+/// No Desktop guard spans root preparation or provider admission.
+fn launch_application(call: &mut ProcessCall, loaded: crate::toolbox::files::application::Loaded,
+                      origin: launch::Origin)
+                      -> Result<(), Status>
+{
+    crate::context::without_recovery(|| launch::start(call, loaded, origin))
+}
+
+fn prepare_launch(call: &mut ProcessCall, loaded: crate::toolbox::files::application::Loaded)
+                  -> Result<Option<launch::Prepared>, Status>
+{
+    call.requirement_class = [0; 4];
+    call.requirement_version = 0;
+    let admission = crate::kernel::with_toolbox(|toolbox| {
+                        toolbox.reserve_application(call, loaded.catalog)
+                    }).map_err(|error| error.status())??;
+    let Some(mut admission) = admission
+    else
+    {
+        return Ok(None);
+    };
+    let roots = (|| {
+        let prepared = crate::toolbox::application_heap::prepare_root(
+                admission.owner().clone(), admission.allocation()).map_err(|error| {
+                    serial!("PROCESS_HEAP_REFUSED app={} {error}", admission.id());
+                    error.status()
+                })?;
+        let heap = crate::toolbox::application_heap::publish_root(prepared).map_err(|failure| {
+                       let status = failure.cause.status();
+                       serial!("PROCESS_HEAP_PUBLICATION_REFUSED app={} {}",
+                               admission.id(),
+                               failure.cause);
+                       failure.prepared.dispose();
+                       status
+                   })?;
+        let prepared_tls =
+            crate::toolbox::native_threads::prepare_root(admission.owner().clone(),
+                                                         admission.allocation()).map_err(|cause| {
+                serial!("PROCESS_TLS_REFUSED app={} {cause}", admission.id());
+                cause.status()
+            })?;
+        let tls =
+            crate::toolbox::native_threads::publish_root(prepared_tls).map_err(|failure| {
+                let status = failure.cause.status();
+                serial!("PROCESS_TLS_PUBLICATION_REFUSED app={} {}", admission.id(), failure.cause);
+                failure.prepared.dispose();
+                status
+            })?;
+        let selected = select_required_services(&loaded.resources,
+                                                admission.owner(),
+                                                admission.allocation(),
+                                                &tls).map_err(|cause| {
+                                                         serial!("PROCESS_ADMISSION_REFUSED \
+                                                                  app={} {cause}",
+                                                                 admission.id());
+                                                         cause.reply(call);
+                                                         cause.status()
+                                                     })?;
+        let ready = match selected
+        {
+            Some(provider) =>
+            {
+                Some(launch::ready_job(&tls, admission.owner(), provider).map_err(|status| {
+                         call.requirement_class = mac_entropy_interface::CLASS.0;
+                         call.requirement_version = mac_entropy_interface::VERSION;
+                         status
+                     })?)
+            }
+            None => None
+        };
+        Ok::<_, Status>((heap, tls, ready))
+    })();
+    match roots
+    {
+        Ok((heap, tls, ready)) =>
+        {
+            Ok(Some(launch::Prepared { admission,
+                                       heap,
+                                       tls,
+                                       loaded: Some(loaded),
+                                       ready,
+                                       directory: None,
+                                       directory_bound: false }))
+        }
+        Err(status) =>
+        {
+            launch::retire(&mut admission);
+            Err(status)
+        }
+    }
+}
+
+fn finish_launch(call: &mut ProcessCall, prepared: &mut launch::Prepared) -> Result<(), Status>
+{
+    let crate::toolbox::files::application::Loaded { catalog,
+                                                     resources } =
+        prepared.loaded.take().ok_or(BAD_ABI)?;
+    let image = crate::allocator::with_target(crate::allocator::Target::Owner {
+        account: prepared.admission.allocation(), class: mac_kernel_model::policy::MemoryClass::Kernel
+    }, || crate::kernel::load_application(prepared.admission.owner(),
+                                          &prepared.admission.allocation(),
+                                          catalog.creator, catalog.file_type, resources))?;
+    // READY has settled; admit the genuine private table hierarchy without a
+    // Desktop borrow, then move its sole pin into actual THRD preparation.
+    let space = crate::machine::paging::process::admit(prepared.admission.owner(),
+                                                       &prepared.admission.allocation(),
+                                                       &image).map_err(|cause| {
+                                                                  serial!("PROCESS_SPACE_REFUSED \
+                                                                           owner={} {cause}",
+                                                                          prepared.admission.id());
+                                                                  cause.status()
+                                                              })?;
+    crate::kernel::with_toolbox(|toolbox| {
+        toolbox.processes.bind_heap(prepared.admission.owner(), prepared.heap.clone())?;
+        toolbox.processes.bind_tls(prepared.admission.owner(), prepared.tls.clone())?;
+        toolbox.finish_application_launch(call, catalog, image, space, &mut prepared.admission)
+    }).map_err(|error| error.status())?
 }
 
 impl Default for Manager

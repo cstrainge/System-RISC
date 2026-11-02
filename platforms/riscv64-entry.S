@@ -20,7 +20,7 @@ csrw vstart,zero
 csrw vcsr,zero
 ret
 __system_risc_unsupported_isa:
-la t1,__system_risc_isa_message
+lla t1,__system_risc_isa_message
 li t2,0x10000000
 1:
 lbu t0,0(t1)

@@ -2,8 +2,13 @@
 //! File/provider work is advanced only after dropping the Desktop guard.
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use mac_abi::{controls, events::{CMD_KEY, SHIFT_KEY},
-              quickdraw::*, scrollbox, standard_file::*, *, geometry::{Point, Rect}};
+use mac_abi::{controls,
+              events::{CMD_KEY, SHIFT_KEY},
+              geometry::{Point, Rect},
+              quickdraw::*,
+              scrollbox,
+              standard_file::*,
+              *};
 use mac_object_table::shared::InvocationGate as _;
 use spinning_top::Spinlock;
 
@@ -161,6 +166,31 @@ impl super::Toolbox
         self.scroll_boxes.prepare_recovery(storage, standard_file::templates::raster_budget()?)
     }
 
+    /// BEGIN consumes the one detached payload; postbirth operations retain
+    /// their existing protocol path below.
+    pub(crate) fn begin_standard_file(&mut self, call: &mut StandardFileCall,
+                                      prepared: &mut standard_file::PreparedDialog)
+                                      -> Result<(), standard_file::BeginError>
+    {
+        let ledger =
+            self.processes
+                .ledger(self.owner)
+                .map_err(|status| standard_file::BeginError::service("recipient", status))?;
+        let activity = crate::context::recovery_activity()
+            .ok_or(standard_file::BeginError::service("service scope", WRONG_THREAD))?;
+        self.standard_file.begin_prepared(&ledger, &activity.storage_owner(), call, prepared)?;
+        let mut guard = InitializingDialog { toolbox:   self,
+                                             handle:    call.handle,
+                                             committed: false };
+        guard.toolbox
+             .initialize_file_dialog(call)
+             .map_err(|status| standard_file::BeginError::service("initialization", status))?;
+        InvocationGate::run(|| *CURRENT.lock() = Some((guard.toolbox.owner, call.handle)));
+        WORK_READY.store(true, Ordering::Release);
+        guard.committed = true;
+        Ok(())
+    }
+
     pub fn standard_file_request(&mut self, call: &mut StandardFileCall) -> Result<(), Status>
     {
         if call.reserved != [0; 2]
@@ -172,29 +202,17 @@ impl super::Toolbox
             return self.dispose_file_dialog(call.handle);
         }
         let ledger = self.processes.ledger(self.owner)?;
-        let subject = if call.operation == BEGIN
-        {
-            Some(crate::recovery::standard_file_subject(self.owner)?)
-        }
-        else
-        {
-            None
-        };
         self.standard_file
             .request(&ledger,
                      &crate::context::recovery_activity().ok_or(WRONG_THREAD)?.storage_owner(),
-                     call)?;
-        if call.operation == BEGIN
-        {
-            self.standard_file.get_mut(self.owner, call.handle)?.subject = subject;
-            let mut guard = InitializingDialog { toolbox:   self,
-                                                 handle:    call.handle,
-                                                 committed: false };
-            guard.toolbox.initialize_file_dialog(call)?;
-            InvocationGate::run(|| *CURRENT.lock() = Some((guard.toolbox.owner, call.handle)));
-            WORK_READY.store(true, Ordering::Release);
-            guard.committed = true;
-        }
+                     call)
+            .map_err(|status| {
+                if status == NO_MEMORY
+                {
+                    serial!("STANDARD_FILE_REFUSED stage=protocol status={status}");
+                }
+                status
+            })?;
         Ok(())
     }
 
@@ -289,21 +307,35 @@ impl super::Toolbox
         let mut window = request(WindowId(0));
         window.bounds = Rect::new(left, top, left + width, top + height);
         window.procedure = template.procedure;
-        checked(self.window(NEW_WINDOW, &mut window))?;
+        checked(self.window(NEW_WINDOW, &mut window)).map_err(|status| {
+                                                         if status == NO_MEMORY
+                                                         {
+                                                             serial!("STANDARD_FILE_REFUSED \
+                                                                      stage=window \
+                                                                      status={status}");
+                                                         }
+                                                         status
+                                                     })?;
         let dialog = self.standard_file.get_mut(self.owner, call.handle)?;
         dialog.window = WindowId(window.id);
-        let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
-        dialog.editor.set_font(FontSelection::default(), &fonts)?;
-        let mut characters = Text::default();
-        for byte in 32..=255
-        {
-            characters.push(mac_formats::text::character(byte).encode_utf8(&mut [0; 4]))?;
-        }
-        dialog.editor.prepare_font_input(characters.text()?, &fonts)?;
         checked(self.window(SET_GROW_ICON_CLIP, &mut request(WindowId(window.id))))?;
         checked(self.window(SELECT_WINDOW, &mut window))?;
-        self.sf_create_widgets(call.handle, Sheet::Main)?;
-        self.standard_file_draw(call.handle, Damage::full())?;
+        self.sf_create_widgets(call.handle, Sheet::Main).map_err(|status| {
+                                                             if status == NO_MEMORY
+                                                             {
+                                                                 serial!("STANDARD_FILE_REFUSED \
+                                                                          stage=controls \
+                                                                          status={status}");
+                                                             }
+                                                             status
+                                                         })?;
+        self.standard_file_draw(call.handle, Damage::full()).map_err(|status| {
+            if status == NO_MEMORY
+            {
+                serial!("STANDARD_FILE_REFUSED stage=draw status={status}");
+            }
+            status
+        })?;
         serial!("STANDARD_FILE_BEGIN app={} handle={} mode={} window={}", self.owner, call.handle,
                 call.mode, window.id);
         Ok(())
@@ -1093,7 +1125,7 @@ impl super::Toolbox
                     {
                         0 => Action::Accept,
                         1 => Action::Cancel,
-                        5 => Action::Desktop,
+                        5 => Action::Toolbox,
                         11 => Action::NewFolder,
                         _ => return Ok(true)
                     };

@@ -1,0 +1,12 @@
+{
+  "name": "Std Files Native",
+  "binary_name": "StdFilesNative",
+  "file_type": "APPL",
+  "creator": "SFIO",
+  "role": "application",
+  "abi_version": 1,
+  "load_base": "0x86000000",
+  "load_limit": "0x86a81000",
+  "description": "Bounded native FILE open-description and writable-fork diagnostics",
+  "resources": []
+}

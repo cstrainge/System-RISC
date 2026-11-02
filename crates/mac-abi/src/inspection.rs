@@ -139,7 +139,7 @@ impl Default for Pool
 
 /// Accounting coverage is separate from the completeness of handle ledgers.
 pub const ACCOUNT_UNAVAILABLE: u32 = 0;
-pub const ACCOUNT_EXECUTION_RESIDENT_HEAP: u32 = 1;
+pub const ACCOUNT_EXECUTION_OWNED_MEMORY: u32 = 1;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AccountUsage

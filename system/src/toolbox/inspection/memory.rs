@@ -9,10 +9,11 @@ use mac_abi::{inspection::{INSPECT_DOMAINS, memory::*},
 pub(crate) trait Source
 {
     type Error: fmt::Display;
+    type Rows: AsRef<[Region]>;
     fn status(error: &Self::Error) -> Status;
     fn revision(&self) -> Result<u64, Self::Error>;
     fn summary(&self) -> Result<Summary, Self::Error>;
-    fn regions(&self) -> Result<&[Region], Self::Error>;
+    fn regions(&self) -> Result<Self::Rows, Self::Error>;
 }
 struct Diagnostic<'a>
 {
@@ -98,6 +99,18 @@ pub(crate) fn request<S: Source>(authority: Option<u64>, source: &S, call: &mut 
         Ok(rows) => rows,
         Err(error) => return reject(call, S::status(&error), error)
     };
+    let rows = rows.as_ref();
+    match source.revision()
+    {
+        Ok(revision) if revision == call.revision =>
+        {}
+        Ok(_) =>
+        {
+            return reject(call, SCAN_STALE,
+                          "System mapping changed while reading; obtain a new snapshot and retry");
+        }
+        Err(cause) => return reject(call, S::status(&cause), cause)
+    }
     let Some(index) = usize::try_from(call.index).ok().filter(|&index| index < rows.len())
     else
     {
@@ -131,6 +144,7 @@ mod tests
     impl Source for Fixture
     {
         type Error = &'static str;
+        type Rows = Vec<Region>;
 
         fn status(_: &Self::Error) -> Status
         {
@@ -150,7 +164,7 @@ mod tests
                          ..Default::default() })
         }
 
-        fn regions(&self) -> Result<&[Region], Self::Error>
+        fn regions(&self) -> Result<Vec<Region>, Self::Error>
         {
             if self.fail.get()
             {
@@ -158,7 +172,7 @@ mod tests
             }
             else
             {
-                Ok(&self.rows)
+                Ok(self.rows.clone())
             }
         }
     }

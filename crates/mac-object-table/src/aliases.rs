@@ -2,16 +2,24 @@
 //! by the facility; a caller never supplies a target key or changes an owner.
 //! All operations borrow the store, so a resolved payload cannot outlive the
 //! alias validation without holding that borrow. Destructors run outside locks.
+mod prepared;
+mod intern;
 use alloc::vec::Vec;
 use core::{fmt,
            sync::atomic::{AtomicUsize, Ordering}};
+
+pub use intern::{InternError, InternFailure, InternPermit, InternPlan, InternPublishFailure,
+                 InternRejected, InternRollback, PreparedIntern, RetiredInternCapacity,
+                 RetiredInternPublication};
+pub use prepared::{PreparedShare, RetiredShareCapacity, RetiredSharePublication,
+                   ShareAdmissionFailure, ShareError, SharePermit, SharePlan, SharePublishFailure};
 
 use crate::{domain::{CompletionError, DomainId, DomainKind, PoolError, ReleasedResource},
             registry::{CleanupFailure, KindLease},
             shared::{InvocationGate, OwnerRef},
             store};
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Error
 {
     Pool(PoolError),
@@ -152,7 +160,7 @@ struct Object<T>
     value:      T,
     references: AtomicUsize
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Target
 {
     id:         u64,
@@ -180,6 +188,22 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                objects: (KindLease<G>, KindLease<G>))
                -> Result<Self, Error>
     {
+        Self::construct(system, aliases, objects, false)
+    }
+
+    /// The same canonical stores, with detached object/alias publication enabled.
+    /// Ordinary new-source interning remains available on this instance.
+    pub fn new_prepared(system: OwnerRef<G>, aliases: (KindLease<G>, KindLease<G>),
+                        objects: (KindLease<G>, KindLease<G>))
+                        -> Result<Self, Error>
+    {
+        Self::construct(system, aliases, objects, true)
+    }
+
+    fn construct(system: OwnerRef<G>, aliases: (KindLease<G>, KindLease<G>),
+                 objects: (KindLease<G>, KindLease<G>), prepared: bool)
+                 -> Result<Self, Error>
+    {
         if system.owner().kind() != DomainKind::System
         {
             return Err(Error::NotSystem { owner: system.owner() });
@@ -199,8 +223,22 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         }
         Ok(Self { alias_kind: kinds[0],
                   deferred: Vec::new(),
-                  aliases: store::Store::owned(aliases.0, aliases.1).map_err(Error::Pool)?,
-                  objects: store::Store::owned(objects.0, objects.1).map_err(Error::Pool)?,
+                  aliases: if prepared
+                           {
+                               store::Store::owned_prepared(aliases.0, aliases.1)
+                           }
+                           else
+                           {
+                               store::Store::owned(aliases.0, aliases.1)
+                           }.map_err(Error::Pool)?,
+                  objects: if prepared
+                           {
+                               store::Store::owned_prepared(objects.0, objects.1)
+                           }
+                           else
+                           {
+                               store::Store::owned(objects.0, objects.1)
+                           }.map_err(Error::Pool)?,
                   system })
     }
 
@@ -287,11 +325,23 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         let live = self.aliases.stored_len();
         // One shared retirement array holds aliases from every domain; the
         // individual alias insert below remains charged to its original owner.
-        G::with_system_allocation(|| self.deferred.try_reserve(live.saturating_add(1))).map_err(|_| {
-                                                              Error::Pool(PoolError::Storage {
-            owner: owner.owner(), kind: self.alias_kind, used: live,
-            requested_slots: live.saturating_add(1), limit: None })
-                                                          })?;
+        // Ordinary publishers must not consume deferred room already promised
+        // to actual detached alias permits. The same Store credit becomes one
+        // stored alias at publication; no second credit counter is maintained.
+        let additional = live.checked_add(self.aliases.publication_credits())
+                             .and_then(|n| n.checked_add(1))
+                             .ok_or(Error::Pool(PoolError::InvalidGrowth))?;
+        let required = self.deferred
+                           .len()
+                           .checked_add(additional)
+                           .ok_or(Error::Pool(PoolError::InvalidGrowth))?;
+        G::with_system_allocation(|| self.deferred.try_reserve(additional)).map_err(|_| {
+            Error::Pool(PoolError::Storage { owner:           owner.owner(),
+                                             kind:            self.alias_kind,
+                                             used:            self.deferred.len(),
+                                             requested_slots: required,
+                                             limit:           None })
+        })?;
         let object = self.objects.get(target.id).ok_or(Error::TargetGone { alias: 0 })?;
         let count = object.references.load(Ordering::Acquire);
         let next = count.checked_add(1).ok_or(Error::ReferenceLimit { alias: 0 })?;

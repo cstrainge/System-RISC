@@ -143,6 +143,28 @@ pub fn finder(system: &System<'_>) -> ToolboxResult<()>
         assert!(system.client().memory(&mut old_handle, &[], &mut []).is_err(),
                 "old handle became valid after replacement allocation");
     }
+    // Commit actual content before the genuine shell main acknowledges readiness.
+    // This diagnostic's UI is deliberately small; it is not production Finder.
+    let update = system.windows().update(window)?;
+    system.draw(window,
+                quickdraw::DrawOperation::Text,
+                Rect::new(12, 18, 240, 38),
+                quickdraw::BLACK,
+                "Finder recovery fixture")?;
+    update.finish()?;
+    let mut malformed = abi::processes::ProcessCall { operation:
+                                                          abi::processes::FINDER_DESKTOP_READY,
+                                                      id: current.id.0,
+                                                      ..Default::default() };
+    assert_eq!(system.client().process(&mut malformed),
+               Err(Error::BadArgument),
+               "desktop-ready must reject a wire-selected identity before changing its default");
+    system.processes().finder_desktop_ready()?;
+    system.processes().finder_desktop_ready()?;
+    log(system,
+        format_args!("FINDER_RECOVERY_DESKTOP_ACK phase={phase} app={} repeated=true \
+                      malformed=BadArgument content=committed\n",
+                     current.id.0))?;
     bytes[..8].copy_from_slice(&current.id.0.to_le_bytes());
     bytes[8..16].copy_from_slice(&current.thread.0.to_le_bytes());
     bytes[16..24].copy_from_slice(&window.0.to_le_bytes());
@@ -152,9 +174,10 @@ pub fn finder(system: &System<'_>) -> ToolboxResult<()>
     if phase == 0
     {
         system.log("DESKTOP_READY: public Finder recovery fixture\n")?;
-        // A background launch must not own the failed shell's report input.
+        // The physical panic action belongs to Finder after the worker's
+        // launch. A pressure transport can prepare its real workload first;
+        // std will queue System recovery as soon as the panic aborts.
         system.processes().activate(current.id)?;
-        panic!("Finder recovery fixture: retained report café λ phase={phase}");
     }
     loop
     {
@@ -163,6 +186,10 @@ pub fn finder(system: &System<'_>) -> ToolboxResult<()>
             Event::KeyDown { key,
                              .. } if key.character() == 'p' =>
             {
+                if phase == 0
+                {
+                    panic!("Finder recovery fixture: retained report café λ phase={phase}");
+                }
                 panic!("Finder recovery fixture: second failure phase={phase}")
             }
             Event::KeyDown { key,
@@ -183,6 +210,10 @@ pub fn finder(system: &System<'_>) -> ToolboxResult<()>
 
 pub fn worker(system: &System<'_>) -> ToolboxResult<()>
 {
+    assert_eq!(system.processes().finder_desktop_ready(),
+               Err(Error::AccessDenied),
+               "another real application must not release Finder's allocation default");
+    system.log("FINDER_RECOVERY_DESKTOP_FOREIGN_REFUSED AccessDenied\n")?;
     let current = system.processes().current()?;
     let _window =
         system.windows().create_owned(WindowSpec::new(Rect::new(400, 100, 700, 240),

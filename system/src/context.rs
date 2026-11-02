@@ -58,7 +58,8 @@ pub fn bootstrap_thread() -> ThreadId
 pub enum DeferredIo
 {
     DriverJob(u64),
-    FileTransfer(u64)
+    FileTransfer(u64),
+    FileOperation(u64)
 }
 #[cfg(any(target_arch = "riscv64", test))]
 impl DeferredIo
@@ -68,7 +69,7 @@ impl DeferredIo
         match self
         {
             Self::DriverJob(id) => id != 0,
-            Self::FileTransfer(id) => id != 0
+            Self::FileTransfer(id) | Self::FileOperation(id) => id != 0
         }
     }
 }
@@ -117,13 +118,11 @@ impl ThreadTrapState
                     depth }
     }
 
-    pub fn defer(&self, job: DeferredIo) -> Result<(), mac_abi::Status>
+    /// Refuse a non-replayable invocation before admitting a mutation that may
+    /// require a scheduler wait. Actual publication rechecks the wait slot.
+    pub(crate) fn check_defer(&self) -> Result<(), mac_abi::Status>
     {
         use core::sync::atomic::Ordering::Relaxed;
-        if !job.valid()
-        {
-            return Err(mac_abi::BAD_ARGUMENT);
-        }
         #[cfg(target_arch = "riscv64")]
         if !crate::machine::traps::can_defer_io()
         {
@@ -133,6 +132,16 @@ impl ThreadTrapState
         {
             return Err(mac_abi::WRONG_THREAD);
         }
+        Ok(())
+    }
+
+    pub fn defer(&self, job: DeferredIo) -> Result<(), mac_abi::Status>
+    {
+        if !job.valid()
+        {
+            return Err(mac_abi::BAD_ARGUMENT);
+        }
+        self.check_defer()?;
         use mac_object_table::shared::InvocationGate as _;
         crate::toolbox::handles::InvocationGate::run(|| {
             let mut deferred = self.deferred.lock();
@@ -187,7 +196,9 @@ enum ThreadOwner
     },
     Process
     {
-        owner: crate::toolbox::handles::OwnerRef, image: crate::images::Binding
+        owner: crate::toolbox::handles::OwnerRef,
+        image: crate::images::Binding,
+        heap:  crate::toolbox::application_heap::RootBinding
     },
     Module
     {
@@ -249,6 +260,7 @@ pub struct ThreadContext
     resources:         selection::ScopedSelection<crate::kernel::ResourceSelection>,
     io_subject:        selection::ScopedSelection<crate::drivers::jobs::subjects::Subject>,
     module:            selection::ScopedSelection<crate::images::ModuleFrame>,
+    tls:               spinning_top::Spinlock<Option<crate::toolbox::native_threads::ThreadSlots>>,
     pub traps:         ThreadTrapState,
     pub definitions:   DefinitionInvocations
 }
@@ -272,8 +284,25 @@ impl ThreadContext
                resources:         selection::ScopedSelection::new(BOOT_THREAD),
                io_subject:        selection::ScopedSelection::new(BOOT_THREAD),
                module:            selection::ScopedSelection::new(BOOT_THREAD),
+               tls:               spinning_top::Spinlock::new(None),
                traps:             ThreadTrapState::new(),
                definitions:       DefinitionInvocations::new() }
+    }
+
+    /// Preparation owns this backing before any canonical THRD becomes runnable.
+    pub(crate) fn install_tls(
+        &self, slots: crate::toolbox::native_threads::ThreadSlots)
+        -> Result<(),
+                  (crate::toolbox::native_threads::Error,
+                   crate::toolbox::native_threads::ThreadSlots)>
+    {
+        let mut current = self.tls.lock();
+        if current.is_some()
+        {
+            return Err((crate::toolbox::native_threads::Error::Busy, slots));
+        }
+        *current = Some(slots);
+        Ok(())
     }
 
     pub fn identity(&self) -> ExecutionContext
@@ -296,7 +325,8 @@ impl ThreadContext
 
     pub(crate) fn assign(&self, owner: crate::toolbox::handles::OwnerRef, thread: u64,
                          image: crate::images::Binding,
-                         allocation: &crate::machine::scheduler::accounting::AllocationAuthority)
+                         allocation: &crate::machine::scheduler::accounting::AllocationAuthority,
+                         heap: &crate::toolbox::application_heap::RootBinding)
                          -> Result<(), mac_abi::Status>
     {
         use core::sync::atomic::Ordering::Relaxed;
@@ -304,6 +334,7 @@ impl ThreadContext
         use mac_object_table::shared::InvocationGate as _;
         if thread == 0
            || allocation.owner() != owner.owner()
+           || heap.owner() != owner.owner()
            || image.owner() != owner.owner().incarnation()
            || owner.owner().kind() != mac_object_table::domain::DomainKind::Process
         {
@@ -312,6 +343,10 @@ impl ThreadContext
         if !owner.accepting()
         {
             return Err(mac_abi::SERVICE_BUSY);
+        }
+        if self.tls.lock().as_ref().is_none_or(|slots| slots.owner() != owner.owner())
+        {
+            return Err(mac_abi::BAD_ABI);
         }
         crate::toolbox::handles::InvocationGate::run(|| {
             let mut binding = self.owner.lock();
@@ -329,7 +364,8 @@ impl ThreadContext
             self.app.store(owner.owner().incarnation(), Relaxed);
             self.thread.store(thread, Relaxed);
             *binding = Some(ThreadOwner::Process { owner,
-                                                   image });
+                                                   image,
+                                                   heap: heap.clone() });
             Ok(())
         })
     }
@@ -461,6 +497,7 @@ impl ThreadContext
     {
         use mac_object_table::shared::InvocationGate as _;
         crate::toolbox::handles::InvocationGate::run(|| {
+            let tls = self.tls.lock().take();
             let owner = self.owner.lock().take();
             let recovery = self.recovery_default.lock().take();
             let allocation = self.allocation.lock().take();
@@ -478,6 +515,7 @@ impl ThreadContext
             // The allocation pin leaves with the quiescent context before
             // process account readiness is checked. No owner lock is held
             // over its original-account retirement notification.
+            drop(tls);
             drop(recovery);
             drop(worker_subject);
             drop(worker_allocation);
@@ -642,6 +680,216 @@ impl ThreadContext
         })
     }
 }
+/// Why this actual executor cannot supply native Process authority. These
+/// are diagnostic identities, not a way to select another account or process.
+#[cfg(target_arch = "riscv64")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ApplicationExecutorError
+{
+    Bootstrap,
+    SystemIdle,
+    Module,
+    Unassigned,
+    Invocation
+    {
+        module:     bool,
+        definition: Option<(u32, i16)>
+    },
+    BaselineMismatch
+}
+#[cfg(target_arch = "riscv64")]
+impl ApplicationExecutorError
+{
+    pub(crate) fn status(&self) -> mac_abi::Status
+    {
+        match self
+        {
+            Self::Bootstrap | Self::SystemIdle | Self::Module | Self::Unassigned =>
+            {
+                mac_abi::WRONG_THREAD
+            }
+            Self::Invocation { .. } => mac_abi::ACCESS_DENIED,
+            Self::BaselineMismatch => mac_abi::BAD_ABI
+        }
+    }
+}
+#[cfg(target_arch = "riscv64")]
+impl core::fmt::Display for ApplicationExecutorError
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Bootstrap =>
+            {
+                out.write_str("native Process services require a scheduled process; \
+                               bootstrap/firmware execution is not an application")
+            }
+            Self::SystemIdle =>
+            {
+                out.write_str("System idle execution cannot borrow native Process services")
+            }
+            Self::Module =>
+            {
+                out.write_str("module worker execution cannot borrow native Process services")
+            }
+            Self::Unassigned =>
+            {
+                out.write_str("native Process services have no live assigned process-thread \
+                               baseline")
+            }
+            Self::Invocation { module,
+                               definition } =>
+            {
+                write!(out,
+                       "native Process service refused during invocation overlay: \
+                        module={module}, definition={definition:?}")
+            }
+            Self::BaselineMismatch =>
+            {
+                out.write_str("process baseline owner, account, image or canonical heap binding \
+                               do not match")
+            }
+        }
+    }
+}
+/// Temporary authority copied only from a genuinely pinned process baseline.
+/// Fields are private, non-Clone and CPU-affine; neither caller IDs nor ambient
+/// allocator/I/O/resource selections can construct this value. The original
+/// context pin outlives every owned clone and the complete request closure.
+#[cfg(target_arch = "riscv64")]
+pub(crate) struct ApplicationExecutor<'a>
+{
+    owner:      crate::toolbox::handles::OwnerRef,
+    allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+    heap:       crate::toolbox::application_heap::RootBinding,
+    image:      crate::images::Binding,
+    _context:   &'a ContextRef,
+    _affine:    core::marker::PhantomData<*mut ()>
+}
+#[cfg(target_arch = "riscv64")]
+impl ApplicationExecutor<'_>
+{
+    pub(crate) fn owner(&self) -> &crate::toolbox::handles::OwnerRef
+    {
+        &self.owner
+    }
+
+    pub(crate) fn allocation(&self) -> &crate::machine::scheduler::accounting::AllocationAuthority
+    {
+        &self.allocation
+    }
+
+    pub(crate) fn thread(&self) -> u64
+    {
+        self._context.identity().thread.0
+    }
+
+    pub(crate) fn image(&self) -> crate::images::Binding
+    {
+        self.image
+    }
+
+    /// The Process service first validates this exact live Finder main against
+    /// its canonical directory entry. Move only its future default out; the
+    /// caller disposes it after Desktop and the native metadata gates return.
+    pub(crate) fn take_recovery_default_after_desktop_ready(
+        &self)
+        -> Option<crate::allocator::recovery::Permit>
+    {
+        use mac_object_table::shared::InvocationGate as _;
+        crate::toolbox::handles::InvocationGate::run(|| {
+            self._context.recovery_default.lock().take()
+        })
+    }
+
+    pub(crate) fn with_tls<R>(&self,
+                              operation: impl FnOnce(&mut crate::toolbox::native_threads::ThreadSlots)
+                                     -> R)
+                              -> Result<R, crate::toolbox::native_threads::Error>
+    {
+        use mac_object_table::shared::InvocationGate as _;
+        crate::toolbox::handles::InvocationGate::run(|| {
+            let mut slots = self._context.tls.lock();
+            let slots = slots.as_mut().ok_or(crate::toolbox::native_threads::Error::Authority)?;
+            if slots.owner() != self.owner.owner()
+            {
+                return Err(crate::toolbox::native_threads::Error::Authority);
+            }
+            Ok(operation(slots))
+        })
+    }
+
+    pub(crate) fn heap(&self) -> &crate::toolbox::application_heap::RootBinding
+    {
+        &self.heap
+    }
+}
+/// Use for an actual synchronous Process request (heap, TLS or current thread). No author
+/// callback, yield or bootstrap-stack handoff belongs inside this closure.
+/// The higher-ranked boundary prevents its borrowed executor from escaping.
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn with_application_executor<R>(operation: impl for<'a> FnOnce(&ApplicationExecutor<'a>)
+                                                          -> R)
+                                           -> Result<R, ApplicationExecutorError>
+{
+    use mac_object_table::shared::InvocationGate as _;
+    let context = current_thread_context();
+    if context.is_bootstrap()
+    {
+        return Err(ApplicationExecutorError::Bootstrap);
+    }
+    let (owner, allocation, heap, image) = crate::toolbox::handles::InvocationGate::run(|| {
+        let module = context.module.borrow(|frame| frame.is_some());
+        let definition = context.definitions.current();
+        if module || definition.is_some()
+        {
+            return Err(ApplicationExecutorError::Invocation { module,
+                                                              definition });
+        }
+        let owner = context.owner.lock();
+        let (owner, image, heap) = match owner.as_ref()
+        {
+            Some(ThreadOwner::Process { owner,
+                                        image,
+                                        heap }) => (owner, image, heap),
+            Some(ThreadOwner::System { .. }) => return Err(ApplicationExecutorError::SystemIdle),
+            Some(ThreadOwner::Module { .. }) => return Err(ApplicationExecutorError::Module),
+            None => return Err(ApplicationExecutorError::Unassigned)
+        };
+        let allocation = context.allocation.lock();
+        let Some(DefaultAllocation::Account(allocation)) = allocation.as_ref()
+        else
+        {
+            return Err(ApplicationExecutorError::BaselineMismatch);
+        };
+        let identity = context.identity();
+        if owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+           || allocation.owner() != owner.owner()
+           || heap.owner() != owner.owner()
+           || image.owner() != owner.owner().incarnation()
+           || identity.app.0 != owner.owner().incarnation()
+           || identity.thread.0 == 0
+           || context.is_module_worker()
+        {
+            return Err(ApplicationExecutorError::BaselineMismatch);
+        }
+        // Clone existing admitted authority, never Account::admit_use. An
+        // ordinary owner stop still permits genuine disposal from the original
+        // record; new allocation is rechecked by the resident heap itself.
+        Ok((owner.clone(), allocation.clone(), heap.clone(), *image))
+    })?;
+    // All selections/owner/default-allocation guards ended before page/metadata
+    // work can reenter the real allocator. The context reader remains pinned.
+    let executor = ApplicationExecutor { owner,
+                                         allocation,
+                                         heap,
+                                         image,
+                                         _context: &context,
+                                         _affine: core::marker::PhantomData };
+    Ok(operation(&executor))
+}
+
 /// An owned pin, never a static reference to reclaimable scheduler storage.
 /// The static variant is reserved for the actual boot/firmware context.
 #[cfg(target_arch = "riscv64")]

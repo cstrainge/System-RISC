@@ -5,6 +5,8 @@
 #![forbid(unsafe_code)]
 #![feature(allocator_ext)]
 extern crate alloc;
+mod capacity;
+pub use capacity::{CapacityError, CapacityPlan, PreparedCapacity};
 pub mod projected;
 pub mod aliases;
 pub mod completion;
@@ -49,7 +51,7 @@ pub struct Exhausted;
 /// Register object namespaces here, never in individual managers. Memory's
 /// one-based slots1..512 are its unchanged wire contract. Migrated managers
 /// use registered owner stores and full-width identities instead of these ranges.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Kind
 {
     Memory,
@@ -202,32 +204,32 @@ impl<T> Table<T>
         && self.kind.shared_generation(index).load(Ordering::Relaxed) < u16::MAX
     }
 
-    fn vacant(&mut self) -> Result<usize, Exhausted>
+    fn vacant(&mut self, grow: bool) -> Result<usize, CapacityError>
     {
-        if let Some(index) =
-            self.slots.iter().enumerate().position(|(index, slot)| self.available(index, slot))
+        let required = self.required_capacity()?;
+        if required > self.slots.capacity()
         {
-            return Ok(index);
+            if !grow
+            {
+                return Err(CapacityError::CapacityChanged);
+            }
+            self.slots
+                .try_reserve(required - self.slots.len())
+                .map_err(|_| CapacityError::AllocationFailed)?;
         }
-        while self.slots.len() < self.kind.capacity()
+        while self.slots.len() < required
         {
-            self.slots.try_reserve(1).map_err(|_| Exhausted)?;
             self.slots.push(Slot { generation: 0,
                                    value:      None });
-            let index = self.slots.len() - 1;
-            if self.available(index, &self.slots[index])
-            {
-                return Ok(index);
-            }
         }
-        Err(Exhausted)
+        Ok(required - 1)
     }
 
     /// Reserve capacity before a manager performs fallible object initialization.
     /// No ID/generation is consumed until insertion succeeds.
     pub fn reserve(&mut self) -> Result<(), Exhausted>
     {
-        self.vacant().map(|_| ())
+        self.vacant(true).map(|_| ()).map_err(|_| Exhausted)
     }
 
     pub fn insert(&mut self, value: T) -> Result<u32, Exhausted>
@@ -237,9 +239,18 @@ impl<T> Table<T>
 
     pub fn insert_with(&mut self, create: impl FnOnce(u32) -> T) -> Result<u32, Exhausted>
     {
+        let (index, id) = self.issue(true).map_err(|_| Exhausted)?;
+        self.slots[index].value = Some(create(id));
+        Ok(id)
+    }
+
+    // Both paths consume the same boot-wide generation counter, only after
+    // real capacity is available. No separate prepared identity issuer exists.
+    fn issue(&mut self, grow: bool) -> Result<(usize, u32), CapacityError>
+    {
         loop
         {
-            let index = self.vacant()?;
+            let index = self.vacant(grow)?;
             let shared = self.kind.shared_generation(index);
             let Ok(previous) = shared.try_update(Ordering::Relaxed,
                                                  Ordering::Relaxed,
@@ -249,11 +260,8 @@ impl<T> Table<T>
                 continue;
             };
             let generation = previous + 1;
-            let slot = &mut self.slots[index];
-            slot.generation = generation;
-            let id = Self::id(self.kind, index, generation);
-            slot.value = Some(create(id));
-            return Ok(id);
+            self.slots[index].generation = generation;
+            return Ok((index, Self::id(self.kind, index, generation)));
         }
     }
 

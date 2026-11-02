@@ -1,14 +1,8 @@
-#![no_std]
-#![no_main]
-
-use mac_toolbox::{Rect, System, SystemServices, ToolboxResult,
-                  abi::{OK, Status},
+use mac_toolbox::{Rect, System, ToolboxResult,
                   controls::{Anchors, BorderOffsets, Cell, Fill, Reflow, SizeBounds, SizeUnit,
                              StaticTextSpec, TextAlignment, TextLayout},
                   events::{Event, EventMask},
                   include_resource_ids,
-                  panic::install,
-                  panic_handler,
                   quickdraw::WHITE,
                   resources::APPLICATION,
                   windows::WindowSpec};
@@ -25,7 +19,7 @@ fn run(system: System) -> ToolboxResult<()>
 {
     system.menus().clear()?;
 
-    let _menu = [system.menus().install_owned(APPLICATION, 128)?];
+    system.menus().install_menu_resource(APPLICATION, 128)?;
 
     let mut window = system.windows().create_owned(
             WindowSpec::new(Rect::new(80, 80, 480, 320), "Control Suite")
@@ -116,27 +110,7 @@ fn run(system: System) -> ToolboxResult<()>
 }
 
 
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
+fn main() -> ToolboxResult<()>
 {
-    if let Err(status) = unsafe { install(services) }
-    {
-        return status;
-    }
-
-    let system = match unsafe { System::from_raw(services) }
-    {
-        Ok(system) => system,
-        Err(status) => return status.status()
-    };
-
-    match run(system)
-    {
-        Ok(()) => OK,
-        Err(status) => status.status()
-    }
+    run(System::new()?)
 }
-
-
-panic_handler!();

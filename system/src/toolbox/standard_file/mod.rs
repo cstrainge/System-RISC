@@ -13,13 +13,17 @@ pub(super) mod page;
 pub(super) mod view;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod templates;
+#[cfg(target_arch = "riscv64")]
+mod preparation;
 use alloc::vec::Vec;
 
 use mac_abi::{files::{self, CatalogInfo, FileCall, ROOT_ID, VolumeInfo},
+              geometry::Rect,
               standard_file::*,
-              *,
-              geometry::Rect};
+              *};
 use page::Page;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use preparation::{BeginError, PreparedDialog};
 #[cfg(target_arch = "riscv64")]
 pub(crate) use templates::prepare as prepare_templates;
 use view::Text;
@@ -35,7 +39,7 @@ pub enum Action
     Select(usize),
     Open(usize),
     Parent,
-    Desktop,
+    Toolbox,
     Volume(i32),
     Previous(i32),
     Page(i32),
@@ -994,12 +998,6 @@ fn pool_status(error: mac_object_table::domain::PoolError) -> Status
 {
     crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error))
 }
-fn inline(bytes: &[u8], length: u32) -> Result<&str, Status>
-{
-    core::str::from_utf8(bytes.get(..length as usize).ok_or(BAD_ARGUMENT)?).map_err(|_| {
-                                                                               BAD_ARGUMENT
-                                                                           })
-}
 impl Manager
 {
     pub(crate) fn prepare_recovery(&mut self, storage: &OwnerRef) -> Result<(), Status>
@@ -1078,133 +1076,20 @@ impl Manager
         {
             return Err(BAD_ARGUMENT);
         }
+        // BEGIN has one detached, authenticated publication path. Never rebuild
+        // its payload while a manager/Desktop guard is held.
         if call.operation == BEGIN
         {
-            if self.active(owner).is_some()
-            {
-                return Err(SERVICE_BUSY);
-            }
-            if call.mode > PUT || !(-1..=MAX_TYPES as i32).contains(&call.type_count)
-            {
-                return Err(BAD_ARGUMENT);
-            }
-            let prompt = Text::new(inline(&call.prompt, call.prompt_length)?)?;
-            let name = inline(&call.name, call.name_length)?;
-            let mut editor =
-                Editor::new(Rect::new(15, 157, 4111, 173), Rect::new(15, 157, 227, 173))?;
-            editor.set_text(name)?;
-            editor.select(0, name.len() as u32)?;
-            editor.activate(true);
-            let mut types = [[0; 4]; MAX_TYPES];
-            let type_count = call.type_count.max(0) as usize;
-            types[..type_count].copy_from_slice(&call.types[..type_count]);
-            let mut icons = Vec::new();
-            icons.try_reserve_exact(page::ROWS).map_err(|_| NO_MEMORY)?;
-            let mut ancestors = Vec::new();
-            ancestors.try_reserve_exact(page::ANCESTORS).map_err(|_| NO_MEMORY)?;
-            let mut entries = Page::default();
-            entries.reset();
-            let dialog =
-                Dialog { saved_name: None,
-                         owner,
-                         window: WindowId(0),
-                         auxiliary: WindowId(0),
-                         auxiliary_sheet: Sheet::Main,
-                         mode: call.mode,
-                         location: (call.volume,
-                                    if call.directory == 0 { ROOT_ID } else { call.directory }),
-                         entries,
-                         icons,
-                         selected: None,
-                         first: 0,
-                         prompt,
-                         editor,
-                         focus_name: call.mode == PUT,
-                         name_tracking: false,
-                         state: PENDING,
-                         result: CatalogInfo::default(),
-                         replacing: false,
-                         types,
-                         type_count,
-                         all: call.type_count == -1,
-                         sheet: Sheet::Main,
-                         error: OK,
-                         error_context: Text::default(),
-                         last_click: None,
-                         popup: false,
-                         ancestors,
-                         typeahead: Text::default(),
-                         typed_at: 0,
-                         name_format: None,
-                         volume_info: VolumeInfo::default(),
-                         desktop_resume: None,
-                         stage: Some(if call.volume == 0
-                                     {
-                                         Stage::DefaultVolume
-                                     }
-                                     else
-                                     {
-                                         Stage::Volume
-                                     }),
-                         issued: false,
-                         revision: 1,
-                         desktop_count: 0,
-                         desktop_volume: 0,
-                         save_destination: None,
-                         desktop_folder: None,
-                         desktop_cursor: files::DesktopScanCursor::default(),
-                         create_when: 0,
-                         main_widgets: Widgets::default(),
-                         auxiliary_widgets: Widgets::default(),
-                         #[cfg(target_arch = "riscv64")]
-                         subject: None,
-                         #[cfg(target_arch = "riscv64")]
-                         recovery_activity: crate::context::recovery_activity() };
-            let reservation = self.publication.as_mut().ok_or(NOT_SUPPORTED)?;
-            let publication: Result<u64, Status> = {
-                #[cfg(target_arch = "riscv64")]
-                {
-                    let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
-                    if activity.recipient().owner() != recipient.owner()
-                       || activity.storage_owner().owner() != storage.owner()
-                       || !recipient.accepting()
-                       || !crate::context::io_subject().is_some_and(|subject| {
-                               subject.scope().same_scope(activity.root_subject().scope())
-                           })
-                    {
-                        return Err(ACCESS_DENIED);
-                    }
-                    let subject = activity.root_subject();
-                    self.slots.insert_reserved_in_scope_with_acknowledgement(
-                        reservation, subject.scope(), Some(activity.acknowledgement_pin()),
-                        |_| dialog).map(|publication| publication.id()).map_err(|error| {
-                            match error
-                            {
-                                mac_object_table::store::PublicationError::Busy => SERVICE_BUSY,
-                                mac_object_table::store::PublicationError::Pool(error) =>
-                                    pool_status(error)
-                            }
-                        })
-                }
-                #[cfg(not(target_arch = "riscv64"))]
-                {
-                    let _ = (reservation, dialog);
-                    Err(NOT_SUPPORTED)
-                }
-            };
-            call.handle = publication?;
+            return Err(NOT_SUPPORTED);
         }
-        else
+        self.get(owner, call.handle)?;
+        if call.operation == DISPOSE
         {
-            self.get(owner, call.handle)?;
-            if call.operation == DISPOSE
-            {
-                return self.dispose(owner, call.handle);
-            }
-            if call.operation != POLL
-            {
-                return Err(NOT_SUPPORTED);
-            }
+            return self.dispose(owner, call.handle);
+        }
+        if call.operation != POLL
+        {
+            return Err(NOT_SUPPORTED);
         }
         let dialog = self.get(owner, call.handle)?;
         call.state = dialog.state;
@@ -1369,7 +1254,7 @@ impl Manager
                                      (entry.volume, entry.parent)
                                  });
             }
-            Action::Desktop => return d.restart((0, 0)),
+            Action::Toolbox => return d.restart((0, 0)),
             Action::Volume(delta) =>
             {
                 d.stage = Some(Stage::VolumeCount(delta));

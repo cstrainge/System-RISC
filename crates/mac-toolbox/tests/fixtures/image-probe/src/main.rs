@@ -20,7 +20,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
         Ok(system) => system,
         Err(error) => return error.status()
     };
-    let checked = (|| {
+    let checked = (|| -> Result<(), Error> {
         let info = system.processes().current()?;
         let image = info.image.ok_or(Error::BadAbi)?;
         if image.raw() <= u64::from(u32::MAX)
@@ -39,6 +39,12 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
                                              mac_toolbox::controls::TextAlignment::Left)?;
         text.draw()?;
         system.log("IMAGE_PROBE_DEFINITION_PASS\n")?;
+        #[cfg(feature = "abort-live-definition")]
+        {
+            system.log("IMAGE_PROBE_DEFINITION_ABORT_READY\n")?;
+            panic!("Image Probe: abort while an application-owned definition control is live");
+        }
+        #[cfg(not(feature = "abort-live-definition"))]
         system.log("IMAGE_PROBE_PASS\n")
     })();
     match checked

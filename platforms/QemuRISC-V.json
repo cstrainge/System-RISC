@@ -3,7 +3,7 @@
   "rust_target": "riscv64imac-unknown-none-elf",
   "llvm_profile": "rva23u64",
   "qemu_cpu": "rva23s64,mmu=on,pmp=on,sv39=on",
-  "qemu_ram": "8G",
+  "qemu_ram": "2G",
   "qemu_harts": 4,
   "scheduling": {
     "quantum_microseconds": 250,
@@ -49,10 +49,6 @@
       "base": "0x80200000",
       "bytes": "0x6881000"
     },
-    "modules": {
-      "base": "0x87800000",
-      "bytes": "0x800000"
-    },
     "application_relocation_base": "0x83000000",
     "fdt_tail_bytes": "0x200000",
     "boot_stack_bytes": "0x40000",
@@ -80,6 +76,10 @@
     "module_accounts": {
       "kernel_bytes": "0x1000000",
       "worker_stack_bytes": "0x400000"
+    },
+    "tls": { "key_capacity": 256 },
+    "application_heap": {
+      "minimum_extent_bytes": "0x10000"
     },
     "process_accounts": {
       "kernel_bytes": "0x1000000",

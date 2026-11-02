@@ -40,7 +40,7 @@ impl Manager
     /// together only after every root and retained command has been admitted.
     pub(crate) fn prepare_window(&self, window: u64, viewport: Rect, paint_pending: bool,
                                  edit: Option<(&ControlCall, u64)>, gate: TrapGate,
-                                 mut resolve: impl FnMut(i16) -> Result<DefinitionEntry, Status>)
+                                 mut resolve: impl FnMut(i16) -> Result<DefinitionRef, Status>)
                                  -> Result<Prepared, Status>
     {
         layout::LayoutRect::try_from(viewport).map_err(|e| e.status())?;

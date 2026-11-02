@@ -15,6 +15,7 @@ use crate::machine::{interrupts::{NativeInvocationGate, with_masked},
 
 mod budget;
 pub(crate) mod foundation;
+pub(crate) mod ordinary_physical;
 pub(crate) mod recovery;
 
 pub(crate) fn statistics() -> budget::Snapshot

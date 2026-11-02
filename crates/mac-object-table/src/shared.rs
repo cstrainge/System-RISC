@@ -54,6 +54,14 @@ pub trait InvocationGate
     {
     }
 
+    /// A prepared ordinary publication released its real slot/credit and all
+    /// temporary backing/provider pins. This is progress, NOT a resource ACK.
+    /// Post only a coalesced wake; the manager may then return already-released
+    /// empty owner backing outside its guards. Never scan or run cleanup here.
+    fn publication_released(_owner: DomainId)
+    {
+    }
+
     /// A published operation's unique owner has closed its admission. Called
     /// after metadata unlock; post only a coalesced notification, never cleanup.
     fn scope_closed(_owner: DomainId)
@@ -303,6 +311,13 @@ impl<G: InvocationGate> OwnerRef<G>
     pub fn stop_admission(&self)
     {
         self.access(OwnerIndex::stop_admission);
+    }
+
+    /// The existing foundation control flag only; this pins no account/ledger
+    /// payload and supplies no owner authority. Used after temporary pins drop.
+    pub(crate) fn publication_admission(&self) -> Arc<AtomicBool>
+    {
+        self.state.admission.clone()
     }
 
     pub fn accepting(&self) -> bool

@@ -98,11 +98,16 @@ code authentication or an execution permission.
 | 6 | 2 | Role: 1 = resident System, 2 = application, 3 = code resource |
 | 8 | 4 | Native System service ABI version: 1 until the first proper release |
 | 12 | 4 | Native ABI layout fingerprint (`mac-abi::NATIVE_LAYOUT_FINGERPRINT`) |
-| 16 | 8 | Inclusive preferred load reservation base |
-| 24 | 8 | Exclusive preferred load reservation limit |
+| 16 | 8 | Linked image base; System fixed, applications currently preferred |
+| 24 | 8 | Exclusive image span limit in linked coordinates |
 | 32 | 8 | Linked entry point |
 
-The role, ABI and reservation meanings are unchanged. Entry is explicit because
+System and independently loadable definitions/modules no longer declare address
+fields in build manifests. System uses the checked platform image mapping;
+code-resource artifacts share one checked link origin/capacity and package their
+actual page-rounded ELF memory extent. Runtime placement is System-owned and
+independent of that link origin. Applications retain their manifest placement
+until private process mappings replace the current flat layout. Entry is explicit because
 there is no ELF header at runtime. It must be even and lie inside initialized
 executable segment bytes. Versions, layout fingerprints, lengths, address overflows
 and roles are checked. The obsolete 32-byte NABI layout is rejected with a rebuild
@@ -127,15 +132,28 @@ Each record has this layout, relative to its start:
 | --- | --- | --- |
 | 0 | 8 | Destination offset from NABI load base |
 | 8 | 8 | Length of initialized bytes |
-| 16 | 4 | Permissions: R = 4, W = 2, X = 1 |
-| 20 | length | Raw initialized bytes |
+| 16 | 8 | Full memory length, including zero-filled trailing storage (`p_memsz`) |
+| 24 | 4 | Permissions: R = 4, W = 2, X = 1 |
+| 28 | initialized length | Raw initialized bytes |
 
-The next record begins at `20 + length`, without padding. Records are ordered by
-increasing destination offset, nonempty, nonoverlapping and entirely inside the
-NABI reservation. Unknown flag bits and W+X are rejected. Permissions describe
-intent; enforcing them awaits memory protection. BSS-only segments are omitted.
-Every byte of the reservation not supplied by a record is implicitly zero,
-including inter-segment gaps and trailing BSS through the reservation limit.
+The next record begins at `28 + initialized length`, without padding. Every
+record has a nonzero memory length; initialized length may be zero but cannot
+exceed memory length. Records are ordered by increasing destination offset,
+nonoverlapping in their **memory extents**, and entirely inside the NABI
+reservation. Checked addition rejects offset/length overflow. Unknown flag bits
+and W+X are rejected. An entry point and every RLOC source must still lie within
+initialized bytes, never merely within BSS or another zero-filled memory tail.
+
+BSS-only PT_LOAD segments are retained with initialized length zero and their
+actual memory length and permissions. The record explicitly distinguishes file
+bytes from owned memory; consumers must not infer BSS from the next segment or
+the reservation limit. Uninitialized memory is zero-filled before publication.
+An image's reserved virtual extent may include holes or page-rounding padding;
+that reservation does not by itself grant a mapping or an executable page.
+
+The record size is part of the native development layout fingerprint. ABI and
+format remain 1; stale 20-byte-record packages are rejected by the fingerprint
+and require a whole-world rebuild. No old record decoder is retained.
 
 The loader validates the entire stream and all relocation patches before writing
 RAM. It reserves the full declared span at a disjoint actual base, zeros that
@@ -148,7 +166,14 @@ reservation; applications and definitions are independently relocatable.
 The build links RVA23U64-profile RV64 ELF64 System V `ET_EXEC` binaries using
 the LP64 calling convention (the Rust target name remains
 `riscv64imac-unknown-none-elf`, with full `+rva23u64`). It validates them
-with `elf::decode`, and extracts only initialized PT_LOAD bytes. Dynamic linking,
+with `elf::decode`, and retains both `p_filesz` and `p_memsz` for every nonempty-memory
+PT_LOAD. Only initialized bytes are serialized. Native build admission requires
+page-aligned segment starts and rejects overlapping page-rounded memory extents
+with a named segment/range diagnostic; it never merges conflicting permissions
+or creates W+X. ROM System mappings cover each explicit page-rounded memory
+extent, including BSS-only records, while inter-segment holes and reservation
+padding remain unmapped. BootInfo still retains physical reservation ownership
+independently of those mappings. Dynamic linking,
 interpreters, TLS, unsupported machine/ABI flags, bad alignment and overlapping
 ELF segments fail packaging. Link relaxation remains disabled. Full debug ELFs
 and stripped host artifacts can remain in build output; none is stored in a
@@ -193,11 +218,31 @@ three zero bytes. Count is bounded at 65,536. Records are ordered and
 nonoverlapping, patch sources must lie in initialized segment bytes, and linked
 pointer values must lie inside the declared reservation or equal its exclusive
 limit (a one-past-the-end pointer).
-Relocation changes absolute internal pointers; internal PC-relative references
-move unchanged. Invalid records reject the whole load before any writes.
+Relocation changes absolute internal data pointers; executable-segment slots
+are rejected both when packaging and when validating a runtime load. Internal
+PC-relative instructions move unchanged. Invalid records reject the whole load
+before any writes.
 
-The packager accepts internal R_RISCV_32/64 pointers and internal PC-relative
-calls/addressing/branches (16..19,23..25,44,45,57). Other relocation kinds fail.
+All Cargo-built target dependencies use `relocation-model=pic`; codegen overrides
+that conflict with that contract are refused. The packager accepts internal
+R_RISCV_32/64 data pointers and internal PC-relative calls/addressing/branches
+(16..19,23..25,44,45,57). Internal GOT_HI20 references require a matching
+PCREL_LO12_I AUIPC/LD register pair. The linked instructions must resolve an
+aligned initialized nonexecutable 64-bit cell containing the exact internal
+symbol plus addend. That cell receives one RLOC entry, including when several
+instructions use it. External imports, missing/ambiguous pairs, wrong
+instructions/registers, malformed cells and overlaps are rejected. No executable
+instruction is patched. Paired
+ADD32/SUB32 records (35/39) at one word with two allocated internal endpoints
+encode an invariant difference; missing/duplicate endpoints and overlap with
+rebased pointer words are refused. These difference pairs produce no RLOC
+patches. Unsupported relocations, undefined/external references and absolute
+pointer slots in executable segments fail packaging. Absolute data/GOT fixups
+remain necessary for Rust pointers/vtables; PIC does not imply an empty table.
+The generic RLOC wire retains both widths. RV64 code-resource modules and
+definitions require 64-bit internal pointer slots at packaging and runtime,
+so placement is not constrained to the low 4 GiB. Absolute numeric symbols and
+paired 32-bit differences are separate from these pointer slots.
 Application and code-resource builds emit relocations and the linker marker
 `__system_risc_relocation_v1=1`. RLOC is required for both, including an empty
 8-byte table when no absolute pointers need patching; there is no fixed-module
@@ -377,7 +422,12 @@ Control/frame reference across assembly mutation.
 
 Joined1 denotes a peer receiver joined from M park; joined2 denotes the
 primary receiver. The joined field is not the current privilege/entry phase. FenceI=1
-ACKs actual remote fence.i. START=2 is a one-shot transition from the real M park:
+ACKs actual remote fence.i. SFENCE_VMA_ALL=3 executes a full local
+`sfence.vma zero,zero` on each frozen boot-admitted physical CPU, including
+parked participants, before its exact command-sequence ACK. System reserves the
+real command lease before module PTE effects; physical backing cannot be refunded
+until the corresponding non-cloneable completion is consumed. Instruction and
+translation publication remain distinct operations. START=2 is a one-shot transition from the real M park:
 M independently validates the selected CPU profile/root/physical permissions and
 reports Starting=1 or Refused=3. Real warm System initialization reports
 AdmittedIdle=2; the initial phase is Prepared=0. A separate nonzero wake epoch
@@ -1062,8 +1112,17 @@ application ACAP authority. Each invocation pins its real source and execution
 use, selects that module's resources, and separately retains the original I/O
 Subject and allocation target. Teardown waits for actual invocation readers and
 non-image cleanup before releasing image aliases and final account metadata.
-Physical module RAM remains reserved until reset; alias retirement alone does
-not claim physical code reclamation or arbitrary privileged-fault containment.
+The native module path uses private per-segment buddy backing charged to the
+original module Kernel account. Execution maps cover page-rounded explicit
+memory lengths with the resource's RX/R/RW permissions; holes stay unmapped.
+Each original IMAG instance anchors its actual backing and PTE expectations.
+Alias retirement retains its original cleanup ticket until execution/readers and
+non-image resources drain, owned PTEs are cleared, all actual monitor targets ACK
+translation invalidation, and physical pages and charges are released. Missing
+ACKs or foreign PTE state quarantine the same owners until restart. This is an
+implementation contract awaiting native qualification; it does not claim
+arbitrary privileged-fault containment, shared immutable image frames or private
+application address spaces.
 
 ### Native module worker and critical-section boundary
 
@@ -1331,9 +1390,12 @@ a late reset callback cannot reset or bind a replacement claim. Losing the
 manager quarantines its claims, maps and System targets; destruction is never
 a hardware acknowledgement. No operation spins waiting for hardware.
 
-RAM mappings are restricted to the caller's pinned native module reservation.
-The current QEMU virt bus uses coherent identity DMA; this is not physical-page
-pinning, IOMMU isolation, module-image reclamation or multi-hart qualification.
+DMA ranges remain restricted to the caller's retained native module image.
+The bus resolves actual segment physical backing and checks owned ancestor/leaf
+PTEs. A range must fit one contiguous physical segment; holes and unrepresentable
+spans fail. Device maps and their positive stop/reset barriers must drain before
+image retirement. This does not grant arbitrary heap DMA, an IOMMU or broader
+SMP qualification.
 
 The board bus class is `VMMI`; its match key is device ID u32, vendor ID u32,
 then eight zero bytes. Probe ordinals 0..7 describe the board's eight 4 KiB
@@ -1347,27 +1409,29 @@ locks and File Manager guards are released before any module callback. New
 requests are withdrawn before quiescing; pending requests prevent finalization
 until completed/cancelled. Module, interface and request identities use the shared
 generation-tagged facility, including rejection of foreign IDs and slot reuse.
-Code/host descriptors remain pinned after failure; hot unloading is not implemented.
+Code/backing and original cleanup tickets remain retained on uncertain failure.
+Hot replacement and arbitrary privileged fault recovery are not implemented.
 The admission profile fixes separate stored-code (2 MiB), runtime reservation
 (6 MiB), declared heap (4 MiB) and callback-stack (64 KiB) limits in mac-module.
 The packager/loader and resident registry use the same constants. In particular,
 a BSS-backed decoder workspace does not count as stored executable bytes.
 Alignment and each exhausted budget have distinct diagnostic errors. The machine
-adapter still admits modules only while their complete reservations fit its
-actual remaining arena. These checks are admission limits, not an MMU or quota.
+adapter reserves execution VAs from the checked supervisor module window.
+Package descriptor spans must fit that virtual window; actual rounded payload
+pages and metadata must separately fit the original module Kernel account and
+discovered RAM. Failure does not substitute System storage.
 
-The checked QEMU virt platform reserves `0x87800000..0x88000000` (8 MiB) for
-modules, separately from the ROM's live storage scratch heap at
-`0x87000000..0x87800000`. Its default RAM remains 8 GiB; the checked physical map
-requires at least 256 MiB so this reservation and the high 2 MiB device-tree tail
-are disjoint. Generated boot reservations, pager constants and linker symbols
-use this same record. Page metadata starts after the module reservation.
-The image builder sums complete installed System-module descriptor spans,
-including BSS/private heaps, and refuses an over-capacity installation with its
-package name and required bytes. Runtime admission independently reports the
-remaining reservation and requested extent. Code capacity does not grant a
-module worker, heap account or stack budget. These addresses belong to the
-machine adapter, not the class-neutral registry.
+`virtual_memory.modules` defines execution placement. There is no physical module
+arena reservation or identity map. The QemuRISC-V firmware heap remains reserved
+at `0x87000000..0x87800000`; module storage comes from the real page pool. Boot
+reservations, constants and linker symbols are generated from the same checked
+platform record. The image builder reports installed virtual spans, while the
+runtime admits actual backing. Lazy shared kernel/firmware module page-table
+branches belong to System Foundation and remain until reset; payload pages do
+not. The initial Sv39 module window must occupy whole 1 GiB root slots, checked
+at build time, so dynamic branches never replace a bootstrap System subtree. Applications and definitions retain their temporary physical image arena.
+The temporary private module code/data charge is not the final System-owned
+shared immutable image policy.
 
 ## Driver-owned file associations (FASS 0, version 1)
 
@@ -2236,10 +2300,13 @@ physical zero; a mapped physical address of zero remains valid. Direct-map rows
 are aliases, not additional physical charges. Code, read-only data, writable
 data, actual heap backing, System stack, temporary trusted application/module
 arenas and devices are distinguished. The native source walks the actual owned
-immutable root, caches contiguous matching spans once on explicit request and
-validates unmapped guards before publication. It does not report planned
-mappings as installed mappings. Failed allocation leaves initialization
-retryable. Private process maps and per-domain budget gauges remain later gates.
+root through atomic PTE cells and retains revisioned row snapshots. PTE changes
+invalidate the cached revision; a concurrent mutation returns SCAN_STALE. A
+snapshot describes stored PTEs, not a claim that a pending distributed TLB
+operation has already completed. Unmapped guards are validated before row
+publication. Planned mappings are never reported as installed. Failed allocation
+remains retryable. Private process maps and complete per-domain physical budget
+gauges remain later gates.
 
 
 ## Resident Scrap extension service (SCEX, version 1)
@@ -2288,19 +2355,27 @@ qualify host clipboard interoperability.
 
 ## Resident allocation/account coverage
 
-Domain account coverage1 means execution backing plus attributed resident heap.
-Each native resident allocation privately retains its original account/class and
-exact backend Layout, including header/alignment cost. A surviving admitted I/O
-root can continue within that original budget after ordinary owner stop; closed
-roots/accounts cannot supply new authority. Realloc preserves original account,
-class and refunds, including when a later genuine same-account root supplies
-continuation after an earlier root closes. Account observations do
-not include independent application/module heaps or executable-image physical
-pages. The ordinary heap is480 MiB within one512 MiB backing; protected32 MiB is
-excluded. Foundation/System/domain totals are categories of that same ordinary
-storage, not additive physical capacities. The checked platform module account
-policy selects16 MiB kernel admission and a4 MiB future worker stack; it does not
-activate workers. Rebuild all consumers together when changing these contracts.
+Domain account coverage1 (`ACCOUNT_EXECUTION_OWNED_MEMORY`) means charged execution
+backing, resident allocations/metadata and application-heap extents. The Rust
+view is `MemoryAccounting::ExecutionAndOwnedMemory`. Each resident heap allocation
+retains its original account/class and exact backend Layout, including header
+and alignment cost. Application payload extents instead retain their real
+page-pool lease and original Application-class receipt; do not add their internal
+suballocation payload bytes again. Heap metadata remains charged through its
+actual resident allocations. Executable images, unreceipted independent storage
+and CPU time remain outside this coverage.
+
+A surviving admitted I/O root can continue within its original resident budget
+after ordinary owner stop; closed roots/accounts cannot supply new authority.
+Resident realloc preserves account/class/refunds, including when a later genuine
+same-account root supplies continuation after an earlier root closes. The
+ordinary resident heap is480 MiB within one512 MiB backing; protected32 MiB is
+excluded. Foundation/System/domain categories partition that ordinary resident
+heap observation. Page-backed application payloads and execution backing are
+separate physical owners, not extra ordinary-heap occupancy or an all-System
+sum. The checked module policy selects16 MiB kernel admission and4 MiB worker
+stacks; those limits do not grant execution or an Application heap to a module.
+Rebuild all consumers together when changing these contracts.
 
 The System memory-inspection summary separates
 `ordinary_foundation_heap_bytes` from `tracked_foundation_physical_bytes`.
@@ -2322,6 +2397,59 @@ claim that heap, physical attribution and page-pool counters were sampled
 simultaneously. ABI remains version1; the native layout fingerprint changes
 with the summary layout and all producers/consumers rebuild together.
 
+
+## Native application heap (development ABI 1)
+
+`APPLICATION_HEAP` (`0x10028`) addresses the authenticated application's real
+page-backed heap. It is separate from classic Memory Manager handles. The loader
+admits an empty canonical heap root before entry; the first allocation admits
+payload backing under the selected platform growth policy. No initialization
+operation, caller-supplied application/account/heap ID or System-heap fallback
+exists. Applications remain in trusted shared supervisor mappings; this ownership
+contract does not establish user-mode or private-root isolation.
+
+The RV64 `mac_abi::application_heap::Call` has exact size248/alignment8:
+
+| Offset | Field |
+| --- | --- |
+|0|operation, u32: ALLOCATE0, DEALLOCATE1, REALLOCATE2, ALLOCATE_ZEROED3|
+|4|reserved, u32=0|
+|8|pointer, native mutable byte pointer|
+|16|old_size, usize|
+|24|alignment, usize|
+|32|new_size, usize|
+|40|result, output-only native mutable byte pointer|
+|48|detail_length, output-only u32|
+|52|reserved2, u32=0|
+|56|detail, output-only192-byte bounded UTF-8 failure text|
+
+Allocation uses null pointer, old_size0 and nonzero new_size. Disposal supplies
+its exact live pointer/original nonzero Layout and new_size0. Reallocation supplies
+its exact live pointer/old Layout and nonzero new_size at the same alignment.
+Sizes/alignment, arithmetic, actual owner and exact original allocation are
+validated before memory access or mutation. Result/detail input contents are not
+authority and are not scanned as zero-filled input. The resident initializes
+result=null and detail_length0 before effects. Success returns no detail and
+publishes a nonnull aligned result only after allocation/reallocation commits;
+disposal returns no allocation. Failure returns no allocation and its actual
+negative status with bounded UTF-8 cause. Requests whose envelope cannot be
+safely borrowed may refuse before writing a reply.
+
+ALLOCATE_ZEROED clears the requested bytes before publishing success. Failed
+reallocation preserves old ownership, layout and data. Failed disposal retains
+the original record/backing for genuine cleanup; request, Drop or process
+termination does not manufacture an acknowledgment. Internal ownership uses the
+shared facility; raw pointer reuse is still governed by Rust's unsafe allocation
+contract and is not a stale-handle guarantee.
+
+The platform SDK's GlobalAlloc returns null only for a well-formed native
+NO_MEMORY response. Other statuses and malformed results preserve their local
+per-call cause and use nonallocating System-owned application failure reporting;
+no racy shared last-error field or fallback allocator is involved. The ABI stays
+at1 and all native producers/consumers rebuild together with the checked layout
+fingerprint. See [application runtime](docs/APPLICATION-RUNTIME.md) for startup,
+failure and qualification limits.
+
 ## Public CPU information
 
 Native `CPU_INFO=0x10029` exposes ordinary live-application enumeration and
@@ -2341,3 +2469,122 @@ residency, executing residency and sample tick (four u64s), followed by state,
 flags, activity availability and reserved (four u32s). No addresses, thread IDs,
 object IDs or scheduler grants are returned. The native layout fingerprint
 covers this family, its shape and semantic constants; ABI remains version 1.
+
+### Native current-thread and TLS requests
+
+Native development ABI remains 1. The layout fingerprint includes these actual
+records and operations; rebuild System, applications, definitions, modules and
+fixtures together after changing them.
+
+`NATIVE_THREAD` trap `0x1002a` uses a 304-byte, 8-aligned RV64 Call:
+
+| Field | Offset | Type |
+| --- | ---: | --- |
+| operation, flags | 0, 4 | u32 |
+| reserved | 8 | two u64 |
+| entry, data | 24, 32 | usize |
+| stack_bytes | 40 | u64 |
+| thread, right | 48, 56 | u64 |
+| seconds, nanoseconds | 64, 72 | u64, u32 |
+| name_length, name | 76, 80 | u32, pointer to readable UTF-8 |
+| state, outcome, parallelism | 88, 92, 96 | u32 |
+| reserved2, detail_length, reserved3 | 100, 104, 108 | u32 |
+| detail | 112 | 192 UTF-8 bytes |
+
+Flags and all reserved fields are zero. Refusals return negative Status and
+bounded nonempty UTF-8 detail; success has detail_length zero. Output IDs are
+never caller authority. The SDK exposes ThreadId and an affine NativeJoinRight;
+the raw numeric fields belong to this transport boundary. NativeJoinRight is
+initially !Send/!Sync and restricted to its creating application thread's
+ordinary context; it is not std's transferable Send JoinHandle contract.
+CREATE errors preserve data ownership explicitly: a valid resident refusal is
+Retained, while any malformed/protocol reply is Indeterminate. Callers must not
+free data on an indeterminate result; a child may already have accepted it.
+
+| Operation | Value | Inputs and behavior |
+| --- | ---: | --- |
+| CURRENT | 0 | Returns actual current canonical ThreadId, authenticated against this Process and its prepaid TLS slots. |
+| CREATE | 1 | entry/data/stack_bytes; returns thread plus one unique join right. |
+| QUERY | 2 | right; returns its child's identity, state and outcome. |
+| JOIN | 3 | right; consumes it after actual TLS FINISH and final execution-claim release; parks and replays while incomplete. |
+| DETACH | 4 | right; consumes it without cancelling the child; a pending JOIN on that right is woken with cancellation. |
+| EXIT | 5 | Actual child only; requires TLS FINISH and accepts no abandoned Host lease. Accepted exit does not return. Process main uses the separate native process-exit record. |
+| YIELD | 6 | Gives the scheduler an ordinary choice after ending service borrows. |
+| SLEEP | 7 | seconds/nanoseconds; zero returns immediately, finite duration parks through its checked deadline. |
+| NAME | 8 | name/name_length; bounded UTF-8 label, empty clears it. |
+| PARALLELISM | 9 | Returns currently dispatch-admitted eligible CPU allowance, minimum one. |
+
+CREATE's entry has signature `unsafe extern "C" fn(*mut u8)`. It must complete
+its actual TLS teardown before returning. Accepted CREATE transfers data once;
+the child can run before CREATE returns. A resident refusal transfers no data.
+The new child shares the original Process image, heap, account and TLS root;
+its own THRD, full saved CPU state, stack and prepaid TLS slots are independent.
+Zero stack_bytes selects the configurable 4 MiB default. Explicit sizes round
+up to whole pages and must satisfy the configured 64 KiB–8 MiB range and CPU
+state floor. Stack physical backing is charged to the Process Application
+budget; CPU/context/TLS metadata is charged to its Kernel budget. Recovery-kit
+inheritance is not a child-thread allocation source.
+
+States are PREPARING 0, RUNNING 1, RETURNING 2, COMPLETE 3 and ABORTED 4; outcomes
+are NORMAL 0 and ABORTED 1. A join right retains completion metadata, never a
+ThreadCore or stack. Aborted execution does not claim TLS destructors ran. A
+stopped Process closes new key/child admission before teardown. JOIN, EXIT,
+YIELD and SLEEP require a genuine preemptible outer application frame, no held
+Host lease and no critical/nested scope. Replay retains the original invocation
+identity and unique pending right; changing that request cancels its old claim.
+All unrelated input fields must be zero. Nanoseconds must be below one billion;
+finite deadline overflow is BAD_ARGUMENT, never a wrapped or pretend timeout.
+
+`TLS` trap `0x1002b` uses a 264-byte, 8-aligned Call. Fields are operation u32 at 0,
+flags u32 at 4, two reserved u64s at 8, key u64 at 24, opaque value usize at 32,
+destructor address usize at 40, receipt token u64 at 48, present u32 at 56, round
+u32 at 60, detail_length u32 at 64, reserved2 u32 at 68 and 192 diagnostic bytes at 72.
+Flags/reserved are zero. Negative Status preserves the cause and returns bounded
+nonempty UTF-8 detail; success returns detail_length 0. Zero/one/two opaque values
+are legal. IDs and receipt tokens are nonzero and issued by the shared facility.
+
+Operations are CREATE 0, DELETE 1, GET 2, SET 3, BEGIN 4, NEXT 5, ACK 6 and FINISH 7.
+CREATE takes a nullable C destructor address and returns a key. DELETE invalidates
+that Process-owned key without invoking its values' callbacks. GET/SET only
+address the actual current canonical thread and perform no allocation. Every
+thread prepays the platform-selected process key capacity before entry; QemuRISC-V
+selects 256, checked within 16..4096. Existing-key access cannot hide a lazy slot
+allocation failure. Other-process and stale keys are rejected.
+
+BEGIN starts current-thread teardown. NEXT clears one eligible nonzero slot
+before returning present 1, key/value/destructor and its unique receipt; CRT calls
+that pinned destructor outside resident locks, then ACKs that receipt on the same
+thread. The token is correlation only: the actual THRD retains the key and code
+pin; another token cannot reconstruct authority. One receipt may be outstanding.
+Reinitialized/new values are eligible in a later round. There are at most eight
+rounds; exhaustion reports remaining nonzero slots rather than claiming their
+callbacks completed. After NEXT returns present 0, FINISH confirms completion;
+setting another nonzero value invalidates that completion observation. Forced
+Process retirement drops retained receipts only after real execution quiescence
+and does not claim the user destructor ran. Key/code/storage cleanup remains in
+the actual owner's canonical walk.
+
+## Native signed process exit
+
+Native PROCESS accepts a size-distinct 16-byte `NativeExitCall`: signed i32
+program result at byte 0, u32 flags at byte 4, and reserved-zero u64 at byte 8.
+Flags are NORMAL=0 and ABORT=1; other bits are refused before admission. No
+process identity is on this wire. The System authenticates the genuine baseline
+Process executor and outer suspension contract. The existing classic/native
+`ProcessCall` layout and its legacy EXIT behavior remain separate.
+
+The program result is distinct from ApplicationEntry's native service Status.
+NORMAL does not imply user TLS destructor execution: the normal CRT completes
+its own teardown before exit, while explicit process exit skips it. ABORT never
+acknowledges user callbacks as completed. Accepted native exit consumes the
+current author continuation through the outer trap action after borrowed state
+has ended; every returned transport value, including zero, is an exit-contract
+refusal or violation for a nonreturning CRT facade.
+
+The first accepted typed outcome belongs to the real Process row and is consumed
+by stop/recovery policy and actual reclamation reporting. Finder termination
+enters System-owned replacement rather than bypassing the legacy Finder EXIT
+restriction. Diagnostic origin is metadata, never authority to create a recovery
+Activity or select another Process. A submitted resident report is retained;
+unfinished streaming is explicitly marked as a captured prefix. When no report
+was captured, the System labels its generated termination diagnostic accordingly.

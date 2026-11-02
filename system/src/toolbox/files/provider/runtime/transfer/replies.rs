@@ -203,7 +203,7 @@ impl State
                 {
                     return Err(READ_ONLY);
                 }
-                self.stage = if matches!(self.mode, Mode::Trash | Mode::Desktop)
+                self.stage = if matches!(self.mode, Mode::Trash | Mode::Toolbox)
                                 || self.put_away
                                 || self.mode.is_trash_query()
                 {

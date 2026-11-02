@@ -233,10 +233,14 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
         frontend = {'headless': 'native-headless', 'gtk': 'native'}.get(frontend, frontend)
     clipboard, clipboard_reason = select_clipboard(frontend, clipboard)
     extra_disks = tuple(extra_disks)
-    extra_limit = 3 if clipboard else 4
+    # Slot 5 is the declared entropy device. The host filesystem keeps slot 3;
+    # clipboard uses slot 4 when enabled. Extra disks use only remaining slots.
+    extra_buses = [slot for slot in range(4, 8)
+                   if slot != 5 and not (clipboard and slot == 4)]
+    extra_limit = len(extra_buses)
     if len(extra_disks) > extra_limit:
         raise ValueError(f'At most {extra_limit} additional disks fit beside graphics/input'
-                         + (' and clipboard devices; use --no-clipboard for four extra disks' if clipboard else ' devices'))
+                         + (' and entropy/clipboard devices; use --no-clipboard for three extra disks' if clipboard else ' and entropy devices'))
     if host_bridge is not None and (type(host_bridge) is not int or not 0 < host_bridge < 65536):
         raise ValueError('host bridge must be an explicit loopback TCP port')
     if expected_exports is not None and (type(expected_exports) is not int
@@ -302,6 +306,8 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
             '-device', 'ramfb',
             '-device', 'virtio-keyboard-device,bus=virtio-mmio-bus.1',
             '-device', 'virtio-tablet-device,bus=virtio-mmio-bus.2',
+            '-object', 'rng-builtin,id=system-rng',
+            '-device', 'virtio-rng-device,rng=system-rng,bus=virtio-mmio-bus.5',
             '-display', display, '-nic', 'none', '-serial', 'file:' + host_path(serial),
             '-parallel', 'none', '-monitor', 'none', '-qmp', monitor]
     if host_bridge is not None:
@@ -315,12 +321,12 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
         args.extend(['-chardev', 'qemu-vdagent,id=clipboard,clipboard=on,mouse=off',
                      '-device', 'virtio-serial-device,id=clipboardserial,bus=virtio-mmio-bus.4,max_ports=2',
                      '-device', 'virtserialport,bus=clipboardserial.0,nr=1,chardev=clipboard,name=com.redhat.spice.0'])
-    for index, source in enumerate(extra_disks, start=1):
+    for index, (bus, source) in enumerate(zip(extra_buses, extra_disks), start=1):
         source = Path(source).resolve()
         destination = state / f'extra-{index}.raw'
         shutil.copyfile(source, destination)
         args.extend(['-drive',f'if=none,id=extra{index},format=raw,readonly=on,file='+host_path(destination),
-                     '-device',f'virtio-blk-device,drive=extra{index},bus=virtio-mmio-bus.{index+3+int(clipboard)}'])
+                     '-device',f'virtio-blk-device,drive=extra{index},bus=virtio-mmio-bus.{bus}'])
     env = dict(os.environ)
     if frontend == 'gtk':
         env['GDK_BACKEND'] = 'x11'

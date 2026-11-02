@@ -55,12 +55,12 @@ fn close(mut flight: Flight, mut state: Box<State>, outcome: Result<Box<Loaded>,
         }
         state.reading = false;
     }
-    let result = files(|m| m.cleanup_provider_file(state.handle)).and_then(|volume| {
+    let result = files(|m| m.cleanup_provider_file(state.handle)).and_then(|(volume, token)| {
                      submit_args(flight.job.subject(),
                                  flight.provider,
                                  Operation::Close,
                                  Arguments { volume,
-                                             token: u64::from(state.handle),
+                                             token: u64::from(token),
                                              ..Default::default() })
                  });
     match result

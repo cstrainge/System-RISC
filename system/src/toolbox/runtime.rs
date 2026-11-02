@@ -12,12 +12,12 @@ use super::quickdraw::{SurfaceExt,
                        fonts_service,
                        retained::{Content, RenderCommand, SceneTarget},
                        service};
-use crate::{loader::Definitions,
-            platform,
+use crate::{platform,
             toolbox::{events::{BTN_STATE, EventManager,
                                input::{Decoder, Input}},
                       handles::InvocationGate,
                       quickdraw::{Canvas, WHITE, font::GENEVA_9},
+                      resources::definitions::DefinitionRef,
                       windows::{Action, WindowId, WindowManager, WindowPart}},
             virtio_input};
 
@@ -57,6 +57,7 @@ mod dialog_runtime;
 mod event_runtime;
 #[path = "drag/runtime.rs"]
 mod drag_runtime;
+pub(crate) use drag_runtime::native_drag;
 #[path = "textedit/runtime.rs"]
 mod textedit_runtime;
 #[path = "quickdraw/ordinary_underlay.rs"]
@@ -66,30 +67,51 @@ mod window_layout;
 use ordinary_underlay::OrdinaryUnderlay;
 #[path = "processes/runtime.rs"]
 mod local;
-pub(crate) use local::FinderAdmission;
+pub(crate) use local::{FinderAdmission, FinderCapacityError, FinderPreparation,
+                       system_report::{SystemReportAction, SystemReportActionKind,
+                                       active as system_report_active,
+                                       changed as system_report_changed,
+                                       pump as pump_system_report}};
+#[path = "windows/runtime.rs"]
+mod window_runtime;
+pub(crate) use window_runtime::native_window;
+#[path = "controls/runtime.rs"]
+mod control_runtime;
+pub(crate) use control_runtime::native_control;
+fn note_recovery_input_refusal(owner: u64, status: Status)
+{
+    use core::sync::atomic::{AtomicI32, Ordering};
+    static LAST_REFUSAL: AtomicI32 = AtomicI32::new(OK);
+    if LAST_REFUSAL.swap(status, Ordering::AcqRel) != status
+    {
+        serial!("RECOVERY_INPUT_CONTEXT_REFUSED app={} status={status}; modal authority retained",
+                owner);
+    }
+}
+
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 /// Scene retention, damage and compositing state for the screen. It owns no
 /// window or application policy; Toolbox managers publish into it.
 pub(in crate::toolbox) struct Presentation
 {
-    content:                Vec<Content>,
-    pending_content:        Vec<Content>,
-    content_cache:          super::quickdraw::content_cache::ContentCache,
-    ordinary_underlay:      OrdinaryUnderlay,
-    menu_cache:             super::quickdraw::menu_cache::MenuBarCache,
-    redraw:                 bool,
-    content_damage:         Vec<(SceneTarget, super::quickdraw::region::Region)>,
-    presentation_damage:    Vec<Rect>,
-    presentation_copy_full: bool,
+    content:                               Vec<Content>,
+    pending_content:                       Vec<Content>,
+    content_cache:                         super::quickdraw::content_cache::ContentCache,
+    ordinary_underlay:                     OrdinaryUnderlay,
+    menu_cache:                            super::quickdraw::menu_cache::MenuBarCache,
+    redraw:                                bool,
+    content_damage:                        Vec<(SceneTarget, super::quickdraw::region::Region)>,
+    presentation_damage:                   Vec<Rect>,
+    presentation_copy_full:                bool,
     pub(in crate::toolbox) feedback_dirty: bool,
-    feedback:               super::quickdraw::feedback::Feedback,
-    outline_clip:           super::quickdraw::feedback::VisibilityCache,
-    highlight_clip:         super::quickdraw::feedback::VisibilityCache,
-    cursor_dirty:           bool,
-    frame_incomplete:       bool,
-    cursor_bounds:          Rect,
-    presentations:          u64,
-    compositions:           u64
+    feedback:                              super::quickdraw::feedback::Feedback,
+    outline_clip:                          super::quickdraw::feedback::VisibilityCache,
+    highlight_clip:                        super::quickdraw::feedback::VisibilityCache,
+    cursor_dirty:                          bool,
+    frame_incomplete:                      bool,
+    cursor_bounds:                         Rect,
+    presentations:                         u64,
+    compositions:                          u64
 }
 
 /// Pointer shape selection and busy-cursor tracking.
@@ -105,44 +127,49 @@ struct Pointer
 
 pub struct Toolbox
 {
-    pub(in crate::toolbox) drag:      super::drag::Manager,
-    standard_file:                    super::standard_file::Manager,
-    font_suitcases:                   super::font_suitcases::Manager,
-    scroll_boxes:                     super::controls::scrollbox::Manager,
-    controls:                         super::controls::objects::Manager,
-    crash:                            super::crashes::Manager,
-    dialogs:                          super::dialogs::Alerts,
-    core_dialogs:                     super::dialogs::Alerts,
-    core_dialogs_active:              bool,
-    menus:                            super::menus::Manager,
-    system_bar:                       super::menus::SystemBar,
-    worlds:                           super::quickdraw::worlds::Worlds,
-    classic_font:                     mac_abi::quickdraw::FontSelection,
-    pub windows:                      WindowManager,
-    first_window:                     WindowId,
-    events:                           Box<EventManager>,
-    textedit:                         super::textedit::Manager,
-    definitions:                      Definitions,
+    pub(in crate::toolbox) drag:         super::drag::Manager,
+    standard_file:                       super::standard_file::Manager,
+    font_suitcases:                      super::font_suitcases::Manager,
+    scroll_boxes:                        super::controls::scrollbox::Manager,
+    controls:                            super::controls::objects::Manager,
+    crash:                               super::crashes::Manager,
+    system_report:                       Option<local::system_report::SystemReportSlot>,
+    system_report_active:                Option<local::system_report::ReportSession>,
+    system_ui_baseline:                  bool,
+    system_report_temporary:             bool,
+    system_report_present_pending:       bool,
+    system_report_cursor_pending:        bool,
+    dialogs:                             super::dialogs::Alerts,
+    core_dialogs:                        super::dialogs::Alerts,
+    core_dialogs_active:                 bool,
+    menus:                               super::menus::Manager,
+    system_bar:                          super::menus::SystemBar,
+    worlds:                              super::quickdraw::worlds::Worlds,
+    classic_font:                        mac_abi::quickdraw::FontSelection,
+    pub windows:                         WindowManager,
+    first_window:                        WindowId,
+    events:                              Box<EventManager>,
+    textedit:                            super::textedit::Manager,
     pub(in crate::toolbox) presentation: Presentation,
-    pointer: Pointer,
+    pointer:                             Pointer,
     /// Reported main-screen bounds (`qd.screenBits.bounds`); changed only by `display_changed`.
-    pub(in crate::toolbox) screen: Rect,
-    decoders:                         [Decoder; 2],
-    pub revision:                     u32,
-    pub updates:                      u32,
-    last_key:                         u8,
-    last_action:                      &'static str,
-    activity:                         u64,
-    last_observed:                    (u64, u32, u64),
-    cdef:                             DefinitionEntry,
-    system_cdef:                      DefinitionEntry,
-    mdef:                             DefinitionEntry,
-    owner:                            u64,
-    foreground:                       u64,
-    locals:                           Vec<local::Saved>,
-    pub(in crate::toolbox) processes: super::processes::Manager,
-    menu_feedback:                    Option<menu_feedback::Feedback>,
-    app_menu:                         super::processes::menu::ApplicationMenu
+    pub(in crate::toolbox) screen:       Rect,
+    decoders:                            [Decoder; 2],
+    pub revision:                        u32,
+    pub updates:                         u32,
+    last_key:                            u8,
+    last_action:                         &'static str,
+    activity:                            u64,
+    last_observed:                       (u64, u32, u64),
+    cdef:                                DefinitionRef,
+    system_cdef:                         DefinitionRef,
+    mdef:                                DefinitionRef,
+    owner:                               u64,
+    foreground:                          u64,
+    locals:                              Vec<local::Saved>,
+    pub(in crate::toolbox) processes:    super::processes::Manager,
+    menu_feedback:                       Option<menu_feedback::Feedback>,
+    app_menu:                            super::processes::menu::ApplicationMenu
 }
 
 impl super::controls::objects::ControlHost for Toolbox
@@ -171,6 +198,37 @@ impl super::font_suitcases::Host for Toolbox
     fn font_suitcases(&mut self) -> &mut super::font_suitcases::Manager
     {
         &mut self.font_suitcases
+    }
+}
+
+fn window_creation_status(error: super::windows::manager::CreationError) -> Status
+{
+    use super::windows::manager::CreationError;
+    match error
+    {
+        CreationError::NoMemory => NO_MEMORY,
+        CreationError::Binding(status) => status,
+        CreationError::Facility(mac_object_table::domain::PoolError::ForeignOwner { .. }) =>
+            ACCESS_DENIED,
+        CreationError::Facility(error) =>
+        {
+            super::handles::registry_status(&mac_object_table::registry::Error::Pool(error))
+        }
+        CreationError::Stopping | CreationError::RecoveryBusy => SERVICE_BUSY,
+        CreationError::CapacityChanged => SERVICE_BUSY,
+        CreationError::Publication(cause) => match cause {
+            mac_object_table::store::PreparedError::CapacityChanged => SERVICE_BUSY,
+            mac_object_table::store::PreparedError::Pool(
+                mac_object_table::domain::PoolError::ForeignOwner { .. }) => ACCESS_DENIED,
+            mac_object_table::store::PreparedError::Pool(cause) =>
+                super::handles::registry_status(&mac_object_table::registry::Error::Pool(cause)),
+            mac_object_table::store::PreparedError::WrongStore
+            | mac_object_table::store::PreparedError::RetiredStore => BAD_ABI
+        },
+        CreationError::RecoveryAuthority => ACCESS_DENIED,
+        CreationError::Definition { reply,
+                                    .. } => i32::try_from(reply).unwrap_or(BAD_ABI),
+        CreationError::InvalidRequest | CreationError::Geometry { .. } => BAD_ARGUMENT
     }
 }
 
@@ -224,17 +282,18 @@ impl Toolbox
                 // code now: later protected heap backing cannot admit missing
                 // definition images or page metadata on their behalf.
                 let source = crate::kernel::system_resources(&storage)?;
-                self.definitions.resolve_system(source, *b"WDEF", 0)?;
+                crate::loader::prepare_system_definition(source, *b"WDEF", 0)?;
                 for operation in
                     [mac_abi::controls::DRAW_STANDARD, mac_abi::controls::DRAW_SCROLLBAR]
                 {
                     let id = super::controls::definition_id(&mac_abi::controls::ControlCall {
                         operation, ..Default::default()
                     })?;
-                    self.definitions.resolve_system(source, *b"CDEF", id)?;
+                    crate::loader::prepare_system_definition(source, *b"CDEF", id)?;
                 }
                 self.windows.prepare_recovery(&storage).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Window Manager status={status}"); status })?;
                 self.controls.prepare_recovery(&storage, controls).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Control Manager status={status}"); status })?;
+                self.prepare_system_report_slot(&storage)?;
                 self.prepare_core_dialogs().map_err(|status| {
                                                 serial!("RECOVERY_SERVICE_ADMISSION_REFUSED \
                                                          service=Core Alert Manager \
@@ -245,9 +304,16 @@ impl Toolbox
                 self.presentation.content.try_reserve_exact(2).map_err(|_| NO_MEMORY)?;
                 self.presentation.pending_content.try_reserve_exact(2).map_err(|_| NO_MEMORY)?;
                 self.presentation.content_damage.try_reserve_exact(3).map_err(|_| NO_MEMORY)?;
-                self.presentation.presentation_damage.try_reserve_exact(4).map_err(|_| NO_MEMORY)?;
-                self.presentation.ordinary_underlay.prepare(self.windows.recovery_window_capacity(),
-                                                self.presentation.content.capacity().saturating_add(1))?;
+                self.presentation
+                    .presentation_damage
+                    .try_reserve_exact(4)
+                    .map_err(|_| NO_MEMORY)?;
+                self.presentation.ordinary_underlay.prepare(self.windows
+                                                                 .recovery_window_capacity(),
+                                                             self.presentation
+                                                                 .content
+                                                                 .capacity()
+                                                                 .saturating_add(1))?;
                 Ok(())
             })
         })
@@ -269,7 +335,8 @@ impl Toolbox
 
     fn retained_bytes(&self) -> usize
     {
-        window_layout::ordinary_retained_bytes(&self.windows, &self.presentation.content, &self.presentation.pending_content)
+        window_layout::ordinary_retained_bytes(&self.windows, &self.presentation.content,
+                                               &self.presentation.pending_content)
     }
 
     fn content_mut(&mut self, id: impl Into<SceneTarget>) -> Result<&mut Content, Status>
@@ -286,7 +353,8 @@ impl Toolbox
                            NOT_FOUND
                        });
         }
-        self.presentation.pending_content
+        self.presentation
+            .pending_content
             .iter_mut()
             .chain(&mut self.presentation.content)
             .find(|content| content.id == id)
@@ -355,7 +423,8 @@ impl Toolbox
         {
             for span in &band.spans
             {
-                self.presentation.content_cache
+                self.presentation
+                    .content_cache
                     .invalidate_rect(id, Rect::new(span.left, band.top, span.right, band.bottom));
             }
         }
@@ -395,10 +464,14 @@ impl Toolbox
         }
         else
         {
-            if self.presentation.content_damage.capacity().saturating_sub(self.presentation.content_damage.len())
-               <= self.scene_spare()
+            let spare = self.scene_spare();
+            if self.presentation
+                   .content_damage
+                   .capacity()
+                   .saturating_sub(self.presentation.content_damage.len())
+               <= spare
                && shared_scene_allocation(|| {
-                      self.presentation.content_damage.try_reserve(1 + self.scene_spare())
+                      self.presentation.content_damage.try_reserve(1 + spare)
                   }).is_err()
             {
                 // Full composition is an explicit last resort when bounded
@@ -425,7 +498,7 @@ impl Toolbox
         Ok(())
     }
 
-    pub(crate) fn new(mut definitions: Definitions, processes: super::processes::Manager,
+    pub(crate) fn new(processes: super::processes::Manager,
                       finder_owner: super::handles::OwnerRef,
                       controls: super::controls::objects::Manager)
                       -> Result<Self, AdmissionError>
@@ -436,11 +509,13 @@ impl Toolbox
         {
             return Err(AdmissionError::Service(BAD_ABI));
         }
-        definitions.resolve(*b"WDEF", 0)?;
-        let cdef = definitions.resolve(*b"CDEF", 0)?;
         let system_source = crate::kernel::system_resources(&super::handles::system_owner()?)?;
-        let system_cdef = definitions.resolve_system(system_source, *b"CDEF", 0)?;
-        let mdef = definitions.resolve(*b"MDEF", 0)?;
+        // Resident defaults outlive Finder: never anchor them to its private
+        // resource override merely because it is the bootstrap caller.
+        crate::loader::prepare_system_definition(system_source, *b"WDEF", 0)?;
+        let cdef = crate::loader::prepare_system_definition(system_source, *b"CDEF", 0)?;
+        let system_cdef = cdef;
+        let mdef = crate::loader::prepare_system_definition(system_source, *b"MDEF", 0)?;
         let text_cursor =
             crate::kernel::with_resources(|resources| {
                 super::quickdraw::cursors::decode_mono(&resources.get(mac_abi::resources::SYSTEM,
@@ -493,6 +568,12 @@ impl Toolbox
         system_bar.reset(finder);
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
+                  system_report: None,
+                  system_report_active: None,
+                  system_ui_baseline: false,
+                  system_report_temporary: false,
+                  system_report_present_pending: false,
+                  system_report_cursor_pending: false,
                   standard_file: super::standard_file::Manager::new(super::handles::file_dialog_kinds()?)?,
                   font_suitcases: super::font_suitcases::Manager::new(super::handles::font_suitcase_kinds()?)?,
                   scroll_boxes: super::controls::scrollbox::Manager::new(super::handles::scroll_box_kinds()?)?,
@@ -512,7 +593,6 @@ impl Toolbox
                   drag: { let (sessions, receivers) = super::handles::drag_kinds()?;
                           super::drag::Manager::new(sessions, receivers)? },
                   textedit: super::textedit::Manager::new(super::handles::editor_kinds()?, processes.ledger(finder)?)?,
-                  definitions,
                   presentation: Presentation { content: Vec::new(), pending_content: Vec::new(), content_cache: Default::default(), ordinary_underlay: Default::default(), menu_cache: Default::default(), redraw: true, content_damage, presentation_damage, presentation_copy_full:false, feedback_dirty: false, feedback: Default::default(), outline_clip: Default::default(), highlight_clip: Default::default(), cursor_dirty: true, frame_incomplete: false, cursor_bounds: Rect::ZERO, presentations: 0, compositions: 0, },
                   decoders: [Decoder::new(), Decoder::new()],
                   revision: 0,
@@ -596,8 +676,44 @@ impl Toolbox
         self.last_action = "MENU";
     }
 
+    /// Validate the creation intent before a cold WDEF can be admitted. This
+    /// observes current recovery availability; creation repeats the same checks.
+    pub(crate) fn preflight_window(&self, operation: u32, request: &WindowRequest)
+                                   -> Result<Option<i16>, Status>
+    {
+        if operation != NEW_WINDOW
+        {
+            return Ok(None);
+        }
+        if request.title_length as usize > request.title.len()
+           || request.procedure < 0
+           || !matches!(request.reserved, 0 | WINDOW_STAY_IN_BACK)
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        core::str::from_utf8(&request.title[..request.title_length as usize]).map_err(|_| {
+                                                                                 BAD_ARGUMENT
+                                                                             })?;
+        let (recipient, storage) = self.service_owners()?;
+        if !recipient.accepting()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        self.windows
+            .preflight_creation(request.bounds,
+                                &storage,
+                                (request.minimum_width, request.minimum_height),
+                                request.reserved == WINDOW_STAY_IN_BACK)
+            .map_err(window_creation_status)?;
+        Ok(Some(request.procedure >> 4))
+    }
+
     pub fn window(&mut self, operation: u32, request: &mut WindowRequest) -> Status
     {
+        if operation == NEW_WINDOW
+        {
+            return self.create_window(request, None);
+        }
         if operation != GET_WINDOW
         {
             crate::trace::record(crate::trace::WINDOW,
@@ -643,111 +759,6 @@ impl Toolbox
         let mut patch_damage = None;
         match operation
         {
-            NEW_WINDOW =>
-            {
-                if request.title_length as usize > request.title.len() || request.procedure < 0
-                {
-                    return BAD_ARGUMENT;
-                }
-                let title = match core::str::from_utf8(&request.title
-                                                           [..request.title_length as usize])
-                {
-                    Ok(title) => title,
-                    Err(_) => return BAD_ARGUMENT
-                };
-                let stay_in_back = match request.reserved
-                {
-                    0 => false,
-                    WINDOW_STAY_IN_BACK => true,
-                    _ => return BAD_ARGUMENT
-                };
-                let entry = match self.definitions.resolve(*b"WDEF", request.procedure >> 4)
-                {
-                    Ok(entry) => entry,
-                    Err(error) => return crate::loader::status(error)
-                };
-                if shared_scene_allocation(|| {
-                       self.presentation.content.try_reserve(1 + self.scene_spare()).map_err(|_| NO_MEMORY)?;
-                       self.presentation.ordinary_underlay
-                           .prepare_scenes(self.presentation.content.capacity().saturating_add(1))?;
-                       self.presentation.content_damage
-                           .try_reserve(self.presentation.content
-                                            .len()
-                                            .saturating_add(2 + self.scene_spare())
-                                            .saturating_sub(self.presentation.content_damage.len()))
-                           .map_err(|_| NO_MEMORY)
-                   }).is_err()
-                {
-                    return NO_MEMORY;
-                }
-                let (recipient, storage) = match self.service_owners()
-                {
-                    Ok(owners) => owners,
-                    Err(status) => return status
-                };
-                let id = match self.windows.new_window_with_activation(request.bounds,
-                                                                       title,
-                                                                       &storage,
-                                                                       (request.minimum_width,
-                                                                        request.minimum_height),
-                                                                       request.procedure,
-                                                                       entry,
-                                                                       &mut self.events,
-                                                                       when,
-                                                                       false,
-                                                                       stay_in_back)
-                {
-                    Ok(id) => id,
-                    Err(error) =>
-                    {
-                        serial!("WINDOW_INITIALIZATION_REFUSED: owner={} {error}", self.owner);
-                        use super::windows::manager::CreationError;
-                        return match error {
-                            CreationError::NoMemory => NO_MEMORY,
-                            CreationError::Facility(error) => super::handles::registry_status(&mac_object_table::registry::Error::Pool(error)),
-                            CreationError::Stopping | CreationError::RecoveryBusy => SERVICE_BUSY,
-                            CreationError::RecoveryAuthority => ACCESS_DENIED,
-                            CreationError::Definition { reply, .. } => i32::try_from(reply).unwrap_or(BAD_ABI),
-                            CreationError::InvalidRequest | CreationError::Geometry { .. } => BAD_ARGUMENT
-                        };
-                    }
-                };
-                if crate::context::recovery_activity().is_none()
-                   && let Err(status) =
-                       self.drag
-                           .ensure_receiver(&recipient,
-                                            crate::context::current_thread_context().identity()
-                                                                                    .thread
-                                                                                    .0,
-                                            id.0)
-                {
-                    if let Err(error) = self.windows.dispose_window(id, &mut self.events, when)
-                    {
-                        serial!("WINDOW_INITIALIZATION_ROLLBACK_REFUSED: owner={} {error}",
-                                self.owner);
-                    }
-                    return status;
-                }
-                request.id = id.0;
-                if self.first_window.0 == 0
-                {
-                    self.first_window = id;
-                }
-                if self.owner == self.foreground
-                {
-                    self.windows.select_window(id, &mut self.events, when);
-                }
-                if self.owner != self.foreground
-                {
-                    if self.processes.get(self.owner).is_ok_and(|p| p.info.hidden != 0)
-                    {
-                        self.windows.set_hidden(id, true);
-                    }
-                    self.windows.restore_owner_group(self.foreground, &mut self.events, when);
-                }
-                self.presentation.content.push(Content::new(id));
-                self.last_action = "NEW";
-            }
             CLOSE_WINDOW =>
             {
                 if let Err(status) = self.drag.prepare_window_close(id.0)
@@ -771,8 +782,41 @@ impl Toolbox
                             {
                                 i32::try_from(reply).unwrap_or(BAD_ABI)
                             }
+                            #[cfg(target_arch = "riscv64")]
+                            super::handles::cleanup::Cause::ProcessSpace(cause) => cause.status(),
+                            #[cfg(target_arch = "riscv64")]
+                            super::handles::cleanup::Cause::ModuleMapping(cause) => match cause {
+                                crate::machine::paging::modules::CleanupCause::Pending { .. } => SERVICE_BUSY,
+                                _ => BAD_ABI,
+                            },
+                            #[cfg(target_arch = "riscv64")]
+                            super::handles::cleanup::Cause::NativeTls(cause) => match cause {
+                                super::native_threads::CleanupCause::Contract => BAD_ABI,
+                                super::native_threads::CleanupCause::Unavailable => NOT_SUPPORTED,
+                                super::native_threads::CleanupCause::Threads
+                                | super::native_threads::CleanupCause::Readers { .. }
+                                | super::native_threads::CleanupCause::Preparing { .. } => SERVICE_BUSY,
+                            },
+                            #[cfg(target_arch = "riscv64")]
+                            super::handles::cleanup::Cause::ApplicationHeap(cause) =>
+                            {
+                                match cause
+                                {
+                                    super::application_heap::CleanupCause::Unavailable => NOT_SUPPORTED,
+                                    super::application_heap::CleanupCause::Fault(_) => BAD_ABI,
+                                    super::application_heap::CleanupCause::Threads
+                                    | super::application_heap::CleanupCause::Readers { .. }
+                                    | super::application_heap::CleanupCause::Mutation
+                                    | super::application_heap::CleanupCause::Remaining { .. } => SERVICE_BUSY
+                                }
+                            }
                             super::handles::cleanup::Cause::Facility(_) => BAD_ARGUMENT,
-                            super::handles::cleanup::Cause::Alias(_)
+                            #[cfg(target_arch = "riscv64")]
+                            super::handles::cleanup::Cause::ThreadPreparations { .. }
+                            | super::handles::cleanup::Cause::DefinitionPending { .. }
+                            | super::handles::cleanup::Cause::NativeJoin { .. } => SERVICE_BUSY,
+                            super::handles::cleanup::Cause::PublicationPreparations { .. }
+                            | super::handles::cleanup::Cause::Alias(_)
                             | super::handles::cleanup::Cause::ContextUnavailable { .. }
                             | super::handles::cleanup::Cause::DriverInterfaceBusy { .. }
                             | super::handles::cleanup::Cause::DriverDependencyBusy { .. }
@@ -934,13 +978,15 @@ impl Toolbox
                 {
                     return BAD_ARGUMENT;
                 }
+                let spare = self.scene_spare();
                 if shared_scene_allocation(|| {
-                       self.presentation.pending_content.try_reserve(1 + self.scene_spare())
+                       self.presentation.pending_content.try_reserve(1 + spare)
                    }).is_err()
                 {
                     return NO_MEMORY;
                 }
-                let Some(content) = self.presentation.content.iter().find(|content| content.id == id)
+                let Some(content) =
+                    self.presentation.content.iter().find(|content| content.id == id)
                 else
                 {
                     return NOT_FOUND;
@@ -967,14 +1013,16 @@ impl Toolbox
             }
             END_UPDATE =>
             {
-                let Some(index) = self.presentation.pending_content.iter().position(|content| content.id == id)
+                let Some(index) =
+                    self.presentation.pending_content.iter().position(|content| content.id == id)
                 else
                 {
                     return BAD_ARGUMENT;
                 };
                 let (used, limit) = self.retained_admission(SceneTarget::from(id));
                 let bounds = self.windows.window(id).unwrap().local_bounds();
-                let Some(content) = self.presentation.content.iter_mut().find(|content| content.id == id)
+                let Some(content) =
+                    self.presentation.content.iter_mut().find(|content| content.id == id)
                 else
                 {
                     return NOT_FOUND;
@@ -1042,9 +1090,60 @@ impl Toolbox
         result
     }
 
-    pub fn control_definition(&mut self, id: i16) -> Result<DefinitionEntry, Status>
+    pub fn control_definition(id: i16) -> Result<DefinitionRef, Status>
     {
-        self.definitions.resolve(*b"CDEF", id).map_err(crate::loader::status)
+        crate::loader::cached_definition(*b"CDEF", id).and_then(|entry| {
+                                                          entry.ok_or_else(|| {
+                     mac_formats::Error::Missing("control definition was not prepared before \
+                                                  object mutation").into()
+                 })
+                                                      })
+                                                      .map_err(crate::loader::status)
+    }
+
+    pub(crate) fn preflight_scroll_box(&self, call: &mac_abi::scrollbox::Call)
+                                       -> Result<bool, Status>
+    {
+        use mac_abi::scrollbox::*;
+        let (recipient, storage) = self.service_owners()?;
+        let owner = recipient.owner().incarnation();
+        if self.scroll_boxes.bound_definition(call, owner)?.is_some()
+        {
+            return Ok(false);
+        }
+        let window = call.window;
+        if window != 0 && !self.owns(WindowId(window))
+        {
+            return Err(if self.windows.window(WindowId(window)).is_some()
+                       {
+                           ACCESS_DENIED
+                       }
+                       else
+                       {
+                           NOT_FOUND
+                       });
+        }
+        if matches!(call.operation, CREATE | CONFIGURE)
+           && window != 0
+           && !self.windows.window(WindowId(window)).is_some_and(|w| {
+                                                        let bounds = w.bounds;
+                                                        let r = call.spec.viewport;
+                                                        let b = call.spec.scrollbar;
+                                                        r.left >= 0
+                                                        && r.top >= 0
+                                                        && r.right <= bounds.right - bounds.left
+                                                        && r.bottom <= bounds.bottom - bounds.top
+                                                        && b.left >= 0
+                                                        && b.top >= 0
+                                                        && b.right <= bounds.right - bounds.left
+                                                        && b.bottom <= bounds.bottom - bounds.top
+                                                    })
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
+        self.scroll_boxes.preflight_definition(&recipient, &storage, call, &fonts)?;
+        Ok(crate::loader::cached_definition(*b"CDEF", 1).map_err(crate::loader::status)?.is_none())
     }
 
     pub fn scroll_box(&mut self, call: &mut mac_abi::scrollbox::Call)
@@ -1107,7 +1206,11 @@ impl Toolbox
             self.clear_control_highlight(window, call.id, true);
             return Ok(None);
         }
-        let entry = self.definitions.resolve(*b"CDEF", 1).map_err(crate::loader::status)?;
+        let entry = match self.scroll_boxes.bound_definition(call, owner)?
+        {
+            Some(entry) => entry,
+            None => crate::toolbox::runtime::Toolbox::control_definition(1)?
+        };
         let drawing = self.scroll_boxes.request(&recipient,
                                                  &storage,
                                                  call,
@@ -1123,7 +1226,8 @@ impl Toolbox
         {
             let mut removed = Vec::new();
             let mut coalesced = None;
-            for content in self.presentation.content
+            for content in self.presentation
+                               .content
                                .iter_mut()
                                .chain(self.presentation.pending_content.iter_mut())
                                .filter(|content| content.id == SceneTarget::from(window))
@@ -1177,7 +1281,10 @@ impl Toolbox
                 }
                 content.record(RenderCommand::ScrollBox(drawing))?;
             }
-            if !self.presentation.pending_content.iter().any(|content| content.id == SceneTarget::from(window))
+            if !self.presentation
+                    .pending_content
+                    .iter()
+                    .any(|content| content.id == SceneTarget::from(window))
             {
                 for rect in old_bounds.into_iter().flatten().chain(bounds)
                 {
@@ -1193,7 +1300,8 @@ impl Toolbox
     {
         let mut removed = Vec::new();
         let mut coalesced = None;
-        for content in self.presentation.content
+        for content in self.presentation
+                           .content
                            .iter_mut()
                            .chain(&mut self.presentation.pending_content)
                            .filter(|content| content.id == SceneTarget::from(window))
@@ -1224,7 +1332,8 @@ impl Toolbox
         {
             self.content_changed_rect(window, bounds);
         }
-        if changed && !self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        if changed
+           && !self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
         {
             self.present();
         }
@@ -1284,15 +1393,14 @@ impl Toolbox
         if matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
            && self.controls.splitter_request(call, owner, crate::machine::traps::gateway)?
         {
-            let pending = self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let pending =
+                self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
             let prepared = self.controls.prepare_splitter(call,
                                                            owner,
                                                            pending,
                                                            crate::machine::traps::gateway,
                                                            |id| {
-                                                               self.definitions
-                                                                   .resolve(*b"CDEF", id)
-                                                                   .map_err(crate::loader::status)
+                                                               crate::toolbox::runtime::Toolbox::control_definition(id)
                                                            })?;
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
             return self.publish_control_layout(window, prepared, used, limit);
@@ -1303,7 +1411,6 @@ impl Toolbox
         }
         if call.operation == HIT_CHILDREN_OBJECT
         {
-            let definitions = &mut self.definitions;
             let (child, part) =
                 self.controls.hit_children(call.id,
                                             owner,
@@ -1312,8 +1419,7 @@ impl Toolbox
                                             |state| {
                                                 let id = super::controls::definition_id(state)?;
                                                 let entry =
-                                                    definitions.resolve(*b"CDEF", id)
-                                                               .map_err(crate::loader::status)?;
+                                                    crate::toolbox::runtime::Toolbox::control_definition(id)?;
                                                 let mut state = *state;
                                                 super::controls::prepare(&mut state,
                                                            entry,
@@ -1353,15 +1459,14 @@ impl Toolbox
            || (matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
                && self.controls.scrolling(call.id, owner)?)
         {
-            let pending = self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let pending =
+                self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
             let prepared = self.controls.prepare_scroll(call,
                                                          owner,
                                                          pending,
                                                          crate::machine::traps::gateway,
                                                          |id| {
-                                                             self.definitions
-                                                                 .resolve(*b"CDEF", id)
-                                                                 .map_err(crate::loader::status)
+                                                             crate::toolbox::runtime::Toolbox::control_definition(id)
                                                          })?;
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
             return self.publish_control_layout(window, prepared, used, limit);
@@ -1387,16 +1492,15 @@ impl Toolbox
                 return Err(BAD_ARGUMENT);
             }
             let viewport = self.windows.window(WindowId(window)).ok_or(NOT_FOUND)?.local_bounds();
-            let pending = self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let pending =
+                self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
             let prepared = self.controls.prepare_window(window,
                                                          viewport,
                                                          pending,
                                                          Some((call, owner)),
                                                          crate::machine::traps::gateway,
                                                          |id| {
-                                                             self.definitions
-                                                                 .resolve(*b"CDEF", id)
-                                                                 .map_err(crate::loader::status)
+                                                             crate::toolbox::runtime::Toolbox::control_definition(id)
                                                          })?;
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
             return self.publish_control_layout(window, prepared, used, limit);
@@ -1413,9 +1517,7 @@ impl Toolbox
                                                          paint_pending,
                                                          crate::machine::traps::gateway,
                                                          |id| {
-                                                             self.definitions
-                                                                 .resolve(*b"CDEF", id)
-                                                                 .map_err(crate::loader::status)
+                                                             crate::toolbox::runtime::Toolbox::control_definition(id)
                                                          },
                                                          None)?;
             call.layout.measurement = prepared.measurement;
@@ -1441,10 +1543,18 @@ impl Toolbox
         }
         let split_before = !matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
                            && self.controls.splitter_capture(call.id, owner)?;
-        let definition = self.controls.definition(call, owner)?;
-        let entry = self.control_definition(definition)?;
+        let entry = match self.controls.bound_definition(call, owner)?
+        {
+            Some(entry) => entry,
+            None =>
+            {
+                let (id, _) = self.controls.preflight_definition(&recipient, &storage, call)?;
+                crate::toolbox::runtime::Toolbox::control_definition(id)?
+            }
+        };
         let (used, limit) = self.retained_admission(SceneTarget::from(window));
-        let content = self.presentation.pending_content
+        let content = self.presentation
+                          .pending_content
                           .iter_mut()
                           .chain(&mut self.presentation.content)
                           .find(|content| content.id == SceneTarget::from(window));
@@ -1512,7 +1622,10 @@ impl Toolbox
             // A control state change commits its own pixels before returning.
             // Full window updates remain private until EndUpdate.
             if damage.iter().any(|r| !r.is_empty())
-               && !self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+               && !self.presentation
+                       .pending_content
+                       .iter()
+                       .any(|c| c.id == SceneTarget::from(window))
             {
                 self.present();
             }
@@ -1520,11 +1633,177 @@ impl Toolbox
         Ok(())
     }
 
+    fn finish_managed_control(&mut self, call: &mac_abi::controls::ControlCall, window: u64,
+                              drawing: Option<super::controls::Drawing>)
+                              -> Result<(), Status>
+    {
+        use mac_abi::controls::*;
+        if call.operation == DISPOSE_OBJECT
+        {
+            let mut removed = Vec::new();
+            let mut coalesced = None;
+            for content in self.presentation
+                               .content
+                               .iter_mut()
+                               .chain(self.presentation.pending_content.iter_mut())
+                               .filter(|c| c.id == SceneTarget::from(window))
+            {
+                content.retain_commands(|command| {
+                           if let RenderCommand::Control(d) = command
+                              && d.id == call.id
+                           {
+                               accumulate_removed_damage(&mut removed, &mut coalesced, d.bounds());
+                               return false;
+                           }
+                           true
+                       });
+            }
+            for bounds in removed.into_iter().chain(coalesced)
+            {
+                self.content_changed_rect(window, bounds);
+            }
+        }
+        if let Some(drawing) = drawing
+        {
+            if window == 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let bounds = drawing.bounds();
+            let damage = drawing.damage();
+            let (used, limit) = self.retained_admission(SceneTarget::from(window));
+            let size = drawing.storage();
+            let content = self.content_mut(window)?;
+            let old = content.iter_commands_mut()
+                             .find(|c| matches!(c, RenderCommand::Control(d) if d.id == call.id));
+            let old_bounds = if let Some(command) = old
+            {
+                if used - command.storage() + size > limit
+                {
+                    return Err(NO_MEMORY);
+                }
+                let old_bounds = if let RenderCommand::Control(d) = command
+                {
+                    d.bounds()
+                }
+                else
+                {
+                    unreachable!()
+                };
+                *command = RenderCommand::Control(drawing);
+                Some(old_bounds)
+            }
+            else
+            {
+                if used + size > limit || content.commands.len() >= 512
+                {
+                    return Err(NO_MEMORY);
+                }
+                content.record(RenderCommand::Control(drawing))?;
+                None
+            };
+            if let Some(old) = old_bounds
+               && old != bounds
+            {
+                self.content_changed_rect(window, old);
+            }
+            for damage in damage.into_iter().filter(|r| !r.is_empty())
+            {
+                self.content_changed_rect(window, damage);
+            }
+            // A control state change commits its own pixels before returning.
+            // Full window updates remain private until EndUpdate.
+            if damage.iter().any(|r| !r.is_empty())
+               && !self.presentation
+                       .pending_content
+                       .iter()
+                       .any(|c| c.id == SceneTarget::from(window))
+            {
+                self.present();
+            }
+        }
+        Ok(())
+    }
+
+    /// A retained object is already bound. Only a validated cache miss may
+    /// ask the native coordinator to admit executable pages outside Desktop.
+    pub(crate) fn preflight_control(&self, call: &mac_abi::controls::ControlCall)
+                                    -> Result<Option<i16>, Status>
+    {
+        use mac_abi::controls::*;
+        let id = if call.operation >= CREATE_STANDARD
+        {
+            let (recipient, storage) = self.service_owners()?;
+            let owner = recipient.owner().incarnation();
+            let bound = self.controls.bound_definition(call, owner)?;
+            let window = if matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
+            {
+                call.window
+            }
+            else
+            {
+                self.controls.window(call.id, owner)?
+            };
+            if window != 0 && !self.owns(WindowId(window))
+            {
+                return Err(if self.windows.window(WindowId(window)).is_some()
+                           {
+                               ACCESS_DENIED
+                           }
+                           else
+                           {
+                               NOT_FOUND
+                           });
+            }
+            if let Some(auxiliary) = self.controls.auxiliary_definition(call, owner)?
+            {
+                auxiliary
+            }
+            else if bound.is_some()
+            {
+                return Ok(None);
+            }
+            else
+            {
+                self.controls.preflight_definition(&recipient, &storage, call)?.0
+            }
+        }
+        else
+        {
+            if !call.surface.is_null()
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            if call.window != 0 && !self.owns(WindowId(call.window))
+            {
+                return Err(if self.windows.window(WindowId(call.window)).is_some()
+                           {
+                               ACCESS_DENIED
+                           }
+                           else
+                           {
+                               NOT_FOUND
+                           });
+            }
+            if call.window == 0 && matches!(call.operation, DRAW_STANDARD | DRAW_SCROLLBAR)
+            {
+                return Err(NOT_FOUND);
+            }
+            super::controls::preflight(call)?
+        };
+        match crate::loader::cached_definition(*b"CDEF", id).map_err(crate::loader::status)?
+        {
+            Some(_) => Ok(None),
+            None => Ok(Some(id))
+        }
+    }
+
     fn remove_dead_control_drawings(&mut self, window: u64)
     {
         let mut removed = Vec::new();
         let mut coalesced = None;
-        for content in self.presentation.content
+        for content in self.presentation
+                           .content
                            .iter_mut()
                            .chain(self.presentation.pending_content.iter_mut())
                            .filter(|c| c.id == SceneTarget::from(window))
@@ -1545,7 +1824,8 @@ impl Toolbox
         {
             self.content_changed_rect(window, bounds);
         }
-        if changed && !self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        if changed
+           && !self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
         {
             self.present();
         }
@@ -1555,7 +1835,8 @@ impl Toolbox
     {
         let mut damage = Vec::new();
         let mut coalesced = None;
-        if let Some(content) = self.presentation.pending_content
+        if let Some(content) = self.presentation
+                                   .pending_content
                                    .iter_mut()
                                    .chain(&mut self.presentation.content)
                                    .find(|c| c.id == SceneTarget::from(window))
@@ -1569,7 +1850,8 @@ impl Toolbox
         {
             self.content_changed_rect(window, bounds);
         }
-        if changed && !self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        if changed
+           && !self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
         {
             self.present();
         }
@@ -1589,12 +1871,18 @@ impl Toolbox
         {
             return NOT_FOUND;
         }
-        let id = match super::controls::definition_id(call)
+        let id = match super::controls::preflight(call)
         {
             Ok(id) => id,
             Err(e) => return e
         };
-        let entry = match self.definitions.resolve(*b"CDEF", id)
+        let entry = match crate::loader::cached_definition(*b"CDEF", id).and_then(|entry| {
+                                                                            entry.ok_or_else(|| {
+                                       mac_formats::Error::Missing("control definition was not \
+                                                                    prepared before object \
+                                                                    mutation").into()
+                                   })
+                                                                        })
         {
             Ok(entry) => entry,
             Err(e) => return crate::loader::status(e)
@@ -1703,8 +1991,9 @@ impl Toolbox
             {
                 return Err(BAD_ARGUMENT);
             }
+            let spare = self.scene_spare();
             shared_scene_allocation(|| {
-                self.presentation.pending_content.try_reserve(1 + self.scene_spare())
+                self.presentation.pending_content.try_reserve(1 + spare)
             }).map_err(|_| NO_MEMORY)?;
             let content = self.presentation.content.iter().find(|c| c.id == id).ok_or(NOT_FOUND)?;
             let pending = Content::pending_patch(id, content.port.clone(), mask);
@@ -1722,7 +2011,8 @@ impl Toolbox
         }
         else
         {
-            let index = self.presentation.pending_content
+            let index = self.presentation
+                            .pending_content
                             .iter()
                             .position(|c| c.id == id && c.is_patch())
                             .ok_or(BAD_ARGUMENT)?;
@@ -1893,7 +2183,9 @@ impl Toolbox
     /// chrome and covered windows, while TextEdit accounts for its port clip.
     fn automatic_cursor_at_mouse(&self) -> Option<u32>
     {
-        if !self.pointer.cursors.is_automatic() || self.menus.is_tracking() || self.windows.is_tracking()
+        if !self.pointer.cursors.is_automatic()
+           || self.menus.is_tracking()
+           || self.windows.is_tracking()
         {
             return None;
         }
@@ -2045,23 +2337,6 @@ impl Toolbox
         Ok(())
     }
 
-    pub fn definition(&mut self, call: &mut DefinitionCall) -> i64
-    {
-        if !call.header.supports::<DefinitionCall>()
-        {
-            return BAD_ABI as i64;
-        }
-        match self.definitions.resolve(call.kind.to_be_bytes(), call.id)
-        {
-            Ok(entry) => super::resources::definitions::invoke(entry, call),
-            Err(error) =>
-            {
-                serial!("DEFINITION_UNAVAILABLE: {}", error);
-                crate::loader::status(error) as i64
-            }
-        }
-    }
-
     fn action(&mut self, action: Action, when: u32)
     {
         // Held drag motion changes only the frontbuffer outline. Accepted
@@ -2123,39 +2398,61 @@ impl Toolbox
 
     fn input(&mut self, input: Input, when: u32)
     {
-        if let Some(activity) = crate::recovery::for_input(self.owner)
+        // Resolve this real ButtonDown once. Motion/keys/ticks use the actual
+        // report focus/capture and never add definition HIT calls.
+        let hit = if self.system_report_needs_hit()
+                     && !self.menus.is_tracking()
+                     && !self.windows.is_tracking()
+                     && let Input::Button { point,
+                                            down: true } = input
+                     && point.v >= self.screen.top + mac_abi::menus::MENU_BAR_HEIGHT
+        {
+            Some(self.windows.find_window(point))
+        }
+        else
+        {
+            None
+        };
+        match self.system_report_input(input, when, hit)
+        {
+            Ok(true) => return,
+            Err(status) =>
+            {
+                note_recovery_input_refusal(self.owner, status);
+                return;
+            }
+            Ok(false) => ()
+        }
+        if let Some(activity) =
+            crate::recovery::for_input(self.owner).filter(|activity| !activity.is_system_report())
         {
             let kind =
                 crate::recovery::active(self.owner, crate::recovery::Kind::CoreAlert).is_some();
-            if let Err(status) =
-                activity.run(|| {
-                            if kind
-                            {
-                                self.with_core_dialogs(|toolbox| toolbox.input_impl(input, when));
-                            }
-                            else
-                            {
-                                self.input_impl(input, when);
-                            }
-                        })
+            if let Err(status) = activity.run(|| {
+                                             if kind
+                                             {
+                                                 self.with_core_dialogs(|toolbox| {
+                                                         toolbox.input_impl_with_hit(input, when,
+                                                                                     hit)
+                                                     });
+                                             }
+                                             else
+                                             {
+                                                 self.input_impl_with_hit(input, when, hit);
+                                             }
+                                         })
             {
-                use core::sync::atomic::{AtomicI32, Ordering};
-                static LAST_REFUSAL: AtomicI32 = AtomicI32::new(OK);
-                if LAST_REFUSAL.swap(status, Ordering::AcqRel) != status
-                {
-                    serial!("RECOVERY_INPUT_CONTEXT_REFUSED app={} status={status}; modal \
-                             authority retained",
-                            activity.owner());
-                }
+                note_recovery_input_refusal(activity.owner(), status);
             }
         }
         else
         {
-            self.input_impl(input, when);
+            self.input_impl_with_hit(input, when, hit);
         }
     }
 
-    fn input_impl(&mut self, input: Input, when: u32)
+    fn input_impl_with_hit(&mut self, input: Input, when: u32,
+                           admitted_hit: Option<super::windows::Hit>)
     {
         let (kind, a, b, c) = match input
         {
@@ -2223,7 +2520,16 @@ impl Toolbox
             self.display_changed(if self.screen == full { reduced } else { full });
             return;
         }
-        if self.crash_input(input, when)
+        let report_scope = !self.system_report_selected()
+                           || crate::context::recovery_activity().is_some_and(|activity| {
+                                                                     activity.is_system_report()
+                                                                 });
+        if report_scope
+           && match admitted_hit
+           {
+               Some(hit) => self.crash_input_with_hit(input, when, Some(hit)),
+               None => self.crash_input(input, when)
+           }
         {
             return;
         }
@@ -2285,7 +2591,7 @@ impl Toolbox
                         // starting capture or activating the desktop behind it.
                         return;
                     }
-                    let hit = self.windows.find_window(point);
+                    let hit = admitted_hit.unwrap_or_else(|| self.windows.find_window(point));
                     let active_before = self.windows.active_window();
                     let owner = hit.window
                                    .and_then(|id| self.window_owner(id))
@@ -2299,12 +2605,12 @@ impl Toolbox
                     {
                         let active = active_before == Some(id);
                         self.presentation.redraw |= hit.part != WindowPart::Drag
-                                       && (!active
-                                           || matches!(hit.part,
-                                                       WindowPart::Grow
-                                                       | WindowPart::GoAway
-                                                       | WindowPart::ZoomIn
-                                                       | WindowPart::ZoomOut));
+                                                    && (!active
+                                                        || matches!(hit.part,
+                                                                    WindowPart::Grow
+                                                                    | WindowPart::GoAway
+                                                                    | WindowPart::ZoomIn
+                                                                    | WindowPart::ZoomOut));
                         // DragWindow activates a background window only after a
                         // successful release; Command-drag preserves its plane.
                         if hit.part != WindowPart::Drag
@@ -2322,11 +2628,28 @@ impl Toolbox
                                 .start_tracking_with_modifiers(hit, point, self.events.modifiers);
                         }
                         else if hit.part == WindowPart::Content
-                                && (active
-                                    || self.windows.window(id).is_some_and(|w| w.stays_in_back()))
+                                  && (active
+                                      || self.windows.window(id).is_some_and(|w| w.stays_in_back()))
                         {
                             let local = self.windows.window(id).unwrap().global_to_local(point);
-                            let button = self.presentation.content.iter().find(|c| c.id == id).and_then(|c| c.iter_commands().filter_map(|command| match command { RenderCommand::Legacy(c)=>Some(c),_=>None }).find(|command| command.kind == DRAW_BUTTON && command.bounds.contains(local)));
+                            let button = self.presentation
+                                             .content
+                                             .iter()
+                                             .find(|c| c.id == id)
+                                             .and_then(|c| {
+                                                 c.iter_commands()
+                                                  .filter_map(|command| {
+                                                      match command
+                                                      {
+                                                          RenderCommand::Legacy(c) => Some(c),
+                                                          _ => None
+                                                      }
+                                                  })
+                                                  .find(|command| {
+                                                      command.kind == DRAW_BUTTON
+                                                      && command.bounds.contains(local)
+                                                  })
+                                             });
                             if let Some(command) = button
                             {
                                 let mut state = control(command);
@@ -2508,8 +2831,10 @@ impl Toolbox
     pub(super) fn next_positioned(&mut self, mask: u16, remove: bool, positioned: bool)
                                   -> (Event, mac_abi::events::EventPosition, bool)
     {
-        self.presentation.cursor_dirty |= self.pointer.responsiveness.foreground(self.foreground, Self::when());
-        self.presentation.cursor_dirty |= self.pointer.responsiveness.polled(self.owner, Self::when());
+        self.presentation.cursor_dirty |=
+            self.pointer.responsiveness.foreground(self.foreground, Self::when());
+        self.presentation.cursor_dirty |=
+            self.pointer.responsiveness.polled(self.owner, Self::when());
         self.poll_inputs();
         self.automatic_control_layout();
         let when = Self::when();
@@ -2599,18 +2924,24 @@ impl Toolbox
 
     pub fn present(&mut self)
     {
+        if self.system_report_temporary
+        {
+            self.system_report_present_pending = true;
+            return;
+        }
         crate::trace::record(crate::trace::PRESENT, self.owner, 0, 0, 0, 0);
         self.tick_menu_feedback();
         self.tick_cursor();
-        let available =
-            if self.presentation.redraw || !self.presentation.content_damage.is_empty() || self.presentation.ordinary_underlay.pending()
-            {
-                crate::kernel::heap_available()
-            }
-            else
-            {
-                0
-            };
+        let available = if self.presentation.redraw
+                           || !self.presentation.content_damage.is_empty()
+                           || self.presentation.ordinary_underlay.pending()
+        {
+            crate::kernel::heap_available()
+        }
+        else
+        {
+            0
+        };
         let retry_ordinary = self.presentation.ordinary_underlay.retry_due(available);
         if !self.presentation.redraw
            && !self.presentation.cursor_dirty
@@ -2629,20 +2960,24 @@ impl Toolbox
             self.enter(self.foreground);
         }
         let full = self.presentation.redraw;
-        let mut damage = core::mem::take(&mut self.presentation.content_damage);
         let mut damaged = core::mem::take(&mut self.presentation.presentation_damage);
         let mut copy_full = core::mem::take(&mut self.presentation.presentation_copy_full);
-        let ordinary_damage = damage.iter().any(|(id, _)| !self.system_scene(*id));
-        let compose = full || !damage.is_empty() || retry_ordinary;
+        let compose = full || !self.presentation.content_damage.is_empty() || retry_ordinary;
         if compose
         {
+            // Cursor/feedback-only presentation must leave the admitted damage
+            // queue and its capacity in place. Every take below has a restore.
+            let mut damage = core::mem::take(&mut self.presentation.content_damage);
+            let ordinary_damage = damage.iter().any(|(id, _)| !self.system_scene(*id));
             let started = crate::trace::clock();
             self.revision = self.revision.wrapping_add(1);
             self.presentation.compositions = self.presentation.compositions.wrapping_add(1);
             let cache_budget = super::quickdraw::content_cache::PIXEL_BUDGET
                 .saturating_sub(self.scroll_boxes.raster_storage())
                 .saturating_sub(super::quickdraw::menu_cache::BYTES);
-            self.presentation.content_cache.preserve_headroom(available, 2 * 1024 * 1024, cache_budget);
+            self.presentation
+                .content_cache
+                .preserve_headroom(available, 2 * 1024 * 1024, cache_budget);
             if full || ordinary_damage || retry_ordinary
             {
                 // Refusal retains the exact owned ordinary regions. The
@@ -2679,14 +3014,16 @@ impl Toolbox
                                                  crate::display::WIDTH,
                                                  crate::display::HEIGHT);
                     self.presentation.menu_cache.paint(&mut canvas,
-                                           (self.foreground,
-                                            self.menus.selected_menu(),
-                                            self.menus.application_selected(),
-                                            self.menus.system_selected()),
-                                           |canvas| {
-                                               self.menus.draw_bar(&mut self.system_bar,
-                                                                   &mut self.app_menu, canvas)
-                                           })?;
+                                                        (self.foreground,
+                                                         self.menus.selected_menu(),
+                                                         self.menus.application_selected(),
+                                                         self.menus.system_selected()),
+                                                        |canvas| {
+                                                            self.menus
+                                                                .draw_bar(&mut self.system_bar,
+                                                                          &mut self.app_menu,
+                                                                          canvas)
+                                                        })?;
                     self.menus.draw_popup(&mut self.system_bar, &mut self.app_menu, &mut canvas)
                 });
                 if let Err(error) = menu_paint
@@ -2721,7 +3058,11 @@ impl Toolbox
                                  0,
                                  self.revision as u64);
         }
-        if full || copy_full || self.presentation.cursor_dirty || self.presentation.feedback_dirty || !damaged.is_empty()
+        if full
+           || copy_full
+           || self.presentation.cursor_dirty
+           || self.presentation.feedback_dirty
+           || !damaged.is_empty()
         {
             self.compose_cursor(full, damaged, copy_full);
         }
@@ -2740,6 +3081,11 @@ impl Toolbox
     /// scene. It remains available when every app thread is CPU bound.
     fn present_cursor_overlay(&mut self)
     {
+        if self.system_report_temporary
+        {
+            self.system_report_cursor_pending = true;
+            return;
+        }
         // A refused scene replay may have touched only the private back buffer.
         // Never leak those uncommitted pixels through a later cursor-only copy.
         if self.presentation.frame_incomplete
@@ -2804,7 +3150,8 @@ impl Toolbox
         {
             let target = (window != 0).then_some(WindowId(window));
             feedback.highlight = Some(Highlight { bounds,
-                                                  clip: self.presentation.highlight_clip
+                                                  clip: self.presentation
+                                                            .highlight_clip
                                                             .get(&self.windows, target) });
         }
         if let Some(bounds) = self.drag.feedback()
@@ -2836,9 +3183,16 @@ impl Toolbox
     fn compose_cursor(&mut self, full: bool, mut damaged: Vec<Rect>, copy_full: bool)
     {
         let feedback = self.prepare_feedback(full);
-        let automatic =
-            if self.pointer.responsiveness.active() { None } else { self.automatic_cursor_at_mouse() };
-        let cursor_changed = self.presentation.cursor_dirty || self.pointer.automatic_cursor != automatic;
+        let automatic = if self.pointer.responsiveness.active()
+        {
+            None
+        }
+        else
+        {
+            self.automatic_cursor_at_mouse()
+        };
+        let cursor_changed =
+            self.presentation.cursor_dirty || self.pointer.automatic_cursor != automatic;
         self.pointer.automatic_cursor = automatic;
         let text_cursor = automatic.map(|id| {
                                        match id
@@ -2848,16 +3202,24 @@ impl Toolbox
                                            _ => self.pointer.text_cursor
                                        }
                                    });
-        let cursor =
-            if self.pointer.responsiveness.active() { &mut self.pointer.busy_cursor } else { &mut self.pointer.cursors };
+        let cursor = if self.pointer.responsiveness.active()
+        {
+            &mut self.pointer.busy_cursor
+        }
+        else
+        {
+            &mut self.pointer.cursors
+        };
         let text_cursor = if self.pointer.responsiveness.active() { None } else { text_cursor };
         let sprite = cursor.sprite(self.events.mouse, text_cursor);
         let bounds = sprite.map_or(Rect::ZERO, |sprite| sprite.bounds());
         let overlays =
-            super::quickdraw::presentation::Overlays { previous_cursor: self.presentation.cursor_bounds,
+            super::quickdraw::presentation::Overlays { previous_cursor: self.presentation
+                                                                            .cursor_bounds,
                                                        cursor: sprite,
                                                        cursor_changed,
-                                                       previous_feedback: Some(&self.presentation.feedback),
+                                                       previous_feedback:
+                                                           Some(&self.presentation.feedback),
                                                        feedback: Some(&feedback) };
         let back = platform::back_buffer();
         if full || copy_full
@@ -2920,7 +3282,7 @@ impl Toolbox
     }
 }
 
-fn paint(canvas: &mut Canvas, command: &DrawCommand, cdef: DefinitionEntry)
+fn paint(canvas: &mut Canvas, command: &DrawCommand, cdef: DefinitionRef)
 {
     let text = core::str::from_utf8(&command.text[..command.text_length as usize]).unwrap_or("");
     match command.kind

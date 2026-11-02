@@ -13,7 +13,7 @@ fn resources(target: ExtensionTarget) -> Vec<Resource>
                                   load_limit:  0x82001000,
                                   entry:       0x82000000 };
     let mut code = descriptor.encode().unwrap().to_vec();
-    code.extend(native::image::encode(&descriptor, [(0, 5, b"\x82\x80".as_slice())]).unwrap());
+    code.extend(native::image::encode(&descriptor, [(0, 2, 5, b"\x82\x80".as_slice())]).unwrap());
     code.extend_from_slice(b"RLC1\0\0\0\0");
     let spec = Spec { kind:         PackageKind::Extension,
                       kernel_abi:   native::ABI_VERSION,

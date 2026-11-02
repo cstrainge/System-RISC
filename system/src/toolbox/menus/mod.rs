@@ -9,7 +9,7 @@ use mac_object_table::domain::{CompletionError, DomainId, PoolError, ReleasedRes
 
 use crate::toolbox::{handles::{KindLease, OwnerRef, Store},
                      quickdraw::{Canvas, SurfaceExt},
-                     resources::manager::Manager as Resources};
+                     resources::{definitions::DefinitionRef, manager::Manager as Resources}};
 pub(crate) mod lifetime;
 
 mod apple;
@@ -109,7 +109,7 @@ pub struct Manager
 {
     objects:  Store<Menu, Bar>,
     owner:    Option<OwnerRef>,
-    entry:    DefinitionEntry,
+    entry:    DefinitionRef,
     gate:     TrapGate,
     tracking: Tracking
 }
@@ -119,7 +119,7 @@ fn pool_status(error: PoolError) -> Status
 }
 impl Manager
 {
-    pub(crate) fn new(kinds: (KindLease, KindLease), entry: DefinitionEntry, gate: TrapGate)
+    pub(crate) fn new(kinds: (KindLease, KindLease), entry: DefinitionRef, gate: TrapGate)
                       -> Result<Self, Status>
     {
         Ok(Self { objects: Store::owned_state(kinds.0, kinds.1, Bar::new).map_err(pool_status)?,
@@ -171,7 +171,7 @@ impl Manager
         Self::measure_with(self.entry, self.gate, state)
     }
 
-    fn measure_with(entry: DefinitionEntry, gate: TrapGate, state: &mut MenuDefinitionState)
+    fn measure_with(entry: DefinitionRef, gate: TrapGate, state: &mut MenuDefinitionState)
                     -> Result<(), Status>
     {
         state.bar_bounds = Rect::new(0, 0, crate::display::WIDTH as i16, 20);
@@ -737,7 +737,7 @@ fn parse_fmnu(bytes: &[u8], state: &mut MenuDefinitionState) -> Result<(), Statu
     Ok(())
 }
 
-fn invoke(entry: DefinitionEntry, gate: TrapGate, state: &mut MenuDefinitionState, message: i16,
+fn invoke(entry: DefinitionRef, gate: TrapGate, state: &mut MenuDefinitionState, message: i16,
           param: i64, surface: *mut Surface)
           -> i64
 {

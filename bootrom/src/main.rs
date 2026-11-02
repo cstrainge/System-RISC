@@ -45,22 +45,24 @@ _start:
     mv s0, a1
     csrw mie, zero
     csrw satp, zero
-    la sp, __stack_top
-    la t0, trap
+    # Bootstrap must not read the RAM GOT before initialized data is copied.
+    # lla remains PC-relative even when all Rust dependencies are built PIC.
+    lla sp, __stack_top
+    lla t0, trap
     csrw mtvec, t0
     call __system_risc_enable_isa
     .option pop
-    la t0, __data_load
-    la t1, __data_start
-    la t2, __data_end
+    lla t0, __data_load
+    lla t1, __data_start
+    lla t2, __data_end
 1:  bgeu t1, t2, 2f
     ld t3, 0(t0)
     sd t3, 0(t1)
     addi t0, t0, 8
     addi t1, t1, 8
     j 1b
-2:  la t0, __bss_start
-    la t1, __bss_end
+2:  lla t0, __bss_start
+    lla t1, __bss_end
 3:  bgeu t0, t1, 4f
     sd zero, 0(t0)
     addi t0, t0, 8
@@ -73,7 +75,7 @@ parked:
 trap:
     # Never use an interrupted S-mode virtual stack in M mode. This terminal
     # path abandons the failed execution; no suspended frame is resumed.
-    la sp, __stack_top
+    lla sp, __stack_top
     li t0,0x6600
     csrs mstatus,t0
     csrw vstart,zero
@@ -433,13 +435,14 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
     regions.try_reserve_exact(3).map_err(|_|mac_formats::Error::AllocationFailed("firmware mapping-record allocation failed"))?;
     for segment in &startup.image.segments
     {
-        serial!("LOAD: virtual={:#x} physical={:#x} bytes={} flags={}",
+        serial!("LOAD: virtual={:#x} physical={:#x} bytes={} memory_bytes={} flags={}",
                 descriptor.load_base + segment.offset,
                 memory::IMAGE_BASE + segment.offset,
                 segment.length,
+                segment.memory_length,
                 segment.flags);
     }
-    let [boot, firmware, _, _] = memory::BOOT_RESERVED;
+    let [boot, firmware, _] = memory::BOOT_RESERVED;
     for (base, end, permissions) in [(flash.base, flash.base + flash.length, READ | EXECUTE),
                                      (boot.0, boot.1, READ | WRITE),
                                      (firmware.0, firmware.1, READ | WRITE)]
@@ -460,7 +463,7 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
                                                              access:  Access::Supervisor,
                                                              global:  r.flags & FIRMWARE_ONLY == 0 } }
     };
-    // Temporary trusted flat app/definition/module mappings are a bootable
+    // Temporary trusted flat app/definition mappings are a bootable
     // self-virtualization step, not private process mappings or U-mode isolation.
     let identity = |base, end, execute| {
         translation::Region { virtual_address: VirtualAddress(base),
@@ -472,8 +475,7 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
                                                              access: Access::Supervisor,
                                                              global: false } }
     };
-    let fixed = [identity(memory::APPLICATION_PRIMARY_BASE, memory::IMAGE_LIMIT, true),
-                 identity(memory::BOOT_RESERVED[2].0, memory::BOOT_RESERVED[2].1, true)];
+    let fixed = [identity(memory::APPLICATION_PRIMARY_BASE, memory::IMAGE_LIMIT, true)];
     let io = memory::BOOT_MMIO_REGIONS.iter().map(|&(base, end)| identity(base, end, false));
     let devices = platform::PLATFORM_MMIO_DEVICES.iter().map(|&(_, _, base, bytes, _, _)| {
                                                             identity(base, base + bytes, false)

@@ -827,52 +827,56 @@ impl Browser
             return Ok(());
         }
         super::session_positions::save(location.volume, location.folder, rows)?;
-        cache::edit(slot, |folder| {
-            for (row, index) in rows.iter().zip(&indices)
-            {
-                let files::Placement::At(point) = row.placement
-                else
+        let receipt = self.begin_startup_patch(slot);
+        let result = (|| {
+            cache::edit(slot, |folder| {
+                for (row, index) in rows.iter().zip(&indices)
                 {
-                    unreachable!()
-                };
-                let item = &mut folder.items[*index as usize];
-                let x = point.h.saturating_add(16);
-                let y = point.v.saturating_add(28);
-                if item.icon_bounds.left == x && item.icon_bounds.top == y
-                {
-                    continue;
+                    let files::Placement::At(point) = row.placement
+                    else
+                    {
+                        unreachable!()
+                    };
+                    let item = &mut folder.items[*index as usize];
+                    let x = point.h.saturating_add(16);
+                    let y = point.v.saturating_add(28);
+                    if item.icon_bounds.left == x && item.icon_bounds.top == y
+                    {
+                        continue;
+                    }
+                    damage[changed] = item.bounds;
+                    changed += 1;
+                    item.icon_bounds = Rect::new(x, y, x.saturating_add(32), y.saturating_add(32));
+                    item.session_position = true;
                 }
-                damage[changed] = item.bounds;
-                changed += 1;
-                item.icon_bounds = Rect::new(x, y, x.saturating_add(32), y.saturating_add(32));
-                item.session_position = true;
-            }
+                if changed == 0
+                {
+                    return Ok(());
+                }
+                let width = folder.width;
+                folder.width = -1;
+                folder.layout(width)?;
+                for &index in &indices[..rows.len()]
+                {
+                    let item = &folder.items[index as usize];
+                    damage[changed] = item.bounds;
+                    changed += 1;
+                }
+                Ok::<_, Error>(())
+            })?;
             if changed == 0
             {
                 return Ok(());
             }
-            let width = folder.width;
-            folder.width = -1;
-            folder.layout(width)?;
-            for &index in &indices[..rows.len()]
+            for rect in &mut damage[..changed]
             {
-                let item = &folder.items[index as usize];
-                damage[changed] = item.bounds;
-                changed += 1;
+                rect.offset(-window.scroll_h, -window.scroll);
             }
-            Ok::<_, Error>(())
-        })?;
-        if changed == 0
-        {
-            return Ok(());
-        }
-        for rect in &mut damage[..changed]
-        {
-            rect.offset(-window.scroll_h, -window.scroll);
-        }
-        self.change_selection(system, slot, window.selected, &damage[..changed])?;
-        self.configure_zoom(system, slot)?;
-        self.refresh_chrome(system, slot, false, true, false)?;
-        system.log("FINDER_ICON_LAYOUT_SESSION_COMMITTED\n")
+            self.change_selection(system, slot, window.selected, &damage[..changed])?;
+            self.configure_zoom(system, slot)?;
+            self.refresh_chrome(system, slot, false, true, false)?;
+            system.log("FINDER_ICON_LAYOUT_SESSION_COMMITTED\n")
+        })();
+        self.finish_startup_patch(slot, receipt, result)
     }
 }

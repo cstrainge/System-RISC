@@ -258,7 +258,7 @@ impl Manager
 
     pub(crate) fn prepare_automatic(&self, root: Root, owner: u64, viewport: Rect,
                                     paint_pending: bool, gate: TrapGate,
-                                    resolve: impl FnMut(i16) -> Result<DefinitionEntry, Status>)
+                                    resolve: impl FnMut(i16) -> Result<DefinitionRef, Status>)
                                     -> Result<Prepared, Status>
     {
         let o = self.get(root.id, owner)?;

@@ -1,21 +1,24 @@
 //! One loaded Splitter CDEF supplies standalone and container drag geometry.
 //! A capture retains its initial geometry; only its outline moves until release.
 use super::*;
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct Capture
 {
-    initial:  ControlDefinitionState,
-    entry:    DefinitionEntry,
-    anchor:   Point,
-    point:    Point,
-    position: i16,
-    clip:     Option<Rect>,
-    boundary: Option<(u32, u32)>
+    initial:     ControlDefinitionState,
+    entry:       DefinitionRef,
+    anchor:      Point,
+    point:       Point,
+    position:    i16,
+    clip:        Option<Rect>,
+    boundary:    Option<(u32, u32)>,
+    // Standalone controls retain their own binding. Table captures share the
+    // actual divider dependency across later layout snapshot replacement.
+    _definition: Option<Arc<BoundDefinition>>
 }
 impl Capture
 {
-    fn new(mut initial: ControlDefinitionState, entry: DefinitionEntry, anchor: Point,
-           clip: Option<Rect>)
+    fn new(mut initial: ControlDefinitionState, entry: DefinitionRef, anchor: Point,
+           clip: Option<Rect>, definition: Option<Arc<BoundDefinition>>)
            -> Self
     {
         initial.value = if initial.flags & SPLITTER_HORIZONTAL != 0
@@ -32,7 +35,8 @@ impl Capture
                anchor,
                point: anchor,
                clip,
-               boundary: None }
+               boundary: None,
+               _definition: definition }
     }
 
     fn move_to(&mut self, point: Point, gate: TrapGate) -> Result<(), Status>
@@ -57,7 +61,7 @@ impl Capture
         Ok(())
     }
 
-    fn outline(self) -> Result<Option<Rect>, Status>
+    fn outline(&self) -> Result<Option<Rect>, Status>
     {
         let mut b = self.initial.bounds;
         if self.initial.flags & SPLITTER_PARENT != 0
@@ -121,7 +125,7 @@ impl State
                                          standard: segment.state(d.viewport, enabled),
                                          point,
                                          ..Default::default() };
-            super::super::prepare(&mut call, d.entry, gate)?;
+            super::super::prepare(&mut call, d.definition.reference(), gate)?;
             if call.result == i32::from(SPLITTER_PART)
             {
                 return Ok(Some(*segment));
@@ -163,7 +167,7 @@ impl Manager
 
     pub(crate) fn prepare_splitter(&self, call: &mut ControlCall, owner: u64, paint_pending: bool,
                                    gate: TrapGate,
-                                   mut resolve: impl FnMut(i16) -> Result<DefinitionEntry, Status>)
+                                   mut resolve: impl FnMut(i16) -> Result<DefinitionRef, Status>)
                                    -> Result<Prepared, Status>
     {
         let root = self.get(call.id, owner)?;
@@ -218,9 +222,10 @@ impl Manager
                                         .and_then(|g| g.dividers.as_ref())
                                         .ok_or(CORRUPT_DATA)?;
                             let mut capture = Capture::new(segment.state(d.viewport, true),
-                                                           d.entry,
+                                                           d.definition.reference(),
                                                            call.point,
-                                                           tree::clip(clip, Some(d.viewport)));
+                                                           tree::clip(clip, Some(d.viewport)),
+                                                           Some(d.definition.clone()));
                             capture.boundary = Some((segment.axis, segment.index));
                             Some(capture)
                         }
@@ -240,7 +245,7 @@ impl Manager
                         let entry = resolve(CDEF_SPLITTER)?;
                         if next.hit(call.point, entry, gate)? == SPLITTER_PART
                         {
-                            Some(Capture::new(spec, entry, call.point, clip))
+                            Some(Capture::new(spec, entry, call.point, clip, None))
                         }
                         else
                         {
@@ -251,16 +256,16 @@ impl Manager
                     {
                         position = Some(capture.position);
                         feedback = Some(capture.outline()?);
-                        next.splitter = Some(capture);
                         next.tracking = Some(Tracking::new(SPLITTER_PART, call.point,
                                                            capture.position, call.ticks));
+                        next.splitter = Some(capture);
                         handled = true;
                     }
                 }
             }
             POLL_TRACKING =>
             {
-                if let Some(mut capture) = next.splitter
+                if let Some(mut capture) = next.splitter.take()
                 {
                     let old = capture.outline()?;
                     capture.move_to(call.point, gate)?;
@@ -335,7 +340,7 @@ impl Manager
         let mut front = None;
         for (id, o) in self.objects.iter().filter(|(_, o)| o.window == window)
         {
-            if let Some(capture) = o.state.splitter
+            if let Some(capture) = o.state.splitter.as_ref()
             {
                 return Some(usize::from(capture.initial.flags & SPLITTER_HORIZONTAL != 0));
             }

@@ -6,7 +6,7 @@ use std::{env, fs,
 use mac_formats::{elf,
                   macbinary::{self, MacFile},
                   native::{Descriptor, Role, image},
-                  resource, text};
+                  requirements, resource, text};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -66,13 +66,20 @@ pub fn inspect(bytes: &[u8]) -> Result<Value>
         (Descriptor::decode(&find(*b"NABI")?.data)?, &find(*b"RV64")?.data)
     };
     let image = image::decode(code, &descriptor)?;
+    if descriptor.role != Role::Application
+       && resources.iter().any(|row| row.kind == requirements::RESOURCE_KIND)
+    {
+        return Err(error("NREQ requires a native application image"));
+    }
+    let required_services = requirements::Requirements::from_resources(&resources)?;
     Ok(json!({
         "name": text::decode(&file.name), "file_type": text::decode(&file.file_type), "creator": text::decode(&file.creator),
         "created": file.created, "modified": file.modified,
         "role": match descriptor.role { Role::System => "system", Role::Application => "application", Role::CodeResource => "code_resource" },
         "abi_version": descriptor.abi_version, "load_base": descriptor.load_base, "load_limit": descriptor.load_limit,
         "format_version": mac_formats::native::FORMAT_VERSION, "entry": descriptor.entry, "code_sha256": sha256(code), "resource_fork_sha256": sha256(&file.resources), "macbinary_sha256": sha256(bytes),
-        "segments": image.segments.iter().map(|s| json!({"address": descriptor.load_base + s.offset, "offset": s.offset, "length": s.length, "flags": s.flags})).collect::<Vec<_>>(),
+        "required_services": required_services.iter().map(|item| json!({"class": text::decode(&item.class.0), "version": item.version})).collect::<Vec<_>>(),
+        "segments": image.segments.iter().map(|s| json!({"address": descriptor.load_base + s.offset, "offset": s.offset, "length": s.length, "memory_length": s.memory_length, "flags": s.flags})).collect::<Vec<_>>(),
         "resources": resources.iter().map(|r| json!({"type": text::decode(&r.kind), "id": r.id, "name": r.name.as_deref().map(text::decode), "attributes": r.attributes, "size": r.data.len(), "sha256": sha256(&r.data)})).collect::<Vec<_>>()
         ,"extension_parts": if file.file_type == *b"INIT" { modules.iter().map(|module| json!({
             "target": mac_module::ExtensionTarget::from_resource_id(module.contract.code_id).map(mac_module::ExtensionTarget::conventional_name),
@@ -84,7 +91,29 @@ pub fn inspect(bytes: &[u8]) -> Result<Value>
 
 pub fn build(manifest_path: &Path, elf_path: &Path, out: &Path) -> Result<Value>
 {
-    let manifest = Manifest::read(manifest_path)?;
+    build_requiring(manifest_path, elf_path, out, &[])
+}
+
+/// Package an image with the non-optional provider requirements of its selected
+/// runtime. Explicit manifest requirements remain subject to the same decoder;
+/// an incompatible version is a build failure, never an override or fallback.
+pub fn build_requiring(manifest_path: &Path, elf_path: &Path, out: &Path,
+                       runtime: &[requirements::Requirement])
+                       -> Result<Value>
+{
+    let artifacts =
+        elf_path.parent().ok_or_else(|| error("native ELF has no artifact directory"))?;
+    build_requiring_with_artifacts(manifest_path, elf_path, out, runtime, artifacts)
+}
+
+/// Package an application whose independently loaded definitions were built
+/// for the low-level target in a separate final artifact directory.
+pub fn build_requiring_with_artifacts(manifest_path: &Path, elf_path: &Path, out: &Path,
+                                      runtime: &[requirements::Requirement], artifacts: &Path)
+                                      -> Result<Value>
+{
+    let mut manifest = Manifest::read(manifest_path)?;
+    manifest.require_runtime(runtime)?;
     if manifest.archive
     {
         return Err(error("use rebuild for a lossless archive"));
@@ -96,18 +125,15 @@ pub fn build(manifest_path: &Path, elf_path: &Path, out: &Path) -> Result<Value>
     strip_runtime(elf_path, &runtime)?;
     let elf_bytes = fs::read(&runtime)?;
     elf::decode(&elf_bytes, descriptor.load_base, descriptor.load_limit)?;
-    let mut compiled =
-        manifest.compile_resources(manifest_path,
-                                   &elf_bytes,
-                                   Some(elf_path.parent()
-                                                .ok_or_else(|| {
-                                                    error("native ELF has no artifact directory")
-                                                })?))?;
+    let mut compiled = manifest.compile_resources(manifest_path, &elf_bytes, Some(artifacts))?;
     if matches!(descriptor.role, Role::Application | Role::CodeResource)
     {
         let image = elf::decode(&debug_elf, descriptor.load_base, descriptor.load_limit)?;
-        let data = elf::relocation::extract(&debug_elf, &image, descriptor.load_base)?
-            .ok_or_else(|| error("native modules require relocation-capable linking"))?;
+        let data = elf::relocation::extract(&debug_elf, &image, descriptor.load_base,
+                                            descriptor.role)?.ok_or_else(|| {
+                                                                 error("native modules require \
+                                                                        relocation-capable linking")
+                                                             })?;
         {
             compiled.push(resource::Resource { kind: *b"RLOC",
                                                id: 0,

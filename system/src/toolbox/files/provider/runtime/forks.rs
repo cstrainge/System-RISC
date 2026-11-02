@@ -36,12 +36,12 @@ fn quarantine(handle: u32)
 }
 fn cleanup(mut flight: Flight, handle: u32, error: Status) -> Progress
 {
-    let job = files(|manager| manager.cleanup_provider_file(handle)).and_then(|volume| {
+    let job = files(|manager| manager.cleanup_provider_file(handle)).and_then(|(volume, token)| {
                   submit_args(flight.job.subject(),
                               flight.provider,
                               Operation::Close,
                               Arguments { volume,
-                                          token: u64::from(handle),
+                                          token: u64::from(token),
                                           ..Default::default() })
               });
     match job
@@ -174,13 +174,13 @@ fn prepare(owner: crate::toolbox::files::subject::Access<'_>, call: &FileCall, c
         }
         CLOSE =>
         {
-            let (provider, volume) =
+            let (provider, volume, token) =
                 files(|manager| manager.begin_provider_file_close(owner, call.handle))?;
             Ok((provider,
                 Action::Close { handle: call.handle },
                 Operation::Close,
                 Arguments { volume,
-                            token: u64::from(call.handle),
+                            token: u64::from(token),
                             ..Default::default() }))
         }
         _ => Err(BAD_ARGUMENT)
@@ -293,7 +293,7 @@ pub(super) fn pump_cleanup()
     }
     drop(flights);
     let next = files(|manager| manager.next_orphaned_file());
-    let (handle, provider, volume, owner) = match next
+    let (handle, provider, volume, token, owner) = match next
     {
         Ok(Some(next)) => next,
         Ok(None) => return,
@@ -310,7 +310,7 @@ pub(super) fn pump_cleanup()
                         provider,
                         Operation::Close,
                         Arguments { volume,
-                                    token: u64::from(handle),
+                                    token: u64::from(token),
                                     ..Default::default() })
     {
         Ok(job) =>

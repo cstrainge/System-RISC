@@ -6,7 +6,7 @@ mod resource;
 pub(crate) use resource::ModuleReadError;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod application;
-use alloc::{string::String, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
 
 use mac_abi::geometry::{Point, Rect};
 use mac_object_table::shared::InvocationGate as _;
@@ -14,6 +14,8 @@ use mac_object_table::shared::InvocationGate as _;
 use crate::toolbox::handles::InvocationGate;
 
 mod objects;
+#[cfg(target_arch = "riscv64")]
+pub(crate) mod local;
 mod subject;
 pub(crate) mod pins;
 pub(crate) mod forks;
@@ -319,6 +321,8 @@ struct BlockMounted
 #[allow(clippy::large_enum_variant)]
 enum Mounted
 {
+    #[cfg(target_arch = "riscv64")]
+    Operating(Arc<local::Operation>),
     Block(BlockMounted),
     #[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
     Provider(provider::Mounted)
@@ -330,6 +334,8 @@ impl Mounted
         match self
         {
             Self::Block(mounted) => Some(mounted.info),
+            #[cfg(target_arch = "riscv64")]
+            Self::Operating(operation) => Some(operation.info()),
             Self::Provider(mounted) => mounted.info
         }
     }
@@ -339,16 +345,98 @@ struct OpenFile
     owner:          u64,
     id:             u32,
     volume:         u32,
-    fork:           spinning_top::Spinlock<FileFork>,
-    position:       core::sync::atomic::AtomicU64,
+    description:    Arc<OpenDescription>,
+    retired:        core::sync::atomic::AtomicBool,
+    last_close:     core::sync::atomic::AtomicBool,
+    operations:     core::sync::atomic::AtomicU32,
     authority:      subject::Authority,
     #[cfg(target_arch = "riscv64")]
     io_subject:     Option<crate::drivers::jobs::subjects::Subject>,
     #[cfg_attr(not(any(target_arch = "riscv64", feature = "test-support")), allow(dead_code))]
-    resource_index: Option<mac_formats::resource::index::Index>
+    resource_index: spinning_top::Spinlock<Option<mac_formats::resource::index::Index>>
+}
+struct OpenDescription
+{
+    fork:           spinning_top::Spinlock<FileFork>,
+    position:       core::sync::atomic::AtomicU64,
+    handles:        core::sync::atomic::AtomicU32,
+    provider_token: core::sync::atomic::AtomicU32,
+    flags:          u32,
+    kind:           u32
+}
+impl OpenDescription
+{
+    fn new(fork: FileFork, kind: u32, flags: u32) -> Result<Arc<Self>, Status>
+    {
+        Arc::try_new(Self { fork: spinning_top::Spinlock::new(fork),
+                            position: core::sync::atomic::AtomicU64::new(0),
+                            handles: core::sync::atomic::AtomicU32::new(1),
+                            provider_token: core::sync::atomic::AtomicU32::new(0),
+                            flags,
+                            kind }).map_err(|_| NO_MEMORY)
+    }
+}
+impl Drop for OpenFile
+{
+    fn drop(&mut self)
+    {
+        self.relinquish();
+    }
 }
 impl OpenFile
 {
+    // Publication owns one handle count. Temporary operation/Arc pins do not.
+    // Invalidation and payload disposal may both pass here; decrement once.
+    fn relinquish(&self)
+    {
+        use core::sync::atomic::Ordering;
+        if !self.retired.swap(true, Ordering::AcqRel)
+        {
+            self.last_close.store(self.description.handles.fetch_sub(1, Ordering::AcqRel) == 1,
+                                  Ordering::Release);
+        }
+    }
+
+    fn final_handle(&self) -> bool
+    {
+        use core::sync::atomic::Ordering;
+        if self.retired.load(Ordering::Acquire)
+        {
+            self.last_close.load(Ordering::Acquire)
+        }
+        else
+        {
+            self.description.handles.load(Ordering::Acquire) == 1
+        }
+    }
+
+    fn duplicate(&self) -> Result<Self, Status>
+    {
+        use core::sync::atomic::Ordering;
+        if self.retired.load(Ordering::Acquire)
+        {
+            return Err(NOT_FOUND);
+        }
+        self.description.fork.lock().length()?;
+        self.description
+            .handles
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+            .map_err(|_| NO_MEMORY)?;
+        Ok(Self { owner:                                      self.owner,
+                  id:                                         self.id,
+                  volume:                                     self.volume,
+                  description:                                self.description.clone(),
+                  authority:                                  self.authority.clone(),
+                  resource_index:                             spinning_top::Spinlock::new(None),
+                  #[cfg(target_arch = "riscv64")]
+                  io_subject:                                 self.io_subject.clone(),
+                  retired:
+                      core::sync::atomic::AtomicBool::new(false),
+                  last_close:
+                      core::sync::atomic::AtomicBool::new(false),
+                  operations:                                 core::sync::atomic::AtomicU32::new(0) })
+    }
+
     fn owner_stopping(&self) -> bool
     {
         !self.authority.accepting()
@@ -356,6 +444,9 @@ impl OpenFile
 }
 enum FileFork
 {
+    /// Private, preallocated description held by an uncompleted OPEN. No FFRK
+    /// payload is published until actual catalog/fork state replaces this.
+    Opening,
     Block(Fork),
     Provider(provider::Open)
 }
@@ -365,6 +456,7 @@ impl FileFork
     {
         match self
         {
+            Self::Opening => Err(SERVICE_BUSY),
             Self::Block(fork) => Ok(fork.length),
             Self::Provider(fork) => fork.ready_length()
         }
@@ -377,6 +469,12 @@ impl FileFork
 }
 pub struct Manager
 {
+    #[cfg(target_arch = "riscv64")]
+    local_operation:      Option<Arc<local::Operation>>,
+    #[cfg(target_arch = "riscv64")]
+    operations:           objects::Objects<local::pending::Entry>,
+    #[cfg(target_arch = "riscv64")]
+    operation_cursor:     usize,
     #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
     file_icons:           icon_cache::Cache,
     pins:                 pins::Pins,
@@ -394,7 +492,14 @@ impl Default for Manager
 {
     fn default() -> Self
     {
-        Self { pins:
+        Self { #[cfg(target_arch = "riscv64")]
+               local_operation:                                                           None,
+               #[cfg(target_arch = "riscv64")]
+               operations:
+                   objects::Objects::new(),
+               #[cfg(target_arch = "riscv64")]
+               operation_cursor:                                                          0,
+               pins:
                    pins::Pins::new(),
                volumes:
                    Table::new(Kind::Volumes),
@@ -481,6 +586,8 @@ impl Manager
     /// provider commits already acknowledge their own durability barriers.
     pub(crate) fn prepare_power(&mut self) -> Result<(), Status>
     {
+        #[cfg(target_arch = "riscv64")]
+        self.local_ready()?;
         if self.handles.cleanup_pending()
            || self.writes.iter().next().is_some()
            || self.streams.iter().next().is_some()
@@ -489,7 +596,9 @@ impl Manager
             return Err(SERVICE_BUSY);
         }
         #[cfg(target_arch = "riscv64")]
-        if self.transfers.iter().next().is_some() || !provider::runtime::power_ready()
+        if self.transfers.iter().next().is_some()
+           || self.operations.iter().next().is_some()
+           || !provider::runtime::power_ready()
         {
             return Err(SERVICE_BUSY);
         }
@@ -508,7 +617,9 @@ impl Manager
                         mounted.device.flush().map_err(|_| IO_ERROR)?;
                     }
                 }
-                Mounted::Provider(mounted) => mounted.power_status()?
+                Mounted::Provider(mounted) => mounted.power_status()?,
+                #[cfg(target_arch = "riscv64")]
+                Mounted::Operating(_) => return Err(SERVICE_BUSY)
             }
         }
         Ok(())
@@ -583,6 +694,17 @@ impl Manager
     fn validate_transfer_mutation<'a>(&self, owner: impl Into<subject::Access<'a>>, volume: u32)
                                       -> Result<(), Status>
     {
+        #[cfg(target_arch = "riscv64")]
+        if self.operations.iter().any(|(_, entry)| entry.blocks_mutation(self, volume))
+        {
+            return Err(SERVICE_BUSY);
+        }
+        self.validate_transfer_conflicts(owner, volume)
+    }
+
+    fn validate_transfer_conflicts<'a>(&self, owner: impl Into<subject::Access<'a>>, volume: u32)
+                                       -> Result<(), Status>
+    {
         let owner = owner.into();
         #[cfg(target_arch = "riscv64")]
         if self.transfers
@@ -602,6 +724,11 @@ impl Manager
         let owner = authority.owner().incarnation();
         self.read_provider(volume)?;
         self.validate_transfer_read(owner, volume, id)?;
+        #[cfg(target_arch = "riscv64")]
+        if self.operations.iter().any(|(_, entry)| entry.protects(self, volume, id))
+        {
+            return Err(SERVICE_BUSY);
+        }
         if self.writes.iter().any(|(_, write)| write.volume == volume && write.expected_cnid == id)
            || self.streams
                   .iter()
@@ -631,6 +758,11 @@ impl Manager
 
     fn file_pinned(&self, volume: u32, id: u32) -> bool
     {
+        #[cfg(target_arch = "riscv64")]
+        if self.operations.iter().any(|(_, entry)| entry.protects(self, volume, id))
+        {
+            return true;
+        }
         self.pins.objects().any(|pin| pin.volume == volume && pin.id == id)
     }
 
@@ -657,6 +789,11 @@ impl Manager
     {
         let owner = authority.owner().incarnation();
         self.validate_transfer_read(owner, volume, id)?;
+        #[cfg(target_arch = "riscv64")]
+        if self.operations.iter().any(|(_, entry)| entry.protects(self, volume, id))
+        {
+            return Err(SERVICE_BUSY);
+        }
         if self.writes.iter().any(|(_, write)| write.volume == volume && write.expected_cnid == id)
            || self.streams
                   .iter()
@@ -792,8 +929,12 @@ impl Manager
 
     fn mounted(&mut self, id: u32) -> Result<&mut BlockMounted, Status>
     {
+        #[cfg(target_arch = "riscv64")]
+        self.local_ready()?;
         match self.volumes.get_mut(id).ok_or(NOT_FOUND)?
         {
+            #[cfg(target_arch = "riscv64")]
+            Mounted::Operating(_) => Err(SERVICE_BUSY),
             Mounted::Block(mounted) => Ok(mounted),
             Mounted::Provider(_) => Err(NOT_SUPPORTED)
         }
@@ -980,6 +1121,42 @@ impl Manager
         Ok(())
     }
 
+    fn live_file_length(&mut self, access: subject::Access<'_>, handle: u32)
+                        -> Result<u64, Status>
+    {
+        let file = self.slot_access(access, handle)?;
+        let volume = file.volume;
+        let id = file.id;
+        let description = file.description.clone();
+        if matches!(&*description.fork.lock(), FileFork::Provider(_))
+        {
+            return description.fork.lock().length();
+        }
+        let mut entry = self.entry(volume, id)?;
+        let fork = match description.kind
+                   {
+                       DATA_FORK => entry.data.take(),
+                       RESOURCE_FORK => entry.resources.take(),
+                       _ => return Err(BAD_ABI)
+                   }.ok_or(NOT_SUPPORTED)?;
+        let length = fork.length;
+        *description.fork.lock() = FileFork::Block(fork);
+        Ok(length)
+    }
+
+    fn duplicate_for(&mut self, owner: u64, authority: &crate::toolbox::handles::OwnerRef, id: u32)
+                     -> Result<(u32, u64, u64), Status>
+    {
+        self.validate_file_authority(owner, authority)?;
+        let length = self.live_file_length(subject::Access::Client(owner), id)?;
+        let file = self.slot_access(subject::Access::Client(owner), id)?;
+        let position = file.description.position.load(core::sync::atomic::Ordering::Acquire);
+        let copy = file.duplicate()?;
+        let handle =
+            self.handles.insert_authorized(&subject::Authority::Client(authority.clone()), copy)?;
+        Ok((handle, position, length))
+    }
+
     fn open_for(&mut self, owner: u64, authority: &crate::toolbox::handles::OwnerRef, volume: u32,
                 id: u32, kind: u32)
                 -> Result<(u32, u64), Status>
@@ -1015,15 +1192,27 @@ impl Manager
                        _ => return Err(BAD_ARGUMENT)
                    }.ok_or(NOT_SUPPORTED)?;
         let length = fork.length;
-        let handle = self.handles.insert_authorized(authority,
-                                          OpenFile { #[cfg(target_arch = "riscv64")] io_subject: None, owner:access.label(),
-                                                     id,
-                                                     volume,
-                                                     fork: spinning_top::Spinlock::new(FileFork::Block(fork)),
-                                                     position:
-                                                         core::sync::atomic::AtomicU64::new(0),
-                                                     authority: authority.clone(),
-                                                     resource_index: None })?;
+        let handle =
+            self.handles
+                .insert_authorized(authority,
+                                   OpenFile { #[cfg(target_arch = "riscv64")]
+                                              io_subject: None,
+                                              owner: access.label(),
+                                              id,
+                                              volume,
+                                              description:
+                                                  OpenDescription::new(FileFork::Block(fork),
+                                                                       kind,
+                                                                       OPEN_READ)?,
+                                              retired:
+                                                  core::sync::atomic::AtomicBool::new(false),
+                                              last_close:
+                                                  core::sync::atomic::AtomicBool::new(false),
+                                              operations:
+                                                  core::sync::atomic::AtomicU32::new(0),
+                                              authority: authority.clone(),
+                                              resource_index:
+                                                  spinning_top::Spinlock::new(None) })?;
         Ok((handle, length))
     }
 
@@ -1514,58 +1703,67 @@ impl Manager
             }
             READ =>
             {
-                // Clone only the bounded extent descriptor; handles keep independent marks.
+                // Clone the bounded extent descriptor; duplicate handles share the cursor.
                 let (volume, position, mut fork) = {
                     let file = self.slot_access(owner, call.handle)?;
-                    let FileFork::Block(fork) = &*file.fork.lock()
+                    if file.description.flags & OPEN_READ == 0
+                    {
+                        return Err(ACCESS_DENIED);
+                    }
+                    let FileFork::Block(fork) = &*file.description.fork.lock()
                     else
                     {
                         return Err(NOT_SUPPORTED);
                     };
 
                     (file.volume,
-                     file.position.load(core::sync::atomic::Ordering::Relaxed),
+                     file.description.position.load(core::sync::atomic::Ordering::Relaxed),
                      fork.clone())
                 };
                 let length = self.with_volume(volume, |v| io(v.read(&mut fork, position, output)))?;
                 let file = self.slot_access(owner, call.handle)?;
                 let fork_length = fork.length;
-                *file.fork.lock() = FileFork::Block(fork);
-                file.position.fetch_add(length as u64, core::sync::atomic::Ordering::Relaxed);
+                *file.description.fork.lock() = FileFork::Block(fork);
+                file.description
+                    .position
+                    .fetch_add(length as u64, core::sync::atomic::Ordering::Relaxed);
                 call.transferred = length;
-                call.position = file.position.load(core::sync::atomic::Ordering::Relaxed);
+                call.position =
+                    file.description.position.load(core::sync::atomic::Ordering::Relaxed);
                 call.length = fork_length;
             }
             SEEK =>
             {
+                let length = self.live_file_length(owner, call.handle)?;
                 let file = self.slot_access(owner, call.handle)?;
-                let length = file.fork.lock().length()?;
                 let base = match call.whence
                 {
                     SEEK_START => 0,
-                    SEEK_CURRENT => file.position.load(core::sync::atomic::Ordering::Relaxed),
+                    SEEK_CURRENT =>
+                    {
+                        file.description.position.load(core::sync::atomic::Ordering::Relaxed)
+                    }
                     SEEK_END => length,
                     _ => return Err(BAD_ARGUMENT)
                 };
                 let position = base.checked_add_signed(call.offset).ok_or(BAD_ARGUMENT)?;
-                if position > length
-                {
-                    return Err(BAD_ARGUMENT);
-                }
-                file.position.store(position, core::sync::atomic::Ordering::Relaxed);
+                file.description.position.store(position, core::sync::atomic::Ordering::Relaxed);
                 call.position = position;
                 call.length = length;
             }
             TELL =>
             {
+                let length = self.live_file_length(owner, call.handle)?;
                 let file = self.slot_access(owner, call.handle)?;
-                call.position = file.position.load(core::sync::atomic::Ordering::Relaxed);
-                call.length = file.fork.lock().length()?;
+                call.position =
+                    file.description.position.load(core::sync::atomic::Ordering::Relaxed);
+                call.length = length;
             }
             CLOSE =>
             {
-                if matches!(&*self.slot_access(owner, call.handle)?.fork.lock(),
+                if matches!(&*self.slot_access(owner, call.handle)?.description.fork.lock(),
                             FileFork::Provider(_))
+                   && self.slot_access(owner, call.handle)?.final_handle()
                 {
                     return Err(NOT_SUPPORTED);
                 }

@@ -30,9 +30,9 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
                     .map_err(service)?;
     require(own.incarnation == system.processes().current()?.id.0,
             "account row has genuine current identity")?;
-    let mac_toolbox::inspection::MemoryAccounting::ExecutionAndResidentHeap { kernel,
-                                                                              application,
-                                                                              closing } =
+    let mac_toolbox::inspection::MemoryAccounting::ExecutionAndOwnedMemory { kernel,
+                                                                             application,
+                                                                             closing } =
         own.accounting
     else
     {
@@ -74,11 +74,11 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
                     .map_err(service)?
                     .at(0)
                     .map_err(service)?;
-    let mac_toolbox::inspection::MemoryAccounting::ExecutionAndResidentHeap { kernel:
-                                                                                  allocated,
-                                                                              application:
-                                                                                  same_stack,
-                                                                              .. } = row.accounting
+    let mac_toolbox::inspection::MemoryAccounting::ExecutionAndOwnedMemory { kernel:
+                                                                                 allocated,
+                                                                             application:
+                                                                                 same_stack,
+                                                                             .. } = row.accounting
     else
     {
         return Err(Failure::Mismatch("resident account disappeared"));

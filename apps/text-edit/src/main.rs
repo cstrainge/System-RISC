@@ -1,6 +1,4 @@
 //! Text Edit: resource-based native document editing through the public Toolbox.
-#![no_std]
-#![no_main]
 
 
 use core::fmt::Write;
@@ -14,7 +12,7 @@ mod font_choices;
 mod encoding;
 mod documents;
 mod batch;
-include_resource_ids!();
+mac_toolbox::include_resource_ids!();
 mod menus;
 mod ui;
 use ui::{Text, text};
@@ -29,9 +27,14 @@ fn diagnostic(system: &System<'_>, stage: &str, error: Error) -> Error
     error
 }
 
-fn run(system: &System<'_>) -> Result<(), Error>
+fn main() -> Result<(), Error>
 {
-    let _menus = menus::install(system).map_err(|error| diagnostic(system, "menus", error))?;
+    let system = &System::new()?;
+    if system.capabilities() & CAP_GRAPHICS == 0
+    {
+        return Err(Error::NotSupported);
+    }
+    menus::install(system).map_err(|error| diagnostic(system, "menus", error))?;
     let mut application = documents::Application::new(system).map_err(|error| {
                                                                  diagnostic(system, "documents",
                                                                             error)
@@ -48,31 +51,3 @@ fn run(system: &System<'_>) -> Result<(), Error>
         }
     }
 }
-
-/// # Safety
-/// The native loader supplies initialized segments and a live service table.
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
-{
-    if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
-    {
-        return status;
-    }
-    let system = match unsafe { System::from_raw(services) }
-    {
-        Ok(system) => system,
-        Err(status) => return status.status()
-    };
-    if system.capabilities() & CAP_GRAPHICS == 0
-    {
-        return mac_toolbox::abi::NOT_SUPPORTED;
-    }
-    match run(&system)
-    {
-        Ok(()) => mac_toolbox::abi::OK,
-        Err(status) => diagnostic(&system, "run", status).status()
-    }
-}
-
-mac_toolbox::panic_handler!();

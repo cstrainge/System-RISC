@@ -20,6 +20,7 @@
           {
             "text": "Close Window",
             "command": "clos",
+            "command_symbol": "CLOSE",
             "enabled": true,
             "key": "W"
           },
@@ -27,6 +28,7 @@
           {
             "text": "Quit",
             "command": "quit",
+            "command_symbol": "QUIT",
             "enabled": true,
             "key": "Q"
           }

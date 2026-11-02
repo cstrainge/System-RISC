@@ -1,0 +1,10 @@
+{
+  "rustup_toolchain": "nightly-2026-10-05",
+  "rustc_commit": "28221559263a3976766cf305940e80e30cf9ba8a",
+  "target": "riscv64-unknown-systemrisc",
+  "patches": [
+    "patches/0001-systemrisc-backends.patch"
+  ],
+  "cargo_commit": "f3865b2a4d1acc5276f6b3c67d0e057f4dab3928",
+  "rust_src_sha256": "e6729ec5ff833317d760f981aad65f1d423deee099e607427e450a056d41938d"
+}

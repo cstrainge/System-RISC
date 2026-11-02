@@ -685,6 +685,10 @@ impl Browser
     /// creation-ordered stack even before the flag is consulted.
     pub(super) fn create_desktop_window(&mut self, system: &System<'_>) -> Result<(), Error>
     {
+        if self.desktop.window != WindowId(0)
+        {
+            return Ok(());
+        }
         let bounds = desktop_bounds(system)?;
         self.desktop.window =
             system.windows()

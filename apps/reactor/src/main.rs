@@ -1,7 +1,6 @@
 //! First inspection customer. Plain managed lists precede the shared view
 //! protocol; incomplete model coverage is visible rather than fabricated.
-#![no_std]
-#![no_main]
+extern crate alloc;
 use core::{cell::Cell,
            fmt::{self, Write}};
 
@@ -11,11 +10,10 @@ use mac_toolbox::{controls::{ScrollBox, ScrollBoxSpec, StaticText, TextAlignment
                   quickdraw::{fonts::FontSelection, theme},
                   *};
 mod memory;
-mac_toolbox::panic_handler!();
-const DOMAINS: u32 = u32::from_be_bytes(*b"domr");
-const MEMORY: u32 = u32::from_be_bytes(*b"memr");
-const QUIT: u32 = u32::from_be_bytes(*b"quit");
-const REFRESH: u32 = u32::from_be_bytes(*b"rfrs");
+mod cache;
+mac_toolbox::include_resource_ids!();
+
+use crate::resources::commands::{DOMAINS, MEMORY, QUIT, REFRESH};
 const POOL_DETAIL_ROWS: u32 = 6;
 // 24 bytes fit Monaco 9 in the minimum-width details pane. A UTF-8 cut
 // can leave at most three bytes unused, so this bounds every diagnostic.
@@ -153,8 +151,9 @@ struct Panes<'a>
     selected:       Option<Domain>,
     ledger:         Option<LedgerSnapshot<'a>>,
     selected_index: Option<u32>,
-    pool_cache:     Cell<Option<(u64, Pool, Option<ObjectKind>)>>,
-    fault_cache:    Cell<Option<(u64, inspection::CompletionFault)>>
+    membership:     inspection::MembershipRevision,
+    pool_cache:     cache::Rows<(Pool, Option<ObjectKind>)>,
+    fault_cache:    cache::Rows<inspection::CompletionFault>
 }
 fn spec(bounds: Rect, count: u32, palette: theme::Palette) -> ScrollBoxSpec
 {
@@ -244,8 +243,9 @@ impl<'a> Panes<'a>
                             selected: None,
                             ledger: None,
                             selected_index: None,
-                            pool_cache: Cell::new(None),
-                            fault_cache: Cell::new(None) };
+                            membership: snapshot.revision,
+                            pool_cache: cache::Rows::new(),
+                            fault_cache: cache::Rows::new() };
         result.populate(snapshot, result.domains.control().info()?)?;
         result.detail_rows(system)?;
         Ok(result)
@@ -312,7 +312,6 @@ impl<'a> Panes<'a>
         }
         // Read a missing pool/provider once and retain it across partial scrolls.
         // Managed row caches service repaints without re-enumerating anything.
-        let mut cached = self.pool_cache.get();
         for index in view.missing
         {
             let mut line = Line::new();
@@ -354,19 +353,11 @@ impl<'a> Panes<'a>
                         let offset =
                             u64::from(index - 11) - row.kinds * u64::from(POOL_DETAIL_ROWS);
                         let fault_index = offset / u64::from(FAULT_DETAIL_ROWS);
-                        let fault = match self.fault_cache.get()
-                        {
-                            Some((at, fault)) if at == fault_index => fault,
-                            _ =>
-                            {
-                                let fault = self.ledger
-                                                .ok_or(Error::BadAbi)?
-                                                .completion_fault_at(fault_index)
-                                                .map_err(|e| inspection_error(system, e))?;
-                                self.fault_cache.set(Some((fault_index, fault)));
-                                fault
-                            }
-                        };
+                        let fault = self.fault_cache.get_or_read(cache::Key::new(self.membership, row), fault_index, || {
+                            self.ledger.ok_or(Error::BadAbi)?
+                                .completion_fault_at(fault_index)
+                                .map_err(|e| inspection_error(system, e))
+                        })?;
                         match offset % u64::from(FAULT_DETAIL_ROWS)
                         {
                             0 =>
@@ -402,41 +393,21 @@ impl<'a> Panes<'a>
                     _ =>
                     {
                         let kind_index = u64::from((index - 11) / POOL_DETAIL_ROWS);
-                        let (pool, registration) = match cached
-                        {
-                            Some((at, pool, registration)) if at == kind_index =>
+                        let (pool, registration) = self.pool_cache.get_or_read(cache::Key::new(self.membership, row), kind_index, || {
+                            let pool = self.ledger.ok_or(Error::BadAbi)?
+                                .at(kind_index).map_err(|e| inspection_error(system, e))?;
+                            let registration = match pool.registration
                             {
-                                (pool, registration)
-                            }
-                            _ =>
-                            {
-                                let pool = self.ledger
-                                               .ok_or(Error::BadAbi)?
-                                               .at(kind_index)
-                                               .map_err(|e| inspection_error(system, e))?;
-                                let registration = match pool.registration
+                                Some(id) => match system.inspection().object_kinds().and_then(|snapshot| snapshot.get(id))
                                 {
-                                    Some(id) =>
-                                    {
-                                        match system.inspection()
-                                                    .object_kinds()
-                                                    .and_then(|snapshot| snapshot.get(id))
-                                        {
-                                            Ok(registration) => Some(registration),
-                                            Err(error) if error.cause == Error::NotFound => None,
-                                            Err(error) =>
-                                            {
-                                                return Err(inspection_error(system, error));
-                                            }
-                                        }
-                                    }
-                                    None => None
-                                };
-                                cached = Some((kind_index, pool, registration));
-                                self.pool_cache.set(cached);
-                                (pool, registration)
-                            }
-                        };
+                                    Ok(registration) => Some(registration),
+                                    Err(error) if error.cause == Error::NotFound => None,
+                                    Err(error) => return Err(inspection_error(system, error))
+                                },
+                                None => None
+                            };
+                            Ok((pool, registration))
+                        })?;
                         match (index - 11) % POOL_DETAIL_ROWS
                         {
                             0 =>
@@ -531,6 +502,7 @@ impl<'a> Panes<'a>
     fn refresh(&mut self, system: &System<'a>, snapshot: Snapshot<'a>, paint: bool)
                -> ToolboxResult<()>
     {
+        self.membership = snapshot.revision;
         let mut config = self.domains.control().info()?.spec;
         config.count = u32::try_from(snapshot.count).map_err(|_| Error::BadAbi)?;
         self.domains.control().configure(config)?;
@@ -542,8 +514,8 @@ impl<'a> Panes<'a>
         {
             self.selected = None;
             self.ledger = None;
-            self.pool_cache.set(None);
-            self.fault_cache.set(None);
+            self.pool_cache.clear();
+            self.fault_cache.clear();
             self.selected_index = None;
             for index in 0..snapshot.count
             {
@@ -591,8 +563,8 @@ impl<'a> Panes<'a>
             }
             self.selected = Some(row);
             self.ledger = Some(ledger);
-            self.pool_cache.set(None);
-            self.fault_cache.set(None);
+            self.pool_cache.clear();
+            self.fault_cache.clear();
             self.selected_index = Some(index);
             self.set_domain_row(index, row, true)?;
             self.configure_details()?;
@@ -649,11 +621,12 @@ impl<'a> Panes<'a>
     }
 }
 
-fn run(system: &System<'_>) -> ToolboxResult<()>
+fn main() -> ToolboxResult<()>
 {
+    let system = &System::new()?;
     system.menus().clear()?;
-    let _file = system.menus().install_owned(resources::APPLICATION, 128)?;
-    let _view = system.menus().install_owned(resources::APPLICATION, 129)?;
+    system.menus().install_menu_resource(ResourceScope::Application, 128)?;
+    system.menus().install_menu_resource(ResourceScope::Application, 129)?;
     let mut title = [0; 128];
     let title = system.resources().application().string(128, &mut title)?;
     let (bounds, procedure) = window_layout(system)?;
@@ -865,30 +838,4 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
             }
         }
     }
-}
-
-/// # Safety
-/// The native loader supplies initialized segments and a live service table.
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> abi::Status
-{
-    if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
-    {
-        return status;
-    }
-    let system = match unsafe { System::from_raw(services) }
-    {
-        Ok(system) => system,
-        Err(error) => return error.status()
-    };
-    run(&system).map_or_else(|error| {
-                                 let mut message = Line::new();
-                                 let _ = writeln!(message,
-                                                  "REACTOR_ERROR: Toolbox operation failed: \
-                                                   {error}");
-                                 let _ = system.log(message.text());
-                                 error.status()
-                             },
-                             |_| abi::OK)
 }

@@ -34,8 +34,8 @@ fn resource() -> Resource
     let pointer = (descriptor.load_base + 0x800).to_le_bytes();
     let mut data = descriptor.encode().unwrap().to_vec();
     data.extend(image::encode(&descriptor,
-                              [(0, image::READ | image::EXECUTE, [0x82, 0x80].as_slice()),
-                               (0x100, image::READ | image::WRITE, pointer.as_slice())]).unwrap());
+                              [(0, 2, image::READ | image::EXECUTE, [0x82, 0x80].as_slice()),
+                               (0x100, 8, image::READ | image::WRITE, pointer.as_slice())]).unwrap());
     data.extend_from_slice(b"RLC1\x01\0\0\0\0\x01\0\0\x08\0\0\0");
     Resource { kind: *b"WDEF",
                id: 0,

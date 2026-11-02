@@ -371,7 +371,8 @@ fn dynamic_document_items_remeasure_and_failed_changes_leave_menu_usable()
     let fork = include_bytes!("data/original-menus.rsrc");
     mac_system::testing::menus::with_resources(fork, fork, |services| {
         let system = unsafe { System::from_raw(services) }.unwrap();
-        let mut menu = system.menus().install_owned(resources::APPLICATION, 257).unwrap();
+        system.menus().install_menu_resource(resources::APPLICATION, 257).unwrap();
+        let menu = system.menus().find(MenuId(257)).unwrap();
         menu.truncate(0).unwrap();
         menu.set_item(1, "Untitled", 100, true, true).unwrap();
         let short = menu.layout().unwrap();
@@ -450,10 +451,12 @@ fn foreign_menu_handles_cannot_cross_domains_and_the_registered_walk_releases_pa
     let fork = capacity_fork();
     mac_system::testing::menus::with_resources(&fork, &fork, |services| {
         let system = unsafe { System::from_raw(services) }.unwrap();
-        let own = system.menus().install_owned(ResourceScope::Application, 32000).unwrap();
+        system.menus().install_menu_resource(ResourceScope::Application, 32000).unwrap();
+        let own = system.menus().find(mac_toolbox::MenuId(32000)).unwrap();
         let other = fixture::add("Other menu owner", 0);
         let foreign = with_owner(other, || {
-            system.menus().install_owned(ResourceScope::Application, 32000).unwrap().into_handle()
+            system.menus().install_menu_resource(ResourceScope::Application, 32000).unwrap();
+            system.menus().find(mac_toolbox::MenuId(32000)).unwrap().handle()
         });
         assert_ne!(own.handle(), foreign);
         let error = system.menus().menu(foreign).layout().unwrap_err();
@@ -477,7 +480,7 @@ fn foreign_menu_handles_cannot_cross_domains_and_the_registered_walk_releases_pa
             assert_eq!((snapshot.domain().live, snapshot.domain().pending), (0, 0));
         });
         assert!(own.layout().is_ok(), "another domain's teardown changed our menu");
-        drop(own);
+        own.dispose().unwrap();
     });
 }
 
@@ -489,10 +492,14 @@ fn failed_disposal_keeps_all_menu_geometry_and_handles_until_a_successful_retry(
     let fork = capacity_fork();
     mac_system::testing::menus::with_resources(&fork, &fork, |services| {
         let system = unsafe { System::from_raw(services) }.unwrap();
-        let mut first = system.menus().install_owned(ResourceScope::Application, 32000).unwrap();
-        let second = system.menus().install_owned(ResourceScope::Application, 32001).unwrap();
-        let third = system.menus().install_owned(ResourceScope::Application, 32002).unwrap();
-        let fourth = system.menus().install_owned(ResourceScope::Application, 32003).unwrap();
+        system.menus().install_menu_resource(ResourceScope::Application, 32000).unwrap();
+        let first = system.menus().find(mac_toolbox::MenuId(32000)).unwrap();
+        system.menus().install_menu_resource(ResourceScope::Application, 32001).unwrap();
+        let second = system.menus().find(mac_toolbox::MenuId(32001)).unwrap();
+        system.menus().install_menu_resource(ResourceScope::Application, 32002).unwrap();
+        let third = system.menus().find(mac_toolbox::MenuId(32002)).unwrap();
+        system.menus().install_menu_resource(ResourceScope::Application, 32003).unwrap();
+        let fourth = system.menus().find(mac_toolbox::MenuId(32003)).unwrap();
         let handles = [first.handle(), second.handle(), third.handle(), fourth.handle()];
         let layouts: Vec<_> =
             handles.iter().map(|&h| system.menus().menu(h).layout().unwrap()).collect();

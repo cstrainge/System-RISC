@@ -110,7 +110,7 @@ impl Index
                                      })
                                  },
                                  |s| {
-                                     if s.flags & image::EXECUTE != 0
+                                     if s.flags & image::EXECUTE != 0 && s.length != 0
                                      {
                                          index.segments[index.count] =
                                              Segment { offset:  s.data_offset,
@@ -214,11 +214,14 @@ pub const HEADER_ROWS: u32 = 7;
 #[derive(Clone, Copy)]
 pub struct Source
 {
-    pub descriptor:  Descriptor,
-    pub key:         ResourceKey,
-    pub offset:      usize,
-    pub length:      usize,
-    pub relocations: Option<(usize, usize)>
+    pub descriptor:    Descriptor,
+    pub key:           ResourceKey,
+    pub offset:        usize,
+    pub length:        usize,
+    pub relocations:   Option<(usize, usize)>,
+    segments:          u16,
+    initialized_bytes: u64,
+    memory_bytes:      u64
 }
 impl Source
 {
@@ -250,6 +253,9 @@ impl Source
         }
         let offset = if embedded { DESCRIPTOR_SIZE } else { 0 };
         let available = length.checked_sub(offset).ok_or_else(bad)?;
+        let mut segments = 0u16;
+        let mut initialized_bytes = 0u64;
+        let mut memory_bytes = 0u64;
         let end =
             image::inspect(available,
                            &descriptor,
@@ -260,7 +266,13 @@ impl Source
                                    _ => Err(mac_code_resource::Error("code resource read failed"))
                                }
                            },
-                           |_| {}).map_err(|_| bad())?;
+                           |segment| {
+                               segments += 1;
+                               // Ordered nonoverlapping memory extents bound
+                               // both sums by the validated image reservation.
+                               initialized_bytes += segment.length as u64;
+                               memory_bytes += segment.memory_length;
+                           }).map_err(|_| bad())?;
         if !embedded && end != length
         {
             return Err(bad());
@@ -270,7 +282,10 @@ impl Source
                             key,
                             offset,
                             length: end,
-                            relocations };
+                            relocations,
+                            segments,
+                            initialized_bytes,
+                            memory_bytes };
         if embedded
         {
             source.relocation_rows(file)?;
@@ -333,7 +348,11 @@ pub fn loader(file: &ResourceFile<'_>, source: &Source, mut emit: impl FnMut(&st
         Err(mac_toolbox::Error::NotFound) => emit("RLOC: absent (fixed-address image)"),
         Err(_) => emit("RLOC: malformed relocation table")
     }
-    emit("");
+    let mut line = Text::<128>::new();
+    let _ = write!(line,
+                   "Segments: {}; file {}; memory {}",
+                   source.segments, source.initialized_bytes, source.memory_bytes);
+    emit(line.as_str());
 }
 
 pub fn relocation_count(length: usize,

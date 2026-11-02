@@ -44,7 +44,7 @@ impl Bus for PlatformBus
 {
     fn dma_address(&self, cpu_address: u64, bytes: u64) -> Result<u64, Status>
     {
-        super::paging::bus_address(cpu_address, bytes).ok_or(mac_abi::ACCESS_DENIED)
+        crate::kernel::module_dma_address(cpu_address, bytes)
     }
 
     fn probe(&mut self, ordinal: u32) -> Result<Description, Status>
@@ -236,7 +236,12 @@ pub(crate) fn synchronous(caller: u64, operation: u32, input: &[u8], output: &mu
             let description = if operation == wire::CLAIM
             {
                 drivers::device_allowed(caller, description.bus, description.key)?;
-                with(|devices| devices.claim(&owner, ordinal, description))?
+                // The retained claim belongs to this module even when the
+                // device is first opened by an application-owned request.
+                let account = drivers::module_allocation(caller)?;
+                crate::allocation::with_kernel_allocation(account, || {
+                    with(|devices| devices.claim(&owner, ordinal, description))
+                })??
             }
             else
             {
@@ -255,7 +260,12 @@ pub(crate) fn synchronous(caller: u64, operation: u32, input: &[u8], output: &mu
             let address = u64::from_le_bytes(input[8..16].try_into().map_err(|_| BAD_ARGUMENT)?);
             let length = u64::from_le_bytes(input[16..24].try_into().map_err(|_| BAD_ARGUMENT)?);
             drivers::owns_memory(caller, address, length)?;
-            let mapping = with(|devices| devices.map(&owner, device, address, length))?;
+            // DMA metadata outlives the originating I/O operation and follows
+            // the same genuine module ownership as its admitted CPU storage.
+            let account = drivers::module_allocation(caller)?;
+            let mapping = crate::allocation::with_kernel_allocation(account, || {
+                with(|devices| devices.map(&owner, device, address, length))
+            })??;
             output[..wire::MAPPING_BYTES].copy_from_slice(&mapping.encode());
             Ok(wire::MAPPING_BYTES)
         }

@@ -19,6 +19,11 @@ impl SavedState
         Ok((stride, bytes))
     }
 
+    pub(crate) fn frame_bytes() -> Result<u64, Error>
+    {
+        Ok(Self::layout()?.0 as u64)
+    }
+
     pub(crate) fn planned_backing_bytes() -> Result<u64, Error>
     {
         Backing::planned_bytes(Self::layout()?.1)

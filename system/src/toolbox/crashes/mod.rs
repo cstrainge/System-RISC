@@ -5,10 +5,17 @@
 use alloc::vec::Vec;
 mod storage;
 #[cfg(target_arch = "riscv64")]
+mod detail;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use detail::FailureDetail;
+#[cfg(target_arch = "riscv64")]
 mod pending;
 use mac_abi::{crashes::*, *};
 #[cfg(target_arch = "riscv64")]
-pub(crate) use pending::{cleanup_progress, modal_available, pump_dismissals, pump_reports};
+pub(crate) use pending::owner_stopped as pending_owner_stopped;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use pending::{cleanup_progress, modal_available, pump_dismissals, pump_reports,
+                         take_for_termination};
 use storage::Payload;
 
 pub const RESOURCE_ID: i16 = -16400;
@@ -31,28 +38,49 @@ pub(crate) fn prepared_layout() -> Result<ReportLayout, Status>
     LAYOUT.get().copied().ok_or(NOT_SUPPORTED)
 }
 
+#[derive(Clone, Copy)]
+enum Capture
+{
+    None,
+    Streaming,
+    Submitted,
+    Prefix,
+    SystemDiagnostic
+}
+
 pub struct Manager
 {
-    payload:                    Payload,
-    archive_origin:             Option<storage::Origin>,
-    columns:                    usize,
-    column:                     usize,
-    previous_cr:                bool,
-    info:                       CrashInfo,
+    capture:                         Capture,
+    dismissal:                       Option<storage::Origin>,
+    superseded:                      bool,
+    payload:                         Payload,
+    archive_origin:                  Option<storage::Origin>,
+    columns:                         usize,
+    column:                          usize,
+    previous_cr:                     bool,
+    info:                            CrashInfo,
     #[cfg(target_arch = "riscv64")]
-    pub(super) controls:        [Option<u64>; 6],
+    pub(super) controls:             [Option<u64>; 6],
     #[cfg(target_arch = "riscv64")]
-    pub(super) control_enabled: [bool; 6],
+    pub(super) control_enabled:      [bool; 6],
     #[cfg(target_arch = "riscv64")]
-    pub(super) control_labels:  [u32; 6],
+    pub(super) control_labels:       [u32; 6],
     #[cfg(target_arch = "riscv64")]
-    pub(super) tracking:        Option<usize>,
+    pub(super) tracking:             Option<usize>,
     #[cfg(target_arch = "riscv64")]
-    pub(super) copy_failed:     bool,
+    pub(super) copy_failed:          bool,
     #[cfg(target_arch = "riscv64")]
-    pub(super) restart_pending: bool,
+    pub(super) restart_pending:      bool,
     #[cfg(target_arch = "riscv64")]
-    pub(super) restart_error:   Option<Status>
+    pub(super) restart_error:        Option<Status>,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) restart_terminal:     bool,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) power_failure:        Option<(Status, u32)>,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) restart_detail:       Option<FailureDetail>,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) restart_detail_dirty: bool
 }
 
 /// Diagnostic data is independent of the dying application's window/control
@@ -60,6 +88,8 @@ pub struct Manager
 #[cfg(any(target_arch = "riscv64", test))]
 pub(crate) struct Snapshot
 {
+    capture:     Capture,
+    superseded:  bool,
     payload:     Payload,
     columns:     usize,
     column:      usize,
@@ -71,7 +101,9 @@ impl Snapshot
 {
     pub(crate) fn retain(&self) -> Result<Self, Status>
     {
-        Ok(Self { payload:     self.payload.snapshot()?,
+        Ok(Self { capture:     self.capture,
+                  superseded:  self.superseded,
+                  payload:     self.payload.snapshot()?,
                   columns:     self.columns,
                   column:      self.column,
                   previous_cr: self.previous_cr,
@@ -109,28 +141,39 @@ impl Default for Manager
 {
     fn default() -> Self
     {
-        Self { payload:                                         Payload::default(),
-               archive_origin:                                  None,
-               columns:                                         DEFAULT_COLUMNS,
-               column:                                          0,
-               previous_cr:                                     false,
-               info:                                            CrashInfo { page_lines:
-                                                                                PAGE_LINES,
-                                                                            ..Default::default() },
+        Self { capture:                                              Capture::None,
+               dismissal:                                            None,
+               superseded:                                           false,
+               payload:                                              Payload::default(),
+               archive_origin:                                       None,
+               columns:                                              DEFAULT_COLUMNS,
+               column:                                               0,
+               previous_cr:                                          false,
+               info:
+                   CrashInfo { page_lines: PAGE_LINES,
+                               ..Default::default() },
                #[cfg(target_arch = "riscv64")]
-               controls:                                        [None; 6],
+               controls:                                             [None; 6],
                #[cfg(target_arch = "riscv64")]
-               control_enabled:                                 [false; 6],
+               control_enabled:                                      [false; 6],
                #[cfg(target_arch = "riscv64")]
-               control_labels:                                  [u32::MAX; 6],
+               control_labels:                                       [u32::MAX; 6],
                #[cfg(target_arch = "riscv64")]
-               tracking:                                        None,
+               tracking:                                             None,
                #[cfg(target_arch = "riscv64")]
-               copy_failed:                                     false,
+               copy_failed:                                          false,
                #[cfg(target_arch = "riscv64")]
-               restart_pending:                                 false,
+               restart_pending:                                      false,
                #[cfg(target_arch = "riscv64")]
-               restart_error:                                   None }
+               restart_error:                                        None,
+               #[cfg(target_arch = "riscv64")]
+               restart_terminal:                                     false,
+               #[cfg(target_arch = "riscv64")]
+               power_failure:                                        None,
+               #[cfg(target_arch = "riscv64")]
+               restart_detail:                                       None,
+               #[cfg(target_arch = "riscv64")]
+               restart_detail_dirty:                                 false }
     }
 }
 #[cfg(target_arch = "riscv64")]
@@ -147,8 +190,88 @@ pub(crate) fn initialize_protected_report(permit: crate::allocator::recovery::Pe
     })
 }
 
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn protected_stock_available() -> bool
+{
+    storage::available()
+}
+
 impl Manager
 {
+    /// Preserve the genuine capture/archive identity after its System-owned
+    /// presentation has acknowledged dismissal. This retains no protected
+    /// snapshot, so the single capture stock can be reused by a later BEGIN.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn dismissed_metadata(&self) -> Self
+    {
+        let mut info = self.info;
+        info.window = WindowId(0);
+        info.dismissed = 1;
+        Self { capture: self.capture,
+               dismissal: if self.superseded
+               {
+                   None
+               }
+               else
+               {
+                   self.archive_origin.or(self.payload.origin())
+               },
+               superseded: self.superseded,
+               archive_origin: self.archive_origin.or(self.payload.origin()),
+               columns: self.columns,
+               column: self.column,
+               previous_cr: self.previous_cr,
+               info,
+               ..Self::default() }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn capture_attempt(&mut self)
+    {
+        self.dismissal = None;
+        self.superseded = true;
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn capture_superseded(&self) -> bool
+    {
+        self.superseded
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn acknowledged_capture(&self, owner: u64) -> bool
+    {
+        !self.superseded
+        && self.info.dismissed != 0
+        && self.info.window.0 == 0
+        && self.dismissal.is_some_and(|receipt| receipt.app() == owner)
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn main_error_capture(&self, owner: u64, thread: u64) -> bool
+    {
+        !self.superseded
+        && matches!(self.capture, Capture::Submitted)
+        && self.info.app == owner
+        && self.info.thread == thread
+        && self.info.flags & MAIN_ERROR != 0
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn owns_protected_stock(&self) -> bool
+    {
+        self.payload.protected()
+    }
+
+    pub(crate) fn submit(&mut self, flags: u32)
+    {
+        if matches!(self.capture, Capture::Streaming)
+        {
+            self.capture = Capture::Submitted;
+        }
+        self.info.flags |= flags;
+    }
+
     #[cfg(any(target_arch = "riscv64", test))]
     pub(crate) fn snapshot(&self) -> Result<Snapshot, Status>
     {
@@ -160,7 +283,9 @@ impl Manager
         {
             self.payload.snapshot()?
         };
-        Ok(Snapshot { payload,
+        Ok(Snapshot { capture: self.capture,
+                      superseded: self.superseded,
+                      payload,
                       columns: self.columns,
                       column: self.column,
                       previous_cr: self.previous_cr,
@@ -173,7 +298,10 @@ impl Manager
         let mut info = snapshot.info;
         info.window = WindowId(0);
         info.dismissed = 0;
-        Self { payload: snapshot.payload,
+        Self { dismissal: None,
+               superseded: snapshot.superseded,
+               capture: snapshot.capture,
+               payload: snapshot.payload,
                columns: snapshot.columns,
                column: snapshot.column,
                previous_cr: snapshot.previous_cr,
@@ -255,12 +383,65 @@ impl Manager
     {
         self.restart_error = None;
         self.restart_pending = false;
+        self.restart_terminal = false;
+        self.power_failure = None;
+        self.restart_detail = None;
+        self.restart_detail_dirty = true;
     }
 
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn add_flags(&mut self, flags: u32)
     {
         self.info.flags |= flags;
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn seal_failure_capture(&mut self)
+                                       -> crate::toolbox::processes::termination::Retention
+    {
+        use crate::toolbox::processes::termination::Retention;
+        let retained = match self.capture
+        {
+            Capture::None | Capture::Streaming =>
+            {
+                self.capture = Capture::Prefix;
+                self.info.flags |= TRUNCATED;
+                Retention::CapturedPrefix
+            }
+            Capture::Submitted =>
+            {
+                if self.info.flags & TRUNCATED != 0
+                {
+                    Retention::CapturedPrefix
+                }
+                else
+                {
+                    Retention::CapturedComplete
+                }
+            }
+            Capture::Prefix => Retention::CapturedPrefix,
+            Capture::SystemDiagnostic => Retention::SystemDiagnostic
+        };
+        if self.superseded
+        {
+            match retained
+            {
+                Retention::CapturedComplete => Retention::PreviousComplete,
+                Retention::CapturedPrefix => Retention::PreviousPrefix,
+                Retention::SystemDiagnostic => Retention::PreviousSystemDiagnostic,
+                other => other
+            }
+        }
+        else
+        {
+            retained
+        }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn seal_system_diagnostic(&mut self)
+    {
+        self.capture = Capture::SystemDiagnostic;
     }
 
     pub fn set_window(&mut self, window: WindowId)
@@ -381,7 +562,8 @@ impl Manager
                 data.starts.clear();
                 data.starts.push(0);
                 let payload = core::mem::take(&mut self.payload);
-                *self = Self { payload,
+                *self = Self { capture: Capture::Streaming,
+                               payload,
                                info: CrashInfo { app,
                                                  thread,
                                                  flags: call.flags,
@@ -392,6 +574,10 @@ impl Manager
             }
             APPEND =>
             {
+                if !matches!(self.capture, Capture::Streaming)
+                {
+                    return Err(ACCESS_DENIED);
+                }
                 if input.len() > MAX_APPEND_BYTES
                 {
                     return Err(BAD_ARGUMENT);
@@ -436,7 +622,7 @@ impl Manager
             }
             SHOW =>
             {
-                self.info.flags |= call.flags;
+                self.submit(call.flags);
                 true
             }
             INFO => false,
@@ -466,6 +652,14 @@ impl Manager
                 }
                 let changed = self.info.dismissed == 0;
                 self.info.dismissed = 1;
+                self.dismissal = if self.superseded
+                {
+                    None
+                }
+                else
+                {
+                    self.archive_origin.or(self.payload.origin())
+                };
                 changed
             }
             _ => return Err(NOT_SUPPORTED)

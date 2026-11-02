@@ -15,6 +15,37 @@ pub(super) struct Scratch
     previous:   Vec<Rect>,
     gaps:       Vec<Rect>
 }
+/// Empty replacement arrays only; paint never allocates or keeps these owners.
+pub(super) struct CapacityPlan
+{
+    lengths: [usize; 5]
+}
+pub(super) struct PreparedCapacity(Scratch);
+fn lengths(windows: usize) -> Result<[usize; 5], Status>
+{
+    let rectangles = windows.checked_mul(2).ok_or(NO_MEMORY)?;
+    let edges = rectangles.checked_mul(2).and_then(|n| n.checked_add(2)).ok_or(NO_MEMORY)?;
+    let gaps = rectangles.checked_add(1).ok_or(NO_MEMORY)?;
+    Ok([rectangles, edges, rectangles, gaps, gaps])
+}
+fn detached<T: Clone>(length: usize, zero: T) -> Result<Vec<T>, Status>
+{
+    let mut values = Vec::new();
+    values.try_reserve_exact(length).map_err(|_| NO_MEMORY)?;
+    values.resize(length, zero);
+    Ok(values)
+}
+impl CapacityPlan
+{
+    pub(super) fn prepare(self) -> Result<PreparedCapacity, Status>
+    {
+        Ok(PreparedCapacity(Scratch { rectangles: detached(self.lengths[0], Rect::ZERO)?,
+                                      edges:      detached(self.lengths[1], 0)?,
+                                      intervals:  detached(self.lengths[2], (0, 0))?,
+                                      previous:   detached(self.lengths[3], Rect::ZERO)?,
+                                      gaps:       detached(self.lengths[4], Rect::ZERO)? }))
+    }
+}
 fn grow<T: Clone>(values: &mut Vec<T>, length: usize, empty: T) -> Result<(), Status>
 {
     if length > values.len()
@@ -26,6 +57,65 @@ fn grow<T: Clone>(values: &mut Vec<T>, length: usize, empty: T) -> Result<(), St
 }
 impl Scratch
 {
+    pub(super) fn plan_capacity(&self, windows: usize) -> Result<CapacityPlan, Status>
+    {
+        let required = lengths(windows)?;
+        let current = [self.rectangles.capacity(),
+                       self.edges.capacity(),
+                       self.intervals.capacity(),
+                       self.previous.capacity(),
+                       self.gaps.capacity()];
+        Ok(CapacityPlan { lengths: core::array::from_fn(|i| {
+                              if current[i] < required[i] { required[i] } else { 0 }
+                          }) })
+    }
+
+    pub(super) fn can_install(&self, windows: usize, prepared: &PreparedCapacity)
+                              -> Result<bool, Status>
+    {
+        let required = lengths(windows)?;
+        let current = [self.rectangles.capacity(),
+                       self.edges.capacity(),
+                       self.intervals.capacity(),
+                       self.previous.capacity(),
+                       self.gaps.capacity()];
+        let replacement = [prepared.0.rectangles.capacity(),
+                           prepared.0.edges.capacity(),
+                           prepared.0.intervals.capacity(),
+                           prepared.0.previous.capacity(),
+                           prepared.0.gaps.capacity()];
+        Ok((0..5).all(|i| current[i] >= required[i] || replacement[i] >= required[i]))
+    }
+
+    /// Check all geometry before mutation. Displaced buffers stay in prepared.
+    pub(super) fn install_capacity(&mut self, windows: usize, prepared: &mut PreparedCapacity)
+                                   -> Result<(), Status>
+    {
+        if !self.can_install(windows, prepared)?
+        {
+            return Err(mac_abi::SERVICE_BUSY);
+        }
+        let required = lengths(windows)?;
+        fn install<T: Clone>(current: &mut Vec<T>, replacement: &mut Vec<T>, length: usize, zero: T)
+        {
+            if current.capacity() < length
+            {
+                core::mem::swap(current, replacement);
+            }
+            if current.len() < length
+            {
+                // Capacity was checked before any buffer moved.
+                current.resize(length, zero);
+            }
+        }
+        install(&mut self.rectangles, &mut prepared.0.rectangles, required[0], Rect::ZERO);
+        install(&mut self.edges, &mut prepared.0.edges, required[1], 0);
+        install(&mut self.intervals, &mut prepared.0.intervals, required[2], (0, 0));
+        install(&mut self.previous, &mut prepared.0.previous, required[3], Rect::ZERO);
+        install(&mut self.gaps, &mut prepared.0.gaps, required[4], Rect::ZERO);
+        Ok(())
+    }
+
     pub(super) fn prepare(&mut self, windows: usize) -> Result<(), Status>
     {
         let rectangles = windows.checked_mul(2).ok_or(NO_MEMORY)?;

@@ -4,10 +4,16 @@
 pub(crate) mod cleanup;
 pub(crate) mod subject;
 #[cfg(target_arch = "riscv64")]
-pub(crate) use mac_object_table::domain::{DirectoryError, DomainKind};
+pub(crate) use mac_object_table::domain::{DirectoryCapacityError, DirectoryError, DomainKind};
 #[cfg(target_arch = "riscv64")]
 pub(crate) type Directory<T> =
     mac_object_table::domain::Directory<T, crate::machine::interrupts::NativeInvocationGate>;
+#[cfg(target_arch = "riscv64")]
+pub(crate) type DirectoryCapacityPlan<T> =
+    mac_object_table::domain::DirectoryCapacityPlan<T, crate::machine::interrupts::NativeInvocationGate>;
+#[cfg(target_arch = "riscv64")]
+pub(crate) type PreparedDirectoryCapacity<T> =
+    mac_object_table::domain::PreparedDirectoryCapacity<T, crate::machine::interrupts::NativeInvocationGate>;
 pub(crate) use mac_object_table::{Kind, Table};
 
 #[cfg(target_arch = "riscv64")]
@@ -106,7 +112,7 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                let owner = system_owner_checked()?;
                                let mut registry = Resident::new();
                                registry.register(&owner,
-                                         crate::toolbox::controls::objects::specification(), cleanup::context::Desktop(crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::objects::ReleaseControls)))
+                                         crate::toolbox::controls::objects::specification(), cleanup::context::Toolbox(crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::objects::ReleaseControls)))
                                .map_err(|error| {
                                    serial!("KIND_REGISTRATION_REFUSED: {error}");
                                    KindAccessError::Registry(error)
@@ -115,72 +121,75 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                    error
                                })?;
                                registry.register(&owner,
-                                         crate::toolbox::controls::objects::storage_specification(), cleanup::context::Desktop(crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::objects::ReleaseStorage)))
+                                         crate::toolbox::controls::objects::storage_specification(), cleanup::context::Toolbox(crate::toolbox::controls::objects::ReleaseStorage))
                                .map_err(KindAccessError::Registry)?;
                                registry.register(&owner,
-                                         crate::toolbox::controls::scrollbox::specification(false), cleanup::context::Desktop(crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::scrollbox::ReleaseScrollBoxes)))
+                                         crate::toolbox::controls::scrollbox::specification(false), cleanup::context::Toolbox(crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::scrollbox::ReleaseScrollBoxes)))
                                .map_err(KindAccessError::Registry)?;
                                registry.register(&owner,
-                                         crate::toolbox::controls::scrollbox::specification(true), cleanup::context::Desktop(crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::scrollbox::ReleaseStorage)))
+                                         crate::toolbox::controls::scrollbox::specification(true), cleanup::context::Toolbox(crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::scrollbox::ReleaseStorage)))
                                .map_err(KindAccessError::Registry)?;
                                registry.register(&owner,
-                                         crate::toolbox::standard_file::specification(false), cleanup::context::Desktop(crate::toolbox::handles::cleanup::Complete(crate::toolbox::standard_file::ReleaseDialogs)))
+                                         crate::toolbox::standard_file::specification(false), cleanup::context::Toolbox(crate::toolbox::handles::cleanup::Complete(crate::toolbox::standard_file::ReleaseDialogs)))
                                .map_err(KindAccessError::Registry)?;
                                registry.register(&owner,
-                                         crate::toolbox::standard_file::specification(true), cleanup::context::Desktop(crate::toolbox::handles::cleanup::Complete(crate::toolbox::standard_file::ReleaseStorage)))
+                                         crate::toolbox::standard_file::specification(true), cleanup::context::Toolbox(crate::toolbox::handles::cleanup::Complete(crate::toolbox::standard_file::ReleaseStorage)))
                                .map_err(KindAccessError::Registry)?;
                                for storage in [false, true]
                                {
                                    registry.register(&owner,
                                        crate::toolbox::font_suitcases::specification(storage),
-                                       cleanup::context::Desktop(cleanup::Complete(
+                                       cleanup::context::Toolbox(cleanup::Complete(
                                            crate::toolbox::font_suitcases::ReleasePreviews(storage))))
                                        .map_err(KindAccessError::Registry)?;
                                }
                                registry.register(&owner,
-                                         crate::toolbox::quickdraw::worlds::specification(false), cleanup::context::Desktop(crate::toolbox::handles::cleanup::Complete(crate::toolbox::quickdraw::worlds::ReleaseWorlds)))
+                                         crate::toolbox::quickdraw::worlds::specification(false), cleanup::context::Toolbox(crate::toolbox::handles::cleanup::Complete(crate::toolbox::quickdraw::worlds::ReleaseWorlds)))
                                .map_err(KindAccessError::Registry)?;
                                registry.register(&owner,
-                                         crate::toolbox::quickdraw::worlds::specification(true), cleanup::context::Desktop(crate::toolbox::handles::cleanup::Complete(crate::toolbox::quickdraw::worlds::ReleaseStorage)))
+                                         crate::toolbox::quickdraw::worlds::specification(true), cleanup::context::Toolbox(crate::toolbox::handles::cleanup::Complete(crate::toolbox::quickdraw::worlds::ReleaseStorage)))
                                .map_err(KindAccessError::Registry)?;
-                               registry.register(&owner, crate::toolbox::windows::lifetime::specification(false), cleanup::context::Desktop(crate::toolbox::windows::lifetime::ReleaseWindows)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner, crate::toolbox::windows::lifetime::specification(true), cleanup::context::Desktop(crate::toolbox::windows::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner, crate::toolbox::menus::lifetime::specification(false), cleanup::context::Desktop(cleanup::Complete(crate::toolbox::menus::lifetime::ReleaseMenus))).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner, crate::toolbox::menus::lifetime::specification(true), cleanup::context::Desktop(cleanup::Complete(crate::toolbox::menus::lifetime::ReleaseStorage))).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner, crate::toolbox::memory::lifetime::specification(false), cleanup::context::Desktop(crate::toolbox::memory::lifetime::ReleaseBlocks)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner, crate::toolbox::memory::lifetime::specification(true), cleanup::context::Desktop(crate::toolbox::memory::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner, crate::toolbox::textedit::lifetime::specification(false), cleanup::context::Desktop(cleanup::Complete(crate::toolbox::textedit::lifetime::ReleaseEditors))).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner, crate::toolbox::textedit::lifetime::specification(true), cleanup::context::Desktop(cleanup::Complete(crate::toolbox::textedit::lifetime::ReleaseStorage))).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner,crate::toolbox::dialogs::specification(false), cleanup::context::Desktop(crate::toolbox::dialogs::ReleaseAlerts)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner,crate::toolbox::dialogs::specification(true), cleanup::context::Desktop(crate::toolbox::dialogs::ReleaseStorage)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner, crate::toolbox::files::forks::lifetime::specification(false), cleanup::context::Desktop(crate::toolbox::files::forks::lifetime::ReleaseForks)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner, crate::toolbox::files::forks::lifetime::specification(true), cleanup::context::Desktop(crate::toolbox::files::forks::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner,crate::toolbox::files::write::lifetime::specification(false), cleanup::context::Desktop(crate::toolbox::files::write::lifetime::ReleaseWrites)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner,crate::toolbox::files::write::lifetime::specification(true), cleanup::context::Desktop(crate::toolbox::files::write::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner,crate::toolbox::files::streams::lifetime::specification(false), cleanup::context::Desktop(crate::toolbox::files::streams::lifetime::ReleaseStreams)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner,crate::toolbox::files::streams::lifetime::specification(true), cleanup::context::Desktop(crate::toolbox::files::streams::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner,crate::toolbox::files::groups::lifetime::specification(false), cleanup::context::Desktop(crate::toolbox::files::groups::lifetime::ReleaseGroups)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner,crate::toolbox::files::groups::lifetime::specification(true), cleanup::context::Desktop(crate::toolbox::files::groups::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner,crate::toolbox::files::transfer_lifetime::specification(false), cleanup::context::Desktop(crate::toolbox::files::transfer_lifetime::ReleaseTransfers)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner,crate::toolbox::files::transfer_lifetime::specification(true), cleanup::context::Desktop(crate::toolbox::files::transfer_lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::windows::lifetime::specification(false), cleanup::context::Toolbox(crate::toolbox::windows::lifetime::ReleaseWindows)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::windows::lifetime::specification(true), cleanup::context::Toolbox(crate::toolbox::windows::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::menus::lifetime::specification(false), cleanup::context::Toolbox(cleanup::Complete(crate::toolbox::menus::lifetime::ReleaseMenus))).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::menus::lifetime::specification(true), cleanup::context::Toolbox(cleanup::Complete(crate::toolbox::menus::lifetime::ReleaseStorage))).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::memory::lifetime::specification(false), cleanup::context::Toolbox(crate::toolbox::memory::lifetime::ReleaseBlocks)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::memory::lifetime::specification(true), cleanup::context::Toolbox(crate::toolbox::memory::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::textedit::lifetime::specification(false), cleanup::context::Toolbox(cleanup::Complete(crate::toolbox::textedit::lifetime::ReleaseEditors))).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::textedit::lifetime::specification(true), cleanup::context::Toolbox(cleanup::Complete(crate::toolbox::textedit::lifetime::ReleaseStorage))).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::dialogs::specification(false), cleanup::context::Toolbox(crate::toolbox::dialogs::ReleaseAlerts)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::dialogs::specification(true), cleanup::context::Toolbox(crate::toolbox::dialogs::ReleaseStorage)).map_err(KindAccessError::Registry)?;
+                               for storage in [false,true] {
+                                   registry.register(&owner,crate::toolbox::files::local::lifetime::specification(storage), cleanup::context::Toolbox(crate::toolbox::files::local::lifetime::ReleaseOperations(storage))).map_err(KindAccessError::Registry)?;
+                               }
+                               registry.register(&owner, crate::toolbox::files::forks::lifetime::specification(false), cleanup::context::Toolbox(crate::toolbox::files::forks::lifetime::ReleaseForks)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::files::forks::lifetime::specification(true), cleanup::context::Toolbox(crate::toolbox::files::forks::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::files::write::lifetime::specification(false), cleanup::context::Toolbox(crate::toolbox::files::write::lifetime::ReleaseWrites)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::files::write::lifetime::specification(true), cleanup::context::Toolbox(crate::toolbox::files::write::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::files::streams::lifetime::specification(false), cleanup::context::Toolbox(crate::toolbox::files::streams::lifetime::ReleaseStreams)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::files::streams::lifetime::specification(true), cleanup::context::Toolbox(crate::toolbox::files::streams::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::files::groups::lifetime::specification(false), cleanup::context::Toolbox(crate::toolbox::files::groups::lifetime::ReleaseGroups)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::files::groups::lifetime::specification(true), cleanup::context::Toolbox(crate::toolbox::files::groups::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::files::transfer_lifetime::specification(false), cleanup::context::Toolbox(crate::toolbox::files::transfer_lifetime::ReleaseTransfers)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner,crate::toolbox::files::transfer_lifetime::specification(true), cleanup::context::Toolbox(crate::toolbox::files::transfer_lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
                                for storage in [false,true]
                                {
                                    registry.register(&owner,
-                                       crate::toolbox::processes::documents::storage::specification(storage), cleanup::context::Desktop(crate::toolbox::processes::documents::storage::ReleaseBatches(storage)))
+                                       crate::toolbox::processes::documents::storage::specification(storage), cleanup::context::Toolbox(crate::toolbox::processes::documents::storage::ReleaseBatches(storage)))
                                        .map_err(KindAccessError::Registry)?;
                                }
                                for kind in crate::toolbox::files::pins::Registration::ALL
                                {
-                                   registry.register(&owner, kind.specification(), cleanup::context::Desktop(kind))
+                                   registry.register(&owner, kind.specification(), cleanup::context::Toolbox(kind))
                                        .map_err(KindAccessError::Registry)?;
                                }
                                use crate::toolbox::drag::lifetime::{Registration, ReleaseKind};
-                               registry.register(&owner, crate::toolbox::files::watch::lifetime::specification(false), cleanup::context::Desktop(crate::toolbox::files::watch::lifetime::ReleaseWatches)).map_err(KindAccessError::Registry)?;
-                               registry.register(&owner, crate::toolbox::files::watch::lifetime::specification(true), cleanup::context::Desktop(crate::toolbox::files::watch::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::files::watch::lifetime::specification(false), cleanup::context::Toolbox(crate::toolbox::files::watch::lifetime::ReleaseWatches)).map_err(KindAccessError::Registry)?;
+                               registry.register(&owner, crate::toolbox::files::watch::lifetime::specification(true), cleanup::context::Toolbox(crate::toolbox::files::watch::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
                                for kind in [Registration::Sessions, Registration::SessionStorage,
                                             Registration::Receivers, Registration::ReceiverStorage]
                                {
-                                   registry.register(&owner, kind.specification(), cleanup::context::Desktop(ReleaseKind(kind)))
+                                   registry.register(&owner, kind.specification(), cleanup::context::Toolbox(ReleaseKind(kind)))
                                            .map_err(KindAccessError::Registry)?;
                                }
                                for storage in [false, true]
@@ -222,6 +231,25 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                        crate::drivers::scheduler::ReleaseRegistration(storage))
                                        .map_err(KindAccessError::Registry)?;
                                }
+                               for storage in [false,true] {
+                                   registry.register(&owner,crate::machine::scheduler::application::specification(storage),crate::machine::scheduler::application::ReleaseRights(storage))
+                                       .map_err(KindAccessError::Registry)?;
+                               }
+                               for kind in crate::machine::paging::process::lifetime::Kind::ALL {
+                                   registry.register(&owner,kind.specification(),kind).map_err(KindAccessError::Registry)?;
+                               }
+                               for kind in crate::toolbox::native_threads::lifetime::Kind::ALL {
+                                   registry.register(&owner,kind.specification(),kind)
+                                       .map_err(KindAccessError::Registry)?;
+                               }
+                               for kind in crate::toolbox::application_heap::lifetime::Kind::ALL {
+                                   registry.register(&owner,kind.specification(),kind)
+                                       .map_err(KindAccessError::Registry)?;
+                               }
+                               for kind in crate::toolbox::resources::definitions::Registration::ALL {
+                                   registry.register(&owner, kind.specification(), kind)
+                                       .map_err(KindAccessError::Registry)?;
+                               }
                                for kind in crate::images::Registration::ALL {
                                    registry.register(&owner, kind.specification(), kind)
                                        .map_err(KindAccessError::Registry)?;
@@ -242,6 +270,13 @@ pub(crate) fn controls_kinds() -> Result<(KindLease, KindLease), mac_abi::Status
 pub(crate) fn thread_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"THRD"))?, registry.get(KindCode(*b"THST"))?)))
+        .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn definition_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry| Ok((registry.get(KindCode(*b"DDEF"))?, registry.get(KindCode(*b"DSTA"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 
@@ -460,4 +495,11 @@ pub(crate) fn document_batch_kinds() -> Result<(KindLease, KindLease), mac_abi::
 {
     registry(|registry| Ok((registry.get(KindCode(*b"DBAT"))?,registry.get(KindCode(*b"DBST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn file_operation_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry|Ok((registry.get(KindCode(*b"FIOP"))?,registry.get(KindCode(*b"FIOB"))?)))
+        .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
 }

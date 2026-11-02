@@ -20,37 +20,44 @@
           {
             "text": "Open...",
             "key": "O",
-            "command": "open"
+            "command": "open",
+            "command_symbol": "OPEN"
           },
           "-",
           {
             "text": "Save JSON",
             "key": "S",
-            "command": "save"
+            "command": "save",
+            "command_symbol": "SAVE"
           },
           {
             "text": "Save JSON As...",
-            "command": "svas"
+            "command": "svas",
+            "command_symbol": "SAVE_AS"
           },
           {
             "text": "Export JSON...",
             "key": "E",
-            "command": "expr"
+            "command": "expr",
+            "command_symbol": "EXPORT_JSON"
           },
           {
             "text": "Export JSON to Host",
-            "command": "host"
+            "command": "host",
+            "command_symbol": "EXPORT_TO_HOST"
           },
           "-",
           {
             "text": "Close Window",
             "key": "W",
-            "command": "clos"
+            "command": "clos",
+            "command_symbol": "CLOSE"
           },
           {
             "text": "Quit",
             "key": "Q",
-            "command": "quit"
+            "command": "quit",
+            "command_symbol": "QUIT"
           }
         ]
       }

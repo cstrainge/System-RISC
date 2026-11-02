@@ -286,6 +286,8 @@ impl Manager
                 }
                 let probes = match self.volumes.get(call.volume).ok_or(NOT_FOUND)?
                 {
+                    #[cfg(target_arch = "riscv64")]
+                    Mounted::Operating(_) => return Err(SERVICE_BUSY),
                     Mounted::Block(_) =>
                     {
                         if !self.entry(call.volume, call.cnid)?.directory

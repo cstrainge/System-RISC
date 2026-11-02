@@ -1,0 +1,46 @@
+[package]
+name = "toolbox-std-application"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[features]
+exit = []
+panic = []
+panic-hook-restore = ["panic"]
+oom = []
+threads = []
+thread-transfer = ["threads"]
+thread-residency = ["threads"]
+child-panic = []
+live-child = []
+entropy = []
+entropy-unavailable = ["entropy"]
+entropy-short = ["entropy"]
+entropy-cancel = ["entropy"]
+launch-ready = []
+launch-cancel = ["launch-ready"]
+std-random = []
+std-random-unavailable = ["std-random"]
+main-error = []
+main-error-cleanup-panic = ["main-error"]
+
+[[bin]]
+name = "StdProbe"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+mac-toolbox = { path = "../../.." }
+
+[build-dependencies]
+mac-build = { path = "../../../../../tools/mac-build" }
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = 3
+codegen-units = 1

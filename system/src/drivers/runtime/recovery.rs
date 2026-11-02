@@ -85,12 +85,19 @@ fn reap() -> bool
                      else
                      {
                          MORE.store(false, Ordering::Release);
-                         return false;
+                         return (false, None);
                      };
                      CURSOR.store(module, Ordering::Release);
-                     match runtime.registry.rollback(module)
+                     let removed = match runtime.registry.rollback(module)
                      {
-                         Ok(()) => serial!("MODULE_ROLLBACK_COMPLETE module={module}"),
+                         Ok(()) =>
+                         {
+                             serial!("MODULE_ROLLBACK_COMPLETE module={module}");
+                             runtime.bindings
+                                    .iter()
+                                    .position(|binding| binding.module == module)
+                                    .map(|index| runtime.bindings.swap_remove(index))
+                         }
                          Err(cause) =>
                          {
                              if let Some(name) = runtime.registry.recovery_refusal(module, cause)
@@ -98,12 +105,19 @@ fn reap() -> bool
                                  serial!("MODULE_ROLLBACK_RETAINED name={name} module={module} \
                                           reason={cause}");
                              }
+                             None
                          }
-                     }
-                     true
+                     };
+                     (true, removed)
                  })
     {
-        Ok(attempted) => attempted,
+        Ok((attempted, removed)) =>
+        {
+            // Registry/account completion proves no live callback can use the
+            // bridge. Its actual Host/icon buffers drop outside RUNTIME.
+            drop(removed);
+            attempted
+        }
         Err(_) =>
         {
             RETRY.store(8, Ordering::Release);

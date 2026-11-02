@@ -14,6 +14,12 @@ use super::traps::TrapFrame;
 use crate::{context::{EventWaiter, ThreadContext},
             toolbox::handles::{OwnerRef, Store}};
 mod lifetime;
+mod admission;
+pub(crate) mod application;
+pub(crate) mod address;
+pub(crate) use address::changed as address_wait_changed;
+mod stack;
+pub(crate) use stack::{StackPinError, StackWaitPin, pin_application_stack};
 mod worker;
 pub(crate) mod service;
 pub(crate) mod wake;
@@ -206,17 +212,19 @@ struct RunState
 {
     // Scheduler-owned execution claim, retained across frame restore and body
     // execution. Only a complete outer-capture handoff may clear it.
-    affinity:    ThreadAffinity,
-    service:     service::State,
-    claimed_by:  Option<HartKey>,
-    live:        bool,
-    retired:     bool,
-    switches:    u64,
-    waiting:     Option<Wait>,
-    woken:       u8,
-    ready_since: Option<u64>,
-    last_hart:   Option<HartKey>,
-    at_handoff:  bool
+    affinity:        ThreadAffinity,
+    service:         service::State,
+    claimed_by:      Option<HartKey>,
+    live:            bool,
+    retired:         bool,
+    failure_pending: bool,
+    failure_parked:  bool,
+    switches:        u64,
+    waiting:         Option<Wait>,
+    woken:           u8,
+    ready_since:     Option<u64>,
+    last_hart:       Option<HartKey>,
+    at_handoff:      bool
 }
 /// Policy refusal preserves the actual missing/invalid clock or ready interval.
 /// This surface does not invent a CPU-time counter.
@@ -278,17 +286,19 @@ impl RunState
 
     const fn new() -> Self
     {
-        Self { affinity:    ThreadAffinity::Eligible,
-               service:     service::State::new(),
-               claimed_by:  None,
-               live:        false,
-               retired:     false,
-               switches:    0,
-               waiting:     None,
-               woken:       0,
-               ready_since: None,
-               last_hart:   None,
-               at_handoff:  false }
+        Self { affinity:        ThreadAffinity::Eligible,
+               service:         service::State::new(),
+               claimed_by:      None,
+               live:            false,
+               retired:         false,
+               failure_pending: false,
+               failure_parked:  false,
+               switches:        0,
+               waiting:         None,
+               woken:           0,
+               ready_since:     None,
+               last_hart:       None,
+               at_handoff:      false }
     }
 
     fn allows(&self, hart: HartKey) -> bool
@@ -296,12 +306,22 @@ impl RunState
         self.affinity.allows(hart) && (!self.service.primary() || hart.is_primary())
     }
 
+    fn runnable(&self) -> bool
+    {
+        self.live && !self.retired && !self.failure_parked && self.waiting.is_none()
+    }
+
+    /// Fresh dispatch admission, shared by policy, bootstrap and final commit.
+    fn selectable(&self, hart: HartKey, is_current: bool) -> bool
+    {
+        self.runnable()
+        && self.allows(hart)
+        && (self.claimed_by.is_none() || (is_current && self.claimed_by == Some(hart)))
+    }
+
     fn ready(&self) -> bool
     {
-        self.live
-        && !self.retired
-        && self.waiting.is_none()
-        && (self.claimed_by.is_none() || self.at_handoff)
+        self.runnable() && (self.claimed_by.is_none() || self.at_handoff)
     }
 }
 impl Thread
@@ -315,7 +335,24 @@ impl Thread
     {
         let mut state = self.state.get();
         let was_ready = state.ready();
+        let was_retired = state.retired;
+        let was_failure_parked = state.failure_parked;
         change(&mut state);
+        if state.failure_pending && state.service.quiescent()
+        {
+            state.failure_parked = true;
+        }
+        if !was_failure_parked && state.failure_parked
+        {
+            crate::toolbox::processes::termination::progress();
+        }
+        if !was_retired && state.retired
+        {
+            if let Some(backing) = self.core.backing.lock().as_ref()
+            {
+                backing.stack.close();
+            }
+        }
         if !state.ready()
         {
             state.ready_since = None;
@@ -394,6 +431,18 @@ impl Thread
 #[derive(Clone, Copy)]
 enum Wait
 {
+    Address
+    {
+        deadline: Option<u64>
+    },
+    NativeJoin
+    {
+        request: u64
+    },
+    Sleep
+    {
+        deadline: u64
+    },
     Worker
     {
         deadline: Option<u64>
@@ -428,39 +477,35 @@ impl Scheduler
     {
         self.threads.iter().enumerate().filter_map(|(slot, _)| self.thread(slot).map(|t| (slot, t)))
     }
-
-    fn prepare_records(&mut self) -> Result<(), mac_abi::Status>
-    {
-        if self.records.is_none()
-        {
-            let (objects, backing) = crate::toolbox::handles::thread_kinds()?;
-            self.records = Some(Store::owned(objects, backing).map_err(lifetime::pool_status)?);
-        }
-        Ok(())
-    }
-
-    fn prepare(&mut self) -> Result<usize, mac_abi::Status>
-    {
-        self.prepare_records()?;
-        let slot = self.threads.iter().position(Option::is_none).unwrap_or(self.threads.len());
-        if slot == self.threads.len()
-        {
-            self.threads.try_reserve(1).map_err(|_| mac_abi::NO_MEMORY)?;
-        }
-        // Admission grows scratch, never the timer/event polling path. If input
-        // handling births a thread while a snapshot is leased, reserve a spare;
-        // returning the lease keeps the larger buffer.
-        self.waiters
-            .try_reserve(slot.saturating_add(1).saturating_sub(self.waiters.len()))
-            .map_err(|_| mac_abi::NO_MEMORY)?;
-        Ok(slot)
-    }
 }
 static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler { records:        None,
                                                             threads:        Vec::new(),
                                                             waiters:        Vec::new(),
                                                             waiters_leased: false,
                                                             ticks:          0 });
+pub(crate) fn initialize_records() -> Result<(), mac_abi::Status>
+{
+    if !crate::context::current_thread_context().is_bootstrap()
+    {
+        return Err(mac_abi::ACCESS_DENIED);
+    }
+    let (objects, backing) = crate::toolbox::handles::thread_kinds()?;
+    let mut prepared =
+        Some(crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                 Store::owned_prepared(objects, backing).map_err(lifetime::pool_status)
+             })?);
+    let result = super::interrupts::with_masked(|| {
+        let mut scheduler = SCHEDULER.lock();
+        if scheduler.records.is_some()
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        scheduler.records = prepared.take();
+        Ok(())
+    });
+    drop(prepared);
+    result
+}
 unsafe extern "C" {
     fn __system_start_frame(frame: *mut TrapFrame) -> !;
 }
@@ -496,23 +541,32 @@ pub(crate) fn has_threads(app: u64) -> bool
 struct ThreadBacking
 {
     // CPU/stack disappear before code-dependent launch/image pins.
-    cpu:    accounting::Charged<super::traps::SavedState>,
-    stack:  accounting::Charged<super::pages::Stack>,
-    loaded: Option<crate::kernel::LoadedImage>
+    cpu:   accounting::Charged<super::traps::SavedState>,
+    stack: Arc<stack::StackBacking>,
+    image: Option<ApplicationImageUse>
+}
+enum ApplicationImageUse
+{
+    Main(crate::kernel::LoadedImage),
+    Child(crate::images::ApplicationExecution)
 }
 struct ThreadCore
 {
+    address:            Mutex<Option<address::Pending>>,
     backing:            Mutex<Option<ThreadBacking>>,
     launch:             Mutex<Option<crate::drivers::WorkerLaunch>>,
     context:            Arc<ThreadContext>,
     release:            Mutex<Option<ReleasedResource>>,
     binding:            crate::images::Binding,
+    space:              Option<super::paging::process::Pin>,
     top:                usize,
     cleanup_refusal:    Mutex<Option<ReapState>>,
     // Only impossible service binding uncertainty fills this prepaid slot.
     // It intentionally retains the original core/ticket until reset.
     service_quarantine: spin::Once<(Arc<ThreadCore>, mac_abi::Status)>,
-    name:               Option<ThreadName>
+    name:               Mutex<Option<ThreadName>>,
+    application:        Option<Arc<application::Completion>>,
+    pending_join:       Mutex<Option<application::PendingJoin>>
 }
 impl ThreadCore
 {
@@ -544,20 +598,32 @@ pub(crate) struct PreparedThread
     owner:      crate::toolbox::handles::OwnerRef,
     core:       mac_object_table::retained::Read<ThreadCore>,
     allocation: accounting::AllocationAuthority,
-    recovery:   Option<crate::allocator::recovery::Permit>
+    recovery:   Option<crate::allocator::recovery::Permit>,
+    heap:       crate::toolbox::application_heap::RootBinding
 }
 pub(crate) struct PrepareFailure
 {
     pub(crate) status: mac_abi::Status,
     pub(crate) loaded: crate::kernel::LoadedImage
 }
+#[derive(Clone, Copy)]
+pub(crate) enum SpawnRefusal
+{
+    RetryableAdmission,
+    TerminalBinding,
+    Cancelled
+}
 pub(crate) struct SpawnFailure
 {
-    pub(crate) status:   mac_abi::Status,
-    pub(crate) prepared: PreparedThread
+    pub(crate) disposition: SpawnRefusal,
+    pub(crate) status:      mac_abi::Status,
+    pub(crate) prepared:    PreparedThread
 }
 pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
-                      loaded: crate::kernel::LoadedImage, charges: accounting::ThreadCharges)
+                      loaded: crate::kernel::LoadedImage, charges: accounting::ThreadCharges,
+                      heap: crate::toolbox::application_heap::RootBinding,
+                      tls: crate::toolbox::native_threads::RootBinding,
+                      space: super::paging::process::Pin)
                       -> Result<PreparedThread, PrepareFailure>
 {
     let target = crate::allocator::Target::Owner { account: charges.allocation().clone(),
@@ -567,11 +633,23 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
     // borrowed until every fallible preparation has succeeded, so refusal can
     // return the original image use without publishing or losing it.
     let prepared = crate::context::with_allocation(target, || {
-        if !owner.accepting() || loaded.binding().owner() != owner.owner().incarnation()
+        if !owner.accepting()
+           || owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+           || loaded.binding().owner() != owner.owner().incarnation()
+           || heap.owner() != owner.owner()
+           || charges.allocation().owner() != owner.owner()
+           || !space.matches(&owner, loaded.binding())
         {
             return Err(mac_abi::ACCESS_DENIED);
         }
         let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
+        let slots = crate::toolbox::native_threads::prepare_slots(&owner, &tls).map_err(|cause| {
+                                                                                   cause.status()
+                                                                               })?;
+        context.install_tls(slots).map_err(|(cause, slots)| {
+                                       drop(slots);
+                                       cause.status()
+                                   })?;
         let (stack, cpu, allocation) = charges.allocate(&owner, |top| {
                                                   let mut initial = TrapFrame::default();
                                                   initial.pc = app_start as *const () as usize;
@@ -587,18 +665,25 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                                   error.status()
                                               })?;
         let top = stack.top();
-        let core = Arc::try_new(ThreadCore { backing:
+        let stack = stack::StackBacking::prepare(&owner, stack)?;
+        let core = Arc::try_new(ThreadCore { address: Mutex::new(None),
+                                             backing:
                                                  Mutex::new(Some(ThreadBacking { cpu,
                                                                                  stack,
-                                                                                 loaded: None })),
+                                                                                 image: None })),
                                              launch: Mutex::new(None),
                                              context,
                                              release: Mutex::new(None),
                                              binding: loaded.binding(),
+                                             space: Some(space),
                                              top,
                                              cleanup_refusal: Mutex::new(None),
                                              service_quarantine: spin::Once::new(),
-                                             name: None }).map_err(|_| mac_abi::NO_MEMORY)?;
+                                             name: Mutex::new(None),
+                                             application: None,
+                                             pending_join: Mutex::new(None) }).map_err(|_| {
+                                                                                  mac_abi::NO_MEMORY
+                                                                              })?;
         Ok((core, allocation))
     });
     match prepared
@@ -614,7 +699,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
             };
             match storage.backing.get_mut().as_mut()
             {
-                Some(backing) => backing.loaded = Some(loaded),
+                Some(backing) => backing.image = Some(ApplicationImageUse::Main(loaded)),
                 None =>
                 {
                     return Err(PrepareFailure { status: mac_abi::BAD_ABI,
@@ -625,7 +710,8 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                 core: mac_object_table::retained::Read::new(core,
                                                                             context_released),
                                 allocation,
-                                recovery: None })
+                                recovery: None,
+                                heap })
         }
         Err(status) =>
         {
@@ -643,7 +729,9 @@ pub(crate) struct RecoveryPrepareFailure
 /// The same process entry, CPU frame and THRD publication use boot-held native
 /// backing. All fallible control-block work precedes consumption of the loan.
 pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
-                               charges: accounting::ThreadCharges, loan: FinderBackingLoan)
+                               charges: accounting::ThreadCharges, loan: FinderBackingLoan,
+                               heap: crate::toolbox::application_heap::RootBinding,
+                               tls: crate::toolbox::native_threads::RootBinding)
                                -> Result<PreparedThread, RecoveryPrepareFailure>
 {
     let permit = loan.permit();
@@ -656,24 +744,48 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
                || owner.owner().kind() != mac_object_table::domain::DomainKind::Process
                || owner.owner().incarnation() != crate::context::finder_app().0
                || loaded.binding().owner() != owner.owner().incarnation()
+               || heap.owner() != owner.owner()
+               || charges.allocation().owner() != owner.owner()
             {
                 return Err(mac_abi::ACCESS_DENIED);
             }
+            let space = super::paging::process::admit_recovery(&owner,
+                                                               charges.allocation(),
+                                                               &loaded,
+                                                               permit.clone()).map_err(|cause| {
+                            serial!("PROCESS_SPACE_REFUSED owner={} {cause}",
+                                    owner.owner().incarnation());
+                            cause.status()
+                        })?;
             let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
+            let slots =
+                crate::toolbox::native_threads::prepare_slots(&owner, &tls).map_err(|cause| {
+                                                                               cause.status()
+                                                                           })?;
+            context.install_tls(slots).map_err(|(cause, slots)| {
+                                           drop(slots);
+                                           cause.status()
+                                       })?;
             context.install_recovery_default(permit.clone());
-            let core = ThreadCore { backing: Mutex::new(None),
+            let stack_preparation = stack::StackBacking::prepay(&owner)?;
+            let core = ThreadCore { address: Mutex::new(None),
+                                    backing: Mutex::new(None),
                                     launch: Mutex::new(None),
                                     context,
                                     release: Mutex::new(None),
                                     binding: loaded.binding(),
+                                    space: Some(space),
                                     top: 0,
                                     cleanup_refusal: Mutex::new(None),
                                     service_quarantine: spin::Once::new(),
-                                    name: None };
-            Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)
+                                    name: Mutex::new(None),
+                                    application: None,
+                                    pending_join: Mutex::new(None) };
+            let core = Arc::try_new(core).map_err(|_| mac_abi::NO_MEMORY)?;
+            Ok::<_, mac_abi::Status>((core, stack_preparation))
         })
     });
-    let mut core = match metadata
+    let (mut core, stack_preparation) = match metadata
     {
         Ok(core) => core,
         Err(status) =>
@@ -709,89 +821,69 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
         }
     };
     storage.top = stack.top();
+    let stack = stack_preparation.finish(stack);
     *storage.backing.get_mut() = Some(ThreadBacking { cpu,
                                                       stack,
-                                                      loaded: Some(loaded) });
+                                                      image:
+                                                          Some(ApplicationImageUse::Main(loaded)) });
     Ok(PreparedThread { owner,
                         core: mac_object_table::retained::Read::new(core, context_released),
                         allocation,
-                        recovery: Some(permit) })
+                        recovery: Some(permit),
+                        heap })
 }
 
 pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
                              -> Result<u64, SpawnFailure>
 {
-    match prepared.recovery.clone()
+    let mut disposition = SpawnRefusal::RetryableAdmission;
+    let published = match admission::publish(&prepared, runnable)
     {
-        Some(permit) =>
+        Err(cause) =>
         {
-            crate::context::with_recovery_allocation(permit, || {
-                spawn_prepared_inner(prepared, runnable)
-            })
+            serial!("THREAD_ADMISSION_REFUSED owner={} {cause}",
+                    prepared.owner.owner().incarnation());
+            Err(cause.status())
         }
-        None => spawn_prepared_inner(prepared, runnable)
-    }
-}
-fn spawn_prepared_inner(prepared: PreparedThread, runnable: bool) -> Result<u64, SpawnFailure>
-{
-    let published =
-        (|| {
-            let mut scheduler = SCHEDULER.lock();
-            let slot = crate::allocator::with_system(crate::allocator::SystemClass::Ordinary,
-                                                     || scheduler.prepare())?;
-            if !prepared.owner.accepting()
+        Ok(publication) =>
+        {
+            match publication.assigned
             {
-                return Err(mac_abi::ACCESS_DENIED);
-            }
-            let store = scheduler.records.as_mut().ok_or(mac_abi::BAD_ABI)?;
-            // Shared Store indices grow under their narrow System hook. Its actual
-            // per-owner Claim, slots and completions belong to this admitted child.
-            let publication = crate::context::with_allocation(crate::allocator::Target::Owner {
-                account: prepared.allocation.clone(),
-                class: mac_kernel_model::policy::MemoryClass::Kernel
-            }, || store.insert_with_receipt(&prepared.owner, |id| {
-                Record::Scheduled(Thread { id,
-                         core: prepared.core.share(),
-                         worker: None, scope: None,
-                         state: Cell::new(RunState::new()) })
-            })).map_err(lifetime::pool_status)?;
-            let (id, receipt) = publication.into_parts();
-            if slot == scheduler.threads.len()
-            {
-                scheduler.threads.push(Some(receipt));
-            }
-            else
-            {
-                scheduler.threads[slot] = Some(receipt);
-            }
-            // Publication's receipt remains valid if a stopping walk has already
-            // invalidated ordinary lookup. An unstarted refusal retains the same
-            // preparation; its stack/image pins are never dropped under this lock.
-            let assigned = prepared.core.context.assign(prepared.owner.clone(),
-                                                        id,
-                                                        prepared.core.binding,
-                                                        &prepared.allocation);
-            if let Err(status) = assigned
-            {
-                let removed = scheduler.records.as_mut().and_then(|store| store.remove(id));
-                if removed.is_some()
+                Ok(()) => Ok(publication.id),
+                Err(status) =>
                 {
-                    scheduler.threads[slot] = None;
+                    disposition = SpawnRefusal::TerminalBinding;
+                    let removed = super::interrupts::with_masked(|| {
+                        let mut scheduler = SCHEDULER.lock();
+                        let slot = scheduler.iter().find_map(|(slot, thread)| {
+                                                       (thread.id == publication.id).then_some(slot)
+                                                   });
+                        let removed =
+                            scheduler.records
+                                     .as_mut()
+                                     .and_then(|store| store.remove_with_backing(publication.id));
+                        if let Some(slot) = slot
+                        {
+                            if removed.is_some()
+                            {
+                                scheduler.threads[slot] = None;
+                            }
+                            else if let Some(thread) = scheduler.thread(slot)
+                            {
+                                retire(thread);
+                            }
+                        }
+                        removed
+                    });
+                    // Includes detached canonical owner capacity, not only Record.
+                    // A concurrent walk may already own the row; leave it inert and
+                    // retiring, retaining the same original preparation on refusal.
+                    drop(removed);
+                    Err(status)
                 }
-                else if let Some(thread) = scheduler.thread(slot)
-                {
-                    retire(thread);
-                }
-                drop(scheduler);
-                drop(removed);
-                return Err(status);
             }
-            if let Some(thread) = scheduler.thread(slot)
-            {
-                thread.update(|state| state.live = runnable);
-            }
-            Ok(id)
-        })();
+        }
+    };
     match published
     {
         Ok(id) =>
@@ -820,6 +912,14 @@ fn spawn_prepared_inner(prepared: PreparedThread, runnable: bool) -> Result<u64,
         Err(status) =>
         {
             Err(SpawnFailure { status,
+                               disposition: if prepared.owner.accepting()
+                               {
+                                   disposition
+                               }
+                               else
+                               {
+                                   SpawnRefusal::Cancelled
+                               },
                                prepared })
         }
     }
@@ -836,7 +936,7 @@ pub(crate) fn start_prepared(thread: u64, owner: &OwnerRef) -> Result<(), mac_ab
     {
         return Err(mac_abi::ACCESS_DENIED);
     }
-    if record.state.get().retired
+    if record.state.get().retired || record.state.get().failure_pending
     {
         return Err(mac_abi::SERVICE_BUSY);
     }
@@ -844,37 +944,101 @@ pub(crate) fn start_prepared(thread: u64, owner: &OwnerRef) -> Result<(), mac_ab
     Ok(())
 }
 pub(crate) fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
-                    charges: accounting::ThreadCharges)
+                    charges: accounting::ThreadCharges,
+                    heap: crate::toolbox::application_heap::RootBinding,
+                    tls: crate::toolbox::native_threads::RootBinding,
+                    space: super::paging::process::Pin)
                     -> Result<u64, mac_abi::Status>
 {
-    let prepared = prepare(owner, loaded, charges).map_err(|failure| {
-                                                      let PrepareFailure { status,
-                                                                           loaded } = failure;
-                                                      // Failed preparation retains the unique image
-                                                      // until its caller accepts
-                                                      // the refusal; dispose that lease through its
-                                                      // ordinary owned path.
-                                                      drop(loaded);
-                                                      status
-                                                  })?;
+    let prepared = prepare(owner, loaded, charges, heap, tls, space).map_err(|failure| {
+                       let PrepareFailure { status,
+                                            loaded } = failure;
+                       // Failed preparation retains the unique image
+                       // until its caller accepts
+                       // the refusal; dispose that lease through its
+                       // ordinary owned path.
+                       drop(loaded);
+                       status
+                   })?;
     spawn_prepared(prepared, true).map_err(|failure| failure.status)
 }
 
 extern "C" fn app_start(entry: usize) -> !
 {
     let function: mac_abi::ApplicationEntry = unsafe { core::mem::transmute(entry) };
-    let _status = unsafe { function(crate::kernel::services()) };
-    let mut call = mac_abi::processes::ProcessCall { operation: mac_abi::processes::EXIT,
-                                                     ..Default::default() };
-    unsafe {
-        super::traps::gateway(mac_abi::traps::PROCESS,
-                              (&mut call as *mut mac_abi::processes::ProcessCall).cast(),
-                              core::mem::size_of_val(&call));
-    }
-    loop
+    let status = unsafe { function(crate::kernel::services()) };
+    if status != mac_abi::OK
     {
-        core::hint::spin_loop();
+        app_return_log(format_args!("APPLICATION_ENTRY_RETURNED entry={entry:#x} \
+                                     status={status}\n"));
     }
+    // Entry Status describes the CRT service contract, not the program's
+    // signed main result. A failed entry aborts with a distinct diagnostic;
+    // ordinary main/explicit exit carries its own result through NativeExitCall.
+    let mut call =
+        mac_abi::processes::NativeExitCall { code:     if status == mac_abi::OK { 0 } else { 101 },
+                                             flags:    if status == mac_abi::OK
+                                             {
+                                                 mac_abi::processes::NATIVE_EXIT_NORMAL
+                                             }
+                                             else
+                                             {
+                                                 mac_abi::processes::NATIVE_EXIT_ABORT
+                                             },
+                                             reserved: 0 };
+    let exit_status = unsafe {
+        super::traps::gateway(mac_abi::traps::PROCESS,
+                              (&mut call as *mut mac_abi::processes::NativeExitCall).cast(),
+                              core::mem::size_of_val(&call))
+    };
+    app_return_log(format_args!("APPLICATION_EXIT_RETURNED entry={entry:#x} \
+                                 status={exit_status}; nonreturning System contract lost\n"));
+    // EXIT must consume this canonical continuation. Its unexpected return is
+    // an unrecoverable platform contract failure, reported by the real trap's
+    // loud terminal path. Do not silently retain a spinning app (M-D04).
+    unsafe {
+        core::arch::asm!("unimp", options(noreturn, nostack));
+    }
+}
+
+fn app_return_log(arguments: core::fmt::Arguments<'_>)
+{
+    use core::fmt::Write;
+    struct Text
+    {
+        bytes: [u8; 256],
+        used:  usize
+    }
+    impl Write for Text
+    {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result
+        {
+            if text.len() > self.bytes.len() - self.used
+            {
+                return Err(core::fmt::Error);
+            }
+            self.bytes[self.used..self.used + text.len()].copy_from_slice(text.as_bytes());
+            self.used += text.len();
+            Ok(())
+        }
+    }
+    let mut text = Text { bytes: [0; 256],
+                          used:  0 };
+    if text.write_fmt(arguments).is_err()
+    {
+        let fallback = b"APPLICATION_RETURN_DIAGNOSTIC_OVERFLOW\n";
+        text.bytes[..fallback.len()].copy_from_slice(fallback);
+        text.used = fallback.len();
+    }
+    let mut call = mac_abi::traps::LogCall { bytes:  text.bytes.as_ptr(),
+                                             length: text.used };
+    // The returning app may be on a peer. The actual LOG trap routes the same
+    // continuation before touching fixed-owner firmware; no direct peer UART.
+    let _ = unsafe {
+        super::traps::gateway(mac_abi::traps::LOG,
+                              core::ptr::from_mut(&mut call).cast(),
+                              core::mem::size_of_val(&call))
+    };
 }
 fn arm()
 {
@@ -925,6 +1089,7 @@ fn prepare_system_idle(target: super::traps::execution::IdleTarget)
                           cause.status()
                       })?;
             let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
+
             let name = ThreadName::new("System idle")?;
             let core = Arc::try_new(SystemIdleCore { cpu,
                                                      _stack: stack,
@@ -932,24 +1097,74 @@ fn prepare_system_idle(target: super::traps::execution::IdleTarget)
                                                      target,
                                                      publication: spin::Once::new(),
                                                      name }).map_err(|_| mac_abi::NO_MEMORY)?;
+            let mut permit = admission::thread_permit(&owner).map_err(|cause| {
+                                 serial!("SYSTEM_IDLE_PREPARATION_REFUSED hart={} {cause}",
+                                         core.target.number());
+                                 cause.status()
+                             })?;
+            let mut record = Record::SystemIdle(IdleRecord { id:   permit.id(),
+                                                             core: core.clone() });
+            loop
             {
-                let mut scheduler = SCHEDULER.lock();
-                scheduler.prepare_records()?;
-                let store = scheduler.records.as_mut().ok_or(mac_abi::BAD_ABI)?;
-                let publication = store.insert_with_receipt(&owner, |id| {
-                                           Record::SystemIdle(IdleRecord { id,
-                                                                           core: core.clone() })
-                                       })
-                                       .map_err(lifetime::pool_status)?;
-                let (_, receipt) = publication.into_parts();
-                // No fallible action follows actual native publication. The proof
-                // binds this row's same fresh Arc, canonical System owner and source.
-                core.publication.call_once(|| receipt);
-                ThreadContext::assign_system(SystemThreadBinding { context: core.context
-                                                                                .clone(),
-                                                                   owner,
-                                                                   publication: receipt,
-                                                                   resources });
+                let result =
+                    super::interrupts::with_masked(|| {
+                        let mut scheduler = SCHEDULER.lock();
+                        let published = match scheduler.records.as_mut()
+                        {
+                            Some(store) => store.publish_prepared(permit, record)
+                                                .map_err(|failure| {
+                                                    (admission::Error::Publication(failure.cause),
+                                                     failure.permit,
+                                                     failure.value)
+                                                }),
+                            None =>
+                            {
+                                Err((admission::Error::Admission { status: mac_abi::BAD_ABI,
+                                                                   stage:  "canonical System idle \
+                                                                            THRD Store" },
+                                     permit,
+                                     record))
+                            }
+                        };
+                        match published
+                        {
+                            Err(failure) => Err(failure),
+                            Ok((publication, old)) =>
+                            {
+                                let (_, receipt) = publication.into_parts();
+                                // Only this successful canonical birth constructs the
+                                // sealed System binding. Idle never enters the run queue.
+                                core.publication.call_once(|| receipt);
+                                ThreadContext::assign_system(SystemThreadBinding {
+                                    context: core.context.clone(),
+                                    owner: owner.clone(),
+                                    publication: receipt,
+                                    resources
+                                });
+                                Ok(old)
+                            }
+                        }
+                    });
+                match result
+                {
+                    Ok(old) =>
+                    {
+                        old.dispose();
+                        break;
+                    }
+                    Err((cause, returned_permit, returned_record)) =>
+                    {
+                        permit = returned_permit;
+                        record = returned_record;
+                        if !matches!(cause, admission::Error::Publication(
+                            mac_object_table::store::PreparedError::CapacityChanged))
+                        {
+                            serial!("SYSTEM_IDLE_PUBLICATION_REFUSED hart={} {cause}",
+                                    core.target.number());
+                            return Err(cause.status());
+                        }
+                    }
+                }
             }
             serial!("SYSTEM_IDLE_REGISTERED thread={} hart={} name={}",
                     core.context.identity().thread.0,
@@ -960,7 +1175,8 @@ fn prepare_system_idle(target: super::traps::execution::IdleTarget)
     })
 }
 
-pub(crate) fn start() -> Result<(), StartError>
+pub(crate) fn start(pending: Option<crate::toolbox::processes::startup::PendingStartup>)
+                    -> Result<(), StartError>
 {
     let interval = super::monitor::microseconds_to_ticks_ceil(QUANTUM_MICROSECONDS)
         .map_err(StartError::Clock)?;
@@ -978,18 +1194,45 @@ pub(crate) fn start() -> Result<(), StartError>
     // Peers remain AdmittedIdle; this grants no dispatch policy permission.
     super::smp::initialize().map_err(StartError::Cpus)?;
     let wake_receiver = super::monitor::prepare_primary_wake().map_err(StartError::Wake)?;
+    if let Some(token) = pending
+    {
+        // Only the actual installed initial Finder flight authorizes this
+        // route. An absent runnable Finder alone must remain a boot error.
+        if !crate::toolbox::processes::startup::pending(&token)
+        {
+            return Err(mac_formats::Error::Malformed("scheduler startup token has no retained \
+                                                      initial Finder readiness flight").into());
+        }
+        let hart = selected_hart();
+        let frame = idle_frame();
+        super::traps::execution::select_space(None);
+        activate_idle_context();
+        select_current(IDLE);
+        super::traps::execution::dispatch::idle_committed(hart, frame);
+        // StartupFlight owns all real admission/job/image/boot-panel resources.
+        // This sealed, non-Clone token owns no account pin and must not survive
+        // forever on the abandoned bootstrap stack.
+        drop(token);
+        arm();
+        wake::admitted(wake_receiver);
+        hart.resume_activity(true);
+        unsafe {
+            super::paging::activate_scheduled_root();
+            __system_start_frame(frame)
+        }
+    }
     let scheduler = SCHEDULER.lock();
     // Module preparations can precede Finder in the shared THRD store. Start
     // the genuine runnable Finder process, never an inert/armed module slot.
     let finder = crate::context::finder_app().0;
+    let hart = selected_hart();
     let (slot, t) =
         scheduler.iter()
                  .find(|(_, thread)| {
                      let state = thread.state.get();
                      thread.worker.is_none()
                      && thread.core.context.identity().app.0 == finder
-                     && state.live
-                     && !state.retired
+                     && state.selectable(hart, false)
                  })
                  .ok_or(mac_formats::Error::Malformed("scheduler bootstrap has no runnable \
                                                        Finder process"))?;
@@ -997,7 +1240,6 @@ pub(crate) fn start() -> Result<(), StartError>
         t.core
          .cpu_frame()
          .ok_or(mac_formats::Error::Malformed("scheduler bootstrap Finder has no CPU backing"))?;
-    let hart = selected_hart();
     if !t.state.get().allows(hart)
     {
         return Err(mac_formats::Error::Malformed("scheduler bootstrap Finder violates actual \
@@ -1007,6 +1249,7 @@ pub(crate) fn start() -> Result<(), StartError>
     {
         return Err(mac_formats::Error::Malformed("scheduler bootstrap Finder is already claimed").into());
     }
+    select_space(&t.core);
     t.commit_execution(hart);
     t.core.publish_cpu();
     activate_context(Some(&t.core.context));
@@ -1017,7 +1260,11 @@ pub(crate) fn start() -> Result<(), StartError>
     // Publish the real receiver, then notify only retained callable/cleanup work.
     wake::admitted(wake_receiver);
     hart.resume_activity(false);
-    unsafe { __system_start_frame(frame) }
+    // The genuine selected claim pins its SPCE throughout restoration.
+    unsafe {
+        super::paging::activate_scheduled_root();
+        __system_start_frame(frame)
+    }
 }
 extern "C" fn idle() -> !
 {
@@ -1166,6 +1413,14 @@ pub fn wait_io(job: crate::context::DeferredIo) -> Result<bool, mac_abi::Status>
     service::suspension_allowed(thread.state.get())?;
     let pending = match job
     {
+        crate::context::DeferredIo::FileOperation(handle) =>
+        {
+            crate::toolbox::files::local::pending::io_pending(thread.core
+                                                                    .context
+                                                                    .identity()
+                                                                    .thread,
+                                                              handle)?
+        }
         crate::context::DeferredIo::FileTransfer(handle) =>
         {
             crate::toolbox::files::transfer_io_pending(thread.id, handle)?
@@ -1212,6 +1467,10 @@ fn retire(thread: &Thread)
                   state.retired = true;
                   state.service.retire_committed();
               });
+        if let Some(completion) = thread.core.application.as_ref()
+        {
+            completion.retire();
+        }
         RETIRED_COUNT.fetch_add(1, Ordering::AcqRel);
     }
     RECLAIM_PENDING.store(true, Ordering::Release);
@@ -1220,6 +1479,8 @@ fn retire(thread: &Thread)
 /// retains its original job cancellation owner, including after invalidation.
 pub(crate) fn retire_owner(owner: u64)
 {
+    address::cancel_owner(owner);
+    application::cancel_owner(owner);
     let mut after = 0;
     loop
     {
@@ -1258,6 +1519,7 @@ pub(crate) fn reclaim_retired()
     {
         return;
     }
+    address::release_retired();
     let mut after = 0;
     loop
     {
@@ -1279,6 +1541,13 @@ pub(crate) fn reclaim_retired()
                                             }
                                             if Arc::strong_count(&thread.core) != 1
                                                || Arc::strong_count(&thread.core.context) != 1
+                                               || thread.core
+                                                        .backing
+                                                        .lock()
+                                                        .as_ref()
+                                                        .is_none_or(|backing| {
+                                                            Arc::strong_count(&backing.stack) != 1
+                                                        })
                                             {
                                                 return None;
                                             }
@@ -1418,6 +1687,11 @@ fn release_claim(scheduler: &Scheduler, slot: usize, hart: HartKey)
         RECLAIM_PENDING.store(true, Ordering::Release);
     }
     worker::execution_released(thread);
+    application::execution_released(&scheduler, thread);
+    if thread.state.get().failure_pending
+    {
+        crate::toolbox::processes::termination::progress();
+    }
     let released = thread.state.get();
     if released.ready()
     {
@@ -1494,6 +1768,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
                 reclaim_retired();
                 crate::drivers::scheduler::pump();
                 crate::drivers::pump_jobs();
+                crate::toolbox::processes::startup::pump();
                 crate::toolbox::files::pump_provider_operations();
                 crate::toolbox::files::installed_fonts::pump();
                 crate::toolbox::runtime::Toolbox::pump_standard_file();
@@ -1502,15 +1777,21 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
                 crate::toolbox::crashes::pump_dismissals();
                 crate::toolbox::crashes::pump_reports();
                 crate::toolbox::processes::documents::pump();
+                crate::toolbox::native_threads::pump();
+                crate::toolbox::application_heap::wait::pump();
+                crate::kernel::pump_module_images();
                 crate::toolbox::processes::retirement::pump();
                 crate::toolbox::processes::finder::pump();
+                crate::toolbox::processes::termination::pump();
+                application::pump_rights();
             }
         });
     }
     let mut scheduler = SCHEDULER.lock();
     validate_capture(&scheduler, &capture);
     scheduler.ticks += 1;
-    wake_deadlines(&scheduler, crate::platform::ticks());
+    let now = crate::platform::ticks();
+    wake_deadlines(&scheduler, now);
     // Deadline/wake edits above precede Round.now. No scheduler guard or
     // mutable frame borrow may cross foreign policy entry.
     let preferred = if hart.dispatch_eligible() && crate::drivers::scheduler::configured()
@@ -1594,15 +1875,12 @@ fn commit_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture, in
     {
         let thread = scheduler.thread(index)?;
         let state = thread.state.get();
-        if !state.live
-           || state.retired
-           || state.waiting.is_some()
-           || !state.allows(hart)
-           || !(state.claimed_by.is_none() || (index == current && state.claimed_by == Some(hart)))
+        if !state.selectable(hart, index == current)
         {
             return None;
         }
         let next = if index == current { capture.frame() } else { thread.core.cpu_frame()? };
+        select_space(&thread.core);
         worker::commit_resume(thread);
         thread.commit_execution(hart);
         thread.core.publish_cpu();
@@ -1616,6 +1894,7 @@ fn commit_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture, in
     }
     let next = if current == IDLE { capture.frame() } else { idle_frame() };
     activate_idle_context();
+    super::traps::execution::select_space(None);
     select_current(IDLE);
     release_claim(scheduler, current, hart);
     super::traps::execution::dispatch::idle_committed(hart, next);
@@ -1624,10 +1903,12 @@ fn commit_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture, in
 
 fn wake_deadlines(scheduler: &Scheduler, now: u64)
 {
+    let invalidated = address::take_invalidations();
     for (_, thread) in scheduler.iter()
     {
+        address::observe(thread, now, invalidated);
         if matches!(thread.state.get().waiting,
-            Some(Wait::Events { deadline, .. } | Wait::Worker { deadline: Some(deadline) }) if now >= deadline)
+            Some(Wait::Events { deadline, .. } | Wait::Worker { deadline: Some(deadline) } | Wait::Sleep { deadline }) if now >= deadline)
         {
             thread.update(|state| state.waiting = None);
             if let Some(worker) = &thread.worker
@@ -1658,10 +1939,7 @@ fn bootstrap_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture)
     let priority = scheduler.iter()
                             .filter(|(slot, t)| {
                                 let state = t.state.get();
-                                state.live
-                                && state.allows(hart)
-                                && (state.claimed_by.is_none()
-                                    || (*slot == current && state.claimed_by == Some(hart)))
+                                state.selectable(hart, *slot == current)
                             })
                             .map(|(_, t)| t.state.get().woken)
                             .max()
@@ -1684,12 +1962,7 @@ fn bootstrap_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture)
                 continue;
             };
             let state = thread.state.get();
-            if state.live
-               && state.allows(hart)
-               && !state.retired
-               && (state.claimed_by.is_none()
-                   || (index == current && state.claimed_by == Some(hart)))
-               && if boosted { state.woken == priority } else { state.waiting.is_none() }
+            if state.selectable(hart, index == current) && (!boosted || state.woken == priority)
             {
                 if index == current || thread.core.cpu_frame().is_some()
                 {
@@ -1701,9 +1974,15 @@ fn bootstrap_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture)
     None
 }
 
-pub fn retired() -> bool
+/// Called only after the outer trap's service and frame borrows have ended.
+/// A pending failure may still drain genuine Host leases; only the actual
+/// quiescent park forbids resuming that author continuation.
+pub(crate) fn must_leave_current() -> bool
 {
-    SCHEDULER.lock().thread(current()).is_some_and(|t| t.state.get().retired)
+    SCHEDULER.lock().thread(current()).is_some_and(|thread| {
+                                          let state = thread.state.get();
+                                          state.retired || state.failure_parked
+                                      })
 }
 pub fn image_for(app: u64) -> Option<crate::images::Binding>
 {
@@ -1713,4 +1992,46 @@ pub fn image_for(app: u64) -> Option<crate::images::Binding>
                                                                    })
                                                                    .flatten()
                            })
+}
+
+/// The actual SCHEDULER turn pins this space through the outgoing claim.
+/// Final native return reads the selected hart's scalar without another lock.
+fn select_space(core: &ThreadCore)
+{
+    if core.context.is_module_worker()
+    {
+        if core.space.is_some()
+        {
+            super::traps::entry_lost("module THRD carries a Process space")
+        }
+        super::traps::execution::select_space(None);
+    }
+    else
+    {
+        let Some(space) = core.space.as_ref()
+        else
+        {
+            super::traps::entry_lost("application THRD has no canonical Process space")
+        };
+        if space.owner().incarnation() != core.binding.owner()
+        {
+            super::traps::entry_lost("application THRD Process space owner changed")
+        }
+        super::traps::execution::select_space(Some(space));
+    }
+}
+
+fn application_space(executor: &crate::context::ApplicationExecutor<'_>)
+                     -> Result<super::paging::process::Pin, mac_abi::Status>
+{
+    let scheduler = SCHEDULER.lock();
+    let thread = scheduler.iter()
+                          .find_map(|(_, t)| (t.id == executor.thread()).then_some(t))
+                          .ok_or(mac_abi::WRONG_THREAD)?;
+    let space = thread.core.space.as_ref().ok_or(mac_abi::ACCESS_DENIED)?;
+    if !space.matches(executor.owner(), executor.image())
+    {
+        return Err(mac_abi::ACCESS_DENIED);
+    }
+    Ok(space.clone())
 }

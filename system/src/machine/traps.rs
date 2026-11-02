@@ -110,6 +110,47 @@ pub(crate) fn validate_stack_configuration(
     Ok(())
 }
 
+/// Complete warm requests in their one existing Desktop turn. Only a validated
+/// cold miss ends that borrow before page/monitor work, then re-enters and
+/// revalidates. No borrowed manager state or synthetic worker crosses the gap.
+enum DefinitionTurn<T>
+{
+    Complete(T),
+    Prepare
+    {
+        kind: [u8; 4],
+        id:   i16
+    }
+}
+fn definition_request<T>(mut run: impl FnMut(&mut crate::toolbox::runtime::Toolbox)
+                               -> Result<DefinitionTurn<T>, Status>)
+                         -> Result<T, Status>
+{
+    let first =
+        crate::kernel::with_toolbox(|toolbox| run(toolbox)).map_err(|cause| cause.status())??;
+    let (kind, id) = match first
+    {
+        DefinitionTurn::Complete(result) => return Ok(result),
+        DefinitionTurn::Prepare { kind,
+                                  id } => (kind, id)
+    };
+    crate::loader::prepare_definition(kind, id).map_err(|cause| {
+                                                   serial!("DEFINITION_PREPARATION_REFUSED \
+                                                            kind={:?} id={} cause={}",
+                                                           kind,
+                                                           id,
+                                                           cause);
+                                                   crate::loader::status(cause)
+                                               })?;
+    match crate::kernel::with_toolbox(|toolbox| run(toolbox)).map_err(|cause| cause.status())??
+    {
+        DefinitionTurn::Complete(result) => Ok(result),
+        // Source/request admission changed while the same real cold work was
+        // outside the manager. Do not spin or commit with a mismatched source.
+        DefinitionTurn::Prepare { .. } => Err(SERVICE_BUSY)
+    }
+}
+
 /// Local CSR installation only. Warm entry uses this while its Control stays
 /// poisoned; it must not initialize global tracing or use firmware logging.
 fn install_local()
@@ -131,12 +172,25 @@ extern "C" fn __system_trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame
     // SAFETY: traps.S saved the complete frame on owned storage and hardware
     // cleared SIE before entering this sole native trap boundary.
     match unsafe {
-              super::paging::with_kernel(|| {
+              super::paging::with_kernel((*frame).prior_depth == 0, || {
                   // SAFETY: assembly saved the complete live frame. This borrow ends,
                   // including service/context readers, before any ownership handoff.
                   let (action, outer) = {
                       let borrowed = &mut *frame;
                       (dispatch_frame(borrowed), borrowed.prior_depth == 0)
+                  };
+                  // Every early service/Host/refusal branch reaches this one
+                  // guard-free outer return. A safe-parked author must hand off
+                  // its genuine claim rather than resume through such a branch.
+                  let action = if outer
+                                  && matches!(action, Dispatch::Resume)
+                                  && super::scheduler::must_leave_current()
+                  {
+                      Dispatch::Schedule
+                  }
+                  else
+                  {
+                      action
                   };
                   let next = match action
                   {
@@ -333,17 +387,28 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
     {
         Ok(())
     };
-    let result = if let Err(status) = admission
+    let (result, action) = if let Err(status) = admission
     {
-        status as i64
+        (status as i64, super::scheduler::service::RequestAction::Return)
     }
     else if matches!(number, WAIT_EVENT | POSITIONED_EVENT) && physical_depth != 1
     {
-        WRONG_THREAD as i64
+        (WRONG_THREAD as i64, super::scheduler::service::RequestAction::Return)
+    }
+    else if matches!(number, NATIVE_THREAD | ADDRESS_WAIT)
+              || (number == PROCESS && size == size_of::<mac_abi::processes::NativeExitCall>())
+    {
+        let identity = super::scheduler::service::request_identity(frame);
+        let suspension = super::scheduler::service::request_suspension_allowed(frame);
+        let response = hart::service_scope(physical_depth == 1, || unsafe {
+            dispatch_native_request(number, request, size, identity, suspension)
+        });
+        (i64::from(response.status), response.action)
     }
     else
     {
-        hart::service_scope(physical_depth == 1, || unsafe { dispatch(number, request, size) })
+        (hart::service_scope(physical_depth == 1, || unsafe { dispatch(number, request, size) }),
+         super::scheduler::service::RequestAction::Return)
     };
     #[cfg(feature = "event-trace")]
     {
@@ -370,6 +435,11 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
             // delivery while cancellation safely drains the owned request.
             match job
             {
+                crate::context::DeferredIo::FileOperation(handle) =>
+                {
+                    crate::toolbox::files::local::pending::abandon(thread.identity().thread,
+                                                                   Some(handle))
+                }
                 crate::context::DeferredIo::FileTransfer(handle) =>
                 {
                     crate::toolbox::files::abandon_transfer_waiter(thread.identity().thread.0,
@@ -397,8 +467,17 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
             }
         }
     }
+    if action == super::scheduler::service::RequestAction::Replay
+    {
+        // Every Call/executor/manager borrow has ended. The original PC and
+        // request identity remain owned by this same canonical continuation.
+        return Dispatch::Schedule;
+    }
     finish_service(frame, completion, result);
-    if physical_depth == 1 && super::scheduler::retired()
+    if physical_depth == 1
+       && matches!(action,
+                   super::scheduler::service::RequestAction::Yield
+                   | super::scheduler::service::RequestAction::Exit)
     {
         return Dispatch::Schedule;
     }
@@ -514,6 +593,119 @@ unsafe fn request<'a, T>(pointer: *mut (), size: usize) -> Option<&'a mut T>
     }
 }
 
+/// Bounded, nonallocating per-call detail. Preserve UTF-8 boundaries and the
+/// original typed status; diagnostics never classify or replace the cause.
+fn application_heap_refusal(call: &mut application_heap::Call, status: Status,
+                            cause: &impl core::fmt::Display)
+                            -> Status
+{
+    use core::fmt::Write;
+    struct Detail<'a>
+    {
+        bytes: &'a mut [u8],
+        used:  usize
+    }
+    impl Write for Detail<'_>
+    {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result
+        {
+            let mut count = text.len().min(self.bytes.len() - self.used);
+            while !text.is_char_boundary(count)
+            {
+                count -= 1;
+            }
+            self.bytes[self.used..self.used + count].copy_from_slice(&text.as_bytes()[..count]);
+            self.used += count;
+            if count == text.len() { Ok(()) } else { Err(core::fmt::Error) }
+        }
+    }
+    call.result = core::ptr::null_mut();
+    let mut detail = Detail { bytes: &mut call.detail,
+                              used:  0 };
+    let _ = write!(&mut detail, "{cause}");
+    call.detail_length = detail.used as u32;
+    status
+}
+
+/// Actual action-bearing native families. Each request borrow ends before the
+/// caller commits its saved frame or schedules a different continuation.
+unsafe fn dispatch_native_request(number: u32, pointer: *mut (), size: usize,
+                                  identity: super::scheduler::service::RequestIdentity,
+                                  suspension: Result<(), Status>)
+                                  -> super::scheduler::service::RequestResult
+{
+    use super::scheduler::service::RequestResult;
+    match number
+    {
+        PROCESS =>
+        {
+            match unsafe { request::<mac_abi::processes::NativeExitCall>(pointer, size) }
+            {
+                Some(call) => toolbox::processes::termination::request(call, suspension),
+                None => RequestResult::done(BAD_ARGUMENT)
+            }
+        }
+        NATIVE_THREAD =>
+        {
+            match unsafe { request::<mac_abi::native_threads::Call>(pointer, size) }
+            {
+                Some(call) =>
+                {
+                    let mut name = [0u8; mac_module::MAX_NAME_BYTES];
+                    toolbox::native_threads::thread_request::request(
+                                                                     call,
+                                                                     identity,
+                                                                     suspension,
+                                                                     |pointer, length| {
+                                                                         use super::scheduler::application::Error;
+                                                                         if length > name.len() || (length != 0 && pointer.is_null())
+                            {
+                                return Err(Error::Invalid("thread name pointer/length exceeds bounded inline storage"));
+                            }
+                                                                         if length != 0
+                                                                         {
+                                                                             // SAFETY: the native
+                                                                             // supervisor ABI
+                                                                             // requires readable
+                                                                             // input
+                                                                             // for this synchronous
+                                                                             // call. Copy before
+                                                                             // scheduler guards;
+                                                                             // scalar validation
+                                                                             // and bounded length
+                                                                             // precede this access.
+                                                                             name[..length].copy_from_slice(unsafe {
+                                    core::slice::from_raw_parts(pointer, length)
+                                });
+                                                                         }
+                                                                         core::str::from_utf8(&name[..length])
+                                .map_err(|_| Error::Invalid("thread name is not UTF-8"))
+                                                                     }
+                    )
+                }
+                None =>
+                {
+                    super::scheduler::application::cancel_current();
+                    RequestResult::done(BAD_ARGUMENT)
+                }
+            }
+        }
+        ADDRESS_WAIT =>
+        {
+            match unsafe { request::<mac_abi::address_wait::Call>(pointer, size) }
+            {
+                Some(call) => super::scheduler::address::request(call, identity, suspension),
+                None =>
+                {
+                    super::scheduler::address::cancel_current();
+                    RequestResult::done(BAD_ARGUMENT)
+                }
+            }
+        }
+        _ => RequestResult::done(NOT_SUPPORTED)
+    }
+}
+
 /// Native modules still share trusted supervisor mappings. Size/alignment are checked here;
 /// valid live pointees remain the calling module's ABI contract, not an MMU guarantee.
 unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
@@ -535,6 +727,52 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
     }
     match number
     {
+        ENTROPY =>
+        {
+            let call = read_request!(mac_abi::entropy::Call);
+            if call.capacity as usize > mac_abi::entropy::MAX_CAPACITY
+               || (call.capacity != 0 && call.output.is_null())
+            {
+                toolbox::entropy::abandon_thread(crate::context::current_thread());
+                return toolbox::entropy::refusal(call,
+                                                 BAD_ARGUMENT,
+                                                 format_args!("entropy output pointer/capacity \
+                                                               is invalid"))
+                       as i64;
+            }
+            // Trusted native supervisor ABI: the caller owns this valid mutable
+            // span for the synchronous call. No slice survives park/replay.
+            let output = if call.capacity == 0
+            {
+                &mut []
+            }
+            else
+            {
+                unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity as usize) }
+            };
+            toolbox::entropy::request(call, output) as i64
+        }
+        TLS =>
+        {
+            let call = read_request!(mac_abi::tls::Call);
+            toolbox::native_threads::native::request(call) as i64
+        }
+        APPLICATION_HEAP =>
+        {
+            let call = read_request!(application_heap::Call);
+            call.result = core::ptr::null_mut();
+            call.detail_length = 0;
+            // Only a borrowed, actual process baseline authorizes this heap.
+            // Service placement and ambient module/I/O selections grant none.
+            match crate::context::with_application_executor(|executor| unsafe {
+                      toolbox::application_heap::request(executor, call)
+                  })
+            {
+                Ok(Ok(())) => OK as i64,
+                Ok(Err(cause)) => application_heap_refusal(call, cause.status(), &cause) as i64,
+                Err(cause) => application_heap_refusal(call, cause.status(), &cause) as i64
+            }
+        }
         POWER =>
         {
             let call = read_request!(mac_abi::power::PowerCall);
@@ -744,6 +982,18 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                 let call = read_request!(files::FileCall);
                 if matches!(call.operation,
                             files::OPEN
+                            | files::OPEN_OPTIONS
+                            | files::WRITE
+                            | files::READ
+                            | files::SEEK
+                            | files::TELL
+                            | files::SET_LENGTH
+                            | files::SYNC
+                            | files::CURRENT_DIRECTORY
+                            | files::CHANGE_DIRECTORY
+                            | files::RESOLVE_PATH
+                            | files::OPEN_PATH
+                            | files::CURRENT_EXECUTABLE_PATH
                             | files::WATCH_DIRECTORY
                             | files::POLL_WATCH
                             | files::DISPOSE_WATCH)
@@ -813,8 +1063,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         DRAG =>
         unsafe {
             toolbox::drag::native::dispatch(pointer, size, |call, input, output| {
-                crate::kernel::with_toolbox(|runtime| runtime.drag_request(call, input, output))
-                    .map_err(|error| error.status())?
+                toolbox::runtime::native_drag(call, input, output)
             })
         },
         SCRAP =>
@@ -837,7 +1086,14 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         SCROLL_BOX =>
         unsafe {
             toolbox::controls::scrollbox_native::dispatch(pointer, size, |call| {
-                crate::kernel::with_toolbox(|toolbox|toolbox.scroll_box(call)).unwrap_or_else(|e|Err(e.status()))
+                definition_request(|toolbox| {
+                    if toolbox.preflight_scroll_box(call)?
+                    {
+                        return Ok(DefinitionTurn::Prepare { kind: *b"CDEF",
+                                                            id:   1 });
+                    }
+                    toolbox.scroll_box(call).map(DefinitionTurn::Complete)
+                })
             })
         },
         CONTROL =>
@@ -845,17 +1101,29 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             let call = read_request!(mac_abi::controls::ControlCall);
             if !call.surface.is_null()
             {
-                return crate::kernel::with_toolbox(|runtime| unsafe {
-                           toolbox::controls::native::dispatch(CONTROL,
-                                                               pointer,
-                                                               size,
-                                                               |id| runtime.control_definition(id),
-                                                               gateway)
-                       }).unwrap_or_else(|error| error.status() as i64);
+                return unsafe {
+                    toolbox::controls::native::dispatch(CONTROL,
+                                                        pointer,
+                                                        size,
+                                                        |id| {
+                                                            crate::loader::prepare_definition(*b"CDEF", id).map_err(crate::loader::status)
+                                                        },
+                                                        gateway)
+                };
             }
-            crate::kernel::with_toolbox(|runtime| runtime.control(call)).unwrap_or_else(|error| {
-                                                                            error.status()
-                                                                        }) as i64
+            if matches!(call.operation,
+                        mac_abi::controls::CREATE_STANDARD | mac_abi::controls::CREATE_SCROLLBAR)
+            {
+                return toolbox::runtime::native_control(call) as i64;
+            }
+            definition_request(|runtime| {
+                if let Some(id) = runtime.preflight_control(call)?
+                {
+                    return Ok(DefinitionTurn::Prepare { kind: *b"CDEF",
+                                                        id });
+                }
+                Ok(DefinitionTurn::Complete(runtime.control(call)))
+            }).unwrap_or_else(|status| status) as i64
         }
         GEOMETRY => toolbox::quickdraw::geometry::dispatch(read_request!(GeometryCall)) as i64,
         SURFACE =>
@@ -868,7 +1136,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         WINDOW =>
         {
             let call = read_request!(WindowCall);
-            crate::kernel::with_toolbox(|runtime|runtime.window(call.operation,&mut call.request)).unwrap_or_else(|error|error.status()) as i64
+            toolbox::runtime::native_window(call.operation, &mut call.request) as i64
         }
         DRAW =>
         {
@@ -936,8 +1204,20 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         DEFINITION =>
         {
             let call = read_request!(DefinitionCall);
+            if !call.header.supports::<DefinitionCall>()
+            {
+                return BAD_ABI as i64;
+            }
             call.gate = gateway;
-            crate::kernel::with_toolbox(|runtime| runtime.definition(call)).unwrap_or_else(|error|error.status() as i64)
+            match crate::loader::prepare_definition(call.kind.to_be_bytes(), call.id)
+            {
+                Ok(entry) => toolbox::resources::definitions::invoke(entry, call),
+                Err(cause) =>
+                {
+                    serial!("DEFINITION_UNAVAILABLE: {}", cause);
+                    crate::loader::status(cause) as i64
+                }
+            }
         }
         CLASSIC =>
         {

@@ -5,14 +5,15 @@ use mac_formats::{Error, Result, resource::Resource};
 
 use crate::toolbox::{controls::objects::Manager,
                      quickdraw::{Canvas, Point,
-                                 fonts::{FontManager, FontSelection}}};
+                                 fonts::{FontManager, FontSelection}},
+                     resources::definitions::DefinitionRef};
 mod strip;
 pub(crate) use strip::Refusal as ExtensionRefusal;
 
 pub struct BootScreen
 {
     id:         u64,
-    entry:      DefinitionEntry,
+    entry:      DefinitionRef,
     state:      ControlDefinitionState,
     extensions: strip::Strip
 }
@@ -23,7 +24,7 @@ fn failed(_: Status) -> Error
 impl BootScreen
 {
     pub(crate) fn begin(resources: &[Resource], fonts: &FontManager,
-                        definitions: &mut crate::loader::Definitions, controls: &mut Manager)
+                        source: crate::kernel::SystemResources, controls: &mut Manager)
                         -> crate::loader::LoadResult<Self>
     {
         let title = resources.iter()
@@ -43,7 +44,7 @@ impl BootScreen
                                    .as_slice()
                                    .try_into()
                                    .map_err(|_| Error::Malformed("invalid boot icon resource"))?;
-        let entry = definitions.resolve(*b"CDEF", CDEF_PROGRESS_BAR)?;
+        let entry = crate::loader::prepare_system_definition(source, *b"CDEF", CDEF_PROGRESS_BAR)?;
         // Package admission and theme resolution happen before any paint or
         // module callback. Every outcome then owns ready-to-copy pixels.
         let extensions =

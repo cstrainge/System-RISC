@@ -5,8 +5,6 @@
   "creator": "MACS",
   "role": "code_resource",
   "abi_version": 1,
-  "load_base": "0x82000000",
-  "load_limit": "0x82100000",
   "description": "Native scheduler lifecycle diagnostic",
   "resources": [],
   "extension_target": "system"

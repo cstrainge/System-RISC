@@ -326,11 +326,19 @@ impl<'a, D: BlockDevice> Volume<'a, D>
     {
         match (&mut self.backend, &mut fork.storage)
         {
-            (Backend::Hfs(v), ForkStorage::Hfs(f)) => v.read(f, offset, output),
+            (Backend::Hfs(v), ForkStorage::Hfs(f)) =>
+            {
+                if offset >= fork.length { Ok(0) } else { v.read(f, offset, output) }
+            }
             (Backend::HfsB(v),
              ForkStorage::HfsB { id,
                                  kind }) =>
             {
+                fork.length = v.entry(*id).map_err(native_error)?.fork(*kind).length;
+                if offset >= fork.length
+                {
+                    return Ok(0);
+                }
                 v.read_fork(*id, *kind, offset, output).map_err(native_error)
             }
             _ => Err(Error::Malformed("foreign filesystem fork descriptor"))

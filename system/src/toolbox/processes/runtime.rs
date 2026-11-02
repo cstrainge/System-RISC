@@ -1,7 +1,7 @@
 //! App-local state is swapped only at the interrupt-masked service boundary.
 //! The compositor/window registry are shared; applications never select identity.
 #![forbid(unsafe_code)]
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 
 use mac_abi::{events::{Event, EventKind},
               geometry::Point,
@@ -9,9 +9,17 @@ use mac_abi::{events::{Event, EventKind},
               *};
 
 use crate::toolbox::{events::EventManager,
-                     processes::menu::{Action, Entry},
+                     handles::{DirectoryCapacityError, DirectoryCapacityPlan, OwnerRef,
+                               PreparedDirectoryCapacity},
+                     processes::{PreparedProcess, Process, ResourceBinding,
+                                 menu::{Action, Entry},
+                                 termination::{Outcome, Retention}},
+                     resources::definitions::DefinitionRef,
                      runtime::Toolbox,
                      windows::{GroupFocus, WindowId}};
+
+#[path = "runtime/system_report.rs"]
+pub(super) mod system_report;
 
 pub(super) struct Saved
 {
@@ -24,9 +32,136 @@ pub(super) struct Saved
     events:       Box<EventManager>,
     textedit:     crate::toolbox::textedit::Manager
 }
+
+/// Empty storage only: neither this plan nor its prepared buffers authenticate
+/// an owner or reserve a process identity. Final admission revalidates both.
+pub(crate) struct FinderCapacityPlan
+{
+    processes: DirectoryCapacityPlan<Process>,
+    locals:    usize,
+    mdef:      DefinitionRef
+}
+#[must_use = "dispose detached and obsolete Finder directory buffers outside Desktop"]
+pub(crate) struct FinderCapacity
+{
+    processes: PreparedDirectoryCapacity<Process>,
+    locals:    Vec<Saved>
+}
+#[derive(Debug)]
+pub(crate) enum FinderCapacityError
+{
+    Directory(DirectoryCapacityError),
+    Geometry,
+    Storage
+    {
+        entries: usize
+    },
+    Changed
+    {
+        required: usize,
+        prepared: usize
+    }
+}
+impl FinderCapacityError
+{
+    pub(crate) fn status(&self) -> Status
+    {
+        match self
+        {
+            Self::Directory(DirectoryCapacityError::Storage { .. }) | Self::Storage { .. } =>
+            {
+                NO_MEMORY
+            }
+            Self::Directory(DirectoryCapacityError::Changed { .. }) | Self::Changed { .. } =>
+            {
+                SERVICE_BUSY
+            }
+            Self::Directory(DirectoryCapacityError::Geometry { .. }) | Self::Geometry =>
+            {
+                BAD_ARGUMENT
+            }
+        }
+    }
+}
+impl core::fmt::Display for FinderCapacityError
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Directory(cause) => cause.fmt(out),
+            Self::Geometry =>
+            {
+                out.write_str("Finder saved-context directory capacity overflows; no replacement \
+                               admitted")
+            }
+            Self::Storage { entries } =>
+            {
+                write!(out,
+                       "not enough System storage for {entries} saved application contexts; \
+                        original desktop retained")
+            }
+            Self::Changed { required,
+                            prepared } =>
+            {
+                write!(out,
+                       "saved application directory now requires {required} entries but detached \
+                        storage holds {prepared}; prepare again")
+            }
+        }
+    }
+}
+/// Detached, authentic recipient backing. Empty manager Stores issue no object
+/// IDs. Keep those managers before the canonical account so their receipts
+/// disappear before its root closes on an unpublished refusal.
+pub(crate) struct FinderPreparation
+{
+    local:      Saved,
+    allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+    owner:      OwnerRef,
+    process:    PreparedProcess
+}
+impl FinderPreparation
+{
+    /// A refused publication can retain a report snapshot. Release it outside
+    /// Desktop before the next attempt captures the current report checkpoint.
+    pub(crate) fn release_report(&mut self)
+    {
+        drop(core::mem::take(&mut self.local.crash));
+    }
+}
+impl FinderCapacityPlan
+{
+    pub(crate) fn prepare_recipient(&self) -> Result<FinderPreparation, Status>
+    {
+        let process = PreparedProcess::prepare("Finder", 0, 0)?;
+        let owner = process.owner().clone();
+        let allocation = process.allocation()?;
+        let local = Saved::try_new(owner.clone(), self.mdef, allocation.clone())?;
+        Ok(FinderPreparation { local,
+                               allocation,
+                               owner,
+                               process })
+    }
+
+    pub(crate) fn prepare(self) -> Result<FinderCapacity, FinderCapacityError>
+    {
+        use mac_object_table::shared::InvocationGate as _;
+        let processes = self.processes.prepare().map_err(FinderCapacityError::Directory)?;
+        core::alloc::Layout::array::<Saved>(self.locals).map_err(|_| {
+                                                            FinderCapacityError::Geometry
+                                                        })?;
+        let mut locals = Vec::new();
+        crate::toolbox::handles::InvocationGate::with_system_allocation(|| {
+            locals.try_reserve_exact(self.locals)
+        }).map_err(|_| FinderCapacityError::Storage { entries: self.locals })?;
+        Ok(FinderCapacity { processes,
+                            locals })
+    }
+}
 impl Saved
 {
-    pub fn try_new(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionEntry,
+    pub fn try_new(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionRef,
                    allocation: crate::machine::scheduler::accounting::AllocationAuthority)
                    -> Result<Self, Status>
     {
@@ -44,7 +179,7 @@ impl Saved
 
     /// The active row holds the one empty swap placeholder. Its boxed queue
     /// travels between active rows and must never retain a process account.
-    pub fn try_placeholder(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionEntry)
+    pub fn try_placeholder(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionRef)
                            -> Result<Self, Status>
     {
         use mac_object_table::shared::InvocationGate as _;
@@ -56,7 +191,7 @@ impl Saved
         Self::construct(owner, mdef, events)
     }
 
-    fn construct(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionEntry,
+    fn construct(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionRef,
                  events: Box<EventManager>)
                  -> Result<Self, Status>
     {
@@ -79,16 +214,23 @@ impl Saved
 /// process. Lost preparations stop admission and enter the ordinary reaper.
 pub(crate) struct FinderAdmission
 {
-    old:        u64,
-    owner:      crate::toolbox::handles::OwnerRef,
-    original:   crate::images::Binding,
-    allocation: crate::machine::scheduler::accounting::AllocationAuthority,
-    permit:     crate::allocator::recovery::Permit,
-    activity:   crate::recovery::Activity,
-    active:     bool
+    old:              u64,
+    owner:            crate::toolbox::handles::OwnerRef,
+    original:         crate::images::Binding,
+    original_catalog: mac_abi::files::CatalogInfo,
+    allocation:       crate::machine::scheduler::accounting::AllocationAuthority,
+    permit:           crate::allocator::recovery::Permit,
+    activity:         crate::recovery::Activity,
+    active:           bool,
+    system_report:    Option<crate::recovery::SystemReportLease>
 }
 impl FinderAdmission
 {
+    pub(crate) fn original_catalog(&self) -> mac_abi::files::CatalogInfo
+    {
+        self.original_catalog
+    }
+
     pub(crate) fn old(&self) -> u64
     {
         self.old
@@ -119,6 +261,27 @@ impl FinderAdmission
         self.activity.clone()
     }
 
+    pub(crate) fn system_report(&self) -> Option<&crate::recovery::SystemReportLease>
+    {
+        self.system_report.as_ref()
+    }
+
+    /// The closure is called only after Desktop entry. Failed transfer restores
+    /// the same lease to this exclusively borrowed admission before returning.
+    pub(crate) fn handoff_system_report(&mut self, toolbox: &mut Toolbox) -> Result<(), Status>
+    {
+        let report = self.system_report.take().ok_or(BAD_ABI)?;
+        match toolbox.retain_system_report(report)
+        {
+            Ok(()) => Ok(()),
+            Err((status, report)) =>
+            {
+                self.system_report = Some(report);
+                Err(status)
+            }
+        }
+    }
+
     pub(crate) fn original(&self) -> crate::images::Binding
     {
         self.original
@@ -135,22 +298,88 @@ impl Drop for FinderAdmission
     {
         if self.active
         {
-            self.owner.stop_admission();
+            use mac_object_table::shared::InvocationGate as _;
+            crate::toolbox::handles::InvocationGate::run(|| {
+                self.owner.stop_admission();
+                crate::machine::scheduler::retire_owner(self.id());
+            });
             crate::toolbox::processes::retirement::resources_released();
         }
     }
 }
 impl Toolbox
 {
-    pub(crate) fn reserve_finder(&mut self, old: u64, permit: crate::allocator::recovery::Permit)
+    /// A scheduling preference only. Capture authority remains the exact
+    /// retained binding, not a saved report's original app/thread label.
+    pub(crate) fn native_failure_stock_owner(&self) -> Option<u64>
+    {
+        if self.crash.owns_protected_stock() && self.processes.has_native_failure(self.owner)
+        {
+            return Some(self.owner);
+        }
+        self.locals
+            .iter()
+            .find(|local| {
+                local.crash.owns_protected_stock() && self.processes.has_native_failure(local.id)
+            })
+            .map(|local| local.id)
+    }
+
+    fn log_actual_exit(owner: u64, outcome: Option<crate::toolbox::processes::termination::Record>)
+    {
+        match outcome
+        {
+            Some(outcome) => serial!("PROCESS_EXIT app={owner} {outcome}"),
+            None => serial!("PROCESS_EXIT app={owner} kind=unstarted")
+        }
+    }
+
+    pub(crate) fn native_failure_selection(&mut self,
+                                           binding: &crate::toolbox::processes::ResourceBinding)
+                                           -> Result<(), Status>
+    {
+        if self.processes.ledger(binding.owner())?.owner() != binding.ledger().owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        self.enter(binding.owner());
+        if self.owner != binding.owner()
+        {
+            return Err(NOT_FOUND);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn plan_finder_capacity(&self) -> Result<FinderCapacityPlan, FinderCapacityError>
+    {
+        let required = self.locals.len().checked_add(1).ok_or(FinderCapacityError::Geometry)?;
+        Ok(FinderCapacityPlan { processes: self.processes
+                                               .plan_provision_capacity()
+                                               .map_err(FinderCapacityError::Directory)?,
+                                mdef:      self.mdef,
+                                locals:    if self.locals.capacity() < required
+                                {
+                                    required
+                                }
+                                else
+                                {
+                                    0
+                                } })
+    }
+
+    pub(crate) fn reserve_finder(&mut self, old: u64, permit: crate::allocator::recovery::Permit,
+                                 capacity: &mut FinderCapacity,
+                                 prepared: &mut Option<FinderPreparation>)
                                  -> Result<FinderAdmission, Status>
     {
         crate::context::with_recovery_allocation(permit.clone(), || {
-            self.reserve_finder_inner(old, permit)
+            self.reserve_finder_inner(old, permit, capacity, prepared)
         })
     }
 
-    fn reserve_finder_inner(&mut self, old: u64, permit: crate::allocator::recovery::Permit)
+    fn reserve_finder_inner(&mut self, old: u64, permit: crate::allocator::recovery::Permit,
+                            capacity: &mut FinderCapacity,
+                            prepared: &mut Option<FinderPreparation>)
                             -> Result<FinderAdmission, Status>
     {
         let activity = crate::context::recovery_activity().ok_or(NOT_SUPPORTED)?;
@@ -160,41 +389,77 @@ impl Toolbox
         }
         let binding = self.processes.resource_binding(old)?;
         let original = binding.image().ok_or(BAD_ABI)?;
+        let original_catalog = self.processes.original_catalog(old)?;
+        // Check both capacities before moving either buffer. These observations
+        // reserve no identity; final provision remains in this Desktop turn.
+        let required = self.locals.len().checked_add(1).ok_or(BAD_ARGUMENT)?;
+        if self.locals.capacity() < required && capacity.locals.capacity() < required
         {
-            use mac_object_table::shared::InvocationGate as _;
-            crate::toolbox::handles::InvocationGate::with_system_allocation(|| {
-                self.locals.try_reserve(1)
-            }).map_err(|_| NO_MEMORY)?;
+            let cause = FinderCapacityError::Changed { required,
+                                                       prepared: capacity.locals.capacity() };
+            return Err(cause.status());
+        }
+        self.processes.install_provision_capacity(&mut capacity.processes).map_err(|cause| {
+            let cause = FinderCapacityError::Directory(cause);
+            if cause.status() != SERVICE_BUSY
+            {
+                serial!("FINDER_CAPACITY_REFUSED: {cause}");
+            }
+            cause.status()
+        })?;
+        if self.locals.capacity() < required
+        {
+            capacity.locals.extend(self.locals.drain(..));
+            core::mem::swap(&mut self.locals, &mut capacity.locals);
+        }
+        let recipient = prepared.as_mut().ok_or(BAD_ARGUMENT)?;
+        if !recipient.owner.accepting()
+        {
+            return Err(SERVICE_BUSY);
         }
         self.enter(old);
-        let id = self.processes.provision("Finder", 0, 0)?;
-        let prepared = (|| {
-            let owner = self.processes.ledger(id)?;
-            let allocation = self.processes.allocation(id)?;
-            let snapshot = crate::allocator::with_target(crate::allocator::Target::Owner {
-                account: allocation.clone(), class: mac_kernel_model::policy::MemoryClass::Kernel
-            }, || self.crash.snapshot())?;
-            let mut local = Saved::try_new(owner.clone(), self.mdef, allocation.clone())?;
-            local.crash = crate::toolbox::crashes::Manager::from_snapshot(snapshot);
-            Ok::<_, Status>((local, owner, allocation))
-        })();
-        let (local, owner, allocation) = match prepared
+        if self.owner != old
         {
-            Ok(prepared) => prepared,
-            Err(status) =>
+            return Err(NOT_FOUND);
+        }
+        // The original report checkpoint remains here. Protected payloads share
+        // their genuine archived Arc; Local report deep-copy remains separate
+        // migration debt. The previous detached report was released outside.
+        let snapshot = crate::allocator::with_target(crate::allocator::Target::Owner {
+            account: recipient.allocation.clone(),
+            class: mac_kernel_model::policy::MemoryClass::Kernel
+        }, || self.crash.snapshot())?;
+        recipient.local.crash = crate::toolbox::crashes::Manager::from_snapshot(snapshot);
+        recipient.process.bind_launch_catalog(original_catalog)?;
+        let FinderPreparation { local,
+                                allocation,
+                                owner,
+                                process } = prepared.take().ok_or(BAD_ARGUMENT)?;
+        match self.processes.provision_prepared(process)
+        {
+            Ok(_) =>
+            {}
+            Err((cause, process)) =>
             {
-                self.retire_unstarted(id)?;
-                return Err(status);
+                *prepared = Some(FinderPreparation { local,
+                                                     allocation,
+                                                     owner,
+                                                     process });
+                return Err(cause);
             }
-        };
+        }
+        // Capacities and authentic old/recipient state were checked in this
+        // same Desktop turn. No fallible work follows Process publication.
         self.locals.push(local);
         Ok(FinderAdmission { old,
                              owner,
                              original,
+                             original_catalog,
                              allocation,
                              permit,
                              activity,
-                             active: true })
+                             active: true,
+                             system_report: None })
     }
 
     pub(crate) fn bind_finder_image(&mut self, admission: &FinderAdmission,
@@ -208,11 +473,14 @@ impl Toolbox
         self.processes.bind_image(admission.id(), image)
     }
 
-    pub(crate) fn commit_finder_handoff(&mut self, admission: &FinderAdmission)
-                                        -> Result<(), Status>
+    pub(crate) fn commit_finder_role(&mut self, admission: &FinderAdmission) -> Result<(), Status>
     {
         let old = admission.old;
         let next = admission.id();
+        if admission.system_report().is_none()
+        {
+            return Err(BAD_ABI);
+        }
         if !self.locals.iter().any(|local| local.id == next)
            || self.processes.get(next)?.image.is_none()
         {
@@ -223,15 +491,6 @@ impl Toolbox
         let ledger = self.processes.ledger(old)?;
         let checkpoint = self.processes.cleanup_checkpoint(old)?;
         let binding = self.processes.resource_binding(old)?;
-        if let Err(status) = self.close_crash_report(&admission.activity)
-        {
-            if status == SERVICE_BUSY && self.windows.window(self.crash.info().window).is_none()
-            {
-                crate::toolbox::processes::finder::report_cleanup_wait();
-            }
-            return Err(status);
-        }
-        self.crash.release_payload();
         {
             use mac_object_table::shared::InvocationGate as _;
             crate::toolbox::handles::InvocationGate::run(|| {
@@ -239,12 +498,11 @@ impl Toolbox
                 {
                     return Err(SERVICE_BUSY);
                 }
-                admission.activity.handoff_recipient(&ledger, &admission.owner)?;
                 crate::context::replace_finder_app(old, &admission.owner)
             })?;
         }
         self.stop_process(file, ledger, checkpoint, binding, Some(next));
-        serial!("FINDER_HANDOFF old={old} new={next} state=waiting-for-old-stack");
+        serial!("FINDER_HANDOFF old={old} new={next} state=waiting-for-old-process");
         Ok(())
     }
 
@@ -262,13 +520,16 @@ impl Toolbox
         }
         self.activate_process(id)?;
         self.refresh_app_menu();
-        self.crash.restart_pending = true;
-        if self.crash.info().report_bytes != 0
-        {
-            let window = self.resume_crash_report()?;
-            admission.activity.set_object(window.0);
-        }
-        Ok(())
+        let report = admission.system_report().ok_or(BAD_ABI)?;
+        self.with_system_report(report, |toolbox| {
+                toolbox.crash.restart_pending = true;
+                if toolbox.crash.info().report_bytes != 0 && !report.activity().closing()
+                {
+                    let window = toolbox.resume_crash_report()?;
+                    report.activity().set_object(window.0);
+                }
+                Ok(())
+            })?
     }
 
     /// Only the scheduler transition can commit this admission. The bounded
@@ -282,10 +543,15 @@ impl Toolbox
         }
         {
             use mac_object_table::shared::InvocationGate as _;
+            let lease = admission.system_report().ok_or(BAD_ABI)?;
+            // Validate and borrow the actual System manager before runnable
+            // publication. The borrow prevents its replacement across commit;
+            // no fallible report step can roll back a running thread.
+            let report = self.system_report_manager(lease)?;
             crate::toolbox::handles::InvocationGate::run(|| {
                 crate::machine::scheduler::start_prepared(thread, admission.owner())?;
                 admission.started();
-                self.crash.finder_recovered();
+                report.finder_recovered();
                 Ok::<_, Status>(())
             })?;
         }
@@ -359,11 +625,22 @@ impl Toolbox
         }
     }
 
-    pub(crate) fn spawn_process(&self, id: u64, loaded: crate::kernel::LoadedImage)
+    pub(crate) fn spawn_process(&self, id: u64, loaded: crate::kernel::LoadedImage,
+                                space: crate::machine::paging::process::Pin)
                                 -> Result<u64, Status>
     {
+        let owner = self.processes.ledger(id)?;
+        if !space.matches(&owner, loaded.binding())
+        {
+            return Err(ACCESS_DENIED);
+        }
         let charges = self.processes.thread_charges(id)?;
-        crate::machine::scheduler::spawn(self.processes.ledger(id)?, loaded, charges)
+        crate::machine::scheduler::spawn(owner,
+                                         loaded,
+                                         charges,
+                                         self.processes.heap(id)?,
+                                         self.processes.tls(id)?,
+                                         space)
     }
 
     pub(super) fn post_drag_notice(&mut self, notice: crate::toolbox::drag::Notice)
@@ -595,6 +872,11 @@ impl Toolbox
         {
             return;
         }
+        if self.system_ui_baseline
+        {
+            self.enter_process_from_system(id);
+            return;
+        }
         let Some(old) = self.locals.iter().position(|s| s.id == self.owner)
         else
         {
@@ -673,6 +955,10 @@ impl Toolbox
                                  event.message as u64,
                                  event.modifiers as u64);
             let position = self.event_position(event, target);
+            if self.route_system_report_event(event, target, position)
+            {
+                continue;
+            }
             if target == self.owner
             {
                 // post_positioned clears the trusted-routing flag. Requeue
@@ -692,6 +978,7 @@ impl Toolbox
         let mouse = self.events.mouse;
         let modifiers = self.events.modifiers;
         let keys = self.events.keys;
+        self.sync_system_report_input(mouse, modifiers, keys);
         for local in &mut self.locals
         {
             local.events.mouse = mouse;
@@ -850,7 +1137,7 @@ impl Toolbox
     pub fn activate_process_window(&mut self, id: u64, front: Option<WindowId>)
                                    -> Result<(), Status>
     {
-        self.activate_process_focus(id, front.map_or(GroupFocus::Desktop, GroupFocus::Window))
+        self.activate_process_focus(id, front.map_or(GroupFocus::Toolbox, GroupFocus::Window))
     }
 
     fn activate_process_focus(&mut self, id: u64, focus: GroupFocus) -> Result<(), Status>
@@ -976,61 +1263,77 @@ impl Toolbox
         // Reload would overwrite the old process's writable image. Refuse
         // while its stack or quarantined callbacks still retain that image.
         if self.processes.file_stopping(call.volume, call.cnid)
+           || self.processes.file_starting(call.volume, call.cnid)
         {
             return Err(SERVICE_BUSY);
         }
         Ok(false)
     }
 
-    pub(crate) fn launch_application(&mut self, call: &mut ProcessCall,
-                                     loaded: crate::toolbox::files::application::Loaded)
-                                     -> Result<(), Status>
+    /// Only provisional directory/account/checkpoint publication is performed
+    /// here. The caller prepares its heap after releasing Desktop.
+    pub(crate) fn reserve_application(
+        &mut self, call: &mut ProcessCall, catalog: mac_abi::files::CatalogInfo)
+        -> Result<Option<crate::toolbox::processes::LaunchAdmission>, Status>
     {
-        crate::context::without_recovery(|| self.launch_application_inner(call, loaded))
-    }
-
-    fn launch_application_inner(&mut self, call: &mut ProcessCall,
-                                loaded: crate::toolbox::files::application::Loaded)
-                                -> Result<(), Status>
-    {
-        // Another caller may have launched this file while its fork was read.
+        if catalog.volume != call.volume || catalog.id != call.cnid
+        {
+            return Err(BAD_ABI);
+        }
         if self.activate_existing_application(call)?
         {
-            return Ok(());
+            return Ok(None);
         }
+        let id = self.processes.provision(catalog.name(), catalog.volume, catalog.id)?;
+        let capture = self.processes
+                          .bind_launch_catalog(id, catalog)
+                          .and_then(|()| self.processes.launch_admission(id));
+        match capture
+        {
+            Ok(admission) => Ok(Some(admission)),
+            Err(status) =>
+            {
+                if let Err(cleanup) = self.retire_unstarted(id)
+                {
+                    serial!("PROCESS_ADMISSION_RETIRE_RETAINED app={id} original={status} \
+                             cleanup={cleanup}");
+                }
+                crate::toolbox::processes::retirement::resources_released();
+                Err(status)
+            }
+        }
+    }
+
+    pub(crate) fn finish_application_launch(&mut self, call: &mut ProcessCall,
+                                            catalog: mac_abi::files::CatalogInfo,
+                                            loaded: crate::kernel::LoadedImage,
+                                            space: crate::machine::paging::process::Pin,
+                                            admission: &mut crate::toolbox::processes::LaunchAdmission)
+                                            -> Result<(), Status>
+    {
+        let id = admission.id();
+        if self.processes.ledger(id)?.owner() != admission.owner().owner()
+           || self.processes.heap(id)?.owner() != admission.owner().owner()
+           || !space.matches(admission.owner(), loaded.binding())
+        {
+            return Err(ACCESS_DENIED);
+        }
+        // Other launches may use saved-manager capacity while this process
+        // prepares its heap outside Desktop. Reserve at the actual push stage.
         {
             use mac_object_table::shared::InvocationGate as _;
             crate::toolbox::handles::InvocationGate::with_system_allocation(|| {
                 self.locals.try_reserve(1)
             }).map_err(|_| NO_MEMORY)?;
         }
-        let crate::toolbox::files::application::Loaded { catalog,
-                                                         resources } = loaded;
-        // Storage reads finish before provisioning: a deferred I/O replay must
-        // not create another child. Image admission now has a genuine subject
-        // domain ready for its registered aliases and future account charges.
-        let id = self.processes.provision(catalog.name(), call.volume, call.cnid)?;
         let prepared = (|| {
             let authority = self.processes.ledger(id)?;
-            let loaded = crate::allocator::with_target(crate::allocator::Target::Owner {
-                account: self.processes.allocation(id)?,
-                class: mac_kernel_model::policy::MemoryClass::Kernel
-            }, || crate::kernel::load_application(&authority, catalog.creator,
-                                                  catalog.file_type, resources))?;
             self.processes.bind_image(id, loaded.binding())?;
             let local =
                 Saved::try_new(authority.clone(), self.mdef, self.processes.allocation(id)?)?;
             Ok::<_, Status>((loaded, local, authority))
         })();
-        let (loaded, local, authority) = match prepared
-        {
-            Ok(local) => local,
-            Err(error) =>
-            {
-                self.retire_unstarted(id)?;
-                return Err(error);
-            }
-        };
+        let (loaded, local, authority) = prepared?;
         // RAM-only pin admission closes launch-vs-transfer races. No storage
         // operation or provider callback runs under this desktop guard.
         let pinned = crate::allocator::with_target(crate::allocator::Target::Owner {
@@ -1042,10 +1345,9 @@ impl Toolbox
         if let Err(error) = pinned
         {
             self.locals.push(local);
-            self.retire_unstarted(id)?;
             return Err(error);
         }
-        let thread = match self.spawn_process(id, loaded)
+        let thread = match self.spawn_process(id, loaded, space)
         {
             Ok(t) => t,
             Err(e) =>
@@ -1053,7 +1355,6 @@ impl Toolbox
                 // Keep saved managers reachable for the same owner walk used
                 // by EXIT. A refused cleanup retains its domain for retry.
                 self.locals.push(local);
-                self.retire_unstarted(id)?;
                 return Err(e);
             }
         };
@@ -1063,10 +1364,11 @@ impl Toolbox
         call.info = self.processes.snapshot(id)?;
         self.notify_finder_file_state(call.volume, call.cnid, true);
         serial!("PROCESS_LAUNCHED app={} thread={} name={}", id, thread, catalog.name());
+        admission.started();
         Ok(())
     }
 
-    fn retire_unstarted(&mut self, owner: u64) -> Result<(), Status>
+    pub(crate) fn retire_unstarted(&mut self, owner: u64) -> Result<(), Status>
     {
         let ledger = self.processes.ledger(owner)?;
         ledger.stop_admission();
@@ -1178,6 +1480,22 @@ impl Toolbox
         crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
             let caller = file.id;
             self.enter(caller);
+            if let Err(status) =
+                self.processes.note_exit(&ledger,
+                                         if replacement.is_some()
+                                         {
+                                             Outcome::ShellReplacement
+                                         }
+                                         else
+                                         {
+                                             Outcome::Legacy
+                                         },
+                                         crate::context::current_thread_context().identity()
+                                                                                 .thread
+                                                                                 .0)
+            {
+                serial!("PROCESS_EXIT_RECORD_RETAINED app={caller} status={status}");
+            }
             {
                 use mac_object_table::shared::InvocationGate as _;
                 crate::toolbox::handles::InvocationGate::run(|| {
@@ -1220,6 +1538,14 @@ impl Toolbox
             self.route_events();
             let previous = replacement.unwrap_or_else(|| self.processes.previous(caller));
             self.enter(previous);
+            if self.owner == caller
+            {
+                if let Err(status) = self.park_stopped_system_ui(&ledger)
+                {
+                    serial!("PROCESS_UI_RETIRE_RETAINED app={caller} status={status}; actual \
+                             charged UI remains owned pending a genuine System context");
+                }
+            }
             self.notify_finder_file_state(file.volume, file.cnid, false);
             if self.foreground == caller
             {
@@ -1238,15 +1564,10 @@ impl Toolbox
         });
     }
 
-    pub(crate) fn evict_image_origin(&mut self, origin: u64)
-    {
-        self.definitions.evict_origin(origin);
-    }
-
     pub(crate) fn reap_processes(&mut self)
     {
         crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-            crate::kernel::finish_image_origins(self);
+            crate::kernel::finish_image_origins();
             let mut previous = 0;
             while let Some(owner) = self.processes.stopping_after(previous)
             {
@@ -1260,11 +1581,19 @@ impl Toolbox
                 {
                     continue;
                 };
+                if self.owner == owner && self.park_stopped_system_ui(&ledger).is_err()
+                {
+                    // Active charged state is still owned. Do not remove its
+                    // Saved placeholder and strand the account's last receipts.
+                    continue;
+                }
                 if self.processes.cleanup_drained(owner) == Ok(true)
                 {
+                    let outcome = self.processes.exit_record(owner).ok().flatten();
                     if self.processes.remove(owner).is_ok()
                     {
-                        serial!("PROCESS_EXIT app={owner}");
+                        crate::toolbox::processes::finder::owner_removed(&ledger);
+                        Self::log_actual_exit(owner, outcome);
                     }
                     continue;
                 }
@@ -1358,6 +1687,7 @@ impl Toolbox
                 }
                 self.locals.retain(|state| state.id != owner);
                 drop(checkpoint);
+                let outcome = self.processes.exit_record(owner).ok().flatten();
                 if let Err(status) = self.processes.remove(owner)
                 {
                     let remaining = ledger.summary();
@@ -1387,7 +1717,8 @@ impl Toolbox
                     }
                     continue;
                 }
-                serial!("PROCESS_EXIT app={owner}");
+                crate::toolbox::processes::finder::owner_removed(&ledger);
+                Self::log_actual_exit(owner, outcome);
             }
         });
     }
@@ -1421,12 +1752,15 @@ impl crate::toolbox::files::forks::lifetime::ForkHost for Toolbox
                          -> Result<(), crate::toolbox::handles::cleanup::Failure>
     {
         match crate::kernel::with_files_owned(ticket, |ticket, files| {
-                  crate::toolbox::files::forks::lifetime::ForkHost::release_file_fork(files,
-                                                                                      ticket,
-                                                                                      storage)
+                  files.release_fork_owned(ticket, storage)
               })
         {
-            Ok(result) => result,
+            Ok(Ok(retired)) =>
+            {
+                retired.dispose();
+                Ok(())
+            }
+            Ok(Err(failure)) => Err(failure),
             Err((error, ticket)) =>
             {
                 Err(crate::toolbox::handles::cleanup::Failure::files_unavailable(ticket, error))
@@ -1604,6 +1938,80 @@ impl crate::toolbox::files::pins::PinHost for Toolbox
     {
         match crate::kernel::with_files_owned(ticket, |ticket, files| {
                   crate::toolbox::files::pins::PinHost::release_file_pin(files, ticket, kind)
+              })
+        {
+            Ok(result) => result,
+            Err((error, ticket)) =>
+            {
+                Err(crate::toolbox::handles::cleanup::Failure::files_unavailable(ticket, error))
+            }
+        }
+    }
+}
+
+impl Toolbox
+{
+    pub(crate) fn native_normal_exit(&mut self, owner: &OwnerRef, image: crate::images::Binding,
+                                     thread: u64, outcome: Outcome)
+                                     -> Result<(), Status>
+    {
+        let id = owner.owner().incarnation();
+        let binding = self.processes.resource_binding(id)?;
+        if id == crate::context::finder_app().0
+           || binding.ledger().owner() != owner.owner()
+           || binding.image().map(crate::images::Binding::id) != Some(image.id())
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let file = self.processes.snapshot(id)?;
+        let checkpoint = self.processes.cleanup_checkpoint(id)?;
+        self.processes.note_exit(owner, outcome, thread)?;
+        self.stop_process(file, owner.clone(), checkpoint, binding, None);
+        Ok(())
+    }
+
+    pub(crate) fn record_native_report(
+        &mut self, binding: &ResourceBinding, retention: Retention)
+        -> Result<crate::toolbox::processes::termination::Record, Status>
+    {
+        if self.processes.ledger(binding.owner())?.owner() != binding.ledger().owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let info = self.crash.info();
+        self.processes.note_report(binding, retention, info.app, info.thread)
+    }
+
+    pub(crate) fn stop_native_failure(&mut self, binding: &ResourceBinding) -> Result<(), Status>
+    {
+        if binding.owner() == crate::context::finder_app().0
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let file = self.processes.snapshot(binding.owner())?;
+        let ledger = self.processes.ledger(binding.owner())?;
+        if ledger.owner() != binding.ledger().owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let checkpoint = self.processes.cleanup_checkpoint(binding.owner())?;
+        self.stop_process(file,
+                          ledger,
+                          checkpoint,
+                          self.processes.resource_binding(binding.owner())?,
+                          None);
+        Ok(())
+    }
+}
+
+impl crate::toolbox::files::local::lifetime::OperationHost for Toolbox
+{
+    fn release_file_operation(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                              storage: bool)
+                              -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        match crate::kernel::with_files_owned(ticket, |ticket, files| {
+                  crate::toolbox::files::local::lifetime::OperationHost::release_file_operation(files,ticket,storage)
               })
         {
             Ok(result) => result,

@@ -3,12 +3,15 @@ use std::{collections::BTreeSet,
           path::{Path, PathBuf}};
 
 use mac_formats::{native::{Descriptor, Role},
+                  requirements::{self, Requirement},
                   resource::Resource,
                   text};
 use mac_module::{ExtensionTarget, PackageKind};
 use serde::{Deserialize, Serialize};
 
 use crate::{Result, error};
+
+mod commands;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -17,40 +20,53 @@ pub struct Manifest
     /// Lossless resource archive: preserve every supplied resource verbatim.
     /// Build manifests keep automatic NABI/RV64/vers generation.
     #[serde(default)]
-    pub archive:          bool,
+    pub archive:           bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resource_format:  Option<ResourceFormat>,
+    pub resource_format:   Option<ResourceFormat>,
     #[serde(default)]
-    pub data_fork:        Option<Payload>,
+    pub data_fork:         Option<Payload>,
     #[serde(default)]
-    pub file_flags:       u16,
+    pub file_flags:        u16,
     #[serde(default)]
     /// Microseconds since 1904-01-01, matching native catalog metadata.
-    pub created:          u64,
+    pub created:           u64,
     #[serde(default)]
-    pub modified:         u64,
-    pub name:             String,
+    pub modified:          u64,
+    pub name:              String,
     /// Cargo executable name, when the Macintosh filename contains spaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binary_name:      Option<String>,
-    pub file_type:        String,
+    pub binary_name:       Option<String>,
+    pub file_type:         String,
     /// INIT execution part. Resource names remain optional metadata; this target
     /// chooses the RV64/EABI resource ID emitted by the module packager.
     #[serde(default,
             skip_serializing_if = "Option::is_none",
             serialize_with = "serialize_extension_target",
             deserialize_with = "deserialize_extension_target")]
-    pub extension_target: Option<ExtensionTarget>,
-    pub creator:          String,
-    pub role:             String,
-    pub abi_version:      u32,
-    pub load_base:        String,
-    pub load_limit:       String,
+    pub extension_target:  Option<ExtensionTarget>,
+    pub creator:           String,
+    pub role:              String,
+    pub abi_version:       u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_base:         Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_limit:        Option<String>,
     #[serde(skip)]
-    pub cargo_version:    String,
-    pub description:      String,
+    pub cargo_version:     String,
+    pub description:       String,
+    /// Required provider interfaces for native application launch admission.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_services: Vec<RequiredService>,
     #[serde(default)]
-    pub resources:        Vec<Definition>
+    pub resources:         Vec<Definition>
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequiredService
+{
+    pub class:   String,
+    pub version: u32
 }
 
 fn serialize_extension_target<S: serde::Serializer>(value: &Option<ExtensionTarget>, serializer: S)
@@ -133,7 +149,7 @@ pub enum Payload
     },
     NativeCode
     {
-        artifact: String, load_base: String, load_limit: String
+        artifact: String
     }
 }
 
@@ -147,24 +163,10 @@ pub fn fourcc(text: &str) -> Result<[u8; 4]>
 
 fn address(value: &str) -> Result<u64>
 {
-    match value
-    {
-        "@system_image_base" =>
-        {
-            return Ok(crate::platform::current().virtual_memory()?.system_image_range().start);
-        }
-        "@system_image_limit" =>
-        {
-            return Ok(crate::platform::current().virtual_memory()?.system_image_range().end);
-        }
-        _ => ()
-    }
-    Ok(u64::from_str_radix(value.strip_prefix("0x").ok_or_else(|| {
-                                                        error("addresses must start with 0x or \
-                                                               name a known \
-                                                               @system_image_base/@\
-                                                               system_image_limit platform symbol")
-                                                    })?,
+    Ok(u64::from_str_radix(value.strip_prefix("0x")
+                                .ok_or_else(|| {
+                                    error("application link addresses must start with 0x")
+                                })?,
                            16)?)
 }
 
@@ -276,19 +278,21 @@ pub enum MenuItem
 #[serde(deny_unknown_fields)]
 pub struct MenuItemDefinition
 {
-    pub text:    String,
+    pub text:           String,
     #[serde(default)]
-    pub key:     Option<String>,
+    pub key:            Option<String>,
     #[serde(default)]
-    pub mark:    u8,
+    pub mark:           u8,
     #[serde(default)]
-    pub style:   u8,
+    pub style:          u8,
     #[serde(default = "menu_enabled")]
-    pub enabled: bool,
+    pub enabled:        bool,
     #[serde(default)]
-    pub checked: bool,
+    pub checked:        bool,
     #[serde(default)]
-    pub command: Option<String>
+    pub command:        Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_symbol: Option<String>
 }
 fn menu_enabled() -> bool
 {
@@ -312,22 +316,6 @@ impl MenuItem
         {
             Self::Text(_) => true,
             Self::Definition(item) => item.enabled
-        }
-    }
-
-    fn command(&self) -> Result<u32>
-    {
-        match self
-        {
-            Self::Definition(item) =>
-            {
-                item.command
-                    .as_deref()
-                    .map(fourcc)
-                    .transpose()
-                    .map(|v| v.map_or(0, u32::from_be_bytes))
-            }
-            _ => Ok(0)
         }
     }
 
@@ -372,6 +360,11 @@ impl Manifest
 
     pub fn validate(&self) -> Result<()>
     {
+        self.validated_commands().map(|_| ())
+    }
+
+    fn validated_commands(&self) -> Result<commands::Commands>
+    {
         if self.binary_name.as_deref().is_some_and(|name| {
                                           name.is_empty()
                                           || !name.bytes().all(|b| {
@@ -412,6 +405,7 @@ impl Manifest
         {
             return Err(error("lossless archives require raw hex payloads"));
         }
+        self.service_requirements()?;
         let mut keys = BTreeSet::from([(*b"RV64", 0), (*b"NABI", 0), (*b"RLOC", 0), (*b"vers", 1)]);
         if let Some(kind) = crate::module::kind(self)
         {
@@ -426,6 +420,11 @@ impl Manifest
         }
         for definition in &self.resources
         {
+            if !self.archive && definition.kind == "NREQ"
+            {
+                return Err(error("NREQ is generated from required_services; remove the \
+                                  explicit resource"));
+            }
             if let Payload::NativeCode { artifact, .. } = &definition.payload
                 && (artifact.is_empty() || !artifact.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
             {
@@ -453,12 +452,75 @@ impl Manifest
                 return Err(error("compressed resource payloads are not supported"));
             }
         }
-        Ok(())
+        commands::Commands::parse(self)
     }
 
     pub fn binary_name(&self) -> &str
     {
         self.binary_name.as_deref().unwrap_or(&self.name)
+    }
+
+    pub(crate) fn require_runtime(&mut self, runtime: &[Requirement]) -> Result<()>
+    {
+        // read() has already refused duplicates in the author manifest. Reuse
+        // an identical runtime dependency but never accept another version.
+        for requirement in runtime
+        {
+            let class = text::decode(&requirement.class.0);
+            if let Some(existing) = self.required_services.iter().find(|item| item.class == class)
+            {
+                if existing.version != requirement.version
+                {
+                    return Err(error(format!("runtime requires {class} version {}, but the \
+                                              manifest requires version {}",
+                                             requirement.version, existing.version)));
+                }
+            }
+            else
+            {
+                self.required_services.push(RequiredService { class,
+                                                              version: requirement.version });
+            }
+        }
+        self.service_requirements()?;
+        Ok(())
+    }
+
+    fn service_requirements(&self) -> Result<Vec<u8>>
+    {
+        if self.required_services.is_empty()
+        {
+            return Ok(Vec::new());
+        }
+        if self.archive || self.role != "application" || crate::module::kind(self).is_some()
+        {
+            return Err(error("required_services is only valid for a built native application \
+                              (including Finder), not a module or resource archive"));
+        }
+        if self.required_services.len() > requirements::MAX_RECORDS
+        {
+            return Err(requirements::Error::Limit.into());
+        }
+        let mut records = Vec::with_capacity(self.required_services.len());
+        for (index, service) in self.required_services.iter().enumerate()
+        {
+            let class = mac_module::ClassId(fourcc(&service.class).map_err(|cause| {
+                                                error(format!("required_services[{index}].class: \
+                                                               {cause}"))
+                                            })?);
+            if let Some(previous) =
+                records.iter().position(|record: &Requirement| record.class == class)
+            {
+                return Err(error(format!("required_services[{index}] duplicates or conflicts \
+                                          with class {:?} in required_services[{previous}]",
+                                         service.class)));
+            }
+            records.push(Requirement { class,
+                                       version: service.version });
+        }
+        let mut bytes = [0; requirements::MAX_BYTES];
+        let length = requirements::encode(&records, &mut bytes)?;
+        Ok(bytes[..length].to_vec())
     }
 
     pub fn descriptor(&self) -> Result<Descriptor>
@@ -470,11 +532,37 @@ impl Manifest
             "code_resource" => Role::CodeResource,
             _ => return Err(error("role must be system, application or code_resource"))
         };
+        let range = match role
+        {
+            Role::Application =>
+            {
+                let base = self.load_base.as_deref().ok_or_else(|| {
+                                                         error("application placement requires \
+                                                                load_base until private process \
+                                                                mappings are active")
+                                                     })?;
+                let limit = self.load_limit.as_deref().ok_or_else(|| {
+                                                           error("application placement requires \
+                                                                  load_limit until private \
+                                                                  process mappings are active")
+                                                       })?;
+                address(base)?..address(limit)?
+            }
+            Role::System | Role::CodeResource =>
+            {
+                if self.load_base.is_some() || self.load_limit.is_some()
+                {
+                    return Err(error("System/modules/definitions derive link geometry from the \
+                                      checked platform; remove load_base/load_limit and rebuild"));
+                }
+                crate::platform::current().link_range(role)?
+            }
+        };
         let d = Descriptor { role,
                              abi_version: self.abi_version,
-                             load_base: address(&self.load_base)?,
-                             load_limit: address(&self.load_limit)?,
-                             entry: address(&self.load_base)? };
+                             load_base: range.start,
+                             load_limit: range.end,
+                             entry: range.start };
         if d.load_base & 4095 != 0 || d.load_limit & 4095 != 0
         {
             return Err(error("load reservations must be page aligned"));
@@ -483,8 +571,9 @@ impl Manifest
         Ok(d)
     }
 
-    pub fn rust_ids(&self) -> String
+    pub fn rust_ids(&self) -> Result<String>
     {
+        let commands = self.validated_commands()?;
         let mut output = String::from("// Generated from resources.json; do not edit.\n");
         let module = crate::module::kind(self);
         let code = module.map_or(*b"RV64", PackageKind::code_type);
@@ -503,12 +592,19 @@ impl Manifest
                                                                      r.id)
                                                                 }))
         {
-            let kind = fourcc(kind).expect("validated manifest");
+            let kind = fourcc(kind)?;
             output.push_str(&format!("#[allow(dead_code)]\npub const {symbol}: \
                                       mac_abi::ResourceKey = \
                                       mac_abi::ResourceKey::from_bytes({kind:?}, {id});\n"));
         }
-        output
+        output.push_str("pub mod commands {\n");
+        for (symbol, value) in commands.symbols
+        {
+            output.push_str(&format!("    #[allow(dead_code)]\n    pub const {symbol}: u32 = \
+                                      0x{value:08x};\n"));
+        }
+        output.push_str("}\n");
+        Ok(output)
     }
 
     pub(crate) fn module_code_id(&self) -> i16
@@ -542,13 +638,17 @@ impl Manifest
     pub fn compile_resources(&self, path: &Path, elf: &[u8], artifacts: Option<&Path>)
                              -> Result<Vec<Resource>>
     {
-        self.validate()?;
+        let command_table = self.validated_commands()?;
         let mut resources = Vec::new();
         if !self.archive
         {
             let mut descriptor = self.descriptor()?;
             let image = mac_formats::elf::decode(elf, descriptor.load_base, descriptor.load_limit)?;
             descriptor.entry = image.entry;
+            if descriptor.role == Role::CodeResource
+            {
+                descriptor.load_limit = descriptor.load_base.checked_add(mac_formats::elf::relocation::span(&image, descriptor.load_base)?).ok_or_else(|| error("native code extent overflows"))?;
+            }
             let code = compact_code(elf, &image, &descriptor)?;
             resources.extend([Resource { kind:       *b"RV64",
                                          id:         0,
@@ -568,6 +668,15 @@ impl Manifest
                                       name:       None,
                                       attributes: 0,
                                       data:       version });
+            let requirements = self.service_requirements()?;
+            if !requirements.is_empty()
+            {
+                resources.push(Resource { kind:       requirements::RESOURCE_KIND,
+                                          id:         requirements::RESOURCE_ID,
+                                          name:       Some(b"Required services".to_vec()),
+                                          attributes: 0,
+                                          data:       requirements });
+            }
         }
         for definition in &self.resources
         {
@@ -620,11 +729,11 @@ impl Manifest
                     out.extend_from_slice(&enable_bits.to_be_bytes());
                     out.extend(text::pstring(title)?);
                     let mut commands = Vec::new();
-                    for item in items
+                    for (item, command) in items.iter().zip(&command_table.menus[&definition.id])
                     {
                         out.extend(text::pstring(item.text())?);
                         out.extend_from_slice(&item.metadata()?);
-                        commands.extend_from_slice(&item.command()?.to_be_bytes());
+                        commands.extend_from_slice(&command.to_be_bytes());
                     }
                     if commands.iter().any(|byte| *byte != 0)
                     {
@@ -667,9 +776,7 @@ impl Manifest
                                   .collect::<Result<Vec<u8>>>()?
                 }
                 Payload::File { path: source } => fs::read(path.parent().unwrap().join(source))?,
-                Payload::NativeCode { artifact,
-                                      load_base,
-                                      load_limit } =>
+                Payload::NativeCode { artifact } =>
                 {
                     let source = artifacts.ok_or_else(|| {
                                               error("native_code requires this build's artifact \
@@ -677,15 +784,17 @@ impl Manifest
                                           })?
                                           .join(artifact);
                     let elf = fs::read(&source)?;
+                    let range = crate::platform::current().link_range(Role::CodeResource)?;
                     let mut descriptor = Descriptor { role:        Role::CodeResource,
                                                       abi_version: self.abi_version,
-                                                      load_base:   address(load_base)?,
-                                                      load_limit:  address(load_limit)?,
-                                                      entry:       address(load_base)? };
+                                                      load_base:   range.start,
+                                                      load_limit:  range.end,
+                                                      entry:       range.start };
                     let image = mac_formats::elf::decode(&elf, descriptor.load_base,
                                                          descriptor.load_limit)?;
                     descriptor.entry = image.entry;
-                    let relocations = mac_formats::elf::relocation::extract(&elf, &image, descriptor.load_base)?
+                    descriptor.load_limit = descriptor.load_base.checked_add(mac_formats::elf::relocation::span(&image, descriptor.load_base)?).ok_or_else(|| error("definition extent overflows"))?;
+                    let relocations = mac_formats::elf::relocation::extract(&elf, &image, descriptor.load_base, descriptor.role)?
                         .ok_or_else(|| error("definition requires relocation-capable linking"))?;
                     let mut payload = descriptor.encode()?.to_vec();
                     payload.extend(compact_code(&elf, &image, &descriptor)?);
@@ -709,10 +818,39 @@ impl Manifest
 fn compact_code(bytes: &[u8], image: &mac_formats::elf::Image, descriptor: &Descriptor)
                 -> Result<Vec<u8>>
 {
+    let page = crate::platform::current().memory()?.page_bytes();
+    let mut previous_end = descriptor.load_base;
+    for (index, segment) in image.segments.iter().enumerate()
+    {
+        let end = segment.address
+                         .checked_add(segment.memory_size)
+                         .and_then(|end| end.checked_add(page - 1))
+                         .map(|end| end / page * page)
+                         .ok_or_else(|| {
+                             error(format!("native segment {index} memory extent or page \
+                                            rounding overflows"))
+                         })?;
+        if !segment.address.is_multiple_of(page)
+           || segment.address < previous_end
+           || end > descriptor.load_limit
+        {
+            return Err(error(format!("native segment {index} at {:#x}+{:#x} cannot map \
+                                      {page}-byte pages: start must be page aligned, rounded \
+                                      memory must not overlap the preceding segment ending \
+                                      {previous_end:#x}, and end {end:#x} must fit image \
+                                      limit {:#x}; correct the native linker script and \
+                                      rebuild",
+                                     segment.address,
+                                     segment.memory_size,
+                                     descriptor.load_limit)));
+        }
+        previous_end = end;
+    }
     Ok(mac_formats::native::image::encode(descriptor,
                                           image.segments.iter().map(|s| {
                                                                    (s.address
                                                                     - descriptor.load_base,
+                                                                    s.memory_size,
                                                                     s.flags,
                                                                     &bytes[s.offset as usize
                                                                            ..(s.offset
@@ -766,7 +904,7 @@ mod tests
         assert_eq!(&commands[..8], b"new sope");
         let vers = &resources.iter().find(|r| r.kind == *b"vers").unwrap().data;
         assert_eq!(&vers[..7], &[0, 0x10, 0x80, 0, 0, 0, 5]);
-        assert!(m.rust_ids().contains("FILE_MENU"));
+        assert!(m.rust_ids().unwrap().contains("FILE_MENU"));
         let mut m = manifest();
         m.cargo_version = "12.3.4".into();
         let resources = m.compile_resources(&path, &elf_fixture(), None).unwrap();
@@ -848,7 +986,7 @@ version="12.3.4-beta.2"
             m.role = "code_resource".into();
             m.extension_target = Some(target);
             m.validate().unwrap();
-            let generated = m.rust_ids();
+            let generated = m.rust_ids().unwrap();
             assert!(generated.contains(&format!("NATIVE_CODE: mac_abi::ResourceKey = \
                                                  mac_abi::ResourceKey::from_bytes({:?}, {});",
                                                 *b"RV64",

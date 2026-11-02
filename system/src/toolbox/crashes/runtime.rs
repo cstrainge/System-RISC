@@ -3,7 +3,11 @@
 use alloc::string::String;
 use core::fmt;
 
-use mac_abi::{crashes::*, events::CMD_KEY, quickdraw::*, *, geometry::{Point, Rect}};
+use mac_abi::{crashes::*,
+              events::CMD_KEY,
+              geometry::{Point, Rect},
+              quickdraw::*,
+              *};
 
 use crate::toolbox::{crashes::{RESOURCE_ID, ReportLayout},
                      events::input::Input,
@@ -26,7 +30,7 @@ enum Paint
     Warnings
 }
 const FOOTER: Rect = Rect::new(14, 350, 566, 365);
-const WARNINGS: Rect = Rect::new(14, 74, 566, 87);
+const WARNINGS: Rect = Rect::new(14, 62, 566, 87);
 const MONACO: FontSelection = FontSelection { family: 4,
                                               size:   9,
                                               face:   0 };
@@ -65,6 +69,19 @@ impl fmt::Display for Label
     fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result
     {
         output.write_str(self.text().map_err(|_| fmt::Error)?)
+    }
+}
+impl fmt::Write for Label
+{
+    fn write_str(&mut self, text: &str) -> fmt::Result
+    {
+        if text.len() > self.bytes.len() - self.length
+        {
+            return Err(fmt::Error);
+        }
+        self.bytes[self.length..self.length + text.len()].copy_from_slice(text.as_bytes());
+        self.length += text.len();
+        Ok(())
     }
 }
 fn label(index: u32) -> Result<Label, Status>
@@ -150,6 +167,156 @@ fn window_request(id: WindowId) -> WindowRequest
 
 impl super::Toolbox
 {
+    pub(crate) fn main_error_report(&self, owner: u64, thread: u64) -> bool
+    {
+        self.owner == owner && self.crash.main_error_capture(owner, thread)
+    }
+
+    pub(crate) fn note_crash_capture_attempt(&mut self)
+    {
+        self.crash.capture_attempt();
+    }
+
+    pub(crate) fn acknowledged_native_failure(
+        &mut self, binding: &crate::toolbox::processes::ResourceBinding)
+        -> Result<Option<crate::toolbox::processes::termination::Retention>, Status>
+    {
+        self.native_failure_selection(binding)?;
+        if binding.owner() == crate::context::finder_app().0
+           || !self.crash.acknowledged_capture(binding.owner())
+        {
+            return Ok(None);
+        }
+        Ok(Some(self.crash.seal_failure_capture()))
+    }
+
+    pub(crate) fn submit_crash_capture(&mut self, flags: u32) -> Result<CrashInfo, Status>
+    {
+        if self.crash.info().app == 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        self.crash.submit(flags);
+        Ok(self.crash.info())
+    }
+
+    pub(crate) fn adopt_native_failure_report(&mut self,
+                                              binding: &crate::toolbox::processes::ResourceBinding,
+                                              snapshot: &mut Option<crate::toolbox::crashes::Snapshot>,
+                                              fresh: &mut Option<crate::recovery::FreshReport>,
+                                              activity: &crate::recovery::Activity)
+                                              -> Result<crate::recovery::ReportAdoption, Status>
+    {
+        use crate::recovery::ReportAdoption;
+        self.native_failure_selection(binding)?;
+        if activity.closing()
+        {
+            return Ok(ReportAdoption::FreshClaimNeeded);
+        }
+        let old = self.crash.info().window;
+        if let Some(proof) = fresh.as_ref()
+        {
+            // A fresh Opening is the actual all-prior-children-ACK receipt.
+            // It cannot clear anything published in this current session.
+            if activity.has_outstanding_windows()
+               || (old.0 != 0 && self.windows.window(old).is_some())
+            {
+                return Ok(ReportAdoption::FreshClaimNeeded);
+            }
+            proof.validate(activity, binding.ledger())?;
+        }
+        else if old.0 != 0
+        {
+            if snapshot.is_some() || self.windows.window(old).is_none()
+            {
+                return Ok(ReportAdoption::FreshClaimNeeded);
+            }
+        }
+        else if activity.has_outstanding_windows()
+        {
+            return Ok(ReportAdoption::FreshClaimNeeded);
+        }
+        // Consume before replacing metadata or publishing a new window, with
+        // or without a queued snapshot. A retry can never reuse this receipt.
+        let proof = fresh.take();
+        if proof.is_some() && old.0 != 0
+        {
+            self.crash.set_window(WindowId(0));
+        }
+        if let Some(snapshot) = snapshot.take()
+        {
+            let superseded = self.crash.capture_superseded();
+            self.crash = crate::toolbox::crashes::Manager::from_snapshot(snapshot);
+            if superseded
+            {
+                self.crash.capture_attempt();
+            }
+        }
+        drop(proof);
+        Ok(ReportAdoption::Ready)
+    }
+
+    pub(crate) fn native_failure_keeps_stock(&mut self,
+                                             binding: &crate::toolbox::processes::ResourceBinding)
+                                             -> Result<bool, Status>
+    {
+        self.native_failure_selection(binding)?;
+        Ok(self.crash.owns_protected_stock())
+    }
+
+    /// All authors were actually quiesced before this snapshot boundary. A
+    /// submitted report remains complete; unfinished streaming is labelled as
+    /// a captured prefix, never passed off as the full userspace diagnostic.
+    pub(crate) fn prepare_native_failure_report(
+        &mut self, binding: &crate::toolbox::processes::ResourceBinding,
+        record: crate::toolbox::processes::termination::Record)
+        -> Result<crate::toolbox::processes::termination::Retention, Status>
+    {
+        self.native_failure_selection(binding)?;
+        let info = self.crash.info();
+        if info.app == 0 || info.dismissed != 0 || info.thread == 0
+        {
+            if info.window.0 != 0
+            {
+                let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                self.close_crash_report(&activity)?;
+            }
+            self.crash.begin_protected(binding.owner(), record.thread, 0)?;
+            let layout = crate::toolbox::crashes::prepared_layout()?;
+            self.crash.set_columns(layout.columns)?;
+            self.crash.set_page_lines(layout.page_lines);
+            let mut text = Label { bytes:  [0; 256],
+                                   length: 0 };
+            use core::fmt::Write;
+            write!(text,
+                   "System-owned process termination.\nApp: {}  Thread: {}\n{}\nNo complete \
+                    application diagnostic was submitted.\n",
+                   binding.owner(),
+                   record.thread,
+                   record.outcome).map_err(|_| BAD_ARGUMENT)?;
+            self.crash.request(&mut CrashCall { operation: APPEND,
+                                                 ..Default::default() },
+                                text.text()?,
+                                &mut [])?;
+            self.crash.seal_system_diagnostic();
+        }
+        let retention = self.crash.seal_failure_capture();
+        self.resume_crash_report()?;
+        Ok(retention)
+    }
+
+    pub(crate) fn native_failure_dismissed(&self,
+                                           binding: &crate::toolbox::processes::ResourceBinding)
+                                           -> Result<bool, Status>
+    {
+        let info = self.crash.info();
+        if info.app != binding.owner()
+        {
+            return Err(BAD_ABI);
+        }
+        Ok(info.dismissed != 0 && info.window.0 == 0)
+    }
+
     /// Boot preparation uses the renderer's actual managed-button requirement.
     pub(crate) const fn crash_control_count() -> usize
     {
@@ -276,6 +443,54 @@ impl super::Toolbox
         Ok(())
     }
 
+    /// Position the whole WDEF structure, including its title and frame, in the
+    /// usable desktop. The free vertical space is split one part above and two
+    /// below, so the report sits in the upper middle rather than at a fixed pixel.
+    fn position_main_error(&self, request: &mut WindowRequest, title: &str) -> Result<(), Status>
+    {
+        use mac_abi::definitions;
+        let id = request.procedure >> 4;
+        let entry = crate::loader::cached_definition(*b"WDEF", id).map_err(crate::loader::status)?
+                                                                  .ok_or(NOT_FOUND)?;
+        let mut state = definitions::WindowDefinitionState::new(request.bounds, title);
+        let mut call = DefinitionCall { reflow: 0,
+                                        header: Header::for_type::<DefinitionCall>(),
+                                        kind: definitions::WDEF,
+                                        id,
+                                        variation: request.procedure & 15,
+                                        message: definitions::CALCULATE,
+                                        reserved: 0,
+                                        param: 0,
+                                        object: core::ptr::from_mut(&mut state).cast(),
+                                        surface: core::ptr::null_mut(),
+                                        gate: crate::machine::traps::gateway };
+        let status = crate::toolbox::resources::definitions::invoke(entry, &mut call);
+        if status < 0
+        {
+            return Err(status as Status);
+        }
+        let usable = Rect::new(self.screen.left, self.screen.top + mac_abi::menus::MENU_BAR_HEIGHT, self.screen.right, self.screen.bottom);
+        let frame = state.structure;
+        let width = i32::from(frame.right) - i32::from(frame.left);
+        let height = i32::from(frame.bottom) - i32::from(frame.top);
+        let spare_width = i32::from(usable.right) - i32::from(usable.left) - width;
+        let spare_height = i32::from(usable.bottom) - i32::from(usable.top) - height;
+        if width <= 0 || height <= 0 || spare_width < 0 || spare_height < 0
+        {
+            return Err(NOT_SUPPORTED);
+        }
+        let dx = i32::from(usable.left) + spare_width / 2 - i32::from(frame.left);
+        let dy = i32::from(usable.top) + spare_height / 3 - i32::from(frame.top);
+        let shifted = |value: i16, delta: i32| {
+            i16::try_from(i32::from(value) + delta).map_err(|_| BAD_ARGUMENT)
+        };
+        request.bounds = Rect::new(shifted(request.bounds.left, dx)?,
+                                   shifted(request.bounds.top, dy)?,
+                                   shifted(request.bounds.right, dx)?,
+                                   shifted(request.bounds.bottom, dy)?);
+        Ok(())
+    }
+
     pub(crate) fn queue_crash_report(&mut self, flags: u32) -> Result<CrashInfo, Status>
     {
         if self.crash.info().app == 0
@@ -378,12 +593,21 @@ impl super::Toolbox
         {
             return Err(ACCESS_DENIED);
         }
+        if !owner.accepting()
+        {
+            return Err(OPERATION_CANCELLED);
+        }
         self.enter(binding.owner());
         if self.owner != binding.owner()
         {
             return Err(NOT_FOUND);
         }
+        let superseded = self.crash.capture_superseded();
         self.crash = crate::toolbox::crashes::Manager::from_snapshot(snapshot);
+        if superseded
+        {
+            self.crash.capture_attempt();
+        }
         self.resume_crash_report()
     }
 
@@ -393,6 +617,10 @@ impl super::Toolbox
         if activity.owner() != self.owner
         {
             return Err(ACCESS_DENIED);
+        }
+        if activity.closing()
+        {
+            return Err(OPERATION_CANCELLED);
         }
         if self.dialogs.active()
            && let Err(status) = self.close_dialog()
@@ -438,9 +666,14 @@ impl super::Toolbox
                               request.procedure = word(8)?;
                               Ok::<_, Status>(request)
                           }).ok_or(NOT_SUPPORTED)??;
-        let title = label(0)?;
+        let main_error = self.crash.info().flags & MAIN_ERROR != 0;
+        let title = label(if main_error { 30 } else { 0 })?;
         request.title[..title.len()].copy_from_slice(title.as_bytes());
         request.title_length = title.len() as u32;
+        if main_error
+        {
+            self.position_main_error(&mut request, title.text()?)?;
+        }
         checked(self.window(NEW_WINDOW, &mut request))?;
         self.crash.set_window(WindowId(request.id));
         activity.set_object(request.id);
@@ -453,6 +686,17 @@ impl super::Toolbox
         serial!("CRASH_REPORT_READY app={} window={} bytes={} lines={} page_lines={} flags={}",
                 self.owner, info.window.0, info.report_bytes, info.line_count, info.page_lines,
                 info.flags);
+        if main_error
+        {
+            if let Some(window) = self.windows.window(info.window)
+            {
+                serial!("MAIN_ERROR_REPORT_BOUNDS app={} content={:?} structure={:?} usable={:?}",
+                        self.owner,
+                        window.bounds,
+                        window.structure(),
+                        Rect::new(self.screen.left, self.screen.top + mac_abi::menus::MENU_BAR_HEIGHT, self.screen.right, self.screen.bottom));
+            }
+        }
         Ok(())
     }
 
@@ -572,7 +816,8 @@ impl super::Toolbox
                         icons_service::Drawing::new(resources, &call, service::Port::default())
                     }).ok_or(NOT_SUPPORTED)??;
                 self.icon(&call, drawing)?;
-                self.crash_text(window, FontSelection::default(), 64, 29, label(0)?.text()?)?;
+                let title = label(if info.flags & MAIN_ERROR != 0 { 30 } else { 0 })?;
+                self.crash_text(window, FontSelection::default(), 64, 29, title.text()?)?;
                 self.crash_text(window,
                                 MONACO,
                                 64,
@@ -582,34 +827,89 @@ impl super::Toolbox
                                                         info.app,
                                                         label(13)?,
                                                         info.thread))?)?;
-                let description =
-                    if self.is_current_finder_report() { label(8)? } else { label(11)? };
-                self.crash_text(window, MONACO, 14, 72, description.text()?)?;
             }
             if matches!(mode, Paint::Full | Paint::Warnings)
             {
-                let mut warnings = String::new();
-                for (enabled, index) in [(info.flags & TRUNCATED != 0, 9),
-                                         (info.flags & FORMAT_FAILED != 0, 10),
-                                         (self.crash.copy_failed, 17)]
+                if let Some(detail) =
+                    self.crash.restart_detail.filter(|_| self.crash.power_failure.is_none())
                 {
-                    if enabled
+                    // Fixed owned lines were formatted once outside Desktop.
+                    // This paint touches only the bounded description/warning band.
+                    self.crash_text(window, MONACO, 14, 72, detail.line(0)?)?;
+                    self.crash_text(window, MONACO, 14, 84, detail.line(1)?)?;
+                }
+                else
+                {
+                    let description = label(if self.is_current_finder_report()
+                                            {
+                                                8
+                                            }
+                                            else if info.flags & MAIN_ERROR != 0
+                                            {
+                                                31
+                                            }
+                                            else
+                                            {
+                                                11
+                                            })?;
+                    self.crash_text(window, MONACO, 14, 72, description.text()?)?;
+                    let mut warnings = String::new();
+                    for (enabled, index) in [(info.flags & TRUNCATED != 0, 9),
+                                             (info.flags & FORMAT_FAILED != 0, 10),
+                                             (self.crash.copy_failed, 17)]
                     {
-                        if !warnings.is_empty()
+                        if enabled
                         {
-                            append(&mut warnings, "   ")?;
+                            if !warnings.is_empty()
+                            {
+                                append(&mut warnings, "   ")?;
+                            }
+                            append(&mut warnings, label(index)?.text()?)?;
                         }
-                        append(&mut warnings, label(index)?.text()?)?;
                     }
+                    if self.crash.restart_terminal
+                    {
+                        warnings.clear();
+                        if let Some((status, stage)) = self.crash.power_failure
+                        {
+                            let message = match stage
+                            {
+                                mac_abi::power::SELECTION_FAILURE => 25,
+                                mac_abi::power::APPLICATION_FAILURE => 26,
+                                mac_abi::power::STORAGE_FAILURE => 27,
+                                mac_abi::power::DEVICE_FAILURE => 28,
+                                _ => 29
+                            };
+                            write_text(&mut warnings,
+                                       format_args!("{} ({status})", label(message)?))?;
+                        }
+                        else
+                        {
+                            append(&mut warnings, label(24)?.text()?)?;
+                            if let Some(status) = self.crash.restart_error
+                            {
+                                write_text(&mut warnings, format_args!(" ({status})"))?;
+                            }
+                        }
+                    }
+                    else if self.crash.capture_superseded()
+                    {
+                        warnings.clear();
+                        append(&mut warnings, label(22)?.text()?)?;
+                        if let Some(status) = self.crash.restart_error
+                        {
+                            write_text(&mut warnings, format_args!("  {} ({status})", label(7)?))?;
+                        }
+                    }
+                    else if let Some(status) = self.crash.restart_error
+                    {
+                        warnings.clear();
+                        append(&mut warnings,
+                               label(if status == NO_MEMORY { 19 } else { 18 })?.text()?)?;
+                        write_text(&mut warnings, format_args!(" ({status})"))?;
+                    }
+                    self.crash_text(window, MONACO, 14, 84, &warnings)?;
                 }
-                if let Some(status) = self.crash.restart_error
-                {
-                    warnings.clear();
-                    append(&mut warnings,
-                           label(if status == NO_MEMORY { 19 } else { 18 })?.text()?)?;
-                    write_text(&mut warnings, format_args!(" ({status})"))?;
-                }
-                self.crash_text(window, MONACO, 14, 84, &warnings)?;
             }
             if matches!(mode, Paint::Full | Paint::Report)
             {
@@ -757,12 +1057,17 @@ impl super::Toolbox
             let enabled = u32::from(self.crash_button_enabled(index));
             // This chooses presentation only. Retry execution independently
             // validates the retained Work admission and genuine binding.
-            let label_index = if index == 5 && self.is_current_finder_report()
+            let label_index = if index == 5 && self.crash.restart_terminal
+            {
+                23
+            }
+            else if index == 5 && self.is_current_finder_report()
             {
                 7
             }
             else if index == 5
-                      && self.owner == crate::context::finder_app().0
+                      && (self.owner == crate::context::finder_app().0
+                          || self.system_report_selected())
                       && (self.crash.restart_error.is_some() || self.crash.restart_pending)
             {
                 21
@@ -848,6 +1153,20 @@ impl super::Toolbox
             return Ok(());
         }
         let binding = self.processes.resource_binding(self.owner)?;
+        self.queue_native_finder_restart(binding)
+    }
+
+    /// Authority is the actual Process/Activity binding. The diagnostic may
+    /// still describe an earlier Finder instance and cannot mint authority.
+    pub(crate) fn queue_native_finder_restart(&mut self,
+                                              binding: crate::toolbox::processes::ResourceBinding)
+                                              -> Result<(), Status>
+    {
+        self.native_failure_selection(&binding)?;
+        if binding.owner() != crate::context::finder_app().0
+        {
+            return Err(ACCESS_DENIED);
+        }
         let permit = crate::recovery::permit()?;
         match crate::toolbox::processes::finder::request(binding, permit)
         {
@@ -890,19 +1209,78 @@ impl super::Toolbox
     pub(crate) fn finish_finder_start_ui(&mut self, admission: &super::FinderAdmission)
                                          -> Result<(), Status>
     {
-        if self.owner != admission.id() || self.crash.restart_pending
+        let report = admission.system_report().ok_or(BAD_ABI)?;
+        if report.activity().closing() || self.system_report_closing(report)?
         {
-            return Err(ACCESS_DENIED);
-        }
-        let window = self.crash.info().window;
-        if window.0 == 0
-        {
+            // A real user dismissal or the same beneficiary's next BEGIN owns
+            // closing. Never recreate its invalidated window or retain Work's
+            // lease forever after the next capture has requested actual ACK.
             return Ok(());
         }
-        if self.windows.window(window).is_none()
+        self.with_system_report(report, |toolbox| {
+                if toolbox.crash.restart_pending
+                {
+                    return Err(ACCESS_DENIED);
+                }
+                let window = toolbox.crash.info().window;
+                if window.0 == 0
+                {
+                    return Ok(());
+                }
+                if toolbox.windows.window(window).is_none()
+                {
+                    return Err(SERVICE_BUSY);
+                }
+                toolbox.draw_crash_warnings()?;
+                toolbox.crash_controls(false)
+            })?
+    }
+
+    /// Store only already-bounded display bytes. The coordinator retains its
+    /// original typed cause. Failed paint stays dirty for a real progress wake;
+    /// an unchanged successfully drawn warning does no rendering work.
+    pub(crate) fn finder_image_failure(&mut self, status: Status, terminal: bool,
+                                       detail: crate::toolbox::crashes::FailureDetail,
+                                       power_failure: Option<(Status, u32)>)
+                                       -> Result<(), Status>
+    {
+        let changed = self.crash.restart_pending
+                      || self.crash.restart_error != Some(status)
+                      || self.crash.restart_terminal != terminal
+                      || self.crash.restart_detail != Some(detail)
+                      || self.crash.power_failure != power_failure;
+        self.crash.restart_pending = false;
+        self.crash.restart_error = Some(status);
+        self.crash.restart_terminal = terminal;
+        self.crash.power_failure = power_failure;
+        self.crash.restart_detail = Some(detail);
+        self.crash.restart_detail_dirty |= changed;
+        if self.crash.info().window.0 == 0
         {
-            // Dismissal owns its real ACK wait; do not redraw an invalidated ID.
-            return Err(SERVICE_BUSY);
+            self.show_crash_report()?;
+        }
+        else if self.crash.restart_detail_dirty
+        {
+            self.draw_crash_warnings()?;
+            self.crash_controls(false)?;
+        }
+        self.crash.restart_detail_dirty = false;
+        Ok(())
+    }
+
+    pub(crate) fn finder_restart_terminal(&mut self, status: Status,
+                                          power_failure: Option<(Status, u32)>)
+                                          -> Result<(), Status>
+    {
+        self.crash.restart_pending = false;
+        self.crash.restart_error = Some(status);
+        self.crash.restart_terminal = true;
+        self.crash.power_failure = power_failure;
+        self.crash.restart_detail = None;
+        self.crash.restart_detail_dirty = true;
+        if self.crash.info().window.0 == 0
+        {
+            return self.show_crash_report();
         }
         self.draw_crash_warnings()?;
         self.crash_controls(false)
@@ -910,9 +1288,13 @@ impl super::Toolbox
 
     pub(crate) fn finder_restart_failed(&mut self, status: Status) -> Result<(), Status>
     {
-        let changed = self.crash.restart_pending || self.crash.restart_error != Some(status);
+        let changed = self.crash.restart_pending
+                      || self.crash.restart_error != Some(status)
+                      || self.crash.restart_detail.is_some();
         self.crash.restart_pending = false;
         self.crash.restart_error = Some(status);
+        self.crash.restart_detail = None;
+        self.crash.restart_detail_dirty |= changed;
         if changed
         {
             serial!("FINDER_RESTART_FAILED app={} status={status}; report retained, retry \
@@ -927,7 +1309,7 @@ impl super::Toolbox
         self.crash_controls(false)
     }
 
-    fn cancel_crash_tracking(&mut self)
+    pub(super) fn cancel_crash_tracking(&mut self)
     {
         if let Some(index) = self.crash.tracking.take()
            && let Some(id) = self.crash.controls[index]
@@ -973,6 +1355,48 @@ impl super::Toolbox
             }
             5 =>
             {
+                if self.system_report_selected()
+                {
+                    if !self.crash.restart_terminal && self.crash.restart_error.is_none()
+                    {
+                        return self.request_system_report_dismiss();
+                    }
+                    let kind = if self.crash.restart_terminal
+                    {
+                        crate::toolbox::runtime::SystemReportActionKind::Restart
+                    }
+                    else
+                    {
+                        crate::toolbox::runtime::SystemReportActionKind::Retry
+                    };
+                    let action = self.system_report_action(kind)?;
+                    match crate::toolbox::processes::finder::system_report_action(&action)
+                    {
+                        Ok(()) => (),
+                        Err(NOT_FOUND)
+                            if kind == crate::toolbox::runtime::SystemReportActionKind::Restart =>
+                        {
+                            self.request_system_report_restart(&action)?;
+                        }
+                        Err(status) => return Err(status)
+                    }
+                    self.crash.restart_pending = true;
+                    if kind == crate::toolbox::runtime::SystemReportActionKind::Retry
+                    {
+                        self.crash.restart_error = None;
+                        self.crash.restart_detail = None;
+                        self.crash.restart_detail_dirty = true;
+                        self.draw_crash_warnings()?;
+                    }
+                    return self.crash_controls(false);
+                }
+                if self.crash.restart_terminal
+                {
+                    let binding = self.processes.resource_binding(self.owner)?;
+                    crate::toolbox::processes::finder::restart_system(&binding)?;
+                    self.crash.restart_pending = true;
+                    return self.crash_controls(false);
+                }
                 if self.is_current_finder_report()
                 {
                     return self.request_finder_restart();
@@ -1004,7 +1428,9 @@ impl super::Toolbox
                 info.first_line, info.line_count, info.page_lines);
     }
 
-    fn crash_pointer(&mut self, point: Point, down: bool, when: u32) -> bool
+    fn crash_pointer(&mut self, point: Point, down: bool, when: u32,
+                     admitted_hit: Option<crate::toolbox::windows::Hit>)
+                     -> bool
     {
         use mac_abi::controls::*;
         let window = self.crash.info().window;
@@ -1050,7 +1476,7 @@ impl super::Toolbox
         {
             return false;
         }
-        let hit = self.windows.find_window(point);
+        let hit = admitted_hit.unwrap_or_else(|| self.windows.find_window(point));
         if hit.window != Some(window) || hit.part != WindowPart::Content
         {
             return false;
@@ -1083,6 +1509,13 @@ impl super::Toolbox
     }
 
     pub(super) fn crash_input(&mut self, input: Input, when: u32) -> bool
+    {
+        self.crash_input_with_hit(input, when, None)
+    }
+
+    pub(super) fn crash_input_with_hit(&mut self, input: Input, when: u32,
+                                       admitted_hit: Option<crate::toolbox::windows::Hit>)
+                                       -> bool
     {
         let info = self.crash.info();
         if self.owner != self.foreground
@@ -1136,10 +1569,10 @@ impl super::Toolbox
                 true
             }
             Input::Button { point,
-                            down } => self.crash_pointer(point, down, when),
+                            down } => self.crash_pointer(point, down, when, admitted_hit),
             Input::Move(point) if self.crash.tracking.is_some() =>
             {
-                self.crash_pointer(point, true, when)
+                self.crash_pointer(point, true, when, None)
             }
             _ => false
         }

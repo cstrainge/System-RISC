@@ -549,7 +549,7 @@ fn request_sources<T: Subject, M: Subject, G: InvocationGate>(source: Sources<'_
                                                     reserved:  value.reserved(),
                                                     committed: value.committed() }
                                  };
-                                 Account { coverage:    ACCOUNT_EXECUTION_RESIDENT_HEAP,
+                                 Account { coverage:    ACCOUNT_EXECUTION_OWNED_MEMORY,
                                            closing:     u32::from(snapshot.closing),
                                            kernel:      usage(snapshot.kernel),
                                            application: usage(snapshot.application) }

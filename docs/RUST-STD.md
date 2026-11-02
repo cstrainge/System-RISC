@@ -1,12 +1,17 @@
 # Rust standard library bring-up
 
-Status: design/backlog, tracked as [platform workstream P8](CORE-TOOLBOX-ROADMAP.md#p8--rust-standard-library).
+Status: incremental implementation, tracked as [platform workstream P8](CORE-TOOLBOX-ROADMAP.md#p8--rust-standard-library).
+The bounded [native File Manager foundation](NATIVE-FILE-IO.md) has finite target
+observations. Basic std File/cwd adapters and the deliberate GUI null-stream
+profile are under target qualification; real CLAP streams and pipes remain future work.
 The goal is ordinary `std` for every native userspace application, including
 Finder and all `apps/*`; userspace applications must no longer need `#![no_std]`,
 `#![no_main]`, a handwritten `_start` or a panic-handler macro. Toolbox libraries
 remain usable without std. Kernel, machine adapters, resource definitions and the
-minimal ABI/transport remain `no_std`. This plan does not install a new toolchain
-or implement a std backend.
+minimal ABI/transport remain `no_std`. The private development SDK and a native
+ordinary-main probe now exist. Installed app sources use ordinary `main` and
+the image builder selects the std SDK for them. This implementation step does
+not close the remaining adoption gates below.
 
 The application policy includes [P11 CLAP commands](TERMINAL.md), hosted by
 Terminal with preference-defined base environments and checked session identity.
@@ -15,10 +20,10 @@ adds hardware process protection. Ordinary CLI/std support does not establish
 either compiler hosting or memory isolation.
 
 [P15 HFS-B](CORE-TOOLBOX-ROADMAP.md#p15--hfs-b-and-early-system-migration) is the
-immediate implementation priority, before the P8 application/sysroot migration.
-Use the current no_std apps to establish its boot/launch gate; do not make P15
-depend on std support. HFS-B is the boot/system/workspace target. After its
-formatter/boot/write-integrity gate, normal builds require HFS-B startup media.
+current boot/system/workspace target. The normal image now requires the pinned
+std SDK for application images; System and low-level modules remain no_std.
+Continue qualifying actual
+formatter/boot/write behavior on HFS-B startup media.
 Keep mounted classic HFS behavior unchanged; validate the new format's full-name,
 64-bit size/time and dual-fork services instead of extending HFS storage limits.
 Audit the existing 4 MiB resource-loading and staged-write ceilings early as part
@@ -28,20 +33,89 @@ with bounded memory use before making std the application build default.
 
 ## Current evidence and gaps
 
-At this planning checkpoint the host has rustc nightly 1.101.0, commit
-`28221559263a3976766cf305940e80e30cf9ba8a`, and rust-src installed. This is an
-observed toolchain, not a selected release requirement. Guest builds explicitly
-require `riscv64imac-unknown-none-elf`; they use `_start(SystemServices)`, compact
-native resource packaging and `panic = "abort"`. The linker drops `.eh_frame`.
+The development SDK pins rustc commit
+`28221559263a3976766cf305940e80e30cf9ba8a` and its matching rust-src, with custom
+target `riscv64-unknown-systemrisc`, PIC and `panic = "abort"`. The reproducible
+private-source builder is documented in [platforms/rust](../platforms/rust/README.md).
+Kernel and independent low-level modules keep their no_std target. An application
+supplies normal `main`; the platform supplies native entry and shared services.
 
-The one-hart scheduler supplies separate application threads, preemption, trusted
-identities and event-specific blocking/wakeup. This is not worker-thread spawning,
-general park/wake, TLS or a std runtime. Memory handles are generation checked
-but do not expose a stable-pointer allocator. File reads/catalog operations and
-bounded transactional data-file creation exist; generic writable file streams,
-pipes and std descriptors do not. Monotonic nanoseconds and signed Unix wall
-seconds exist, with finer wall-clock precision still to define. Networking is
-[P7](NETWORKING.md), not an existing socket backend.
+Finite optimized four-CPU QEMU runs of the real packaged `Std Probe` exercised
+ordinary main, Vec/String/Box allocation, repeated `System::new()`, native TLS and
+its destructor, clocks, a scheduler-backed Condvar timeout, and window create/close.
+Matching terminal variants observed normal return with code0, explicit
+`std::process::exit(-23)` without user TLS cleanup, the default System panic report,
+and a real 512MiB allocation refusal against the 64MiB process account. Panic and
+OOM submit Abort immediately after reporting. System owns the report, dismissal,
+thread/process reclamation and subsequent input; these were observed in each
+applicable case. The panic dispatcher must not skip the System hook merely because
+stderr has no panic-output endpoint.
+
+These are bounded main-thread cases, not complete S1 or std adoption acceptance.
+Their scope does not qualify early-startup failures, custom hooks, full memory exhaustion, Finder OOM recovery,
+Windows or other hardware. Non-ASCII bytes reached the report transport; glyph
+availability is a separate font/rendering concern. Existing native scheduler and
+module-worker evidence does not substitute for std child-thread observations.
+
+Later finite optimized four-CPU QEMU observations exercised actual std children,
+TLS teardown, synchronization, scoped borrowing, transferred join/detach rights,
+creation-budget refusal/reuse, child panic and process exit with a live child.
+Paused physical PC/SP observations caught each of four real child register bodies
+migrating at the same stack pointer, with overlapping execution. Actual thread
+and Process/account reclamation and subsequent input were observed. These are
+bounded scenarios, including instrumentation and pauses, not race-absence or
+latency guarantees.
+
+The native random backend now uses the same checked entropy transport as the
+public API. With optimized SDK
+`c76fa2ded199ab765b77d4dbc45abb9113e30a8aa00fade3f82ac1364c19ec9e`,
+System resource hash
+`bb6873aad2b92a75fa85861f46c040080cfdd7b79a5b6892656bbbd6da4e7727`,
+and private RV64 QEMU with four CPUs and 8 GiB, HashMap/HashSet operations completed
+in main and four native children. Queue metadata recorded six real device
+completions; source bytes and seeds were not logged. Removing the RNG produced
+an informative System report, Abort101, actual reclamation and subsequent input.
+The positive diagnostic explicitly checked source readiness in main. It does
+not qualify pending readiness during launch, initial/replacement Finder,
+malformed-device handling, provider retirement, source security or full adoption.
+
+The retained ENTR1 launch coordinator now has bounded native observations for
+initial Finder, ordinary launch/cancellation/retry and asynchronous document
+commit/refusal/retry, plus already-ready Finder-role replacements. Their exact
+artifacts, source-freshness correction, injected-device configuration and remaining
+gaps are recorded in [application runtime observations](APPLICATION-RUNTIME.md#bounded-ready-observations--2026-11-01).
+Matching SDK `056bc07dc1d2272fed1caf2c3a318a0b87ff16eee8a6ed434f6c39bdb04a58a3`
+also exercised cross-thread std join/drop with actual THRD/account closure on that
+System artifact. Public entropy normal, absent, short completion and caller-stop /
+reset / fresh retry ran on the same artifact; no bytes or seeds were logged.
+The prior explicit-readiness HashMap cases above remain scoped to their earlier
+SDK/System artifact and do not establish later automatic launch admission.
+
+The normal `xtask sdk app` packaging route now adds ENTR1 automatically. An
+identical author declaration is reused; an incompatible version or duplicate
+author declaration fails with its cause. Generic low-level native packaging does
+not infer a runtime from arbitrary ELF files; std builds use the SDK route.
+
+With optimized SDK
+`21e9737a2b06f05b90dc4a7ff69f4cb47ee3e32b28e69b113b91aac8cd2193db`
+and the System/ROM artifacts recorded in the application-runtime READY observations,
+a private ordinary-main application declared no services and made no author
+readiness call. Its actual packaged NREQ contained ENTR1. Holding the real source
+kept main unpublished while input responded; release led to HashMap/HashSet work
+in main and four children, six device completions, five actual THRD reclaims,
+original Process/account closure and input. Removing the real RNG refused launch
+before main, reclaimed the unstarted owner and allowed typed alert dismissal/input.
+Actual SDK builds also observed identical-declaration reuse, informative version
+conflict/duplicate refusals, then a restored successful build. These are finite
+packaging/launch/seeding cases, not source-security or complete adoption acceptance.
+
+Basic native std File/cwd adapters are connected and under target qualification.
+Installed app sources now use ordinary main through the shared std SDK; final
+combined-system migration and launch-context qualification remain. The GUI profile
+uses intentional null stdin/stdout/stderr as documented below, without a Terminal
+or output view. This does not implement real CLAP/session streams or the future
+pipes extension. Panic reporting remains independent of these null streams.
+Networking remains [P7](NETWORKING.md).
 
 ## Application build and default panic contract
 
@@ -157,13 +231,13 @@ a linked std stub as an implemented service.
 | --- | --- | --- |
 | `alloc`, Box/Vec/String, collections, Arc | Internal System heap, atomics and memory handles | Stable-pointer allocate/deallocate/reallocate with alignment, zeroing, ownership and OOM policy. Never use movable handles as raw allocations. Match GlobalAlloc contracts, including no unwinding/reentrant allocation; test alignment, growth, reuse, failure and concurrent clients. |
 | Iterators, formatting, Unicode/string logic, numerics, generic `io` helpers | Mostly portable Rust/compiler code | Audit target intrinsics/math/builtins and dependency paths; verify representative runtime results. Their presence does not imply the OS-backed portions of std work. |
-| HashMap/HashSet and random-dependent runtime behavior | No verified OS entropy service | Add an entropy/randomness backend, seed policy, early-boot failure behavior and independent state across apps/threads. Verify the actual pinned std seeding path; do not present timestamps as secure entropy for P7 TLS or third-party getrandom. |
-| `thread`, scoped threads, join, sleep, park/unpark | One main OS thread per app; event wait blocks it | Spawn native workers in the same AppId with distinct ThreadIds/stacks, join/exit, wake tokens, deadlines, names/IDs, stack exhaustion and cleanup. Scoped threads must not outlive borrowed state; dropping a join handle and app exit require explicit lifecycle rules. |
-| `thread_local!` and runtime TLS | App-local manager context, not native thread TLS | Per-OS-thread keys/values, initialization/reentrancy, destructor order/reentrancy and teardown. Keep code and thread state alive through destructors. Test distinct values on workers, multiple apps and thread-slot reuse. |
+| HashMap/HashSet and random-dependent runtime behavior | External VirtIO RNG, checked resident entropy transport and bounded native seeding observations | Add an entropy/randomness backend, seed policy, early-boot failure behavior and independent state across apps/threads. Verify the actual pinned std seeding path; do not present timestamps as secure entropy for P7 TLS or third-party getrandom. |
+| `thread`, scoped threads, join, sleep, park/unpark | Genuine native children/rights and bounded std thread observations | Spawn native workers in the same AppId with distinct ThreadIds/stacks, join/exit, wake tokens, deadlines, names/IDs, stack exhaustion and cleanup. Scoped threads must not outlive borrowed state; dropping a join handle and app exit require explicit lifecycle rules. |
+| `thread_local!` and runtime TLS | Canonical per-thread OS-key TLS and bounded std teardown observations | Per-OS-thread keys/values, initialization/reentrancy, destructor order/reentrancy and teardown. Keep code and thread state alive through destructors. Test distinct values on workers, multiple apps and thread-slot reuse. |
 | Mutex/RwLock/Condvar/Once/OnceLock/LazyLock, channels | Interrupt-masked service guards; event-specific wait | General atomic check/enqueue-and-park plus wake/timeout; no lost wakeups, spins behind preempted owners or locks across switches. Specify memory ordering, spurious wakes and fairness. Test blocked-thread progress, initialization races and channels using real workers. |
 | `time::{Instant,SystemTime}`, thread sleep | Monotonic ns, signed Unix seconds and checked HFS conversion | Define precision/resolution, range, subtraction/overflow and wall adjustment. Sleep uses scheduler deadlines and never UI event consumption. Test 2026+, before/after epoch, 2040 HFS boundary and adjustment-independent Instant. |
-| `io` stdin/stdout/stderr, buffering and printing | Serial diagnostics and UI services | Owned stream/descriptor table, partial reads/writes, EOF, locks, redirection and pipe readiness. Define absent stdin and broken-pipe behavior. GUI apps need no terminal until actual output requests one; no serial log stream masquerading as user stdout. |
-| `fs`, File/OpenOptions, Read/Write/Seek, metadata/read_dir | Read-only fork streams, catalog/identity, mutations, bounded whole-data-file writer | General open/create/read/write/append/truncate/seek/sync, large offsets, cursor sharing on clone, flags and access errors, atomic replacement and directory races. A 4 MiB staging writer is not a writable File. Plain std files address the data fork; resource forks stay an explicit native extension. |
+| `io` stdin/stdout/stderr, buffering and printing | GUI null-stream profile; CLAP streams deferred | GUI APPL/FNDR stdin is permanent EOF and stdout/stderr intentionally discard writes with successful flush; all are non-terminal. No output window or serial delivery is implied. Future CLAP/Terminal sessions require real owned endpoints, partial I/O, EOF, locks, redirection and readiness. Full pipe functionality belongs to the planned pipes extension, replacing kernel stubs through the service boundary. |
+| `fs`, File/OpenOptions, Read/Write/Seek, metadata/read_dir | Native bounded writable descriptions and path services; basic std File/cwd adapter under qualification | General open/create/read/write/append/truncate/seek/sync, large offsets, cursor sharing on clone, flags and access errors, atomic replacement and directory races. A 4 MiB staging writer is not a writable File. Plain std files address the data fork; resource forks stay an explicit native extension. |
 | `path`, OsStr/OsString, environment/cwd/temp/exe paths | Native UTF-8 strings over classic HFS names | Define native path/volume syntax, encoding and invalid-input behavior, HFS case/name limitations, normalization and unsupported Unicode names without lossy substitution. Snapshot args/env and synchronize allowed mutations. Preferences remain JSON, separate from the process environment. |
 | `process::{Command,Child,Stdio}`, exit/abort | Resource-app launch/activation/exit | Child arguments/environment/cwd, process ownership, exit status, wait/try_wait, kill and redirected pipes. Launch resource-fork apps through the loader; no need to implement Unix fork to provide Command. Do not treat activate-existing-app as spawn-a-child. |
 | `net`, address resolution and socket readiness | No device/socket service | P7 sockets, owned descriptors, connect/accept, UDP, names, options, partial I/O, EOF, deadlines and cancellation, then std backend mapping. Verify IPv4/IPv6 and process cleanup without a second TCP/IP stack. |
@@ -280,3 +354,115 @@ allocation/startup, files, clocks, OS threads/TLS/synchronization, event wakeups
 System-owned panic reporting. Compile the standard library's surface while
 reporting unavailable facilities honestly; do not invent working sockets or
 require a generic IPC subsystem merely to deliver resident completions.
+
+
+### Entropy source deadline observations — 2026-11-01
+
+A private optimized RV64 QEMU image with System resource
+`f7fef2e643ddb3af4b47cd1beff66ef2d92c451e07749ee6620bdfbf519683f7`
+and ROM `73954623bc3ed093a15ddce337473768263e14dfc748cf5cfda39be07fbf1a09`
+exercised the actual 104-byte Host clock descriptor and external RNG deadline.
+With SDK `f2d785d5e70a1d71eae401220614a13a19fe3409ff33d0e05179124d242eacc0`,
+normal delayed READY led to std collection work in main/four children and real
+reclamation. With the source withheld, ordinary and document launch reached the
+native deadline, refused with ENTR1/I/O identity, reset the device, reclaimed the
+unstarted owner and allowed alert dismissal and genuine retry. Initial Finder
+reached its terminal startup screen, retained unique original boot ownership
+until actual Restart, then booted a fresh desktop.
+
+A real no_std diagnostic using only the public facade measured 30.0585137 seconds
+on the guest clock before refusal, observed zero initialized bytes and an unchanged
+64-byte caller buffer, received the provider's explicit 30-second explanation,
+then completed actual reset and source-backed retry, THRD/account closure and
+input. A single diagnostic guest timer interval permitted reset metadata sampling;
+this is not latency or concurrency acceptance. The first public message still
+called the generic I/O cause disk I/O; that wording failed presentation review and
+the shared Display text was corrected. This historical capture does not establish
+the corrected text's native presentation.
+
+Those five captures kept source/base fixed, reaped owned guests and removed cloned
+media. Logs include transient pending cleanup/quarantine messages; actual later
+PROCESS_EXIT is emitted only after successful canonical removal, settled cleanup
+and original account closure. Pending messages alone do not establish either final
+failure or completed cleanup. Clock-policy/foreign-context refusal, regression,
+overflow, malformed DMA, unacknowledged reset, pending replacement cancellation,
+provider withdrawal, Windows and other hardware remain unqualified.
+
+
+The corrected final assembly used the same System executable
+`5caa5a12d7a503ae29a2cf1f254cd2817a59470507bbb79c2578b1e9c21e40b7`,
+System resource `eb2e53170ffec45d8ce555b6eaa1ac30b0ac61c89ee84ff346e0e953baa993ea`,
+Finder resource `1c31d265d01b21f257d1d98157129f13ed250074425a33dd6e4c76c9a319865a`,
+the ROM above, and matching SDK
+`55265da35c763f56a6311d1e69b43a2d76f558bd0c11480681b6c35d5506614c`.
+The real public diagnostic then observed 30.0429125 guest-clock seconds, unchanged
+output, the corrected general I/O cause and explicit source deadline, actual reset,
+successful retry and original thread/account closure. The assembled resource set
+changed even though the System executable stayed identical; the final image was
+rebuilt and the ordinary/document/boot deadline scenarios were repeated on it.
+
+A further final-assembly std case supplied the genuine automatic launch READY
+reply, allowed ordinary main to enter, then withheld the actual std seed reply.
+The native deadline produced the precise retained System report and Abort101;
+the seed reply stayed withheld, no collection workload completed, the device reset,
+and report dismissal allowed actual THRD and original account closure and input.
+The actual report was inspected visually. This exercises unexpected source loss
+after admission, not merely absent-device rejection before author entry. All six
+final captures kept source/base fixed, reaped owned guests and removed cloned
+media without host cleanup errors. These observations do not enlarge the
+unqualified clock/cleanup/provider/platform cases listed above or complete std
+adoption.
+
+### GUI standard streams and deferred pipes
+
+The current graphical APPL/FNDR profile deliberately uses null standard streams:
+stdin immediately returns zero bytes/EOF without changing the caller's buffer;
+stdout and stderr discard arbitrary bytes, report successful writes and flush
+successfully. They are non-terminal. An ordinary `Result::Err` from main uses the
+platform's separate System error-report path, including `ToolboxResult<()>`:
+retain its Debug details while the error is alive, complete normal std/TLS cleanup,
+then display the System-owned report and exit normally with failure status 1.
+System retains the report until genuine dismissal. The window is horizontally
+centered in the usable desktop, with one third of spare vertical space above its
+WDEF structure. A cleanup panic supersedes the draft and follows the separate
+panic/Abort101 contract. These new report/cleanup paths require matching native
+qualification; earlier silent-Err observations describe the previous policy.
+
+These semantics are the graphical application contract, not a real output
+stream, interactive input, serial console or CLAP acceptance. A future CLAP
+profile must bind actual session endpoints before it is supported. Full pipes
+functionality is planned for an external pipes extension that replaces resident
+kernel placeholders through the production service/module boundary; do not grow
+a parallel full kernel pipe implementation or treat unsupported stubs as pipe
+support. Redirection, pipe readiness/backpressure and lifecycle remain deferred.
+
+
+### Combined Control Suite observation — 2026-11-02
+
+The combined image builds all eight installed applications with the std SDK,
+including Control Suite. A finite optimized RV64 QEMU capture with four configured
+CPUs, 800x600 display and exactly 2 GiB RAM used System executable
+`7a78ca81ca4b8fec659ea2b7eecb2d9e6c2550255f9f9b25e4f004f1fa1e0457`,
+System resource `63b073ca855e105ab2575b2154066136d89a0db405d94b67307632503b9b597e`,
+ROM `3e53daf4485f326a8662aacc581da565ba588316e56a4378ea07e86d053fc291`
+and SDK `f21d209834f9b38c17a9f195fe1102430465eb55822b46fe7c93f9355e35ce7d`.
+Offline installed data/resource forks matched each of the eight build packages.
+The actual launch admitted Documents for the Control Suite owner before entry.
+Physical input exercised its four labeled cells, both splitters' parent-sized
+outlines and accepted releases, window resize, normal return with status 0,
+actual thread and Process/account removal, and subsequent Finder input. Saved
+frames were inspected; source and base media stayed fixed, and the private guest
+was reaped with its cloned media removed.
+
+The preceding full sequence and a drag-only partition failed account closure:
+the global outline visibility cache retained 264 bytes and two account pins
+charged to the invoking application. A launch/close-only partition closed its
+account. Retained account pins count strong account references; they do not establish
+an allocation count. Newly constructed shared visibility snapshots now select ordinary
+System backing while preserving actual allocation receipts and cached refusal
+behavior. The original full sequence then reached the outcome above. This is
+finite evidence for that cache lifetime and GUI sequence, not general pressure,
+allocation-failure, cancellation, race or SMP qualification. The kernel still
+keeps additional harts parked. Initial/replacement Finder Documents and recovery,
+the new Result-error dialog, and final integration with local changes remain
+separate adoption gates.

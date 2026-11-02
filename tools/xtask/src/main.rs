@@ -4,6 +4,7 @@ mod docs;
 mod authority;
 mod resource_map;
 mod modules;
+mod sdk;
 
 use std::{env,
           ffi::OsStr,
@@ -118,6 +119,7 @@ impl Workspace
                || matches!(*package,
                            "vhost-transport"
                            | "vdagent-channel"
+                           | "virtio-rng"
                            | "host-clipboard-extension"
                            | "multi-scheduler-extension"
                            | "vhost-filesystem"
@@ -150,34 +152,21 @@ impl Workspace
         self.guest_build(&["native-wdef", "native-buttons-cdef", "native-scrollbar-cdef",
                            "native-mdef", "native-progress-bar-cdef", "native-static-text-cdef",
                            "native-table-cdef", "native-splitter-cdef"])?;
-        self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "cursor-test",
-                           "panic-test", "resedit", "reactor", "bootrom", "vhost-transport",
-                           "vhost-filesystem", "stuffit-filesystem", "qemu-power-device",
-                           "vdagent-channel", "host-clipboard-extension",
-                           "multi-scheduler-extension", "control-suite"])?;
-        // Keep userspace's allocation-free serde graph independent of the
-        // resident System's alloc-enabled serde. Cargo feature unification
-        // across the kernel and an app must not impose a userspace heap.
-        self.guest_build(&["text-edit"])?;
+        self.guest_build(&["mac-system", "bootrom", "vhost-transport", "vhost-filesystem",
+                           "stuffit-filesystem", "qemu-power-device", "vdagent-channel",
+                           "virtio-rng", "host-clipboard-extension", "multi-scheduler-extension"])?;
         boot::package_rom(self)?;
         let mut reports = Vec::new();
         for (directory, name, binary) in
             [("system", "System", "System"),
-             ("apps/finder", "Finder", "Finder"),
-             ("apps/quickdraw-test", "QuickDraw Test", "QuickDrawTest"),
-             ("apps/text-edit", "Text Edit", "TextEdit"),
-             ("apps/cursor-test", "Cursor Test", "CursorTest"),
-             ("apps/panic-test", "Panic Test", "PanicTest"),
-             ("apps/resedit", "Res Edit", "ResEdit"),
-             ("apps/reactor", "Reactor Room", "Reactor"),
              ("drivers/vhost-transport", "Host Transport", "HostTransport"),
              ("drivers/vdagent-channel", "VDAgent Channel", "VDAgentChannel"),
+             ("drivers/virtio-rng", "VirtIO RNG", "VirtioRng"),
              ("extensions/host-clipboard", "Host Clipboard", "HostClipboard"),
              ("extensions/multi-scheduler", "Multi-Scheduler", "MultiScheduler"),
              ("drivers/vhost-filesystem", "Host Filesystem", "HostFilesystem"),
              ("drivers/stuffit-filesystem", "StuffIt Filesystem", "StuffItFilesystem"),
-             ("drivers/qemu-power-device", "Qemu Power Device", "QemuPowerDevice"),
-             ("apps/control-suite", "Control Suite", "ControlSuite")]
+             ("drivers/qemu-power-device", "Qemu Power Device", "QemuPowerDevice")]
         {
             let report = package::build(&self.root.join(directory).join("resources.json"),
                                         &self.build
@@ -191,21 +180,46 @@ impl Workspace
                      report["resources"].as_array().unwrap().len());
             reports.push(report);
         }
+        for app in ["finder", "quickdraw-test", "text-edit", "cursor-test", "panic-test",
+                    "resedit", "reactor", "control-suite"]
+        {
+            let features: &[&str] = if app == "text-edit"
+                                       && (self.checking
+                                           || env::var_os("SYSTEM7_TEXTEDIT_INPUT_TRACE").is_some())
+            {
+                &["input-trace"]
+            }
+            else
+            {
+                &[]
+            };
+            reports.push(sdk::application(self,
+                                          &self.root.join("apps").join(app).join("Cargo.toml"),
+                                          features,
+                                          Some(&self.build.join("dist")))?);
+        }
         authority::install(self, &mut reports)?;
         for (index, a) in reports.iter().enumerate()
         {
             for b in &reports[index + 1..]
             {
-                if a["load_base"].as_u64() < b["load_limit"].as_u64()
+                // Relocatable modules/definitions share link origins, not
+                // execution storage. Only current flat application/System
+                // mappings still need pairwise preferred-placement exclusion.
+                if a["role"] != "code_resource"
+                   && b["role"] != "code_resource"
+                   && a["load_base"].as_u64() < b["load_limit"].as_u64()
                    && b["load_base"].as_u64() < a["load_limit"].as_u64()
                 {
                     return Err(error("native executable memory reservations overlap"));
                 }
             }
         }
-        let module_bytes = modules::footprint(&reports, self.platform.memory()?.module_capacity())?;
-        println!("Resident module code: {module_bytes} of {} reserved bytes",
-                 self.platform.memory()?.module_capacity());
+        let module_bytes =
+            modules::footprint(&reports, self.platform.virtual_memory()?.module_capacity())?;
+        println!("Resident module execution spans: {module_bytes} of {} virtual bytes; payload \
+                  pages admitted at runtime",
+                 self.platform.virtual_memory()?.module_capacity());
         let report = json!({"platform": self.platform.name, "target": &self.platform.rust_target, "qemu_harts": self.platform.qemu_harts.get(), "guest_profile": "release", "build_dir": self.build, "toolchain": {"cargo": output(self.cargo().arg("--version"))?, "rustc": output(Command::new("rustc").arg("--version"))?}, "packages": reports});
         write_json(&self.build.join("dist/build.json"), &report)?;
         Ok(reports)
@@ -429,6 +443,10 @@ fn write_json(path: &Path, value: &Value) -> Result<()>
 
 fn main() -> ExitCode
 {
+    if let Some(status) = sdk::compiler_proxy()
+    {
+        return status;
+    }
     match execute()
     {
         Ok(()) => ExitCode::SUCCESS,
@@ -480,6 +498,7 @@ fn execute() -> Result<()>
     let lease = if args.first().is_some_and(|s| {
                                    matches!(s.as_str(),
                                             "build"
+                                            | "sdk"
                                             | "image"
                                             | "rom"
                                             | "boot"
@@ -496,6 +515,20 @@ fn execute() -> Result<()>
     };
     match args.as_slice()
     {
+        [command, action] if command == "sdk" && matches!(action.as_str(), "prepare" | "build") =>
+        {
+            sdk::run(&workspace, action, None)?;
+        }
+        [command, action, path] if command == "sdk" && action == "app" =>
+        {
+            sdk::run(&workspace, action, Some(path))?;
+        }
+        [command, action, path, option, features]
+            if command == "sdk" && action == "app" && option == "--features" =>
+        {
+            let features: Vec<_> = features.split(',').collect();
+            sdk::application(&workspace, Path::new(path), &features, None)?;
+        }
         [command, path] if command == "resource-map" =>
         {
             println!("{}", resource_map::inspect(Path::new(path))?);
@@ -572,6 +605,9 @@ fn execute() -> Result<()>
 
 fn help()
 {
+    println!("  cargo xtask sdk prepare    Materialize the pinned private Rust application SDK");
+    println!("  cargo xtask sdk build      Compile the staged System RISC standard library");
+    println!("  cargo xtask sdk app Cargo.toml  Build a std application with the private SDK");
     println!("  cargo xtask doc            Generate Rust library documentation in docs/api");
     println!("  cargo xtask resource-map FILE  Inspect checked resource metadata as JSON");
     println!("System7 build tools\n\n  cargo xtask rebuild MANIFEST OUT  Rebuild a ResEdit \
