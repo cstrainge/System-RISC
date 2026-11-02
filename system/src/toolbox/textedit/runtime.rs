@@ -107,8 +107,8 @@ impl super::Toolbox
         }
         let window = self.windows.window(call.window).ok_or(NOT_FOUND)?;
         let mut canvas = crate::toolbox::quickdraw::Canvas::new(crate::platform::back_buffer(),
-                                                                crate::display::WIDTH,
-                                                                crate::display::HEIGHT);
+                                                                crate::display::width(),
+                                                                crate::display::height());
         for band in region.bands()
         {
             for span in &band.spans

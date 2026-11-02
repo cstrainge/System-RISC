@@ -709,7 +709,6 @@ impl Toolbox
     /// Source for every main-screen change. A display driver reporting a new
     /// mode calls this; the System only records the bounds and tells native
     /// applications, who own their own layout. Classic queues are untouched.
-    #[cfg(feature = "display-event-debug")]
     pub(crate) fn display_changed(&mut self, bounds: mac_abi::geometry::Rect)
     {
         self.screen = bounds;

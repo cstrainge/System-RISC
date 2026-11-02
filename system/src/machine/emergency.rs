@@ -70,11 +70,11 @@ pub(crate) fn prepare() -> Result<(), Error>
 {
     KIT.try_call_once(|| -> Result<Kit,Error> {
         let palette = crate::toolbox::theme::palette();
-        let screen = Screen::new(crate::display::WIDTH, crate::display::HEIGHT, palette)
+        let screen = Screen::new(crate::display::width(), crate::display::height(), palette)
             .map_err(Error::Geometry)?;
-        let cursor = Cursor::new(crate::display::WIDTH, crate::display::HEIGHT, palette)
+        let cursor = Cursor::new(crate::display::width(), crate::display::height(), palette)
             .map_err(Error::Geometry)?;
-        let bytes = crate::display::WIDTH.checked_mul(crate::display::HEIGHT)
+        let bytes = crate::display::width().checked_mul(crate::display::height())
             .and_then(|pixels| pixels.checked_mul(size_of::<u32>())).ok_or(Error::Size)?;
         let (frame, stack) = super::paging::reserve_terminal_storage(
             bytes, super::memory::SYSTEM_STACK_BYTES as usize).map_err(Error::Reserve)?;
@@ -84,7 +84,7 @@ pub(crate) fn prepare() -> Result<(), Error>
         // the separate DMA scratch until reset, including on transfer timeout.
         let display = unsafe {
             mac_boot_screen::ramfb::prepare_terminal(super::memory::FW_CFG_BASE as usize,
-                frame.physical().0, crate::display::WIDTH, crate::display::HEIGHT,
+                frame.physical().0, crate::display::width(), crate::display::height(),
                 |pointer, length| super::paging::bus_address(pointer as u64, length as u64))
         }.map_err(Error::Display)?;
         // These dedicated statics live in System's pinned image, outside the
@@ -255,7 +255,7 @@ unsafe extern "C" fn run(pointer: *const ()) -> !
     // compositor/tracking storage or normal input queues.
     let state = unsafe { &mut *kit.state.get() };
     let pixels = unsafe {
-        core::slice::from_raw_parts_mut(kit.frame.cpu_base() as *mut u32, crate::display::PIXELS)
+        core::slice::from_raw_parts_mut(kit.frame.cpu_base() as *mut u32, crate::display::pixels())
     };
     if let Err(error) = state.screen.draw(&record, pixels)
     {
