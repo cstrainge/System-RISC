@@ -49,7 +49,9 @@ fn try_folder_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
             {
                 use core::fmt::Write;
                 let mut message = browser::Text::<80>::default();
-                let _ = writeln!(&mut message, "FINDER_ACTION_FAILED status={} error={status:?}", status.status());
+                let _ = writeln!(&mut message,
+                                 "FINDER_ACTION_FAILED status={} error={status:?}",
+                                 status.status());
                 let _ = system.log(message.as_str());
                 if let Err(error) = alerts.folder_error(system, status, failed)
                 {
@@ -76,10 +78,11 @@ fn try_open_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
     match result
     {
         Ok(value) => Ok(Some(value)),
-        Err(browser::ActionFailure::Other(cause)) => {
+        Err(browser::ActionFailure::Other(cause)) =>
+        {
             let target = browser.take_open_failure(Some(cause));
             try_folder_action(system, alerts, Err(cause), target)
-        },
+        }
         Err(browser::ActionFailure::Open { item,
                                            cause }) =>
         {
@@ -98,10 +101,10 @@ fn try_open_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
 /// objects; only a successful native acknowledgement retires this state.
 struct Startup<'a>
 {
-    menus:        Option<[mac_toolbox::menus::MenuRef<'a>; 5]>,
-    initialized:  bool,
-    menus_ready:  bool,
-    pending:      bool
+    menus:       Option<[mac_toolbox::menus::MenuRef<'a>; 5]>,
+    initialized: bool,
+    menus_ready: bool,
+    pending:     bool
 }
 impl<'a> Startup<'a>
 {
@@ -815,7 +818,10 @@ fn main() -> Result<(), Error>
                 menus::NEW_FOLDER => browser.new_folder(system),
                 menus::OPEN =>
                 {
-                    try_open_action(system, &mut alerts, browser.open_selection(system), &mut browser).map(|_| ())
+                    try_open_action(system,
+                                    &mut alerts,
+                                    browser.open_selection(system),
+                                    &mut browser).map(|_| ())
                 }
                 menus::SELECT_ALL => browser.select_all(system),
                 menus::GET_INFO => info.open_selection(system, browser.selected_locations()),
@@ -959,7 +965,10 @@ fn main() -> Result<(), Error>
                                      .modifiers
                                      .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
-                    let _ = try_open_action(system, &mut alerts, browser.open_selection(system), &mut browser)?;
+                    let _ = try_open_action(system,
+                                            &mut alerts,
+                                            browser.open_selection(system),
+                                            &mut browser)?;
                 }
                 else if code == 0x74
                 {
@@ -974,7 +983,10 @@ fn main() -> Result<(), Error>
                 if event.window().is_none()
                    || browser.contains(event.window().unwrap_or_default()) =>
             {
-                match try_open_action(system, &mut alerts, browser.click(system, &event, position), &mut browser)?
+                match try_open_action(system,
+                                      &mut alerts,
+                                      browser.click(system, &event, position),
+                                      &mut browser)?
                 {
                     Some(browser::ClickOutcome::Completed) =>
                     {

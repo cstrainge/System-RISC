@@ -2000,7 +2000,11 @@ impl Toolbox
         if matches!(call.operation, QD_WINDOW_BEGIN_MASK | QD_WINDOW_BEGIN_RECTS)
         {
             let commands = {
-                let content = self.presentation.content.iter().find(|content| content.id == id).ok_or(NOT_FOUND)?;
+                let content = self.presentation
+                                  .content
+                                  .iter()
+                                  .find(|content| content.id == id)
+                                  .ok_or(NOT_FOUND)?;
                 if content.has_report_commands()
                 {
                     let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
@@ -2012,7 +2016,10 @@ impl Toolbox
                     let (frame, lease) = activity.take_report_frame(window)?;
                     Some(super::quickdraw::retained::Commands::from_report(frame, lease))
                 }
-                else { None }
+                else
+                {
+                    None
+                }
             };
             let bounds = {
                 let window = self.windows.window(id.window()?).ok_or(NOT_FOUND)?;
@@ -2347,7 +2354,11 @@ impl Toolbox
                                       -> Result<crate::recovery::ReportPortView, Status>
     {
         let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
-        let content = self.presentation.pending_content.iter().find(|c| c.id == window).ok_or(BAD_ARGUMENT)?;
+        let content = self.presentation
+                          .pending_content
+                          .iter()
+                          .find(|c| c.id == window)
+                          .ok_or(BAD_ARGUMENT)?;
         if self.crash.info().window != window || !content.report_binding(&activity, window)
         {
             return Err(ACCESS_DENIED);
@@ -2373,12 +2384,16 @@ impl Toolbox
                                   -> Result<(), Status>
     {
         activity.validate_core_paint(window)?;
-        if !self.owns(window) || self.presentation.pending_content.iter().any(|content| content.id == window)
+        if !self.owns(window)
+           || self.presentation.pending_content.iter().any(|content| content.id == window)
         {
             return Err(ACCESS_DENIED);
         }
-        let content =
-            self.presentation.content.iter_mut().find(|content| content.id == window).ok_or(NOT_FOUND)?;
+        let content = self.presentation
+                          .content
+                          .iter_mut()
+                          .find(|content| content.id == window)
+                          .ok_or(NOT_FOUND)?;
         if content.commands.is_core()
         {
             return if content.commands.core_binding(activity, window)
@@ -2413,8 +2428,11 @@ impl Toolbox
         {
             return Err(ACCESS_DENIED);
         }
-        let content =
-            self.presentation.content.iter_mut().find(|content| content.id == window).ok_or(NOT_FOUND)?;
+        let content = self.presentation
+                          .content
+                          .iter_mut()
+                          .find(|content| content.id == window)
+                          .ok_or(NOT_FOUND)?;
         if content.has_report_commands()
         {
             return if content.report_binding(activity, window)
@@ -2449,7 +2467,8 @@ impl Toolbox
         // the original END_UPDATE still validates the current Window owner.
         let text = item.line(range.clone())?;
         call.width = fonts.text_width(fonts_service::selection(call.selection), text)?;
-        let content = self.presentation.pending_content
+        let content = self.presentation
+                          .pending_content
                           .iter_mut()
                           .find(|content| content.id == window)
                           .ok_or(BAD_ARGUMENT)?;
@@ -2711,7 +2730,8 @@ impl Toolbox
               == CMD_KEY | mac_abi::events::OPTION_KEY | mac_abi::events::SHIFT_KEY
            && mac_code == 0x0f
         {
-            let full = Rect::new(0, 0, crate::display::width() as i16, crate::display::height() as i16);
+            let full =
+                Rect::new(0, 0, crate::display::width() as i16, crate::display::height() as i16);
             let reduced = Rect::new(0, 0, full.right * 3 / 4, full.bottom * 3 / 4);
             self.display_changed(if self.screen == full { reduced } else { full });
             return;
@@ -2984,14 +3004,16 @@ impl Toolbox
                 return false;
             }
         };
-        let width = (settled.width as usize).clamp(crate::display::MIN_WIDTH, crate::display::MAX_WIDTH);
+        let width =
+            (settled.width as usize).clamp(crate::display::MIN_WIDTH, crate::display::MAX_WIDTH);
         let height =
             (settled.height as usize).clamp(crate::display::MIN_HEIGHT, crate::display::MAX_HEIGHT);
         if width == crate::display::width() && height == crate::display::height()
         {
             return false;
         }
-        let size = Size { width: width as u32, height: height as u32 };
+        let size = Size { width:  width as u32,
+                          height: height as u32 };
         match crate::machine::video::apply(size)
         {
             Ok(Outcome::Applied) => (),

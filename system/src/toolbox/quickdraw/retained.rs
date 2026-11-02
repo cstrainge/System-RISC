@@ -3,7 +3,8 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ops::{Deref, DerefMut, Range};
 
-use mac_abi::{BAD_ARGUMENT, DrawCommand, geometry::{Point, Rect}, Status, WindowId};
+use mac_abi::{BAD_ARGUMENT, DrawCommand, Status, WindowId,
+              geometry::{Point, Rect}};
 
 use super::{Canvas,
             fonts::FontManager,
@@ -807,7 +808,8 @@ impl Content
     /// Replace a prepared control batch after admitting its complete growth.
     /// The carrier keeps the original Core/Report backing and cannot allocate
     /// after the first live command is removed.
-    pub(crate) fn replace_controls(&mut self, drawings: &mut Vec<crate::toolbox::controls::Drawing>,
+    pub(crate) fn replace_controls(&mut self,
+                                   drawings: &mut Vec<crate::toolbox::controls::Drawing>,
                                    mut removed: impl FnMut(&crate::toolbox::controls::Drawing))
                                    -> Result<(), Status>
     {
@@ -820,14 +822,17 @@ impl Content
         }).count();
         self.commands.admit_additional(drawings.len().saturating_sub(replaced))?;
         self.retain_commands(|command| {
-            if let RenderCommand::Control(old) = command
-               && drawings.iter().any(|new| new.id == old.id)
-            {
-                removed(old);
-                false
-            }
-            else { true }
-        });
+                if let RenderCommand::Control(old) = command
+                   && drawings.iter().any(|new| new.id == old.id)
+                {
+                    removed(old);
+                    false
+                }
+                else
+                {
+                    true
+                }
+            });
         for drawing in drawings.drain(..)
         {
             self.commands.values.push(RenderCommand::Control(drawing));
