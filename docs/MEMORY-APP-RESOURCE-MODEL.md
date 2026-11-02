@@ -4661,3 +4661,39 @@ was unsupported and is withdrawn. The later generic close of a System-owned
 report is a concrete ownership-refusal candidate, but its exact failing call was
 not separately traced. No public System-window authority was relaxed to obtain a
 passing aggregate.
+
+### Boot-admitted Core Alert icon families
+
+Core template admission now derives the unique icon IDs from the actual checked
+Error, OOM and Save Changes resources. It decodes each family once through the
+existing System resource/palette path and retains that immutable Drawing with
+the templates. Painting clones the same family, applies the current item bounds
+and uses the existing target/port/retained-command implementation. Ordinary
+application alerts retain their original resource-chain decoder. Missing Core
+stock is an internal admission error, never a request for a late decoder fallback.
+This removes repeated icon decoding, not the remaining shape, command, text,
+control-title or scrollbox raster allocations; no zero-allocation kit is claimed.
+
+A source-fixed optimized release/LTO no_std RVA23 image used System ELF
+`9cabd3639a92b032dbe3040cff8cee7b791135b6486da73fb8f9920895cc99a4`
+and resource
+`2422a13b2501adefb7c98232b2b6a753df7b29eb5c7cf4af49d2c0aa98bbbda2`,
+with the preceding ROM unchanged. A private QEMU4/800x600/2 GiB guest completed
+Text Edit's three Save Changes choices, saved `ab`, acknowledged the malformed
+file Core Error, accepted new-document input and closed the three accounts. The
+warning-icon crop matched the preceding release's pixels exactly; this is a
+bounded regression comparison, not original-Mac pixel-perfect qualification.
+
+The existing native controller, 44 worker modules and diagnostic app were also
+rebuilt normally. A private QEMU1/2 GiB run stopped at its existing first healthy
+checkpoint after two Save sessions, expected competing Busy refusals and actual
+Core OOM opening/drawing/RAII disposal. It deliberately did not run the pressure,
+full-report or worker-reclamation campaign. Its private System resource package
+added the original diagnostic image inspection grant and preserved existing
+grants. Both source/base pairs stayed fixed and owned guests were reaped with
+private media removed. A preceding QEMU4 run with those 44 workers failed before
+diagnostic launch while awaiting Applications-folder readiness; a late scheduler
+sample was logged, but the cause remains unresolved. The one-hart observation
+does not qualify that four-hart configuration. Boot resource-negative cases,
+pressure, interleavings, full reserve recovery, performance and general SMP remain
+unverified. No host Rust suite supplied acceptance.

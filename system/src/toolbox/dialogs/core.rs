@@ -7,10 +7,17 @@ use mac_abi::{dialogs::*, resources, *};
 use mac_object_table::store::PublicationError;
 
 use super::{Alert, Item, modal::DialogState};
-use crate::{recovery::Activity, toolbox::handles::OwnerRef};
+use crate::{recovery::Activity,
+            toolbox::{handles::OwnerRef,
+                      quickdraw::{icons_service, service}}};
 
 const IDS: [i16; 3] = [CORE_ERROR_ALERT, CORE_OUT_OF_MEMORY_ALERT, CORE_SAVE_CHANGES_ALERT];
-static TEMPLATES: spin::Once<[Alert; 3]> = spin::Once::new();
+struct Templates
+{
+    alerts: [Alert; IDS.len()],
+    icons:  Vec<(i16, icons_service::Drawing)>
+}
+static TEMPLATES: spin::Once<Templates> = spin::Once::new();
 
 pub(crate) fn supported(scope: resources::Scope, id: i16) -> bool
 {
@@ -21,6 +28,7 @@ pub(crate) fn required_control_count() -> Result<usize, Status>
 {
     Ok(TEMPLATES.get()
                 .ok_or(NOT_SUPPORTED)?
+                .alerts
                 .iter()
                 .map(|alert| alert.items.iter().filter(|item| item.kind == 4).count())
                 .max()
@@ -39,9 +47,41 @@ pub(crate) fn prepare() -> Result<(), Status>
                      crate::kernel::with_resources(|resources| super::load(resources, &call))
                 .ok_or(NOT_SUPPORTED)?
                  };
-                 Ok::<_, Status>([load(IDS[0])?, load(IDS[1])?, load(IDS[2])?])
+                 let alerts = [load(IDS[0])?, load(IDS[1])?, load(IDS[2])?];
+                 let mut icons = Vec::new();
+                 for item in
+                     alerts.iter().flat_map(|alert| &alert.items).filter(|item| item.kind == 32)
+                 {
+                     if icons.iter().any(|(id, _)| *id == item.icon)
+                     {
+                         continue;
+                     }
+                     icons.try_reserve(1).map_err(|_| NO_MEMORY)?;
+                     let call = mac_abi::quickdraw::IconCall { scope: resources::SYSTEM,
+                                                               id: item.icon,
+                                                               destination: item.bounds,
+                                                               ..Default::default() };
+                     let drawing =
+                         crate::kernel::with_resources(|resources| {
+                             icons_service::Drawing::new(resources, &call, service::Port::default())
+                         }).ok_or(NOT_SUPPORTED)??;
+                     icons.push((item.icon, drawing));
+                 }
+                 Ok::<_, Status>(Templates { alerts,
+                                             icons })
              })?;
     Ok(())
+}
+
+/// Clone the actual boot-admitted immutable family, never decode during paint.
+/// Missing stock is an internal template-admission failure, not a late-load hint.
+pub(crate) fn pinned_icon(id: i16, destination: Rect) -> Result<icons_service::Drawing, Status>
+{
+    let templates = TEMPLATES.get().ok_or(BAD_ABI)?;
+    let (_, drawing) = templates.icons.iter().find(|(held, _)| *held == id).ok_or(BAD_ABI)?;
+    let mut drawing = drawing.clone();
+    drawing.destination = destination;
+    Ok(drawing)
 }
 
 fn substitute(template: &str, value: &str) -> Result<String, Status>
@@ -79,7 +119,7 @@ pub(crate) fn instantiate(call: &DialogCall) -> Result<Alert, Status>
         return Err(BAD_ARGUMENT);
     }
     let index = IDS.iter().position(|&id| id == call.resource).ok_or(NOT_SUPPORTED)?;
-    let template = &TEMPLATES.get().ok_or(NOT_SUPPORTED)?[index];
+    let template = &TEMPLATES.get().ok_or(NOT_SUPPORTED)?.alerts[index];
     let value = core::str::from_utf8(call.text
                                          .get(..call.text_length as usize)
                                          .ok_or(BAD_ARGUMENT)?).map_err(|_| BAD_ARGUMENT)?;

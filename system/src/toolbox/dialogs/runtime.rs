@@ -714,11 +714,18 @@ impl super::Desktop
                                        id: item.icon,
                                        destination: item.bounds,
                                        ..Default::default() };
-                        let drawing = crate::kernel::with_resources(|resources| {
-                                          icons_service::Drawing::new(resources,
-                                                                      &call,
-                                                                      service::Port::default())
-                                      }).ok_or(NOT_SUPPORTED)??;
+                        let drawing = if self.core_dialogs_active
+                        {
+                            dialogs::core_alerts::pinned_icon(item.icon, item.bounds)?
+                        }
+                        else
+                        {
+                            crate::kernel::with_resources(|resources| {
+                                icons_service::Drawing::new(resources,
+                                                            &call,
+                                                            service::Port::default())
+                            }).ok_or(NOT_SUPPORTED)??
+                        };
                         self.icon(&call, drawing)?;
                     }
                     _ => return Err(NOT_SUPPORTED)
