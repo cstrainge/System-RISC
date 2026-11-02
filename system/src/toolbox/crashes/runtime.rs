@@ -524,7 +524,10 @@ impl super::Toolbox
         {
             return Err(status as Status);
         }
-        let usable = Rect::new(self.screen.left, self.screen.top + mac_abi::menus::MENU_BAR_HEIGHT, self.screen.right, self.screen.bottom);
+        let usable = Rect::new(self.screen.left,
+                               self.screen.top + mac_abi::menus::MENU_BAR_HEIGHT,
+                               self.screen.right,
+                               self.screen.bottom);
         let frame = state.structure;
         let width = i32::from(frame.right) - i32::from(frame.left);
         let height = i32::from(frame.bottom) - i32::from(frame.top);
@@ -690,9 +693,11 @@ impl super::Toolbox
         // An application can panic between BeginUpdate and EndUpdate. Its
         // uncommitted pixels must never leak into a later presentation.
         while let Some(index) =
-            self.presentation.pending_content
-                .iter()
-                .position(|content| content.id.window().is_ok_and(|id| self.owns(id)))
+            self.presentation.pending_content.iter().position(|content| {
+                                                        content.id
+                                                               .window()
+                                                               .is_ok_and(|id| self.owns(id))
+                                                    })
         {
             let id = self.presentation.pending_content.remove(index).id.window()?;
             self.windows.end_update(id);
@@ -749,7 +754,10 @@ impl super::Toolbox
                         self.owner,
                         window.bounds,
                         window.structure(),
-                        Rect::new(self.screen.left, self.screen.top + mac_abi::menus::MENU_BAR_HEIGHT, self.screen.right, self.screen.bottom));
+                        Rect::new(self.screen.left,
+                                  self.screen.top + mac_abi::menus::MENU_BAR_HEIGHT,
+                                  self.screen.right,
+                                  self.screen.bottom));
             }
         }
         Ok(())

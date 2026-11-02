@@ -98,12 +98,18 @@ fn publish(content: &mut [Content], controls: &mut Manager, window: u64, mut pre
           .map_err(|_| NO_MEMORY)?;
     if limited_damage.is_none()
     {
-        for drawing in drawings.iter() { damage.push(drawing.visible_bounds()); }
+        for drawing in drawings.iter()
+        {
+            damage.push(drawing.visible_bounds());
+        }
     }
     // Carrier admission precedes both removal and all infallible appends.
     content.replace_controls(drawings, |drawing| {
-        if limited_damage.is_none() { damage.push(drawing.visible_bounds()); }
-    })?;
+               if limited_damage.is_none()
+               {
+                   damage.push(drawing.visible_bounds());
+               }
+           })?;
     if let Some(rect) = limited_damage
     {
         damage.push(rect);

@@ -20,7 +20,7 @@ pub(crate) struct DialogState
     pub alert:                    Option<Arc<Alert>>,
     pub controls:                 Vec<Option<u64>>,
     pub tracking:                 Option<usize>,
-    pub system_menu: bool,
+    pub system_menu:              bool,
     pub(super) recovery_activity: Option<crate::recovery::Activity>,
     pub(super) core_payload:      Option<crate::recovery::CorePayloadLease>
 }
@@ -29,7 +29,7 @@ static EMPTY: DialogState = DialogState { previous:          None,
                                           alert:             None,
                                           controls:          Vec::new(),
                                           tracking:          None,
-                                          system_menu: false,
+                                          system_menu:       false,
                                           recovery_activity: None,
                                           core_payload:      None };
 impl Drop for DialogState

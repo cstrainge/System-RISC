@@ -471,10 +471,11 @@ impl super::Toolbox
                 return Err(status as Status);
             }
             let r = state.structure;
-            alert.bounds
-                 .offset((crate::display::width() as i16 - (r.right - r.left)) / 2 - r.left,
-                         20 + ((crate::display::height() as i16 - 20) - (r.bottom - r.top)) / 5
-                         - r.top);
+            alert.bounds.offset((crate::display::width() as i16 - (r.right - r.left)) / 2 - r.left,
+                                20
+                                + ((crate::display::height() as i16 - 20) - (r.bottom - r.top))
+                                  / 5
+                                - r.top);
         }
         Ok(())
     }
@@ -749,8 +750,11 @@ impl super::Toolbox
             return Err(ACCESS_DENIED);
         }
         let bounds = window.local_bounds();
-        let index =
-            self.presentation.pending_content.iter().position(|content| content.id == id).ok_or(BAD_ARGUMENT)?;
+        let index = self.presentation
+                        .pending_content
+                        .iter()
+                        .position(|content| content.id == id)
+                        .ok_or(BAD_ARGUMENT)?;
         let full = !self.presentation.pending_content[index].is_patch();
         self.presentation.pending_content.swap_remove(index);
         self.textedit.begin_cursor_update(id);
@@ -789,7 +793,8 @@ impl super::Toolbox
         let result = (|| {
             if let Some(activity) = &core_activity
             {
-                let content = self.presentation.pending_content
+                let content = self.presentation
+                                  .pending_content
                                   .iter_mut()
                                   .find(|content| content.id == WindowId(window))
                                   .ok_or(BAD_ABI)?;
