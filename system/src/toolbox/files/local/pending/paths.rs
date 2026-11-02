@@ -12,7 +12,8 @@ pub(super) struct State
     ancestry:         Builder,
     prefix:           String,
     change:           Option<Arc<pins::DirectoryState>>,
-    ready:            bool
+    ready:            bool,
+    executable_leaf:  bool
 }
 fn owned(text: &str) -> Result<String, Status>
 {
@@ -62,13 +63,18 @@ fn begin(owner: u64, authority: &OwnerRef, call: &FileCall, name: &str)
          -> Result<(u64, Arc<Packet>), Status>
 {
     crate::context::current_thread_context().traps.check_defer()?;
-    if !matches!(call.operation, CURRENT_DIRECTORY | CHANGE_DIRECTORY | RESOLVE_PATH | OPEN_PATH)
+    if !matches!(call.operation,
+                 CURRENT_DIRECTORY
+                 | CHANGE_DIRECTORY
+                 | RESOLVE_PATH
+                 | OPEN_PATH
+                 | CURRENT_EXECUTABLE_PATH)
     {
         return Err(NOT_SUPPORTED);
     }
     if name.len() > 4096
        || name.contains('\0')
-       || call.operation != CURRENT_DIRECTORY && name.is_empty()
+       || !matches!(call.operation, CURRENT_DIRECTORY | CURRENT_EXECUTABLE_PATH) && name.is_empty()
     {
         return Err(BAD_ARGUMENT);
     }
@@ -165,18 +171,36 @@ fn begin(owner: u64, authority: &OwnerRef, call: &FileCall, name: &str)
             {
                 None
             };
-            let file =
-                if let Some(root) = root { root } else { manager.pins.directory(authority)? };
-            if manager.read_provider(file.volume)?.is_some()
+            let file = if call.operation == CURRENT_EXECUTABLE_PATH
             {
+                manager.pins.snapshot_executable(authority, subject.scope().clone())?
+            }
+            else
+            {
+                if let Some(root) = root { root } else { manager.pins.directory(authority)? }
+            };
+            if matches!(manager.volumes.get(file.volume), Some(Mounted::Provider(_)))
+            {
+                manager.read_provider(file.volume)?;
                 return Err(NOT_SUPPORTED);
             }
+            // Native path admission needs canonical identity/protection, not
+            // device ownership. A current device flight may finish while our
+            // genuine operation waits in the ordinary queue.
             manager.validate_transfer_read(owner, file.volume, file.id)?;
-            let mounted = manager.mounted(file.volume)?;
-            let info = mounted.info;
-            let disk = mounted.device.index;
-            let partition = mounted.partition;
-            manager.pins.snapshot_directory(authority, subject.scope().clone(), root)?;
+            let (info, disk, partition) = match manager.volumes.get(file.volume).ok_or(NOT_FOUND)?
+            {
+                Mounted::Block(mounted) => (mounted.info, mounted.device.index, mounted.partition),
+                Mounted::Operating(operation) =>
+                {
+                    (operation.info(), operation.disk, operation.partition)
+                }
+                Mounted::Provider(_) => return Err(NOT_SUPPORTED)
+            };
+            if call.operation != CURRENT_EXECUTABLE_PATH
+            {
+                manager.pins.snapshot_directory(authority, subject.scope().clone(), root)?;
+            }
             Ok((file, info, disk, partition))
         }).map_err(|status| {
               serial!("FILE_PATH_SCOPE subject={} owner={} closed={}",
@@ -213,7 +237,8 @@ fn begin(owner: u64, authority: &OwnerRef, call: &FileCall, name: &str)
                         {
                             None
                         },
-                        ready: false };
+                        ready: false,
+                        executable_leaf: call.operation == CURRENT_EXECUTABLE_PATH };
     let packet=Arc::try_new(Packet {input,subject,source:Source {volume:file.volume,node:core::sync::atomic::AtomicU32::new(file.id),opening:key.operation==OPEN_PATH,description,disk,partition},
         record:spinning_top::Spinlock::new(Record {flight:None,terminal:None,abandoned:false,started:false,mutating:false,position:0,length:0,transferred:0,output:None,open,open_complete:false,catalog:None,handle:0,path:Some(state)})}).map_err(|_|NO_MEMORY)?;
     let kinds = crate::toolbox::handles::file_operation_kinds()?;
@@ -254,9 +279,17 @@ pub(super) fn consume(packet: &Packet, entry: CatalogInfo)
             return Err(BAD_ABI);
         }
         packet.source.node.store(entry.id, Ordering::Release);
-        if packet.input.call.operation == CURRENT_DIRECTORY
+        if matches!(packet.input.call.operation, CURRENT_DIRECTORY | CURRENT_EXECUTABLE_PATH)
         {
-            if !entry.is_directory()
+            if state.executable_leaf
+            {
+                if entry.is_directory()
+                {
+                    return Err(BAD_ABI);
+                }
+                state.executable_leaf = false;
+            }
+            else if !entry.is_directory()
             {
                 return Err(BAD_ABI);
             }

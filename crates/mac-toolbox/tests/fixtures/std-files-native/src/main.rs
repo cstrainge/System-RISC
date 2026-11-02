@@ -294,6 +294,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>>
 {
     let system = System::new().expect("native diagnostic has installed platform services");
     run(&system).expect("finite native file/path cases");
+    launch_context_cases(&system).expect("finite real std launch-context workflow");
     std_cases(&system).expect("finite real std File/BufReader/BufWriter workflow");
     null_stdio_cases(&system).expect("GUI null standard streams");
     if cfg!(feature = "result-error")
@@ -412,5 +413,82 @@ fn null_stdio_cases(system: &System<'_>) -> Result<(), Box<dyn std::error::Error
     assert!(!io::stdout().is_terminal());
     assert!(!io::stderr().is_terminal());
     system.log("STD_GUI_NULL_STDIN_STDOUT_STDERR_OBSERVED\n")?;
+    Ok(())
+}
+
+fn launch_context_cases(system: &System<'_>) -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::{env,
+              sync::atomic::{AtomicBool, Ordering}};
+    assert_eq!(env::args_os().len(), 0, "GUI launch fabricated command arguments");
+    assert_eq!(env::vars_os().count(), 0, "GUI launch imported an environment");
+    let executable = env::current_exe()?;
+    assert!(executable.ends_with("Applications/Panic Test"));
+    assert!(executable.is_absolute());
+    assert!(std::path::Path::new("/").is_absolute());
+    assert!(std::path::Path::new("Documents").is_relative());
+    assert_eq!(std::path::Path::new("/ignored").join(&executable), executable);
+    assert!(std::fs::metadata(&executable)?.is_file());
+    let entry = path(system, RESOLVE_PATH, executable.to_str().unwrap(), 0, &mut [])?;
+    let mut remove = FileCall { operation: REMOVE,
+                                volume: entry.volume,
+                                cnid: entry.cnid,
+                                ..Default::default() };
+    assert_eq!(system.client().file(&mut remove, "", &mut []).err(),
+               Some(Error::ServiceBusy),
+               "native removal did not retain the busy executing file");
+    assert!(std::fs::metadata(&executable)?.is_file());
+    let documents = env::current_dir()?;
+    assert_eq!(std::path::absolute("Std Rust File")?, documents.join("Std Rust File"));
+    env::set_current_dir("..")?;
+    assert_eq!(env::current_exe()?, executable, "chdir changed executable identity");
+    env::set_current_dir(&documents)?;
+    // These operations exercise the platform's synchronized process-local
+    // environment. No C/libc/foreign environment readers exist in this profile.
+    unsafe {
+        env::set_var("STD_GUI_α", "first value α");
+    }
+    let snapshot = env::vars();
+    unsafe {
+        env::set_var("STD_GUI_α", "second value β");
+    }
+    assert_eq!(snapshot.collect::<Vec<_>>(),
+               [("STD_GUI_α".to_owned(), "first value α".to_owned())]);
+    assert_eq!(env::var("STD_GUI_α")?, "second value β");
+    let ready = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let ready_ref = &ready;
+        let expected = &executable;
+        let worker = scope.spawn(move || {
+                              assert_eq!(env::current_exe().unwrap(), *expected);
+                              for n in 0..32
+                              {
+                                  unsafe {
+                                      env::set_var("STD_GUI_WORKER", format!("worker-{n}-α"));
+                                  }
+                              }
+                              ready_ref.store(true, Ordering::Release);
+                          });
+        for _ in 0..64
+        {
+            let values = env::vars().collect::<Vec<_>>();
+            assert_eq!(values.iter().filter(|(key, _)| key == "STD_GUI_α").count(), 1);
+            assert!(values.iter().all(|(key, value)| {
+                                     key != "STD_GUI_WORKER"
+                                     || value.starts_with("worker-") && value.ends_with("-α")
+                                 }));
+        }
+        worker.join().unwrap();
+        assert!(ready.load(Ordering::Acquire));
+    });
+    assert_eq!(env::var("STD_GUI_WORKER")?, "worker-31-α");
+    unsafe {
+        env::remove_var("STD_GUI_α");
+        env::remove_var("STD_GUI_WORKER");
+    }
+    assert!(env::var_os("STD_GUI_α").is_none());
+    assert_eq!(env::vars_os().count(), 0);
+    assert_eq!(env::current_exe()?, executable);
+    system.log("STD_GUI_ACTUAL_EXE_PIN_ARGS_ENV_SNAPSHOT_WORKER_REUSE_OBSERVED\n")?;
     Ok(())
 }

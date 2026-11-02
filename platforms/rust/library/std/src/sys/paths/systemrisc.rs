@@ -1,29 +1,34 @@
-use mac_abi::files::{CHANGE_DIRECTORY, CURRENT_DIRECTORY, FileCall};
+use mac_abi::files::{CHANGE_DIRECTORY, CURRENT_DIRECTORY, CURRENT_EXECUTABLE_PATH, FileCall};
 
 use crate::{ffi::{OsStr, OsString},
             fmt, io,
             marker::PhantomData,
             path::{self, Path, PathBuf},
-            sys::pal::{runtime, unsupported}};
+            sys::pal::runtime};
 
-pub fn getcwd() -> io::Result<PathBuf>
+fn query(operation: u32) -> io::Result<PathBuf>
 {
     let mut bytes = vec![0; 4096];
-    let mut call = FileCall { operation: CURRENT_DIRECTORY,
+    let mut call = FileCall { operation,
                               ..Default::default() };
     runtime::client().file(&mut call, "", &mut bytes)
                      .map_err(|cause| io::Error::from_raw_os_error(cause.status()))?;
     if call.transferred > bytes.len()
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData,
-                                  "native current directory exceeds its output span"));
+                                  "native queried path exceeds its output span"));
     }
     bytes.truncate(call.transferred);
     let text = String::from_utf8(bytes).map_err(|_| {
                                            io::Error::new(io::ErrorKind::InvalidData,
-                                                          "native current directory is not UTF-8")
+                                                          "native queried path is not UTF-8")
                                        })?;
     Ok(PathBuf::from(text))
+}
+
+pub fn getcwd() -> io::Result<PathBuf>
+{
+    query(CURRENT_DIRECTORY)
 }
 
 pub fn chdir(path: &path::Path) -> io::Result<()>
@@ -96,7 +101,7 @@ impl crate::error::Error for JoinPathsError
 
 pub fn current_exe() -> io::Result<PathBuf>
 {
-    unsupported()
+    query(CURRENT_EXECUTABLE_PATH)
 }
 
 pub fn temp_dir() -> PathBuf

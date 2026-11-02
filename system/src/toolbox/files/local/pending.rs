@@ -409,7 +409,8 @@ fn finish_request(thread: ThreadId, id: u64, packet: Arc<Packet>, call: &mut Fil
         if !fits
         {
             abandon(thread, Some(id));
-            return if packet.input.call.operation == CURRENT_DIRECTORY
+            return if matches!(packet.input.call.operation,
+                               CURRENT_DIRECTORY | CURRENT_EXECUTABLE_PATH)
             {
                 BAD_ARGUMENT
             }

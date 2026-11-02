@@ -74,6 +74,8 @@ pub const CURRENT_DIRECTORY: u32 = 46;
 pub const CHANGE_DIRECTORY: u32 = 47;
 pub const RESOLVE_PATH: u32 = 48;
 pub const OPEN_PATH: u32 = 49;
+/// Query the actual executable alias; output/transferred contain UTF-8 bytes.
+pub const CURRENT_EXECUTABLE_PATH: u32 = 50;
 pub const OPEN_READ: u32 = 1;
 pub const OPEN_WRITE: u32 = 2;
 pub const OPEN_APPEND: u32 = 4;

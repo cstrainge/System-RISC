@@ -193,9 +193,11 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
                 files::CURRENT_DIRECTORY
                 | files::CHANGE_DIRECTORY
                 | files::RESOLVE_PATH
-                | files::OPEN_PATH)
+                | files::OPEN_PATH
+                | files::CURRENT_EXECUTABLE_PATH)
     {
-        let current = call.operation == files::CURRENT_DIRECTORY;
+        let current =
+            matches!(call.operation, files::CURRENT_DIRECTORY | files::CURRENT_EXECUTABLE_PATH);
         let opening = call.operation == files::OPEN_PATH;
         if call.volume != 0
            || call.cnid != 0

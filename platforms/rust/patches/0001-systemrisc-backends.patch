@@ -313,3 +313,27 @@
      target_os = "hermit" => {
          mod hermit;
          #[expect(dead_code)]
+--- a/library/std/src/sys/env/mod.rs
++++ b/library/std/src/sys/env/mod.rs
+@@ -15,6 +15,10 @@
+ mod common;
+ 
+ cfg_select! {
++    target_os = "systemrisc" => {
++        mod systemrisc;
++        pub use systemrisc::*;
++    }
+     target_family = "unix" => {
+         mod unix;
+         pub use unix::*;
+--- a/library/std/src/sys/path/unix.rs
++++ b/library/std/src/sys/path/unix.rs
+@@ -58,7 +58,7 @@
+ }
+ 
+ pub(crate) fn is_absolute(path: &Path) -> bool {
+-    if cfg!(any(unix, target_os = "hermit", target_os = "wasi", target_os = "motor")) {
++    if cfg!(any(unix, target_os = "hermit", target_os = "wasi", target_os = "motor", target_os = "systemrisc")) {
+         path.has_root()
+     } else {
+         path.has_root() && path.prefix().is_some()

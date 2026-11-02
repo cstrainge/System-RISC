@@ -993,6 +993,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                             | files::CHANGE_DIRECTORY
                             | files::RESOLVE_PATH
                             | files::OPEN_PATH
+                            | files::CURRENT_EXECUTABLE_PATH
                             | files::WATCH_DIRECTORY
                             | files::POLL_WATCH
                             | files::DISPOSE_WATCH)
