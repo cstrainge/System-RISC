@@ -5,9 +5,9 @@ use core::fmt;
 
 use mac_abi::{crashes::*, quickdraw::*, *};
 
-use crate::toolbox::{crashes::{RESOURCE_ID, ReportLayout},
+use crate::toolbox::{crashes::{RESOURCE_ID, ReportLayout, prepared_icon},
                      events::input::Input,
-                     quickdraw::{fonts_service, icons_service, service},
+                     quickdraw::fonts_service,
                      windows::WindowPart};
 
 const REPORT: Rect = Rect::new(14, 91, 566, 347);
@@ -738,11 +738,7 @@ impl super::Desktop
                                       id: RESOURCE_ID,
                                       destination: Rect::new(18, 14, 50, 46),
                                       ..Default::default() };
-                let drawing =
-                    crate::kernel::with_resources(|resources| {
-                        icons_service::Drawing::new(resources, &call, service::Port::default())
-                    }).ok_or(NOT_SUPPORTED)??;
-                self.icon(&call, drawing)?;
+                self.icon(&call, prepared_icon()?)?;
                 self.crash_text(window, FontSelection::default(), 64, 29, label(0)?.text()?)?;
                 self.crash_text(window,
                                 MONACO,

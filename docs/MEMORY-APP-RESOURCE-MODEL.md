@@ -5201,3 +5201,49 @@ whole teardown allocation-free, establish performance/SMP, or finish the full
 emergency kit and production Finder OOM restart. Report/Standard File storage,
 remaining rollback/failure qualification and later user-mode isolation remain
 separate work. No host Rust test supplied OS acceptance.
+
+### Boot-prepared report bomb family
+
+Report bootstrap now admits the actual System bomb icon family alongside the
+measured report layout in one checked prepared record. Admission runs under the
+existing genuine recovery Permit and System Ordinary allocation scope. The same
+System resource ID -16400, flags, destination and default Port feed the existing
+decoder. Failed admission drops its local ownership and refuses initialization;
+full report paint has no decoder fallback. The immutable decoded family and its
+original protected receipt remain pinned for reset lifetime.
+
+Full report paint clones that prepared drawing and uses the unchanged actual
+window IconCall and Desktop.icon path, which captures the window's real Port.
+Retained commands own their family clones independently. This removes repeated
+icon decoding and family/Arc construction; it does not remove command, clip,
+text, Port, raster or formatting allocations elsewhere in report painting.
+
+The first actual RV64 compiler check caught an incorrect sibling-module lookup.
+After correcting the internal visibility/import, the optimized no_std System/
+Finder check and fixed-source release/LTO image build completed. Native runs
+used System ELF
+`73b8a96e44babc69775fa2f698b8b530c0b7da94d993984ebeb0543c6ede2ab2`
+and resource
+`cd2b9a783d395337be410c672fa7f3768d3bd95932bc07f6ece19c0653e0c8a3`;
+Finder and ROM remained the preceding recorded artifacts.
+
+In one private QEMU4/800x600/exact 2 GiB guest, six installed native applications
+entered and quit through their UI, with sampled nonidentity mappings absent
+after real account closure. Panic Test then displayed its 27,246-byte, 331-line
+report; scrolling to the end, genuine dismissal, actual abort account closure
+and subsequent mouse input completed. First/last report frames were reviewed.
+A separate guest ran the existing live-control Image Probe abort twice in the
+same boot. Both distinct process lifetimes observed their own live DDEF, showed
+the System report, accepted genuine dismissal and reached actual thread/account
+closure before subsequent reuse. Both report frames were reviewed. The finite
+visible bomb crop matched the preceding artifact exactly.
+
+Each run recorded fixed source/base artifacts, exact 2 GiB argv/boot/page-bank
+RAM, owned process exit zero/reap and private media removal without cleanup
+errors. The existing host driver only supplied UI input and collected actual
+guest observations. There were no host-linked replacement services or host Rust
+test acceptance. Decoder/allocation event counts, forced bootstrap failure,
+exhaustion on this artifact, every cancellation/refusal interleaving, original
+Macintosh visual fidelity, timing, SMP and full recovery-kit readiness remain
+unqualified. These observations do not inherit the preceding artifact's pressure
+result.

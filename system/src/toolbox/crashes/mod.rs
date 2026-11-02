@@ -31,11 +31,25 @@ pub(crate) struct ReportLayout
     pub(crate) page_lines: u32
 }
 #[cfg(target_arch = "riscv64")]
-static LAYOUT: spin::Once<ReportLayout> = spin::Once::new();
+struct PreparedReport
+{
+    layout: ReportLayout,
+    icon:   super::quickdraw::icons_service::Drawing
+}
+#[cfg(target_arch = "riscv64")]
+static PREPARED: spin::Once<PreparedReport> = spin::Once::new();
 #[cfg(target_arch = "riscv64")]
 pub(crate) fn prepared_layout() -> Result<ReportLayout, Status>
 {
-    LAYOUT.get().copied().ok_or(NOT_SUPPORTED)
+    PREPARED.get().map(|prepared| prepared.layout).ok_or(NOT_SUPPORTED)
+}
+#[cfg(target_arch = "riscv64")]
+pub(super) fn prepared_icon() -> Result<super::quickdraw::icons_service::Drawing, Status>
+{
+    // The immutable family and its original protected receipt are reset-pinned.
+    // This template's default Port has no owned clip to duplicate; the normal
+    // Desktop icon path still captures the actual window Port when recording.
+    PREPARED.get().map(|prepared| prepared.icon.clone()).ok_or(NOT_SUPPORTED)
 }
 
 #[derive(Clone, Copy)]
@@ -182,9 +196,21 @@ pub(crate) fn initialize_protected_report(permit: crate::allocator::recovery::Pe
 {
     crate::context::with_recovery_allocation(permit, || {
         crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-            let layout = crate::toolbox::runtime::Desktop::measure_crash_report_layout()?;
-            storage::prepare()?;
-            LAYOUT.call_once(|| layout);
+            PREPARED.try_call_once(|| {
+                        let layout =
+                            crate::toolbox::runtime::Desktop::measure_crash_report_layout()?;
+                        let call = quickdraw::IconCall { scope: resources::SYSTEM,
+                                                         id: RESOURCE_ID,
+                                                         destination: Rect::new(18, 14, 50, 46),
+                                                         ..Default::default() };
+                        let icon = crate::kernel::with_resources(|resources| {
+                                       super::quickdraw::icons_service::Drawing::new(
+                        resources, &call, super::quickdraw::service::Port::default())
+                                   }).ok_or(NOT_SUPPORTED)??;
+                        storage::prepare()?;
+                        Ok::<_, Status>(PreparedReport { layout,
+                                                         icon })
+                    })?;
             Ok(())
         })
     })
