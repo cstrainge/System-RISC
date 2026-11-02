@@ -207,6 +207,32 @@ pub(crate) struct ResourceBinding
     owner: crate::toolbox::handles::OwnerRef,
     image: Option<crate::images::Binding>
 }
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RetirementCheckError
+{
+    AdmissionOpen,
+    BindingChanged
+}
+impl core::fmt::Display for RetirementCheckError
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        out.write_str(match self
+                      {
+                          Self::AdmissionOpen =>
+                          {
+                              "old Finder admission is still open after handoff; full retirement \
+                               is not established"
+                          }
+                          Self::BindingChanged =>
+                          {
+                              "old Finder directory binding differs from its retained owner/image; \
+                               full retirement cannot be authorized"
+                          }
+                      })
+    }
+}
+
 impl ResourceBinding
 {
     pub(crate) fn ledger(&self) -> &crate::toolbox::handles::OwnerRef
@@ -623,6 +649,30 @@ impl Manager
         }
         drop(process.cleanup.take());
         Ok(())
+    }
+
+    /// The retained genuine binding is correlation after handoff, not a Read
+    /// or account pin. Only actual directory absence establishes full removal;
+    /// empty THRD/image tables alone cannot establish that barrier.
+    pub(crate) fn retired_binding(&self, old: &ResourceBinding)
+                                  -> Result<bool, RetirementCheckError>
+    {
+        if old.ledger().accepting()
+        {
+            return Err(RetirementCheckError::AdmissionOpen);
+        }
+        let Some(process) = self.entries.get(old.owner())
+        else
+        {
+            return Ok(true);
+        };
+        if process.ledger().owner() != old.ledger().owner()
+           || process.value().image.map(crate::images::Binding::id)
+              != old.image().map(crate::images::Binding::id)
+        {
+            return Err(RetirementCheckError::BindingChanged);
+        }
+        Ok(false)
     }
 
     pub fn remove(&mut self, id: u64) -> Result<(), Status>

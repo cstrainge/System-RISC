@@ -13,6 +13,32 @@ mod admission;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use admission::{ControlCommit, ControlPlan, CreationError};
 
+/// Recovery placement follows a genuine active Session and its original I/O
+/// root, not inequality of recipient/storage labels. A System report has the
+/// SAME genuine System owner in both roles and still uses admitted endpoints.
+fn recovery_mode(recipient: &OwnerRef, storage: &OwnerRef) -> Result<bool, Status>
+{
+    #[cfg(target_arch = "riscv64")]
+    if let Some(activity) = crate::context::recovery_activity()
+    {
+        if activity.recipient().owner() != recipient.owner()
+           || activity.storage_owner().owner() != storage.owner()
+           || !crate::context::io_subject().is_some_and(|subject| {
+                                               subject.scope()
+                                                      .same_scope(activity.root_subject().scope())
+                                           })
+        {
+            return Err(ACCESS_DENIED);
+        }
+        return Ok(true);
+    }
+    if storage.owner() != recipient.owner()
+    {
+        return Err(ACCESS_DENIED);
+    }
+    Ok(false)
+}
+
 pub(crate) fn specification() -> mac_object_table::registry::Specification<'static>
 {
     mac_object_table::registry::Specification { kind:     KindCode(*b"CTRL"),
@@ -225,26 +251,11 @@ impl Manager
                                        -> Result<(i16, Option<DefinitionRef>), Status>
     {
         let owner = recipient.owner().incarnation();
-        let recovery = storage.owner() != recipient.owner();
+        let recovery = recovery_mode(recipient, storage)?;
         if recovery
+           && matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
+           && !recipient.accepting()
         {
-            #[cfg(target_arch = "riscv64")]
-            {
-                let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
-                if activity.owner() != owner
-                   || activity.storage_owner().owner() != storage.owner()
-                   || !crate::context::io_subject().is_some_and(|subject| {
-                                                       subject.scope()
-                                                              .same_scope(activity.root_subject()
-                                                                                  .scope())
-                                                   })
-                   || (matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
-                       && !recipient.accepting())
-                {
-                    return Err(ACCESS_DENIED);
-                }
-            }
-            #[cfg(not(target_arch = "riscv64"))]
             return Err(ACCESS_DENIED);
         }
         let operation = call.operation;
@@ -342,7 +353,7 @@ impl Manager
         let (_, bound) = self.preflight_definition(recipient, storage, call)?;
         let entry = bound.unwrap_or(entry);
         let owner = recipient.owner().incarnation();
-        let recovery = storage.owner() != recipient.owner();
+        let recovery = recovery_mode(recipient, storage)?;
         let operation = call.operation;
         // A configure which changes family admits a replacement before any
         // mutation; unchanged operations keep the original canonical binding.

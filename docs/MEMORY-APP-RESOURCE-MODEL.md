@@ -4405,3 +4405,89 @@ no_std RV64 compilation evidence only. The preceding native artifact observation
 belong to their recorded source; they do not establish an outside-Files FFRK
 consumer, its device-effect outcome, or its delayed-ACK/stop/reap behavior. Those
 connected paths require their own native qualification.
+
+## Pending replacement image and independent System report — 2026-11-02
+
+Finder recovery now retains one owned `PendingRecoveryImage` after canonical
+alias publication and releases the original image Read before returning that
+preparation. No replacement payload is written yet. The coordinator first
+moves the complete diagnostic into genuine System-owned UI, commits the Finder
+role, stops the old Process and waits for its actual directory removal. Both
+successful removal paths supply a targeted wake; the retained authentic binding
+is rechecked for admission closure and identity. Empty thread/image tables or
+an invalidated public ID do not substitute for the final account barrier.
+
+The same pending preparation, new Process account and protected permit then
+supply the existing Mapping writer outside Desktop and IMAGES. Loading, source
+and alias remain retained across refusal. Once a Mapping is anchored it is
+never replaced or reset. Typed causes distinguish allocation refusal before an
+anchor, a returned Mapped/instruction-fence Busy refusal, cancellation and
+terminal publication states. Retry resumes only the same safe preparation;
+Preparing or uncertain acknowledgment cannot be relabeled transient. A finish
+refusal returns the original pending owner. Bounded preformatted failure detail
+is prepared outside painting; the coordinator retains the full typed cause.
+
+The report's UI no longer belongs to the provisional replacement Process. After
+old Window/control disposal has actually acknowledged, the same modal Session,
+Subject, protected permit and child endpoints transfer to the real System owner.
+An affine `SystemReportLease` is retained before the later role transition can
+refuse. The boot-admitted System Saved context is not a Process directory row,
+thread or fabricated owner. Selection uses scoped swaps and restores physical
+input and ordinary foreground state before deferred presentation. System controls
+validate their genuine Activity and System Subject. Actual hit testing is reused
+for ButtonDown; mouse motion does not gain a new window search.
+
+Retry actions authenticate the actual beneficiary binding and live admission;
+System Restart remains a service action independently of beneficiary lifetime.
+The work hands its same lease to the service before ending. A stopped last
+Process parks its charged active managers in its own genuine Saved row before
+removal, using the admitted System context. No stopped owner is revived. Actual
+Desktop contention rearms the existing UI-progress and work-wake bits; it neither
+forgets a gated notification nor adds an inner retry loop. Old report child
+cleanup sleeps on its existing actual acknowledgment wake.
+
+Native CRASH view operations recognize the exact beneficiary of the System
+report. Fresh capture requests close that same presentation and wait for child
+ACK, work/service lease handoff and actual Session/Subject drain. Dismissed
+metadata retains the original archive identity without retaining its protected
+snapshot. Full report, displaced manager and final service pins are destroyed
+after Desktop is released. Neither lease Drop nor an absent Window fabricates
+an acknowledgment or resets a live capture buffer.
+
+A source-fixed release/LTO no_std RVA23 image used System ELF
+`f6846a0c8db3da17dc5bb497dd5eb59f0453b4cbcbdcde46edb9347f78d759c9`,
+System resource
+`b8edeae0db5467753f63add70f3caa2a38e507adb45caf8cca7a9aae37161497`
+and ROM
+`cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+Each private four-CPU, 800x600 QEMU guest requested exactly 2 GiB and reported
+2,147,483,648 bytes through both boot discovery and the page bank. Event/TextEdit
+tracing was off. Six installed native applications entered and quit through their
+own commands; sampled image leaves were absent after their actual Process
+closure. Panic Test relaunched, scrolled its long report, dismissed it and closed
+its account.
+
+The existing independently packaged Finder-role and survivor workload completed
+two crash/replacement cycles, fresh writable state, stale Window/handle rejection,
+actual old Process/account closure and replacement/survivor input. Complete
+immutable code and all declared RX/R/RW segment pages matched the packaged image
+in protected physical backing. An additional run of the unchanged guest workload
+used physical input to copy the first System-owned report (171 bytes), close its
+window (three windows became two), then trigger another genuine panic and finish
+the second replacement. Screens showed the full report and the surviving normal
+windows after dismissal. This exercised a short System-owned report; the long
+scroll observation belonged to ordinary Panic Test, not a large System report.
+Sources and base artifacts stayed fixed per capture; every owned guest exited
+zero, was reaped, and its cloned media was removed. Paused mapping observations
+cost approximately 222–283 ms of host time each, with additional immutable-code
+reads. Those costs and paced input/serial observation perturb execution.
+
+The first paired compilation failure (a DomainEntry accessor) is retained; a
+corrected optimized target check and full image build completed. These build and
+finite guest observations do not establish forced replacement-owner cancellation,
+protected-reserve/ordinary-heap exhaustion, headroom, terminal publication or
+uncertain-ACK behavior, full Save/Save As exhaustion, production Finder OOM
+restart, arbitrary privileged-fault containment, U-mode isolation, latency or
+race absence. No host Rust test suite supplied OS acceptance. The earlier failed
+aggregate alert-ownership scenario remains failed under its original artifact;
+it was not relabeled by these narrower runs.
