@@ -18,8 +18,19 @@ fn main()
         let mut resources = resource::decode(&system.resources).unwrap();
         let policy =
             resources.iter_mut().find(|r| r.kind == authority::RESOURCE_KIND && r.id == 0).unwrap();
-        policy.data = authority::encode(&[(digest, authority::INSPECT_DOMAINS)]).unwrap();
-        system.resources = resource::encode(&resources).unwrap();
+        // Keep the installed packages' genuine grants. This diagnostic adds
+        // only its exact new content identity, not a replacement System policy.
+        authority::granted(&policy.data, digest).unwrap();
+        let mut grants: Vec<([u8; 32], u64)> = policy.data[12..].chunks_exact(40)
+                                                                .map(|row| {
+                                                                    (row[..32].try_into().unwrap(),
+                                  u64::from_be_bytes(row[32..].try_into().unwrap()))
+                                                                })
+                                                                .filter(|(old, _)| *old != digest)
+                                                                .collect();
+        grants.push((digest, authority::INSPECT_DOMAINS));
+        policy.data = authority::encode(&grants).unwrap();
+        system.resources = resource::encode_native(&resources).unwrap();
         std::fs::write(output.join("System.bin"), macbinary::encode(&system).unwrap()).unwrap();
     }
 }

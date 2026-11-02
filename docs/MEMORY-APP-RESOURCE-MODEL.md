@@ -4768,3 +4768,146 @@ or qualify production Finder restart under OOM, persistent reserve exhaustion,
 all startup failure interleavings, timing, race absence, U-mode or general SMP.
 The earlier failed pressure campaign and heavy four-hart folder-readiness case
 remain failed. No host Rust pass supplied OS acceptance.
+
+### Bounded native pressure refill and post-pressure Finder refusal
+
+The existing native ordinary-pressure holder now continues applying demand after
+its 2,048 chunk descriptors fill. On each existing 250 ms refill turn it visits
+at most 64 existing chunks, with at most five shrinking reserve attempts per
+chunk. Each replacement stays within the original 64 KiB chunk maximum; actual
+capacity growth is charged toward the unchanged 8 MiB finisher ceiling. Failed
+replacement preserves the old payload. A grow-by-one refusal is not reported as
+a fresh one-byte allocation refusal. The controller logs its already-read heap
+summary only when its original renewed-pressure deadline fails. No assertion,
+deadline, worker count, account budget or allocator was relaxed. This corrects
+a workload limitation; it is not a System allocation-policy change.
+
+Two fixed-source optimized release/LTO no_std native campaigns used the System
+`be63664005abb09f22c66bfcd17f852e7fcac3d1e7e85ec962f64bf0b86a86d1` and Finder
+`afac71a7a5d6aada2a2bdc4de1246aab5c251aeb9ea3d1ed552ff44874f06fd0` ELF artifacts
+described above. Each private QEMU guest configured one hart, 800x600 and exactly
+2 GiB of requested/discovered RAM. Normally packaged native controller/holders
+and an APPL exercised the real trap, allocator and module-worker paths. Both
+observed ordinary allocation refusal with retained original bytes and caller
+Kernel-account headroom, two managed Save sessions and competing Busy refusals
+in healthy and pressured phases, Core OOM open/dispose, exact 1,048,576-byte
+report content, all 44 holder payload releases and all 44 actual worker-reclaimed
+records. Holder checksums sample the first byte of each chunk; they are not
+full-payload hashes.
+
+The first campaign FAILED its final physical Finder Get Info check after real
+worker release. Finder logged NoMemory while reading Applications/System RISC;
+two application-alert attempts also failed NoMemory, and the last alert attempt
+had no failure/dismissal record. A repeat with identical artifacts, workload,
+actions, timers and assertions completed the final Get Info open/close and
+mouse-position check. Its only collector change captured a frame/state after
+an already failed assertion; that branch was not entered. In the repeat, the
+last application-alert attempt also logged NoMemory. The difference narrows
+investigation to error presentation/recovery but does not establish the exact
+failed modal state or prove the intermittent failure fixed.
+
+Both guests exited zero, were reaped and had their private raw/cloned media
+removed; sources and base artifacts stayed fixed. These finite observations do
+not qualify reliable production Finder OOM recovery, full Save/Save As reserve
+exhaustion, module unloading, account closure beyond the recorded worker paths,
+SMP, timing or race absence. The original pre-refill renewed-pressure timeout
+and the first post-refill final Finder failure remain failed. No host Rust
+suite supplied acceptance.
+
+### Draw-only rectangle geometry without temporary region ownership
+
+Resident QuickDraw now validates scalar rectangle/rounded-rectangle drawing
+without first constructing and discarding an owned Region. Drawing those shapes
+streams rows into the existing Canvas through borrowed normalized clip spans.
+Frame subtracts the same inset inner geometry, emitting at most two disjoint
+spans per row. Rounded edges retain the existing integer predicate; local
+pattern phase, origin, transfer mode and pixel writer are shared with the
+unchanged owned-region drawing paths. Region-returning APIs still return owned
+Regions. There is no low-memory alternate renderer, extra stock or quota.
+
+This removes temporary region/Boolean-result allocation refusals for these
+draw-only primitives. It does not make the whole drawing invocation, clip
+decoding, command retention, text, resources, backing or dialogs allocation-free.
+Existing negative-size, area, pen and hidden-pen checks retain their boundary
+order; pressure-time error behavior deliberately changes where the eliminated
+temporary ownership was the sole failing allocation.
+
+The two-file source change passed an optimized no_std RV64 compiler check and
+a fixed-source complete image build. System ELF
+6973d0d3949d35223e34f0a7cee5ef022077558718d81894ab1e5af3a87483c6
+and System resource
+f837f8c63a89f161a18a43d803ced3cb026e2c16fff4d0b2c50af4032d33d023
+ran in private QEMU4/800x600 guests requesting and discovering exactly 2 GiB.
+Finder remained the preceding afac71a7/1b92ae0a artifacts. Installed Text Edit
+completed actual Save Changes Cancel/Save/Do Not Save, saved the exact bytes
+ab, acknowledged malformed-UTF8 Core Error, accepted fresh input and closed
+three actual accounts. Selected whole dialog bounds for Cancel, Save,
+Standard File PUT and Core Error matched the preceding native image pixel for
+pixel. Separately, six installed apps launched and quit with sampled nonidentity
+image mappings and absence in both permanent roots after actual Process close.
+Panic Test relaunched, scrolled/dismissed its 27,246-byte 331-line System report
+and closed. QuickDraw Test's Shapes-page frame, Cursor Test's frame and Reactor
+Room's frame were each identical to the preceding native captures; the Shapes
+page and current Core dialog frames were reviewed.
+
+Each native run kept its source/base artifacts fixed, exited its owned guest
+zero, reaped it and removed its private cloned/raw media. These comparisons
+establish equality only for the recorded current-System captures, not original
+Macintosh fidelity or unexercised geometry/modes. Negative admission, odd/thin
+rounded rows, sparse clips, arbitrary origins/pens, forced refusal/cancellation,
+pressure behavior and timing still need target evidence. The shared pixel
+writer's broader modes and Region outputs are not exhaustively qualified.
+Neither the source review nor the native observations close protected
+Save/Save As exhaustion, production Finder OOM recovery or general SMP gates.
+No host Rust suite supplied acceptance.
+
+### Foundation attribution for initial page-table and metadata owners
+
+Initial System and firmware page-table preparation now selects the existing
+sealed Foundation physical owner. Each table page and its separate Node storage
+page carries its original receipt beside its actual ordinary page-pool lease.
+Taking the root moves the same Foundation-backed PageBox into its AddressSpace;
+the corresponding Node retains only its metadata storage. Root/table metadata
+stays independently owned through preparation and eventual destruction. No
+System DomainAccount, second physical counter, page-number-derived owner,
+relabelled header or extra heap capacity was introduced.
+
+The private source enum distinguishes Foundation boot backing from process
+ordinary/protected backing. Process roots still use their original genuine
+accounts and sources. Module payload/branch constructors reject an impossible
+Foundation selector rather than treating it as another allocation fallback.
+Typed Foundation refusal retains its cause; partial preparation drops actual
+leases before refunding their distinct physical attribution. Those rollback
+paths were source-reviewed, not forced in the following native observations.
+
+A complete fixed-source optimized release/LTO no_std RV64 image build and
+compiler check completed. Two existing normally packaged native
+memory-inspection scenarios ran through the real loader, traps and page layer in
+private QEMU4/800x600 guests requesting/discovering exactly 2 GiB. The diagnostic
+retains its existing manual native entry and assertions; it is not production
+Finder/std acceptance. Its private System package adds only the exact
+INSPECT_DOMAINS image grant, preserving existing grants and native fork encoding.
+No guest service was replaced and no host Rust test runner supplied acceptance.
+
+Before the production change, System6973d0d3/f837f8c6 reported 42 initial
+tables and 33,734,656 tracked Foundation physical bytes. After it, System ELF
+1b6f1b4cf13e4f47d3f2f2ded3b116f61d343ffe7b403665c5a693a0158eecb2
+and resource
+5ebdf09c7d06e3431d703e7c9f677798228a8e801d9826f00ee3a53677edbc13
+reported the same 42 tables and 34,078,720 bytes. The observed increase is
+344,064 bytes: exactly 84 four-KiB pages for the initial tables and their
+separate metadata owners. Both samples reported 347,619 free physical pages,
+503,316,480 bytes of ordinary heap capacity, four four-MiB System stacks and
+eight actual guards. The native scenario also exercised mapping reads, a typed
+out-of-range refusal with informative detail, and subsequent usable reads.
+
+A separate shipping-app workflow on the new image completed six app entries/
+own quits with sampled nonidentity image mappings and absence in both permanent
+roots after actual Process closure, plus Panic Test relaunch, scrolling and
+dismissal of its long System report. Each guest kept its source/base fixed,
+exited zero, was reaped and had its private raw/cloned media removed. Counter
+differences establish the recorded attribution, not whole-System usage or
+performance equivalence. Forced allocation/counter-overflow/partial-boot
+rollback, reset reclamation, broad SMP and hardware/user-mode isolation remain
+unverified by these runs. The fixed allocator heap parent remains separately
+represented; it was not charged again as Foundation physical storage.

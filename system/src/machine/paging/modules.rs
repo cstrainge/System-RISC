@@ -644,6 +644,11 @@ impl Mapping
                 {
                     match &source
                     {
+                        BackingSource::Foundation =>
+                        {
+                            // Initial System table backing is not an image source.
+                            return Err(Error::State);
+                        }
                         BackingSource::Ordinary =>
                         {
                             let planned =
@@ -1473,6 +1478,11 @@ impl Plan
                 }
                 None => match source
                 {
+                    BackingSource::Foundation =>
+                    {
+                        // Only initial prepare_space selects this source.
+                        return Err(Error::State);
+                    }
                     BackingSource::Ordinary => BranchBacking::Foundation(
                         Foundation::<Backing>::allocate(PAGE_BYTES as usize).map_err(Error::Foundation)?
                     ),
