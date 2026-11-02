@@ -214,6 +214,11 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             }
             continue;
         }
+        if let Event::DisplayChanged { .. } = event
+        {
+            let _ = try_action(system, &mut alerts, browser.display_changed(system))?;
+            continue;
+        }
         if matches!(event, Event::Activate { .. }) && alerts.window() == WindowId(0)
         {
             browser.activate(&event);

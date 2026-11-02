@@ -288,6 +288,10 @@ pub const VALIDATE_WINDOW: u32 = 11;
 /// Application-supplied standard zoom rectangle. reserved=1 restores the System
 /// default; reserved=0 uses bounds. GET_WINDOW returns zoomed state in reserved.
 pub const SET_STANDARD_BOUNDS: u32 = 12;
+/// Resize and move an owned window to `bounds` (global content rectangle),
+/// the native form of SizeWindow plus MoveWindow. Content is re-laid-out, the
+/// window is not reordered, and a geometry-changed notification follows.
+pub const SET_WINDOW_BOUNDS: u32 = 13;
 /// OsEvent message prefix; low24 bits contain the WindowId.
 pub const WINDOW_CLOSE_REQUEST: u32 = 0x03000000;
 /// A classic 31-byte MacRoman catalog name may occupy up to93 UTF8 bytes.

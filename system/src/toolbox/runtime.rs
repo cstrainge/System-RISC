@@ -125,6 +125,8 @@ pub struct Toolbox
     definitions:                      Definitions,
     pub(in crate::toolbox) presentation: Presentation,
     pointer: Pointer,
+    /// Reported main-screen bounds (`qd.screenBits.bounds`); changed only by `display_changed`.
+    pub(in crate::toolbox) screen: Rect,
     decoders:                         [Decoder; 2],
     pub revision:                     u32,
     pub updates:                      u32,
@@ -500,6 +502,7 @@ impl Toolbox
                   core_dialogs_active: false,
                   menus: super::menus::Manager::new(super::handles::menu_kinds()?, mdef, crate::machine::traps::gateway)?,
                   system_bar,
+                  screen: Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16),
                   pointer: Pointer { cursors: Default::default(), busy_cursor, text_cursor, resize_cursors,
                                      responsiveness: Default::default(), automatic_cursor: None },
                   worlds: super::quickdraw::worlds::Worlds::new(super::handles::world_kinds()?)?,
@@ -856,6 +859,18 @@ impl Toolbox
             VALIDATE_WINDOW =>
             {
                 return self.windows.validate(id).map_or_else(|error| error, |()| OK);
+            }
+            SET_WINDOW_BOUNDS =>
+            {
+                return match self.set_window_bounds(id, request.bounds)
+                {
+                    Some(action) =>
+                    {
+                        self.action(action, when);
+                        OK
+                    }
+                    None => OK
+                };
             }
             SET_STANDARD_BOUNDS =>
             {
@@ -1788,7 +1803,7 @@ impl Toolbox
         }
         if call.operation == QD_SCREEN_BOUNDS
         {
-            call.bounds = Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16);
+            call.bounds = self.screen;
             return Ok(());
         }
         if let mac_abi::quickdraw::DrawingTarget::World(world) =
@@ -2192,6 +2207,21 @@ impl Toolbox
         {
             self.presentation.cursor_dirty = true;
             self.presentation.redraw |= self.windows.tracking_repaints_scene();
+        }
+        #[cfg(feature = "display-event-debug")]
+        if let Input::Key { character,
+                            down: true,
+                            repeat: false,
+                            modifiers,
+                            .. } = input
+           && modifiers & (CMD_KEY | mac_abi::events::OPTION_KEY | mac_abi::events::CONTROL_KEY)
+              == CMD_KEY | mac_abi::events::OPTION_KEY | mac_abi::events::CONTROL_KEY
+           && character.to_ascii_lowercase() == b'r'
+        {
+            let full = Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16);
+            let reduced = Rect::new(0, 0, full.right * 3 / 4, full.bottom * 3 / 4);
+            self.display_changed(if self.screen == full { reduced } else { full });
+            return;
         }
         if self.crash_input(input, when)
         {

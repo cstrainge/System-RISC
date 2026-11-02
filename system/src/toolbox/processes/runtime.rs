@@ -429,6 +429,27 @@ impl Toolbox
         Ok(())
     }
 
+    /// Source for every main-screen change. A display driver reporting a new
+    /// mode calls this; the System only records the bounds and tells native
+    /// applications, who own their own layout. Classic queues are untouched.
+    #[cfg(feature = "display-event-debug")]
+    pub(crate) fn display_changed(&mut self, bounds: mac_abi::geometry::Rect)
+    {
+        self.screen = bounds;
+        self.presentation.redraw = true;
+        let event = Event { kind: EventKind::OsEvent,
+                            message: mac_abi::events::DISPLAY_CHANGED,
+                            payload: (u64::from((bounds.right - bounds.left) as u32) << 32)
+                                     | u64::from((bounds.bottom - bounds.top) as u32),
+                            when: Self::when(),
+                            ..Default::default() };
+        self.events.post_level(event);
+        for local in &mut self.locals
+        {
+            local.events.post_level(event);
+        }
+    }
+
     pub(super) fn forget_cursor_window(&mut self, window: WindowId)
     {
         self.textedit.forget_cursor_window(window);
