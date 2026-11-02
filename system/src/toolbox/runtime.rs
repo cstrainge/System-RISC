@@ -60,6 +60,9 @@ use ordinary_underlay::OrdinaryUnderlay;
 #[path = "processes/runtime.rs"]
 mod local;
 pub(crate) use local::{FinderAdmission, FinderCapacityError, FinderPreparation};
+#[path = "windows/runtime.rs"]
+mod window_runtime;
+pub(crate) use window_runtime::native_window;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
@@ -147,11 +150,23 @@ fn window_creation_status(error: super::windows::manager::CreationError) -> Stat
     {
         CreationError::NoMemory => NO_MEMORY,
         CreationError::Binding(status) => status,
+        CreationError::Facility(mac_object_table::domain::PoolError::ForeignOwner { .. }) =>
+            ACCESS_DENIED,
         CreationError::Facility(error) =>
         {
             super::handles::registry_status(&mac_object_table::registry::Error::Pool(error))
         }
         CreationError::Stopping | CreationError::RecoveryBusy => SERVICE_BUSY,
+        CreationError::CapacityChanged => SERVICE_BUSY,
+        CreationError::Publication(cause) => match cause {
+            mac_object_table::store::PreparedError::CapacityChanged => SERVICE_BUSY,
+            mac_object_table::store::PreparedError::Pool(
+                mac_object_table::domain::PoolError::ForeignOwner { .. }) => ACCESS_DENIED,
+            mac_object_table::store::PreparedError::Pool(cause) =>
+                super::handles::registry_status(&mac_object_table::registry::Error::Pool(cause)),
+            mac_object_table::store::PreparedError::WrongStore
+            | mac_object_table::store::PreparedError::RetiredStore => BAD_ABI
+        },
         CreationError::RecoveryAuthority => ACCESS_DENIED,
         CreationError::Definition { reply,
                                     .. } => i32::try_from(reply).unwrap_or(BAD_ABI),
@@ -621,6 +636,10 @@ impl Desktop
 
     pub fn window(&mut self, operation: u32, request: &mut WindowRequest) -> Status
     {
+        if operation == NEW_WINDOW
+        {
+            return self.create_window(request, None);
+        }
         if operation != GET_WINDOW
         {
             crate::trace::record(crate::trace::WINDOW,
@@ -666,109 +685,6 @@ impl Desktop
         let mut patch_damage = None;
         match operation
         {
-            NEW_WINDOW =>
-            {
-                let definition = match self.preflight_window(operation, request)
-                {
-                    Ok(Some(id)) => id,
-                    Ok(None) => return BAD_ABI,
-                    Err(status) => return status
-                };
-                let title = match core::str::from_utf8(&request.title
-                                                           [..request.title_length as usize])
-                {
-                    Ok(title) => title,
-                    Err(_) => return BAD_ARGUMENT
-                };
-                let entry =
-                    match crate::loader::cached_definition(*b"WDEF", definition).and_then(|entry| {
-                              entry.ok_or_else(|| {
-                                       mac_formats::Error::Missing("window definition was not \
-                                                                    prepared before object \
-                                                                    mutation").into()
-                                   })
-                          })
-                    {
-                        Ok(entry) => entry,
-                        Err(error) => return crate::loader::status(error)
-                    };
-                // Capture logical reservation use before the shared allocator
-                // suppresses recovery authority. The real modal may consume its
-                // admitted slots; ordinary publishers must preserve that spare.
-                let spare = self.scene_spare();
-                if shared_scene_allocation(|| {
-                       self.content.try_reserve(1 + spare).map_err(|_| NO_MEMORY)?;
-                       self.ordinary_underlay
-                           .prepare_scenes(self.content.capacity().saturating_add(1))?;
-                       self.content_damage
-                           .try_reserve(self.content
-                                            .len()
-                                            .saturating_add(2 + spare)
-                                            .saturating_sub(self.content_damage.len()))
-                           .map_err(|_| NO_MEMORY)
-                   }).is_err()
-                {
-                    return NO_MEMORY;
-                }
-                let (recipient, storage) = match self.service_owners()
-                {
-                    Ok(owners) => owners,
-                    Err(status) => return status
-                };
-                let id = match self.windows.new_window_with_activation(request.bounds,
-                                                                       title,
-                                                                       &storage,
-                                                                       (request.minimum_width,
-                                                                        request.minimum_height),
-                                                                       request.procedure,
-                                                                       entry,
-                                                                       &mut self.events,
-                                                                       when,
-                                                                       false)
-                {
-                    Ok(id) => id,
-                    Err(error) =>
-                    {
-                        serial!("WINDOW_INITIALIZATION_REFUSED: owner={} {error}", self.owner);
-                        return window_creation_status(error);
-                    }
-                };
-                if crate::context::recovery_activity().is_none()
-                   && let Err(status) =
-                       self.drag
-                           .ensure_receiver(&recipient,
-                                            crate::context::current_thread_context().identity()
-                                                                                    .thread
-                                                                                    .0,
-                                            id.0)
-                {
-                    if let Err(error) = self.windows.dispose_window(id, &mut self.events, when)
-                    {
-                        serial!("WINDOW_INITIALIZATION_ROLLBACK_REFUSED: owner={} {error}",
-                                self.owner);
-                    }
-                    return status;
-                }
-                request.id = id.0;
-                if self.first_window.0 == 0
-                {
-                    self.first_window = id;
-                }
-                if self.owner == self.foreground
-                {
-                    self.windows.select_window(id, &mut self.events, when);
-                }
-                if self.owner != self.foreground
-                {
-                    if self.processes.get(self.owner).is_ok_and(|p| p.info.hidden != 0)
-                    {
-                        self.windows.set_hidden(id, true);
-                    }
-                    self.windows.restore_owner_group(self.foreground, &mut self.events, when);
-                }
-                self.content.push(Content::new(id));
-                self.last_action = "NEW";
-            }
             CLOSE_WINDOW =>
             {
                 if let Err(status) = self.drag.prepare_window_close(id.0)

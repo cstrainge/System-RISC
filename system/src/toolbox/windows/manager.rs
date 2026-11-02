@@ -18,6 +18,11 @@ use crate::toolbox::{events::*,
                                  presentation::{Outline, indexed_tracking_xor},
                                  region::{BooleanOp, Region, RegionError}},
                      resources::definitions::{BoundDefinition, DefinitionRef}};
+#[cfg(target_arch = "riscv64")]
+#[path = "admission.rs"]
+mod admission;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use admission::{PreparedWindow, WindowCommit, WindowPlan};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i16)]
 pub enum WindowPart
@@ -107,6 +112,41 @@ struct OwnedWindow
     window:         Window,
     disposal_state: Cell<Option<WindowDefinitionState>>,
     binding:        BoundDefinition
+}
+impl OwnedWindow
+{
+    #[allow(clippy::too_many_arguments)]
+    fn new(bounds: Rect, title: &str, owner: u64, minimum: (i16, i16), procedure: i16,
+           gate: mac_abi::TrapGate, binding: BoundDefinition,
+           #[cfg(target_arch = "riscv64")] source: WindowSource)
+           -> Self
+    {
+        Self { window: Window { id: WindowId(0),
+                                initialized: false,
+                                bounds,
+                                owner,
+                                #[cfg(target_arch = "riscv64")]
+                                source,
+                                min_width: minimum.0,
+                                min_height: minimum.1,
+                                state: WindowDefinitionState::new(bounds, title),
+                                procedure,
+                                entry: binding.reference(),
+                                gate,
+                                user_bounds: None,
+                                standard_bounds: None,
+                                grow_icon_clip: None,
+                                content_outline: None,
+                                close_deferred: false,
+                                damage: Some(Rect::new(0,
+                                                       0,
+                                                       bounds.right - bounds.left,
+                                                       bounds.bottom - bounds.top)),
+                                hidden: false,
+                                updating: false },
+               disposal_state: Cell::new(None),
+               binding }
+    }
 }
 impl core::ops::Deref for OwnedWindow
 {
@@ -349,6 +389,8 @@ pub(crate) enum CreationError
     NoMemory,
     RecoveryBusy,
     RecoveryAuthority,
+    CapacityChanged,
+    Publication(mac_object_table::store::PreparedError),
     Facility(mac_object_table::domain::PoolError),
     Binding(Status),
     Stopping,
@@ -384,6 +426,12 @@ impl core::fmt::Display for CreationError
                 f.write_str("System modal window creation requires its genuine storage owner, \
                              recipient and admitted I/O root")
             }
+            Self::CapacityChanged =>
+            {
+                f.write_str("window metadata capacity changed; prepare current capacity and retry \
+                             the original admission")
+            }
+            Self::Publication(cause) => cause.fmt(f),
             Self::Facility(error) => error.fmt(f),
             Self::Binding(status) =>
             {
@@ -593,7 +641,7 @@ impl WindowManager
     {
         Ok(Self { visibility: RefCell::new(Default::default()),
                   front_cache: Cell::new(None),
-                  windows: Store::owned(kinds.0, kinds.1).map_err(|_| BAD_ARGUMENT)?,
+                  windows: Store::owned_prepared(kinds.0, kinds.1).map_err(|_| BAD_ARGUMENT)?,
                   retained_failures: VecDeque::new(),
                   #[cfg(target_arch = "riscv64")]
                   recovery_windows: core::array::from_fn(|_| None),
@@ -1141,7 +1189,6 @@ impl WindowManager
                                              events: &mut EventManager, when: u32, activate: bool)
                                              -> Result<WindowId, CreationError>
     {
-        let (min_width, min_height) = minimum;
         #[cfg(target_arch = "riscv64")]
         let recovery = crate::context::recovery_activity();
         #[cfg(target_arch = "riscv64")]
@@ -1169,7 +1216,6 @@ impl WindowManager
                 .try_reserve(required.saturating_sub(self.geometry_order.len()))
                 .map_err(|_| CreationError::NoMemory)
         })?;
-        let previous = self.active;
         #[cfg(target_arch = "riscv64")]
         let source = if owner.owner().kind() == mac_object_table::domain::DomainKind::System
         {
@@ -1189,32 +1235,10 @@ impl WindowManager
         {
             logical_owner = activity.owner();
         }
-        let window = Window { id: WindowId(0),
-                              initialized: false,
-                              bounds,
-                              owner: logical_owner,
-                              #[cfg(target_arch = "riscv64")]
-                              source,
-                              min_width,
-                              min_height,
-                              state: WindowDefinitionState::new(bounds, title),
-                              procedure,
-                              entry,
-                              gate: self.gate,
-                              user_bounds: None,
-                              standard_bounds: None,
-                              grow_icon_clip: None,
-                              content_outline: None,
-                              close_deferred: false,
-                              damage: Some(Rect::new(0,
-                                                     0,
-                                                     bounds.right - bounds.left,
-                                                     bounds.bottom - bounds.top)),
-                              hidden: false,
-                              updating: false };
-        let mut window = Some(OwnedWindow { window,
-                                            disposal_state: Cell::new(None),
-                                            binding });
+        let mut window = Some(OwnedWindow::new(bounds, title, logical_owner, minimum, procedure,
+                                               self.gate, binding,
+                                               #[cfg(target_arch = "riscv64")]
+                                               source));
         self.retry_retained_quarantines();
         InvocationGate::with_system_allocation(|| {
             let padding = self.recovery_spare();
@@ -1256,6 +1280,24 @@ impl WindowManager
                              .map_err(CreationError::Facility)?)
             }
         };
+        self.initialize_window(id, procedure, events, when, activate,
+                               #[cfg(target_arch = "riscv64")]
+                               recovery,
+                               #[cfg(target_arch = "riscv64")]
+                               recovery_slot)
+    }
+
+    /// One WDEF lifecycle for ordinary prepared and System-reserved births.
+    /// Rollback still invokes the original ticket/quarantine path under Desktop.
+    #[allow(clippy::too_many_arguments)]
+    fn initialize_window(&mut self, id: WindowId, procedure: i16, events: &mut EventManager,
+                         when: u32, activate: bool,
+                         #[cfg(target_arch = "riscv64")]
+                         recovery: Option<crate::recovery::Activity>,
+                         #[cfg(target_arch = "riscv64")] recovery_slot: Option<usize>)
+                         -> Result<WindowId, CreationError>
+    {
+        let previous = self.active;
         let mut guard = InitializingWindow { manager: self,
                                              id,
                                              committed: false };

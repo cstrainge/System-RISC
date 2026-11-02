@@ -860,6 +860,21 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         (entry.key == key && entry.id == completion.id).then_some(&entry.value)
     }
 
+    /// Same canonical retained entry and actual owner-ledger pending state.
+    /// This observes existing walk ownership; it never constructs a release ticket.
+    pub(crate) fn pending_completion(&self, completion: &CompletionKey) -> bool
+    {
+        if self.completing(completion).is_none()
+        {
+            return false;
+        }
+        self.owner_index(completion.owner()).ok().is_some_and(|at| {
+                                                     self.owners[at].claim
+                                                                    .owner
+                                                                    .pending(completion.key)
+                                                 })
+    }
+
     /// Begin ordinary manager disposal without moving its retained payload.
     /// The returned unique ticket must be completed or retained for retry.
     pub fn begin_release(&self, id: u64) -> Option<ReleasedResource>

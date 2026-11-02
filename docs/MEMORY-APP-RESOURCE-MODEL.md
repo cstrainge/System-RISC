@@ -7,12 +7,13 @@ scoped resident metadata routing now extend stack/CPU charges. Selected optimize
 native lifecycle/storage/recovery observations and their limits are recorded below. A fixed512 MiB page-backed System heap
 is split into480 MiB ordinary and32 MiB protected storage. Process-owned
 page-backed application heaps and shared application startup/allocation are
-implemented; bounded native observations are recorded below. The module-only
-page-backed mapping path now has private segment charges, owning atomic PTE
-transactions, actual translation receipts and original-ticket retirement; bounded
-native observations and outstanding qualification gaps are recorded below. Applications and definitions retain
-their temporary image arena. Shared immutable image frames and private process
-mappings remain pending. Module allocation forwarding, genuine invocation/resource scopes and module-owned
+implemented; bounded native observations are recorded below. Applications,
+modules and definitions now own page-backed segment charges, atomic PTE
+transactions, actual translation receipts and original-ticket retirement.
+Processes have independent supervisor page tables; their bodies still run as
+trusted supervisor code. Temporary application placement policy remains, while
+shared immutable execution frames and user-mode privilege isolation remain open.
+Module allocation forwarding, genuine invocation/resource scopes and module-owned
 workers are implemented; bounded native observations are recorded below. The
 Host Clipboard and SMP development prerequisites are published; complete
 recovery-service qualification and broader SMP stress/timing remain open.
@@ -4221,3 +4222,73 @@ large writable/BSS segment. This artifact census was checked against its native
 resource and ELF segments; it is not an allocation or recovery observation.
 The 15-page native recovery workload therefore cannot size production Finder
 stock or establish production recovery headroom.
+
+## Prepared native windows and ordinary image interning
+
+Native Process window creation now prepares its genuine canonical WIND
+publication, original WDEF binding and shared Window Manager capacity outside
+Desktop. Scene, pending-update, damage and deferred-damage directories likewise
+use fresh storage, preserving the real allocation source rather than growing an
+old ordinary header during protected recovery. Dependent queue sizing uses the
+actual allocated vector capacity. Final turns validate the same owner, request
+and modal spare; capacity retry retains the exact admitted permit and payload.
+Rejected and retired metadata returns outside Desktop, including when the shared
+WDEF initialization tail refuses. Internal dialogs retain their existing real
+reserved/custom paths; a prepared native refusal never falls back to them.
+Non-creation WINDOW commands keep their direct service/status path, with no new
+UART diagnostic on a transient busy query.
+
+Ordinary application and module image loading now also prepares both canonical
+System objects and recipient aliases outside IMAGES. An existing target retains
+its full completion provenance and actual canonical Source, rather than a
+merely equal input. A missing-target observation uses the original object pool's
+birth counter; changed or saturated observations refuse without repeating deep
+equality at commit. No second issuer, credit counter or digest identity is added.
+Partial admission retains every genuine permit and displaced buffer. A refused
+alias after actual object birth returns its zero-reference removal for outside
+disposal, or proves that the original System walk already owns invalidation.
+Planning diagnostics retain typed causes until after leaving IMAGES.
+
+The source-fixed release/LTO RVA23 four-CPU, 8 GiB, 800x600 private QEMU image used
+System ELF `203cadfbf5d930d7f7fc4ea6de2cd5fa2247b61c56f4cc8489fdd48782ab9b86`
+and System resource
+`6b5f6896143e28eb8d2b1eb510ca0168ff54a4c1b98858737321cccd10fb86bf`;
+ROM remained `cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+The world rebuilt with content fingerprints and event/TextEdit tracing off.
+Six installed apps entered/quit with sampled image absence after account closure;
+Panic Test exercised report dismissal and retirement. Two apps and two module
+workers used independent app roots, own image/shared modules and absent foreign
+low images. All four bodies were sampled migrating with the same stacks, with
+overlap, register/service/cancel and actual thread/process/account closure.
+The 135 paused samples cost approximately31–68 ms of host time each, perturbing
+execution rather than measuring guest latency. Two native Finder-role replacement
+cycles exercised fresh state/stale IDs, exact protected code/page identity,
+old account closure and replacement/survivor input.
+
+Valid app-owned WDEF/CDEF resources exercised cold loading, eight mapped pages,
+panic/report dismissal, account closure, page absence and relaunch. A malformed
+WDEF refused with its informative typed cause, retained a dismissible System
+report, closed the app account and left no added definition mappings. Image-VA
+reservation refusal retained a copyable report and closed the unstarted account;
+pressure-owner quit enabled fresh replacement and input to the selected fixture
+window. These observations are not heap or protected-reserve exhaustion.
+
+One earlier pressure input attempt did not acknowledge a key sent immediately
+after a fixture marker. Source review found that marker precedes window creation;
+the still-active report intentionally consumes unrelated keys. The failed run
+recorded neither active window nor post-create readiness, so its exact cause is
+unestablished. An identical repeat acknowledged input. A separate focused-input
+run observed the actual non-report window, selected it physically, then received
+the key with zero reported queue drops. This establishes that scoped scenario,
+not the original missing-key cause. An earlier artifact's finite migration run
+also failed to sample one app migrating; its original incomplete result remains.
+No failure was relabeled as a pass or erased by later observations.
+
+Sources/base stayed fixed per run; owned guests were reaped and cloned media
+removed. No host Rust suite supplied OS acceptance. Forced factory/capacity/stop
+races, saturated counters, partial two-birth rollback, uncertain acknowledgment,
+stock/headroom and full production Finder OOM recovery remain unqualified.
+Successful postbirth WDEF rollback disposal, generic alias cleanup, drag-receiver
+and control admission, ordinary internal publishers and deep equality planning
+retain separate migration or performance work. There is no U-mode, race-absence,
+latency, arbitrary privileged-fault recovery or whole-OS qualification claim.
