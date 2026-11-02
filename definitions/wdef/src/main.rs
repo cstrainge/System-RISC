@@ -10,10 +10,24 @@ use mac_abi::{BAD_ABI, BAD_ARGUMENT, DefinitionCall, NOT_SUPPORTED};
 use toolbox_quickdraw::{Point, Rect, SurfacePort as Canvas, WHITE, font::CHICAGO_12};
 const BLACK: u32 = 0;
 pub const TITLE_HEIGHT: i16 = 19;
+/// Variation with no frame, shadow, title or boxes: structure equals content and
+/// every point inside is content. Used by windows that are pure content, such as
+/// the desktop. It is an ordinary variation of this one definition.
+const BORDERLESS: i16 = 15;
 
 fn calculate(state: &mut WindowDefinitionState, variation: i16)
 {
     let r = state.content;
+    if variation == BORDERLESS
+    {
+        state.structure = r;
+        state.structure_piece_count = 0;
+        state.structure_pieces = [Rect::ZERO; 2];
+        state.close_box = Rect::ZERO;
+        state.zoom_box = Rect::ZERO;
+        state.grow_box = Rect::ZERO;
+        return;
+    }
     let style = variation & 3;
     state.zoom_box = Rect::new(r.right - 19, r.top - 14, r.right - 8, r.top - 3);
     state.structure = match style
@@ -308,7 +322,7 @@ pub unsafe extern "C" fn standard_window_definition(pointer: *mut DefinitionCall
     }
     if call.kind != WDEF
        || call.id != 0
-       || !matches!(call.variation, 0 | 1 | 2 | 3 | 4 | 5 | 8 | 12)
+       || !matches!(call.variation, 0 | 1 | 2 | 3 | 4 | 5 | 8 | 12 | BORDERLESS)
     {
         return NOT_SUPPORTED as i64;
     }
@@ -377,6 +391,7 @@ pub unsafe extern "C" fn standard_window_definition(pointer: *mut DefinitionCall
             let mut canvas = Canvas::new(connection);
             let result = match call.message
             {
+                _ if call.variation == BORDERLESS && call.message != GROW => Ok(()),
                 DRAW => draw(state, call.variation, &mut canvas),
                 GROW =>
                 {
