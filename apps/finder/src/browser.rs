@@ -1931,7 +1931,7 @@ impl Browser
         }
         if changed
         {
-            let front = self.closable_front(system);
+            let front = front.filter(|id| !self.is_desktop_window(*id));
             if front.is_none()
             {
                 self.desktop_active = true;
