@@ -41,7 +41,7 @@ pub(super) fn retire(admission: &mut LaunchAdmission)
         return;
     }
     admission.stop();
-    match crate::kernel::with_desktop(|desktop| desktop.retire_unstarted(admission.id()))
+    match crate::kernel::with_toolbox(|toolbox| toolbox.retire_unstarted(admission.id()))
     {
         Ok(Ok(())) => (),
         Ok(Err(status)) =>

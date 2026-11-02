@@ -3,7 +3,7 @@
 use mac_abi::{Status,
               events::{Event, EventCall, EventKind}};
 
-impl super::Desktop
+impl super::Toolbox
 {
     pub fn event_service(&mut self, call: &mut EventCall) -> Status
     {
@@ -12,8 +12,8 @@ impl super::Desktop
                     | mac_abi::events::OS_PEEK
                     | mac_abi::events::OS_GET)
         {
-            self.cursor_dirty |= self.responsiveness.foreground(self.foreground, Self::when());
-            self.cursor_dirty |= self.responsiveness.polled(self.owner, Self::when());
+            self.presentation.cursor_dirty |= self.pointer.responsiveness.foreground(self.foreground, Self::when());
+            self.presentation.cursor_dirty |= self.pointer.responsiveness.polled(self.owner, Self::when());
             self.automatic_control_layout();
         }
         self.poll_inputs();
@@ -34,7 +34,7 @@ impl super::Desktop
     }
 }
 
-impl super::Desktop
+impl super::Toolbox
 {
     pub(super) fn event_position(&self, event: Event, owner: u64)
                                  -> mac_abi::events::EventPosition

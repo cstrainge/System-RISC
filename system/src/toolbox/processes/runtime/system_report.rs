@@ -7,7 +7,7 @@ use mac_abi::{ACCESS_DENIED, BAD_ABI, NOT_FOUND, SERVICE_BUSY, Status};
 
 use super::{FinderAdmission, ResourceBinding, Saved};
 use crate::{recovery::{Activity, SystemReportLease},
-            toolbox::{crashes, events::input::Input, handles::OwnerRef, runtime::Desktop}};
+            toolbox::{crashes, events::input::Input, handles::OwnerRef, runtime::Toolbox}};
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static CHANGED: AtomicBool = AtomicBool::new(false);
@@ -69,7 +69,7 @@ pub(in crate::toolbox::runtime) struct ReportSession
 
 struct BaselineForeground<'a>
 {
-    desktop:            &'a mut Desktop,
+    toolbox:            &'a mut Toolbox,
     previous:           u64,
     previous_temporary: bool
 }
@@ -77,28 +77,28 @@ impl Drop for BaselineForeground<'_>
 {
     fn drop(&mut self)
     {
-        self.desktop.foreground = self.previous;
-        self.desktop.system_report_temporary = self.previous_temporary;
+        self.toolbox.foreground = self.previous;
+        self.toolbox.system_report_temporary = self.previous_temporary;
     }
 }
 
 struct Selection<'a>
 {
-    desktop:             &'a mut Desktop,
+    toolbox:             &'a mut Toolbox,
     slot:                Option<SystemReportSlot>,
     previous_owner:      u64,
     previous_foreground: u64,
     previous_temporary:  bool
 }
-fn swap_ui(desktop: &mut Desktop, saved: &mut Saved)
+fn swap_ui(toolbox: &mut Toolbox, saved: &mut Saved)
 {
-    core::mem::swap(&mut desktop.crash, &mut saved.crash);
-    core::mem::swap(&mut desktop.dialogs, &mut saved.dialogs);
-    core::mem::swap(&mut desktop.menus, &mut saved.menus);
-    core::mem::swap(&mut desktop.cursors, &mut saved.cursors);
-    core::mem::swap(&mut desktop.classic_font, &mut saved.classic_font);
-    core::mem::swap(&mut desktop.events, &mut saved.events);
-    core::mem::swap(&mut desktop.textedit, &mut saved.textedit);
+    core::mem::swap(&mut toolbox.crash, &mut saved.crash);
+    core::mem::swap(&mut toolbox.dialogs, &mut saved.dialogs);
+    core::mem::swap(&mut toolbox.menus, &mut saved.menus);
+    core::mem::swap(&mut toolbox.pointer.cursors, &mut saved.cursors);
+    core::mem::swap(&mut toolbox.classic_font, &mut saved.classic_font);
+    core::mem::swap(&mut toolbox.events, &mut saved.events);
+    core::mem::swap(&mut toolbox.textedit, &mut saved.textedit);
 }
 impl Drop for Selection<'_>
 {
@@ -108,23 +108,23 @@ impl Drop for Selection<'_>
         // needed to restore actual borrowed UI state. Physical input persists.
         if let Some(mut slot) = self.slot.take()
         {
-            let physical = (self.desktop.events.mouse,
-                            self.desktop.events.modifiers,
-                            self.desktop.events.keys);
-            swap_ui(self.desktop, &mut slot.saved);
-            self.desktop.events.mouse = physical.0;
-            self.desktop.events.modifiers = physical.1;
-            self.desktop.events.keys = physical.2;
-            slot.session = self.desktop.system_report_active.take();
-            self.desktop.owner = self.previous_owner;
-            self.desktop.foreground = self.previous_foreground;
-            self.desktop.system_report_temporary = self.previous_temporary;
-            self.desktop.system_report = Some(slot);
+            let physical = (self.toolbox.events.mouse,
+                            self.toolbox.events.modifiers,
+                            self.toolbox.events.keys);
+            swap_ui(self.toolbox, &mut slot.saved);
+            self.toolbox.events.mouse = physical.0;
+            self.toolbox.events.modifiers = physical.1;
+            self.toolbox.events.keys = physical.2;
+            slot.session = self.toolbox.system_report_active.take();
+            self.toolbox.owner = self.previous_owner;
+            self.toolbox.foreground = self.previous_foreground;
+            self.toolbox.system_report_temporary = self.previous_temporary;
+            self.toolbox.system_report = Some(slot);
         }
     }
 }
 
-impl Desktop
+impl Toolbox
 {
     pub(in crate::toolbox::runtime) fn prepare_system_report_slot(&mut self, owner: &OwnerRef)
                                                                   -> Result<(), Status>
@@ -275,10 +275,10 @@ impl Desktop
             let previous_temporary = self.system_report_temporary;
             self.system_report_temporary |= previous != self.owner;
             self.foreground = self.owner;
-            let restore = BaselineForeground { desktop: self,
+            let restore = BaselineForeground { toolbox: self,
                                                previous,
                                                previous_temporary };
-            return Ok(operation(&mut *restore.desktop));
+            return Ok(operation(&mut *restore.toolbox));
         }
         if self.core_dialogs_active || !activity.is_system_report()
         {
@@ -302,12 +302,12 @@ impl Desktop
         self.owner = activity.storage_owner().owner().incarnation();
         self.foreground = self.owner;
         self.system_report_active = slot.session.take();
-        let restore = Selection { desktop: self,
+        let restore = Selection { toolbox: self,
                                   slot: Some(slot),
                                   previous_owner,
                                   previous_foreground,
                                   previous_temporary };
-        Ok(operation(&mut *restore.desktop))
+        Ok(operation(&mut *restore.toolbox))
     }
 
     /// No payload is extracted. Retain the same affine owner before Work ends;
@@ -406,7 +406,7 @@ pub(crate) fn changed()
     }
 }
 
-impl Desktop
+impl Toolbox
 {
     pub(crate) fn system_report_closing(&self, lease: &SystemReportLease) -> Result<bool, Status>
     {
@@ -578,10 +578,10 @@ impl Desktop
         }
         let activity = session.activity.clone();
         let started = !self.windows.is_tracking();
-        let result = self.with_system_report_activity(&activity, |desktop| {
-                             desktop.input_impl_with_hit(input, when, hit);
-                             let tracking = desktop.windows.is_tracking();
-                             if let Some(session) = &mut desktop.system_report_active
+        let result = self.with_system_report_activity(&activity, |toolbox| {
+                             toolbox.input_impl_with_hit(input, when, hit);
+                             let tracking = toolbox.windows.is_tracking();
+                             if let Some(session) = &mut toolbox.system_report_active
                              {
                                  session.frame_tracking =
                                      tracking && (session.frame_tracking || started);
@@ -606,7 +606,7 @@ impl Desktop
             // genuine child ACK. Reap still waits all real Session/Subject pins.
             return Ok(());
         }
-        self.with_system_report_activity(activity, |desktop| desktop.close_crash_report(activity))?
+        self.with_system_report_activity(activity, |toolbox| toolbox.close_crash_report(activity))?
     }
 }
 
@@ -624,7 +624,7 @@ enum Turn
     Retired(RetiredReport),
     Restart(Activity)
 }
-impl Desktop
+impl Toolbox
 {
     fn system_report_turn(&mut self) -> Result<Turn, Status>
     {
@@ -647,8 +647,8 @@ impl Desktop
         }
         if session.close_requested || activity.closing()
         {
-            self.with_system_report_activity(&activity, |desktop| {
-                    desktop.close_crash_report(&activity)
+            self.with_system_report_activity(&activity, |toolbox| {
+                    toolbox.close_crash_report(&activity)
                 })??;
             if self.system_ui_baseline
             {
@@ -687,8 +687,8 @@ impl Desktop
         }
         if let Some(result) = activity.take_system_report_power_result()
         {
-            let applied = self.with_system_report_activity(&activity, |desktop| {
-                                  desktop.finder_restart_terminal(desktop.crash
+            let applied = self.with_system_report_activity(&activity, |toolbox| {
+                                  toolbox.finder_restart_terminal(toolbox.crash
                                                                          .restart_error
                                                                          .unwrap_or(BAD_ABI),
                                                                   result)
@@ -709,17 +709,17 @@ impl Desktop
         {
             return Ok(Turn::Restart(activity));
         }
-        self.with_system_report_activity(&activity, |desktop| {
-                if desktop.crash.info().window.0 == 0
+        self.with_system_report_activity(&activity, |toolbox| {
+                if toolbox.crash.info().window.0 == 0
                 {
-                    let window = desktop.resume_crash_report()?;
+                    let window = toolbox.resume_crash_report()?;
                     activity.set_object(window.0);
                 }
-                let report = desktop.crash.info().window;
-                let mut redraw = desktop.windows
-                                        .next_update_for(report, &desktop.events, Self::when())
+                let report = toolbox.crash.info().window;
+                let mut redraw = toolbox.windows
+                                        .next_update_for(report, &toolbox.events, Self::when())
                                         .is_some();
-                while let Some(event) = desktop.events.next_matching(mac_abi::events::EVERY_EVENT)
+                while let Some(event) = toolbox.events.next_matching(mac_abi::events::EVERY_EVENT)
                 {
                     if event.window != report.0
                     {
@@ -732,12 +732,12 @@ impl Desktop
                     else if event.kind == mac_abi::events::EventKind::Activate
                               && event.modifiers & mac_abi::events::ACTIVE_FLAG == 0
                     {
-                        desktop.cancel_crash_tracking();
+                        toolbox.cancel_crash_tracking();
                     }
                 }
                 if redraw
                 {
-                    desktop.resume_crash_report()?;
+                    toolbox.resume_crash_report()?;
                 }
                 Ok::<_, Status>(())
             })??;
@@ -753,7 +753,7 @@ pub(crate) fn pump()
     {
         return;
     }
-    match crate::kernel::with_desktop(|desktop| desktop.system_report_turn())
+    match crate::kernel::with_toolbox(|toolbox| toolbox.system_report_turn())
     {
         Err(_) => CHANGED.store(true, Ordering::Release),
         Ok(Err(_)) | Ok(Ok(Turn::None)) => (), // actual ACK/use/UI action wakes a retry
@@ -766,7 +766,7 @@ pub(crate) fn pump()
     }
 }
 
-impl Desktop
+impl Toolbox
 {
     /// Park the stopped current Process's charged state in its ACTUAL Saved
     /// row before the reaper removes that row. The installed System context is
@@ -792,7 +792,7 @@ impl Desktop
         core::mem::swap(&mut self.crash, &mut self.locals[at].crash);
         core::mem::swap(&mut self.dialogs, &mut self.locals[at].dialogs);
         core::mem::swap(&mut self.menus, &mut self.locals[at].menus);
-        core::mem::swap(&mut self.cursors, &mut self.locals[at].cursors);
+        core::mem::swap(&mut self.pointer.cursors, &mut self.locals[at].cursors);
         core::mem::swap(&mut self.classic_font, &mut self.locals[at].classic_font);
         core::mem::swap(&mut self.events, &mut self.locals[at].events);
         core::mem::swap(&mut self.textedit, &mut self.locals[at].textedit);
@@ -838,7 +838,7 @@ impl Desktop
         core::mem::swap(&mut self.crash, &mut self.locals[at].crash);
         core::mem::swap(&mut self.dialogs, &mut self.locals[at].dialogs);
         core::mem::swap(&mut self.menus, &mut self.locals[at].menus);
-        core::mem::swap(&mut self.cursors, &mut self.locals[at].cursors);
+        core::mem::swap(&mut self.pointer.cursors, &mut self.locals[at].cursors);
         core::mem::swap(&mut self.classic_font, &mut self.locals[at].classic_font);
         core::mem::swap(&mut self.events, &mut self.locals[at].events);
         core::mem::swap(&mut self.textedit, &mut self.locals[at].textedit);
@@ -852,7 +852,7 @@ impl Desktop
     }
 }
 
-impl Desktop
+impl Toolbox
 {
     /// Existing native CRASH calls retain their authentic beneficiary view,
     /// while capture writes require a fresh BEGIN after real service teardown.
@@ -893,8 +893,8 @@ impl Desktop
                     return Err(SERVICE_BUSY);
                 }
                 let activity = session.activity.clone();
-                self.with_system_report_activity(&activity, |desktop| {
-                        desktop.crash_request(call, input, output)
+                self.with_system_report_activity(&activity, |toolbox| {
+                        toolbox.crash_request(call, input, output)
                     })??;
             }
             DISMISS =>

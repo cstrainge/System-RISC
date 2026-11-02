@@ -146,8 +146,8 @@ pub(crate) fn pump_reports()
         snapshot.add_flags(pending.flags);
         let activity = crate::recovery::claim_report(pending.binding.ledger().clone())?;
         let shown = activity.run(|| {
-                                crate::kernel::with_desktop(|desktop| {
-                                    desktop.publish_pending_crash_report(&pending.binding, snapshot)
+                                crate::kernel::with_toolbox(|toolbox| {
+                                    toolbox.publish_pending_crash_report(&pending.binding, snapshot)
                                 }).map_err(|e| e.status())?
                             })
                             .and_then(core::convert::identity)
@@ -174,8 +174,8 @@ pub(crate) fn pump_reports()
                 // refused. Close it through the normal manager; its genuine
                 // ticket/Activity remains retained if disposal refuses.
                 let _cleanup = activity.run(|| {
-                                           crate::kernel::with_desktop(|desktop| {
-                                               desktop.close_crash_report(&activity)
+                                           crate::kernel::with_toolbox(|toolbox| {
+                                               toolbox.close_crash_report(&activity)
                                            }).map_err(|error| error.status())?
                                        });
                 activity.close();
@@ -284,8 +284,8 @@ pub(crate) fn pump_dismissals()
     // a reclaimed selection cannot lose the original binding or cleanup intent.
     let result = pending.activity
                         .run(|| {
-                            crate::kernel::with_desktop(|desktop| {
-                                desktop.finish_crash_dismissal(&pending.binding, &pending.activity,
+                            crate::kernel::with_toolbox(|toolbox| {
+                                toolbox.finish_crash_dismissal(&pending.binding, &pending.activity,
                                                                pending.window, &pending.snapshot)
                             }).map_err(|error| error.status())?
                         })

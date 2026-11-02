@@ -25,7 +25,7 @@ pub(crate) fn pump()
     {
         return;
     }
-    if crate::kernel::with_desktop(|desktop| desktop.reap_processes()).is_err()
+    if crate::kernel::with_toolbox(|toolbox| toolbox.reap_processes()).is_err()
     {
         // A busy desktop has not consumed the checkpoint. Keep the request,
         // rather than losing the only path to retained manager state.

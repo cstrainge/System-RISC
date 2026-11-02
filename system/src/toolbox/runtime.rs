@@ -10,7 +10,7 @@ use mac_object_table::shared::InvocationGate as _;
 use super::quickdraw::{SurfaceExt,
                        fonts::FontManager,
                        fonts_service,
-                       retained::{Content, DesktopLayer, RenderCommand, SceneTarget},
+                       retained::{Content, RenderCommand, SceneTarget},
                        service};
 use crate::{platform,
             toolbox::{events::{BTN_STATE, EventManager,
@@ -90,96 +90,110 @@ fn note_recovery_input_refusal(owner: u64, status: Status)
 }
 
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
-pub struct Desktop
+/// Scene retention, damage and compositing state for the screen. It owns no
+/// window or application policy; Toolbox managers publish into it.
+pub(in crate::toolbox) struct Presentation
 {
-    pub(in crate::toolbox) drag:      super::drag::Manager,
-    standard_file:                    super::standard_file::Manager,
-    font_suitcases:                   super::font_suitcases::Manager,
-    scroll_boxes:                     super::controls::scrollbox::Manager,
-    controls:                         super::controls::objects::Manager,
-    crash:                            super::crashes::Manager,
-    system_report:                    Option<local::system_report::SystemReportSlot>,
-    system_report_active:             Option<local::system_report::ReportSession>,
-    system_ui_baseline:               bool,
-    system_report_temporary:          bool,
-    system_report_present_pending:    bool,
-    system_report_cursor_pending:     bool,
-    dialogs:                          super::dialogs::Alerts,
-    core_dialogs:                     super::dialogs::Alerts,
-    core_dialogs_active:              bool,
-    desktop:                          DesktopLayer,
-    menus:                            super::menus::Manager,
-    system_bar:                       super::menus::SystemBar,
-    cursors:                          super::quickdraw::cursors::Cursors,
-    busy_cursor:                      super::quickdraw::cursors::Cursors,
-    responsiveness:                   super::quickdraw::responsiveness::Responsiveness,
-    text_cursor:                      mac_abi::quickdraw::MonoCursor,
-    resize_cursors:                   [mac_abi::quickdraw::MonoCursor; 2],
-    automatic_cursor:                 Option<u32>,
-    worlds:                           super::quickdraw::worlds::Worlds,
-    classic_font:                     mac_abi::quickdraw::FontSelection,
-    pub windows:                      WindowManager,
-    first_window:                     WindowId,
-    events:                           Box<EventManager>,
-    textedit:                         super::textedit::Manager,
-    content:                          Vec<Content>,
-    pending_content:                  Vec<Content>,
-    content_cache:                    super::quickdraw::content_cache::ContentCache,
-    ordinary_underlay:                OrdinaryUnderlay,
-    menu_cache:                       super::quickdraw::menu_cache::MenuBarCache,
-    decoders:                         [Decoder; 2],
-    pub revision:                     u32,
-    pub updates:                      u32,
-    last_key:                         u8,
-    last_action:                      &'static str,
-    redraw:                           bool,
-    content_damage:                   Vec<(SceneTarget, super::quickdraw::region::Region)>,
-    presentation_damage:              Vec<Rect>,
-    presentation_copy_full:           bool,
-    pub(super) feedback_dirty:        bool,
-    feedback:                         super::quickdraw::feedback::Feedback,
-    outline_clip:                     super::quickdraw::feedback::VisibilityCache,
-    highlight_clip:                   super::quickdraw::feedback::VisibilityCache,
-    cursor_dirty:                     bool,
-    frame_incomplete:                 bool,
-    cursor_bounds:                    Rect,
-    activity:                         u64,
-    last_observed:                    (u64, u32, u64),
-    presentations:                    u64,
-    compositions:                     u64,
-    cdef:                             DefinitionRef,
-    system_cdef:                      DefinitionRef,
-    mdef:                             DefinitionRef,
-    owner:                            u64,
-    foreground:                       u64,
-    locals:                           Vec<local::Saved>,
-    pub(in crate::toolbox) processes: super::processes::Manager,
-    menu_feedback:                    Option<menu_feedback::Feedback>,
-    app_menu:                         super::processes::menu::ApplicationMenu
+    content:                               Vec<Content>,
+    pending_content:                       Vec<Content>,
+    content_cache:                         super::quickdraw::content_cache::ContentCache,
+    ordinary_underlay:                     OrdinaryUnderlay,
+    menu_cache:                            super::quickdraw::menu_cache::MenuBarCache,
+    redraw:                                bool,
+    content_damage:                        Vec<(SceneTarget, super::quickdraw::region::Region)>,
+    presentation_damage:                   Vec<Rect>,
+    presentation_copy_full:                bool,
+    pub(in crate::toolbox) feedback_dirty: bool,
+    feedback:                              super::quickdraw::feedback::Feedback,
+    outline_clip:                          super::quickdraw::feedback::VisibilityCache,
+    highlight_clip:                        super::quickdraw::feedback::VisibilityCache,
+    cursor_dirty:                          bool,
+    frame_incomplete:                      bool,
+    cursor_bounds:                         Rect,
+    presentations:                         u64,
+    compositions:                          u64
 }
 
-impl super::controls::objects::ControlHost for Desktop
+/// Pointer shape selection and busy-cursor tracking.
+struct Pointer
+{
+    cursors:          super::quickdraw::cursors::Cursors,
+    busy_cursor:      super::quickdraw::cursors::Cursors,
+    responsiveness:   super::quickdraw::responsiveness::Responsiveness,
+    text_cursor:      mac_abi::quickdraw::MonoCursor,
+    resize_cursors:   [mac_abi::quickdraw::MonoCursor; 2],
+    automatic_cursor: Option<u32>
+}
+
+pub struct Toolbox
+{
+    pub(in crate::toolbox) drag:         super::drag::Manager,
+    standard_file:                       super::standard_file::Manager,
+    font_suitcases:                      super::font_suitcases::Manager,
+    scroll_boxes:                        super::controls::scrollbox::Manager,
+    controls:                            super::controls::objects::Manager,
+    crash:                               super::crashes::Manager,
+    system_report:                       Option<local::system_report::SystemReportSlot>,
+    system_report_active:                Option<local::system_report::ReportSession>,
+    system_ui_baseline:                  bool,
+    system_report_temporary:             bool,
+    system_report_present_pending:       bool,
+    system_report_cursor_pending:        bool,
+    dialogs:                             super::dialogs::Alerts,
+    core_dialogs:                        super::dialogs::Alerts,
+    core_dialogs_active:                 bool,
+    menus:                               super::menus::Manager,
+    system_bar:                          super::menus::SystemBar,
+    worlds:                              super::quickdraw::worlds::Worlds,
+    classic_font:                        mac_abi::quickdraw::FontSelection,
+    pub windows:                         WindowManager,
+    first_window:                        WindowId,
+    events:                              Box<EventManager>,
+    textedit:                            super::textedit::Manager,
+    pub(in crate::toolbox) presentation: Presentation,
+    pointer:                             Pointer,
+    /// Reported main-screen bounds (`qd.screenBits.bounds`); changed only by `display_changed`.
+    pub(in crate::toolbox) screen:       Rect,
+    decoders:                            [Decoder; 2],
+    pub revision:                        u32,
+    pub updates:                         u32,
+    last_key:                            u8,
+    last_action:                         &'static str,
+    activity:                            u64,
+    last_observed:                       (u64, u32, u64),
+    cdef:                                DefinitionRef,
+    system_cdef:                         DefinitionRef,
+    mdef:                                DefinitionRef,
+    owner:                               u64,
+    foreground:                          u64,
+    locals:                              Vec<local::Saved>,
+    pub(in crate::toolbox) processes:    super::processes::Manager,
+    menu_feedback:                       Option<menu_feedback::Feedback>,
+    app_menu:                            super::processes::menu::ApplicationMenu
+}
+
+impl super::controls::objects::ControlHost for Toolbox
 {
     fn managed_controls(&mut self) -> &mut super::controls::objects::Manager
     {
         &mut self.controls
     }
 }
-impl super::controls::scrollbox::ScrollBoxHost for Desktop
+impl super::controls::scrollbox::ScrollBoxHost for Toolbox
 {
     fn managed_scroll_boxes(&mut self) -> &mut super::controls::scrollbox::Manager
     {
         &mut self.scroll_boxes
     }
 }
-impl super::standard_file::FileDialogHost for Desktop
+impl super::standard_file::FileDialogHost for Toolbox
 {
     fn file_dialogs(&mut self) -> &mut super::standard_file::Manager
     {
         &mut self.standard_file
     }
 }
-impl super::font_suitcases::Host for Desktop
+impl super::font_suitcases::Host for Toolbox
 {
     fn font_suitcases(&mut self) -> &mut super::font_suitcases::Manager
     {
@@ -218,7 +232,7 @@ fn window_creation_status(error: super::windows::manager::CreationError) -> Stat
     }
 }
 
-impl Desktop
+impl Toolbox
 {
     /// Separate the actual System storage owner from the app receiving a modal
     /// service. Only a genuine private Activity supplies that authority.
@@ -287,12 +301,19 @@ impl Desktop
                                                 status
                                             })?;
                 self.prepare_standard_file_storage(&storage).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Standard File Manager status={status}"); status })?;
-                self.content.try_reserve_exact(2).map_err(|_| NO_MEMORY)?;
-                self.pending_content.try_reserve_exact(2).map_err(|_| NO_MEMORY)?;
-                self.content_damage.try_reserve_exact(3).map_err(|_| NO_MEMORY)?;
-                self.presentation_damage.try_reserve_exact(4).map_err(|_| NO_MEMORY)?;
-                self.ordinary_underlay.prepare(self.windows.recovery_window_capacity(),
-                                                self.content.capacity().saturating_add(1))?;
+                self.presentation.content.try_reserve_exact(2).map_err(|_| NO_MEMORY)?;
+                self.presentation.pending_content.try_reserve_exact(2).map_err(|_| NO_MEMORY)?;
+                self.presentation.content_damage.try_reserve_exact(3).map_err(|_| NO_MEMORY)?;
+                self.presentation
+                    .presentation_damage
+                    .try_reserve_exact(4)
+                    .map_err(|_| NO_MEMORY)?;
+                self.presentation.ordinary_underlay.prepare(self.windows
+                                                                 .recovery_window_capacity(),
+                                                             self.presentation
+                                                                 .content
+                                                                 .capacity()
+                                                                 .saturating_add(1))?;
                 Ok(())
             })
         })
@@ -314,39 +335,30 @@ impl Desktop
 
     fn retained_bytes(&self) -> usize
     {
-        self.retained_admission(SceneTarget::Desktop).0
+        window_layout::ordinary_retained_bytes(&self.windows, &self.presentation.content,
+                                               &self.presentation.pending_content)
     }
 
     fn content_mut(&mut self, id: impl Into<SceneTarget>) -> Result<&mut Content, Status>
     {
         let id = id.into();
-        if id == SceneTarget::Desktop
+        if !self.owns(id.window()?)
         {
-            if self.owner != crate::context::finder_app().0
-            {
-                return Err(ACCESS_DENIED);
-            }
-            self.desktop.pending_mut()
+            return Err(if self.windows.window(id.window()?).is_some()
+                       {
+                           ACCESS_DENIED
+                       }
+                       else
+                       {
+                           NOT_FOUND
+                       });
         }
-        else
-        {
-            if !self.owns(id.window()?)
-            {
-                return Err(if self.windows.window(id.window()?).is_some()
-                           {
-                               ACCESS_DENIED
-                           }
-                           else
-                           {
-                               NOT_FOUND
-                           });
-            }
-            self.pending_content
-                .iter_mut()
-                .chain(&mut self.content)
-                .find(|content| content.id == id)
-                .ok_or(NOT_FOUND)
-        }
+        self.presentation
+            .pending_content
+            .iter_mut()
+            .chain(&mut self.presentation.content)
+            .find(|content| content.id == id)
+            .ok_or(NOT_FOUND)
     }
 
     /// A retained update is private until EndUpdate. Other threads can poll,
@@ -364,7 +376,7 @@ impl Desktop
     fn content_changed_rect(&mut self, id: impl Into<SceneTarget>, rect: Rect)
     {
         let id = id.into();
-        if self.pending_content.iter().any(|content| content.id == id)
+        if self.presentation.pending_content.iter().any(|content| content.id == id)
         {
             return;
         }
@@ -376,32 +388,16 @@ impl Desktop
     {
         let id = id.into();
         use super::quickdraw::region::{BooleanOp, Region};
-        if self.pending_content.iter().any(|content| content.id == id)
+        if self.presentation.pending_content.iter().any(|content| content.id == id)
         {
             return;
         }
-        let local = if id == SceneTarget::Desktop
-        {
-            if self.desktop.is_updating()
-            {
-                return;
-            }
-            self.desktop.bounds()
-        }
+        let Some(window) = id.window().ok().and_then(|window| self.windows.window(window))
         else
         {
-            let SceneTarget::Window(window) = id
-            else
-            {
-                return;
-            };
-            let Some(window) = self.windows.window(window)
-            else
-            {
-                return;
-            };
-            window.local_bounds()
+            return;
         };
+        let local = window.local_bounds();
         let bounds = region.bounds();
         let region = if bounds.left >= local.left
                         && bounds.top >= local.top
@@ -427,7 +423,8 @@ impl Desktop
         {
             for span in &band.spans
             {
-                self.content_cache
+                self.presentation
+                    .content_cache
                     .invalidate_rect(id, Rect::new(span.left, band.top, span.right, band.bottom));
             }
         }
@@ -440,8 +437,8 @@ impl Desktop
         let id = id.into();
         if !self.system_scene(id)
         {
-            self.ordinary_underlay.changed();
-            match self.ordinary_underlay.queue_if_deferred(id, region)
+            self.presentation.ordinary_underlay.changed();
+            match self.presentation.ordinary_underlay.queue_if_deferred(id, region)
             {
                 Ok(()) => return,
                 Err(pending) => return self.queue_active_content_damage(id, pending)
@@ -459,7 +456,7 @@ impl Desktop
             return;
         }
         if let Some((_, previous)) =
-            self.content_damage.iter_mut().find(|(window, _)| *window == id)
+            self.presentation.content_damage.iter_mut().find(|(window, _)| *window == id)
         {
             *previous=previous.combine(&region,BooleanOp::Union).unwrap_or_else(|_| {
                 Region::from_rect(super::quickdraw::geometry::union_rect(previous.bounds(),region.bounds()))
@@ -468,15 +465,21 @@ impl Desktop
         else
         {
             let spare = self.scene_spare();
-            if self.content_damage.capacity().saturating_sub(self.content_damage.len()) <= spare
-               && shared_scene_allocation(|| self.content_damage.try_reserve(1 + spare)).is_err()
+            if self.presentation
+                   .content_damage
+                   .capacity()
+                   .saturating_sub(self.presentation.content_damage.len())
+               <= spare
+               && shared_scene_allocation(|| {
+                      self.presentation.content_damage.try_reserve(1 + spare)
+                  }).is_err()
             {
                 // Full composition is an explicit last resort when bounded
                 // damage bookkeeping cannot be admitted; painting never panics.
-                self.redraw = true;
+                self.presentation.redraw = true;
                 return;
             }
-            self.content_damage.push((id, region));
+            self.presentation.content_damage.push((id, region));
         }
     }
 
@@ -484,21 +487,14 @@ impl Desktop
                              -> Result<(), Status>
     {
         let id = id.into();
-        let changed = if id == SceneTarget::Desktop
-        {
-            self.desktop.set_outline(next)
-        }
-        else
-        {
-            self.windows.content_outline(id.window()?, next)?
-        };
-        self.feedback_dirty |= changed;
+        let changed = self.windows.content_outline(id.window()?, next)?;
+        self.presentation.feedback_dirty |= changed;
         Ok(())
     }
 
     fn apply_control_outline(&mut self, window: u64, next: Option<Rect>) -> Result<(), Status>
     {
-        self.feedback_dirty |= self.windows.control_outline(WindowId(window), next)?;
+        self.presentation.feedback_dirty |= self.windows.control_outline(WindowId(window), next)?;
         Ok(())
     }
 
@@ -587,16 +583,9 @@ impl Desktop
                   core_dialogs_active: false,
                   menus: super::menus::Manager::new(super::handles::menu_kinds()?, mdef, crate::machine::traps::gateway)?,
                   system_bar,
-                  desktop: DesktopLayer::new(Rect::new(0,
-                                                        21,
-                                                        crate::display::WIDTH as i16,
-                                                        crate::display::HEIGHT as i16)),
-                  cursors: Default::default(),
-                  busy_cursor,
-                  responsiveness: Default::default(),
-                  text_cursor,
-                  resize_cursors,
-                  automatic_cursor:None,
+                  screen: Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16),
+                  pointer: Pointer { cursors: Default::default(), busy_cursor, text_cursor, resize_cursors,
+                                     responsiveness: Default::default(), automatic_cursor: None },
                   worlds: super::quickdraw::worlds::Worlds::new(super::handles::world_kinds()?)?,
                   classic_font: Default::default(),
                   windows: WindowManager::with_kinds(super::handles::window_kinds()?, crate::machine::traps::gateway)?,
@@ -604,32 +593,15 @@ impl Desktop
                   drag: { let (sessions, receivers) = super::handles::drag_kinds()?;
                           super::drag::Manager::new(sessions, receivers)? },
                   textedit: super::textedit::Manager::new(super::handles::editor_kinds()?, processes.ledger(finder)?)?,
-                  content: Vec::new(),
-                  pending_content: Vec::new(),
-                  content_cache: Default::default(),
-                  ordinary_underlay: Default::default(),
-                  menu_cache: Default::default(),
+                  presentation: Presentation { content: Vec::new(), pending_content: Vec::new(), content_cache: Default::default(), ordinary_underlay: Default::default(), menu_cache: Default::default(), redraw: true, content_damage, presentation_damage, presentation_copy_full:false, feedback_dirty: false, feedback: Default::default(), outline_clip: Default::default(), highlight_clip: Default::default(), cursor_dirty: true, frame_incomplete: false, cursor_bounds: Rect::ZERO, presentations: 0, compositions: 0, },
                   decoders: [Decoder::new(), Decoder::new()],
                   revision: 0,
                   updates: 0,
                   last_key: 0,
                   last_action: "READY",
-                  redraw: true,
-                  content_damage,
-                  presentation_damage,
-                  presentation_copy_full:false,
                   menu_feedback: None,
-                  feedback_dirty: false,
-                  feedback: Default::default(),
-                  outline_clip: Default::default(),
-                  highlight_clip: Default::default(),
-                  cursor_dirty: true,
-                  frame_incomplete: false,
-                  cursor_bounds: Rect::ZERO,
                   activity: 0,
                   last_observed: (u64::MAX, u32::MAX, u64::MAX),
-                  presentations: 0,
-                  compositions: 0,
                   cdef,system_cdef,mdef,owner:finder,foreground:finder,locals,
                   processes,
                   app_menu:crate::kernel::with_resources(|resources| super::processes::menu::ApplicationMenu::new(mdef,crate::machine::traps::gateway,resources)).ok_or(NOT_SUPPORTED)?? })
@@ -651,6 +623,11 @@ impl Desktop
         if call.reserved != 0
         {
             return BAD_ARGUMENT;
+        }
+        if call.operation == mac_abi::menus::GET_BAR_HEIGHT
+        {
+            call.value = mac_abi::menus::MENU_BAR_HEIGHT as u32;
+            return OK;
         }
         if call.operation == mac_abi::menus::SHOW_ABOUT_SYSTEM
         {
@@ -679,8 +656,8 @@ impl Desktop
         if matches!(result, Ok(true)) && self.owner == self.foreground
         {
             self.refresh_system_menu();
-            self.menu_cache.invalidate();
-            self.redraw = true;
+            self.presentation.menu_cache.invalidate();
+            self.presentation.redraw = true;
         }
         result.map_or_else(|status| status, |_| OK)
     }
@@ -710,7 +687,7 @@ impl Desktop
         }
         if request.title_length as usize > request.title.len()
            || request.procedure < 0
-           || request.reserved != 0
+           || !matches!(request.reserved, 0 | WINDOW_STAY_IN_BACK)
         {
             return Err(BAD_ARGUMENT);
         }
@@ -725,7 +702,8 @@ impl Desktop
         self.windows
             .preflight_creation(request.bounds,
                                 &storage,
-                                (request.minimum_width, request.minimum_height))
+                                (request.minimum_width, request.minimum_height),
+                                request.reserved == WINDOW_STAY_IN_BACK)
             .map_err(window_creation_status)?;
         Ok(Some(request.procedure >> 4))
     }
@@ -756,7 +734,7 @@ impl Desktop
             };
             request.id = id.0;
         }
-        if !matches!(operation, NEW_WINDOW | SELECT_DESKTOP)
+        if operation != NEW_WINDOW
            && request.id != 0
            && !(if operation == GET_WINDOW
            {
@@ -871,10 +849,10 @@ impl Desktop
                 }
                 self.scroll_boxes.remove_window(id.0);
                 self.controls.remove_window(id.0);
-                self.content.retain(|content| content.id != id);
-                self.content_damage.retain(|(target, _)| *target != id);
-                self.ordinary_underlay.forget(SceneTarget::from(id));
-                self.pending_content.retain(|content| content.id != id);
+                self.presentation.content.retain(|content| content.id != id);
+                self.presentation.content_damage.retain(|(target, _)| *target != id);
+                self.presentation.ordinary_underlay.forget(SceneTarget::from(id));
+                self.presentation.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);
                 self.last_action = "CLOSE";
                 if let Some(alert) = alert
@@ -899,21 +877,6 @@ impl Desktop
                 }
                 self.windows.select_window(id, &mut self.events, when);
                 self.last_action = "SELECT";
-            }
-            SELECT_DESKTOP =>
-            {
-                if self.owner != crate::context::finder_app().0
-                {
-                    return ACCESS_DENIED;
-                }
-                if self.foreground != crate::context::finder_app().0
-                   && let Err(status) =
-                       self.activate_process_window(crate::context::finder_app().0, None)
-                {
-                    return status;
-                }
-                self.windows.deactivate_all(&mut self.events, when);
-                self.last_action = "DESKTOP_SELECT";
             }
             GET_WINDOW =>
             {
@@ -940,6 +903,18 @@ impl Desktop
             VALIDATE_WINDOW =>
             {
                 return self.windows.validate(id).map_or_else(|error| error, |()| OK);
+            }
+            SET_WINDOW_BOUNDS =>
+            {
+                return match self.set_window_bounds(id, request.bounds)
+                {
+                    Some(action) =>
+                    {
+                        self.action(action, when);
+                        OK
+                    }
+                    None => OK
+                };
             }
             SET_STANDARD_BOUNDS =>
             {
@@ -1004,11 +979,14 @@ impl Desktop
                     return BAD_ARGUMENT;
                 }
                 let spare = self.scene_spare();
-                if shared_scene_allocation(|| self.pending_content.try_reserve(1 + spare)).is_err()
+                if shared_scene_allocation(|| {
+                       self.presentation.pending_content.try_reserve(1 + spare)
+                   }).is_err()
                 {
                     return NO_MEMORY;
                 }
-                let Some(content) = self.content.iter().find(|content| content.id == id)
+                let Some(content) =
+                    self.presentation.content.iter().find(|content| content.id == id)
                 else
                 {
                     return NOT_FOUND;
@@ -1029,25 +1007,27 @@ impl Desktop
                     return NOT_FOUND;
                 };
                 request.bounds = damage;
-                self.pending_content.push(pending);
+                self.presentation.pending_content.push(pending);
                 self.textedit.begin_cursor_update(id);
                 self.updates += 1;
             }
             END_UPDATE =>
             {
-                let Some(index) = self.pending_content.iter().position(|content| content.id == id)
+                let Some(index) =
+                    self.presentation.pending_content.iter().position(|content| content.id == id)
                 else
                 {
                     return BAD_ARGUMENT;
                 };
                 let (used, limit) = self.retained_admission(SceneTarget::from(id));
                 let bounds = self.windows.window(id).unwrap().local_bounds();
-                let Some(content) = self.content.iter_mut().find(|content| content.id == id)
+                let Some(content) =
+                    self.presentation.content.iter_mut().find(|content| content.id == id)
                 else
                 {
                     return NOT_FOUND;
                 };
-                let mut pending = self.pending_content.swap_remove(index);
+                let mut pending = self.presentation.pending_content.swap_remove(index);
                 let outline = pending.outline.take();
                 if let Some(mask) = pending.patch_mask().cloned()
                 {
@@ -1099,7 +1079,7 @@ impl Desktop
         else if !matches!(operation, BEGIN_UPDATE | INVALIDATE_WINDOW | SET_CLOSE_DEFERRED)
                   && (operation != SELECT_WINDOW || self.windows.active_window() != active_before)
         {
-            self.redraw = true;
+            self.presentation.redraw = true;
         }
         // Retained drawing is committed before EndUpdate returns. Applications
         // can report readiness only after the corresponding pixels are visible.
@@ -1229,7 +1209,7 @@ impl Desktop
         let entry = match self.scroll_boxes.bound_definition(call, owner)?
         {
             Some(entry) => entry,
-            None => crate::toolbox::runtime::Desktop::control_definition(1)?
+            None => crate::toolbox::runtime::Toolbox::control_definition(1)?
         };
         let drawing = self.scroll_boxes.request(&recipient,
                                                  &storage,
@@ -1246,9 +1226,10 @@ impl Desktop
         {
             let mut removed = Vec::new();
             let mut coalesced = None;
-            for content in self.content
+            for content in self.presentation
+                               .content
                                .iter_mut()
-                               .chain(self.pending_content.iter_mut())
+                               .chain(self.presentation.pending_content.iter_mut())
                                .filter(|content| content.id == SceneTarget::from(window))
             {
                 content.retain_commands(|command| {
@@ -1300,7 +1281,10 @@ impl Desktop
                 }
                 content.record(RenderCommand::ScrollBox(drawing))?;
             }
-            if !self.pending_content.iter().any(|content| content.id == SceneTarget::from(window))
+            if !self.presentation
+                    .pending_content
+                    .iter()
+                    .any(|content| content.id == SceneTarget::from(window))
             {
                 for rect in old_bounds.into_iter().flatten().chain(bounds)
                 {
@@ -1316,9 +1300,10 @@ impl Desktop
     {
         let mut removed = Vec::new();
         let mut coalesced = None;
-        for content in self.content
+        for content in self.presentation
+                           .content
                            .iter_mut()
-                           .chain(&mut self.pending_content)
+                           .chain(&mut self.presentation.pending_content)
                            .filter(|content| content.id == SceneTarget::from(window))
         {
             for command in content.iter_commands_mut()
@@ -1347,7 +1332,8 @@ impl Desktop
         {
             self.content_changed_rect(window, bounds);
         }
-        if changed && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        if changed
+           && !self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
         {
             self.present();
         }
@@ -1407,13 +1393,14 @@ impl Desktop
         if matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
            && self.controls.splitter_request(call, owner, crate::machine::traps::gateway)?
         {
-            let pending = self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let pending =
+                self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
             let prepared = self.controls.prepare_splitter(call,
                                                            owner,
                                                            pending,
                                                            crate::machine::traps::gateway,
                                                            |id| {
-                                                               crate::toolbox::runtime::Desktop::control_definition(id)
+                                                               crate::toolbox::runtime::Toolbox::control_definition(id)
                                                            })?;
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
             return self.publish_control_layout(window, prepared, used, limit);
@@ -1432,7 +1419,7 @@ impl Desktop
                                             |state| {
                                                 let id = super::controls::definition_id(state)?;
                                                 let entry =
-                                                    crate::toolbox::runtime::Desktop::control_definition(id)?;
+                                                    crate::toolbox::runtime::Toolbox::control_definition(id)?;
                                                 let mut state = *state;
                                                 super::controls::prepare(&mut state,
                                                            entry,
@@ -1454,7 +1441,7 @@ impl Desktop
             // transaction. Refuse before consuming the child's owner; retry after
             // EndUpdate. No old scene is re-clipped against a half-built new one.
             let paint_pending =
-                self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+                self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
             if self.controls.change_parent(call, owner, paint_pending)?
             {
                 self.sync_control_tree(window);
@@ -1472,13 +1459,14 @@ impl Desktop
            || (matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
                && self.controls.scrolling(call.id, owner)?)
         {
-            let pending = self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let pending =
+                self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
             let prepared = self.controls.prepare_scroll(call,
                                                          owner,
                                                          pending,
                                                          crate::machine::traps::gateway,
                                                          |id| {
-                                                             crate::toolbox::runtime::Desktop::control_definition(id)
+                                                             crate::toolbox::runtime::Toolbox::control_definition(id)
                                                          })?;
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
             return self.publish_control_layout(window, prepared, used, limit);
@@ -1504,14 +1492,15 @@ impl Desktop
                 return Err(BAD_ARGUMENT);
             }
             let viewport = self.windows.window(WindowId(window)).ok_or(NOT_FOUND)?.local_bounds();
-            let pending = self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let pending =
+                self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
             let prepared = self.controls.prepare_window(window,
                                                          viewport,
                                                          pending,
                                                          Some((call, owner)),
                                                          crate::machine::traps::gateway,
                                                          |id| {
-                                                             crate::toolbox::runtime::Desktop::control_definition(id)
+                                                             crate::toolbox::runtime::Toolbox::control_definition(id)
                                                          })?;
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
             return self.publish_control_layout(window, prepared, used, limit);
@@ -1521,21 +1510,21 @@ impl Desktop
            && self.controls.is_table(call.id, owner)?
         {
             let paint_pending =
-                self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+                self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
             let prepared = self.controls.prepare_layout(call,
                                                          owner,
                                                          paint_pending,
                                                          crate::machine::traps::gateway,
                                                          |id| {
-                                                             crate::toolbox::runtime::Desktop::control_definition(id)
+                                                             crate::toolbox::runtime::Toolbox::control_definition(id)
                                                          },
                                                          None)?;
             call.layout.measurement = prepared.measurement;
             self.publish_control_layout(window, prepared, used, limit)?;
             return Ok(());
         }
-        if self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        if self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
            && self.controls.changes_tree_geometry(call, owner)?
         {
             return Err(SERVICE_BUSY);
@@ -1560,13 +1549,14 @@ impl Desktop
             None =>
             {
                 let (id, _) = self.controls.preflight_definition(&recipient, &storage, call)?;
-                crate::toolbox::runtime::Desktop::control_definition(id)?
+                crate::toolbox::runtime::Toolbox::control_definition(id)?
             }
         };
         let (used, limit) = self.retained_admission(SceneTarget::from(window));
-        let content = self.pending_content
+        let content = self.presentation
+                          .pending_content
                           .iter_mut()
-                          .chain(&mut self.content)
+                          .chain(&mut self.presentation.content)
                           .find(|content| content.id == SceneTarget::from(window));
         let drawing = self.controls.request_with(&recipient,
                                                   &storage,
@@ -1632,7 +1622,10 @@ impl Desktop
             // A control state change commits its own pixels before returning.
             // Full window updates remain private until EndUpdate.
             if damage.iter().any(|r| !r.is_empty())
-               && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+               && !self.presentation
+                       .pending_content
+                       .iter()
+                       .any(|c| c.id == SceneTarget::from(window))
             {
                 self.present();
             }
@@ -1649,9 +1642,10 @@ impl Desktop
         {
             let mut removed = Vec::new();
             let mut coalesced = None;
-            for content in self.content
+            for content in self.presentation
+                               .content
                                .iter_mut()
-                               .chain(self.pending_content.iter_mut())
+                               .chain(self.presentation.pending_content.iter_mut())
                                .filter(|c| c.id == SceneTarget::from(window))
             {
                 content.retain_commands(|command| {
@@ -1720,7 +1714,10 @@ impl Desktop
             // A control state change commits its own pixels before returning.
             // Full window updates remain private until EndUpdate.
             if damage.iter().any(|r| !r.is_empty())
-               && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+               && !self.presentation
+                       .pending_content
+                       .iter()
+                       .any(|c| c.id == SceneTarget::from(window))
             {
                 self.present();
             }
@@ -1805,9 +1802,10 @@ impl Desktop
     {
         let mut removed = Vec::new();
         let mut coalesced = None;
-        for content in self.content
+        for content in self.presentation
+                           .content
                            .iter_mut()
-                           .chain(self.pending_content.iter_mut())
+                           .chain(self.presentation.pending_content.iter_mut())
                            .filter(|c| c.id == SceneTarget::from(window))
         {
             content.retain_commands(|command| {
@@ -1826,7 +1824,8 @@ impl Desktop
         {
             self.content_changed_rect(window, bounds);
         }
-        if changed && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        if changed
+           && !self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
         {
             self.present();
         }
@@ -1836,9 +1835,10 @@ impl Desktop
     {
         let mut damage = Vec::new();
         let mut coalesced = None;
-        if let Some(content) = self.pending_content
+        if let Some(content) = self.presentation
+                                   .pending_content
                                    .iter_mut()
-                                   .chain(&mut self.content)
+                                   .chain(&mut self.presentation.content)
                                    .find(|c| c.id == SceneTarget::from(window))
         {
             content.sync_control_tree(&self.controls, |bounds| {
@@ -1850,7 +1850,8 @@ impl Desktop
         {
             self.content_changed_rect(window, bounds);
         }
-        if changed && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        if changed
+           && !self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
         {
             self.present();
         }
@@ -1958,30 +1959,10 @@ impl Desktop
         let target = SceneTarget::decode(call.target)?;
         let id = target;
         // Use the ordinary owner/generation gate, including stale window IDs.
-        let desktop = SceneTarget::decode(call.target)? == SceneTarget::Desktop;
-        if desktop
-        {
-            if self.owner != crate::context::finder_app().0
-            {
-                return Err(ACCESS_DENIED);
-            }
-        }
-        else
-        {
-            self.content_mut(SceneTarget::decode(call.target)?)?;
-        }
+        self.content_mut(target)?;
         if matches!(call.operation, QD_WINDOW_BEGIN_MASK | QD_WINDOW_BEGIN_RECTS)
         {
-            let bounds = if desktop
-            {
-                if self.desktop.is_updating()
-                {
-                    return Err(BAD_ARGUMENT);
-                }
-                self.desktop.bounds()
-            }
-            else
-            {
+            let bounds = {
                 let window = self.windows.window(id.window()?).ok_or(NOT_FOUND)?;
                 if window.updating
                 {
@@ -2006,19 +1987,15 @@ impl Desktop
             };
             let mask = mask.combine(&Region::from_rect(bounds), BooleanOp::Intersection)
                            .map_err(super::quickdraw::regions_service::status)?;
-            if desktop
-            {
-                return self.desktop.begin_mask(mask, self.retained_bytes(), MAX_RETAINED_BYTES);
-            }
             if mask.is_empty()
             {
                 return Err(BAD_ARGUMENT);
             }
             let spare = self.scene_spare();
             shared_scene_allocation(|| {
-                self.pending_content.try_reserve(1 + spare)
+                self.presentation.pending_content.try_reserve(1 + spare)
             }).map_err(|_| NO_MEMORY)?;
-            let content = self.content.iter().find(|c| c.id == id).ok_or(NOT_FOUND)?;
+            let content = self.presentation.content.iter().find(|c| c.id == id).ok_or(NOT_FOUND)?;
             let pending = Content::pending_patch(id, content.port.clone(), mask);
             let (used, limit) = self.retained_admission(id);
             if used.saturating_add(pending.storage()) > limit
@@ -2029,34 +2006,19 @@ impl Desktop
             {
                 return Err(BAD_ARGUMENT);
             }
-            self.pending_content.push(pending);
+            self.presentation.pending_content.push(pending);
             self.textedit.begin_cursor_update(id.window()?);
         }
         else
         {
-            if desktop
-            {
-                if call.operation == QD_WINDOW_CANCEL_MASK
-                {
-                    return self.desktop.cancel_mask();
-                }
-                let outline = self.desktop.pending_outline();
-                let mask = self.desktop.commit_mask(self.retained_bytes(), MAX_RETAINED_BYTES)?;
-                if let Some(outline) = outline
-                {
-                    self.apply_content_outline(SceneTarget::Desktop, outline)?;
-                }
-                self.content_changed_region(SceneTarget::Desktop, mask);
-                self.present();
-                return Ok(());
-            }
-            let index = self.pending_content
+            let index = self.presentation
+                            .pending_content
                             .iter()
                             .position(|c| c.id == id && c.is_patch())
                             .ok_or(BAD_ARGUMENT)?;
             if call.operation == QD_WINDOW_CANCEL_MASK
             {
-                self.pending_content.swap_remove(index);
+                self.presentation.pending_content.swap_remove(index);
                 self.textedit.begin_cursor_update(id.window()?);
                 self.windows.end_update(id.window()?);
             }
@@ -2084,26 +2046,14 @@ impl Desktop
                     region: &[u8])
                     -> Result<(), Status>
     {
-        use mac_abi::quickdraw::{QD_DESKTOP_BEGIN, QD_DESKTOP_BOUNDS, QD_DESKTOP_CANCEL,
-                                 QD_DESKTOP_END, QD_GET_STATE};
+        use mac_abi::quickdraw::QD_SCREEN_BOUNDS;
         if call.operation == mac_abi::quickdraw::QD_WINDOW_OUTLINE
         {
             if call.verb > 1
             {
                 return Err(BAD_ARGUMENT);
             }
-            let desktop = SceneTarget::decode(call.target)? == SceneTarget::Desktop;
-            if desktop
-            {
-                if self.owner != crate::context::finder_app().0
-                {
-                    return Err(ACCESS_DENIED);
-                }
-            }
-            else
-            {
-                self.content_mut(SceneTarget::decode(call.target)?)?;
-            }
+            self.content_mut(SceneTarget::decode(call.target)?)?;
             let next = (call.verb == 1 && !call.bounds.is_empty()).then_some(call.bounds);
             let target = SceneTarget::decode(call.target)?;
             #[cfg(feature = "event-trace")]
@@ -2116,17 +2066,13 @@ impl Desktop
                 crate::trace::record(crate::trace::WINDOW,
                                      self.owner,
                                      crate::trace::CONTENT_OUTLINE_REQUEST,
-                                     if desktop { 0 } else { target.window()?.0 },
+                                     target.window()?.0,
                                      packed,
                                      u64::from(next.is_some()));
             }
             let id = target;
-            if desktop && self.desktop.is_updating()
-            {
-                self.desktop.pending_mut()?.outline = Some(next);
-            }
-            else if let Some(pending) =
-                self.pending_content.iter_mut().find(|content| content.id == id)
+            if let Some(pending) =
+                self.presentation.pending_content.iter_mut().find(|content| content.id == id)
             {
                 pending.outline = Some(next);
             }
@@ -2145,33 +2091,9 @@ impl Desktop
         {
             return self.masked_update(call, region);
         }
-        if matches!(call.operation,
-                    QD_DESKTOP_BEGIN | QD_DESKTOP_END | QD_DESKTOP_CANCEL | QD_DESKTOP_BOUNDS)
+        if call.operation == QD_SCREEN_BOUNDS
         {
-            if self.owner != crate::context::finder_app().0 && call.operation != QD_DESKTOP_BOUNDS
-            {
-                return Err(ACCESS_DENIED);
-            }
-            let outline = self.desktop.pending_outline();
-            let committed = self.desktop.request(call)?;
-            if committed
-            {
-                if let Some(outline) = outline
-                {
-                    self.apply_content_outline(SceneTarget::Desktop, outline)?;
-                }
-                self.content_cache.invalidate(SceneTarget::Desktop);
-                self.last_action = "DESKTOP";
-                self.redraw = true;
-                self.present();
-            }
-            return Ok(());
-        }
-        if call.operation == QD_GET_STATE
-           && call.target.decode().map_err(|_| BAD_ARGUMENT)?
-              == mac_abi::quickdraw::DrawingTarget::Desktop
-        {
-            call.state = self.desktop.port().wire();
+            call.bounds = self.screen;
             return Ok(());
         }
         if let mac_abi::quickdraw::DrawingTarget::World(world) =
@@ -2235,8 +2157,8 @@ impl Desktop
     pub fn cursor(&mut self, call: &mut mac_abi::quickdraw::CursorCall, colors: &[u32])
                   -> Result<(), Status>
     {
-        let changed = self.cursors.request(call, colors, self.events.mouse)?;
-        self.cursor_dirty |= changed && self.owner == self.foreground;
+        let changed = self.pointer.cursors.request(call, colors, self.events.mouse)?;
+        self.presentation.cursor_dirty |= changed && self.owner == self.foreground;
         Ok(())
     }
 
@@ -2244,7 +2166,7 @@ impl Desktop
                            -> Result<(), Status>
     {
         let changed = crate::kernel::with_resources_in(call.scope, |resources| {
-            self.cursors.resource_request(call,
+            self.pointer.cursors.resource_request(call,
                                           self.events.mouse,
                                           Self::when(),
                                           |kind, id, scope| {
@@ -2252,7 +2174,7 @@ impl Desktop
                                               super::quickdraw::cursors::copy_resource(&resource.data)
                                           })
         })??;
-        self.cursor_dirty |= changed && self.owner == self.foreground;
+        self.presentation.cursor_dirty |= changed && self.owner == self.foreground;
         Ok(())
     }
 
@@ -2261,7 +2183,9 @@ impl Desktop
     /// chrome and covered windows, while TextEdit accounts for its port clip.
     fn automatic_cursor_at_mouse(&self) -> Option<u32>
     {
-        if !self.cursors.is_automatic() || self.menus.is_tracking() || self.windows.is_tracking()
+        if !self.pointer.cursors.is_automatic()
+           || self.menus.is_tracking()
+           || self.windows.is_tracking()
         {
             return None;
         }
@@ -2417,7 +2341,7 @@ impl Desktop
     {
         // Held drag motion changes only the frontbuffer outline. Accepted
         // geometry/close changes are the point where the real scene changes.
-        self.redraw |= !matches!(action, Action::CloseRequest(_));
+        self.presentation.redraw |= !matches!(action, Action::CloseRequest(_));
         if let Action::Drag(id) | Action::Resize(id) = action
         {
             self.events.post_system(Event { kind: EventKind::OsEvent,
@@ -2453,10 +2377,10 @@ impl Desktop
             {
                 self.scroll_boxes.remove_window(id.0);
                 self.controls.remove_window(id.0);
-                self.content.retain(|content| content.id != id);
-                self.content_damage.retain(|(target, _)| *target != id);
-                self.ordinary_underlay.forget(SceneTarget::from(id));
-                self.pending_content.retain(|content| content.id != id);
+                self.presentation.content.retain(|content| content.id != id);
+                self.presentation.content_damage.retain(|(target, _)| *target != id);
+                self.presentation.ordinary_underlay.forget(SceneTarget::from(id));
+                self.presentation.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);
                 self.events.post_system_for(closed_owner,
                                             Event { kind: EventKind::OsEvent,
@@ -2481,7 +2405,7 @@ impl Desktop
                      && !self.windows.is_tracking()
                      && let Input::Button { point,
                                             down: true } = input
-                     && point.v >= self.desktop.bounds().top
+                     && point.v >= self.screen.top + mac_abi::menus::MENU_BAR_HEIGHT
         {
             Some(self.windows.find_window(point))
         }
@@ -2507,8 +2431,8 @@ impl Desktop
             if let Err(status) = activity.run(|| {
                                              if kind
                                              {
-                                                 self.with_core_dialogs(|desktop| {
-                                                         desktop.input_impl_with_hit(input, when,
+                                                 self.with_core_dialogs(|toolbox| {
+                                                         toolbox.input_impl_with_hit(input, when,
                                                                                      hit)
                                                      });
                                              }
@@ -2578,8 +2502,23 @@ impl Desktop
         // overlays or a changed stacking plane have their own scene damage.
         if !matches!(input, Input::Key { .. })
         {
-            self.cursor_dirty = true;
-            self.redraw |= self.windows.tracking_repaints_scene();
+            self.presentation.cursor_dirty = true;
+            self.presentation.redraw |= self.windows.tracking_repaints_scene();
+        }
+        #[cfg(feature = "display-event-debug")]
+        if let Input::Key { character,
+                            down: true,
+                            repeat: false,
+                            modifiers,
+                            .. } = input
+           && modifiers & (CMD_KEY | mac_abi::events::OPTION_KEY | mac_abi::events::CONTROL_KEY)
+              == CMD_KEY | mac_abi::events::OPTION_KEY | mac_abi::events::CONTROL_KEY
+           && character.to_ascii_lowercase() == b'r'
+        {
+            let full = Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16);
+            let reduced = Rect::new(0, 0, full.right * 3 / 4, full.bottom * 3 / 4);
+            self.display_changed(if self.screen == full { reduced } else { full });
+            return;
         }
         let report_scope = !self.system_report_selected()
                            || crate::context::recovery_activity().is_some_and(|activity| {
@@ -2618,7 +2557,7 @@ impl Desktop
                 self.events.mouse = point;
                 if self.menus.is_tracking()
                 {
-                    self.redraw |=
+                    self.presentation.redraw |=
                         self.menus.hover(point, &mut self.system_bar, &mut self.app_menu);
                     return;
                 }
@@ -2643,7 +2582,7 @@ impl Desktop
                 {
                     if self.menus.begin(point, &self.system_bar, &self.app_menu)
                     {
-                        self.redraw = true;
+                        self.presentation.redraw = true;
                         return;
                     }
                     if (0..20).contains(&point.v)
@@ -2665,13 +2604,13 @@ impl Desktop
                     if let Some(id) = hit.window
                     {
                         let active = active_before == Some(id);
-                        self.redraw |= hit.part != WindowPart::Drag
-                                       && (!active
-                                           || matches!(hit.part,
-                                                       WindowPart::Grow
-                                                       | WindowPart::GoAway
-                                                       | WindowPart::ZoomIn
-                                                       | WindowPart::ZoomOut));
+                        self.presentation.redraw |= hit.part != WindowPart::Drag
+                                                    && (!active
+                                                        || matches!(hit.part,
+                                                                    WindowPart::Grow
+                                                                    | WindowPart::GoAway
+                                                                    | WindowPart::ZoomIn
+                                                                    | WindowPart::ZoomOut));
                         // DragWindow activates a background window only after a
                         // successful release; Command-drag preserves its plane.
                         if hit.part != WindowPart::Drag
@@ -2688,10 +2627,29 @@ impl Desktop
                             self.windows
                                 .start_tracking_with_modifiers(hit, point, self.events.modifiers);
                         }
-                        else if hit.part == WindowPart::Content && active
+                        else if hit.part == WindowPart::Content
+                                  && (active
+                                      || self.windows.window(id).is_some_and(|w| w.stays_in_back()))
                         {
                             let local = self.windows.window(id).unwrap().global_to_local(point);
-                            let button = self.content.iter().find(|c| c.id == id).and_then(|c| c.iter_commands().filter_map(|command| match command { RenderCommand::Legacy(c)=>Some(c),_=>None }).find(|command| command.kind == DRAW_BUTTON && command.bounds.contains(local)));
+                            let button = self.presentation
+                                             .content
+                                             .iter()
+                                             .find(|c| c.id == id)
+                                             .and_then(|c| {
+                                                 c.iter_commands()
+                                                  .filter_map(|command| {
+                                                      match command
+                                                      {
+                                                          RenderCommand::Legacy(c) => Some(c),
+                                                          _ => None
+                                                      }
+                                                  })
+                                                  .find(|command| {
+                                                      command.kind == DRAW_BUTTON
+                                                      && command.bounds.contains(local)
+                                                  })
+                                             });
                             if let Some(command) = button
                             {
                                 let mut state = control(command);
@@ -2749,7 +2707,7 @@ impl Desktop
                         }
                         else
                         {
-                            self.redraw = true;
+                            self.presentation.redraw = true;
                         }
                         return;
                     }
@@ -2758,7 +2716,7 @@ impl Desktop
                     {
                         self.action(action, when);
                     }
-                    self.redraw |= active_before != self.windows.active_window();
+                    self.presentation.redraw |= active_before != self.windows.active_window();
                     self.events.post_system(Event { payload: 0,
                                                     kind: EventKind::MouseUp,
                                                     message: 0,
@@ -2776,7 +2734,7 @@ impl Desktop
                 if down && character == 27 && self.menus.is_tracking()
                 {
                     self.menus.cancel_tracking();
-                    self.redraw = true;
+                    self.presentation.redraw = true;
                     return;
                 }
                 if down
@@ -2873,8 +2831,10 @@ impl Desktop
     pub(super) fn next_positioned(&mut self, mask: u16, remove: bool, positioned: bool)
                                   -> (Event, mac_abi::events::EventPosition, bool)
     {
-        self.cursor_dirty |= self.responsiveness.foreground(self.foreground, Self::when());
-        self.cursor_dirty |= self.responsiveness.polled(self.owner, Self::when());
+        self.presentation.cursor_dirty |=
+            self.pointer.responsiveness.foreground(self.foreground, Self::when());
+        self.presentation.cursor_dirty |=
+            self.pointer.responsiveness.polled(self.owner, Self::when());
         self.poll_inputs();
         self.automatic_control_layout();
         let when = Self::when();
@@ -2972,22 +2932,23 @@ impl Desktop
         crate::trace::record(crate::trace::PRESENT, self.owner, 0, 0, 0, 0);
         self.tick_menu_feedback();
         self.tick_cursor();
-        let available =
-            if self.redraw || !self.content_damage.is_empty() || self.ordinary_underlay.pending()
-            {
-                crate::kernel::heap_available()
-            }
-            else
-            {
-                0
-            };
-        let retry_ordinary = self.ordinary_underlay.retry_due(available);
-        if !self.redraw
-           && !self.cursor_dirty
-           && self.content_damage.is_empty()
-           && !self.feedback_dirty
-           && self.presentation_damage.is_empty()
-           && !self.presentation_copy_full
+        let available = if self.presentation.redraw
+                           || !self.presentation.content_damage.is_empty()
+                           || self.presentation.ordinary_underlay.pending()
+        {
+            crate::kernel::heap_available()
+        }
+        else
+        {
+            0
+        };
+        let retry_ordinary = self.presentation.ordinary_underlay.retry_due(available);
+        if !self.presentation.redraw
+           && !self.presentation.cursor_dirty
+           && self.presentation.content_damage.is_empty()
+           && !self.presentation.feedback_dirty
+           && self.presentation.presentation_damage.is_empty()
+           && !self.presentation.presentation_copy_full
            && !retry_ordinary
         {
             self.publish_observation();
@@ -2998,23 +2959,25 @@ impl Desktop
         {
             self.enter(self.foreground);
         }
-        let full = self.redraw;
-        let mut damaged = core::mem::take(&mut self.presentation_damage);
-        let mut copy_full = core::mem::take(&mut self.presentation_copy_full);
-        let compose = full || !self.content_damage.is_empty() || retry_ordinary;
+        let full = self.presentation.redraw;
+        let mut damaged = core::mem::take(&mut self.presentation.presentation_damage);
+        let mut copy_full = core::mem::take(&mut self.presentation.presentation_copy_full);
+        let compose = full || !self.presentation.content_damage.is_empty() || retry_ordinary;
         if compose
         {
             // Cursor/feedback-only presentation must leave the admitted damage
             // queue and its capacity in place. Every take below has a restore.
-            let mut damage = core::mem::take(&mut self.content_damage);
+            let mut damage = core::mem::take(&mut self.presentation.content_damage);
             let ordinary_damage = damage.iter().any(|(id, _)| !self.system_scene(*id));
             let started = crate::trace::clock();
             self.revision = self.revision.wrapping_add(1);
-            self.compositions = self.compositions.wrapping_add(1);
+            self.presentation.compositions = self.presentation.compositions.wrapping_add(1);
             let cache_budget = super::quickdraw::content_cache::PIXEL_BUDGET
                 .saturating_sub(self.scroll_boxes.raster_storage())
                 .saturating_sub(super::quickdraw::menu_cache::BYTES);
-            self.content_cache.preserve_headroom(available, 2 * 1024 * 1024, cache_budget);
+            self.presentation
+                .content_cache
+                .preserve_headroom(available, 2 * 1024 * 1024, cache_budget);
             if full || ordinary_damage || retry_ordinary
             {
                 // Refusal retains the exact owned ordinary regions. The
@@ -3022,7 +2985,7 @@ impl Desktop
                 let _ = self.update_ordinary_underlay(&mut damage, full, available, &mut damaged,
                                                       &mut copy_full);
             }
-            let rendered = if full || self.frame_incomplete
+            let rendered = if full || self.presentation.frame_incomplete
             {
                 self.paint_system_layer(&mut damaged, &mut copy_full)
             }
@@ -3032,8 +2995,8 @@ impl Desktop
             };
             if rendered.is_err()
             {
-                self.content_damage = damage;
-                self.frame_incomplete = true;
+                self.presentation.content_damage = damage;
+                self.presentation.frame_incomplete = true;
                 self.restore_presentation_damage(damaged, copy_full);
                 if self.processes.ledger(caller).is_ok_and(|owner| owner.accepting())
                 {
@@ -3043,33 +3006,35 @@ impl Desktop
             }
             // A metadata refusal may leave an exact ordinary entry active.
             damage.retain(|(id, _)| !self.system_scene(*id));
-            self.content_damage = damage;
+            self.presentation.content_damage = damage;
             if full || self.menus.is_tracking()
             {
                 let menu_paint = crate::context::without_recovery(|| {
                     let mut canvas = Canvas::new(platform::back_buffer(),
                                                  crate::display::WIDTH,
                                                  crate::display::HEIGHT);
-                    self.menu_cache.paint(&mut canvas,
-                                           (self.foreground,
-                                            self.menus.selected_menu(),
-                                            self.menus.application_selected(),
-                                            self.menus.system_selected()),
-                                           |canvas| {
-                                               self.menus.draw_bar(&mut self.system_bar,
-                                                                   &mut self.app_menu, canvas)
-                                           })?;
+                    self.presentation.menu_cache.paint(&mut canvas,
+                                                        (self.foreground,
+                                                         self.menus.selected_menu(),
+                                                         self.menus.application_selected(),
+                                                         self.menus.system_selected()),
+                                                        |canvas| {
+                                                            self.menus
+                                                                .draw_bar(&mut self.system_bar,
+                                                                          &mut self.app_menu,
+                                                                          canvas)
+                                                        })?;
                     self.menus.draw_popup(&mut self.system_bar, &mut self.app_menu, &mut canvas)
                 });
                 if let Err(error) = menu_paint
                 {
-                    if !self.frame_incomplete
+                    if !self.presentation.frame_incomplete
                     {
                         serial!("MENU_PAINT_FAILED menu={} status={}; incomplete frame deferred",
                                 error.menu, error.status);
                     }
-                    self.redraw = true;
-                    self.frame_incomplete = true;
+                    self.presentation.redraw = true;
+                    self.presentation.frame_incomplete = true;
                     self.restore_presentation_damage(damaged, copy_full);
                     if self.processes.ledger(caller).is_ok_and(|owner| owner.accepting())
                     {
@@ -3078,8 +3043,8 @@ impl Desktop
                     return;
                 }
             }
-            self.redraw = false;
-            self.frame_incomplete = false;
+            self.presentation.redraw = false;
+            self.presentation.frame_incomplete = false;
             crate::platform::with_tracking_mask(|scratch| {
                 let mut canvas = Canvas::new(platform::back_buffer(),
                                              crate::display::WIDTH,
@@ -3093,7 +3058,11 @@ impl Desktop
                                  0,
                                  self.revision as u64);
         }
-        if full || copy_full || self.cursor_dirty || self.feedback_dirty || !damaged.is_empty()
+        if full
+           || copy_full
+           || self.presentation.cursor_dirty
+           || self.presentation.feedback_dirty
+           || !damaged.is_empty()
         {
             self.compose_cursor(full, damaged, copy_full);
         }
@@ -3119,18 +3088,18 @@ impl Desktop
         }
         // A refused scene replay may have touched only the private back buffer.
         // Never leak those uncommitted pixels through a later cursor-only copy.
-        if self.frame_incomplete
-           || !self.cursor_dirty
-              && !self.feedback_dirty
-              && self.presentation_damage.is_empty()
-              && !self.presentation_copy_full
+        if self.presentation.frame_incomplete
+           || !self.presentation.cursor_dirty
+              && !self.presentation.feedback_dirty
+              && self.presentation.presentation_damage.is_empty()
+              && !self.presentation.presentation_copy_full
         {
             return;
         }
         let caller = self.owner;
         self.enter(self.foreground);
-        let damage = core::mem::take(&mut self.presentation_damage);
-        let copy_full = core::mem::take(&mut self.presentation_copy_full);
+        let damage = core::mem::take(&mut self.presentation.presentation_damage);
+        let copy_full = core::mem::take(&mut self.presentation.presentation_copy_full);
         self.compose_cursor(false, damage, copy_full);
         self.publish_observation();
         self.enter(caller);
@@ -3138,17 +3107,17 @@ impl Desktop
 
     fn restore_presentation_damage(&mut self, mut damaged: Vec<Rect>, copy_full: bool)
     {
-        self.presentation_copy_full |= copy_full;
-        if self.presentation_damage.is_empty()
+        self.presentation.presentation_copy_full |= copy_full;
+        if self.presentation.presentation_damage.is_empty()
         {
-            core::mem::swap(&mut self.presentation_damage, &mut damaged);
+            core::mem::swap(&mut self.presentation.presentation_damage, &mut damaged);
         }
         else
         {
             for rect in damaged
             {
-                accumulate_presentation_damage(&mut self.presentation_damage,
-                                               &mut self.presentation_copy_full, rect);
+                accumulate_presentation_damage(&mut self.presentation.presentation_damage,
+                                               &mut self.presentation.presentation_copy_full, rect);
             }
         }
     }
@@ -3159,14 +3128,14 @@ impl Desktop
                                presentation::Outline};
         // A pending geometry change has not reached the retained scene yet.
         // Keep its old visibility snapshot until composition commits it.
-        if !full && self.redraw
+        if !full && self.presentation.redraw
         {
-            return self.feedback.clone();
+            return self.presentation.feedback.clone();
         }
         if full
         {
-            self.outline_clip.invalidate();
-            self.highlight_clip.invalidate();
+            self.presentation.outline_clip.invalidate();
+            self.presentation.highlight_clip.invalidate();
         }
         if let Some(shape) = self.windows.drag_outline()
         {
@@ -3181,7 +3150,8 @@ impl Desktop
         {
             let target = (window != 0).then_some(WindowId(window));
             feedback.highlight = Some(Highlight { bounds,
-                                                  clip: self.highlight_clip
+                                                  clip: self.presentation
+                                                            .highlight_clip
                                                             .get(&self.windows, target) });
         }
         if let Some(bounds) = self.drag.feedback()
@@ -3200,22 +3170,11 @@ impl Desktop
                 let shape = Outline::new(&[bounds],
                                          i32::from(window.bounds.left),
                                          i32::from(window.bounds.top));
-                let clip = self.outline_clip.get(&self.windows, Some(window.id));
+                let clip = self.presentation.outline_clip.get(&self.windows, Some(window.id));
                 feedback.outline = shape.map(|shape| {
                                             ClippedOutline { shape,
                                                              clip }
                                         });
-            }
-        }
-        else if self.foreground == crate::context::finder_app().0
-        {
-            if let Some(bounds) = self.desktop.outline()
-            {
-                let clip = self.outline_clip.get(&self.windows, None);
-                feedback.outline = Outline::new(&[bounds], 0, 0).map(|shape| {
-                                                                    ClippedOutline { shape,
-                                                                                     clip }
-                                                                });
             }
         }
         feedback
@@ -3224,28 +3183,43 @@ impl Desktop
     fn compose_cursor(&mut self, full: bool, mut damaged: Vec<Rect>, copy_full: bool)
     {
         let feedback = self.prepare_feedback(full);
-        let automatic =
-            if self.responsiveness.active() { None } else { self.automatic_cursor_at_mouse() };
-        let cursor_changed = self.cursor_dirty || self.automatic_cursor != automatic;
-        self.automatic_cursor = automatic;
+        let automatic = if self.pointer.responsiveness.active()
+        {
+            None
+        }
+        else
+        {
+            self.automatic_cursor_at_mouse()
+        };
+        let cursor_changed =
+            self.presentation.cursor_dirty || self.pointer.automatic_cursor != automatic;
+        self.pointer.automatic_cursor = automatic;
         let text_cursor = automatic.map(|id| {
                                        match id
                                        {
-                                           17 => self.resize_cursors[0],
-                                           21 => self.resize_cursors[1],
-                                           _ => self.text_cursor
+                                           17 => self.pointer.resize_cursors[0],
+                                           21 => self.pointer.resize_cursors[1],
+                                           _ => self.pointer.text_cursor
                                        }
                                    });
-        let cursor =
-            if self.responsiveness.active() { &mut self.busy_cursor } else { &mut self.cursors };
-        let text_cursor = if self.responsiveness.active() { None } else { text_cursor };
+        let cursor = if self.pointer.responsiveness.active()
+        {
+            &mut self.pointer.busy_cursor
+        }
+        else
+        {
+            &mut self.pointer.cursors
+        };
+        let text_cursor = if self.pointer.responsiveness.active() { None } else { text_cursor };
         let sprite = cursor.sprite(self.events.mouse, text_cursor);
         let bounds = sprite.map_or(Rect::ZERO, |sprite| sprite.bounds());
         let overlays =
-            super::quickdraw::presentation::Overlays { previous_cursor: self.cursor_bounds,
+            super::quickdraw::presentation::Overlays { previous_cursor: self.presentation
+                                                                            .cursor_bounds,
                                                        cursor: sprite,
                                                        cursor_changed,
-                                                       previous_feedback: Some(&self.feedback),
+                                                       previous_feedback:
+                                                           Some(&self.presentation.feedback),
                                                        feedback: Some(&feedback) };
         let back = platform::back_buffer();
         if full || copy_full
@@ -3262,22 +3236,22 @@ impl Desktop
             platform::present_rects(back, damaged.iter().copied(), overlays);
         }
         self.acknowledge_menu_feedback();
-        self.feedback = feedback;
-        self.feedback_dirty = !full && self.redraw;
-        if self.presentation_damage.is_empty()
-           && self.presentation_damage.capacity() < damaged.capacity()
+        self.presentation.feedback = feedback;
+        self.presentation.feedback_dirty = !full && self.presentation.redraw;
+        if self.presentation.presentation_damage.is_empty()
+           && self.presentation.presentation_damage.capacity() < damaged.capacity()
         {
             damaged.clear();
-            self.presentation_damage = damaged;
+            self.presentation.presentation_damage = damaged;
         }
-        self.cursor_bounds = bounds;
-        self.cursor_dirty = false;
-        self.presentations = self.presentations.wrapping_add(1);
+        self.presentation.cursor_bounds = bounds;
+        self.presentation.cursor_dirty = false;
+        self.presentation.presentations = self.presentation.presentations.wrapping_add(1);
     }
 
     fn publish_observation(&mut self)
     {
-        if self.last_observed == (self.activity, self.revision, self.presentations)
+        if self.last_observed == (self.activity, self.revision, self.presentation.presentations)
         {
             return;
         }
@@ -3301,10 +3275,10 @@ impl Desktop
                                              u64::from(self.events.dropped),
                                              u64::from_le_bytes(action[..8].try_into().unwrap()),
                                              u64::from_le_bytes(action[8..].try_into().unwrap()),
-                                             self.menu_cache.paints,
-                                             self.presentations,
-                                             self.compositions]);
-        self.last_observed = (self.activity, self.revision, self.presentations);
+                                             self.presentation.menu_cache.paints,
+                                             self.presentation.presentations,
+                                             self.presentation.compositions]);
+        self.last_observed = (self.activity, self.revision, self.presentation.presentations);
     }
 }
 
@@ -3354,7 +3328,7 @@ fn background(canvas: &mut Canvas)
     }
 }
 
-impl super::classic::Services for Desktop
+impl super::classic::Services for Toolbox
 {
     fn drag(&mut self, call: &mut mac_abi::drag::Call, input: &[u8], output: &mut [u8])
             -> Result<(), Status>
@@ -3416,7 +3390,7 @@ impl super::classic::Services for Desktop
 
     fn cursor(&mut self, call: &mut mac_abi::quickdraw::CursorCall) -> Result<(), Status>
     {
-        Desktop::cursor(self, call, &[])
+        Toolbox::cursor(self, call, &[])
     }
 
     fn ticks(&self) -> u32
@@ -3425,7 +3399,7 @@ impl super::classic::Services for Desktop
     }
 }
 
-impl super::quickdraw::worlds::WorldHost for Desktop
+impl super::quickdraw::worlds::WorldHost for Toolbox
 {
     fn offscreen_worlds(&mut self) -> &mut super::quickdraw::worlds::Worlds
     {
@@ -3433,7 +3407,7 @@ impl super::quickdraw::worlds::WorldHost for Desktop
     }
 }
 
-impl super::windows::lifetime::WindowHost for Desktop
+impl super::windows::lifetime::WindowHost for Toolbox
 {
     fn release_window(&mut self, ticket: mac_object_table::domain::ReleasedResource)
                       -> Result<(), super::handles::cleanup::Failure>
@@ -3462,12 +3436,12 @@ impl super::windows::lifetime::WindowHost for Desktop
             }
             self.scroll_boxes.remove_window(id.0);
             self.controls.remove_window(id.0);
-            self.content.retain(|content| content.id != id);
-            self.content_damage.retain(|(target, _)| *target != id);
-            self.ordinary_underlay.forget(SceneTarget::from(id));
-            self.pending_content.retain(|content| content.id != id);
+            self.presentation.content.retain(|content| content.id != id);
+            self.presentation.content_damage.retain(|(target, _)| *target != id);
+            self.presentation.ordinary_underlay.forget(SceneTarget::from(id));
+            self.presentation.pending_content.retain(|content| content.id != id);
             self.forget_cursor_window(id);
-            self.redraw = true;
+            self.presentation.redraw = true;
         }
         result.map(|_| ())
     }

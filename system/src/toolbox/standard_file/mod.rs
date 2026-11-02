@@ -39,7 +39,7 @@ pub enum Action
     Select(usize),
     Open(usize),
     Parent,
-    Desktop,
+    Toolbox,
     Volume(i32),
     Previous(i32),
     Page(i32),
@@ -1254,7 +1254,7 @@ impl Manager
                                      (entry.volume, entry.parent)
                                  });
             }
-            Action::Desktop => return d.restart((0, 0)),
+            Action::Toolbox => return d.restart((0, 0)),
             Action::Volume(delta) =>
             {
                 d.stage = Some(Stage::VolumeCount(delta));

@@ -15,7 +15,7 @@ pub(crate) mod startup;
 pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
 {
     let caller = crate::context::current_thread_context().identity().app.0;
-    crate::kernel::with_desktop(|desktop| {
+    crate::kernel::with_toolbox(|toolbox| {
         if matches!(call.operation,
                     mac_abi::inspection::KIND_BEGIN
                     | mac_abi::inspection::KIND
@@ -23,13 +23,13 @@ pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
         {
             crate::toolbox::handles::registry(|registry| {
                 crate::toolbox::inspection::registered_kinds(registry,
-                                                             desktop.processes.get(caller).is_ok(),
+                                                             toolbox.processes.get(caller).is_ok(),
                                                              call)
             }).unwrap_or_else(|error| error.status())
         }
         else
         {
-            desktop.processes.inspect(caller, call)
+            toolbox.processes.inspect(caller, call)
         }
     }).unwrap_or_else(|error| error.status())
 }
@@ -37,8 +37,8 @@ pub(crate) fn memory_inspection_request(call: &mut mac_abi::inspection::memory::
 {
     use crate::toolbox::inspection::Subject;
     let caller = crate::context::current_thread_context().identity().app.0;
-    crate::kernel::with_desktop(|desktop| {
-        let authority = desktop.processes.entries.get(caller).map(|e| e.value().authority());
+    crate::kernel::with_toolbox(|toolbox| {
+        let authority = toolbox.processes.entries.get(caller).map(|e| e.value().authority());
         crate::toolbox::inspection::memory::request(authority,
                                                     &crate::machine::paging::inspection::Native,
                                                     call)
@@ -48,8 +48,8 @@ pub(crate) fn memory_inspection_request(call: &mut mac_abi::inspection::memory::
 pub(crate) fn cpu_inspection_request(call: &mut mac_abi::inspection::cpus::Call) -> Status
 {
     let caller = crate::context::current_thread_context().identity().app.0;
-    crate::kernel::with_desktop(|desktop| {
-        crate::toolbox::inspection::cpus::request(desktop.processes
+    crate::kernel::with_toolbox(|toolbox| {
+        crate::toolbox::inspection::cpus::request(toolbox.processes
                                                          .entries
                                                          .get(caller)
                                                          .is_some_and(|entry| {
@@ -828,7 +828,7 @@ fn finder_desktop_ready() -> Result<(), Status>
     use mac_object_table::shared::InvocationGate as _;
 
     let released = crate::context::with_application_executor(|executor| {
-                       crate::kernel::with_desktop(|desktop| {
+                       crate::kernel::with_toolbox(|toolbox| {
                            crate::toolbox::handles::InvocationGate::run(|| {
                                let owner = executor.owner().owner();
                                let id = owner.incarnation();
@@ -836,7 +836,7 @@ fn finder_desktop_ready() -> Result<(), Status>
                                {
                                    return Err(ACCESS_DENIED);
                                }
-                               let entry = desktop.processes.entries.get(id).ok_or(NOT_FOUND)?;
+                               let entry = toolbox.processes.entries.get(id).ok_or(NOT_FOUND)?;
                                let process = entry.value();
                                if entry.ledger().owner() != owner
                                   || process.info.id != id
@@ -890,7 +890,7 @@ pub(crate) fn request(call: &mut ProcessCall) -> Status
                 finder_desktop_ready()?;
                 return Ok(OK);
             }
-            return crate::kernel::with_desktop(|d| d.process(call)).map_err(|e| e.status());
+            return crate::kernel::with_toolbox(|d| d.process(call)).map_err(|e| e.status());
         }
         crate::context::without_recovery(|| {
             if launch::pending()
@@ -903,7 +903,7 @@ pub(crate) fn request(call: &mut ProcessCall) -> Status
             crate::machine::scheduler::reclaim_retired();
             retirement::pump();
             if !crate::toolbox::files::application::pending()
-           && crate::kernel::with_desktop(|d| d.activate_existing_application(call))
+           && crate::kernel::with_toolbox(|d| d.activate_existing_application(call))
                 .map_err(|e| e.status())??
         {
             return Ok(OK);
@@ -1028,8 +1028,8 @@ fn prepare_launch(call: &mut ProcessCall, loaded: crate::toolbox::files::applica
 {
     call.requirement_class = [0; 4];
     call.requirement_version = 0;
-    let admission = crate::kernel::with_desktop(|desktop| {
-                        desktop.reserve_application(call, loaded.catalog)
+    let admission = crate::kernel::with_toolbox(|toolbox| {
+                        toolbox.reserve_application(call, loaded.catalog)
                     }).map_err(|error| error.status())??;
     let Some(mut admission) = admission
     else
@@ -1127,10 +1127,10 @@ fn finish_launch(call: &mut ProcessCall, prepared: &mut launch::Prepared) -> Res
                                                                           prepared.admission.id());
                                                                   cause.status()
                                                               })?;
-    crate::kernel::with_desktop(|desktop| {
-        desktop.processes.bind_heap(prepared.admission.owner(), prepared.heap.clone())?;
-        desktop.processes.bind_tls(prepared.admission.owner(), prepared.tls.clone())?;
-        desktop.finish_application_launch(call, catalog, image, space, &mut prepared.admission)
+    crate::kernel::with_toolbox(|toolbox| {
+        toolbox.processes.bind_heap(prepared.admission.owner(), prepared.heap.clone())?;
+        toolbox.processes.bind_tls(prepared.admission.owner(), prepared.tls.clone())?;
+        toolbox.finish_application_launch(call, catalog, image, space, &mut prepared.admission)
     }).map_err(|error| error.status())?
 }
 

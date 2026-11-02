@@ -16,7 +16,7 @@ use crate::{context::ThreadId, machine::scheduler::accounting::AllocationAuthori
 pub(crate) enum ReceiverTarget
 {
     Window(WindowId),
-    Desktop
+    Toolbox
 }
 impl ReceiverTarget
 {
@@ -25,7 +25,7 @@ impl ReceiverTarget
         match self
         {
             Self::Window(id) if id.0 != 0 => Ok(id.0),
-            Self::Desktop => Ok(0),
+            Self::Toolbox => Ok(0),
             Self::Window(_) => Err(ReceiverError::InvalidTarget)
         }
     }
@@ -34,7 +34,7 @@ impl ReceiverTarget
 pub(crate) enum ReceiverError
 {
     InvalidTarget,
-    Desktop(crate::state::AccessError),
+    Toolbox(crate::state::AccessError),
     Binding(Status),
     Publication(PreparedError)
 }
@@ -45,7 +45,7 @@ impl ReceiverError
         match self
         {
             Self::InvalidTarget => BAD_ARGUMENT,
-            Self::Desktop(cause) => cause.status(),
+            Self::Toolbox(cause) => cause.status(),
             Self::Binding(status) => status,
             Self::Publication(cause) => super::prepared_receiver_status(cause)
         }
@@ -62,7 +62,7 @@ impl fmt::Display for ReceiverError
                 out.write_str("drag receiver requires a real nonzero WindowId or the explicit \
                                Finder desktop target")
             }
-            Self::Desktop(cause) => write!(out, "drag receiver Desktop access refused: {cause:?}"),
+            Self::Toolbox(cause) => write!(out, "drag receiver Desktop access refused: {cause:?}"),
             Self::Binding(status) =>
             {
                 write!(out,
@@ -280,7 +280,7 @@ impl Manager
             return Ok(None);
         }
         let window = target.window()?;
-        if matches!(target, ReceiverTarget::Desktop)
+        if matches!(target, ReceiverTarget::Toolbox)
            && value.owner.owner().incarnation() != crate::context::finder_app().0
         {
             return Err(ReceiverError::Binding(ACCESS_DENIED));

@@ -272,17 +272,17 @@ pub(crate) fn specification(storage: bool) -> Specification<'static>
 }
 pub(crate) struct ReleaseAlerts;
 pub(crate) struct ReleaseStorage;
-impl Release<crate::toolbox::runtime::Desktop, Failure> for ReleaseAlerts
+impl Release<crate::toolbox::runtime::Toolbox, Failure> for ReleaseAlerts
 {
-    fn release(&self, context: &mut crate::toolbox::runtime::Desktop, ticket: ReleasedResource)
+    fn release(&self, context: &mut crate::toolbox::runtime::Toolbox, ticket: ReleasedResource)
                -> Result<(), Failure>
     {
         context.release_alert(ticket)
     }
 }
-impl Release<crate::toolbox::runtime::Desktop, Failure> for ReleaseStorage
+impl Release<crate::toolbox::runtime::Toolbox, Failure> for ReleaseStorage
 {
-    fn release(&self, context: &mut crate::toolbox::runtime::Desktop, ticket: ReleasedResource)
+    fn release(&self, context: &mut crate::toolbox::runtime::Toolbox, ticket: ReleasedResource)
                -> Result<(), Failure>
     {
         context.release_alert_storage(ticket).map_err(Into::into)

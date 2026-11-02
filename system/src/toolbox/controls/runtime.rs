@@ -13,7 +13,7 @@ use crate::toolbox::controls::objects::{ControlCommit, ControlPlan, CreationErro
 #[derive(Debug)]
 enum ControlAdmissionError
 {
-    Desktop(crate::state::AccessError),
+    Toolbox(crate::state::AccessError),
     Service
     {
         stage:  &'static str,
@@ -28,7 +28,7 @@ impl ControlAdmissionError
     {
         match self
         {
-            Self::Desktop(cause) => cause.status(),
+            Self::Toolbox(cause) => cause.status(),
             Self::Service { status,
                             .. } => status,
             Self::Control(cause) => cause.status(),
@@ -42,7 +42,7 @@ impl fmt::Display for ControlAdmissionError
     {
         match self
         {
-            Self::Desktop(cause) => write!(out, "control Desktop access refused: {cause:?}"),
+            Self::Toolbox(cause) => write!(out, "control Desktop access refused: {cause:?}"),
             Self::Service { stage,
                             status } => write!(out, "control {stage} refused with status {status}"),
             Self::Control(cause) => cause.fmt(out),
@@ -50,10 +50,10 @@ impl fmt::Display for ControlAdmissionError
         }
     }
 }
-fn desktop<T>(run: impl FnOnce(&mut Desktop) -> Result<T, ControlAdmissionError>)
+fn toolbox<T>(run: impl FnOnce(&mut Toolbox) -> Result<T, ControlAdmissionError>)
               -> Result<T, ControlAdmissionError>
 {
-    crate::kernel::with_desktop(run).map_err(ControlAdmissionError::Desktop)?
+    crate::kernel::with_toolbox(run).map_err(ControlAdmissionError::Toolbox)?
 }
 fn service(stage: &'static str, status: Status) -> ControlAdmissionError
 {
@@ -66,7 +66,7 @@ enum Turn
     Internal,
     Process(ControlPlan)
 }
-impl Desktop
+impl Toolbox
 {
     fn control_parent(&self, call: &ControlCall) -> Result<(), Status>
     {
@@ -103,7 +103,7 @@ impl Desktop
         let (definition, _) = self.controls
                                   .preflight_definition(&recipient, &storage, call)
                                   .map_err(|status| service("definition intent", status))?;
-        let entry = crate::toolbox::runtime::Desktop::control_definition(definition)
+        let entry = crate::toolbox::runtime::Toolbox::control_definition(definition)
                         .map_err(|status| service("prepared definition", status))?;
         let allocation =
             self.processes
@@ -160,7 +160,7 @@ fn create_native(call: &mut ControlCall) -> Result<Status, ControlAdmissionError
     let mut cold = false;
     let plan = loop
     {
-        match desktop(|runtime| runtime.plan_native_control(call))?
+        match toolbox(|runtime| runtime.plan_native_control(call))?
         {
             Turn::Cold(id) if !cold =>
             {
@@ -172,14 +172,14 @@ fn create_native(call: &mut ControlCall) -> Result<Status, ControlAdmissionError
             {
                 return Err(service("definition source changed during preparation", SERVICE_BUSY));
             }
-            Turn::Internal => return desktop(|runtime| Ok(runtime.control(call))),
+            Turn::Internal => return toolbox(|runtime| Ok(runtime.control(call))),
             Turn::Process(plan) => break plan
         }
     };
     let mut input = Some(plan.prepare().map_err(ControlAdmissionError::Control)?);
     let mut prepared = loop
     {
-        let admission = desktop(|runtime| {
+        let admission = toolbox(|runtime| {
             let value =
                 input.as_ref().ok_or_else(|| service("unpublished preparation", BAD_ABI))?;
             runtime.validate_native_control_owner(call, value.recipient(), value.storage())?;
@@ -198,7 +198,7 @@ fn create_native(call: &mut ControlCall) -> Result<Status, ControlAdmissionError
             {
                 // Do not invoke foreign VALIDATE again, nor discard its title
                 // or definition when only the metadata snapshot is stale.
-                let plan = desktop(|runtime| {
+                let plan = toolbox(|runtime| {
                     let value =
                         input.as_ref().ok_or_else(|| service("retained preparation", BAD_ABI))?;
                     runtime.validate_native_control_owner(call,
@@ -222,7 +222,7 @@ fn create_native(call: &mut ControlCall) -> Result<Status, ControlAdmissionError
         input.dispose();
     }
     let mut retired = None;
-    let result = desktop(|runtime| {
+    let result = toolbox(|runtime| {
         let value = prepared.as_ref().ok_or_else(|| service("canonical permit", BAD_ABI))?;
         runtime.validate_native_control_owner(call, value.recipient(), value.storage())?;
         if !value.matches_request(call)
@@ -233,7 +233,7 @@ fn create_native(call: &mut ControlCall) -> Result<Status, ControlAdmissionError
             runtime.controls
                    .preflight_definition(value.recipient(), value.storage(), call)
                    .map_err(|status| service("current definition intent", status))?;
-        let entry = crate::toolbox::runtime::Desktop::control_definition(definition)
+        let entry = crate::toolbox::runtime::Toolbox::control_definition(definition)
                            .map_err(|status| service("current definition source", status))?;
         let complete = runtime.controls
                               .commit_process_create(&mut prepared, call, entry)

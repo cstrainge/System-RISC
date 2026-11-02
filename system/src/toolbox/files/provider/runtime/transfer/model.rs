@@ -10,7 +10,7 @@ pub(super) enum Mode
     Copy,
     Move,
     Trash,
-    Desktop,
+    Toolbox,
     DeleteTrash,
     CountTrash
 }
@@ -371,7 +371,7 @@ impl State
                       TRANSFER_COPY => Mode::Copy,
                       TRANSFER_MOVE => Mode::Move,
                       TRANSFER_TRASH => Mode::Trash,
-                      TRANSFER_DESKTOP => Mode::Desktop,
+                      TRANSFER_DESKTOP => Mode::Toolbox,
                       _ => return Err(BAD_ARGUMENT)
                   },
                   when: call.when,

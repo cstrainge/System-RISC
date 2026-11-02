@@ -476,8 +476,8 @@ pub(super) fn pump()
         }
         if let Ok((Some(owner), _)) = restored
         {
-            let delivered = crate::kernel::with_desktop(|desktop| {
-                                desktop.notify_file_transfer(owner, handle)
+            let delivered = crate::kernel::with_toolbox(|toolbox| {
+                                toolbox.notify_file_transfer(owner, handle)
                             }).map_err(crate::state::AccessError::status)
                               .and_then(|r| r);
             if let Err(error) = delivered

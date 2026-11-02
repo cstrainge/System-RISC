@@ -425,13 +425,13 @@ impl Drop for Running
     }
 }
 
-fn desktop<R>(binding: &ResourceBinding,
-              call: impl FnOnce(&mut crate::toolbox::runtime::Desktop) -> Result<R, Status>)
+fn toolbox<R>(binding: &ResourceBinding,
+              call: impl FnOnce(&mut crate::toolbox::runtime::Toolbox) -> Result<R, Status>)
               -> Result<R, Status>
 {
-    crate::kernel::with_desktop(|desktop| {
-        desktop.enter(binding.owner());
-        crate::kernel::with_process_resources(binding, || call(desktop))?
+    crate::kernel::with_toolbox(|toolbox| {
+        toolbox.enter(binding.owner());
+        crate::kernel::with_process_resources(binding, || call(toolbox))?
     }).map_err(|error| error.status())?
 }
 
@@ -449,17 +449,17 @@ fn report_access_status(cause: crate::state::AccessError) -> Status
 }
 
 fn report_ui<R>(admission: &FinderAdmission,
-                call: impl FnOnce(&mut crate::toolbox::runtime::Desktop) -> Result<R, Status>)
+                call: impl FnOnce(&mut crate::toolbox::runtime::Toolbox) -> Result<R, Status>)
                 -> Result<R, Status>
 {
     let report = admission.system_report().ok_or(BAD_ABI)?;
-    crate::kernel::with_desktop(|desktop| desktop.with_system_report(report, call))
+    crate::kernel::with_toolbox(|toolbox| toolbox.with_system_report(report, call))
         .map_err(report_access_status)??
 }
 
 fn handoff_report(admission: &mut FinderAdmission) -> Result<(), Status>
 {
-    crate::kernel::with_desktop(|desktop| admission.handoff_system_report(desktop))
+    crate::kernel::with_toolbox(|toolbox| admission.handoff_system_report(toolbox))
         .map_err(report_access_status)?
 }
 
@@ -468,13 +468,13 @@ fn handoff_report(admission: &mut FinderAdmission) -> Result<(), Status>
 /// refusal or absent ID is accepted as proof of closing.
 fn handoff_closing_report(admission: &mut FinderAdmission) -> Result<bool, Status>
 {
-    crate::kernel::with_desktop(|desktop| {
+    crate::kernel::with_toolbox(|toolbox| {
         let report = admission.system_report().ok_or(BAD_ABI)?;
-        if !desktop.system_report_closing(report)?
+        if !toolbox.system_report_closing(report)?
         {
             return Ok(false);
         }
-        admission.handoff_system_report(desktop)?;
+        admission.handoff_system_report(toolbox)?;
         Ok(true)
     }).map_err(report_access_status)?
 }
@@ -484,8 +484,8 @@ fn notify_image_failure(admission: &FinderAdmission, failure: &ImageFailure, ter
                         -> Result<(), Status>
 {
     let detail = crate::toolbox::crashes::FailureDetail::prepare(failure)?;
-    report_ui(admission, |desktop| {
-        desktop.finder_image_failure(failure.status(), terminal, detail, power_failure)
+    report_ui(admission, |toolbox| {
+        toolbox.finder_image_failure(failure.status(), terminal, detail, power_failure)
     })
 }
 
@@ -514,7 +514,7 @@ fn cancel_with_report(admission: &mut FinderAdmission, status: Status) -> bool
 
 fn refresh_started_report(admission: &FinderAdmission) -> Result<(), Status>
 {
-    crate::kernel::with_desktop(|desktop| desktop.finish_finder_start_ui(admission))
+    crate::kernel::with_toolbox(|toolbox| toolbox.finish_finder_start_ui(admission))
         .map_err(report_access_status)?
 }
 
@@ -572,7 +572,7 @@ fn reserve_finder(binding: &ResourceBinding, permit: &crate::allocator::recovery
                   prepared: &mut Option<FinderPreparation>)
                   -> Result<FinderAdmission, Status>
 {
-    let plan = desktop(binding, |desktop| desktop.plan_finder_capacity().map_err(capacity_status))?;
+    let plan = toolbox(binding, |toolbox| toolbox.plan_finder_capacity().map_err(capacity_status))?;
     // The real recovery allocation scope remains active, but no Desktop,
     // directory or owner lock crosses these fresh shared-buffer allocations.
     if prepared.is_none()
@@ -580,8 +580,8 @@ fn reserve_finder(binding: &ResourceBinding, permit: &crate::allocator::recovery
         *prepared = Some(plan.prepare_recipient()?);
     }
     let mut capacity = plan.prepare().map_err(capacity_status)?;
-    let result = desktop(binding, |desktop| {
-        desktop.reserve_finder(binding.owner(), permit.clone(), &mut capacity, prepared)
+    let result = toolbox(binding, |toolbox| {
+        toolbox.reserve_finder(binding.owner(), permit.clone(), &mut capacity, prepared)
     });
     // Successful installation leaves obsolete empty arrays here. On refusal
     // these are still the original prepared arrays. Neither drops under Desktop.
@@ -739,8 +739,8 @@ fn step_inner(work: Work) -> Option<Work>
                     }
                 }
             };
-            match desktop(&old, |desktop| {
-                      desktop.processes.bind_heap(admission.owner(), heap.clone())
+            match toolbox(&old, |toolbox| {
+                      toolbox.processes.bind_heap(admission.owner(), heap.clone())
                   })
             {
                 Ok(()) =>
@@ -801,8 +801,8 @@ fn step_inner(work: Work) -> Option<Work>
                     }
                 }
             };
-            match desktop(&old, |desktop| {
-                      desktop.processes.bind_tls(admission.owner(), tls.clone())
+            match toolbox(&old, |toolbox| {
+                      toolbox.processes.bind_tls(admission.owner(), tls.clone())
                   })
             {
                 Ok(()) =>
@@ -829,7 +829,7 @@ fn step_inner(work: Work) -> Option<Work>
                       admission } =>
         {
             let selected = (|| {
-                let tls = desktop(&old, |desktop| desktop.processes.tls(admission.id()))?;
+                let tls = toolbox(&old, |toolbox| toolbox.processes.tls(admission.id()))?;
                 let provider = crate::kernel::select_application_services(admission.owner(),
                                                                           admission.allocation(),
                                                                           &tls,
@@ -936,7 +936,7 @@ fn step_inner(work: Work) -> Option<Work>
                                          cancellation={cause}; owned job/runtime retained",
                                         admission.id());
                                 let _notification =
-                                    desktop(&old, |desktop| desktop.finder_restart_failed(cause));
+                                    toolbox(&old, |toolbox| toolbox.finder_restart_failed(cause));
                             }
                         }
                     }
@@ -947,7 +947,7 @@ fn step_inner(work: Work) -> Option<Work>
                                  delivery={status}; owned job/runtime retained",
                                 admission.id());
                         let _notification =
-                            desktop(&old, |desktop| desktop.finder_restart_failed(status));
+                            toolbox(&old, |toolbox| toolbox.finder_restart_failed(status));
                     }
                 }
             }
@@ -1061,9 +1061,9 @@ fn step_inner(work: Work) -> Option<Work>
                         admission,
                         pending } =>
         {
-            match desktop(&old, |desktop| {
-                      desktop.bind_finder_image(&admission, pending.binding())?;
-                      desktop.processes.resource_binding(admission.id())
+            match toolbox(&old, |toolbox| {
+                      toolbox.bind_finder_image(&admission, pending.binding())?;
+                      toolbox.processes.resource_binding(admission.id())
                   })
             {
                 Ok(next) =>
@@ -1097,8 +1097,8 @@ fn step_inner(work: Work) -> Option<Work>
             // changing the Finder role or stopping any original owner.
             if admission.system_report().is_none()
             {
-                let adoption = desktop(&old, |desktop| {
-                    desktop.adopt_finder_system_report(&old, &mut admission)
+                let adoption = toolbox(&old, |toolbox| {
+                    toolbox.adopt_finder_system_report(&old, &mut admission)
                 });
                 if let Err(status) = adoption
                 {
@@ -1128,7 +1128,7 @@ fn step_inner(work: Work) -> Option<Work>
                                 });
                 }
             }
-            match desktop(&old, |desktop| desktop.commit_finder_role(&admission))
+            match toolbox(&old, |toolbox| toolbox.commit_finder_role(&admission))
             {
                 Ok(()) =>
                 {
@@ -1170,7 +1170,7 @@ fn step_inner(work: Work) -> Option<Work>
             // wake after inspecting a still-present old directory entry.
             WAITING_FOR_OLD.store(true, Ordering::Release);
             let removed =
-                crate::kernel::with_desktop(|desktop| desktop.processes.retired_binding(&old));
+                crate::kernel::with_toolbox(|toolbox| toolbox.processes.retired_binding(&old));
             match removed
             {
                 Ok(Ok(true)) =>
@@ -1351,10 +1351,10 @@ fn step_inner(work: Work) -> Option<Work>
                 }
             };
             WAITING_FOR_STACK.store(false, Ordering::Release);
-            let (charges, heap, tls) = match desktop(&next, |desktop| {
-                      Ok((desktop.processes.thread_charges(admission.id())?,
-                          desktop.processes.heap(admission.id())?,
-                          desktop.processes.tls(admission.id())?))
+            let (charges, heap, tls) = match toolbox(&next, |toolbox| {
+                      Ok((toolbox.processes.thread_charges(admission.id())?,
+                          toolbox.processes.heap(admission.id())?,
+                          toolbox.processes.tls(admission.id())?))
                   })
             {
                 Ok(admission) => admission,
@@ -1458,11 +1458,11 @@ fn step_inner(work: Work) -> Option<Work>
         {
             // The inner result belongs only to post-commit presentation. It
             // cannot turn a runnable thread back into failed preparation.
-            match desktop(&next, |desktop| {
-                      desktop.prepare_finder_start(&admission, thread)?;
-                      desktop.commit_finder_start(&mut admission, thread)?;
+            match toolbox(&next, |toolbox| {
+                      toolbox.prepare_finder_start(&admission, thread)?;
+                      toolbox.commit_finder_start(&mut admission, thread)?;
                       UI_PROGRESS.store(false, Ordering::Release);
-                      Ok(desktop.finish_finder_start_ui(&admission))
+                      Ok(toolbox.finish_finder_start_ui(&admission))
                   })
             {
                 Ok(Ok(())) =>
@@ -1547,7 +1547,7 @@ fn step_inner(work: Work) -> Option<Work>
                         permit,
                         activity } =>
         {
-            match desktop(&target, |desktop| desktop.finder_restart_failed(status))
+            match toolbox(&target, |toolbox| toolbox.finder_restart_failed(status))
             {
                 Ok(()) => None,
                 Err(_) =>
@@ -1586,7 +1586,7 @@ fn step_inner(work: Work) -> Option<Work>
             if !attempted || UI_PROGRESS.swap(false, Ordering::AcqRel)
             {
                 let _notification =
-                    report_ui(&admission, |desktop| desktop.finder_restart_failed(status));
+                    report_ui(&admission, |toolbox| toolbox.finder_restart_failed(status));
                 attempted = true;
             }
             Some(Work::BackingPaused { next,
@@ -1625,8 +1625,8 @@ fn step_inner(work: Work) -> Option<Work>
             }
             if !attempted || UI_PROGRESS.swap(false, Ordering::AcqRel)
             {
-                let _notification = report_ui(&admission, |desktop| {
-                    desktop.finder_restart_terminal(status, power_failure)
+                let _notification = report_ui(&admission, |toolbox| {
+                    toolbox.finder_restart_terminal(status, power_failure)
                 });
                 attempted = true;
             }
@@ -1677,7 +1677,7 @@ fn step_inner(work: Work) -> Option<Work>
             if !attempted || UI_PROGRESS.swap(false, Ordering::AcqRel)
             {
                 let _notification =
-                    report_ui(&admission, |desktop| desktop.finder_restart_failed(status));
+                    report_ui(&admission, |toolbox| toolbox.finder_restart_failed(status));
                 attempted = true;
             }
             Some(Work::Paused { next,

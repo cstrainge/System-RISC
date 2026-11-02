@@ -2,8 +2,7 @@
 use crate::{Surface,
             geometry::{Point, Rect}};
 mod target;
-pub use target::{DrawingTarget, TARGET_DESKTOP, TARGET_WINDOW, TARGET_WORLD, Target, TargetError,
-                 WorldId};
+pub use target::{DrawingTarget, TARGET_WINDOW, TARGET_WORLD, Target, TargetError, WorldId};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,11 +73,9 @@ impl Default for PortState
     }
 }
 
-/// Atomically replace the retained desktop scene through the regular QuickDraw gate.
-pub const QD_DESKTOP_BEGIN: u32 = 32;
-pub const QD_DESKTOP_END: u32 = 33;
-pub const QD_DESKTOP_CANCEL: u32 = 34;
-pub const QD_DESKTOP_BOUNDS: u32 = 35;
+/// Classic `qd.screenBits.bounds`: the whole main screen in global coordinates,
+/// returned in `GraphicsCall::bounds`. Any application may ask.
+pub const QD_SCREEN_BOUNDS: u32 = 35;
 pub const QD_WINDOW_BEGIN_MASK: u32 = 36;
 pub const QD_WINDOW_COMMIT_MASK: u32 = 37;
 pub const QD_WINDOW_CANCEL_MASK: u32 = 38;

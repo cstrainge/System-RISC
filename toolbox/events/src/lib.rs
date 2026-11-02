@@ -6,7 +6,7 @@ use mac_abi::events::{EventCall, EventKind, INPUT_STATE, NATIVE_FLUSH, NATIVE_PE
 pub use mac_abi::{geometry::Point, events::KeyMap};
 mod decoded;
 mod positioned;
-pub use decoded::{Event, EventMask, EventSnapshot, Input, Key, Modifiers};
+pub use decoded::{DisplaySize, Event, EventMask, EventSnapshot, Input, Key, Modifiers};
 pub use positioned::{PointerPosition, PositionedEvent, PositionedSnapshot, ScreenPoint,
                      WindowPoint};
 /// Original EventRecord and low-level queue vocabulary.

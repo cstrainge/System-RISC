@@ -11,7 +11,7 @@ use crate::toolbox::quickdraw::{region::{BooleanOp, Region},
                                 retained::RenderCommand,
                                 service};
 
-impl super::Desktop
+impl super::Toolbox
 {
     pub fn textedit_display_request(&mut self, call: &mut TextEditDisplayCall) -> Status
     {
@@ -40,7 +40,7 @@ impl super::Desktop
                && matches!(call.operation, CUT | PASTE)
                && self.owner == self.foreground
             {
-                self.cursor_dirty |= self.cursors.obscure(self.events.mouse);
+                self.presentation.cursor_dirty |= self.pointer.cursors.obscure(self.events.mouse);
             }
             return status;
         }
@@ -53,13 +53,13 @@ impl super::Desktop
             let status = self.textedit.request_with_fonts(call, input, output, fonts);
             if status == OK && matches!(call.operation, SET_CURSOR_ENABLED | DISPOSE)
             {
-                self.cursor_dirty = true;
+                self.presentation.cursor_dirty = true;
             }
             if status == OK
                && matches!(call.operation, KEY | NAVIGATE)
                && self.owner == self.foreground
             {
-                self.cursor_dirty |= self.cursors.obscure(self.events.mouse);
+                self.presentation.cursor_dirty |= self.pointer.cursors.obscure(self.events.mouse);
             }
             return status;
         }
@@ -82,7 +82,7 @@ impl super::Desktop
             idle.commit();
             return Ok(());
         }
-        let Some(content) = self.content.iter_mut().find(|c| c.id == call.window)
+        let Some(content) = self.presentation.content.iter_mut().find(|c| c.id == call.window)
         else
         {
             idle.commit();
@@ -97,8 +97,8 @@ impl super::Desktop
             call.index = 1;
             return Ok(());
         };
-        if self.redraw
-           || !self.content_damage.is_empty()
+        if self.presentation.redraw
+           || !self.presentation.content_damage.is_empty()
            || self.menus.is_tracking()
            || self.windows.is_tracking()
         {
@@ -120,7 +120,7 @@ impl super::Desktop
                                      (i32::from(local.right) - i32::from(local.left)) as u64,
                                      (i32::from(local.bottom) - i32::from(local.top)) as u64,
                                      0);
-                self.content_cache.invert(call.window.0, local);
+                self.presentation.content_cache.invert(call.window.0, local);
                 let mut screen = local;
                 screen.offset(window.bounds.left, window.bounds.top);
                 self.windows.for_each_visible_rect(call.window, |visible| {
@@ -129,13 +129,13 @@ impl super::Desktop
                                                                                   &mut rect)
                                 {
                                     super::accumulate_presentation_damage(
-                                        &mut self.presentation_damage,
-                                        &mut self.presentation_copy_full, rect);
+                                        &mut self.presentation.presentation_damage,
+                                        &mut self.presentation.presentation_copy_full, rect);
                                     canvas.set_clip(rect);
                                     canvas.invert_rect(rect);
                                     if !window.uses_system_resources()
                                     {
-                                        self.ordinary_underlay.invert(rect);
+                                        self.presentation.ordinary_underlay.invert(rect);
                                     }
                                 }
                             });
@@ -367,7 +367,7 @@ impl super::Desktop
         content.commands.try_reserve(commands.len()).map_err(|_| NO_MEMORY)?;
         content.commands.extend(commands);
         self.content_changed_rect(call.window.0, info.view);
-        let staged = self.pending_content.iter().any(|content| content.id == call.window);
+        let staged = self.presentation.pending_content.iter().any(|content| content.id == call.window);
         self.textedit.bind_cursor(call.id, call.window, port, staged)?;
         call.info = info;
         Ok(())

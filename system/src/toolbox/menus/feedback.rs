@@ -2,7 +2,7 @@
 use mac_abi::{geometry::{Point, Rect},
               menus::Selection};
 
-use super::{Desktop, Input};
+use super::{Toolbox, Input};
 use crate::toolbox::{events::BTN_STATE, menus::Command, quickdraw::Canvas};
 
 const PHASE_TICKS: u32 = 3;
@@ -42,7 +42,7 @@ impl Feedback
                presented: false }
     }
 }
-impl Desktop
+impl Toolbox
 {
     pub(super) fn start_menu_key_feedback(&mut self, selection: Selection, when: u32)
     {
@@ -54,7 +54,7 @@ impl Desktop
         else
         {
             self.menus.cancel_tracking();
-            self.redraw = true;
+            self.presentation.redraw = true;
         }
     }
 
@@ -72,7 +72,7 @@ impl Desktop
         else
         {
             self.menus.cancel_tracking();
-            self.redraw = true;
+            self.presentation.redraw = true;
         }
     }
 
@@ -90,8 +90,8 @@ impl Desktop
             self.menus.cancel_tracking();
         }
         self.enter(caller);
-        self.menu_cache.invalidate();
-        self.redraw = true;
+        self.presentation.menu_cache.invalidate();
+        self.presentation.redraw = true;
     }
 
     pub(super) fn menu_feedback_input(&mut self, input: Input) -> bool
@@ -174,8 +174,8 @@ impl Desktop
         if feedback.phase == PHASE_COUNT && (!keyboard || feedback.presented)
         {
             self.menus.cancel_tracking();
-            self.menu_cache.invalidate();
-            self.redraw |= !keyboard;
+            self.presentation.menu_cache.invalidate();
+            self.presentation.redraw |= !keyboard;
             match feedback.command
             {
                 Command::Resource { selection,
@@ -216,8 +216,8 @@ impl Desktop
         }
         let mut changed = false;
         if !feedback.painted
-           && !self.frame_incomplete
-           && self.presentation_damage.len() < self.presentation_damage.capacity()
+           && !self.presentation.frame_incomplete
+           && self.presentation.presentation_damage.len() < self.presentation.presentation_damage.capacity()
         {
             let selected = feedback.phase % 2 != 0;
             let mut canvas = Canvas::new(crate::platform::back_buffer(),
@@ -225,7 +225,7 @@ impl Desktop
                                          crate::display::HEIGHT);
             if keyboard
             {
-                self.menu_cache.invalidate();
+                self.presentation.menu_cache.invalidate();
             }
             let result =
                 self.menus.paint_feedback(feedback.command, keyboard, selected,
@@ -233,13 +233,13 @@ impl Desktop
             if let Err(status) = result
             {
                 serial!("MENU_FEEDBACK_FAILED status={} phase={}", status, feedback.phase);
-                self.frame_incomplete = true;
+                self.presentation.frame_incomplete = true;
                 self.menu_feedback = Some(feedback);
                 self.cancel_menu_feedback();
                 self.enter(caller);
                 return true;
             }
-            self.presentation_damage.push(feedback.bounds);
+            self.presentation.presentation_damage.push(feedback.bounds);
             feedback.painted = true;
             changed = true;
         }

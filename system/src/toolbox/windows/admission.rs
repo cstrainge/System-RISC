@@ -24,7 +24,7 @@ impl Intent
         && self.0.procedure == request.procedure
         && self.0.minimum_width == request.minimum_width
         && self.0.minimum_height == request.minimum_height
-        && request.reserved == 0
+        && self.0.reserved == request.reserved
         && self.0.title_length == request.title_length
         && request.title_length as usize <= request.title.len()
         && self.0.title[..self.0.title_length as usize]
@@ -134,7 +134,7 @@ impl WindowPlan
             let capacity = self.capacity.prepare()?;
             let window = OwnedWindow::new(self.intent.0.bounds, self.intent.0.title(),
                                            self.owner.owner().incarnation(), self.intent.minimum(),
-                                           self.intent.0.procedure, self.gate, binding,
+                                           self.intent.0.procedure, self.gate, binding, self.intent.0.reserved == mac_abi::WINDOW_STAY_IN_BACK,
                                            WindowSource::Application);
             Ok(WindowPreparation { window, capacity, owner: self.owner,
                                    allocation: allocation.clone(), intent: self.intent, publication })
@@ -235,7 +235,10 @@ impl WindowManager
         {
             return Err(CreationError::RecoveryAuthority);
         }
-        self.preflight_creation(intent.0.bounds, owner, intent.minimum())?;
+        self.preflight_creation(intent.0.bounds,
+                                owner,
+                                intent.minimum(),
+                                intent.0.reserved == mac_abi::WINDOW_STAY_IN_BACK)?;
         Ok(())
     }
 
@@ -245,7 +248,7 @@ impl WindowManager
     {
         if request.title_length as usize > request.title.len()
            || request.procedure < 0
-           || request.reserved != 0
+           || !matches!(request.reserved, 0 | mac_abi::WINDOW_STAY_IN_BACK)
            || core::str::from_utf8(&request.title[..request.title_length as usize]).is_err()
         {
             return Err(CreationError::InvalidRequest);

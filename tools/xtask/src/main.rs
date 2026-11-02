@@ -134,6 +134,15 @@ impl Workspace
         {
             command.args(["--features", "mac-system/event-trace"]);
         }
+        if packages.contains(&"mac-system") && env::var_os("SYSTEM7_DISPLAY_EVENT_DEBUG").is_some()
+        {
+            command.args(["--features", "mac-system/display-event-debug"]);
+        }
+        if packages.contains(&"text-edit")
+           && (self.checking || env::var_os("SYSTEM7_TEXTEDIT_INPUT_TRACE").is_some())
+        {
+            command.args(["--features", "text-edit/input-trace"]);
+        }
         mac_build::platform::configure_for(&self.platform, &mut command);
         run(&mut command)
     }

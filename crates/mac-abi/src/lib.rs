@@ -419,8 +419,6 @@ pub const GET_WINDOW: u32 = 3;
 pub const INVALIDATE_WINDOW: u32 = 4;
 pub const BEGIN_UPDATE: u32 = 5;
 pub const END_UPDATE: u32 = 6;
-/// Deactivate every window while retaining their z order.
-pub const SELECT_DESKTOP: u32 = 7;
 /// Restrict automatic WDEF grow drawing to a window-local rectangle. A reserved
 /// value of1 restores the default unrestricted drawing;0 applies bounds.
 pub const SET_GROW_ICON_CLIP: u32 = 8;
@@ -434,6 +432,10 @@ pub const VALIDATE_WINDOW: u32 = 11;
 /// Application-supplied standard zoom rectangle. reserved=1 restores the System
 /// default; reserved=0 uses bounds. GET_WINDOW returns zoomed state in reserved.
 pub const SET_STANDARD_BOUNDS: u32 = 12;
+/// Resize and move an owned window to `bounds` (global content rectangle),
+/// the native form of SizeWindow plus MoveWindow. Content is re-laid-out, the
+/// window is not reordered, and a geometry-changed notification follows.
+pub const SET_WINDOW_BOUNDS: u32 = 13;
 /// OsEvent message prefix; low24 bits contain the WindowId.
 pub const WINDOW_CLOSE_REQUEST: u32 = 0x03000000;
 /// A classic 31-byte MacRoman catalog name may occupy up to93 UTF8 bytes.
@@ -451,8 +453,13 @@ pub struct WindowRequest
     pub procedure:      i16,
     pub minimum_width:  i16,
     pub minimum_height: i16,
+    /// Creation flags for `NEW_WINDOW` (`WINDOW_STAY_IN_BACK`); other
+    /// operations use this word for their own small arguments.
     pub reserved:       i16
 }
+/// The window stays beneath every ordinary window and is never raised, though
+/// it can be activated. May also extend to the screen edges below the menu bar.
+pub const WINDOW_STAY_IN_BACK: i16 = 1;
 
 impl WindowRequest
 {

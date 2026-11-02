@@ -322,7 +322,7 @@ impl Manager
                 if config.splitter.is_none()
                 {
                     let entry =
-                        crate::toolbox::runtime::Desktop::control_definition(CDEF_SPLITTER)?;
+                        crate::toolbox::runtime::Toolbox::control_definition(CDEF_SPLITTER)?;
                     config.splitter = Some(Arc::try_new(crate::toolbox::resources::definitions::bind(entry)?)
                                                .map_err(|_| NO_MEMORY)?);
                 }

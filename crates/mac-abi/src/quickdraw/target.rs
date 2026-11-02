@@ -10,7 +10,6 @@ pub struct WorldId(pub u64);
 pub enum DrawingTarget
 {
     Window(WindowId),
-    Desktop,
     World(WorldId)
 }
 impl From<WindowId> for DrawingTarget
@@ -29,8 +28,7 @@ impl From<WorldId> for DrawingTarget
 }
 
 pub const TARGET_WINDOW: u32 = 0;
-pub const TARGET_DESKTOP: u32 = 1;
-pub const TARGET_WORLD: u32 = 2;
+pub const TARGET_WORLD: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
@@ -44,8 +42,7 @@ pub struct Target
 pub enum TargetError
 {
     UnknownKind(u32),
-    Reserved(u32),
-    DesktopIdentity(u64)
+    Reserved(u32)
 }
 impl core::fmt::Display for TargetError
 {
@@ -57,10 +54,6 @@ impl core::fmt::Display for TargetError
             Self::Reserved(value) =>
             {
                 write!(f, "drawing target reserved field must be zero, got {value}")
-            }
-            Self::DesktopIdentity(id) =>
-            {
-                write!(f, "desktop target cannot carry object identity {id}")
             }
         }
     }
@@ -75,13 +68,6 @@ impl Target
         Self { kind:     TARGET_WINDOW,
                reserved: 0,
                id:       window.0 }
-    }
-
-    pub const fn desktop() -> Self
-    {
-        Self { kind:     TARGET_DESKTOP,
-               reserved: 0,
-               id:       0 }
     }
 
     pub const fn world(world: WorldId) -> Self
@@ -100,8 +86,6 @@ impl Target
         match self.kind
         {
             TARGET_WINDOW => Ok(DrawingTarget::Window(WindowId(self.id))),
-            TARGET_DESKTOP if self.id == 0 => Ok(DrawingTarget::Desktop),
-            TARGET_DESKTOP => Err(TargetError::DesktopIdentity(self.id)),
             TARGET_WORLD => Ok(DrawingTarget::World(WorldId(self.id))),
             other => Err(TargetError::UnknownKind(other))
         }
@@ -114,7 +98,6 @@ impl From<DrawingTarget> for Target
         match target
         {
             DrawingTarget::Window(window) => Self::window(window),
-            DrawingTarget::Desktop => Self::desktop(),
             DrawingTarget::World(world) => Self::world(world)
         }
     }
@@ -127,8 +110,7 @@ mod tests
     #[test]
     fn target_projection_is_explicit_and_checked()
     {
-        for target in [DrawingTarget::Desktop,
-                       DrawingTarget::Window(WindowId(0x80000000)),
+        for target in [DrawingTarget::Window(WindowId(0x80000000)),
                        DrawingTarget::World(WorldId(u64::MAX))]
         {
             assert_eq!(Target::from(target).decode(), Ok(target));
@@ -139,9 +121,6 @@ mod tests
         assert_eq!(Target { reserved: 1,
                             ..Default::default() }.decode(),
                    Err(TargetError::Reserved(1)));
-        assert_eq!(Target { id: 1,
-                            ..Target::desktop() }.decode(),
-                   Err(TargetError::DesktopIdentity(1)));
         assert_eq!(Target::window(WindowId(u64::MAX)).decode(),
                    Ok(DrawingTarget::Window(WindowId(u64::MAX))));
     }
