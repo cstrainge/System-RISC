@@ -2428,7 +2428,9 @@ impl Desktop
                             self.windows
                                 .start_tracking_with_modifiers(hit, point, self.events.modifiers);
                         }
-                        else if hit.part == WindowPart::Content && active
+                        else if hit.part == WindowPart::Content
+                                && (active
+                                    || self.windows.window(id).is_some_and(|w| w.stays_in_back()))
                         {
                             let local = self.windows.window(id).unwrap().global_to_local(point);
                             let button = self.content.iter().find(|c| c.id == id).and_then(|c| c.iter_commands().filter_map(|command| match command { RenderCommand::Legacy(c)=>Some(c),_=>None }).find(|command| command.kind == DRAW_BUTTON && command.bounds.contains(local)));
