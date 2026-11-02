@@ -1,7 +1,6 @@
 //! Resident scroll boxes. Object identities, viewport pixels, dirty rows and
 //! tracking policy stay in System; CDEF1 owns the scrollbar's pixels and geometry.
 #![forbid(unsafe_code)]
-use crate::toolbox::resources::definitions::DefinitionRef;
 use alloc::{sync::Arc, vec::Vec};
 
 use mac_abi::{controls::*,
@@ -9,7 +8,8 @@ use mac_abi::{controls::*,
               *};
 
 use crate::toolbox::{handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store},
-                     quickdraw::{Canvas, fonts::FontManager, fonts_service}};
+                     quickdraw::{Canvas, fonts::FontManager, fonts_service},
+                     resources::definitions::DefinitionRef};
 const PIXEL_BUDGET: usize = 2 * 1024 * 1024;
 struct Row
 {
@@ -37,6 +37,7 @@ struct Object
     recipient:          u64,
     recovery:           bool,
     spec:               Spec,
+    definition:         DefinitionRef,
     top:                u32,
     raster:             Arc<Raster>,
     tracking:           Option<Tracking>,
@@ -451,9 +452,24 @@ impl Manager
                                        });
     }
 
-    pub(crate) fn request(&mut self, recipient: &OwnerRef, storage: &OwnerRef, call: &mut Call,
-                          fonts: &FontManager, entry: DefinitionRef, gate: TrapGate)
-                          -> Result<Option<Drawing>, Status>
+    /// Fixed CDEF1 binding retained by the actual owned scroll box.
+    pub(crate) fn bound_definition(&self, call: &Call, owner: u64)
+                                   -> Result<Option<DefinitionRef>, Status>
+    {
+        if call.operation == CREATE
+        {
+            Ok(None)
+        }
+        else
+        {
+            Ok(Some(self.get(call.id, owner)?.definition))
+        }
+    }
+
+    /// Admission only: no definition callbacks, raster allocation or mutation.
+    pub(crate) fn preflight_definition(&self, recipient: &OwnerRef, storage: &OwnerRef,
+                                       call: &Call, fonts: &FontManager)
+                                       -> Result<Option<DefinitionRef>, Status>
     {
         let owner = recipient.owner().incarnation();
         if storage.owner() != recipient.owner()
@@ -476,13 +492,40 @@ impl Manager
             #[cfg(not(target_arch = "riscv64"))]
             return Err(ACCESS_DENIED);
         }
+        if call.operation == CREATE && !storage.accepting()
+        {
+            return Err(pool_status(mac_object_table::domain::PoolError::Stopping {
+                owner: storage.owner()
+            }));
+        }
         if call.reserved != [0; 3] || call.text_length as usize > call.text.len()
         {
             return Err(BAD_ARGUMENT);
         }
-        let text = core::str::from_utf8(&call.text[..call.text_length as usize]).map_err(|_| {
-                                                                                    BAD_ARGUMENT
-                                                                                })?;
+        core::str::from_utf8(&call.text[..call.text_length as usize]).map_err(|_| BAD_ARGUMENT)?;
+        if !matches!(call.operation,
+                     CREATE
+                     | CONFIGURE
+                     | INFO
+                     | ROW_AT
+                     | INVALIDATE
+                     | SCROLL_TO
+                     | SET_ROW
+                     | TRACK_BEGIN
+                     | TRACK_POLL
+                     | DRAW
+                     | DISPOSE)
+        {
+            return Err(NOT_SUPPORTED);
+        }
+        if call.operation != CREATE
+        {
+            self.get(call.id, owner)?;
+        }
+        if call.operation == SET_ROW && call.flags & !SELECTED != 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
         if matches!(call.operation, CREATE | CONFIGURE)
         {
             let (w, h, _) = dimensions(call.spec)?;
@@ -516,6 +559,40 @@ impl Manager
             {
                 return Err(NO_MEMORY);
             }
+        }
+        Ok(if call.operation == CREATE { None } else { Some(self.get(call.id, owner)?.definition) })
+    }
+
+    pub(crate) fn request(&mut self, recipient: &OwnerRef, storage: &OwnerRef, call: &mut Call,
+                          fonts: &FontManager, entry: DefinitionRef, gate: TrapGate)
+                          -> Result<Option<Drawing>, Status>
+    {
+        let bound = self.preflight_definition(recipient, storage, call, fonts)?;
+        let entry = bound.unwrap_or(entry);
+        let owner = recipient.owner().incarnation();
+        let text = core::str::from_utf8(&call.text[..call.text_length as usize]).map_err(|_| {
+                                                                                    BAD_ARGUMENT
+                                                                                })?;
+        if matches!(call.operation, CREATE | CONFIGURE)
+        {
+            let (w, h, _) = dimensions(call.spec)?;
+            let previous = if call.operation == CONFIGURE
+            {
+                self.get(call.id, owner)?.raster.pixels() * 8
+            }
+            else
+            {
+                0
+            };
+            let used = self.raster_bytes;
+            let recovery = if call.operation == CREATE
+            {
+                storage.owner() != recipient.owner()
+            }
+            else
+            {
+                self.get(call.id, owner)?.recovery
+            };
             if call.operation == CREATE
             {
                 let data = raster(call.spec)?;
@@ -523,6 +600,7 @@ impl Manager
                                       recipient: owner,
                                       recovery,
                                       spec: call.spec,
+                                      definition: entry,
                                       top: 0,
                                       raster: data,
                                       tracking: None,
@@ -647,10 +725,6 @@ impl Manager
             SCROLL_TO => object.scroll(call.top)?,
             SET_ROW =>
             {
-                if call.flags & !SELECTED != 0
-                {
-                    return Err(BAD_ARGUMENT);
-                }
                 let spec = object.spec;
                 let selected = call.flags & SELECTED != 0;
                 paint_row(object, call.row, |canvas| {

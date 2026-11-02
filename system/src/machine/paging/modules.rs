@@ -46,6 +46,7 @@ pub(crate) enum Error
     Account(mac_kernel_model::account::Error),
     Pages(crate::machine::pages::Error),
     Foundation(crate::allocator::foundation::Error),
+    OrdinaryPhysical(crate::allocator::ordinary_physical::Error),
     Encoding(mac_riscv_pages::Error),
     Conflict
     {
@@ -67,6 +68,7 @@ impl Error
             Self::Account(cause) => crate::allocation::account_status(cause),
             Self::Pages(cause) => cause.status(),
             Self::Foundation(cause) => cause.status(),
+            Self::OrdinaryPhysical(cause) => cause.status(),
             Self::Monitor(cause) => cause.status(),
             Self::Closed => mac_abi::OPERATION_CANCELLED,
             Self::Owner => mac_abi::ACCESS_DENIED,
@@ -123,6 +125,7 @@ impl fmt::Display for Error
             Self::Account(cause) => cause.fmt(out),
             Self::Pages(cause) => cause.fmt(out),
             Self::Foundation(cause) => cause.fmt(out),
+            Self::OrdinaryPhysical(cause) => cause.fmt(out),
             Self::Encoding(cause) => cause.fmt(out),
             Self::Conflict { address,
                              expected,
@@ -244,8 +247,49 @@ struct Segment
 {
     offset:  u64,
     memory:  u64,
-    backing: Backing,
-    _charge: Committed<NativeInvocationGate>
+    backing: PayloadBacking
+}
+enum PayloadBacking
+{
+    Owner
+    {
+        backing: Backing,
+        _charge: Committed<NativeInvocationGate>
+    },
+    System(crate::allocator::ordinary_physical::SystemBacking)
+}
+impl core::ops::Deref for PayloadBacking
+{
+    type Target = Backing;
+
+    fn deref(&self) -> &Backing
+    {
+        match self
+        {
+            Self::Owner { backing,
+                          .. } => backing,
+            Self::System(b) => b
+        }
+    }
+}
+/// Only genuine source authority can choose the corresponding physical receipt.
+pub(crate) enum DefinitionTarget
+{
+    System(crate::kernel::SystemResources),
+    Owner(AccountUse<NativeInvocationGate>)
+}
+#[derive(Clone, Copy)]
+enum TargetKind
+{
+    Application,
+    Module,
+    Definition
+}
+#[derive(Clone, Copy)]
+enum PayloadAuthority<'a>
+{
+    Owner(&'a AccountUse<NativeInvocationGate>),
+    System(crate::kernel::SystemResources)
 }
 struct Payload
 {
@@ -358,13 +402,15 @@ struct State
     phase:     Phase,
     requested: bool
 }
-/// The original IMAG instance owns this anchor before the first PTE effect.
+/// The original canonical IMAG or DDEF record owns this anchor before the first PTE effect.
 /// Payload removal happens only after the actual translation receipt. Drop
 /// itself performs no unmap, monitor wait or fallible teardown.
 pub(crate) struct Mapping
 {
     owner:    OwnerRef,
     base:     u64,
+    target:   TargetKind,
+    entry:    u64,
     segments: Vec<SegmentMap>,
     leaves:   spin::Once<Entries>,
     payload:  Mutex<Option<Payload>>,
@@ -403,14 +449,69 @@ impl Mapping
                           descriptor: &Descriptor, bytes: &[u8], relocations: &[u8], base: u64)
                           -> Result<Arc<Self>, Error>
     {
-        let module = owner.owner().kind() == mac_object_table::domain::DomainKind::Module;
-        let application = owner.owner().kind() == mac_object_table::domain::DomainKind::Process;
+        let target = match (owner.owner().kind(), descriptor.role)
+        {
+            (mac_object_table::domain::DomainKind::Module, Role::CodeResource) =>
+            {
+                TargetKind::Module
+            }
+            (mac_object_table::domain::DomainKind::Process, Role::Application) =>
+            {
+                TargetKind::Application
+            }
+            _ => return Err(Error::Owner)
+        };
         if owner.owner() != account.owner()
-           || !(module && descriptor.role == Role::CodeResource
-                || application && descriptor.role == Role::Application)
         {
             return Err(Error::Owner);
         }
+        Self::prepare_payload(owner,
+                              PayloadAuthority::Owner(account),
+                              target,
+                              descriptor,
+                              bytes,
+                              relocations,
+                              base)
+    }
+
+    pub(crate) fn prepare_definition(owner: &OwnerRef, authority: &DefinitionTarget,
+                                     descriptor: &Descriptor, bytes: &[u8], relocations: &[u8],
+                                     base: u64)
+                                     -> Result<Arc<Self>, Error>
+    {
+        if descriptor.role != Role::CodeResource
+        {
+            return Err(Error::Owner);
+        }
+        let authority = match authority
+        {
+            DefinitionTarget::System(source) if owner.owner() == source.owner().owner() =>
+            {
+                PayloadAuthority::System(*source)
+            }
+            DefinitionTarget::Owner(account)
+                if matches!(owner.owner().kind(),
+                            mac_object_table::domain::DomainKind::Process
+                            | mac_object_table::domain::DomainKind::Module)
+                   && owner.owner() == account.owner() =>
+            {
+                PayloadAuthority::Owner(account)
+            }
+            _ => return Err(Error::Owner)
+        };
+        Self::prepare_payload(owner,
+                              authority,
+                              TargetKind::Definition,
+                              descriptor,
+                              bytes,
+                              relocations,
+                              base)
+    }
+
+    fn prepare_payload(owner: &OwnerRef, authority: PayloadAuthority<'_>, target: TargetKind,
+                       descriptor: &Descriptor, bytes: &[u8], relocations: &[u8], base: u64)
+                       -> Result<Arc<Self>, Error>
+    {
         if !owner.accepting()
         {
             return Err(Error::Closed);
@@ -423,13 +524,11 @@ impl Mapping
                                                                           reservation")))?;
         let end = base.checked_add(extent).ok_or(Error::Extent { offset: base,
                                                                   bytes:  extent })?;
-        let region = if module
+        let region = match target
         {
-            base >= VM_MODULE_START && end <= VM_MODULE_END
-        }
-        else
-        {
-            super::super::memory::application_region(base, end)
+            TargetKind::Module => base >= VM_MODULE_START && end <= VM_MODULE_END,
+            TargetKind::Application => super::super::memory::application_region(base, end),
+            TargetKind::Definition => base >= DEFINITION_BASE && end <= DEFINITION_LIMIT
         };
         if !region || !base.is_multiple_of(PAGE_BYTES) || !extent.is_multiple_of(PAGE_BYTES)
         {
@@ -461,8 +560,19 @@ impl Mapping
                                            bytes:  segment.memory_length });
             }
             let planned = Backing::planned_bytes(mapped as usize).map_err(Error::Pages)?;
-            let charge = account.reserve_kernel(planned).map_err(Error::Account)?;
-            let backing = Backing::reserve_uninitialized(mapped as usize).map_err(Error::Pages)?;
+            let backing = match authority
+            {
+                PayloadAuthority::Owner(account) =>
+                {
+                    let charge = account.reserve_kernel(planned).map_err(Error::Account)?;
+                    let backing = Backing::reserve_uninitialized(mapped as usize).map_err(Error::Pages)?;
+                    PayloadBacking::Owner { backing, _charge: charge.commit() }
+                }
+                PayloadAuthority::System(source) =>
+                {
+                    PayloadBacking::System(crate::allocator::ordinary_physical::SystemBacking::reserve_uninitialized(source, mapped as usize).map_err(Error::OrdinaryPhysical)?)
+                }
+            };
             if backing.bytes() != planned
             {
                 return Err(Error::State);
@@ -474,8 +584,7 @@ impl Mapping
                                        flags:        segment.flags });
             payload.segments.push(Segment { offset: segment.offset,
                                             memory: segment.memory_length,
-                                            backing,
-                                            _charge: charge.commit() });
+                                            backing });
         }
         plan.write_to(&mut payload).map_err(|cause| {
                                         match cause
@@ -489,6 +598,8 @@ impl Mapping
                                     })?;
         Arc::try_new(Self { owner: owner.clone(),
                             base,
+                            target,
+                            entry: plan.entry(),
                             segments,
                             leaves: spin::Once::new(),
                             payload: Mutex::new(Some(payload)),
@@ -498,11 +609,43 @@ impl Mapping
                                                                             })
     }
 
+    pub(crate) fn entry(&self) -> Option<u64>
+    {
+        (self.phase() == Phase::Live).then_some(self.entry)
+    }
+
+    pub(crate) fn quarantined(&self) -> bool
+    {
+        matches!(self.phase(), Phase::Quarantined(_) | Phase::Cleared)
+    }
+
+    pub(crate) fn unpublished(&self) -> bool
+    {
+        matches!(self.phase(), Phase::Prepared | Phase::Preparing)
+    }
+
     pub(crate) fn publish(&self) -> Result<(), Error>
     {
         if !self.owner.accepting()
         {
             return Err(Error::Closed);
+        }
+        if self.phase() == Phase::Live
+        {
+            return Ok(());
+        }
+        if self.phase() == Phase::Mapped
+        {
+            if let Err(cause) = crate::machine::monitor::publish_instructions()
+            {
+                if !matches!(cause, crate::machine::monitor::Error::Busy)
+                {
+                    self.quarantine(Stage::PublishInstructions, &cause)
+                }
+                return Err(Error::Monitor(cause));
+            }
+            self.set_phase(Phase::Live);
+            return Ok(());
         }
         self.with_state(|state| {
                 if state.phase != Phase::Prepared
@@ -518,7 +661,7 @@ impl Mapping
         // treating a legitimate concurrently installed branch as corruption.
         let lease =
             crate::machine::monitor::prepare_translation_invalidation().map_err(Error::Monitor)?;
-        let plan = Plan::prepare(&self.segments, self.owner.owner())?;
+        let plan = Plan::prepare(&self.segments, self.owner.owner(), self.target)?;
         let mut leaves = Vec::new();
         leaves.try_reserve_exact(plan.leaves.iter().filter(|s| is_permanent_root(s.root)).count())
               .map_err(|_| Error::Metadata)?;
@@ -632,15 +775,7 @@ impl Mapping
                     }
                 };
                 let leaves = self.leaves.get().ok_or(Error::State)?;
-                let roots = if self.owner.owner().kind()
-                               == mac_object_table::domain::DomainKind::Module
-                {
-                    super::process::snapshot(false).map_err(Error::Process)?
-                }
-                else
-                {
-                    Vec::new()
-                };
+                let roots = participating_roots(self.target, self.owner.owner(), false)?;
                 let dynamic = process_entries(&self.segments, &roots)?;
                 let mut all = Entries { leaves:    Vec::new(),
                                         ancestors: Vec::new() };
@@ -891,7 +1026,8 @@ struct Plan
 }
 impl Plan
 {
-    fn prepare(segments: &[SegmentMap], owner: mac_object_table::domain::DomainId)
+    fn prepare(segments: &[SegmentMap], owner: mac_object_table::domain::DomainId,
+               target: TargetKind)
                -> Result<Self, Error>
     {
         let mut plan = Self { _processes: Vec::new(),
@@ -905,14 +1041,7 @@ impl Plan
         let pages = segments.iter()
                             .try_fold(0usize, |n, s| n.checked_add((s.bytes / PAGE_BYTES) as usize))
                             .ok_or(Error::Metadata)?;
-        let processes = if owner.kind() == mac_object_table::domain::DomainKind::Module
-        {
-            super::process::snapshot(true).map_err(Error::Process)?
-        }
-        else
-        {
-            Vec::new()
-        };
+        let processes = participating_roots(target, owner, true)?;
         let total = pages.checked_mul(processes.len().checked_add(2).ok_or(Error::Metadata)?)
                          .ok_or(Error::Metadata)?;
         plan.leaves.try_reserve_exact(total).map_err(|_| Error::Metadata)?;
@@ -1188,6 +1317,7 @@ pub(crate) fn revision() -> Option<u64>
 }
 pub(crate) fn monitor_released()
 {
+    crate::toolbox::resources::definitions::monitor_released();
     super::process::monitor_released();
     if RETIRING.load(Ordering::Acquire) != 0
     {
@@ -1357,4 +1487,21 @@ pub(super) fn retire_process_branches(root: PhysicalAddress)
         removed = branch.next.take();
         drop(branch)
     }
+}
+
+fn participating_roots(target: TargetKind, owner: mac_object_table::domain::DomainId,
+                       publication: bool)
+                       -> Result<Vec<super::process::Pin>, Error>
+{
+    if matches!(target, TargetKind::Application)
+    {
+        return Ok(Vec::new());
+    }
+    let mut roots = super::process::snapshot(publication).map_err(Error::Process)?;
+    if matches!(target, TargetKind::Definition)
+       && owner.kind() == mac_object_table::domain::DomainKind::Process
+    {
+        roots.retain(|r| r.owner() == owner)
+    }
+    Ok(roots)
 }

@@ -110,6 +110,47 @@ pub(crate) fn validate_stack_configuration(
     Ok(())
 }
 
+/// Complete warm requests in their one existing Desktop turn. Only a validated
+/// cold miss ends that borrow before page/monitor work, then re-enters and
+/// revalidates. No borrowed manager state or synthetic worker crosses the gap.
+enum DefinitionTurn<T>
+{
+    Complete(T),
+    Prepare
+    {
+        kind: [u8; 4],
+        id:   i16
+    }
+}
+fn definition_request<T>(mut run: impl FnMut(&mut crate::toolbox::runtime::Desktop)
+                               -> Result<DefinitionTurn<T>, Status>)
+                         -> Result<T, Status>
+{
+    let first =
+        crate::kernel::with_desktop(|desktop| run(desktop)).map_err(|cause| cause.status())??;
+    let (kind, id) = match first
+    {
+        DefinitionTurn::Complete(result) => return Ok(result),
+        DefinitionTurn::Prepare { kind,
+                                  id } => (kind, id)
+    };
+    crate::loader::prepare_definition(kind, id).map_err(|cause| {
+                                                   serial!("DEFINITION_PREPARATION_REFUSED \
+                                                            kind={:?} id={} cause={}",
+                                                           kind,
+                                                           id,
+                                                           cause);
+                                                   crate::loader::status(cause)
+                                               })?;
+    match crate::kernel::with_desktop(|desktop| run(desktop)).map_err(|cause| cause.status())??
+    {
+        DefinitionTurn::Complete(result) => Ok(result),
+        // Source/request admission changed while the same real cold work was
+        // outside the manager. Do not spin or commit with a mismatched source.
+        DefinitionTurn::Prepare { .. } => Err(SERVICE_BUSY)
+    }
+}
+
 /// Local CSR installation only. Warm entry uses this while its Control stays
 /// poisoned; it must not initialize global tracing or use firmware logging.
 fn install_local()
@@ -1004,7 +1045,14 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         SCROLL_BOX =>
         unsafe {
             toolbox::controls::scrollbox_native::dispatch(pointer, size, |call| {
-                crate::kernel::with_desktop(|desktop|desktop.scroll_box(call)).unwrap_or_else(|e|Err(e.status()))
+                definition_request(|desktop| {
+                    if desktop.preflight_scroll_box(call)?
+                    {
+                        return Ok(DefinitionTurn::Prepare { kind: *b"CDEF",
+                                                            id:   1 });
+                    }
+                    desktop.scroll_box(call).map(DefinitionTurn::Complete)
+                })
             })
         },
         CONTROL =>
@@ -1012,17 +1060,24 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             let call = read_request!(mac_abi::controls::ControlCall);
             if !call.surface.is_null()
             {
-                return crate::kernel::with_desktop(|runtime| unsafe {
-                           toolbox::controls::native::dispatch(CONTROL,
-                                                               pointer,
-                                                               size,
-                                                               |id| runtime.control_definition(id),
-                                                               gateway)
-                       }).unwrap_or_else(|error| error.status() as i64);
+                return unsafe {
+                    toolbox::controls::native::dispatch(CONTROL,
+                                                        pointer,
+                                                        size,
+                                                        |id| {
+                                                            crate::loader::prepare_definition(*b"CDEF", id).map_err(crate::loader::status)
+                                                        },
+                                                        gateway)
+                };
             }
-            crate::kernel::with_desktop(|runtime| runtime.control(call)).unwrap_or_else(|error| {
-                                                                            error.status()
-                                                                        }) as i64
+            definition_request(|runtime| {
+                if let Some(id) = runtime.preflight_control(call)?
+                {
+                    return Ok(DefinitionTurn::Prepare { kind: *b"CDEF",
+                                                        id });
+                }
+                Ok(DefinitionTurn::Complete(runtime.control(call)))
+            }).unwrap_or_else(|status| status) as i64
         }
         GEOMETRY => toolbox::quickdraw::geometry::dispatch(read_request!(GeometryCall)) as i64,
         SURFACE =>
@@ -1035,7 +1090,16 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         WINDOW =>
         {
             let call = read_request!(WindowCall);
-            crate::kernel::with_desktop(|runtime|runtime.window(call.operation,&mut call.request)).unwrap_or_else(|error|error.status()) as i64
+            definition_request(|runtime| {
+                if let Some(id) = runtime.preflight_window(call.operation, &call.request)?
+                   && crate::loader::cached_definition(*b"WDEF", id).map_err(crate::loader::status)?
+                                                                    .is_none()
+                {
+                    return Ok(DefinitionTurn::Prepare { kind: *b"WDEF",
+                                                        id });
+                }
+                Ok(DefinitionTurn::Complete(runtime.window(call.operation, &mut call.request)))
+            }).unwrap_or_else(|status| status) as i64
         }
         DRAW =>
         {
@@ -1103,8 +1167,20 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         DEFINITION =>
         {
             let call = read_request!(DefinitionCall);
+            if !call.header.supports::<DefinitionCall>()
+            {
+                return BAD_ABI as i64;
+            }
             call.gate = gateway;
-            crate::kernel::with_desktop(|runtime| runtime.definition(call)).unwrap_or_else(|error|error.status() as i64)
+            match crate::loader::prepare_definition(call.kind.to_be_bytes(), call.id)
+            {
+                Ok(entry) => toolbox::resources::definitions::invoke(entry, call),
+                Err(cause) =>
+                {
+                    serial!("DEFINITION_UNAVAILABLE: {}", cause);
+                    crate::loader::status(cause) as i64
+                }
+            }
         }
         CLASSIC =>
         {

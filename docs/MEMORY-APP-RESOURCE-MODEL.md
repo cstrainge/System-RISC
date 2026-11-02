@@ -3576,7 +3576,12 @@ failed-publication pressure, lost-ACK/foreign-PTE injection, full-range stale
 translation reuse and race absence remain unverified or unimplemented as stated
 above. QMP reads and guest diagnostics perturb execution; no latency claim follows.
 
-## Registered definition callables — implementation
+## Registered definition callables — earlier stage
+
+This section records the callable-registration stage. Its fixed-arena/cache
+publication statements are historical; the subsequent
+[native definition resource contract](DEFINITION-RESOURCES.md) describes the
+physical-backing stage and its explicitly limited native observations.
 
 Window, control, menu, process-menu and boot-panel state retain opaque definition
 completion references rather than bare executable addresses. DDEF/DSTA use the
@@ -3751,3 +3756,21 @@ The build now requires both `CARGO_UNSTABLE_CHECKSUM_FRESHNESS=true` and
 fingerprints and artifact hashes. Build-script inputs still need explicit
 rebuilding when their mtime tracking misses changes; content mode does not
 remove that separate limitation. See the [Cargo freshness contract](https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#checksum-freshness).
+
+
+## Physically owned native definition resources — 2026-11-01
+
+Canonical DDEF/DSTA now retain actual segment pages and the original source's
+account (or a sealed ordinary-System physical receipt). Native cold admission
+and real mapping publication leave Desktop before physical work. The teardown
+walk retains its unique ticket while guard-free maintenance performs unmap/ACK
+and physical disposal; ordinary stopped-source calls are refused, with only
+the real Window ticket's private Dispose permit admitting teardown.
+
+The [definition resource contract](DEFINITION-RESOURCES.md) documents source
+selection, caller staging, partial physical attribution, wakeups, exact native
+artifacts and remaining gates. It supersedes earlier fixed identity-arena and
+Desktop-cache descriptions in this historical implementation record. The actual
+own-Process load/dispose/relaunch and failure observations do not qualify foreign
+Module bindings, pressure, arbitrary faults, timing/races, user-mode isolation
+or the broader failed conformance scenario.

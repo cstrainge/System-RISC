@@ -1,250 +1,628 @@
-//! Registered definition callables and the single native invocation boundary.
-use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, Ordering};
+//! Canonical definition records own source, placement and physical publication.
+//! No decode, allocation, monitor operation or author call runs under metadata guards.
+use alloc::{sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use hashbrown::HashMap;
 use mac_abi::{ACCESS_DENIED, BAD_ARGUMENT, DefinitionCall, NO_MEMORY, NOT_FOUND, SERVICE_BUSY,
               Status};
 use mac_kernel_model::image::{ExecutionGate, ExecutionPin};
-use mac_object_table::{domain::ReleasedResource,
+use mac_object_table::{domain::{DomainId, ReleasedResource},
                        registry::{Release, Source, Specification},
                        shared::InvocationGate as _,
-                       store::CompletionKey};
+                       store::{CompletionKey, PreparedError, PublicationPermit}};
+use spinning_top::Spinlock;
 
-use crate::toolbox::handles::{CapacityPolicy, InvocationGate, KindCode, OwnerRef, Store,
-                              cleanup::Failure};
+use crate::{machine::paging::modules::{DefinitionTarget, Mapping},
+            toolbox::handles::{CapacityPolicy, InvocationGate, KindCode, OwnerRef, Store,
+                               cleanup::Failure}};
 
 #[derive(Debug)]
 pub(crate) enum Error
 {
-    Registry(crate::state::AccessError),
     Facility(mac_object_table::domain::PoolError),
-    Preparation(mac_object_table::store::PreparedError),
+    Preparation(PreparedError),
     OwnerUnavailable(Status),
     Allocation,
     Placement,
     Source,
     Stopping,
+    Busy,
+    Missing,
+    Mapping(crate::machine::paging::modules::Error),
+    Retained(crate::machine::paging::modules::CleanupCause),
     Execution(mac_kernel_model::image::Error)
 }
 impl Error
 {
     pub(crate) fn status(&self) -> Status
     {
-        match self {
-            Self::Registry(cause) => cause.status(),
-            Self::Facility(cause) => crate::toolbox::handles::registry_status(
-                &mac_object_table::registry::Error::Pool(*cause)),
-            Self::Preparation(mac_object_table::store::PreparedError::Pool(cause)) =>
-                crate::toolbox::handles::registry_status(&mac_object_table::registry::Error::Pool(*cause)),
-            Self::Preparation(mac_object_table::store::PreparedError::CapacityChanged) => SERVICE_BUSY,
-            Self::Preparation(_) => mac_abi::BAD_ABI,
+        match self
+        {
+            Self::Facility(cause) | Self::Preparation(PreparedError::Pool(cause)) =>
+            {
+                crate::toolbox::handles::registry_status(&mac_object_table::registry::Error::Pool(*cause))
+            }
+            Self::Preparation(PreparedError::CapacityChanged) | Self::Busy | Self::Stopping => SERVICE_BUSY,
             Self::OwnerUnavailable(status) => *status,
             Self::Allocation | Self::Placement => NO_MEMORY,
             Self::Source => ACCESS_DENIED,
-            Self::Stopping => SERVICE_BUSY,
+            Self::Missing => NOT_FOUND,
+            Self::Mapping(cause) => cause.status(),
+            Self::Retained(_) => mac_abi::NOT_SUPPORTED,
             Self::Execution(mac_kernel_model::image::Error::Allocation | mac_kernel_model::image::Error::PinLimit) => NO_MEMORY,
             Self::Execution(mac_kernel_model::image::Error::Busy) => SERVICE_BUSY,
+            Self::Preparation(_) => mac_abi::BAD_ABI
         }
     }
 }
+
 impl core::fmt::Display for Error
 {
-    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
     {
         match self
         {
-            Self::Registry(cause) => write!(out, "definition registry unavailable: {cause:?}"),
-            Self::Facility(cause) => write!(out, "definition registration refused: {cause:?}"),
-            Self::Preparation(cause) =>
+            Self::Facility(e) => write!(f, "definition facility refused: {e:?}"),
+            Self::Preparation(e) => write!(f, "definition publication refused: {e}"),
+            Self::OwnerUnavailable(s) => write!(f, "definition System authority unavailable: {s}"),
+            Self::Allocation => f.write_str("definition metadata capacity refused"),
+            Self::Placement => f.write_str("definition executable placement exhausted"),
+            Self::Source => f.write_str("definition source/owner/account binding mismatch"),
+            Self::Stopping => f.write_str("definition source stopped before publication"),
+            Self::Busy => f.write_str("definition preparation is already active"),
+            Self::Missing => f.write_str("definition manager is unavailable"),
+            Self::Mapping(e) => e.fmt(f),
+            Self::Retained(e) => write!(f, "definition physical publication retained: {e}"),
+            Self::Execution(e) => e.fmt(f)
+        }
+    }
+}
+/// Private original key. Only Ready publication returns one to a manager.
+#[derive(Clone, Copy)]
+pub(crate) struct DefinitionRef(CompletionKey);
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Identity
+{
+    kind:   [u8; 4],
+    id:     i16,
+    origin: u64
+}
+pub(super) enum SourceBinding
+{
+    System(crate::kernel::SystemResources),
+    Image(crate::images::Read)
+}
+impl SourceBinding
+{
+    fn owner(&self) -> &OwnerRef
+    {
+        match self
+        {
+            Self::System(s) => s.owner(),
+            Self::Image(s) => s.owner()
+        }
+    }
+
+    fn origin(&self) -> u64
+    {
+        match self
+        {
+            Self::System(_) => 0,
+            Self::Image(s) => s.binding().id()
+        }
+    }
+
+    pub(super) fn allocation_target(&self) -> crate::allocator::Target
+    {
+        match self
+        {
+            Self::System(_) =>
             {
-                write!(out, "definition publication preparation refused: {cause}")
+                crate::allocator::Target::System(crate::allocator::SystemClass::Ordinary)
             }
-            Self::OwnerUnavailable(status) =>
+            Self::Image(s) =>
             {
-                write!(out, "definition source authority unavailable: status {status}")
+                crate::allocator::Target::Owner { account: s.allocation().clone(),
+                                                  class:
+                                                      mac_kernel_model::policy::MemoryClass::Kernel }
             }
-            Self::Allocation => out.write_str("definition callable metadata allocation failed"),
-            Self::Placement => out.write_str("definition executable address space exhausted"),
-            Self::Source =>
+        }
+    }
+
+    fn mapping_target(&self) -> DefinitionTarget
+    {
+        match self
+        {
+            Self::System(s) => DefinitionTarget::System(*s),
+            Self::Image(s) => DefinitionTarget::Owner(s.allocation().clone())
+        }
+    }
+
+    fn valid(&self) -> bool
+    {
+        match self
+        {
+            Self::System(s) =>
             {
-                out.write_str("definition source does not match its original owner/origin")
+                s.owner().owner().kind() == mac_object_table::domain::DomainKind::System
             }
-            Self::Stopping =>
+            Self::Image(s) =>
             {
-                out.write_str("definition source stopped before callable publication")
+                matches!(s.owner().owner().kind(),
+                         mac_object_table::domain::DomainKind::Process
+                         | mac_object_table::domain::DomainKind::Module)
+                && s.owner().owner() == s.allocation().owner()
             }
-            Self::Execution(cause) => cause.fmt(out)
+        }
+    }
+}
+struct Cell
+{
+    busy:    bool,
+    closing: bool,
+    entry:   Option<mac_abi::DefinitionEntry>,
+    mapping: Option<Arc<Mapping>>
+}
+struct Definition
+{
+    identity:  Identity,
+    owner:     OwnerRef,
+    base:      AtomicU64,
+    limit:     AtomicU64,
+    state:     Spinlock<Cell>,
+    execution: ExecutionGate,
+    retiring:  AtomicBool,
+    source:    SourceBinding
+}
+struct State
+{
+    store:   Store<Arc<Definition>>,
+    index:   HashMap<Identity, CompletionKey>,
+    credits: usize
+}
+static DEFINITIONS: spin::Once<Spinlock<State>> = spin::Once::new();
+static WAITING_PREPARATIONS: AtomicBool = AtomicBool::new(false);
+static WAITING_READERS: AtomicBool = AtomicBool::new(false);
+static WAITING_MONITOR: AtomicBool = AtomicBool::new(false);
+static WAITING_CLAIM_READERS: AtomicBool = AtomicBool::new(false);
+fn state<R>(op: impl FnOnce(&mut State) -> R) -> Result<R, Error>
+{
+    let state = DEFINITIONS.get().ok_or(Error::Missing)?;
+    Ok(InvocationGate::run(|| op(&mut state.lock())))
+}
+fn state_owned<A, R>(argument: A, op: impl FnOnce(A, &mut State) -> R) -> Result<R, (Error, A)>
+{
+    let Some(state) = DEFINITIONS.get()
+    else
+    {
+        return Err((Error::Missing, argument));
+    };
+    Ok(InvocationGate::run(|| op(argument, &mut state.lock())))
+}
+pub(super) fn initialize() -> Result<(), Error>
+{
+    if !crate::context::current_thread_context().is_bootstrap() || DEFINITIONS.get().is_some()
+    {
+        return Err(Error::Source);
+    }
+    let (objects, storage) =
+        crate::toolbox::handles::definition_kinds().map_err(Error::OwnerUnavailable)?;
+    let prepared = crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                       Store::owned_prepared(objects, storage)
+                   }).map_err(Error::Facility)?;
+    DEFINITIONS.call_once(|| {
+                   Spinlock::new(State { store:   prepared,
+                                         index:   HashMap::new(),
+                                         credits: 0 })
+               });
+    Ok(())
+}
+struct IndexCredit
+{
+    active: bool
+}
+fn credit_invariant_lost(reason: &str) -> !
+{
+    // A live credit's reset-lifetime registry cannot disappear, and each
+    // reservation has exactly one refund. A violated counter is structural
+    // System corruption, not an ordinary allocation or teardown refusal.
+    crate::machine::emergency::serial(format_args!("SYSTEM_DEFINITION_INVARIANT_LOST: {reason}\n"));
+    crate::machine::power::fatal_shutdown()
+}
+impl Drop for IndexCredit
+{
+    fn drop(&mut self)
+    {
+        if self.active
+        {
+            match state(|s| {
+                      if let Some(next) = s.credits.checked_sub(1)
+                      {
+                          s.credits = next
+                      }
+                      else
+                      {
+                          credit_invariant_lost("definition index credit underflow")
+                      }
+                  })
+            {
+                Ok(()) => (),
+                Err(_) => credit_invariant_lost("definition index incarnation disappeared")
+            }
         }
     }
 }
 
-/// Original registered completion authority, never an executable pointer or a
-/// caller-constructed ID. Copies still validate the full generation at invocation.
-#[derive(Clone, Copy)]
-pub(crate) struct DefinitionRef(CompletionKey);
-struct Definition
+fn index_credit() -> Result<IndexCredit, Error>
 {
-    owner:     OwnerRef,
-    kind:      [u8; 4],
-    id:        i16,
-    origin:    u64,
-    base:      u64,
-    limit:     u64,
-    entry:     mac_abi::DefinitionEntry,
-    execution: ExecutionGate,
-    retiring:  AtomicBool,
-    _source:   Option<crate::images::Read>
+    let mut prepared = HashMap::new();
+    loop
+    {
+        let need = state(|s| {
+            s.index
+             .len()
+             .checked_add(s.credits)
+             .and_then(|n| n.checked_add(1))
+             .ok_or(Error::Allocation)
+        })??;
+        let enough = state(|s| s.index.capacity() >= need)?;
+        if !enough
+        {
+            crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                prepared.try_reserve(need)
+            }).map_err(|_| Error::Allocation)?;
+        }
+        let (credit, retired) = state(|s| {
+            let Some(need) = s.index.len().checked_add(s.credits).and_then(|n| n.checked_add(1))
+            else
+            {
+                return (None, prepared);
+            };
+            if s.index.capacity() >= need
+            {
+                s.credits += 1;
+                return (Some(IndexCredit { active: true }), prepared);
+            }
+            if prepared.capacity() < need
+            {
+                return (None, prepared);
+            }
+            let mut old = core::mem::replace(&mut s.index, prepared);
+            for (key, value) in old.drain()
+            {
+                s.index.insert(key, value);
+            }
+            s.credits += 1;
+            (Some(IndexCredit { active: true }), old)
+        })?;
+        drop(retired);
+        if let Some(credit) = credit
+        {
+            return Ok(credit);
+        }
+        prepared = HashMap::new();
+    }
 }
-static DEFINITIONS: crate::state::TryState<Store<Arc<Definition>>> = crate::state::TryState::new();
-
-pub(super) fn initialize() -> Result<(), Error>
+fn publication(owner: &OwnerRef) -> Result<PublicationPermit<InvocationGate>, Error>
 {
-    let (objects, storage) =
-        crate::toolbox::handles::definition_kinds().map_err(Error::OwnerUnavailable)?;
-    let store = Store::owned_prepared(objects, storage).map_err(Error::Facility)?;
-    DEFINITIONS.publish(store).map_err(Error::Registry)
+    loop
+    {
+        let plan = state(|s| s.store.plan_publication(owner))?.map_err(Error::Facility)?;
+        let prepared = plan.prepare().map_err(Error::Facility)?;
+        match state(|s| s.store.admit_prepared(prepared))?
+        {
+            Ok((permit, old)) =>
+            {
+                old.dispose();
+                return Ok(permit);
+            }
+            Err(failure) =>
+            {
+                let cause = failure.cause;
+                drop(failure.preparation);
+                if cause != PreparedError::CapacityChanged
+                {
+                    return Err(Error::Preparation(cause));
+                }
+            }
+        }
+    }
 }
-
-/// Fixed-arena placement remains serialized by Desktop during this slice.
-/// Canonical retained records, including cleanup quarantine, own existing ranges.
-pub(super) fn placement(extent: u64) -> Result<u64, Error>
+pub(super) fn cached(kind: [u8; 4], id: i16, origin: u64) -> Result<Option<DefinitionRef>, Error>
 {
-    InvocationGate::run(|| {
-        DEFINITIONS.with(|store| {
-                       let mut base =
-                           crate::machine::memory::DEFINITION_LIMIT.checked_sub(extent)
-                                                                   .ok_or(Error::Placement)?;
-                       loop
-                       {
-                           if base < crate::machine::memory::DEFINITION_BASE
-                           {
-                               return Err(Error::Placement);
-                           }
-                           let overlap =
-                               store.retained_values()
-                                    .find(|entry| base < entry.limit && entry.base < base + extent);
-                           match overlap
-                           {
-                               None => return Ok(base),
-                               Some(other) =>
-                               {
-                                   base = other.base.checked_sub(extent).ok_or(Error::Placement)?
-                               }
-                           }
-                       }
-                   })
-                   .map_err(Error::Registry)?
-    })
+    state(|s| {
+        let Some(key) = s.index.get(&Identity { kind,
+                                                id,
+                                                origin })
+        else
+        {
+            return Ok(None);
+        };
+        let d = s.store.completing(key).ok_or(Error::Source)?;
+        if !d.owner.accepting()
+        {
+            return Err(Error::Stopping);
+        }
+        let cell = d.state.lock();
+        Ok(cell.entry.is_some().then_some(DefinitionRef(*key)))
+    })?
+}
+/// Only the loader's authenticated source query reaches this identity. No
+/// source/owner is selected by wire input and no new incarnation substitutes.
+pub(super) fn finish_existing(kind: [u8; 4], id: i16, origin: u64)
+                              -> Result<Option<DefinitionRef>, Error>
+{
+    if let Some(reference) = cached(kind, id, origin)?
+    {
+        return Ok(Some(reference));
+    }
+    let prepared = state(|s| {
+        let Some(key) = s.index.get(&Identity { kind,
+                                                id,
+                                                origin })
+        else
+        {
+            return Ok(None);
+        };
+        let d = s.store.completing(key).ok_or(Error::Source)?;
+        let preparation = Preparation::claim(d)?;
+        Ok::<_, Error>(Some((*key, preparation)))
+    })??;
+    let Some((key, prepare)) = prepared
+    else
+    {
+        return Ok(None);
+    };
+    let mapping =
+        InvocationGate::run(|| prepare.definition.state.lock().mapping.clone()).ok_or(Error::Busy)?;
+    if mapping.quarantined()
+    {
+        return Err(Error::Retained(mapping.refusal()));
+    }
+    finish(key, &prepare, &mapping).map(Some)
 }
 
-pub(super) fn publish(owner: OwnerRef, source: Option<crate::images::Read>, kind: [u8; 4],
-                      id: i16, origin: u64, base: u64, limit: u64, entry: mac_abi::DefinitionEntry)
+struct Preparation
+{
+    definition: Arc<Definition>,
+    _released:  PreparationReleased
+}
+struct PreparationReleased;
+impl Drop for PreparationReleased
+{
+    fn drop(&mut self)
+    {
+        let preparation = WAITING_PREPARATIONS.swap(false, Ordering::AcqRel);
+        let readers = WAITING_READERS.swap(false, Ordering::AcqRel);
+        if preparation || readers
+        {
+            crate::machine::paging::modules::changed();
+            crate::toolbox::processes::retirement::resources_released();
+        }
+    }
+}
+impl Preparation
+{
+    fn claim(definition: &Arc<Definition>) -> Result<Self, Error>
+    {
+        InvocationGate::run(|| {
+            let mut cell = definition.state.lock();
+            if cell.closing || !definition.owner.accepting()
+            {
+                return Err(Error::Stopping);
+            }
+            if cell.busy
+            {
+                return Err(Error::Busy);
+            }
+            cell.busy = true;
+            Ok(())
+        })?;
+        Ok(Self { definition: definition.clone(),
+                  _released:  PreparationReleased })
+    }
+}
+impl Drop for Preparation
+{
+    fn drop(&mut self)
+    {
+        InvocationGate::run(|| self.definition.state.lock().busy = false);
+    }
+}
+fn placement(store: &Store<Arc<Definition>>, extent: u64) -> Result<u64, Error>
+{
+    let mut base =
+        crate::machine::memory::DEFINITION_LIMIT.checked_sub(extent).ok_or(Error::Placement)?;
+    loop
+    {
+        if base < crate::machine::memory::DEFINITION_BASE
+        {
+            return Err(Error::Placement);
+        }
+        match store.retained_values().find(|d| {
+                                         base < d.limit.load(Ordering::Acquire)
+                                         && d.base.load(Ordering::Acquire) < base + extent
+                                     })
+        {
+            None => return Ok(base),
+            Some(d) =>
+            {
+                base = d.base.load(Ordering::Acquire).checked_sub(extent).ok_or(Error::Placement)?
+            }
+        }
+    }
+}
+pub(super) fn prepare(source: SourceBinding, kind: [u8; 4], id: i16,
+                      code: mac_formats::code::NativeCode)
                       -> Result<DefinitionRef, Error>
 {
-    match &source
+    if !source.valid()
     {
-        Some(source)
-            if source.binding().id() == origin && source.owner().owner() == owner.owner() =>
-        {}
-        None if origin == 0
-                && owner.owner().kind() == mac_object_table::domain::DomainKind::System =>
-        {}
-        _ => return Err(Error::Source)
+        return Err(Error::Source);
     }
-    if !owner.accepting()
+    if !source.owner().accepting()
     {
         return Err(Error::Stopping);
     }
-    let allocation = source.as_ref().map(|source| source.allocation().clone());
-    let publish = || {
-        let definition =
-            Arc::try_new(Definition { owner: owner.clone(),
-                                      kind,
-                                      id,
-                                      origin,
-                                      base,
-                                      limit,
-                                      entry,
-                                      execution:
-                                          ExecutionGate::try_new().map_err(Error::Execution)?,
-                                      retiring: AtomicBool::new(false),
-                                      _source: source }).map_err(|_| Error::Allocation)?;
-        let plan = InvocationGate::run(|| DEFINITIONS.with(|store| store.plan_publication(&owner)))
-            .map_err(Error::Registry)?.map_err(Error::Facility)?;
-        let preparation = plan.prepare().map_err(Error::Facility)?;
-        let admitted = InvocationGate::run(|| {
-            DEFINITIONS.with_owned(preparation, |preparation, store| {
-                           store.admit_prepared(preparation)
-                       })
-        });
-        let (permit, retired) = match admitted
-        {
-            Ok(Ok(admission)) => admission,
-            Ok(Err(failure)) =>
+    let identity = Identity { kind,
+                              id,
+                              origin: source.origin() };
+    if let Some(ready) = finish_existing(kind, id, identity.origin)?
+    {
+        return Ok(ready);
+    }
+    let extent = code.descriptor
+                     .load_limit
+                     .checked_sub(code.descriptor.load_base)
+                     .filter(|n| *n != 0 && n.is_multiple_of(crate::machine::memory::PAGE_BYTES))
+                     .ok_or(Error::Placement)?;
+    if extent > crate::machine::memory::DEFINITION_LIMIT - crate::machine::memory::DEFINITION_BASE
+    {
+        return Err(Error::Placement);
+    }
+    let target = source.allocation_target();
+    crate::allocator::with_target(target, || {
+        let mut credit = index_credit()?;
+        let permit = publication(source.owner())?;
+        let d = Arc::try_new(Definition { identity,
+                                          owner: source.owner().clone(),
+                                          base: AtomicU64::new(0),
+                                          limit: AtomicU64::new(0),
+                                          state: Spinlock::new(Cell { busy:    true,
+                                                                      closing: false,
+                                                                      entry:   None,
+                                                                      mapping: None }),
+                                          execution:
+                                              ExecutionGate::try_new().map_err(Error::Execution)?,
+                                          retiring: AtomicBool::new(false),
+                                          source }).map_err(|_| Error::Allocation)?;
+        let result = state(|s| {
+            if s.index.contains_key(&identity)
             {
-                let cause = failure.cause;
-                drop(failure);
-                return Err(Error::Preparation(cause));
+                return Err((Error::Busy, permit, None));
             }
-            Err((cause, preparation)) =>
+            if !credit.active
+               || s.credits == 0
+               || s.index.capacity() < s.index.len().checked_add(s.credits).unwrap_or(usize::MAX)
             {
-                drop(preparation);
-                return Err(Error::Registry(cause));
+                return Err((Error::Allocation, permit, None));
+            }
+            let base = match placement(&s.store, extent)
+            {
+                Ok(base) => base,
+                Err(e) => return Err((e, permit, None))
+            };
+            d.base.store(base, Ordering::Release);
+            d.limit.store(base + extent, Ordering::Release);
+            match s.store.publish_prepared(permit, d.clone())
+            {
+                Ok((publication, old)) =>
+                {
+                    let key = publication.into_parts().1;
+                    s.index.insert(identity, key);
+                    s.credits -= 1;
+                    credit.active = false;
+                    Ok((key, old))
+                }
+                Err(failure) =>
+                {
+                    Err((Error::Preparation(failure.cause), failure.permit, Some(failure.value)))
+                }
+            }
+        })?;
+        let (key, old) = match result
+        {
+            Ok(v) => v,
+            Err((cause, permit, value)) =>
+            {
+                drop(value);
+                drop(permit);
+                return Err(cause);
             }
         };
-        drop(retired);
-        let published = InvocationGate::run(|| {
-            DEFINITIONS.with_owned((permit, definition), |(permit, definition), store| {
-                           store.publish_prepared(permit, definition)
-                       })
-        });
-        match published
+        old.dispose();
+        let preparation = Preparation { definition: d,
+                                        _released:  PreparationReleased };
+        let base = preparation.definition.base.load(Ordering::Acquire);
+        let mapping =
+            match Mapping::prepare_definition(&preparation.definition.owner,
+                                              &preparation.definition.source.mapping_target(),
+                                              &code.descriptor,
+                                              &code.code,
+                                              &code.relocations,
+                                              base)
+            {
+                Ok(mapping) => mapping,
+                Err(cause) =>
+                {
+                    discard(key, preparation)?;
+                    return Err(Error::Mapping(cause));
+                }
+            };
+        InvocationGate::run(|| preparation.definition.state.lock().mapping = Some(mapping.clone()));
+        match finish(key, &preparation, &mapping)
         {
-            Ok(Ok((publication, retired))) =>
+            Ok(reference) => Ok(reference),
+            Err(cause) =>
             {
-                drop(retired);
-                Ok(DefinitionRef(publication.into_parts().1))
-            }
-            Ok(Err(failure)) =>
-            {
-                let cause = failure.cause;
-                drop(failure);
-                Err(Error::Preparation(cause))
-            }
-            Err((cause, pending)) =>
-            {
-                drop(pending);
-                Err(Error::Registry(cause))
+                if mapping.unpublished()
+                {
+                    mapping.retire().map_err(Error::Mapping)?;
+                    drop(mapping);
+                    discard(key, preparation)?;
+                }
+                Err(cause)
             }
         }
-    };
-    match allocation {
-        Some(account) => crate::allocator::with_target(crate::allocator::Target::Owner {
-            account, class: mac_kernel_model::policy::MemoryClass::Kernel
-        }, publish),
-        None => crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, publish),
-    }
+    })
 }
 
-/// Cache rows carry identity only; stale rows cannot resurrect completed slots.
-pub(super) fn matches(reference: DefinitionRef, kind: [u8; 4], id: i16, origin: u64)
-                      -> Result<bool, Error>
+fn finish(key: CompletionKey, preparation: &Preparation, mapping: &Arc<Mapping>)
+          -> Result<DefinitionRef, Error>
 {
-    InvocationGate::run(|| {
-        DEFINITIONS.with(|store| {
-                       let Some(entry) = store.completing(&reference.0)
-                       else
-                       {
-                           return Ok(false);
-                       };
-                       if !entry.owner.accepting()
-                       {
-                           return Err(Error::Stopping);
-                       }
-                       Ok(entry.kind == kind && entry.id == id && entry.origin == origin)
-                   })
-                   .map_err(Error::Registry)?
-    })
+    mapping.publish().map_err(Error::Mapping)?;
+    if !preparation.definition.owner.accepting()
+    {
+        return Err(Error::Stopping);
+    }
+    let address = preparation.definition.base.load(Ordering::Acquire);
+    // Entry is computed from the validated plan, not assumed to be the range base.
+    let entry = mapping.entry().ok_or(Error::Source)?;
+    if entry < address || entry >= preparation.definition.limit.load(Ordering::Acquire)
+    {
+        return Err(Error::Source);
+    }
+    let function: mac_abi::DefinitionEntry = unsafe { core::mem::transmute(entry as usize) };
+    InvocationGate::run(|| preparation.definition.state.lock().entry = Some(function));
+    Ok(DefinitionRef(key))
+}
+fn discard(key: CompletionKey, preparation: Preparation) -> Result<(), Error>
+{
+    let removed = state(|s| {
+        if s.index.get(&preparation.definition.identity) != Some(&key)
+        {
+            return Err(Error::Source);
+        }
+        match s.store.remove_with_backing(key.id())
+        {
+            Some(removed) =>
+            {
+                s.index.remove(&preparation.definition.identity);
+                Ok(Some(removed))
+            }
+            // A concurrent stopped-owner walk owns its unique pending ticket.
+            // Preparation Drop releases busy/Arc then posts its actual wake.
+            None if s.store.completing(&key).is_some() => Ok(None),
+            None => Err(Error::Source)
+        }
+    })??;
+    drop(preparation);
+    if let Some(removed) = removed
+    {
+        removed.dispose()
+    }
+    Ok(())
 }
 
 struct Invocation
@@ -257,75 +635,87 @@ impl Drop for Invocation
     fn drop(&mut self)
     {
         drop(self.execution.take());
-        let retiring =
-            self.definition.as_ref().is_some_and(|entry| entry.retiring.load(Ordering::Acquire));
+        let retiring = self.definition.as_ref().is_some_and(|d| d.retiring.load(Ordering::Acquire));
         drop(self.definition.take());
-        if retiring
+        let readers = WAITING_READERS.swap(false, Ordering::AcqRel);
+        if retiring || readers
         {
+            crate::machine::paging::modules::changed();
             crate::toolbox::processes::retirement::resources_released();
         }
     }
 }
-fn pin(reference: DefinitionRef, call: &DefinitionCall) -> Result<Invocation, Status>
+fn pin(reference: DefinitionRef, call: &DefinitionCall, disposal: bool)
+       -> Result<(Invocation, mac_abi::DefinitionEntry), Status>
 {
-    InvocationGate::run(|| {
-        DEFINITIONS.with(|store| {
-                       let definition = store.completing(&reference.0).ok_or(NOT_FOUND)?;
-                       if definition.kind != call.kind.to_be_bytes() || definition.id != call.id
-                       {
-                           return Err(BAD_ARGUMENT);
-                       }
-                       if definition.owner.owner() != reference.0.owner()
-                       {
-                           return Err(ACCESS_DENIED);
-                       }
-                       let execution = definition.execution.pin().map_err(|_| SERVICE_BUSY)?;
-                       Ok(Invocation { execution:  Some(execution),
-                                       definition: Some(definition.clone()) })
-                   })
-                   .map_err(|cause| cause.status())?
-    })
+    state(|s| {
+        let d = s.store.completing(&reference.0).ok_or(NOT_FOUND)?;
+        if d.identity.kind != call.kind.to_be_bytes() || d.identity.id != call.id
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        if d.owner.owner() != reference.0.owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let cell = d.state.lock();
+        if cell.closing || (!disposal && !d.owner.accepting())
+        {
+            return Err(SERVICE_BUSY);
+        }
+        // Retained WDEF Dispose currently runs from the original Window release
+        // ticket after owner stop. A blanket accepting check would strand that
+        // Window and therefore DDEF/IMAG cleanup. Restricting other stopped-owner
+        // invocation requires the paired genuine cleanup authority, not a wire
+        // message/boolean exception. Already pinned calls retain their lifetime.
+        let entry = cell.entry.ok_or(SERVICE_BUSY)?;
+        let execution = d.execution.pin().map_err(|_| SERVICE_BUSY)?;
+        Ok((Invocation { execution:  Some(execution),
+                         definition: Some(d.clone()) },
+            entry))
+    }).map_err(|e| e.status())?
 }
 
 pub(crate) fn invoke(reference: DefinitionRef, call: &mut DefinitionCall) -> i64
 {
-    let pin = match pin(reference, call)
-    {
-        Ok(pin) => pin,
-        Err(status) => return status as i64
-    };
-    let Some(definition) = pin.definition.as_ref()
-    else
-    {
-        return SERVICE_BUSY as i64;
-    };
-    // The original registered receipt remains valid for an existing object's
-    // Dispose after stop. No public lookup or new admission can forge it. The
-    // cleanup walk cannot release this source/code while the invocation is held.
-    crate::context::current_thread_context().definitions.with(call.kind,
-                                                              call.id,
-                                                              call.surface,
-                                                              || {
-                                                                  // SAFETY: loader-validated entry
-                                                                  // from the generation-checked
-                                                                  // original
-                                                                  // record; actual execution/source
-                                                                  // lifetime is pinned across this
-                                                                  // call.
-                                                                  unsafe {
-                                                                      (definition.entry)(call)
-                                                                  }
-                                                              })
+    invoke_admitted(reference, call, false)
 }
 
+/// The only stopped-source admission is a real Window Manager cleanup turn.
+/// Its nonconstructible permit borrows the original invalidate-first ticket;
+/// inspecting the wire message alone never grants this authority.
+pub(crate) fn invoke_disposal(permit: crate::toolbox::windows::manager::DefinitionDisposal<'_>,
+                              call: &mut DefinitionCall)
+                              -> i64
+{
+    if call.kind != mac_abi::definitions::WDEF || call.message != mac_abi::definitions::DISPOSE
+    {
+        return BAD_ARGUMENT as i64;
+    }
+    invoke_admitted(permit.entry(), call, true)
+}
+
+fn invoke_admitted(reference: DefinitionRef, call: &mut DefinitionCall, disposal: bool) -> i64
+{
+    let (_pin, entry) = match pin(reference, call, disposal)
+    {
+        Ok(v) => v,
+        Err(e) => return e as i64
+    };
+    crate::context::current_thread_context().definitions
+                                            .with(call.kind, call.id, call.surface, || unsafe {
+                                                entry(call)
+                                            })
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Drain
 {
     Objects,
     Threads,
-    Invocations
+    Invocations,
+    Preparation,
+    Mapping(crate::machine::paging::modules::CleanupCause)
 }
-
 #[derive(Clone, Copy)]
 pub(crate) enum Registration
 {
@@ -338,16 +728,19 @@ impl Registration
 
     pub(crate) fn specification(self) -> Specification<'static>
     {
-        let (kind, label) = match self
-        {
-            Self::Definition => (*b"DDEF", "Loaded definition callables"),
-            Self::Storage => (*b"DSTA", "Definition callable backing")
-        };
-        Specification { kind: KindCode(kind),
-                        label,
+        Specification { kind:     KindCode(match self
+                                           {
+                                               Self::Definition => *b"DDEF",
+                                               Self::Storage => *b"DSTA"
+                                           }),
+                        label:    match self
+                        {
+                            Self::Definition => "Loaded definition callables",
+                            Self::Storage => "Definition callable backing"
+                        },
                         provider: "System Definition Manager",
                         capacity: CapacityPolicy::GrowableUntilMemory,
-                        source: Source::Resident }
+                        source:   Source::Resident }
     }
 }
 impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> for Registration
@@ -356,65 +749,327 @@ impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> fo
                ticket: ReleasedResource)
                -> Result<(), Failure>
     {
-        // Do not nest the scheduler lock under the definition registry. The
-        // canonical stopping owner forbids fresh threads; unresolved thread
-        // publications also remain non-root resources checked below.
-        let threads = matches!(self, Self::Definition)
-                      && InvocationGate::run(|| {
-                          crate::machine::scheduler::has_threads(ticket.key().owner().incarnation())
-                      });
-        let removed = InvocationGate::run(|| {
-            DEFINITIONS.with_owned(ticket, |ticket, store| {
-                           if matches!(self, Self::Storage)
-                           {
-                               return store.release_storage_with_backing(ticket)
-                                           .map(|retired| (None, retired, None))
-                                           .map_err(Failure::from);
-                           }
-                           let exclusion = if let Some(definition) = store.releasing(&ticket)
-                           {
-                               definition.retiring.store(true, Ordering::Release);
-                               let owner = definition.owner.owner().incarnation();
-                               if !crate::images::Manager::root_only(&definition.owner)
-                               {
-                                   return Err(Failure::definition_pending(ticket,
-                                                                          owner,
-                                                                          Drain::Objects));
-                               }
-                               if threads
-                               {
-                                   return Err(Failure::definition_pending(ticket,
-                                                                          owner,
-                                                                          Drain::Threads));
-                               }
-                               match definition.execution.begin_load()
-                               {
-                                   Ok(exclusion) => Some(exclusion),
-                                   Err(_) =>
-                                   {
-                                       return Err(Failure::definition_pending(ticket,
-                                                                              owner,
-                                                                              Drain::Invocations));
-                                   }
-                               }
-                           }
-                           else
-                           {
-                               None
-                           };
-                           store.release_with_backing(ticket)
-                                .map(|removed| (Some(removed), None, exclusion))
-                                .map_err(Failure::from)
-                       })
+        let owner = ticket.key().owner().incarnation();
+        if matches!(self, Self::Storage)
+        {
+            return match state_owned(ticket, |ticket, s| {
+                      if s.store.publication_preparations(ticket.key().owner()) != 0
+                      {
+                          return Err(Failure::definition_pending(ticket,
+                                                                 owner,
+                                                                 Drain::Preparation));
+                      }
+                      s.store.release_storage_with_backing(ticket).map_err(Failure::from)
+                  })
+            {
+                Ok(result) =>
+                {
+                    drop(result?);
+                    Ok(())
+                }
+                Err((_, ticket)) => Err(Failure::context_unavailable(ticket, "definition registry"))
+            };
+        }
+        let definition = match state(|s| s.store.releasing(&ticket).cloned())
+        {
+            Ok(Some(definition)) =>
+            {
+                RetirementRead { definition,
+                                 _released: ClaimReaderReleased }
+            }
+            _ => return Err(Failure::context_unavailable(ticket, "definition registry"))
+        };
+        definition.retiring.store(true, Ordering::Release);
+        if !crate::images::Manager::root_only(&definition.owner)
+        {
+            return Err(Failure::definition_pending(ticket, owner, Drain::Objects));
+        }
+        if InvocationGate::run(|| crate::machine::scheduler::has_threads(owner))
+        {
+            return Err(Failure::definition_pending(ticket, owner, Drain::Threads));
+        }
+        WAITING_PREPARATIONS.store(true, Ordering::Release);
+        let busy = InvocationGate::run(|| {
+            let mut cell = definition.state.lock();
+            cell.closing = true;
+            cell.busy
         });
+        if busy
+        {
+            return Err(Failure::definition_pending(ticket, owner, Drain::Preparation));
+        }
+        let mapping = InvocationGate::run(|| {
+            let cell = definition.state.lock();
+            if cell.mapping.is_none() && cell.entry.is_some()
+            {
+                return Err(Drain::Mapping(crate::machine::paging::modules::CleanupCause::State {
+                    base: definition.base.load(Ordering::Acquire)
+                }));
+            }
+            Ok(cell.mapping.clone())
+        });
+        let mapping = match mapping
+        {
+            Ok(mapping) => mapping,
+            Err(cause) => return Err(Failure::definition_pending(ticket, owner, cause))
+        };
+        if let Some(mapping) = &mapping
+        {
+            if !mapping.settled()
+            {
+                // Desktop owns this walk. Only publish the existing mapping's
+                // real maintenance notice here; no PTE operation/ACK or page
+                // disposal runs while Desktop is borrowed.
+                WAITING_MONITOR.store(true, Ordering::Release);
+                mapping.request_retirement();
+                return Err(Failure::definition_pending(ticket,
+                                                       owner,
+                                                       Drain::Mapping(mapping.refusal())));
+            }
+        }
+        let exclusion = match definition.execution.begin_load()
+        {
+            Ok(v) => v,
+            Err(_) => return Err(Failure::definition_pending(ticket, owner, Drain::Invocations))
+        };
+        WAITING_READERS.store(true, Ordering::Release);
+        let readers = match state(|_| Arc::strong_count(&definition.definition))
+        {
+            Ok(n) => n,
+            Err(_) => return Err(Failure::context_unavailable(ticket, "definition registry"))
+        };
+        if readers != 2
+        {
+            return Err(Failure::definition_pending(ticket, owner, Drain::Preparation));
+        }
+        // Absent mapping is admitted only for a never-published preparation
+        // (entry=None above). A real mapping must already be settled here.
+        drop(mapping);
+        let removed = match state_owned(ticket, |ticket, s| {
+                  let result = s.store.release_with_backing(ticket);
+                  if result.is_ok()
+                  {
+                      s.index.remove(&definition.identity);
+                  }
+                  result
+              })
+        {
+            Ok(result) => result,
+            Err((_, ticket)) =>
+            {
+                return Err(Failure::context_unavailable(ticket, "definition registry"));
+            }
+        };
+        drop(exclusion);
+        drop(definition);
         match removed
         {
-            Ok(result) =>
+            Ok(removed) =>
             {
-                drop(result?);
+                removed.dispose();
                 Ok(())
             }
-            Err((_, ticket)) => Err(Failure::context_unavailable(ticket, "definition registry"))
+            Err(cause) => Err(cause.into())
         }
+    }
+}
+/// A cleanup reader can temporarily block a guard-free retirement claim. Its
+/// checkpoint runs after the actual Arc release, without depending on an exact
+/// final count or borrowing payload which may just have been destroyed.
+struct RetirementRead
+{
+    definition: Arc<Definition>,
+    _released:  ClaimReaderReleased
+}
+impl core::ops::Deref for RetirementRead
+{
+    type Target = Definition;
+
+    fn deref(&self) -> &Definition
+    {
+        &self.definition
+    }
+}
+struct ClaimReaderReleased;
+impl Drop for ClaimReaderReleased
+{
+    fn drop(&mut self)
+    {
+        if WAITING_CLAIM_READERS.swap(false, Ordering::AcqRel)
+        {
+            crate::machine::paging::modules::changed();
+            crate::toolbox::processes::retirement::resources_released();
+        }
+    }
+}
+/// One real canonical DDEF/execution exclusion. The original cleanup ticket
+/// remains in the owner walk; neither source nor mapping is detached from it.
+pub(crate) struct MappingRetirement
+{
+    exclusion:  Option<mac_kernel_model::image::Loading>,
+    definition: Option<Arc<Definition>>,
+    base:       u64,
+    not_run:    bool
+}
+impl MappingRetirement
+{
+    pub(crate) fn base(&self) -> u64
+    {
+        self.base
+    }
+
+    pub(crate) fn run(mut self) -> Result<(), crate::machine::paging::modules::Error>
+    {
+        use crate::machine::paging::modules::Error;
+        self.not_run = false;
+        let definition = self.definition.as_ref().ok_or(Error::State)?;
+        // These were true before the canonical walk requested retirement.
+        // Revalidate before any PTE effect, outside all manager guards. Closing
+        // prevents new invocation/preparation; the retained Loading excludes
+        // calls already in flight, and busy excludes a second retirement turn.
+        if definition.owner.accepting()
+           || !crate::images::Manager::root_only(&definition.owner)
+           || InvocationGate::run(|| {
+               crate::machine::scheduler::has_threads(definition.owner.owner().incarnation())
+           })
+        {
+            return Err(Error::Closed);
+        }
+        let mapping = InvocationGate::run(|| {
+            let cell = definition.state.lock();
+            if !cell.closing || !cell.busy
+            {
+                return Err(Error::State);
+            }
+            let mapping = cell.mapping.as_ref().ok_or(Error::State)?;
+            if !mapping.ready()
+            {
+                return Err(Error::State);
+            }
+            Ok(mapping.clone())
+        })?;
+        mapping.retire()
+    }
+}
+impl Drop for MappingRetirement
+{
+    fn drop(&mut self)
+    {
+        drop(self.exclusion.take());
+        if let Some(definition) = self.definition.take()
+        {
+            InvocationGate::run(|| definition.state.lock().busy = false);
+            drop(definition);
+        }
+        // Abandoning a claimed operation before run consumed no notice. A run
+        // refused by a busy monitor waits for that real lease release instead.
+        if self.not_run
+        {
+            crate::machine::paging::modules::changed();
+        }
+        crate::toolbox::processes::retirement::resources_released();
+    }
+}
+pub(crate) fn mapping_retirement(after: u64) -> Result<Option<MappingRetirement>, Error>
+{
+    if DEFINITIONS.get().is_none()
+    {
+        return Ok(None);
+    }
+    let (claim, changed) = state(|s| {
+        let mut changed = false;
+        let candidate = s.store
+                         .retained_values()
+                         .filter(|definition| {
+                             if definition.base.load(Ordering::Acquire) <= after
+                                || !definition.retiring.load(Ordering::Acquire)
+                             {
+                                 return false;
+                             }
+                             let cell = definition.state.lock();
+                             if !cell.closing
+                                || cell.busy
+                                || !cell.mapping.as_ref().is_some_and(|mapping| mapping.ready())
+                             {
+                                 return false;
+                             }
+                             // Skip this blocked row without starving another
+                             // definition. Arm then recheck its actual reader
+                             // release race; notification happens outside State.
+                             if Arc::strong_count(definition) != 1
+                             {
+                                 WAITING_CLAIM_READERS.store(true, Ordering::Release);
+                                 changed |= Arc::strong_count(definition) == 1;
+                                 return false;
+                             }
+                             true
+                         })
+                         .min_by_key(|definition| definition.base.load(Ordering::Acquire));
+        let Some(definition) = candidate
+        else
+        {
+            return (None, changed);
+        };
+        // Store is the sole reader here and State excludes a new cleanup
+        // reader until this real busy claim is published. Closing already
+        // prevents new author/preparation admission.
+        let mut cell = definition.state.lock();
+        let exclusion = match definition.execution.begin_load()
+        {
+            Ok(exclusion) => exclusion,
+            Err(_) => return (None, changed)
+        };
+        cell.busy = true;
+        (Some(MappingRetirement { exclusion:  Some(exclusion),
+                                  definition: Some(definition.clone()),
+                                  base:       definition.base.load(Ordering::Acquire),
+                                  not_run:    true }),
+         changed)
+    })?;
+    if changed
+    {
+        crate::machine::paging::modules::changed();
+    }
+    Ok(claim)
+}
+pub(crate) fn monitor_released()
+{
+    if WAITING_MONITOR.swap(false, Ordering::AcqRel)
+    {
+        crate::toolbox::processes::retirement::resources_released();
+    }
+}
+#[derive(Clone, Copy)]
+pub(crate) struct Range
+{
+    pub(crate) base:  u64,
+    pub(crate) limit: u64,
+    pub(crate) owner: DomainId
+}
+pub(crate) fn visibility_snapshot() -> Result<Vec<Range>, Error>
+{
+    let mut ranges = Vec::new();
+    loop
+    {
+        let count = state(|s| s.store.retained_values().count())?;
+        ranges.try_reserve(count).map_err(|_| Error::Allocation)?;
+        let full = state(|s| {
+            for d in s.store.retained_values()
+            {
+                if ranges.len() == ranges.capacity()
+                {
+                    return false;
+                }
+                ranges.push(Range { base:  d.base.load(Ordering::Acquire),
+                                    limit: d.limit.load(Ordering::Acquire),
+                                    owner: d.owner.owner() })
+            }
+            true
+        })?;
+        if full
+        {
+            return Ok(ranges);
+        }
+        ranges.clear();
     }
 }

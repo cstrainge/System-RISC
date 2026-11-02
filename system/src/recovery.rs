@@ -676,6 +676,34 @@ pub(crate) fn dialog_request(call: &mut mac_abi::dialogs::DialogCall) -> Status
             opening.commit();
             return Ok(());
         }
+        if !is_core && call.operation == OPEN_ALERT
+        {
+            if call.reserved != 0
+            {
+                return Err(mac_abi::BAD_ARGUMENT);
+            }
+            call.item = 0;
+            let selection = crate::kernel::current_resource_selection();
+            return crate::context::with_selected_resources(selection, || {
+                // Decode once into owned data. No Desktop or source-manager
+                // guard crosses real executable preparation/publication waits.
+                let alert = crate::kernel::with_resources_in(call.scope, |resources| {
+                    crate::toolbox::dialogs::load(resources, call)
+                })??;
+                call.item = alert.items.len() as u16;
+                let buttons = crate::kernel::with_desktop(|desktop| {
+                    desktop.preflight_decoded_alert(&owner, &alert)
+                }).map_err(|error| error.status())??;
+                crate::loader::prepare_definition(*b"WDEF", 0).map_err(crate::loader::status)?;
+                if buttons
+                {
+                    crate::loader::prepare_definition(*b"CDEF", 0).map_err(crate::loader::status)?;
+                }
+                crate::kernel::with_desktop(|desktop| {
+                    desktop.open_prepared_alert(&owner, call, alert)
+                }).map_err(|error| error.status())?
+            }).map_err(|_| mac_abi::WRONG_THREAD)?;
+        }
         let activity = active(owner.owner().incarnation(), Kind::CoreAlert).filter(|activity| {
                                                                                call.window != 0
                     && call.window == activity.session.object.load(Ordering::Acquire)

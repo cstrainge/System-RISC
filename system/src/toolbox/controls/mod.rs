@@ -209,11 +209,24 @@ pub fn definition_id(call: &ControlCall) -> Result<i16, Status>
         _ => Err(NOT_SUPPORTED)
     }
 }
-/// Validate CDEF state without allocating a retained drawing.
-pub(crate) fn validate(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate)
-                       -> Result<(), Status>
+/// Validate wire/state structure without invoking a definition or allocating.
+/// Cold-load preflight and the actual callback path share these checks.
+pub(crate) fn preflight(call: &ControlCall) -> Result<i16, Status>
 {
+    if call.reserved != 0
+    {
+        return Err(BAD_ARGUMENT);
+    }
     let id = definition_id(call)?;
+    if id == 1
+    {
+        mac_definition::validation::scrollbar(&call.scrollbar).map_err(|error| error.status())?;
+    }
+    else
+    {
+        mac_definition::validation::standard(id, variation(call.procedure, id), &call.standard)
+            .map_err(|error| error.status())?;
+    }
     if id == 1
        && (call.scrollbar.maximum < 0
            || call.scrollbar.value < 0
@@ -222,11 +235,17 @@ pub(crate) fn validate(call: &mut ControlCall, entry: DefinitionRef, gate: TrapG
     {
         return Err(BAD_ARGUMENT);
     }
-    if id != 1 && (call.standard.bounds.is_empty()
-        || call.standard.title_length as usize > call.standard.title.len()
-        || core::str::from_utf8(&call.standard.title[..(call.standard.title_length as usize).min(call.standard.title.len())]).is_err()) {
+    if id != 1 && call.standard.bounds.is_empty()
+    {
         return Err(BAD_ARGUMENT);
     }
+    Ok(id)
+}
+/// Validate CDEF state without allocating a retained drawing.
+pub(crate) fn validate(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate)
+                       -> Result<(), Status>
+{
+    let id = preflight(call)?;
     let object = if id == 1
     {
         (&mut call.scrollbar as *mut ScrollbarState).cast()
@@ -262,28 +281,7 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGa
                       title: Option<&Arc<snapshot::Title>>)
                       -> Result<Option<Drawing>, Status>
 {
-    let id = definition_id(call)?;
-    if id == 1
-    {
-        if call.scrollbar.maximum < 0
-           || call.scrollbar.value < 0
-           || call.scrollbar.value > call.scrollbar.maximum
-           || call.scrollbar.bounds.is_empty()
-        {
-            return Err(BAD_ARGUMENT);
-        }
-    }
-    else
-    {
-        let s = &call.standard;
-        let length = s.title_length as usize;
-        if s.bounds.is_empty()
-           || length > s.title.len()
-           || core::str::from_utf8(&s.title[..length]).is_err()
-        {
-            return Err(BAD_ARGUMENT);
-        }
-    }
+    let id = preflight(call)?;
     if matches!(call.operation, DRAW_SCROLLBAR | DRAW_STANDARD)
     {
         validate(call, entry, gate)?;
@@ -382,7 +380,19 @@ pub mod native
                 return Err(BAD_ARGUMENT);
             }
             let call = unsafe { &mut *pointer.cast::<ControlCall>() };
-            let id = definition_id(call)?;
+            let id = preflight(call)?;
+            if matches!(call.operation, DRAW_SCROLLBAR | DRAW_STANDARD)
+            {
+                if call.surface.is_null()
+                   || !(call.surface as usize).is_multiple_of(core::mem::align_of::<Surface>())
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                // End the checked pixel borrow before cold executable loading.
+                // The real drawing path revalidates it before painting; no
+                // canvas or surface reference crosses allocation/publication.
+                unsafe { (&mut *call.surface).canvas() }.ok_or(BAD_ARGUMENT)?;
+            }
             let entry = resolve(id)?;
             if let Some(drawing) = prepare(call, entry, gate)?
             {

@@ -224,6 +224,35 @@ pub(crate) fn pump_module_images()
     {
         return;
     }
+    // DDEF and IMAG consume the same real mapping-change notice, independently.
+    // An empty/blocked definition scan must not stop image maintenance (or vice
+    // versa); neither scan holds Desktop while executing its physical claim.
+    let mut definition_after = 0;
+    loop
+    {
+        let claim =
+            match crate::toolbox::resources::definitions::mapping_retirement(definition_after)
+            {
+                Ok(Some(claim)) => claim,
+                Ok(None) => break,
+                Err(cause) =>
+                {
+                    serial!("DEFINITION_MAPPING_RETIREMENT_RETAINED: {cause}; original ticket \
+                             retained");
+                    break;
+                }
+            };
+        definition_after = claim.base();
+        if let Err(cause) = claim.run()
+        {
+            if !matches!(cause, crate::machine::paging::modules::Error::Monitor(
+                crate::machine::monitor::Error::Busy))
+            {
+                serial!("DEFINITION_MAPPING_RETIREMENT_RETAINED base={definition_after:#x} \
+                         cause={cause}");
+            }
+        }
+    }
     let mut after = 0;
     loop
     {
@@ -330,17 +359,8 @@ pub(crate) fn release_image(ticket: mac_object_table::domain::ReleasedResource,
         }
     }
 }
-pub(crate) fn finish_image_origins(desktop: &mut crate::toolbox::runtime::Desktop)
+pub(crate) fn finish_image_origins()
 {
-    let mut previous = 0;
-    while let Ok(Some((owner, origin))) = IMAGES.with(|images| images.next_retiring(previous))
-    {
-        previous = owner;
-        if !crate::machine::scheduler::has_threads(owner)
-        {
-            desktop.evict_image_origin(origin);
-        }
-    }
     let _ = IMAGES.with(|images| images.finish_retiring());
 }
 
@@ -566,6 +586,11 @@ pub(crate) fn system_resources(owner: &crate::toolbox::handles::OwnerRef)
 }
 impl SystemResources
 {
+    pub(crate) fn owner(&self) -> &crate::toolbox::handles::OwnerRef
+    {
+        &self.0.owner
+    }
+
     pub(crate) fn same_source(&self, other: Self) -> bool
     {
         core::ptr::eq(self.0, other.0)
@@ -949,12 +974,19 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
                                         recovery_boot_error("System modal service admission failed",
                                                             status)
                                     })?;
-    let mut definitions = crate::loader::Definitions::new(files)?;
+    crate::loader::initialize_definitions()?;
+    let system_source =
+        system_resources(&crate::toolbox::handles::system_owner().map_err(|status| {
+                              recovery_boot_error("System definition source unavailable", status)
+                          })?).map_err(|status| {
+                                  recovery_boot_error("System definition source unavailable",
+                                                      status)
+                              })?;
     let mut controls = crate::toolbox::controls::objects::Manager::new(
         crate::toolbox::handles::controls_kinds().map_err(|status| recovery_boot_error("Control Manager kind admission failed", status))?)
         .map_err(|status| recovery_boot_error("Control Manager admission failed", status))?;
-    let mut boot_screen = crate::boot_screen::BootScreen::begin(&files.system, fonts,
-                                                                &mut definitions, &mut controls)?;
+    let mut boot_screen =
+        crate::boot_screen::BootScreen::begin(&files.system, fonts, system_source, &mut controls)?;
     if !crate::platform::setup_framebuffer()
     {
         return Err(mac_formats::Error::Malformed("RAM framebuffer is unavailable").into());
@@ -974,8 +1006,7 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     // stock before any installed module initializer can consume that heap.
     // BootScreen retains its Control identity without borrowing the manager;
     // move that manager once and keep the welcome panel until publication.
-    let mut runtime = crate::toolbox::runtime::Desktop::new(definitions,
-                                                            processes,
+    let mut runtime = crate::toolbox::runtime::Desktop::new(processes,
                                                             finder_owner.clone(),
                                                             controls).map_err(|cause| {
                                                                          match cause

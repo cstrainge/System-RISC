@@ -5,6 +5,8 @@
 pub use mac_abi as __abi;
 mod binding;
 mod families;
+#[doc(hidden)]
+pub mod validation;
 pub use families::{Button, ButtonKind, CaptionMode, Highlight, Progress, ProgressRange,
                    ProgressStyle, Reply, Scrollbar};
 pub use toolbox_controls::Part;

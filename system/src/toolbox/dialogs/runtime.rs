@@ -18,6 +18,19 @@ fn request(window: u64, bounds: Rect) -> WindowRequest
                     minimum_height: 1,
                     reserved: 0 }
 }
+fn alert_button(index: usize, item: &dialogs::Item) -> ControlCall
+{
+    let mut standard = definitions::ControlDefinitionState::new(item.bounds, &item.text);
+    standard.enabled = u32::from(item.enabled);
+    if index == 0 && item.enabled
+    {
+        standard.bounds.inset(-4, -4);
+        standard.flags = definitions::DEFAULT_BUTTON;
+    }
+    ControlCall { operation: CREATE_STANDARD,
+                  standard,
+                  ..Default::default() }
+}
 // Initialization owns the protocol before any window or control is published.
 // Every fallible exit clears the parent, even if a child WDEF refuses disposal.
 struct InitializingAlert<'a>
@@ -190,7 +203,7 @@ impl super::Desktop
         {
             OPEN_ALERT | VALIDATE_ALERT =>
             {
-                let mut alert = if dialogs::core_alerts::supported(call.scope, call.resource)
+                let alert = if dialogs::core_alerts::supported(call.scope, call.resource)
                 {
                     dialogs::core_alerts::instantiate(call)?
                 }
@@ -205,50 +218,7 @@ impl super::Desktop
                 {
                     return Ok(());
                 }
-                if self.dialogs.active()
-                {
-                    return Err(SERVICE_BUSY);
-                }
-                if alert.position == 0x300a
-                {
-                    // Inside Macintosh positions the structure in the upper fifth of
-                    // the desktop. Obtain its insets from WDEF, never duplicate them.
-                    let entry =
-                        self.definitions.resolve(*b"WDEF", 0).map_err(crate::loader::status)?;
-                    let mut state = definitions::WindowDefinitionState::new(alert.bounds, "");
-                    let mut definition =
-                        DefinitionCall { header:    Header::for_type::<DefinitionCall>(),
-                                         kind:      definitions::WDEF,
-                                         id:        0,
-                                         variation: 1,
-                                         message:   definitions::CALCULATE,
-                                         reserved:  0,
-                                         param:     0,
-                                         object:    core::ptr::from_mut(&mut state).cast(),
-                                         surface:   core::ptr::null_mut(),
-                                         gate:      crate::machine::traps::gateway };
-                    let status =
-                        crate::toolbox::resources::definitions::invoke(entry, &mut definition);
-                    if status < 0
-                    {
-                        return Err(status as Status);
-                    }
-                    let r = state.structure;
-                    alert.bounds.offset((crate::display::WIDTH as i16 - (r.right - r.left)) / 2
-                                        - r.left,
-                                        20
-                                        + ((crate::display::HEIGHT as i16 - 20)
-                                           - (r.bottom - r.top))
-                                          / 5
-                                        - r.top);
-                }
-                let previous = self.windows.active_window();
-                self.dialogs.begin(alert, previous)?;
-                let mut guard = InitializingAlert { desktop:   self,
-                                                    committed: false };
-                guard.desktop.initialize_alert()?;
-                call.window = guard.desktop.dialogs.window;
-                guard.committed = true;
+                self.open_decoded_alert(call, alert)?;
             }
             CLOSE =>
             {
@@ -282,6 +252,101 @@ impl super::Desktop
         Ok(())
     }
 
+    fn admit_alert_owner(&self, owner: &crate::toolbox::handles::OwnerRef) -> Result<(), Status>
+    {
+        let (recipient, _) = self.service_owners()?;
+        if recipient.owner() != owner.owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        if !owner.accepting() || self.dialogs.active()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        Ok(())
+    }
+
+    /// The decoded resource is owned; this turn neither loads code nor calls
+    /// definitions. Return only the families actually used by initialization.
+    pub(crate) fn preflight_decoded_alert(&self, owner: &crate::toolbox::handles::OwnerRef,
+                                          alert: &dialogs::Alert)
+                                          -> Result<bool, Status>
+    {
+        self.admit_alert_owner(owner)?;
+        if alert.position == 0
+        {
+            self.preflight_window(NEW_WINDOW, &request(0, alert.bounds))?;
+        }
+        // Auto-positioned bounds depend on the selected WDEF's real insets.
+        // Resource dimensions were checked by load; Window creation validates
+        // the resulting screen bounds after CALCULATE, before publication.
+        let mut buttons = false;
+        for (index, item) in alert.items.iter().enumerate().filter(|(_, item)| item.kind == 4)
+        {
+            let mut call = alert_button(index, item);
+            call.operation = DRAW_STANDARD;
+            crate::toolbox::controls::preflight(&call)?;
+            buttons = true;
+        }
+        Ok(buttons)
+    }
+
+    /// Consume the same decoded resource after cold preparation, without a
+    /// second ALRT/DITL parse or scan. Recheck actual protocol ownership first.
+    pub(crate) fn open_prepared_alert(&mut self, owner: &crate::toolbox::handles::OwnerRef,
+                                      call: &mut DialogCall, alert: dialogs::Alert)
+                                      -> Result<(), Status>
+    {
+        self.admit_alert_owner(owner)?;
+        self.open_decoded_alert(call, alert)
+    }
+
+    fn open_decoded_alert(&mut self, call: &mut DialogCall, mut alert: dialogs::Alert)
+                          -> Result<(), Status>
+    {
+        if self.dialogs.active()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if alert.position == 0x300a
+        {
+            // Inside Macintosh positions the structure in the upper fifth of
+            // the desktop. Obtain its insets from WDEF, never duplicate them.
+            let entry =
+                crate::loader::cached_definition(*b"WDEF", 0).map_err(crate::loader::status)?
+                                                             .ok_or(NOT_FOUND)?;
+            let mut state = definitions::WindowDefinitionState::new(alert.bounds, "");
+            let mut definition = DefinitionCall { header:    Header::for_type::<DefinitionCall>(),
+                                                  kind:      definitions::WDEF,
+                                                  id:        0,
+                                                  variation: 1,
+                                                  message:   definitions::CALCULATE,
+                                                  reserved:  0,
+                                                  param:     0,
+                                                  object:    core::ptr::from_mut(&mut state).cast(),
+                                                  surface:   core::ptr::null_mut(),
+                                                  gate:      crate::machine::traps::gateway };
+            let status = crate::toolbox::resources::definitions::invoke(entry, &mut definition);
+            if status < 0
+            {
+                return Err(status as Status);
+            }
+            let r = state.structure;
+            alert.bounds
+                 .offset((crate::display::WIDTH as i16 - (r.right - r.left)) / 2 - r.left,
+                         20 + ((crate::display::HEIGHT as i16 - 20) - (r.bottom - r.top)) / 5
+                         - r.top);
+        }
+        let previous = self.windows.active_window();
+        self.dialogs.begin(alert, previous)?;
+        let mut guard = InitializingAlert { desktop:   self,
+                                            committed: false };
+        guard.desktop.initialize_alert()?;
+        call.window = guard.desktop.dialogs.window;
+        guard.committed = true;
+        Ok(())
+    }
+
     fn initialize_alert(&mut self) -> Result<(), Status>
     {
         let bounds = self.dialogs.alert.as_ref().ok_or(NOT_FOUND)?.bounds;
@@ -294,17 +359,8 @@ impl super::Desktop
         let alert = self.dialogs.alert.clone().ok_or(NOT_FOUND)?;
         for (index, item) in alert.items.iter().enumerate().filter(|(_, item)| item.kind == 4)
         {
-            let mut standard = definitions::ControlDefinitionState::new(item.bounds, &item.text);
-            standard.enabled = u32::from(item.enabled);
-            if index == 0 && item.enabled
-            {
-                standard.bounds.inset(-4, -4);
-                standard.flags = definitions::DEFAULT_BUTTON;
-            }
-            let mut call = ControlCall { operation: CREATE_STANDARD,
-                                         window: request.id,
-                                         standard,
-                                         ..Default::default() };
+            let mut call = alert_button(index, item);
+            call.window = request.id;
             self.managed_control(&mut call)?;
             self.dialogs.state_mut()?.controls[index] = Some(call.id);
         }
