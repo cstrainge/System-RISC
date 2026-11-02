@@ -29,31 +29,33 @@ enum Mode
 }
 pub struct Viewer
 {
-    pub window: WindowId,
-    snapshot:   Option<ScrapInfo>,
-    first:      FlavorInfo,
-    mode:       Mode,
-    text:       [u8; TEXT_CAPACITY],
-    length:     usize,
-    scroll:     Point,
-    extent:     Point,
-    scrollbars: [controls::ControlId; 2],
-    tracking:   Option<usize>
+    pub window:      WindowId,
+    deferred_update: Option<WindowId>,
+    snapshot:        Option<ScrapInfo>,
+    first:           FlavorInfo,
+    mode:            Mode,
+    text:            [u8; TEXT_CAPACITY],
+    length:          usize,
+    scroll:          Point,
+    extent:          Point,
+    scrollbars:      [controls::ControlId; 2],
+    tracking:        Option<usize>
 }
 impl Default for Viewer
 {
     fn default() -> Self
     {
-        Self { window:     WindowId(0),
-               snapshot:   None,
-               first:      FlavorInfo::default(),
-               mode:       Mode::Empty,
-               text:       [0; TEXT_CAPACITY],
-               length:     0,
-               scroll:     Point::default(),
-               extent:     Point::default(),
-               scrollbars: [controls::ControlId(0); 2],
-               tracking:   None }
+        Self { window:          WindowId(0),
+               deferred_update: None,
+               snapshot:        None,
+               first:           FlavorInfo::default(),
+               mode:            Mode::Empty,
+               text:            [0; TEXT_CAPACITY],
+               length:          0,
+               scroll:          Point::default(),
+               extent:          Point::default(),
+               scrollbars:      [controls::ControlId(0); 2],
+               tracking:        None }
     }
 }
 fn vertical(width: i16, height: i16) -> Rect
@@ -220,6 +222,48 @@ impl Viewer
                 v: (self.extent.v + 6 - height + HEADER + BAR).max(0) }
     }
 
+    pub fn defer_update(&mut self, system: &System<'_>, id: WindowId) -> Result<(), Error>
+    {
+        if id == self.window && id != WindowId(0)
+        {
+            self.deferred_update = Some(id);
+            system.windows().validate(id)?;
+        }
+        Ok(())
+    }
+
+    pub fn has_deferred_update(&self) -> bool
+    {
+        self.deferred_update.is_some()
+    }
+
+    pub fn draw_deferred(&mut self, system: &System<'_>) -> Result<(), Error>
+    {
+        let Some(id) = self.deferred_update
+        else
+        {
+            return Ok(());
+        };
+        if id != self.window || id == WindowId(0)
+        {
+            self.deferred_update = None;
+            return Ok(());
+        }
+        match system.window(id)
+        {
+            Ok(_) => (),
+            Err(Error::NotFound) =>
+            {
+                self.deferred_update = None;
+                return Ok(());
+            }
+            Err(cause) => return Err(cause)
+        }
+        self.draw(system)?;
+        self.deferred_update = None;
+        Ok(())
+    }
+
     pub fn draw(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         self.read(system)?;
@@ -331,7 +375,8 @@ impl Viewer
         })();
         system.end_update(self.window)?;
         result?;
-        system.log("FINDER_CLIPBOARD_READY\n")
+        let _ = system.log("FINDER_CLIPBOARD_READY\n");
+        Ok(())
     }
 
     /// Read-only document input. Loaded CDEF1 owns all scrollbar hit/drag math.

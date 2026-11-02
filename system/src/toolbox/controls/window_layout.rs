@@ -92,37 +92,24 @@ fn publish(content: &mut [Content], controls: &mut Manager, window: u64, mut pre
     {
         return Err(NO_MEMORY);
     }
-    let replaced_current = content.commands.iter().filter(|command| {
-        matches!(command, RenderCommand::Control(d) if drawings.iter().any(|new| new.id == d.id))
-    }).count();
-    content.commands
-           .try_reserve(drawings.len().saturating_sub(replaced_current))
-           .map_err(|_| NO_MEMORY)?;
     damage.try_reserve_exact(removed_count.checked_add(drawings.len())
                                           .and_then(|n| n.checked_add(1))
                                           .ok_or(NO_MEMORY)?)
           .map_err(|_| NO_MEMORY)?;
-    // No fallible operation after the first live scene change.
-    content.retain_commands(|command| {
-               if let RenderCommand::Control(d) = command
-                  && drawings.iter().any(|new| new.id == d.id)
-               {
-                   if limited_damage.is_none()
-                   {
-                       damage.push(d.visible_bounds());
-                   }
-                   return false;
-               }
-               true
-           });
-    for d in drawings.drain(..)
+    if limited_damage.is_none()
     {
-        if limited_damage.is_none()
+        for drawing in drawings.iter()
         {
-            damage.push(d.visible_bounds());
+            damage.push(drawing.visible_bounds());
         }
-        content.commands.push(RenderCommand::Control(d));
     }
+    // Carrier admission precedes both removal and all infallible appends.
+    content.replace_controls(drawings, |drawing| {
+               if limited_damage.is_none()
+               {
+                   damage.push(drawing.visible_bounds());
+               }
+           })?;
     if let Some(rect) = limited_damage
     {
         damage.push(rect);

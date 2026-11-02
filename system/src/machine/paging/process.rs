@@ -45,6 +45,7 @@ pub(crate) enum Error
     Authority,
     BackingOrigin,
     Metadata,
+    Workspace(super::modules::WorkspaceError),
     CloneInventory(super::modules::CloneInventoryError),
     CloneFootprint
     {
@@ -79,6 +80,7 @@ impl Error
         match self
         {
             Self::Metadata => mac_abi::NO_MEMORY,
+            Self::Workspace(cause) => cause.status(),
             Self::DefinitionVisibility { status } => *status,
             Self::Authority | Self::BackingOrigin => mac_abi::ACCESS_DENIED,
             Self::Threads | Self::Readers(_) | Self::Pending | Self::Busy => mac_abi::SERVICE_BUSY,
@@ -108,6 +110,7 @@ impl fmt::Display for Error
                              different backing origin; original root retained")
             }
             Self::Metadata => f.write_str("Process page-table metadata admission refused"),
+            Self::Workspace(cause) => cause.fmt(f),
             Self::CloneInventory(cause) => cause.fmt(f),
             Self::CloneFootprint { expected,
                                    observed,
@@ -365,6 +368,58 @@ impl core::ops::Deref for Pin
         &self.root
     }
 }
+/// Count real linked roots, including closing owners, without pin/allocation.
+/// Callers hold the actual translation lease across count and effects.
+pub(super) fn registered_count(owner: Option<DomainId>) -> Result<usize, Error>
+{
+    interrupts::with_masked(|| {
+        let head = ROOTS.lock();
+        let mut row = head.as_ref().cloned();
+        let mut count = 0usize;
+        while let Some(root) = row
+        {
+            row = root.next.lock().as_ref().cloned();
+            if owner.is_none_or(|owner| root.owner() == owner)
+            {
+                count = count.checked_add(1).ok_or(Error::Metadata)?;
+            }
+        }
+        Ok(count)
+    })
+}
+
+/// Use already admitted retirement capacity. Filtering before insertion avoids
+/// charging a private Definition for unrelated roots. Pins remain in the caller
+/// through the actual translation finish; partial failure never drops them here.
+pub(super) fn snapshot_into(owner: Option<DomainId>, rows: &mut Vec<Pin>) -> Result<(), Error>
+{
+    let required = registered_count(owner)?;
+    if !rows.is_empty() || required > rows.capacity()
+    {
+        return Err(Error::Workspace(super::modules::WorkspaceError::Invariant {
+            part: "root pins", required: required.max(rows.len()), capacity: rows.capacity()
+        }));
+    }
+    let mut row = interrupts::with_masked(|| ROOTS.lock().as_ref().cloned());
+    while let Some(root) = row
+    {
+        // The caller's actual translation lease excludes link/unlink. Clone
+        // the next canonical owner under its short link guard, then admit the
+        // Pin outside ROOTS so even refusal's release notification is unguarded.
+        row = interrupts::with_masked(|| root.next.lock().as_ref().cloned());
+        if owner.is_none_or(|owner| root.owner() == owner)
+        {
+            if rows.len() == rows.capacity()
+            {
+                return Err(Error::Workspace(super::modules::WorkspaceError::Invariant {
+                    part: "root pins", required: rows.len().saturating_add(1), capacity: rows.capacity()
+                }));
+            }
+            rows.push(Pin::try_new(root, true)?);
+        }
+    }
+    Ok(())
+}
 /// A snapshot pins every table owner through the real command ACK. Capacity is
 /// prepared outside ROOTS; the locked turn only clones into admitted capacity.
 pub(super) fn snapshot(publication: bool) -> Result<Vec<Pin>, Error>
@@ -565,7 +620,7 @@ fn admit_with_source(owner: &OwnerRef, allocation: &AllocationAuthority,
                   let permit = permit(owner)?;
                   let lease = crate::machine::monitor::prepare_translation_invalidation()
                 .map_err(Error::Monitor)?;
-                  let space = clone_space(owner, allocation, image.range(), source.clone())?;
+                  let space = clone_space(owner, allocation, image.range(), source.clone(), &lease)?;
                   let register = space.register;
                   // Move the sole backing Arc into canonical Root. No unobserved local
                   // Space clone survives publication or a failed execution-pin admission.
@@ -608,7 +663,7 @@ fn admit_with_source(owner: &OwnerRef, allocation: &AllocationAuthority,
 }
 
 fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, image: core::ops::Range<u64>,
-               source: BackingSource)
+               source: BackingSource, lease: &crate::machine::monitor::TranslationLease)
                -> Result<Space, Error>
 {
     let spaces = SPACES.get().ok_or(Error::Missing)?;
@@ -623,6 +678,17 @@ fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, image: core::
     let mut definitions = crate::toolbox::resources::definitions::visibility_snapshot()
         .map_err(|cause| Error::DefinitionVisibility { status: cause.status() })?;
     definitions.sort_unstable_by_key(|range| range.base);
+    let private_pages = definitions.iter()
+                                   .filter(|range| range.owner == owner.owner())
+                                   .map(|range| range.retirement_pages)
+                                   .max()
+                                   .unwrap_or(0);
+    let registered = registered_count(None)?.checked_add(1).ok_or(Error::Metadata)?;
+    let eligible = registered_count(Some(owner.owner()))?.checked_add(1).ok_or(Error::Metadata)?;
+    // The same lease excludes source PTE changes and root link/unlink until the
+    // new root is actually published/linked. No stale clone can escape this gate.
+    modules::admit_process_workspace(lease, registered, private_pages, eligible)
+        .map_err(Error::Workspace)?;
     let physical = copy_table(&mut tables, source, 2, 0, &image, owner.owner(), &definitions)?;
     if tables.count > footprint.tables
     {

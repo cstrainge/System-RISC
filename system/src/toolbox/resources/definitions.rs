@@ -1113,9 +1113,10 @@ pub(crate) fn monitor_released()
 #[derive(Clone, Copy)]
 pub(crate) struct Range
 {
-    pub(crate) base:  u64,
-    pub(crate) limit: u64,
-    pub(crate) owner: DomainId
+    pub(crate) base:             u64,
+    pub(crate) limit:            u64,
+    pub(crate) owner:            DomainId,
+    pub(crate) retirement_pages: usize
 }
 pub(crate) fn visibility_snapshot() -> Result<Vec<Range>, Error>
 {
@@ -1133,7 +1134,11 @@ pub(crate) fn visibility_snapshot() -> Result<Vec<Range>, Error>
                 }
                 ranges.push(Range { base:  d.base.load(Ordering::Acquire),
                                     limit: d.limit.load(Ordering::Acquire),
-                                    owner: d.owner.owner() })
+                                    owner: d.owner.owner(),
+                                    // Scalar demand from the actual canonical
+                                    // Mapping; no execution/account pin escapes.
+                                    retirement_pages: d.state.lock().mapping.as_ref()
+                                        .map_or(0, |mapping| mapping.retirement_pages()) })
             }
             true
         })?;

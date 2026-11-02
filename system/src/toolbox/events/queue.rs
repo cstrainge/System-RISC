@@ -62,7 +62,6 @@ impl EventManager
 
     /// Level-triggered notification: only the latest of its kind is retained,
     /// so a burst of changes cannot crowd out a receiver's bounded queue.
-    #[cfg(all(target_arch = "riscv64", feature = "display-event-debug"))]
     pub(crate) fn post_level(&mut self, event: Event)
     {
         if let Some(queued) = self.queue[..self.len]

@@ -303,7 +303,8 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
             '-drive', 'if=none,id=startup,format=qcow2,readonly=' + ('off' if writable else 'on') + ',file=' + host_path(disk),
             '-global', 'virtio-mmio.force-legacy=false',
             '-device', 'virtio-blk-device,drive=startup,bus=virtio-mmio-bus.0',
-            '-device', 'ramfb',
+            *(['-device', 'virtio-gpu-device,bus=virtio-mmio-bus.6'] if os.environ.get('SYSTEM7_VIRTIO_GPU') == '1'
+              else ['-device', 'ramfb']),
             '-device', 'virtio-keyboard-device,bus=virtio-mmio-bus.1',
             '-device', 'virtio-tablet-device,bus=virtio-mmio-bus.2',
             '-object', 'rng-builtin,id=system-rng',

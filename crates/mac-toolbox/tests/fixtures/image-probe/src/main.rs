@@ -5,6 +5,45 @@ use mac_toolbox::{Error, System, SystemServices};
 #[path = "../../../image_lifetimes_cases.rs"]
 mod image_lifetimes;
 mac_toolbox::panic_handler!();
+
+fn owned_definition(system: &System<'_>) -> Result<(), Error>
+{
+    for _ in 0..16
+    {
+        let result = (|| {
+            let snapshot = system.inspection()
+                                 .snapshot(mac_toolbox::inspection::Scope::Own)
+                                 .map_err(|failure| failure.cause)?;
+            if snapshot.count != 1
+            {
+                return Err(Error::BadAbi);
+            }
+            let ledger = snapshot.ledger(0).map_err(|failure| failure.cause)?;
+            for index in 0..ledger.len()
+            {
+                let pool = ledger.at(index).map_err(|failure| failure.cause)?;
+                if pool.kind == *b"DDEF" && pool.live > 0
+                {
+                    return Ok(());
+                }
+            }
+            Err(Error::BadAbi)
+        })();
+        match result
+        {
+            Err(Error::ScanStale | Error::ServiceBusy) =>
+            {
+                match system.client().wait_event(0, 1)
+                {
+                    Ok(_) | Err(Error::ServiceBusy) => (),
+                    Err(error) => return Err(error)
+                }
+            }
+            other => return other
+        }
+    }
+    Err(Error::ServiceBusy)
+}
 /// # Safety
 /// The loader's service table remains valid for the application's lifetime.
 #[unsafe(no_mangle)]
@@ -38,6 +77,8 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
                                              Default::default(),
                                              mac_toolbox::controls::TextAlignment::Left)?;
         text.draw()?;
+        owned_definition(&system)?;
+        system.log("IMAGE_PROBE_OWNED_DDEF_PASS\n")?;
         system.log("IMAGE_PROBE_DEFINITION_PASS\n")?;
         #[cfg(feature = "abort-live-definition")]
         {

@@ -1,6 +1,6 @@
 //! System-owned event routing, retained application drawing and compositing.
 #![forbid(unsafe_code)]
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
 use mac_abi::{events::{CMD_KEY, Event, EventKind},
               geometry::{Point, Rect},
@@ -583,7 +583,7 @@ impl Toolbox
                   core_dialogs_active: false,
                   menus: super::menus::Manager::new(super::handles::menu_kinds()?, mdef, crate::machine::traps::gateway)?,
                   system_bar,
-                  screen: Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16),
+                  screen: Rect::new(0, 0, crate::display::width() as i16, crate::display::height() as i16),
                   pointer: Pointer { cursors: Default::default(), busy_cursor, text_cursor, resize_cursors,
                                      responsiveness: Default::default(), automatic_cursor: None },
                   worlds: super::quickdraw::worlds::Worlds::new(super::handles::world_kinds()?)?,
@@ -998,6 +998,40 @@ impl Toolbox
                 }
                 let mut pending = Content::new(id);
                 pending.port = content.port.clone();
+                if content.commands.is_core()
+                {
+                    let Some(activity) = crate::context::recovery_activity()
+                    else
+                    {
+                        return ACCESS_DENIED;
+                    };
+                    let (frame, lease) = match activity.take_core_frame(id)
+                    {
+                        Ok(pair) => pair,
+                        Err(status) => return status
+                    };
+                    pending.commands =
+                        super::quickdraw::retained::Commands::from_core(frame, lease);
+                }
+                else if content.has_report_commands()
+                {
+                    let Some(activity) = crate::context::recovery_activity()
+                    else
+                    {
+                        return ACCESS_DENIED;
+                    };
+                    if !content.report_binding(&activity, id)
+                    {
+                        return ACCESS_DENIED;
+                    }
+                    let (frame, lease) = match activity.take_report_frame(id)
+                    {
+                        Ok(pair) => pair,
+                        Err(status) => return status
+                    };
+                    pending.commands =
+                        super::quickdraw::retained::Commands::from_report(frame, lease);
+                }
                 // First cut repaints each complete rectangular content port.
                 let local = window.local_bounds();
                 self.windows.invalidate(id, local);
@@ -1959,9 +1993,34 @@ impl Toolbox
         let target = SceneTarget::decode(call.target)?;
         let id = target;
         // Use the ordinary owner/generation gate, including stale window IDs.
-        self.content_mut(target)?;
+        if self.content_mut(target)?.commands.is_core()
+        {
+            return Err(NOT_SUPPORTED);
+        }
         if matches!(call.operation, QD_WINDOW_BEGIN_MASK | QD_WINDOW_BEGIN_RECTS)
         {
+            let commands = {
+                let content = self.presentation
+                                  .content
+                                  .iter()
+                                  .find(|content| content.id == id)
+                                  .ok_or(NOT_FOUND)?;
+                if content.has_report_commands()
+                {
+                    let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                    let window = id.window()?;
+                    if !content.report_binding(&activity, window)
+                    {
+                        return Err(ACCESS_DENIED);
+                    }
+                    let (frame, lease) = activity.take_report_frame(window)?;
+                    Some(super::quickdraw::retained::Commands::from_report(frame, lease))
+                }
+                else
+                {
+                    None
+                }
+            };
             let bounds = {
                 let window = self.windows.window(id.window()?).ok_or(NOT_FOUND)?;
                 if window.updating
@@ -1996,7 +2055,11 @@ impl Toolbox
                 self.presentation.pending_content.try_reserve(1 + spare)
             }).map_err(|_| NO_MEMORY)?;
             let content = self.presentation.content.iter().find(|c| c.id == id).ok_or(NOT_FOUND)?;
-            let pending = Content::pending_patch(id, content.port.clone(), mask);
+            let mut pending = Content::pending_patch(id, content.port.clone(), mask);
+            if let Some(commands) = commands
+            {
+                pending.commands = commands;
+            }
             let (used, limit) = self.retained_admission(id);
             if used.saturating_add(pending.storage()) > limit
             {
@@ -2244,8 +2307,31 @@ impl Toolbox
         {
             return self.worlds.get_mut(world.0, self.owner)?.text(call, text, fonts);
         }
+        self.font_draw_retained(call, text, fonts, |content, text| {
+                let mut retained_text = String::new();
+                retained_text.try_reserve_exact(text.len()).map_err(|_| NO_MEMORY)?;
+                retained_text.push_str(text);
+                let port = Arc::try_new(content.port.clone()).map_err(|_| NO_MEMORY)?;
+                Ok((super::quickdraw::retained::TextData::Owned(retained_text), port))
+            })
+    }
+
+    fn font_draw_retained(&mut self, call: &mut mac_abi::quickdraw::FontCall, text: &str,
+                          fonts: &FontManager,
+                          prepare_text: impl FnOnce(&mut Content,
+                                 &str)
+                                 -> Result<(super::quickdraw::retained::TextData,
+                                            Arc<service::Port>),
+                                           Status>)
+                          -> Result<(), Status>
+    {
         let (used, limit) = self.retained_admission(SceneTarget::decode(call.target)?);
         let content = self.content_mut(SceneTarget::decode(call.target)?)?;
+        if content.commands.is_core()
+        {
+            // Core text must come from its typed SAME-frame snapshot seam.
+            return Err(ACCESS_DENIED);
+        }
         if content.commands.len() >= 512
         {
             return Err(NO_MEMORY);
@@ -2255,14 +2341,143 @@ impl Toolbox
             return Err(NO_MEMORY);
         }
         call.width = fonts.text_width(fonts_service::selection(call.selection), text)?;
-        let mut retained_text = String::new();
-        retained_text.try_reserve_exact(text.len()).map_err(|_| NO_MEMORY)?;
-        retained_text.push_str(text);
-        let port = alloc::sync::Arc::try_new(content.port.clone()).map_err(|_| NO_MEMORY)?;
+        let (retained_text, port) = prepare_text(content, text)?;
         content.record(RenderCommand::Text { font: call.selection, baseline: call.baseline,
-            text: super::quickdraw::retained::TextData::Owned(retained_text), color: call.color, port,
+            text: retained_text, color: call.color, port,
             vertical_ink: fonts.vertical_ink_bounds(fonts_service::selection(call.selection)).ok().flatten() })?;
         self.content_changed(SceneTarget::decode(call.target)?);
+        Ok(())
+    }
+
+    pub(super) fn capture_report_port(&self, window: WindowId,
+                                      kind: crate::recovery::ReportPortKind)
+                                      -> Result<crate::recovery::ReportPortView, Status>
+    {
+        let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+        let content = self.presentation
+                          .pending_content
+                          .iter()
+                          .find(|c| c.id == window)
+                          .ok_or(BAD_ARGUMENT)?;
+        if self.crash.info().window != window || !content.report_binding(&activity, window)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        content.commands.capture_report_port(&activity, window, kind, &content.port)
+    }
+
+    pub(super) fn font_draw_report_port(&mut self, call: &mut mac_abi::quickdraw::FontCall,
+                                        text: &str, fonts: &FontManager,
+                                        view: &crate::recovery::ReportPortView)
+                                        -> Result<(), Status>
+    {
+        let window = SceneTarget::decode(call.target)?.window()?;
+        // Capture admitted the real live Session once per actual transition.
+        // Each record checks only its pinned frame, Window and actual Port.
+        self.font_draw_retained(call, text, fonts, |content, text| {
+                content.commands.report_text(view, window, &content.port, text)
+            })
+    }
+
+    pub(super) fn bind_core_scene(&mut self, window: WindowId,
+                                  activity: &crate::recovery::Activity)
+                                  -> Result<(), Status>
+    {
+        activity.validate_core_paint(window)?;
+        if !self.owns(window)
+           || self.presentation.pending_content.iter().any(|content| content.id == window)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let content = self.presentation
+                          .content
+                          .iter_mut()
+                          .find(|content| content.id == window)
+                          .ok_or(NOT_FOUND)?;
+        if content.commands.is_core()
+        {
+            return if content.commands.core_binding(activity, window)
+            {
+                Ok(())
+            }
+            else
+            {
+                Err(ACCESS_DENIED)
+            };
+        }
+        if !content.empty_for_recovery_binding()
+        {
+            return Err(BAD_ABI);
+        }
+        super::dialogs::core_alerts::bind_frames(activity, window)?;
+        let (frame, lease) = activity.take_core_frame(window)?;
+        // No fallible work follows the affine transfer into its actual owner.
+        content.commands = super::quickdraw::retained::Commands::from_core(frame, lease);
+        Ok(())
+    }
+
+    pub(super) fn bind_report_scene(&mut self, window: WindowId,
+                                    activity: &crate::recovery::Activity)
+                                    -> Result<(), Status>
+    {
+        activity.validate_report_paint(window)?;
+        if !self.owns(window)
+           || self.presentation.pending_content.iter().any(|content| content.id == window)
+           || self.crash.info().window != window
+           || self.crash.info().page_lines != super::crashes::prepared_layout()?.page_lines
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let content = self.presentation
+                          .content
+                          .iter_mut()
+                          .find(|content| content.id == window)
+                          .ok_or(NOT_FOUND)?;
+        if content.has_report_commands()
+        {
+            return if content.report_binding(activity, window)
+            {
+                Ok(())
+            }
+            else
+            {
+                Err(ACCESS_DENIED)
+            };
+        }
+        if !content.empty_for_recovery_binding()
+        {
+            return Err(BAD_ABI);
+        }
+        activity.bind_report_frames(window)?;
+        let (frame, lease) = activity.take_report_frame(window)?;
+        // No fallible work follows minting this affine buffer owner.
+        content.commands = super::quickdraw::retained::Commands::from_report(frame, lease);
+        Ok(())
+    }
+
+    pub(super) fn font_draw_core_line(&mut self, call: &mut mac_abi::quickdraw::FontCall,
+                                      item: &super::quickdraw::retained::CoreTextItem,
+                                      range: core::ops::Range<usize>, fonts: &FontManager)
+                                      -> Result<(), Status>
+    {
+        let window = SceneTarget::decode(call.target)?.window()?;
+        let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+        // Item admission already validated the actual live Window and global
+        // Session once. Each line checks its exact pinned frame/source/Port;
+        // the original END_UPDATE still validates the current Window owner.
+        let text = item.line(range.clone())?;
+        call.width = fonts.text_width(fonts_service::selection(call.selection), text)?;
+        let content = self.presentation
+                          .pending_content
+                          .iter_mut()
+                          .find(|content| content.id == window)
+                          .ok_or(BAD_ARGUMENT)?;
+        content.commands.record_core_line(item, call, range,
+            fonts.vertical_ink_bounds(fonts_service::selection(call.selection)).ok().flatten(),
+            window, &content.port, &activity)?;
+        // This is the same retained Text command/renderer; pending changes stay
+        // private until the original END_UPDATE commits them.
+        self.content_changed(window);
         Ok(())
     }
 
@@ -2515,7 +2730,8 @@ impl Toolbox
               == CMD_KEY | mac_abi::events::OPTION_KEY | mac_abi::events::SHIFT_KEY
            && mac_code == 0x0f
         {
-            let full = Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16);
+            let full =
+                Rect::new(0, 0, crate::display::width() as i16, crate::display::height() as i16);
             let reduced = Rect::new(0, 0, full.right * 3 / 4, full.bottom * 3 / 4);
             self.display_changed(if self.screen == full { reduced } else { full });
             return;
@@ -2772,6 +2988,56 @@ impl Toolbox
         self.next_with_presence(mask, true)
     }
 
+    /// Presents video damage and applies a settled host size. Returns true when
+    /// the display mode changed. Driver refusals leave the current mode alone.
+    fn service_video(&mut self) -> bool
+    {
+        use mac_video_interface::{Outcome, Size};
+
+        let settled = match crate::machine::video::service()
+        {
+            Ok(Some(size)) => size,
+            Ok(None) => return false,
+            Err(status) =>
+            {
+                serial!("VIDEO_SERVICE_FAILED status={status}");
+                return false;
+            }
+        };
+        let width =
+            (settled.width as usize).clamp(crate::display::MIN_WIDTH, crate::display::MAX_WIDTH);
+        let height =
+            (settled.height as usize).clamp(crate::display::MIN_HEIGHT, crate::display::MAX_HEIGHT);
+        if width == crate::display::width() && height == crate::display::height()
+        {
+            return false;
+        }
+        let size = Size { width:  width as u32,
+                          height: height as u32 };
+        match crate::machine::video::apply(size)
+        {
+            Ok(Outcome::Applied) => (),
+            Ok(refusal) =>
+            {
+                serial!("VIDEO_MODE_REFUSED {}x{}: {}", width, height, refusal.message());
+                return false;
+            }
+            Err(status) =>
+            {
+                serial!("VIDEO_MODE_APPLY_FAILED {}x{} status={status}", width, height);
+                return false;
+            }
+        }
+        if let Err(refusal) = crate::machine::display::apply_mode(width, height)
+        {
+            serial!("VIDEO_MODE_SYSTEM_REFUSED {}x{}: {:?}", width, height, refusal);
+            return false;
+        }
+        serial!("DISPLAY_MODE_CHANGED {}x{}", width, height);
+        self.display_changed(mac_abi::geometry::Rect::new(0, 0, width as i16, height as i16));
+        true
+    }
+
     fn poll_inputs(&mut self) -> bool
     {
         crate::trace::record(crate::trace::POLL, self.owner, 0, 0, 0, 0);
@@ -2786,12 +3052,13 @@ impl Toolbox
                                      }
                                  })
         });
+        let resized = self.service_video();
         // Idle polling must not copy every application's menus and event queues
         // into and out of the foreground context. Decoder state changes that
         // affect applications (including modifiers) always produce an Input.
         if count == 0
         {
-            return false;
+            return resized;
         }
         let when = Self::when();
         let caller = self.owner;
@@ -3011,8 +3278,8 @@ impl Toolbox
             {
                 let menu_paint = crate::context::without_recovery(|| {
                     let mut canvas = Canvas::new(platform::back_buffer(),
-                                                 crate::display::WIDTH,
-                                                 crate::display::HEIGHT);
+                                                 crate::display::width(),
+                                                 crate::display::height());
                     self.presentation.menu_cache.paint(&mut canvas,
                                                         (self.foreground,
                                                          self.menus.selected_menu(),
@@ -3047,8 +3314,8 @@ impl Toolbox
             self.presentation.frame_incomplete = false;
             crate::platform::with_tracking_mask(|scratch| {
                 let mut canvas = Canvas::new(platform::back_buffer(),
-                                             crate::display::WIDTH,
-                                             crate::display::HEIGHT);
+                                             crate::display::width(),
+                                             crate::display::height());
                 self.windows.draw_tracking(&mut canvas, scratch);
             });
             crate::trace::record(crate::trace::RENDER,
@@ -3227,8 +3494,8 @@ impl Toolbox
             platform::present_rects(back,
                                     [Rect::new(0,
                                                0,
-                                               crate::display::WIDTH as i16,
-                                               crate::display::HEIGHT as i16)],
+                                               crate::display::width() as i16,
+                                               crate::display::height() as i16)],
                                     overlays);
         }
         else
