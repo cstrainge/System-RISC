@@ -460,7 +460,7 @@ fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, image: core::
     definitions.sort_unstable_by_key(|range| range.base);
     let physical = copy_table(&mut tables, source, 2, 0, &image, owner.owner(), &definitions)?;
     let (root, charge) = tables.take_root(physical).map_err(Error::Tables)?;
-    let owner=AddressSpace::<Rva>::reserve(owner.owner(),root,AsidTag::Untagged).map_err(|e|Error::Tables(super::Error::Policy(e)))?;
+    let owner=AddressSpace::<Rva, TableBacking>::reserve(owner.owner(),root,AsidTag::Untagged).map_err(|e|Error::Tables(super::Error::Policy(e)))?;
     let register = MODE | (physical.0 as usize >> 12);
     Ok(Space { owner,
                tables,

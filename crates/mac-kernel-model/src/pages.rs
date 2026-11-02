@@ -154,31 +154,59 @@ impl Iterator for MappingPlan<'_>
         Some(mapping)
     }
 }
-/// A typed physical-page reservation, not an initialized Rust T. There is no
-/// Deref and no global virtual/physical-mode flag. A future audited mapper
-/// supplies initialized mapped access before a root can be activated.
-pub struct PageBox<'pool, 'storage, T, G: InvocationGate>
+/// Metadata exposed by an owned physical reservation. This safe trait does not
+/// authenticate RAM, grant mapped access, or authorize CPU activation. Those
+/// guarantees belong to the native binding's private backing constructors and
+/// activation path, not to arbitrary implementations of this metadata contract.
+/// The reported address and extent must remain stable while this backing is
+/// retained; the native binding enforces that through immutable lease metadata.
+pub trait PageBacking
 {
-    pub(crate) page: PageBlock<'pool, 'storage, G>,
-    marker:          PhantomData<T>
+    fn physical(&self) -> PhysicalAddress;
+    fn bytes(&self) -> u64;
 }
-impl<'pool, 'storage, T, G: InvocationGate> PageBox<'pool, 'storage, T, G>
+impl<G: InvocationGate> PageBacking for PageBlock<'_, '_, G>
 {
-    pub fn reserve(page: PageBlock<'pool, 'storage, G>) -> Result<Self, ModelError>
+    fn physical(&self) -> PhysicalAddress
     {
-        if page.order() != 0
-           || size_of::<T>() as u64 > page.bytes()
-           || align_of::<T>() as u64 > page.bytes()
+        self.address()
+    }
+
+    fn bytes(&self) -> u64
+    {
+        PageBlock::bytes(self)
+    }
+}
+/// Owns one page reservation, not an initialized Rust T. There is no Deref,
+/// mapped access or CPU activation. Native users must supply genuine backing
+/// and initialize it through their audited mapper before activating a root.
+pub struct PageBox<T, B: PageBacking>
+{
+    backing: B,
+    marker:  PhantomData<T>
+}
+impl<T, B: PageBacking> PageBox<T, B>
+{
+    pub fn reserve(backing: B, geometry: PageGeometry) -> Result<Self, ModelError>
+    {
+        let bytes = geometry.bytes();
+        let physical = backing.physical();
+        let extent = backing.bytes();
+        if extent != bytes
+           || !physical.0.is_multiple_of(bytes)
+           || physical.0.checked_add(bytes).is_none()
+           || size_of::<T>() as u64 > bytes
+           || align_of::<T>() as u64 > bytes
         {
             return Err(ModelError::InvalidBinding);
         }
-        Ok(Self { page,
+        Ok(Self { backing,
                   marker: PhantomData })
     }
 
     pub fn physical(&self) -> PhysicalAddress
     {
-        self.page.address()
+        self.backing.physical()
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -198,10 +226,10 @@ pub enum AsidTag
         hardware_value: u64, generation: core::num::NonZeroU64
     }
 }
-pub struct AddressSpace<'pool, 'storage, A: Architecture>
+pub struct AddressSpace<A: Architecture, B: PageBacking>
 {
     owner: DomainId,
-    root:  PageBox<'pool, 'storage, A::PageTable, A::InvocationGate>,
+    root:  PageBox<A::PageTable, B>,
     asid:  AsidTag,
     state: Spinlock<AddressSpaceState>
 }
@@ -210,15 +238,14 @@ struct AddressSpaceState
     mappings:               Vec<Mapping>,
     outstanding_shootdowns: usize
 }
-impl<'pool, 'storage, A: Architecture> AddressSpace<'pool, 'storage, A>
+impl<A: Architecture, B: PageBacking> AddressSpace<A, B>
 {
     /// A reserved, uninitialized root. This shape cannot activate a CPU page
     /// table; initialized mapper/activation proof is a later platform boundary.
-    pub fn reserve(owner: DomainId,
-                   root: PageBox<'pool, 'storage, A::PageTable, A::InvocationGate>, asid: AsidTag)
+    pub fn reserve(owner: DomainId, root: PageBox<A::PageTable, B>, asid: AsidTag)
                    -> Result<Self, ModelError>
     {
-        if root.page.bytes() != A::geometry().bytes()
+        if root.backing.bytes() != A::geometry().bytes()
         {
             return Err(ModelError::InvalidGeometry);
         }

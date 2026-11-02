@@ -3794,3 +3794,49 @@ Desktop-cache descriptions in this historical implementation record. The actual
 own-Process load/dispose/relaunch and failure observations do not qualify foreign
 Module bindings, pressure, arbitrary faults, timing/races, user-mode isolation
 or the broader failed conformance scenario.
+
+## Owning page-backing abstraction
+
+The shared `PageBox<T, B>` consumes an owning backing type and checks one selected
+page's extent, physical alignment, address overflow and type fit. The same
+`AddressSpace<A, B>` and `ProcessRecord<A, B>` retain that ownership. `PageBacking`
+is a stable-metadata contract; it does not authenticate physical RAM, initialize
+a page table or authorize CPU activation. The public buddy constructor likewise
+models caller-admitted ranges. Actual native authority remains in the private
+pool, backing and checked activation constructors.
+
+Every current native root uses one private `TableBacking` that consumes a genuine
+ordinary native RAM lease. The old buddy-specific `into_table` conversion is
+removed. Root extraction still transfers the real table and its original charge
+together; Nodes keep separate owned storage. There is no second root/mapper
+implementation, native scalar-backed constructor, compatibility path or unused
+protected variant. This prepares the ownership seam for real recovery loans; it
+does not implement protected table admission or guarantee Finder restart.
+
+The optimized release/LTO RV64 whole-world image ran privately with four QEMU
+CPUs, 8 GiB, 800x600 and event/TextEdit tracing disabled. System ELF SHA-256 was
+`37c50874ba2620023defcb6363a2f997143ac3c5bb9742e335270965fcd50392`;
+System resource was
+`1d1eef3d57d60a24380c491bfaabac98b226710221e9a750c1dca4c460fe02f2`;
+ROM remained
+`cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+Actual content fingerprints and the fixed-source build were recorded. Existing
+no_std native actors rebuilt and used normal package/loading/traps.
+
+Two real application bodies used distinct private hierarchies with their own
+image and shared module backing, while the other live application's low image
+was absent. All four application/worker bodies were sampled migrating with the
+same stacks and overlapping on different CPUs. Native register/service checks,
+worker cancellation, actual worker/process/account closure and following input
+were observed. The 138 paused read-only snapshots cost approximately36–85 ms of
+host time each; those observations and logs perturb timing/order. This is
+trusted supervisor execution, not U-mode protection, latency or race-absence
+qualification. Source/base stayed fixed; the owned guest was reaped and cloned
+media removed. Public shared/SDK documentation also generated successfully; no
+host Rust test suite supplied runtime evidence.
+
+The existing SPCE disposal still performed translation retirement through the
+Desktop owner walk on this artifact. Moving that work and actual table
+destruction to guard-free maintenance is a separate required follow-up. Genuine
+protected root/Node/publication stock, fresh Finder image backing, pressure and
+uncertain-acknowledgment scenarios remain unimplemented or unverified.

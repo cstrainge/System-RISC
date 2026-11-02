@@ -14,7 +14,7 @@ use mac_abi::{BootInfo, BootMemoryRange,
                      execution::{self, EXECUTE, FIRMWARE_ONLY, READ, Region, WRITE},
                      topology}};
 use mac_kernel_model::{DomainId,
-                       pages::{Access, AddressSpace, Architecture, AsidTag, PageBox,
+                       pages::{Access, AddressSpace, Architecture, AsidTag, PageBacking, PageBox,
                                PageGeometry, PageLayout, PageOwnership, Permissions,
                                PhysicalAddress, VirtualAddress,
                                physical::{DirectMap, Error as PhysicalError}},
@@ -28,7 +28,22 @@ use super::{interrupts::{self, NativeInvocationGate},
 use crate::allocator::foundation::{self, Foundation};
 const MODE: usize = 8usize << 60;
 const PPN: usize = (1usize << 44) - 1;
-type RootPage = PageBox<'static, 'static, [u64; 512], NativeInvocationGate>;
+/// Only this native binding constructs table backing, by consuming a genuine
+/// RAM lease. The shared metadata trait alone cannot authenticate physical RAM.
+struct TableBacking(Backing);
+impl PageBacking for TableBacking
+{
+    fn physical(&self) -> PhysicalAddress
+    {
+        self.0.physical()
+    }
+
+    fn bytes(&self) -> u64
+    {
+        self.0.bytes()
+    }
+}
+type RootPage = PageBox<[u64; 512], TableBacking>;
 static BOOT: spin::Once<Bootstrap> = spin::Once::new();
 static SPACES: spin::Once<Spaces> = spin::Once::new();
 struct Bootstrap
@@ -381,7 +396,8 @@ impl Tables for Frames
         let backing = Backing::allocate(PAGE_BYTES as usize).map_err(FrameError::Pages)?;
         let cpu = backing.cpu_base();
         let physical = backing.physical();
-        let table = backing.into_table().map_err(FrameError::Pages)?;
+        let table = RootPage::reserve(TableBacking(backing), Sv39::geometry())
+            .map_err(|cause| FrameError::Pages(super::pages::Error::Model(cause)))?;
         let storage_charge = self.account.as_ref().map(|a| a.reserve_kernel(Backing::planned_bytes(size_of::<Node>()).map_err(FrameError::Pages)?).map_err(FrameError::Account)).transpose()?;
         let storage = Backing::allocate(size_of::<Node>()).map_err(FrameError::Pages)?;
         let pointer = storage.cpu_base();
@@ -465,7 +481,7 @@ impl Architecture for Rva
 }
 struct Space
 {
-    owner:        AddressSpace<'static, 'static, Rva>,
+    owner:        AddressSpace<Rva, TableBacking>,
     tables:       Frames,
     register:     usize,
     leaves:       u64,
@@ -658,7 +674,7 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
     }
     let (physical, mut tables) = mapper.into_tables();
     let (root, root_charge) = tables.take_root(physical)?;
-    let owner=AddressSpace::<Rva>::reserve(DomainId::SYSTEM,root,AsidTag::Permanent{hardware_value:tag as u64}).map_err(Error::Policy)?;
+    let owner=AddressSpace::<Rva, TableBacking>::reserve(DomainId::SYSTEM,root,AsidTag::Permanent{hardware_value:tag as u64}).map_err(Error::Policy)?;
     let register = MODE | (tag << 44) | (owner.root_physical().0 as usize >> 12);
     Ok(Space { owner,
                tables,
