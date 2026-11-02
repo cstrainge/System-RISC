@@ -403,7 +403,7 @@ impl super::Toolbox
                     status);
         }
         self.menus.clear();
-        self.cursors = Default::default();
+        self.pointer.cursors = Default::default();
         // An application can panic between BeginUpdate and EndUpdate. Its
         // uncommitted pixels must never leak into a later presentation.
         while let Some(index) =

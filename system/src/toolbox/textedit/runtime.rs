@@ -40,7 +40,7 @@ impl super::Toolbox
                && matches!(call.operation, CUT | PASTE)
                && self.owner == self.foreground
             {
-                self.presentation.cursor_dirty |= self.cursors.obscure(self.events.mouse);
+                self.presentation.cursor_dirty |= self.pointer.cursors.obscure(self.events.mouse);
             }
             return status;
         }
@@ -59,7 +59,7 @@ impl super::Toolbox
                && matches!(call.operation, KEY | NAVIGATE)
                && self.owner == self.foreground
             {
-                self.presentation.cursor_dirty |= self.cursors.obscure(self.events.mouse);
+                self.presentation.cursor_dirty |= self.pointer.cursors.obscure(self.events.mouse);
             }
             return status;
         }
