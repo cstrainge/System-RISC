@@ -146,6 +146,7 @@ fn window_creation_status(error: super::windows::manager::CreationError) -> Stat
     match error
     {
         CreationError::NoMemory => NO_MEMORY,
+        CreationError::Binding(status) => status,
         CreationError::Facility(error) =>
         {
             super::handles::registry_status(&mac_object_table::registry::Error::Pool(error))

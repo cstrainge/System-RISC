@@ -17,7 +17,7 @@ use crate::toolbox::{events::*,
                                  geometry::{sect_rect, union_rect},
                                  presentation::{Outline, indexed_tracking_xor},
                                  region::{BooleanOp, Region, RegionError}},
-                     resources::definitions::DefinitionRef};
+                     resources::definitions::{BoundDefinition, DefinitionRef}};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i16)]
 pub enum WindowPart
@@ -89,14 +89,39 @@ impl WindowSource
 /// DISPOSE message, copied WindowId or stopped source cannot construct it.
 pub(crate) struct DefinitionDisposal<'a>
 {
-    entry:   DefinitionRef,
+    binding: &'a BoundDefinition,
     _ticket: &'a mac_object_table::domain::ReleasedResource
 }
 impl DefinitionDisposal<'_>
 {
     pub(crate) fn entry(&self) -> DefinitionRef
     {
-        self.entry
+        self.binding.reference()
+    }
+}
+
+/// The canonical WIND payload owns this dependency; temporary Copy views do
+/// not. Failed Dispose keeps only its ABI-mutated state for the same ticket.
+struct OwnedWindow
+{
+    window:         Window,
+    disposal_state: Cell<Option<WindowDefinitionState>>,
+    binding:        BoundDefinition
+}
+impl core::ops::Deref for OwnedWindow
+{
+    type Target = Window;
+
+    fn deref(&self) -> &Window
+    {
+        &self.window
+    }
+}
+impl core::ops::DerefMut for OwnedWindow
+{
+    fn deref_mut(&mut self) -> &mut Window
+    {
+        &mut self.window
     }
 }
 
@@ -325,6 +350,7 @@ pub(crate) enum CreationError
     RecoveryBusy,
     RecoveryAuthority,
     Facility(mac_object_table::domain::PoolError),
+    Binding(Status),
     Stopping,
     Definition
     {
@@ -359,6 +385,10 @@ impl core::fmt::Display for CreationError
                              recipient and admitted I/O root")
             }
             Self::Facility(error) => error.fmt(f),
+            Self::Binding(status) =>
+            {
+                write!(f, "WDEF original-source binding refused: status {status}")
+            }
             Self::Stopping =>
             {
                 f.write_str("the window owner is stopping; no window was published to its UI")
@@ -393,7 +423,11 @@ impl InitializingWindow<'_>
 {
     fn value(&mut self) -> Result<&mut Window, CreationError>
     {
-        self.manager.windows.get_mut(self.id.0).ok_or(CreationError::Stopping)
+        self.manager
+            .windows
+            .get_mut(self.id.0)
+            .map(|owned| &mut owned.window)
+            .ok_or(CreationError::Stopping)
     }
 
     fn commit(mut self) -> WindowId
@@ -507,7 +541,7 @@ pub struct WindowManager
     // A single bounded memo, never an authority or a payload pin. Successful
     // window-list changes invalidate it; cached IDs still validate on lookup.
     front_cache:           Cell<Option<(u64, Option<WindowId>)>>,
-    windows:               Store<Window>,
+    windows:               Store<OwnedWindow>,
     retained_failures:     VecDeque<mac_object_table::domain::CompletionError>,
     // One guaranteed modal service has one main window and one auxiliary
     // sheet. Keep their guards outside the Copy geometry payload, keyed by
@@ -874,7 +908,7 @@ impl WindowManager
                           -> Result<WindowId, Failure>
     {
         use mac_object_table::registry::CleanupFailure;
-        let Some(window) = self.windows.releasing(&ticket).copied()
+        let Some(window) = self.windows.releasing(&ticket).map(|owned| owned.window)
         else
         {
             return Err(Failure::registration_mismatch(ticket));
@@ -898,16 +932,30 @@ impl WindowManager
         {
             self.tracking = None;
         }
-        let Some(reply) =
-            self.windows.with_releasing(&ticket, |window| {
-                            let permit = DefinitionDisposal { entry:   window.entry,
-                                                              _ticket: &ticket };
-                            window.call(definition::DISPOSE, 0, core::ptr::null_mut(), Some(permit))
-                        })
+        let Some(owned) = self.windows.releasing(&ticket)
         else
         {
             return Err(Failure::registration_mismatch(ticket));
         };
+        if !owned.binding.matches(owned.window.entry)
+        {
+            return Err(Failure::window_definition(ticket,
+                                                  id.0,
+                                                  window.procedure,
+                                                  mac_abi::BAD_ABI as i64));
+        }
+        let mut disposal = owned.window;
+        if let Some(state) = owned.disposal_state.get()
+        {
+            disposal.state = state;
+        }
+        let permit = DefinitionDisposal { binding: &owned.binding,
+                                          _ticket: &ticket };
+        let reply = disposal.call(definition::DISPOSE, 0, core::ptr::null_mut(), Some(permit));
+        // The ABI only mutates WindowDefinitionState. Retain those actual
+        // effects before returning a refusal; retry uses the same original
+        // canonical object/binding/ticket, with no mutable non-Copy extraction.
+        owned.disposal_state.set(Some(disposal.state));
         if reply < 0
         {
             return Err(Failure::window_definition(ticket, id.0, window.procedure, reply));
@@ -933,7 +981,7 @@ impl WindowManager
     pub(crate) fn window_for_owner(&self, id: WindowId, owner: u64) -> Option<&Window>
     {
         let window = self.windows.get(id.0)?;
-        (window.initialized && self.owned_by(id, owner)).then_some(window)
+        (window.initialized && self.owned_by(id, owner)).then_some(&window.window)
     }
 
     pub(crate) fn front_record_for_owner(&self, owner: u64) -> Option<&Window>
@@ -982,12 +1030,12 @@ impl WindowManager
 
     pub fn window(&self, id: WindowId) -> Option<&Window>
     {
-        self.windows.get(id.0).filter(|window| window.initialized)
+        self.windows.get(id.0).filter(|window| window.initialized).map(|owned| &owned.window)
     }
 
     fn window_mut(&mut self, id: WindowId) -> Option<&mut Window>
     {
-        self.windows.get_mut(id.0)
+        self.windows.get_mut(id.0).map(|owned| &mut owned.window)
     }
 
     pub fn back_to_front(&self) -> impl Iterator<Item = &Window>
@@ -1100,6 +1148,8 @@ impl WindowManager
         let recovery_slot = self.preflight_creation(bounds, owner, minimum)?;
         #[cfg(not(target_arch = "riscv64"))]
         self.preflight_creation(bounds, owner, minimum)?;
+        let binding =
+            crate::toolbox::resources::definitions::bind(entry).map_err(CreationError::Binding)?;
         // These arrays index all owners. Only their capacity is System-owned;
         // the subsequent Window and owner Store backing retain caller charges.
         InvocationGate::with_system_allocation(|| {
@@ -1139,29 +1189,32 @@ impl WindowManager
         {
             logical_owner = activity.owner();
         }
-        let mut window = Window { id: WindowId(0),
-                                  initialized: false,
-                                  bounds,
-                                  owner: logical_owner,
-                                  #[cfg(target_arch = "riscv64")]
-                                  source,
-                                  min_width,
-                                  min_height,
-                                  state: WindowDefinitionState::new(bounds, title),
-                                  procedure,
-                                  entry,
-                                  gate: self.gate,
-                                  user_bounds: None,
-                                  standard_bounds: None,
-                                  grow_icon_clip: None,
-                                  content_outline: None,
-                                  close_deferred: false,
-                                  damage: Some(Rect::new(0,
-                                                         0,
-                                                         bounds.right - bounds.left,
-                                                         bounds.bottom - bounds.top)),
-                                  hidden: false,
-                                  updating: false };
+        let window = Window { id: WindowId(0),
+                              initialized: false,
+                              bounds,
+                              owner: logical_owner,
+                              #[cfg(target_arch = "riscv64")]
+                              source,
+                              min_width,
+                              min_height,
+                              state: WindowDefinitionState::new(bounds, title),
+                              procedure,
+                              entry,
+                              gate: self.gate,
+                              user_bounds: None,
+                              standard_bounds: None,
+                              grow_icon_clip: None,
+                              content_outline: None,
+                              close_deferred: false,
+                              damage: Some(Rect::new(0,
+                                                     0,
+                                                     bounds.right - bounds.left,
+                                                     bounds.bottom - bounds.top)),
+                              hidden: false,
+                              updating: false };
+        let mut window = Some(OwnedWindow { window,
+                                            disposal_state: Cell::new(None),
+                                            binding });
         self.retry_retained_quarantines();
         InvocationGate::with_system_allocation(|| {
             let padding = self.recovery_spare();
@@ -1174,9 +1227,10 @@ impl WindowManager
         {
             let subject = activity.root_subject();
             let tokens = self.recovery_publications.as_mut().ok_or(CreationError::RecoveryBusy)?;
+            let mut payload = window.take().ok_or(CreationError::Binding(mac_abi::BAD_ABI))?;
             Some(WindowId(self.windows.insert_reserved_in_scope_with_acknowledgement(
                 &mut tokens[slot], subject.scope(), Some(activity.acknowledgement_pin()), |id| {
-                    window.id = WindowId(id); window
+                    payload.window.id = WindowId(id); payload
                 }).map_err(|error| match error {
                     mac_object_table::store::PublicationError::Busy => CreationError::RecoveryBusy,
                     mac_object_table::store::PublicationError::Pool(error) => CreationError::Facility(error)
@@ -1193,10 +1247,11 @@ impl WindowManager
             Some(id) => id,
             None =>
             {
+                let mut payload = window.take().ok_or(CreationError::Binding(mac_abi::BAD_ABI))?;
                 WindowId(self.windows
                              .insert_with(owner, |id| {
-                                 window.id = WindowId(id);
-                                 window
+                                 payload.window.id = WindowId(id);
+                                 payload
                              })
                              .map_err(CreationError::Facility)?)
             }

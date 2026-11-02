@@ -238,8 +238,15 @@ impl fmt::Display for CleanupCause
                 write!(out, "executable image {base:#x} {stage:?} failed: {cause:?}")
             }
         }?;
-        out.write_str("; original backing/account/cleanup ticket retained; restart required for \
-                       quarantined transitions")
+        out.write_str("; original backing/account/cleanup ticket retained")?;
+        match self
+        {
+            Self::Pending { .. } =>
+            {
+                out.write_str("; waiting for actual quiescence and translation acknowledgment")
+            }
+            _ => out.write_str("; transition quarantined; restart required")
+        }
     }
 }
 

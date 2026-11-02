@@ -81,6 +81,72 @@ impl core::fmt::Display for Error
 /// Private original key. Only Ready publication returns one to a manager.
 #[derive(Clone, Copy)]
 pub(crate) struct DefinitionRef(CompletionKey);
+
+/// One original definition dependency owned by a canonical bound object. This
+/// is not a new resource identity and cannot be copied into a temporary view.
+/// Arc destruction precedes the actual per-change retirement checkpoint.
+pub(crate) struct BoundDefinition
+{
+    _definition: Arc<Definition>,
+    reference:   DefinitionRef,
+    _released:   BindingReleased
+}
+impl BoundDefinition
+{
+    pub(crate) fn reference(&self) -> DefinitionRef
+    {
+        self.reference
+    }
+
+    pub(crate) fn matches(&self, reference: DefinitionRef) -> bool
+    {
+        self.reference.0 == reference.0
+    }
+}
+struct BindingReleased;
+impl Drop for BindingReleased
+{
+    fn drop(&mut self)
+    {
+        // Field order has already released the actual source Arc. Wake only
+        // real cleanup/claim waiters, never ordinary UI create/dispose traffic.
+        let readers = WAITING_READERS.swap(false, Ordering::AcqRel);
+        let claims = WAITING_CLAIM_READERS.swap(false, Ordering::AcqRel);
+        if readers || claims
+        {
+            crate::machine::paging::modules::changed();
+            crate::toolbox::processes::retirement::resources_released();
+        }
+    }
+}
+/// Only actual Ready canonical storage can mint a new dependency. The source
+/// admission observation and pin publication share State with closing: a bind
+/// already admitted before stop may settle, but cleanup sees its actual Arc.
+pub(crate) fn bind(reference: DefinitionRef) -> Result<BoundDefinition, Status>
+{
+    state(|state| {
+        let definition = state.store.completing(&reference.0).ok_or(NOT_FOUND)?;
+        // Completing lookup is required for existing Dispose, but a new bind
+        // must still have a live canonical DDEF entry, never only a pending key.
+        if !state.store.get(reference.0.id()).is_some_and(|live| Arc::ptr_eq(live, definition))
+        {
+            return Err(NOT_FOUND);
+        }
+        if definition.owner.owner() != reference.0.owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let cell = definition.state.lock();
+        if !definition.owner.accepting() || cell.closing || cell.entry.is_none()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        Ok(BoundDefinition { _definition: definition.clone(),
+                             reference,
+                             _released: BindingReleased })
+    }).map_err(|cause| cause.status())?
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct Identity
 {
@@ -714,6 +780,10 @@ pub(crate) enum Drain
     Threads,
     Invocations,
     Preparation,
+    Readers
+    {
+        retained: usize
+    },
     Mapping(crate::machine::paging::modules::CleanupCause)
 }
 #[derive(Clone, Copy)]
@@ -789,15 +859,31 @@ impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> fo
             return Err(Failure::definition_pending(ticket, owner, Drain::Threads));
         }
         WAITING_PREPARATIONS.store(true, Ordering::Release);
-        let busy = InvocationGate::run(|| {
+        WAITING_READERS.store(true, Ordering::Release);
+        let admission = state(|_| {
             let mut cell = definition.state.lock();
+            if cell.busy
+            {
+                return Err(Drain::Preparation);
+            }
+            // Bind/Invocation/Preparation admission also holds State. Test all
+            // real retained readers BEFORE closing so an original foreign
+            // Window can still run its genuine ticket-owned Dispose.
+            let readers = Arc::strong_count(&definition.definition);
+            if readers != 2
+            {
+                return Err(Drain::Readers { retained: readers.saturating_sub(2) });
+            }
+            let exclusion = definition.execution.begin_load().map_err(|_| Drain::Invocations)?;
             cell.closing = true;
-            cell.busy
+            Ok(exclusion)
         });
-        if busy
+        let exclusion = match admission
         {
-            return Err(Failure::definition_pending(ticket, owner, Drain::Preparation));
-        }
+            Ok(Ok(exclusion)) => exclusion,
+            Ok(Err(cause)) => return Err(Failure::definition_pending(ticket, owner, cause)),
+            Err(_) => return Err(Failure::context_unavailable(ticket, "definition registry"))
+        };
         let mapping = InvocationGate::run(|| {
             let cell = definition.state.lock();
             if cell.mapping.is_none() && cell.entry.is_some()
@@ -826,21 +912,6 @@ impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> fo
                                                        owner,
                                                        Drain::Mapping(mapping.refusal())));
             }
-        }
-        let exclusion = match definition.execution.begin_load()
-        {
-            Ok(v) => v,
-            Err(_) => return Err(Failure::definition_pending(ticket, owner, Drain::Invocations))
-        };
-        WAITING_READERS.store(true, Ordering::Release);
-        let readers = match state(|_| Arc::strong_count(&definition.definition))
-        {
-            Ok(n) => n,
-            Err(_) => return Err(Failure::context_unavailable(ticket, "definition registry"))
-        };
-        if readers != 2
-        {
-            return Err(Failure::definition_pending(ticket, owner, Drain::Preparation));
         }
         // Absent mapping is admitted only for a never-published preparation
         // (entry=None above). A real mapping must already be settled here.

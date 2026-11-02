@@ -67,12 +67,29 @@ metadata guards do not span that physical retirement. Real reader/preparation
 release and monitor progress provide wakeups; input and frames are not retries.
 An uncertain transition retains the original mapping/source/range/ticket.
 
-A foreign Process window currently holds only a completion reference to a
-Module-owned definition. If that Module closes first, the later window Dispose
-can be refused and quarantined. Safe refusal is not successful cross-domain
-unload. A genuine bound-object dependency/unload contract remains required for
-that case; this stage does not claim it. Arbitrary privileged-fault containment
-also remains the unproven M-D04 gate.
+Each canonical Window, managed Control and Scroll Box owns a non-cloneable
+binding to the actual definition. The copyable reference in temporary views is
+only correlation/invocation metadata. New bindings validate the original full
+key, live canonical entry, source owner and admission under the same gate as
+closing. Stopping the source refuses new bindings and normal invocation; existing
+bindings retain its original source/account/mapping. The definition walk returns
+its original ticket with a typed retained-reader cause until real bindings and
+invocations release, before setting closing or requesting physical retirement.
+It does not revoke dependent objects or reopen source admission.
+
+Window Dispose borrows both its actual binding and original ticket. Refused
+ABI-mutated state is retained for the same ticket's retry; no generic mutable
+Store escape is added. The binding drops after the Window payload, and Control/
+Scroll Box bindings likewise drop after ordinary payload fields, before the
+final recovery-session acknowledgment. Only actual release wakes armed cleanup
+waiters. No new identity issuer, dependency index or per-input scan is involved.
+
+This replaces the earlier copyable-reference-only dependency. Cross-Module
+binding/unload through a genuine runtime selector remains unverified; a retained
+object can keep unload draining, and an author Dispose failure still quarantines
+its original ticket/binding. Automatic dependent revocation and a complete
+user-facing unload policy are separate work. Arbitrary privileged-fault
+containment remains the unproven M-D04 gate.
 
 ## Bounded native observations — 2026-11-01
 
@@ -170,3 +187,45 @@ pre-guest failure. The earlier broader conformance refusal remains unqualified.
 These integration observations do not close cross-domain Module definition
 unload, uncertain acknowledgments, concurrent retirement, pressure/recovery,
 complete std adoption or user-mode isolation.
+
+## Retained-object binding observations
+
+The binding implementation and final payload-drop ordering ran in a rebuilt
+optimized release/LTO four-CPU, 8 GiB, 800x600 QEMU image, with event/TextEdit
+tracing disabled. System ELF SHA-256 was
+`3f413613b4ea0048104433738dd78ba8280175c429d151268db06413c686562c`;
+System resource was
+`d840c09ca61626afa348a52a6737804c333727a017ff726a27a96b1af2e36302`;
+ROM remained
+`cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+The actual System content fingerprint and fixed-source build record were
+inspected; the earlier build before the final field-order amendment supplies
+compilation evidence only.
+
+Res Edit's unchanged ELF with ordinarily packaged app-owned definitions admitted
+ten new nonidentity protected pages. Actual quit/account closure removed them;
+a new incarnation launched and quit. Separately, the unchanged Panic Test ELF
+with its own definition overrides admitted eight pages, then actually panicked.
+The System report scrolled and was dismissed; actual account closure removed
+those pages, followed by a fresh normal launch/quit and input. Read-only paused
+PTE samples in the panic case cost approximately177–197 ms of host time each.
+
+All six bundled graphical applications also entered and quit using the normal
+installed resources. Sampled application leaves were absent in both permanent
+roots after actual process closure; ordinary Panic Test reporting/dismissal and
+following input also ran. Malformed and translation-required overrides retained
+their typed loader causes, System diagnostic/dismissal, actual account closure
+and no new remaining definition mappings. These are finite functional scenarios,
+not complete application, control, timing or concurrency qualification.
+
+Native pending image cleanup logs now accurately say the original backing,
+account and ticket await quiescence and translation acknowledgment; actual
+process closure followed. Only genuine quarantined mapping transitions say
+restart is required. No cleanup status, retry rule or reclamation condition was
+changed by this diagnostic correction. Source and base media remained fixed per
+capture; all owned guests/helpers were reaped and cloned media removed.
+
+Cross-Module unload, failed-Dispose retries with mutated author state, a Control
+family change during source stop, uncertain acknowledgments, pressure recovery
+and invocation/retirement races remain unverified. Existing author/port guard
+migration, full std adoption and U-mode isolation remain separate work.

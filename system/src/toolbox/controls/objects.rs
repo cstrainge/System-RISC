@@ -6,7 +6,7 @@ use alloc::{sync::Arc, vec::Vec};
 use mac_abi::{controls::*, *};
 
 use crate::toolbox::{handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store},
-                     resources::definitions::DefinitionRef};
+                     resources::definitions::{BoundDefinition, DefinitionRef}};
 
 pub(crate) fn specification() -> mac_object_table::registry::Specification<'static>
 {
@@ -54,10 +54,12 @@ struct Object
     window:             u64,
     recipient:          u64,
     spec:               Spec,
-    definition:         DefinitionRef,
     scrollbar:          bool,
     title:              Option<Arc<super::snapshot::Title>>,
     tracking:           Option<Tracking>,
+    // Retain executable source through all control payload destruction; the
+    // recovery Activity below remains the final modal-session acknowledgment.
+    definition:         BoundDefinition,
     // Last: registered removal must finish payload destruction before the
     // protected modal service can become available to another recipient.
     #[cfg(target_arch = "riscv64")]
@@ -199,7 +201,7 @@ impl Manager
                 return Ok(None);
             }
         }
-        Ok(Some(object.definition))
+        Ok(Some(object.definition.reference()))
     }
 
     /// Pure admission before a cold definition load. Existing objects retain
@@ -285,7 +287,7 @@ impl Manager
                                                            }))?
                        == id =>
                 {
-                    Some(old.definition)
+                    Some(old.definition.reference())
                 }
                 _ => None
             };
@@ -316,7 +318,7 @@ impl Manager
                                                         {
                                                             DRAW_STANDARD
                                                         }))?;
-        Ok((id, Some(object.definition)))
+        Ok((id, Some(object.definition.reference())))
     }
 
     pub(crate) fn request(&mut self, recipient: &OwnerRef, storage: &OwnerRef,
@@ -328,6 +330,17 @@ impl Manager
         let owner = recipient.owner().incarnation();
         let recovery = storage.owner() != recipient.owner();
         let operation = call.operation;
+        // A configure which changes family admits a replacement before any
+        // mutation; unchanged operations keep the original canonical binding.
+        let mut replacement = if operation == CONFIGURE_OBJECT && bound.is_none()
+        {
+            Some(crate::toolbox::resources::definitions::bind(entry)?)
+        }
+        else
+        {
+            None
+        };
+        let mut retired_binding = None;
         let mut admitted_title = None;
         if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR | CONFIGURE_OBJECT)
         {
@@ -369,10 +382,11 @@ impl Manager
             }
             if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
             {
+                let binding = crate::toolbox::resources::definitions::bind(entry)?;
                 let object = Object { window: call.window,
                                       recipient: owner,
                                       spec: Spec::from_call(&spec),
-                                      definition: entry,
+                                      definition: binding,
                                       scrollbar,
                                       title: admitted_title.clone(),
                                       tracking: None,
@@ -428,7 +442,10 @@ impl Manager
             {
                 // New title backing was admitted before any state/capture mutation.
                 o.title = admitted_title;
-                o.definition = entry;
+                if let Some(binding) = replacement.take()
+                {
+                    retired_binding = Some(core::mem::replace(&mut o.definition, binding));
+                }
                 let cancel = o.spec.standard.bounds != call.standard.bounds
                              || o.spec.standard.enabled != call.standard.enabled
                              || o.spec.scrollbar.bounds != call.scrollbar.bounds
@@ -556,7 +573,7 @@ impl Manager
                      | (u32::from(handled) * HANDLED)
                      | (u32::from(action) * ACTION)
                      | (u32::from(changed) * CHANGED);
-        if changed || operation == DRAW_OBJECT
+        let result = if changed || operation == DRAW_OBJECT
         {
             let mut state = o.spec.call(if o.scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD });
             let mut drawing = super::prepare_with_title(&mut state, entry, gate, o.title.as_ref())?.ok_or(BAD_ARGUMENT)?;
@@ -573,7 +590,9 @@ impl Manager
         else
         {
             Ok(None)
-        }
+        };
+        drop(retired_binding);
+        result
     }
 }
 impl Object

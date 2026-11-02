@@ -9,7 +9,7 @@ use mac_abi::{controls::*,
 
 use crate::toolbox::{handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store},
                      quickdraw::{Canvas, fonts::FontManager, fonts_service},
-                     resources::definitions::DefinitionRef};
+                     resources::definitions::{BoundDefinition, DefinitionRef}};
 const PIXEL_BUDGET: usize = 2 * 1024 * 1024;
 struct Row
 {
@@ -37,11 +37,13 @@ struct Object
     recipient:          u64,
     recovery:           bool,
     spec:               Spec,
-    definition:         DefinitionRef,
     top:                u32,
     raster:             Arc<Raster>,
     tracking:           Option<Tracking>,
     highlight:          i16,
+    // Retain executable source through all control payload destruction; the
+    // recovery Activity below remains the final modal-session acknowledgment.
+    definition:         BoundDefinition,
     #[cfg(target_arch = "riscv64")]
     _recovery_activity: Option<crate::recovery::Activity>
 }
@@ -462,7 +464,7 @@ impl Manager
         }
         else
         {
-            Ok(Some(self.get(call.id, owner)?.definition))
+            Ok(Some(self.get(call.id, owner)?.definition.reference()))
         }
     }
 
@@ -560,7 +562,14 @@ impl Manager
                 return Err(NO_MEMORY);
             }
         }
-        Ok(if call.operation == CREATE { None } else { Some(self.get(call.id, owner)?.definition) })
+        Ok(if call.operation == CREATE
+           {
+               None
+           }
+           else
+           {
+               Some(self.get(call.id, owner)?.definition.reference())
+           })
     }
 
     pub(crate) fn request(&mut self, recipient: &OwnerRef, storage: &OwnerRef, call: &mut Call,
@@ -595,12 +604,13 @@ impl Manager
             };
             if call.operation == CREATE
             {
+                let binding = crate::toolbox::resources::definitions::bind(entry)?;
                 let data = raster(call.spec)?;
                 let object = Object { window: call.window,
                                       recipient: owner,
                                       recovery,
                                       spec: call.spec,
-                                      definition: entry,
+                                      definition: binding,
                                       top: 0,
                                       raster: data,
                                       tracking: None,
