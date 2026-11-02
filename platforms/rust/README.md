@@ -28,6 +28,10 @@ requiring an executable shell/Python wrapper on Windows.
 
 SDK JSON/TOML files and captured compiler output use UTF-8 explicitly, including
 on Windows with a different default code page. No Python UTF-8-mode override is required.
+Source-tree checksums sort case-sensitive relative path components on every host,
+so identical Windows and POSIX source trees match the same pin.
+SDK paths on Windows use ordinary drive/UNC spelling rather than the verbatim
+prefix, keeping Cargo's build-std discovery and relative receipt paths consistent.
 
 `prepare` materializes matching rust-src, applies the pinned patch series and
 overlays, and records hashes. It exposes the original host-target libraries
