@@ -1305,7 +1305,8 @@ impl Plan
                                                    root_table,
                                                    address,
                                                    space,
-                                                   account, source)?;
+                                                   account,
+                                                   source)?;
                             l1_cache = Some((l1_prefix, table));
                             table
                         }
@@ -1322,7 +1323,8 @@ impl Plan
                                                    l1,
                                                    address,
                                                    space,
-                                                   account, source)?;
+                                                   account,
+                                                   source)?;
                             l0_cache = Some((l0_prefix, table));
                             table
                         }
@@ -1516,12 +1518,15 @@ impl Plan
             }
             // All inventory arithmetic must succeed before linking owners or
             // exposing PTEs. The true bootstrap count includes its root table.
-            let overflow = || Error::CloneInventory(CloneInventoryError::Overflow {
-                permanent: kernel.tables.count,
-                dynamic: tables.kernel_branches,
-                additional
-            });
-            let kernel_branches = tables.kernel_branches.checked_add(additional).ok_or_else(overflow)?;
+            let overflow = || {
+                Error::CloneInventory(CloneInventoryError::Overflow { permanent: kernel.tables
+                                                                                       .count,
+                                                                      dynamic:
+                                                                          tables.kernel_branches,
+                                                                      additional })
+            };
+            let kernel_branches =
+                tables.kernel_branches.checked_add(additional).ok_or_else(overflow)?;
             kernel.tables.count.checked_add(kernel_branches).ok_or_else(overflow)?;
             let revision = REVISION.load(Ordering::Acquire);
             let next =

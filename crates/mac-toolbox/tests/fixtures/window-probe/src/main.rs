@@ -1,6 +1,4 @@
 //! Test application uses only the aggregate userspace SDK, no resident code.
-#![no_std]
-#![no_main]
 use mac_toolbox::System;
 #[cfg(not(feature = "deferred-close"))]
 use mac_toolbox::{events::classic::{EVERY_EVENT, EventKind},
@@ -150,31 +148,10 @@ fn run(system: &System<'_>) -> mac_toolbox::ToolboxResult<()>
     }
 }
 
-/// # Safety
-/// Loader supplies the live public service table for this application.
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const mac_toolbox::SystemServices)
-                                -> mac_toolbox::abi::Status
+fn main() -> mac_toolbox::ToolboxResult<()>
 {
-    let system = match unsafe { System::from_raw(services) }
-    {
-        Ok(system) => system,
-        Err(error) => return error.status()
-    };
-    match run(&system)
-    {
-        Ok(()) => 0,
-        Err(error) => error.status()
-    }
-}
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo<'_>) -> !
-{
-    loop
-    {
-        core::hint::spin_loop();
-    }
+    let system = System::new()?;
+    run(&system)
 }
 
 #[cfg(feature = "menus")]

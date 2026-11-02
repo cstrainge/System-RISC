@@ -6,7 +6,7 @@ Waiting for input acknowledgements is transport synchronization, not an oracle.
 """
 from system7_platform import tablet_axis
 from hfs_b_tool import Image as NativeImage
-from system7_fixture_build import guest_env as fixture_guest_env, host_env as fixture_host_env
+from system7_fixture_build import build_application
 import argparse
 import hashlib
 import json
@@ -23,16 +23,10 @@ import system7_observer as observer
 
 
 def private_probe_disk(output, menus=False, deferred=False):
-    fixture = vm.ROOT / 'System7/crates/mac-toolbox/tests/fixtures/window-probe'
-    target = vm.build_dir() / 'fixtures/window-probe'
-    subprocess.run(['cargo','build','--manifest-path',str(fixture/'Cargo.toml'),'--locked',
-                    '--release','--target','riscv64imac-unknown-none-elf','--bin','Finder',
-                    '--target-dir',str(target),*(['--features','deferred-close'] if deferred else ['--features','menus'] if menus else [])],cwd=vm.ROOT,env=fixture_guest_env(target), check=True)
+    fixture = vm.SOURCE / 'crates/mac-toolbox/tests/fixtures/window-probe'
     packaged = output / 'package'
-    subprocess.run(['cargo','run','--manifest-path',str(fixture/'Cargo.toml'),'--locked',
-                    '--bin','package','--target-dir',str(target),'--',
-                    str(target/'riscv64imac-unknown-none-elf/release/Finder'),str(packaged)],
-                   cwd=vm.ROOT,env=fixture_host_env(target), check=True)
+    features = ['deferred-close'] if deferred else ['menus'] if menus else []
+    build_application(fixture / 'Cargo.toml', packaged, features)
     private = output / 'dist'
     private.mkdir()
     raw = private / 'probe.raw'
@@ -48,6 +42,7 @@ def private_probe_disk(output, menus=False, deferred=False):
     return private
 
 def capture(output, probe=False, menus=False, profile=False, windows=False):
+    vm.RAM = '2G'
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     disk = vm.DIST / 'system7.qcow2'
@@ -220,7 +215,18 @@ def capture(output, probe=False, menus=False, profile=False, windows=False):
             move(21,36); button(True); button(False); move(16,444); snapshot('close-accepted')
             move(263,140); button(True); button(False); move(16,444); snapshot('last-close-accepted')
 
-        report = {'profile': 'native-rv64-640x480', 'observations': observations,
+        argv = json.loads((output / 'vm/command.json').read_text())
+        ram = vm.qmp('query-memory-size-summary', endpoint=endpoint)
+        detected = list(map(int, re.findall(r'^BOOT_RAM base=0x[0-9a-fA-F]+ bytes=(\d+) ', serial.read_text(errors='replace'), re.M)))
+        if (argv.count('-m') != 1 or argv[argv.index('-m') + 1] != '2G'
+                or ram['base-memory'] != 2147483648 or not detected
+                or set(detected) != {2147483648}):
+            raise RuntimeError('private fixture guest must detect exactly 2 GiB')
+        width, height = vm.display_size()
+        report = {'profile': f'native-rv64-{width}x{height}',
+                  'ram_evidence': {'argv': argv, 'guest_boot_bytes': detected, 'qmp': ram},
+                  'lifecycle_scope': 'Bounded window/menu observations; host shutdown is not guest process/account closure',
+                  'observations': observations,
                   'disk_sha256_before': disk_before,
                   'disk_sha256_after': hashlib.sha256(disk.read_bytes()).hexdigest(),
                   'motion': motion,

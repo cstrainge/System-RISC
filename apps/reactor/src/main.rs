@@ -1,7 +1,5 @@
 //! First inspection customer. Plain managed lists precede the shared view
 //! protocol; incomplete model coverage is visible rather than fabricated.
-#![no_std]
-#![no_main]
 extern crate alloc;
 use core::{cell::Cell,
            fmt::{self, Write}};
@@ -13,10 +11,9 @@ use mac_toolbox::{controls::{ScrollBox, ScrollBoxSpec, StaticText, TextAlignment
                   *};
 mod memory;
 mod cache;
-const DOMAINS: u32 = u32::from_be_bytes(*b"domr");
-const MEMORY: u32 = u32::from_be_bytes(*b"memr");
-const QUIT: u32 = u32::from_be_bytes(*b"quit");
-const REFRESH: u32 = u32::from_be_bytes(*b"rfrs");
+mac_toolbox::include_resource_ids!();
+
+use crate::resources::commands::{DOMAINS, MEMORY, QUIT, REFRESH};
 const POOL_DETAIL_ROWS: u32 = 6;
 // 24 bytes fit Monaco 9 in the minimum-width details pane. A UTF-8 cut
 // can leave at most three bytes unused, so this bounds every diagnostic.
@@ -624,11 +621,12 @@ impl<'a> Panes<'a>
     }
 }
 
-fn run(system: &System<'_>) -> ToolboxResult<()>
+fn main() -> ToolboxResult<()>
 {
+    let system = &System::new()?;
     system.menus().clear()?;
-    let _file = system.menus().install_owned(resources::APPLICATION, 128)?;
-    let _view = system.menus().install_owned(resources::APPLICATION, 129)?;
+    system.menus().install_menu_resource(ResourceScope::Application, 128)?;
+    system.menus().install_menu_resource(ResourceScope::Application, 129)?;
     let mut title = [0; 128];
     let title = system.resources().application().string(128, &mut title)?;
     let (bounds, procedure) = window_layout(system)?;
@@ -841,5 +839,3 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
         }
     }
 }
-
-mac_toolbox::application!(run);

@@ -2,28 +2,16 @@
 use mac_toolbox::{Error, *};
 
 use crate::browser::Browser;
-pub const ABOUT: u32 = u32::from_be_bytes(*b"abou");
-pub const NEW_FOLDER: u32 = u32::from_be_bytes(*b"new ");
-pub const OPEN: u32 = u32::from_be_bytes(*b"sope");
-pub const SELECT_ALL: u32 = u32::from_be_bytes(*b"sela");
-pub const GET_INFO: u32 = u32::from_be_bytes(*b"sinf");
-pub const CLOSE: u32 = u32::from_be_bytes(*b"clos");
-pub const PUT_AWAY: u32 = u32::from_be_bytes(*b"sput");
-pub const CLEAR: u32 = u32::from_be_bytes(*b"cler");
-pub const SHOW_CLIPBOARD: u32 = u32::from_be_bytes(*b"shcl");
-pub const EMPTY: u32 = u32::from_be_bytes(*b"empt");
-pub const RESTART: u32 = u32::from_be_bytes(*b"rest");
-pub const SHUTDOWN: u32 = u32::from_be_bytes(*b"shut");
-pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 6], Error>
+pub use crate::resources::commands::{ABOUT, CLEAR, CLOSE, EMPTY, GET_INFO, NEW_FOLDER, OPEN,
+                                     PUT_AWAY, RESTART, SELECT_ALL, SHOW_CLIPBOARD, SHUTDOWN};
+pub fn install(system: &System<'_>) -> Result<(), Error>
 {
     let menus = system.menus();
     menus.clear()?;
-    let installed = [menus.install_owned(resources::APPLICATION, 1251)?,
-                     menus.install_owned(resources::APPLICATION, 1252)?,
-                     menus.install_owned(resources::APPLICATION, 1253)?,
-                     menus.install_owned(resources::APPLICATION, 1254)?,
-                     menus.install_owned(resources::APPLICATION, 1256)?,
-                     menus.install_owned(resources::APPLICATION, 1255)?];
+    for id in [1251, 1252, 1253, 1254, 1256, 1255]
+    {
+        menus.install_menu_resource(resources::APPLICATION, id)?;
+    }
     match system.power().capabilities()
     {
         Ok(capabilities) =>
@@ -47,7 +35,7 @@ pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 6], Error>
             system.log(line.as_str())?;
         }
     }
-    Ok(installed)
+    Ok(())
 }
 /// Idle scrollbar tracking changes neither selection nor file command policy.
 /// Consumed clipboard events still pass through this shared policy guard.

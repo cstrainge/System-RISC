@@ -1,13 +1,7 @@
 //! Finder is a separate resource-fork application using System Toolbox services.
-#![no_std]
-#![no_main]
 
 use mac_toolbox::{System, *};
-mod resources
-{
-    use mac_toolbox as mac_abi;
-    include!(concat!(env!("OUT_DIR"), "/resource_ids.rs"));
-}
+mac_toolbox::include_resource_ids!();
 
 mod ui;
 mod clipboard;
@@ -42,6 +36,29 @@ fn try_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, result: R
                              status.status());
             system.log(message.as_str())?;
             if let Err(error) = alerts.error(system, status)
+            {
+                let mut message = browser::Text::<80>::default();
+                let _ = writeln!(&mut message, "FINDER_ALERT_FAILED status={}", error.status());
+                system.log(message.as_str())?;
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn try_open_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
+                          result: Result<T, browser::ActionFailure>)
+                          -> Result<Option<T>, Error>
+{
+    use core::fmt::Write;
+    match result
+    {
+        Ok(value) => Ok(Some(value)),
+        Err(browser::ActionFailure::Other(cause)) => try_action(system, alerts, Err(cause)),
+        Err(browser::ActionFailure::Open { item,
+                                           cause }) =>
+        {
+            if let Err(error) = alerts.item_open_error(system, item, cause)
             {
                 let mut message = browser::Text::<80>::default();
                 let _ = writeln!(&mut message, "FINDER_ALERT_FAILED status={}", error.status());
@@ -105,8 +122,9 @@ fn open_about(system: &System<'_>, id: &mut WindowId) -> Result<(), Error>
     system.select_window(*id)?;
     about(system, *id)
 }
-fn finder(system: &System<'_>) -> Result<(), Error>
+fn main() -> Result<(), Error>
 {
+    let system = &System::new()?;
     system.log("Finder: native application entry reached\n")?;
     if system.capabilities() & CAP_GRAPHICS == 0
     {
@@ -117,7 +135,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     let mut watches = watches::Controller::default();
     let mut associations = associations::Controller::default();
     let mut info = get_info::Controller::default();
-    let _menus = menus::install(system)?;
+    menus::install(system)?;
     let mut alerts = ui::Alerts::default();
     let _ = try_action(system, &mut alerts, browser.initialize(system))?;
     if alerts.window() == WindowId(0)
@@ -411,7 +429,10 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             let action = match selection.command
             {
                 menus::NEW_FOLDER => browser.new_folder(system),
-                menus::OPEN => browser.open_selection(system),
+                menus::OPEN =>
+                {
+                    try_open_action(system, &mut alerts, browser.open_selection(system)).map(|_| ())
+                }
                 menus::SELECT_ALL => browser.select_all(system),
                 menus::GET_INFO => info.open_selection(system, browser.selected_locations()),
                 menus::CLOSE =>
@@ -555,7 +576,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                                      .modifiers
                                      .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
-                    let _ = try_action(system, &mut alerts, browser.open_selection(system))?;
+                    let _ = try_open_action(system, &mut alerts, browser.open_selection(system))?;
                 }
                 else if code == 0x74
                 {
@@ -570,7 +591,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 if event.window().is_none()
                    || browser.contains(event.window().unwrap_or_default()) =>
             {
-                match try_action(system, &mut alerts, browser.click(system, &event, position))?
+                match try_open_action(system, &mut alerts, browser.click(system, &event, position))?
                 {
                     Some(browser::ClickOutcome::Completed) =>
                     {
@@ -595,5 +616,3 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         }
     }
 }
-
-mac_toolbox::application!(finder);

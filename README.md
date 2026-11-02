@@ -270,8 +270,9 @@ The checked-in extracted assets suffice to build these Rust packages. Reproducin
 the original captures and resource extraction needs the reference System 7.6.1
 installation, font suitcases, ROM and Retro68 toolchain described in the analysis
 documents. Cargo downloads the host tools' dependencies
-on the first build. Guest code uses no `std`. The ROM and System supply their
-own allocators; Finder and the definitions require no heap.
+on the first build. Installed application images use the pinned System RISC std
+SDK and ordinary Rust `main`. ROM, System, drivers, extensions and definitions
+remain `no_std`; runtime adoption gates are recorded in [RUST-STD](docs/RUST-STD.md).
 
 ## Layout
 
@@ -486,6 +487,31 @@ Compressed resources are not supported. The compiler adds `vers` resource 1
 for Cargo-derived version metadata and generates constants such as
 `resources::FILE_MENU`, of type `mac_abi::ResourceKey`.
 See [Finder's definitions](apps/finder/resources.json) for examples.
+
+Menu item `command` fields contain exactly four Mac Roman bytes. The compiler's
+parsed command table supplies both the `MCMD` resource and generated
+`resources::commands` constants of type `u32`. For example, `"cut "` generates
+`resources::commands::CUT = 0x63757420`; padding affects the value, not the name.
+Keep the existing `mac_toolbox::include_resource_ids!()` invocation to include
+these constants alongside resource keys.
+
+Automatic command names trim outer ASCII spaces, uppercase ASCII letters and
+replace space, hyphen, underscore, dot and slash separators with underscores.
+Names starting with a digit or underscore receive the `COMMAND_` prefix. Other
+characters, or codes consisting entirely of separators, require an explicit
+`command_symbol` on the item. Explicit symbols start with `A`–`Z` and contain
+only uppercase ASCII letters, digits and underscores:
+
+```json
+{ "text": "Paste", "command": "past", "command_symbol": "PASTE" }
+```
+
+Repeated identical command values generate one constant. An explicit symbol on
+any occurrence names that value everywhere; conflicting overrides are errors.
+Different values that produce the same symbol are rejected with both resource
+and item locations; give one a distinct explicit symbol. Missing or all-zero
+commands emit no constant and cannot have an override. Generation orders names
+deterministically and preserves an unchanged resource constants file.
 
 The packager reserves:
 

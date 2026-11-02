@@ -1,22 +1,18 @@
 use mac_toolbox::{Error, *};
 
 use crate::editor;
-
-pub const CUT: u32 = u32::from_be_bytes(*b"cut ");
-pub const COPY: u32 = u32::from_be_bytes(*b"copy");
-pub const PASTE: u32 = u32::from_be_bytes(*b"past");
-pub const CLEAR: u32 = u32::from_be_bytes(*b"cler");
-pub const SELECT_ALL: u32 = u32::from_be_bytes(*b"sela");
+pub use crate::resources::commands::{CLEAR, COPY, CUT, PASTE, SELECT_ALL};
 
 
-pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 4], Error>
+pub fn install(system: &System<'_>) -> Result<(), Error>
 {
     let menus = system.menus();
     menus.clear()?;
-    Ok([menus.install_owned(resources::APPLICATION, 128)?,
-        menus.install_owned(resources::APPLICATION, 129)?,
-        menus.install_owned(resources::APPLICATION, 132)?,
-        menus.install_owned(resources::APPLICATION, 133)?])
+    for id in [128, 129, 132, 133]
+    {
+        menus.install_menu_resource(resources::APPLICATION, id)?;
+    }
+    Ok(())
 }
 #[derive(Default)]
 pub struct Policy

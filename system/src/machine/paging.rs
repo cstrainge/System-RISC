@@ -495,15 +495,14 @@ impl Tables for Frames
     {
         let table_layout = Layout::new::<[u64; 512]>().align_to(PAGE_BYTES as usize)
             .map_err(|_| FrameError::Pages(super::pages::Error::Geometry))?;
-        let charge =
-            self.account
-                .as_ref()
-                .map(|a| {
-                    self.source
+        let charge = self.account
+                         .as_ref()
+                         .map(|a| {
+                             self.source
                         .planned_bytes(table_layout)
                         .and_then(|bytes| a.reserve_kernel(bytes).map_err(FrameError::Account))
-                })
-                .transpose()?;
+                         })
+                         .transpose()?;
         let backing = self.source.allocate_zeroed(table_layout)?;
         let cpu = backing.cpu_base();
         let physical = backing.physical();
@@ -741,10 +740,11 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
                  heap: PhysicalAddress, tag: usize)
                  -> Result<Space, Error>
 {
-    let mut mapper = Mapper::new(Frames { head:    0,
-                                          count:   0,
-                                          account: None,
-                                          source: BackingSource::Ordinary }).map_err(Error::Tables)?;
+    let mut mapper =
+        Mapper::new(Frames { head:    0,
+                             count:   0,
+                             account: None,
+                             source:  BackingSource::Ordinary }).map_err(Error::Tables)?;
     let mut leaves = 0;
     for bank in boot.ram.banks()
     {

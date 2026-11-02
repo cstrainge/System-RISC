@@ -353,7 +353,8 @@ fn step(work: Work) -> Option<Work>
                           .. }
         | Work::BackingPaused { admission,
                               .. }
-        | Work::Terminal { admission, .. }
+        | Work::Terminal { admission,
+                         .. }
         | Work::Paused { admission,
                        .. } => (admission.permit(), admission.activity())
     };
@@ -856,26 +857,23 @@ fn step_inner(work: Work) -> Option<Work>
                     {
                         scheduler::SpawnRefusal::RetryableAdmission =>
                         {
-                            Some(Work::Paused {
-                                next,
-                                admission,
-                                thread: PendingThread::Unpublished(failure.prepared),
-                                status: failure.status,
-                                attempted: false
-                            })
-                        },
+                            Some(Work::Paused { next,
+                                                admission,
+                                                thread:
+                                                    PendingThread::Unpublished(failure.prepared),
+                                                status: failure.status,
+                                                attempted: false })
+                        }
                         scheduler::SpawnRefusal::TerminalBinding =>
                         {
-                            Some(Work::Terminal {
-                                next,
-                                admission,
-                                prepared: failure.prepared,
-                                status: failure.status,
-                                attempted: false,
-                                restart: false,
-                                power_failure: None
-                            })
-                        },
+                            Some(Work::Terminal { next,
+                                                  admission,
+                                                  prepared: failure.prepared,
+                                                  status: failure.status,
+                                                  attempted: false,
+                                                  restart: false,
+                                                  power_failure: None })
+                        }
                         // Stopping is irreversible. Dropping admission requests the real
                         // walk; a row already owned by that walk keeps its own backing.
                         scheduler::SpawnRefusal::Cancelled => None
@@ -985,9 +983,13 @@ fn step_inner(work: Work) -> Option<Work>
                                        status,
                                        attempted })
         }
-        Work::Terminal {
-            next, admission, prepared, status, mut attempted, restart, mut power_failure
-        } =>
+        Work::Terminal { next,
+                         admission,
+                         prepared,
+                         status,
+                         mut attempted,
+                         restart,
+                         mut power_failure } =>
         {
             if !admission.owner().accepting()
             {
@@ -996,10 +998,8 @@ fn step_inner(work: Work) -> Option<Work>
             if restart
             {
                 // No Desktop/FLIGHT guard crosses the actual provider/flush path.
-                let mut call = mac_abi::power::PowerCall {
-                    operation: mac_abi::power::RESTART,
-                    ..Default::default()
-                };
+                let mut call = mac_abi::power::PowerCall { operation: mac_abi::power::RESTART,
+                                                           ..Default::default() };
                 power_failure = match crate::toolbox::power::native(&mut call)
                 {
                     Ok(()) => None,
@@ -1010,12 +1010,16 @@ fn step_inner(work: Work) -> Option<Work>
             if !attempted || UI_PROGRESS.swap(false, Ordering::AcqRel)
             {
                 attempted = desktop(&next, |desktop| {
-                    desktop.finder_restart_terminal(status, power_failure)
-                }).is_ok();
+                                desktop.finder_restart_terminal(status, power_failure)
+                            }).is_ok();
             }
-            Some(Work::Terminal {
-                next, admission, prepared, status, attempted, restart: false, power_failure
-            })
+            Some(Work::Terminal { next,
+                                  admission,
+                                  prepared,
+                                  status,
+                                  attempted,
+                                  restart: false,
+                                  power_failure })
         }
         Work::Paused { next,
                        admission,
@@ -1075,7 +1079,8 @@ pub(crate) fn pump()
     WAKE.store(false, Ordering::Release);
     let next = step(work);
     let sleep = matches!(&next,
-                         Some(Work::Terminal { attempted: true, .. }
+                         Some(Work::Terminal { attempted: true,
+                                               .. }
                               | Work::Ready { .. }
                               | Work::Paused { attempted: true,
                                                .. }

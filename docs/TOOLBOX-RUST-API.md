@@ -1,7 +1,9 @@
 # Public Rust Toolbox API worklist
 
-Verified on 2026-10-20 before the driver/module milestone.
-API audit baseline: `96461ba`.
+Historical API audit baseline: `96461ba` (2026-10-20).
+That earlier verification label does not qualify the current OS. Host checks
+establish only host behavior; native observations apply to their exact target
+artifacts, configurations and exercised paths.
 The ABI remains the transport and classic compatibility contract. Native apps use
 thin typed clients over the same resident services. Rebuild all apps together;
 remove superseded native paths rather than preserving old project APIs.
@@ -11,8 +13,9 @@ remove superseded native paths rather than preserving old project APIs.
       the facade preserves SDK errors and identities.
 - [x] Distinct volume, catalog, process and menu identities.
 - [x] Decoded information snapshots, including precise timestamps and object kinds.
-- [x] Owned TextEdit editors, menus and alerts, with explicit borrowed references
-      and cleanup that retains ownership on errors.
+- [x] Owned TextEdit editors and alerts, with explicit borrowed references and
+      cleanup that retains ownership on errors; resident application menus with
+      generation-checked views and explicit removal.
 - [x] Type codes, scrollbar parts, named drawing operations, memory states/errors,
       private WindowSpec builders and automatic-clock mutation convenience APIs.
 - [x] Document and verify the native threading contract.
@@ -71,7 +74,7 @@ Finder double-click on a StuffIt file mounts its filesystem. Keep both mounts
 loadable through real DRVR/DABI contracts; do not replace them with built-in
 shortcuts. Driver packages stay in Drivers; extensions stay in Extensions.
 
-## Verified native SDK milestone — ABI 7
+## Native SDK identity and lifetime contracts
 
 Native volume/catalog/process/thread/menu identities and resource scopes are
 distinct types. TypeCode preserves FourCC bytes; information snapshots expose
@@ -82,9 +85,15 @@ Drawing operations, compact bitmap font selectors, scrollbar parts and memory
 states/errors use named vocabularies. Ordinary filesystem mutations and data-file
 creation own the clock; `_at` variants preserve supplied timestamps.
 
-TextEdit editors, menus and alerts have owners and borrowed references. Shipped
-apps retain those owners. Explicit cleanup retains ownership on service errors;
-Drop makes a non-panicking best effort. Native and Pascal TextEdit calls validate
+TextEdit editors and alerts have owners and borrowed references. Explicit cleanup
+retains ownership on service errors; Drop makes a non-panicking best effort.
+Menus instead belong to the resident application: `install_menu_resource` returns
+no owner to retain, and dropping a `Menus` client or `MenuRef` view leaves the
+menu installed. Obtain a view with `find(MenuId(...))`; `MenuRef::dispose`,
+`Menus::clear` or actual application teardown ends that lifetime. Failed
+installation or disposal leaves the existing resident state available for retry.
+Old views retain their generation and cannot remove or mutate replacements.
+Native and Pascal TextEdit calls validate
 the same shared handle table. TextEdit and native menu objects use central,
 atomic generation histories across app-local contexts, with slot retirement.
 Memory's wire format and existing process-local policy are unchanged. MenuId

@@ -749,7 +749,14 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
             {
                 return Err(mac_abi::ACCESS_DENIED);
             }
-            let space=super::paging::process::admit_recovery(&owner,charges.allocation(),&loaded,permit.clone()).map_err(|cause|{serial!("PROCESS_SPACE_REFUSED owner={} {cause}",owner.owner().incarnation());cause.status()})?;
+            let space = super::paging::process::admit_recovery(&owner,
+                                                               charges.allocation(),
+                                                               &loaded,
+                                                               permit.clone()).map_err(|cause| {
+                            serial!("PROCESS_SPACE_REFUSED owner={} {cause}",
+                                    owner.owner().incarnation());
+                            cause.status()
+                        })?;
             let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
             let slots =
                 crate::toolbox::native_threads::prepare_slots(&owner, &tls).map_err(|cause| {
@@ -905,7 +912,14 @@ pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
         Err(status) =>
         {
             Err(SpawnFailure { status,
-                               disposition: if prepared.owner.accepting() { disposition } else { SpawnRefusal::Cancelled },
+                               disposition: if prepared.owner.accepting()
+                               {
+                                   disposition
+                               }
+                               else
+                               {
+                                   SpawnRefusal::Cancelled
+                               },
                                prepared })
         }
     }

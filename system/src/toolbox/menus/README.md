@@ -6,6 +6,14 @@ owns menu objects, enable/check state and pointer capture; independently loaded
 draw through resident Surface, Font and resource services rather than embedding a
 second graphics engine.
 
+`install_menu_resource` publishes an application-owned resident object, after
+resource parsing, definition measurement and storage admission succeed. A
+temporary `Menus` client or `MenuRef` view has no destruction effect. Views
+carry generation-checked identities; explicit `dispose`, application `clear`
+and registered application teardown remove menus. Failed preparation leaves
+the old bar intact, and a stale or foreign view cannot remove a replacement.
+The public SDK has no separate Drop-removal menu owner.
+
 Menus install from standard `MENU` resources, with optional `MCMD` four-byte
 command records, or the original Finder's version1 `fmnu` representation. The
 manifest compiler accepts either string items or item objects with `text`, `key`,
@@ -76,7 +84,10 @@ The aggregate userspace tests install captured menu records and run a private
 SDK-only guest with real virtio input and the loaded MDEF. Original System7.6.1
 MenuProbe captures supply strict, unmasked RGB crops for the File popup's normal,
 highlighted and disabled-hover states. Capture transport performs no behavioral
-assertions; Rust acceptance remains under `crates/mac-toolbox/tests/menus.rs`.
+assertions. Existing Rust host checks do not qualify the production trap,
+allocator, MDEF or lifetime paths. A real packaged native SDK application must
+exercise each claimed lifecycle, failure and input workflow on the recorded
+target artifacts; finite observations do not establish absence of races.
 
 This is a bounded native implementation: only MDEF0 is installed, menu item count
 is limited to 31 and installed menus to 8. Apple/Label icon rows, hierarchical and

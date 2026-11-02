@@ -46,33 +46,33 @@ enum Capture
 
 pub struct Manager
 {
-    capture:                    Capture,
-    dismissal:                  Option<storage::Origin>,
-    superseded:                 bool,
-    payload:                    Payload,
-    archive_origin:             Option<storage::Origin>,
-    columns:                    usize,
-    column:                     usize,
-    previous_cr:                bool,
-    info:                       CrashInfo,
+    capture:                     Capture,
+    dismissal:                   Option<storage::Origin>,
+    superseded:                  bool,
+    payload:                     Payload,
+    archive_origin:              Option<storage::Origin>,
+    columns:                     usize,
+    column:                      usize,
+    previous_cr:                 bool,
+    info:                        CrashInfo,
     #[cfg(target_arch = "riscv64")]
-    pub(super) controls:        [Option<u64>; 6],
+    pub(super) controls:         [Option<u64>; 6],
     #[cfg(target_arch = "riscv64")]
-    pub(super) control_enabled: [bool; 6],
+    pub(super) control_enabled:  [bool; 6],
     #[cfg(target_arch = "riscv64")]
-    pub(super) control_labels:  [u32; 6],
+    pub(super) control_labels:   [u32; 6],
     #[cfg(target_arch = "riscv64")]
-    pub(super) tracking:        Option<usize>,
+    pub(super) tracking:         Option<usize>,
     #[cfg(target_arch = "riscv64")]
-    pub(super) copy_failed:     bool,
+    pub(super) copy_failed:      bool,
     #[cfg(target_arch = "riscv64")]
-    pub(super) restart_pending: bool,
+    pub(super) restart_pending:  bool,
     #[cfg(target_arch = "riscv64")]
-    pub(super) restart_error:   Option<Status>,
+    pub(super) restart_error:    Option<Status>,
     #[cfg(target_arch = "riscv64")]
     pub(super) restart_terminal: bool,
     #[cfg(target_arch = "riscv64")]
-    pub(super) power_failure: Option<(Status, u32)>
+    pub(super) power_failure:    Option<(Status, u32)>
 }
 
 /// Diagnostic data is independent of the dying application's window/control
@@ -133,35 +133,35 @@ impl Default for Manager
 {
     fn default() -> Self
     {
-        Self { capture:                                         Capture::None,
-               dismissal:                                       None,
-               superseded:                                      false,
-               payload:                                         Payload::default(),
-               archive_origin:                                  None,
-               columns:                                         DEFAULT_COLUMNS,
-               column:                                          0,
-               previous_cr:                                     false,
-               info:                                            CrashInfo { page_lines:
-                                                                                PAGE_LINES,
-                                                                            ..Default::default() },
+        Self { capture:                                          Capture::None,
+               dismissal:                                        None,
+               superseded:                                       false,
+               payload:                                          Payload::default(),
+               archive_origin:                                   None,
+               columns:                                          DEFAULT_COLUMNS,
+               column:                                           0,
+               previous_cr:                                      false,
+               info:                                             CrashInfo { page_lines:
+                                                                                 PAGE_LINES,
+                                                                             ..Default::default() },
                #[cfg(target_arch = "riscv64")]
-               controls:                                        [None; 6],
+               controls:                                         [None; 6],
                #[cfg(target_arch = "riscv64")]
-               control_enabled:                                 [false; 6],
+               control_enabled:                                  [false; 6],
                #[cfg(target_arch = "riscv64")]
-               control_labels:                                  [u32::MAX; 6],
+               control_labels:                                   [u32::MAX; 6],
                #[cfg(target_arch = "riscv64")]
-               tracking:                                        None,
+               tracking:                                         None,
                #[cfg(target_arch = "riscv64")]
-               copy_failed:                                     false,
+               copy_failed:                                      false,
                #[cfg(target_arch = "riscv64")]
-               restart_pending:                                 false,
+               restart_pending:                                  false,
                #[cfg(target_arch = "riscv64")]
-               restart_error:                                   None,
+               restart_error:                                    None,
                #[cfg(target_arch = "riscv64")]
-               restart_terminal: false,
+               restart_terminal:                                 false,
                #[cfg(target_arch = "riscv64")]
-               power_failure: None }
+               power_failure:                                    None }
     }
 }
 #[cfg(target_arch = "riscv64")]

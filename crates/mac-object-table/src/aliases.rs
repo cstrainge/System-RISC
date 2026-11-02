@@ -231,7 +231,14 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                            {
                                store::Store::owned(aliases.0, aliases.1)
                            }.map_err(Error::Pool)?,
-                  objects: if prepared { store::Store::owned_prepared(objects.0, objects.1) } else { store::Store::owned(objects.0, objects.1) }.map_err(Error::Pool)?,
+                  objects: if prepared
+                           {
+                               store::Store::owned_prepared(objects.0, objects.1)
+                           }
+                           else
+                           {
+                               store::Store::owned(objects.0, objects.1)
+                           }.map_err(Error::Pool)?,
                   system })
     }
 

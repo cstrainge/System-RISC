@@ -612,8 +612,8 @@ fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, image: core::
                -> Result<Space, Error>
 {
     let spaces = SPACES.get().ok_or(Error::Missing)?;
-    let mut tables = Frames { head:    0,
-                              count:   0,
+    let mut tables = Frames { head: 0,
+                              count: 0,
                               account: Some(allocation.clone()),
                               source };
     let source = spaces.kernel.owner.root_physical();

@@ -165,14 +165,14 @@ impl<G: InvocationGate> Account<G>
         // the interrupt-masked invocation gate. Recheck the real admission bit
         // after construction; an observed identity grants no authority.
         let inner = G::with_foundation_allocation(|| {
-                            Arc::try_new(Inner { state:
+                        Arc::try_new(Inner { state:
                                          Spinlock::new(State { account:
                                                                    DomainAccount::new(identity,
                                                                                       kernel,
                                                                                       application),
                                                                closing: false }),
                                      owner })
-                        }).map_err(|_| Error::Metadata { owner: identity })?;
+                    }).map_err(|_| Error::Metadata { owner: identity })?;
         let accepting = G::run(|| inner.owner.accepting());
         if !accepting
         {

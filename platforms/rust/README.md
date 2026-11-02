@@ -1,10 +1,11 @@
 # System RISC Rust SDK source integration
 
 This directory pins the application target and the Rust-source changes for the
-std port. The existing normal image still uses the published no_std application
-runtime. Switching installed applications requires the native startup, Thread
-Manager, TLS, entropy, file and panic milestones in `docs/RUST-STD.md`; a compiled
-standard-library archive does not establish those properties.
+std port. The image builder compiles installed applications, including Finder,
+through this SDK using ordinary Rust `main`. Kernel, ROM, definitions, drivers
+and extensions keep their low-level no_std target. The native startup, Thread
+Manager, TLS, entropy, file, launch and panic gates in `docs/RUST-STD.md` remain
+runtime requirements; compilation does not establish adoption readiness.
 
 ## Private build
 
@@ -125,10 +126,19 @@ on this target. The CRT must preserve that C entry signature; the internal
 compiler/target revisions. Emitting LLVM IR establishes compiler output only,
 not successful linking, startup or execution of an application.
 
-The next integration boundary is the kernel Thread Manager contract, especially
-TLS before std initialization, actual child completion/destruction before join,
-and address-lifetime-safe compare-and-park/wake. Native thread creation is a
-required delivery milestone, not an optional permanent stub.
+Native thread creation, TLS and compare-and-park/wake are implemented through the
+shared transport described above. Their acceptance still requires matching
+System/SDK observations of child completion, destruction before join, address
+lifetimes and process retirement; earlier artifacts do not qualify later builds.
+The image builder and `sdk app` share the std compiler and automatic ENTR1
+packager. Application role accepts ordinary `APPL` and shell `FNDR` packages;
+Finder retains its original file type. `sdk app PATH --features feature1,feature2`
+selects Cargo application features. Embedded low-level definitions are resolved
+from this build root's explicit low-level target/release directory during both
+build-script input tracking and packaging. Each packaged application retains
+its own `.sdk.json` receipt with the selected SDK, source inputs and features.
+Writable files, launch data, streams and complete migrated app workflows remain
+separate adoption gates.
 
 
 For this pinned Cargo, private native rebuilds select both

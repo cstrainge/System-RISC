@@ -7,8 +7,10 @@ compile_error!("the System RISC std target supplies startup; remove the no_std a
 /// Explicit wire/entry-point escape hatch. Ordinary applications use decoded
 /// native services, typed identities and Error rather than numeric statuses.
 pub use mac_abi as abi;
-pub use mac_abi::{ApplicationEntry, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_CLOCK, Point,
-                  Rect, SystemServices, WindowId, dates::Timestamp};
+pub use mac_abi::{ApplicationEntry, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_CLOCK,
+                  SystemServices, WindowId,
+                  dates::Timestamp,
+                  geometry::{Point, Rect}};
 /// Core-only native thread/TLS transport consumed by the platform CRT.
 pub use mac_traps::address_wait;
 /// Owned, bounded UTF-8 text returned by Toolbox snapshots.
@@ -42,6 +44,21 @@ pub use toolbox_scrap as scrap;
 pub use toolbox_standard_file as standard_file;
 pub use toolbox_textedit as textedit;
 pub use toolbox_windows as windows;
+
+/// Include build-generated resource keys and commands in a private module.
+///
+/// Invoke once at the crate root. The build script must call
+/// `mac_build::build_guest()` to generate this application's `resource_ids.rs`.
+#[macro_export]
+macro_rules! include_resource_ids {
+    () => {
+        mod resources
+        {
+            use $crate as mac_abi;
+            ::core::include!(::core::concat!(::core::env!("OUT_DIR"), "/resource_ids.rs"));
+        }
+    };
+}
 
 
 #[derive(Clone, Copy)]

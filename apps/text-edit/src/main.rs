@@ -1,6 +1,4 @@
 //! Text Edit: resource-based native document editing through the public Toolbox.
-#![no_std]
-#![no_main]
 
 
 use core::fmt::Write;
@@ -14,11 +12,7 @@ mod font_choices;
 mod encoding;
 mod documents;
 mod batch;
-mod resources
-{
-    use mac_toolbox as mac_abi;
-    include!(concat!(env!("OUT_DIR"), "/resource_ids.rs"));
-}
+mac_toolbox::include_resource_ids!();
 mod menus;
 mod ui;
 use ui::{Text, text};
@@ -33,13 +27,14 @@ fn diagnostic(system: &System<'_>, stage: &str, error: Error) -> Error
     error
 }
 
-fn run(system: &System<'_>) -> Result<(), Error>
+fn main() -> Result<(), Error>
 {
+    let system = &System::new()?;
     if system.capabilities() & CAP_GRAPHICS == 0
     {
         return Err(Error::NotSupported);
     }
-    let _menus = menus::install(system).map_err(|error| diagnostic(system, "menus", error))?;
+    menus::install(system).map_err(|error| diagnostic(system, "menus", error))?;
     let mut application = documents::Application::new(system).map_err(|error| {
                                                                  diagnostic(system, "documents",
                                                                             error)
@@ -56,5 +51,3 @@ fn run(system: &System<'_>) -> Result<(), Error>
         }
     }
 }
-
-mac_toolbox::application!(run);

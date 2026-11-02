@@ -8,8 +8,9 @@ Finder and all `apps/*`; userspace applications must no longer need `#![no_std]`
 `#![no_main]`, a handwritten `_start` or a panic-handler macro. Toolbox libraries
 remain usable without std. Kernel, machine adapters, resource definitions and the
 minimal ABI/transport remain `no_std`. The private development SDK and a native
-ordinary-main probe now exist; the installed application set still uses no_std
-until the remaining adoption gates below are met.
+ordinary-main probe now exist. Installed app sources use ordinary `main` and
+the image builder selects the std SDK for them. This implementation step does
+not close the remaining adoption gates below.
 
 The application policy includes [P11 CLAP commands](TERMINAL.md), hosted by
 Terminal with preference-defined base environments and checked session identity.
@@ -18,8 +19,9 @@ adds hardware process protection. Ordinary CLI/std support does not establish
 either compiler hosting or memory isolation.
 
 [P15 HFS-B](CORE-TOOLBOX-ROADMAP.md#p15--hfs-b-and-early-system-migration) is the
-current boot/system/workspace target. The normal image's no_std application
-startup does not depend on the staged std SDK. Continue qualifying actual
+current boot/system/workspace target. The normal image now requires the pinned
+std SDK for application images; System and low-level modules remain no_std.
+Continue qualifying actual
 formatter/boot/write behavior on HFS-B startup media.
 Keep mounted classic HFS behavior unchanged; validate the new format's full-name,
 64-bit size/time and dual-fork services instead of extending HFS storage limits.

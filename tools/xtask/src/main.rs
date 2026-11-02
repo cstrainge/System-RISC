@@ -132,11 +132,6 @@ impl Workspace
         {
             command.args(["--features", "mac-system/event-trace"]);
         }
-        if packages.contains(&"text-edit")
-           && (self.checking || env::var_os("SYSTEM7_TEXTEDIT_INPUT_TRACE").is_some())
-        {
-            command.args(["--features", "text-edit/input-trace"]);
-        }
         mac_build::platform::configure_for(&self.platform, &mut command);
         run(&mut command)
     }
@@ -145,26 +140,13 @@ impl Workspace
     {
         self.guest_build(&["native-wdef", "native-buttons-cdef", "native-scrollbar-cdef",
                            "native-mdef", "native-progress-bar-cdef", "native-static-text-cdef"])?;
-        self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "cursor-test",
-                           "panic-test", "resedit", "reactor", "bootrom", "vhost-transport",
-                           "vhost-filesystem", "stuffit-filesystem", "qemu-power-device",
-                           "vdagent-channel", "virtio-rng", "host-clipboard-extension",
-                           "multi-scheduler-extension"])?;
-        // Keep userspace's allocation-free serde graph independent of the
-        // resident System's alloc-enabled serde. Cargo feature unification
-        // across the kernel and an app must not impose a userspace heap.
-        self.guest_build(&["text-edit"])?;
+        self.guest_build(&["mac-system", "bootrom", "vhost-transport", "vhost-filesystem",
+                           "stuffit-filesystem", "qemu-power-device", "vdagent-channel",
+                           "virtio-rng", "host-clipboard-extension", "multi-scheduler-extension"])?;
         boot::package_rom(self)?;
         let mut reports = Vec::new();
         for (directory, name, binary) in
             [("system", "System", "System"),
-             ("apps/finder", "Finder", "Finder"),
-             ("apps/quickdraw-test", "QuickDraw Test", "QuickDrawTest"),
-             ("apps/text-edit", "Text Edit", "TextEdit"),
-             ("apps/cursor-test", "Cursor Test", "CursorTest"),
-             ("apps/panic-test", "Panic Test", "PanicTest"),
-             ("apps/resedit", "Res Edit", "ResEdit"),
-             ("apps/reactor", "Reactor Room", "Reactor"),
              ("drivers/vhost-transport", "Host Transport", "HostTransport"),
              ("drivers/vdagent-channel", "VDAgent Channel", "VDAgentChannel"),
              ("drivers/virtio-rng", "VirtIO RNG", "VirtioRng"),
@@ -185,6 +167,24 @@ impl Workspace
                      report["entry"].as_u64().unwrap(),
                      report["resources"].as_array().unwrap().len());
             reports.push(report);
+        }
+        for app in ["finder", "quickdraw-test", "text-edit", "cursor-test", "panic-test",
+                    "resedit", "reactor"]
+        {
+            let features: &[&str] = if app == "text-edit"
+                                       && (self.checking
+                                           || env::var_os("SYSTEM7_TEXTEDIT_INPUT_TRACE").is_some())
+            {
+                &["input-trace"]
+            }
+            else
+            {
+                &[]
+            };
+            reports.push(sdk::application(self,
+                                          &self.root.join("apps").join(app).join("Cargo.toml"),
+                                          features,
+                                          Some(&self.build.join("dist")))?);
         }
         authority::install(self, &mut reports)?;
         for (index, a) in reports.iter().enumerate()
@@ -514,6 +514,12 @@ fn execute() -> Result<()>
         [command, action, path] if command == "sdk" && action == "app" =>
         {
             sdk::run(&workspace, action, Some(path))?;
+        }
+        [command, action, path, option, features]
+            if command == "sdk" && action == "app" && option == "--features" =>
+        {
+            let features: Vec<_> = features.split(',').collect();
+            sdk::application(&workspace, Path::new(path), &features, None)?;
         }
         [command, path] if command == "resource-map" =>
         {

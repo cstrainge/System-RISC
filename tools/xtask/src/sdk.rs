@@ -46,7 +46,7 @@ pub(super) fn compiler_proxy() -> Option<ExitCode>
          })
 }
 
-pub(super) fn run(workspace: &Workspace, action: &str, manifest: Option<&str>) -> Result<()>
+fn command(workspace: &Workspace, action: &str) -> Result<Command>
 {
     let mut command = workspace.command("python3");
     command.arg(workspace.root.join("scripts/system7_sdk.py"))
@@ -57,38 +57,66 @@ pub(super) fn run(workspace: &Workspace, action: &str, manifest: Option<&str>) -
            .arg(env::current_exe()?)
            .arg("--llvm-profile")
            .arg(&workspace.platform.llvm_profile);
-    if let Some(path) = manifest
+    Ok(command)
+}
+
+pub(super) fn run(workspace: &Workspace, action: &str, manifest: Option<&str>) -> Result<()>
+{
+    if let Some(manifest) = manifest
     {
-        command.arg("--manifest-path").arg(path);
+        application(workspace, Path::new(manifest), &[], None)?;
     }
-    crate::run(&mut command)?;
-    if action == "app"
+    else
     {
-        let receipt = workspace.build.join("sdk/application.json");
-        let mut result: serde_json::Value = serde_json::from_slice(&std::fs::read(&receipt)?)?;
-        let path = |name: &str| -> Result<&Path> {
-            result[name].as_str().map(Path::new).ok_or_else(|| error("SDK app receipt lacks paths"))
-        };
-        let packaged = mac_build::package::build_requiring(
-            path("resource_manifest")?, path("elf")?, path("output")?,
-            &[mac_formats::requirements::Requirement { class: mac_entropy_interface::CLASS,
-                                                       version: mac_entropy_interface::VERSION }]);
-        match packaged
-        {
-            Ok(package) =>
-            {
-                result["package"] = package;
-                result["state"] = "packaged-not-executed".into();
-            }
-            Err(cause) =>
-            {
-                result["package_error"] = cause.to_string().into();
-                crate::write_json(&receipt, &result)?;
-                return Err(cause);
-            }
-        }
-        crate::write_json(&receipt, &result)?;
-        println!("Packaged std application. Native execution has not been observed.");
+        crate::run(&mut command(workspace, action)?)?;
     }
     Ok(())
+}
+
+/// The image builder and standalone SDK command use the same compiler,
+/// platform requirements and packager. Low-level definitions remain separate.
+pub(super) fn application(workspace: &Workspace, manifest: &Path, features: &[&str],
+                          output: Option<&Path>)
+                          -> Result<serde_json::Value>
+{
+    let artifacts =
+        workspace.build.join("target").join(&workspace.platform.rust_target).join("release");
+    let mut command = command(workspace, "app")?;
+    command.arg("--manifest-path").arg(manifest).arg("--artifact-dir").arg(&artifacts);
+    if !features.is_empty()
+    {
+        command.arg("--features").arg(features.join(","));
+    }
+    crate::run(&mut command)?;
+    let receipt = workspace.build.join("sdk/application.json");
+    let mut result: serde_json::Value = serde_json::from_slice(&std::fs::read(&receipt)?)?;
+    let path = |name: &str| -> Result<&Path> {
+        result[name].as_str().map(Path::new).ok_or_else(|| error("SDK app receipt lacks paths"))
+    };
+    let destination = output.unwrap_or(path("output")?).to_path_buf();
+    let packaged = mac_build::package::build_requiring_with_artifacts(
+        path("resource_manifest")?, path("elf")?, &destination,
+        &[mac_formats::requirements::Requirement { class: mac_entropy_interface::CLASS,
+                                                   version: mac_entropy_interface::VERSION }],
+        &artifacts);
+    let package = match packaged
+    {
+        Ok(package) => package,
+        Err(cause) =>
+        {
+            result["package_error"] = cause.to_string().into();
+            crate::write_json(&receipt, &result)?;
+            return Err(cause);
+        }
+    };
+    result["output"] = destination.to_string_lossy().as_ref().into();
+    result["package"] = package.clone();
+    result["state"] = "packaged-not-executed".into();
+    crate::write_json(&receipt, &result)?;
+    // Keep each application receipt even when the next app replaces the SDK's
+    // current receipt. This binds an installed image to its actual std build.
+    let name = package["name"].as_str().ok_or_else(|| error("SDK package lacks its name"))?;
+    crate::write_json(&destination.join(format!("{name}.sdk.json")), &result)?;
+    println!("Packaged std application {name}. Native execution has not been observed.");
+    Ok(package)
 }

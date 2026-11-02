@@ -526,20 +526,25 @@ pub fn editors(system: &System<'_>, gate: Option<mac_abi::TrapGate>) -> Result<(
     Ok(())
 }
 
-/// Resource menu numbers remain semantic properties; references carry lifetimes.
+/// Resource menu numbers are properties; resident menus outlive temporary views.
 pub fn menus(system: &System<'_>, resource: i16) -> Result<(), Failure>
 {
-    use mac_toolbox::{ResourceScope, menus::MenuHandle};
+    use mac_toolbox::{MenuId, ResourceScope, menus::MenuHandle};
     let api = system.menus();
     api.clear()?;
-    let owned = api.install_owned(ResourceScope::Application, resource)?;
-    let stale = owned.menu();
-    let id = owned.id()?;
-    assert_eq!(api.find(id)?.handle(), owned.handle());
-    assert!(owned.handle().0 > u64::from(u32::MAX));
-    drop(owned);
+    let stale = {
+        api.install_menu_resource(ResourceScope::Application, resource)?;
+        let view = api.find(MenuId(resource))?;
+        assert!(view.handle().0 > u64::from(u32::MAX));
+        view
+    };
+    let id = stale.id()?;
+    assert_eq!(api.find(id)?.handle(), stale.handle());
+    assert!(stale.layout().is_ok(), "view scope does not remove the resident menu");
+    stale.dispose()?;
     let before = registered_pool(system, *b"MENU")?;
-    let mut replacement = api.install_owned(ResourceScope::Application, resource)?;
+    api.install_menu_resource(ResourceScope::Application, resource)?;
+    let replacement = api.find(MenuId(resource))?;
     let after = registered_pool(system, *b"MENU")?;
     assert_eq!(after.slots, before.slots, "force actual menu slot reuse");
     assert_eq!(after.births, before.births + 1);
@@ -561,46 +566,43 @@ pub fn menus(system: &System<'_>, resource: i16) -> Result<(), Failure>
     assert_eq!(replacement.id()?, id);
     assert!(replacement.item_count()? > 0);
     api.clear()?;
-    let current = api.install_owned(ResourceScope::Application, resource)?;
+    api.install_menu_resource(ResourceScope::Application, resource)?;
+    let current = api.find(MenuId(resource))?;
     assert_ne!(current.handle(), replacement.handle());
-    replacement.dispose()?;
-    drop(replacement);
-    assert!(current.layout().is_ok(), "dropping a cleared menu must not dispose its replacement");
-    drop(current);
+    assert_eq!(replacement.dispose(), Err(Error::NotFound));
+    assert!(current.layout().is_ok(), "a stale view must not remove its replacement");
+    current.dispose()?;
     assert!(api.find(id).is_err());
     Ok(())
 }
 
 /// Registered menu objects grow past the old eight-object global cap. Resource
-/// menu numbers remain properties; the issued native handle controls lifetime.
+/// menu numbers remain properties; views keep their issued generation identity.
 pub fn menu_capacity(system: &System<'_>) -> Result<(), Failure>
 {
-    use mac_toolbox::{ResourceScope,
-                      menus::{Menu, MenuHandle}};
+    use mac_toolbox::{MenuId, ResourceScope, menus::MenuHandle};
     let api = system.menus();
     api.clear()?;
-    let mut menus: [Option<Menu<'_>>; 12] = core::array::from_fn(|_| None);
-    for (index, menu) in menus.iter_mut().enumerate()
+    for index in 0..12
     {
-        *menu = Some(api.install_owned(ResourceScope::Application, 32000 + index as i16)?);
+        api.install_menu_resource(ResourceScope::Application, 32000 + index)?;
     }
     let live = registered_pool(system, *b"MENU")?;
     assert_eq!(live.live, 12);
     assert!(live.slots >= 12);
-    let stale = menus[0].as_ref().unwrap().handle();
-    for menu in &mut menus
-    {
-        drop(menu.take());
-    }
+    let stale = api.find(MenuId(32000))?.handle();
+    api.clear()?;
     assert_eq!(registered_pool(system, *b"MENU")?.live, 0);
     let before = registered_pool(system, *b"MENU")?;
     for _ in 0..64
     {
-        let replacement = api.install_owned(ResourceScope::Application, 32000)?;
+        api.install_menu_resource(ResourceScope::Application, 32000)?;
+        let replacement = api.find(MenuId(32000))?;
         assert_ne!(stale, replacement.handle());
         assert!(replacement.handle().0 > u64::from(u32::MAX));
         assert_eq!(api.menu(stale).layout(), Err(Error::NotFound));
         assert!(replacement.layout().is_ok());
+        replacement.dispose()?;
     }
     let after = registered_pool(system, *b"MENU")?;
     assert_eq!(after.slots, before.slots);
