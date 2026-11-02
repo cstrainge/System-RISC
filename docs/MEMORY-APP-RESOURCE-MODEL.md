@@ -4491,3 +4491,27 @@ restart, arbitrary privileged-fault containment, U-mode isolation, latency or
 race absence. No host Rust test suite supplied OS acceptance. The earlier failed
 aggregate alert-ownership scenario remains failed under its original artifact;
 it was not relabeled by these narrower runs.
+
+### Cancellation while the independent report is closing
+
+A retained cancellation no longer requires a successful warning repaint before
+returning its report lease. The same Desktop turn authenticates that exact
+lease/Session's closing state and transfers it to the service; it does not infer
+closing from a status or an absent Window. If presentation refuses, the same
+closing proof is checked again. Stopped beneficiaries waiting for old Process
+removal or standby-stack scrub retain their original pending/Loaded image in
+existing typed cancellation states, instead of consuming the stop wake and
+sleeping on an unrelated removal/scrub event. No owner, backing or ACK is replaced.
+
+The combined amendment rebuilt in optimized release/LTO and ran the unchanged
+native two-replacement workload with physical System report Copy/Close followed
+by another panic in a four-CPU, exactly 2 GiB, 800x600 private QEMU guest. System
+ELF was `dc0d4868ae7f45afd983137c46f5c533a33e2613cf515b9b29f60cd3daa4ed87`
+and resource was
+`586f0693086937e242edc473195611798d64faa1a67b99c53b7130534d663fd9`;
+ROM was unchanged. Both actual old accounts closed, replacement/survivor input
+continued, sources/base stayed fixed, and the owned guest exited zero and was
+reaped with cloned media removed. This is normal-path regression evidence;
+it does not force stop during either wait or cancellation overlapping a fresh
+BEGIN. Those branches have source review only. A preceding build interrupted by
+host reboot remains explicitly interrupted; no success is inferred from its log.

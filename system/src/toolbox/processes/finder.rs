@@ -457,6 +457,22 @@ fn handoff_report(admission: &mut FinderAdmission) -> Result<(), Status>
         .map_err(report_access_status)?
 }
 
+/// A real same-session close owns presentation now. Hand the original lease
+/// to that service without trying to reopen its acknowledged Window. No numeric
+/// refusal or absent ID is accepted as proof of closing.
+fn handoff_closing_report(admission: &mut FinderAdmission) -> Result<bool, Status>
+{
+    crate::kernel::with_desktop(|desktop| {
+        let report = admission.system_report().ok_or(BAD_ABI)?;
+        if !desktop.system_report_closing(report)?
+        {
+            return Ok(false);
+        }
+        admission.handoff_system_report(desktop)?;
+        Ok(true)
+    }).map_err(report_access_status)?
+}
+
 fn notify_image_failure(admission: &FinderAdmission, failure: &ImageFailure, terminal: bool,
                         power_failure: Option<(Status, u32)>)
                         -> Result<(), Status>
@@ -469,11 +485,25 @@ fn notify_image_failure(admission: &FinderAdmission, failure: &ImageFailure, ter
 
 fn cancel_with_report(admission: &mut FinderAdmission, status: Status) -> bool
 {
+    match handoff_closing_report(admission)
+    {
+        Ok(true) => return true,
+        Ok(false) => (),
+        Err(_) => return false
+    }
     let failure = ImageFailure::Service { stage: "replacement cancellation; its actual \
                                                   resources are retiring",
                                           status };
-    notify_image_failure(admission, &failure, true, None).is_ok()
-    && handoff_report(admission).is_ok()
+    if notify_image_failure(admission, &failure, true, None).is_ok()
+    {
+        handoff_report(admission).is_ok()
+    }
+    else
+    {
+        // BEGIN or dismissal may have requested closing during presentation.
+        // Recheck the same authentic service, never infer it from a Status.
+        matches!(handoff_closing_report(admission), Ok(true))
+    }
 }
 
 fn refresh_started_report(admission: &FinderAdmission) -> Result<(), Status>
@@ -1048,6 +1078,17 @@ fn step_inner(work: Work) -> Option<Work>
                           admission,
                           pending } =>
         {
+            if !admission.owner().accepting()
+            {
+                WAITING_FOR_OLD.store(false, Ordering::Release);
+                return Some(image_failure(next,
+                                          admission,
+                                          pending,
+                                          ImageFailure::Service { stage:  "replacement stopped \
+                                                                           while waiting for old \
+                                                                           Process removal",
+                                                                  status: OPERATION_CANCELLED }));
+            }
             // Arm first. Removal before the query is seen as absence; removal
             // afterward posts the genuine per-change wake. Never clear that
             // wake after inspecting a still-present old directory entry.
@@ -1163,6 +1204,11 @@ fn step_inner(work: Work) -> Option<Work>
                               restart,
                               mut power_failure } =>
         {
+            if !admission.owner().accepting()
+               && matches!(handoff_closing_report(&mut admission), Ok(true))
+            {
+                return None;
+            }
             if restart
             {
                 power_failure = perform_system_report_restart();
@@ -1172,9 +1218,15 @@ fn step_inner(work: Work) -> Option<Work>
             {
                 let shown = notify_image_failure(&admission, &failure, true, power_failure);
                 attempted = true;
-                if shown.is_ok()
-                   && !admission.owner().accepting()
-                   && handoff_report(&mut admission).is_ok()
+                if !admission.owner().accepting()
+                   && (if shown.is_ok()
+                   {
+                       handoff_report(&mut admission).is_ok()
+                   }
+                   else
+                   {
+                       matches!(handoff_closing_report(&mut admission), Ok(true))
+                   })
                 {
                     // The independent System report now owns the full text,
                     // events and Restart. Actual pending/owner cleanup follows
@@ -1194,6 +1246,15 @@ fn step_inner(work: Work) -> Option<Work>
                      admission,
                      loaded } =>
         {
+            if !admission.owner().accepting()
+            {
+                WAITING_FOR_STACK.store(false, Ordering::Release);
+                return Some(Work::BackingPaused { next,
+                                                  admission,
+                                                  loaded,
+                                                  status: OPERATION_CANCELLED,
+                                                  attempted: false });
+            }
             WAITING_FOR_STACK.store(true, Ordering::Release);
             let loan = match scheduler::take_finder_recovery()
             {
