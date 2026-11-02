@@ -3686,7 +3686,7 @@ their distinct restoration rule.
 
 ### Bounded native observations
 
-The checksum-fresh optimized whole-world QemuRISC-V build used four CPUs, 8 GiB
+The optimized whole-world QemuRISC-V build used four CPUs, 8 GiB
 RAM, an 800×600 display and disabled event/TextEdit input tracing. System resource
 SHA-256 was
 `4489143ae1b13e5b6c36e59d761b6de4468c78f93b55dd2c4386043a710d16c7`;
@@ -3737,3 +3737,17 @@ Concurrent publication/retirement interleavings, uncertain-acknowledgment paths,
 private-root reuse, full-RAM recovery, native responsiveness and user isolation
 remain separate qualification gates. Guaranteed Finder OOM recovery additionally
 needs preadmitted root/table backing; ordinary buddy allocation is not its kit.
+
+
+### Build-freshness claim correction — 2026-11-01
+
+The earlier “checksum-fresh” label for the recorded builds was unsupported.
+Their recorded feature flag alone did not establish content-based freshness.
+The exact artifact hashes, native observations and unchanged-source receipts
+remain their evidence; they do not prove that every changed source was rebuilt.
+
+The build now requires both `CARGO_UNSTABLE_CHECKSUM_FRESHNESS=true` and
+`CARGO_BUILD_FINGERPRINT=content`, followed by checking the actual Cargo
+fingerprints and artifact hashes. Build-script inputs still need explicit
+rebuilding when their mtime tracking misses changes; content mode does not
+remove that separate limitation. See the [Cargo freshness contract](https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#checksum-freshness).

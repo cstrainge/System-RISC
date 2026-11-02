@@ -249,7 +249,7 @@ provider readiness or correct pending-document replay. Its updated native wire
 was exercised separately in the bounded observations below; previous artifact
 observations above remain scoped to their recorded earlier layouts.
 
-An optimized, checksum-fresh QemuRISC-V whole-world build ran in private QEMU
+An optimized QemuRISC-V whole-world build ran in private QEMU
 virt guests with four CPUs, 8 GiB RAM and event/TextEdit input tracing disabled.
 System resource SHA-256 was
 `2f23cf112f75dda00feef4b4af3903581cd2f7eb2a742d8083a2b3b5b73cc629`;
@@ -271,3 +271,17 @@ and updated native transport. They do not establish asynchronous READY ordering,
 pending-document replay/cancellation, exhaustive malformed-wire rejection,
 latency or race absence. Existing diagnostic output, screenshots and injected
 input affect execution. No host-linked service supplied these observations.
+
+
+### Build-freshness claim correction — 2026-11-01
+
+The earlier “checksum-fresh” label for the recorded builds was unsupported.
+Their recorded feature flag alone did not establish content-based freshness.
+The exact artifact hashes, native observations and unchanged-source receipts
+remain their evidence; they do not prove that every changed source was rebuilt.
+
+The build now requires both `CARGO_UNSTABLE_CHECKSUM_FRESHNESS=true` and
+`CARGO_BUILD_FINGERPRINT=content`, followed by checking the actual Cargo
+fingerprints and artifact hashes. Build-script inputs still need explicit
+rebuilding when their mtime tracking misses changes; content mode does not
+remove that separate limitation. See the [Cargo freshness contract](https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#checksum-freshness).
