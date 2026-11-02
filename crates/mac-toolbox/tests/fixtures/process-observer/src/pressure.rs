@@ -1,13 +1,14 @@
 //! Assertions run in the real prelaunched APPL, using public SDK traps. Native
 //! heap/account snapshots are observations, not allocation-event instrumentation.
 use core::{fmt::Write,
-           sync::atomic::{AtomicBool, Ordering}};
+           sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 
 use mac_toolbox::{Error, System, VolumeId,
                   files::{Fork, ROOT_ID},
                   inspection::{self, MemoryAccounting, Scope}};
 const SECOND: u64 = 1_000_000_000;
 static INSPECTION_RETRY_LOGGED: AtomicBool = AtomicBool::new(false);
+static LAST_CORE_WINDOW: AtomicU64 = AtomicU64::new(0);
 #[track_caller]
 fn require(ok: bool) -> Result<(), Error>
 {
@@ -226,6 +227,20 @@ fn modal(system: &System<'_>) -> Result<(), Error>
             Err(error) => return Err(error)
         }
     };
+    let previous = LAST_CORE_WINDOW.load(Ordering::Relaxed);
+    if previous != 0
+    {
+        // This token came from the prior real Core window, not a fabricated
+        // slot. Closing it must not cancel the newly admitted modal session.
+        require(previous != alert.window().0)?;
+        require(matches!(system.dialogs().close(mac_abi::WindowId(previous)),
+                         Err(Error::NotFound)))?;
+    }
+    let mut malformed = mac_abi::dialogs::DialogCall { operation: mac_abi::dialogs::CLOSE,
+                                                       window: alert.window().0,
+                                                       reserved: 1,
+                                                       ..Default::default() };
+    require(matches!(system.client().dialog(&mut malformed), Err(Error::BadArgument)))?;
     // Repaint the SAME live Core window through its public SDK service. These
     // target calls exercise pending/committed frame reuse without a host gate
     // or per-operation acknowledgment. Busy has not admitted a paint.
@@ -241,6 +256,7 @@ fn modal(system: &System<'_>) -> Result<(), Error>
             }
         }
     }
+    LAST_CORE_WINDOW.store(alert.window().0, Ordering::Relaxed);
     drop(alert);
     system.log("PRESSURE_MODAL_BEGIN_PASS sessions=2 concurrent=busy core-alert=opened \
                 disposed=RAII redraws=8\n")

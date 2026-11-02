@@ -1194,6 +1194,17 @@ pub(crate) fn dialog_request(call: &mut mac_abi::dialogs::DialogCall) -> Status
                                                                            });
         let status = if let Some(activity) = activity
         {
+            if call.operation == CLOSE
+            {
+                if call.reserved != 0
+                {
+                    return Err(mac_abi::BAD_ARGUMENT);
+                }
+                // The authenticated close intent survives a refused Desktop
+                // entry, including an SDK destructor's discarded Busy result.
+                // Completion still waits for the original children and ACKs.
+                activity.close();
+            }
             let status = activity.run(|| {
                                      crate::kernel::with_desktop(|desktop| {
                                          desktop.with_core_dialogs(|desktop| desktop.dialog(call))

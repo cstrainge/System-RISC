@@ -5117,3 +5117,87 @@ No new host configuration, stub or alternate implementation was introduced to
 preserve the old nonnative test-support harness. Its compatibility is unqualified;
 the shipping path above is the real no_std RV64 kernel. Host Rust tests supplied
 no acceptance, and the broader test-removal/audit work remains deferred.
+
+### Translation retirement workspace and authenticated Core close intent
+
+Non-application Mapping retirement now borrows one affine workspace admitted
+before publication and process-root inheritance. It retains storage for actual
+root pins and dynamic PTE/ancestor records. Shared mappings use the checked
+high-water mapped-page count times the actual registered-root count, including
+closing roots. Private process definitions use only roots matching the full
+owner identity; their capacity is tracked separately. Page demand comes from
+actual mapped segments, not a virtual reservation or a fixed process quota.
+Canonical definition visibility carries only the scalar page demand needed to
+admit a later root. No additional object registry or identity issuer is added.
+
+Growth uses ordinary System Foundation allocation with recovery suppressed,
+outside metadata guards and under the existing translation exclusion. It can
+honestly refuse before mapping/root publication. Existing backing receipts keep
+their origin. High-water capacity is retained; this is not protected recovery
+stock and does not guarantee that a later replacement with greater demand fits.
+
+Retirement checks out the workspace before acquiring a translation issuer. Real
+root pins are admitted outside the ROOTS guard and retained through the actual
+invalidation completion. Permanent and dynamic records participate in the same
+validate-all-before-write unmap transaction; no combined vector is allocated.
+Insufficient admitted capacity, PTE conflict or uncertain completion preserves
+the original mapping/account and typed quarantine path. The affine return clears
+pins outside guards, reinstalls the original workspace and wakes only an actual
+armed waiter through the existing progress mechanism. Application Mapping
+retirement retains its original per-mapping records.
+
+Core CLOSE also records the authenticated close intent before attempting Desktop
+entry. The current thread's owner, actual active Core session, nonzero matching
+window generation and reserved-field validation precede that intent. The
+original Desktop operation and returned status remain authoritative: Busy is
+not successful cleanup. The existing System maintenance path can retry the
+retained intent, and final reuse still requires the original session, children,
+frame readers and acknowledgments. Ordinary ALRT destructor behavior is a
+separate unresolved scope; this change does not provide a generic SDK retry queue.
+
+The actual optimized no_std RV64 System/Finder compiler check and release/LTO
+image build completed with fixed source. Native observations below used System
+ELF `7e7e6fd065b82f5fbc577ea9f7b49c26651c44309fc74520ccf42ed9815cb250`
+and resource
+`194b3f79e290ca4b9c80961891e7be398ca29404592bcf49c7d1bde5e7a596fa`.
+Finder artifacts remained those recorded above. Subsequent changes refreshed
+only the standalone diagnostic lock graph and its own-ledger assertion; they
+did not change the built kernel dependency graph. Each native run separately
+recorded fixed source, fixed base artifacts, exact 2 GiB argv/boot/page-bank RAM,
+and owned guest/media cleanup.
+
+The existing native Image Probe now queries its own canonical ledger through
+the public SDK while its actual app-owned definition control is alive. Three
+normal process lifetimes observed a live DDEF and reached real thread/account
+closure. A separate abort with that control alive displayed the System-owned
+panic report; genuine keyboard dismissal preceded actual abort-101 account
+closure. Transient definition Objects/Mapping-pending cleanup was observed before
+closure. These four-core-configured QEMU observations do not establish concurrent
+hart execution or exact definition-address/PTE reuse.
+
+A separate one-hart pressure run retained the existing ordinary-memory refusal,
+account headroom, retained 16 W bytes, exact 1 MiB report and all 44 real worker
+reclamations. In each healthy/pressured modal phase it rejected a malformed
+reserved-field CLOSE and then drew the same actual Core alert eight times.
+The second phase additionally rejected the previous real window's stale token.
+After the original stress assertions, reviewed frames and genuine acknowledgment
+showed the restored Applications folder; subsequent Get Info open/close and
+mouse input completed. All three owned guests exited zero, were reaped, and had
+their private cloned/raw media removed without cleanup errors.
+
+Two earlier Image Probe attempts remain failures: a stale standalone lock graph
+prevented guest launch, then an obsolete host expectation for removed CODE_LOADED
+logs failed after actual native definition execution. An offline workspace-only
+lock refresh added the already-used toolbox-entropy dependency without package
+version upgrades. The collector now observes genuine public-ledger DDEF state
+and real process closure; no production log/export was introduced. Former source
+ID and fixed-address assertions are not claimed by this narrower observation.
+
+Pre-Desktop Busy during Core CLOSE was not forced or observed. These results do
+not qualify that deferred-close branch, admission failure/late-root inheritance,
+shared-module final retirement, retained ACK/readers, cancellation, PTE conflict
+or uncertain-completion quarantine. They do not count allocation events, prove
+whole teardown allocation-free, establish performance/SMP, or finish the full
+emergency kit and production Finder OOM restart. Report/Standard File storage,
+remaining rollback/failure qualification and later user-mode isolation remain
+separate work. No host Rust test supplied OS acceptance.
