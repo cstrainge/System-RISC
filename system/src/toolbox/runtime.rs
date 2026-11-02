@@ -2209,14 +2209,14 @@ impl Toolbox
             self.presentation.redraw |= self.windows.tracking_repaints_scene();
         }
         #[cfg(feature = "display-event-debug")]
-        if let Input::Key { character,
+        if let Input::Key { mac_code,
                             down: true,
                             repeat: false,
                             modifiers,
                             .. } = input
-           && modifiers & (CMD_KEY | mac_abi::events::OPTION_KEY | mac_abi::events::CONTROL_KEY)
-              == CMD_KEY | mac_abi::events::OPTION_KEY | mac_abi::events::CONTROL_KEY
-           && character.to_ascii_lowercase() == b'r'
+           && modifiers & (CMD_KEY | mac_abi::events::OPTION_KEY | mac_abi::events::SHIFT_KEY)
+              == CMD_KEY | mac_abi::events::OPTION_KEY | mac_abi::events::SHIFT_KEY
+           && mac_code == 0x0f
         {
             let full = Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16);
             let reduced = Rect::new(0, 0, full.right * 3 / 4, full.bottom * 3 / 4);
