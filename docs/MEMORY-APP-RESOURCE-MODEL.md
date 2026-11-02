@@ -4768,3 +4768,48 @@ or qualify production Finder restart under OOM, persistent reserve exhaustion,
 all startup failure interleavings, timing, race absence, U-mode or general SMP.
 The earlier failed pressure campaign and heavy four-hart folder-readiness case
 remain failed. No host Rust pass supplied OS acceptance.
+
+### Bounded native pressure refill and post-pressure Finder refusal
+
+The existing native ordinary-pressure holder now continues applying demand after
+its 2,048 chunk descriptors fill. On each existing 250 ms refill turn it visits
+at most 64 existing chunks, with at most five shrinking reserve attempts per
+chunk. Each replacement stays within the original 64 KiB chunk maximum; actual
+capacity growth is charged toward the unchanged 8 MiB finisher ceiling. Failed
+replacement preserves the old payload. A grow-by-one refusal is not reported as
+a fresh one-byte allocation refusal. The controller logs its already-read heap
+summary only when its original renewed-pressure deadline fails. No assertion,
+deadline, worker count, account budget or allocator was relaxed. This corrects
+a workload limitation; it is not a System allocation-policy change.
+
+Two fixed-source optimized release/LTO no_std native campaigns used the System
+`be63664005abb09f22c66bfcd17f852e7fcac3d1e7e85ec962f64bf0b86a86d1` and Finder
+`afac71a7a5d6aada2a2bdc4de1246aab5c251aeb9ea3d1ed552ff44874f06fd0` ELF artifacts
+described above. Each private QEMU guest configured one hart, 800x600 and exactly
+2 GiB of requested/discovered RAM. Normally packaged native controller/holders
+and an APPL exercised the real trap, allocator and module-worker paths. Both
+observed ordinary allocation refusal with retained original bytes and caller
+Kernel-account headroom, two managed Save sessions and competing Busy refusals
+in healthy and pressured phases, Core OOM open/dispose, exact 1,048,576-byte
+report content, all 44 holder payload releases and all 44 actual worker-reclaimed
+records. Holder checksums sample the first byte of each chunk; they are not
+full-payload hashes.
+
+The first campaign FAILED its final physical Finder Get Info check after real
+worker release. Finder logged NoMemory while reading Applications/System RISC;
+two application-alert attempts also failed NoMemory, and the last alert attempt
+had no failure/dismissal record. A repeat with identical artifacts, workload,
+actions, timers and assertions completed the final Get Info open/close and
+mouse-position check. Its only collector change captured a frame/state after
+an already failed assertion; that branch was not entered. In the repeat, the
+last application-alert attempt also logged NoMemory. The difference narrows
+investigation to error presentation/recovery but does not establish the exact
+failed modal state or prove the intermittent failure fixed.
+
+Both guests exited zero, were reaped and had their private raw/cloned media
+removed; sources and base artifacts stayed fixed. These finite observations do
+not qualify reliable production Finder OOM recovery, full Save/Save As reserve
+exhaustion, module unloading, account closure beyond the recorded worker paths,
+SMP, timing or race absence. The original pre-refill renewed-pressure timeout
+and the first post-refill final Finder failure remain failed. No host Rust
+suite supplied acceptance.
