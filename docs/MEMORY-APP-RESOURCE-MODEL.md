@@ -4379,3 +4379,29 @@ establish only those build properties. Forced factory exhaustion, native permit
 stop/capacity races, delayed/uncertain ACK, namespace exhaustion, FFRK device-effect
 rollback, protected standby/headroom, full production Finder OOM restart, U-mode
 isolation, hardware timing and general SMP/OS correctness remain unverified.
+
+
+### Shared projected backing ownership
+
+The native and projected Stores expose `publication_credits()` as an observation
+of the same existing incarnation's total unpublished permits across owners. It
+is neither a new counter nor a reservation. A consumer's shared completion or
+retirement-array plan must include those real credits, use checked arithmetic,
+and revalidate its current capacity under its own manager guard before effects.
+Per-owner `publication_preparations` remains the separate backing-cleanup check.
+
+Projected `release_storage_owned` forwards the original native backing release
+and returns an opaque `RetiredOwner` only when the actual native owner storage
+is detachable. Its destruction, retained accounting and original completion ACK
+can therefore occur after the surrounding manager guard. The targeted
+`reap_publication_capacity(owner)` forwards the same native reap condition after
+real publication release. Accepting a ticket while unpublished permits remain
+requires that actual wake/reap route; alternatively retain the original ticket
+for retry before accepting it. Permit cancellation alone does not remove
+escrowed empty backing. No fabricated completion or alternate owner is created.
+
+These additional shared interfaces have source ownership review and optimized
+no_std RV64 compilation evidence only. The preceding native artifact observations
+belong to their recorded source; they do not establish an outside-Files FFRK
+consumer, its device-effect outcome, or its delayed-ACK/stop/reap behavior. Those
+connected paths require their own native qualification.

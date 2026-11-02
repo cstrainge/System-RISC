@@ -1127,9 +1127,11 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         true
     }
 
-    /// Actual detached publication promises in this Store incarnation. Alias
-    /// retirement capacity follows these SAME credits, not another issuer.
-    pub(crate) fn publication_credits(&self) -> usize
+    /// All actual admitted, unpublished permits in this Store incarnation,
+    /// across owners. Shared capacity plans must include these same credits
+    /// and revalidate before effects; this observation reserves no capacity.
+    /// Legacy Stores without a preparation incarnation report zero.
+    pub fn publication_credits(&self) -> usize
     {
         self.incarnation.as_ref().map_or(0, |state| state.credits())
     }
