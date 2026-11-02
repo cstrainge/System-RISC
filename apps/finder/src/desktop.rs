@@ -600,6 +600,8 @@ use core::cell::Cell;
 use mac_toolbox::{Event, Point, WindowId, events::Modifiers};
 
 use super::{Browser, Port};
+use mac_toolbox::{quickdraw::graphics::GraphicsPort, windows::WindowSpec};
+
 use crate::icon_view::{self, State as IconState};
 #[derive(Clone, Copy)]
 pub(super) struct Marquee
@@ -616,10 +618,104 @@ pub(super) struct State
     outline:          Option<Rect>,
     drawn_active:     Cell<bool>,
     pub pressed:      Option<(usize, Point)>,
-    pub select_after: Option<Location>
+    pub select_after: Option<Location>,
+    /// The borderless stay-in-back window that hosts the desktop. Item layout,
+    /// hit testing and dragging stay in global screen coordinates; only the
+    /// drawing boundary translates them to this window's local coordinates.
+    pub window:       WindowId,
+    origin:           (i16, i16)
+}
+
+/// Draws desktop items given in global coordinates into the desktop window.
+///
+/// Icons are still drawn and hit-tested by Finder. The later icon-view control
+/// owns keeping icons inside the visible area (no scrollbar); until then
+/// Finder's own layout provides that behavior.
+struct Local<'a, 's>
+{
+    port: Port<'a, 's>,
+    dh:   i16,
+    dv:   i16
+}
+impl Local<'_, '_>
+{
+    fn rect(&self, r: Rect) -> Rect
+    {
+        Rect::new(r.left - self.dh, r.top - self.dv, r.right - self.dh, r.bottom - self.dv)
+    }
+}
+impl icon_view::Drawing for Local<'_, '_>
+{
+    fn fill(&mut self, bounds: Rect, color: u32) -> Result<(), Error>
+    {
+        let bounds = self.rect(bounds);
+        self.port.fill(bounds, color)
+    }
+
+    fn text_width(&mut self, text: &str) -> Result<i16, Error>
+    {
+        self.port.text_width(text)
+    }
+
+    fn text(&mut self, baseline: Point, text: &str, color: u32) -> Result<(), Error>
+    {
+        let baseline = Point { h: baseline.h - self.dh,
+                               v: baseline.v - self.dv };
+        self.port.text(baseline, text, color)
+    }
+
+    fn icon(&mut self, id: Icon, name: &str, bounds: Rect, state: IconState)
+            -> Result<(), Error>
+    {
+        let bounds = self.rect(bounds);
+        self.port.icon(id, name, bounds, state)
+    }
 }
 impl Browser
 {
+    /// The desktop is the first window created, so it stays at the back of the
+    /// creation-ordered stack even before the flag is consulted.
+    pub(super) fn create_desktop_window(&mut self, system: &System<'_>) -> Result<(), Error>
+    {
+        let bounds = system.quickdraw().desktop().bounds()?;
+        self.desktop.window =
+            system.windows()
+                  .create(WindowSpec::new(bounds, "").procedure(15).stay_in_back())?;
+        self.desktop.origin = (bounds.left, bounds.top);
+        Ok(())
+    }
+
+    pub fn is_desktop_window(&self, id: WindowId) -> bool
+    {
+        id != WindowId(0) && id == self.desktop.window
+    }
+
+    fn desktop_local(&self, r: Rect) -> Rect
+    {
+        let (h, v) = self.desktop.origin;
+        Rect::new(r.left - h, r.top - v, r.right - h, r.bottom - v)
+    }
+
+    /// Finder paints the desktop pattern itself: the System no longer owns a
+    /// desktop background. Same checker the System background used, phased by
+    /// global parity (the pen pattern is aligned to the window surface).
+    fn paint_desktop_pattern(&self, graphics: &GraphicsPort<'_>, local: Rect)
+                             -> Result<(), Error>
+    {
+        let (h, v) = self.desktop.origin;
+        let row = if (i32::from(h) + i32::from(v)) & 1 == 0 { 0xaa } else { 0x55 };
+        graphics.colors(0x878787, 0xc0c0c0)?;
+        graphics.pen_pattern([row, !row, row, !row, row, !row, row, !row])?;
+        let painted = graphics.paint_rect(local);
+        graphics.pen_pattern([0xff; 8])?;
+        painted
+    }
+
+    fn desktop_graphics<'a>(&self, system: &System<'a>) -> GraphicsPort<'a>
+    {
+        system.quickdraw().graphics(self.desktop.window)
+    }
+
     pub(super) fn advance_desktop(&mut self, system: &System<'_>) -> Result<(), Error>
     {
         if !CACHE.lock().ready
@@ -654,8 +750,17 @@ impl Browser
         self.desktop.selected.set(publication.selected);
         if publication.count != 0
         {
-            let graphics = system.quickdraw().desktop().graphics();
-            let update = graphics.masked_rectangles(&publication.damage[..publication.count])?;
+            let graphics = self.desktop_graphics(system);
+            let mut local = publication.damage;
+            for rect in &mut local[..publication.count]
+            {
+                *rect = self.desktop_local(*rect);
+            }
+            let update = graphics.masked_rectangles(&local[..publication.count])?;
+            for &rect in &local[..publication.count]
+            {
+                self.paint_desktop_pattern(&graphics, rect)?;
+            }
             let mut candidates = Selection::EMPTY;
             for &rect in &publication.damage[..publication.count]
             {
@@ -675,29 +780,27 @@ impl Browser
     pub fn draw_desktop(&self, system: &System<'_>) -> Result<(), Error>
     {
         self.desktop.selected.set(ensure(system, self.desktop.selected.get())?);
-        let port = system.quickdraw().desktop();
-        port.begin_update()?;
-        let result = self.draw_desktop_items(system, Selection::all(count()));
-        match result
-        {
-            Ok(()) =>
-            {
-                port.end_update()?;
-                self.desktop.drawn_active.set(self.desktop_active);
-                Ok(())
-            }
-            Err(error) =>
-            {
-                let _ = port.cancel_update();
-                Err(error)
-            }
-        }
+        let id = self.desktop.window;
+        system.begin_update(id)?;
+        let graphics = self.desktop_graphics(system);
+        let full = bounds();
+        let result = (|| {
+            graphics.reset()?;
+            self.paint_desktop_pattern(&graphics, self.desktop_local(full))?;
+            self.draw_desktop_items(system, Selection::all(count()))
+        })();
+        system.end_update(id)?;
+        result?;
+        self.desktop.drawn_active.set(self.desktop_active);
+        Ok(())
     }
 
     fn draw_desktop_items(&self, system: &System<'_>, candidates: Selection) -> Result<(), Error>
     {
-        let mut draw = Port { system,
-                              graphics: system.quickdraw().desktop().graphics() };
+        let mut draw = Local { port: Port { system,
+                                            graphics: self.desktop_graphics(system) },
+                               dh:   self.desktop.origin.0,
+                               dv:   self.desktop.origin.1 };
         for index in candidates.iter()
         {
             let Some(item) = item(index)
@@ -773,19 +876,29 @@ impl Browser
                 length += 1;
             }
         }
-        let graphics = system.quickdraw().desktop().graphics();
+        let graphics = self.desktop_graphics(system);
+        let local_outline = outline.map(|r| self.desktop_local(r));
         if length == 0
         {
             if outline_changed
             {
-                graphics.content_outline(outline)?;
+                graphics.content_outline(local_outline)?;
             }
             self.desktop.selected.set(next);
             self.desktop.outline = outline;
             self.desktop.drawn_active.set(self.desktop_active);
             return Ok(());
         }
-        let update = graphics.masked_rectangles(&rectangles[..length])?;
+        let mut local = rectangles;
+        for rect in &mut local[..length]
+        {
+            *rect = self.desktop_local(*rect);
+        }
+        let update = graphics.masked_rectangles(&local[..length])?;
+        for &rect in &local[..length]
+        {
+            self.paint_desktop_pattern(&graphics, rect)?;
+        }
         let mut candidates = Selection::EMPTY;
         for &rect in &rectangles[..length]
         {
@@ -796,7 +909,7 @@ impl Browser
             self.draw_desktop_items(system, candidates).and_then(|()| {
                                                            if outline_changed
                                                            {
-                                                               graphics.content_outline(outline)?;
+                                                               graphics.content_outline(local_outline)?;
                                                            }
                                                            Ok(())
                                                        });
@@ -834,10 +947,6 @@ impl Browser
                                 -> Result<Option<(WindowId, VolumeId, Cnid)>, Error>
     {
         let was_active = self.desktop_active;
-        if !was_active
-        {
-            system.select_desktop()?;
-        }
         self.desktop_active = true;
         self.front = WindowId(0);
         self.desktop.marquee = None;
