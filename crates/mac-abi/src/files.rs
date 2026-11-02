@@ -84,6 +84,9 @@ pub const OPEN_FLAGS: u32 =
     OPEN_READ | OPEN_WRITE | OPEN_APPEND | OPEN_CREATE | OPEN_CREATE_NEW | OPEN_TRUNCATE;
 pub const SYNC_DATA: u32 = 1;
 pub const MAX_FILE_TRANSFER: usize = 64 * 1024;
+/// READ index flag: output may be uninitialized. Native HFS-B copies only the
+/// returned prefix; providers without this boundary must return Unsupported.
+pub const READ_UNINITIALIZED: u32 = 1;
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct IconMove
@@ -396,7 +399,7 @@ pub struct FileCall
     pub fork:         u32,
     pub whence:       u32,
     pub reserved:     u32,
-    /// Input only for OPEN_OPTIONS; unknown bits refuse before mutation.
+    /// Input only for OPEN_OPTIONS/OPEN_PATH; unknown bits refuse before mutation.
     pub open_flags:   u32,
     pub offset:       i64,
     pub position:     u64,

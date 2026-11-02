@@ -41,7 +41,11 @@ pub(in crate::toolbox::files) fn request(owner: u64, authority: &OwnerRef, call:
     {
         Ok((id, packet)) =>
         {
-            let status = finish_request(crate::context::current_thread(), id, packet, call, output);
+            let status = finish_request(crate::context::current_thread(),
+                                        id,
+                                        packet,
+                                        call,
+                                        Output::Initialized(output));
             if status != OK && status != SERVICE_BUSY
             {
                 refused(call.operation, "execution", status)
@@ -211,7 +215,7 @@ fn begin(owner: u64, authority: &OwnerRef, call: &FileCall, name: &str)
                         },
                         ready: false };
     let packet=Arc::try_new(Packet {input,subject,source:Source {volume:file.volume,node:core::sync::atomic::AtomicU32::new(file.id),opening:key.operation==OPEN_PATH,description,disk,partition},
-        record:spinning_top::Spinlock::new(Record {flight:None,terminal:None,abandoned:false,started:false,position:0,length:0,transferred:0,output:None,open,open_complete:false,catalog:None,handle:0,path:Some(state)})}).map_err(|_|NO_MEMORY)?;
+        record:spinning_top::Spinlock::new(Record {flight:None,terminal:None,abandoned:false,started:false,mutating:false,position:0,length:0,transferred:0,output:None,open,open_complete:false,catalog:None,handle:0,path:Some(state)})}).map_err(|_|NO_MEMORY)?;
     let kinds = crate::toolbox::handles::file_operation_kinds()?;
     let id = files(|manager| {
         manager.validate_file_authority(owner, authority)?;

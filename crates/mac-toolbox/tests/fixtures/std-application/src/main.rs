@@ -31,7 +31,7 @@ use std::error::Error;
 #[cfg(not(feature = "launch-ready"))]
 use std::{cell::RefCell,
           hint::black_box,
-          io::{ErrorKind, Read, Write},
+          io::{IsTerminal, Read, Write},
           sync::{Condvar, Mutex, OnceLock, TryLockError},
           time::{Duration, Instant, SystemTime}};
 
@@ -117,13 +117,17 @@ fn run_standard(system: System) -> Result<(), Box<dyn Error>>
     assert_eq!(*once.get_or_init(|| panic!("OnceLock initialized twice")), 13);
     system.log("STD_PROBE_SYNC_TIMEOUT_OBSERVED\n")?;
 
-    assert_eq!(std::io::stdin().read(&mut [0u8; 1]).unwrap_err().kind(), ErrorKind::Unsupported);
-    assert_eq!(std::io::stdout().write_all(b"unavailable stdout\n").unwrap_err().kind(),
-               ErrorKind::Unsupported);
-    assert_eq!(std::io::stderr().write_all(b"unavailable stderr\n").unwrap_err().kind(),
-               ErrorKind::Unsupported);
-    assert_eq!(std::io::stdout().flush().unwrap_err().kind(), ErrorKind::Unsupported);
-    system.log("STD_PROBE_STREAM_REFUSALS_OBSERVED\n")?;
+    let mut input = [0x55u8; 16];
+    assert_eq!(std::io::stdin().read(&mut input)?, 0);
+    assert_eq!(input, [0x55; 16]);
+    std::io::stdout().write_all(b"intentional GUI null stdout\n")?;
+    std::io::stderr().write_all(b"intentional GUI null stderr\n")?;
+    std::io::stdout().flush()?;
+    std::io::stderr().flush()?;
+    assert!(!std::io::stdin().is_terminal());
+    assert!(!std::io::stdout().is_terminal());
+    assert!(!std::io::stderr().is_terminal());
+    system.log("STD_PROBE_GUI_NULL_STREAMS_OBSERVED\n")?;
 
     let window =
         system.windows().create(WindowSpec::new(Rect::new(60, 80, 290, 440), "Std Probe"))?;

@@ -78,25 +78,6 @@ impl Pins
              .map_err(status)
     }
 
-    pub(super) fn activate_directory(&self, owner: &OwnerRef, id: u64, state: &Arc<DirectoryState>)
-                                     -> Result<(), Status>
-    {
-        let (_, role) =
-            self.aliases.as_ref().ok_or(NOT_SUPPORTED)?.get(owner, id).map_err(status)?;
-        let Role::Directory { scope,
-                              state: actual } = role
-        else
-        {
-            return Err(BAD_ABI);
-        };
-        if !Arc::ptr_eq(actual, state) || scope.closed() || state.cancelled.load(Ordering::Acquire)
-        {
-            return Err(ACCESS_DENIED);
-        }
-        state.ready.store(true, Ordering::Release);
-        Ok(())
-    }
-
     pub(super) fn directory(&self, owner: &OwnerRef) -> Result<File, Status>
     {
         self.aliases

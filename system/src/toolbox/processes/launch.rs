@@ -334,9 +334,8 @@ fn drive(call: &mut ProcessCall, loaded: Option<super::super::files::application
     {
         if prepared.directory.is_none()
         {
-            let original = prepared.loaded.as_ref().ok_or(BAD_ABI)?.catalog;
             let directory = crate::toolbox::files::local::directory::LaunchDirectory::prepare(
-                prepared.admission.owner(), prepared.admission.allocation(), original)?;
+                prepared.admission.owner(), prepared.admission.allocation())?;
             prepared.directory = Some(directory);
         }
         let completed = crate::toolbox::files::local::directory::LaunchDirectory::advance(

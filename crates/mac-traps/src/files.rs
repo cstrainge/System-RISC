@@ -55,6 +55,36 @@ impl Client<'_>
         result
     }
 
+    /// Read into an uninitialized byte span without reading its old contents.
+    /// On success exactly the returned prefix is initialized. The actual FILE
+    /// service owns its result across waits and copies only that prefix into
+    /// the fresh caller span; the remainder is untouched. Provider descriptors
+    /// without this output boundary return Unsupported before lending a span.
+    pub fn file_read_uninit(self, call: &mut FileCall, output: &mut [core::mem::MaybeUninit<u8>])
+                            -> Result<usize>
+    {
+        call.operation = mac_abi::files::READ;
+        call.index = mac_abi::files::READ_UNINITIALIZED;
+        call.name = core::ptr::null();
+        call.name_length = 0;
+        call.input = core::ptr::null();
+        call.input_length = 0;
+        let capacity = output.len().min(mac_abi::files::MAX_FILE_TRANSFER);
+        call.output = output.as_mut_ptr().cast();
+        call.capacity = capacity;
+        call.transferred = 0;
+        let result = status(self.invoke(FILE, call));
+        call.output = core::ptr::null_mut();
+        call.capacity = 0;
+        call.index = 0;
+        result?;
+        if call.transferred > capacity
+        {
+            return Err(crate::Error::BadAbi);
+        }
+        Ok(call.transferred)
+    }
+
     pub fn file(self, call: &mut FileCall, name: &str, output: &mut [u8]) -> Result<()>
     {
         call.input = core::ptr::null();

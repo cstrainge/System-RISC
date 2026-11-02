@@ -1,11 +1,13 @@
 # Native file I/O foundation
 
 The resident File Manager has development operations for ordinary HFS-B fork
-writes and shared open descriptions. This is a bounded native foundation;
-`std::fs` and process streams are not delivered by this milestone. Resident
-path/current-directory operations, ordinary launch-directory admission and
-bounded prepared open/truncate have connected native implementations. The existing
-transactional Save/replace writer remains a separate API.
+writes and shared open descriptions. The platform std backend connects basic
+File/OpenOptions, Read/Write/Seek, buffering, metadata and current-directory APIs
+to those actual services. This is a bounded native profile, not complete std
+filesystem support. GUI streams deliberately use the null profile described in
+RUST-STD.md; real CLAP streams remain future work. Resident path operations,
+GUI Documents-directory admission and bounded prepared open/truncate have
+connected native implementations. Transactional Save/replace remains separate.
 
 FileCall uses the existing FILE trap, ABI version 1 and the whole-world native
 layout fingerprint. Rebuild System, ROM, applications, definitions, drivers and
@@ -53,6 +55,11 @@ These cancellation and concurrent-close paths remain runtime-unqualified.
 
 Operations sharing a cursor or mutating the same physical fork retain admission
 between steps; unrelated file operations may execute between device steps.
+Queued native requests retain lifetime protection while an already admitted
+staged Save or icon group finishes. Volume mutation exclusion starts atomically
+with acquisition of the first actual mutating device step and remains through
+continuation/result publication. A waiting request must not block the existing
+group's next step. No effect is replayed as a retry of transient admission.
 Existing staged save/transfer admissions retain their own conflict rules.
 Firmware still masks interrupts for a complete device step. The 64 KiB data/size
 bound does not establish a bound on metadata processing or target latency.
@@ -72,14 +79,18 @@ preflight before admitting a Subject or copying write bytes, and repeat it befor
 operation publication. An admitted continuation keeps its genuine description
 when the public handle closes; replay does not require reopening that handle.
 
-Ordinary application launch admits its parent directory after required services
-are READY and before author execution. It uses the CatalogInfo captured with the
-original executable read, the prospective owner's actual authority/account and a
-real catalog protection alias. Provider admission retains the genuine job across
-scheduler defer; cancellation retains protection until its actual subject scope
-closes. Successful admission releases the operation root while the owner retains
-its directory alias. Initial/replacement Finder consumers, public current-dir/path
-APIs and provider/cancellation/owner-stop qualification remain separate gates.
+GUI application launch admits the user's `Documents` directory on the unique
+startup volume after required services are READY and before author execution.
+The genuine root alias protects resolution; the validated Documents alias is
+published before that root protection retires. There is no executable-parent or
+root fallback when Documents is absent or invalid. The prospective owner's actual
+authority/account and catalog alias own the admission. Original executable
+CatalogInfo and executable protection remain independent. Provider admission
+retains the genuine job across scheduler defer; cancellation retains protection
+until its actual subject scope closes. Successful admission releases the operation
+root while the owner retains its directory alias. Explicit later chdir replaces
+that directory normally. Initial/replacement Finder consumers and provider,
+cancellation and owner-stop qualification remain separate gates.
 
 Ordinary writable operations currently support native HFS-B. Classic HFS and
 provider operations without the required implementation return explicit errors.
@@ -186,8 +197,8 @@ contract. All affected artifacts and clients must be rebuilt together at ABI 1.
 
 Paths are UTF-8. Absolute paths start `/Volumes/<mounted volume name>/`;
 volume-name selection is exact and must be unique, with duplicate matching names
-returning AlreadyExists. Relative paths start at the process directory captured
-with its original executable launch. Slash-separated components, repeated slash,
+returning AlreadyExists. Relative paths start at the process current directory, initially the user's
+Documents directory for GUI applications. Slash-separated components, repeated slash,
 `.` and `..` are walked against actual catalog entries; `..` at a volume root
 stays at that root. Empty non-query paths and embedded NUL refuse as InvalidInput.
 Volume names containing slash or NUL are unrepresentable. Filesystem component
@@ -237,3 +248,55 @@ extends the existing current_owner capture; it does not relax authority checks.
 Interrupted pre-reboot builds are not successful build evidence. The corrected
 repeat does not qualify forced concurrent chdir/unmount, cancellation/owner-stop,
 provider paths, namespace mutation races, exhaustion, general SMP or std adoption.
+
+## Bounded actual std File and GUI stream observations
+
+The real ordinary-main std APPL diagnostic subsequently ran through Finder,
+normal packaging/loading, real traps and native HFS-B on optimized release/LTO
+RV64/RVA23 QEMU, four configured CPUs, 800x600 and exactly 2 GiB RAM. Each of two
+diagnostic variants ran two boots; actual `-m 2G` and guest `BOOT_RAM` bytes
+2147483648 were checked. The matching System/SDK artifacts were:
+
+- System ELF: `e71d3a9e543642e10ea19415e899b1c02a4d1fc93d117bbf7605ac927b38a632`
+- System resources: `cf51b82a09001661b662c7b9a9d4868250f3e3af8bdc4baa133d5c11f002047b`
+- ROM: `19cc55b172094ec7505d461be6dca90f48f6d87e47cd078c150db2e8771a50e2`
+- SDK: `c4dc6d927c65b736d46281d8f3022fcb9960e58fe42b931798703bf4516cb023`
+- Default diagnostic ELF: `e29017ad6370a02d90bbdb78e2389375cc6b5fecb319a1fcda747a8e9fa4bc6f`
+- Result-error diagnostic ELF: `0f366b95a9ac7cebe577cad3bfbdfb1564c0ca9c7fc626e6b6053f1eb884d0fb`
+
+Actual std observations included File/OpenOptions create/truncate, shared clone
+cursor and nonfinal close, independent append, metadata/timestamps, read/write,
+seek/set_len, zero-filled growth without cursor movement, actual sync,
+BufReader/BufWriter, a buffer boundary splitting a UTF-8 scalar, invalid-UTF-8
+refusal with subsequent raw-byte recovery, and create_new/missing/read-only/
+invalid-offset refusals followed by reuse. Both clean second boots read saved
+std UTF-8 bytes before rewriting, as well as earlier native SYNC bytes.
+
+Ordinary GUI launch used the genuine bound Documents alias; current_dir,
+relative paths, parent/root traversal, explicit chdir, failed chdir preserving
+the old directory and subsequent reuse were observed. Original native bounded
+file/preflight/prepared-open cases repeated. This does not yet qualify the new
+policy in initial or replacement Finder consumers.
+
+GUI stdin returned immediate zero-byte EOF without changing its input buffer;
+stdout/stderr accepted arbitrary bytes with full successful counts, successful
+flush and nonterminal status. The default variant exited normally with code 0;
+`main() -> Result::Err` exited normally with code 1 and no panic/report, with
+stderr intentionally discarded. All four actual Process/account removals,
+Finder refresh/command-close/input and reviewed final screens were observed.
+Sources/base images stayed fixed, owned guests exited zero and private generated
+media was removed.
+
+Two earlier combined runs remain failures. The second identified a WRITE refused
+at initial admission because an existing Finder icon group was live. The new
+canonical waiting implementation allows that pre-existing group to finish before
+acquiring file mutation exclusion; it does not retry committed effects in std.
+The subsequent finite successful runs do not establish adversarial scheduling,
+general Save/transfer overlap, pressure or cancellation safety.
+
+Directory iteration, directory creation/removal/rename/copy, permission/time
+mutation, locks, symlinks and canonicalize remain explicit Unsupported in this
+std backend. Provider-path support, current_exe/environment/child-process work,
+late failure, power loss, sustained concurrency, exhaustion, cancellation,
+rollback failure, SMP and other hardware remain separate qualification gates.
+This is not completion of all std APIs or final application/main-tree integration.

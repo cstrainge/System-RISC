@@ -667,7 +667,7 @@ impl Manager
                                       -> Result<(), Status>
     {
         #[cfg(target_arch = "riscv64")]
-        if self.operations.iter().any(|(_, entry)| entry.uses(self, volume))
+        if self.operations.iter().any(|(_, entry)| entry.blocks_mutation(self, volume))
         {
             return Err(SERVICE_BUSY);
         }

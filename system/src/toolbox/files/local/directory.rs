@@ -1,4 +1,4 @@
-//! Original launch-directory admission. The prospective process owns a real
+//! GUI Documents-directory admission. The prospective process owns a real
 //! catalog alias before any provider callback; cancellation retains that pin
 //! through the actual I/O Subject lifetime, never through a fabricated ID lease.
 #![forbid(unsafe_code)]
@@ -18,7 +18,6 @@ pub(crate) struct LaunchDirectory
     owner:    OwnerRef,
     volume:   u32,
     parent:   u32,
-    alias:    u64,
     provider: Option<u64>,
     state:    Arc<pins::DirectoryState>,
     complete: bool
@@ -44,47 +43,58 @@ fn files<R>(f: impl FnOnce(&mut Manager) -> Result<R, Status>) -> Result<R, Stat
 impl LaunchDirectory
 {
     /// Call after READY and before publishing author execution, outside Desktop.
-    /// `original` is the catalog snapshot captured with the launch package,
-    /// never a new executable lookup; owner/account supply actual authority.
-    pub(crate) fn prepare(owner: &OwnerRef, allocation: AllocationAuthority, original: CatalogInfo)
+    /// The startup/user Documents directory is independent of executable
+    /// location. Original executable metadata/pins remain separate authority.
+    pub(crate) fn prepare(owner: &OwnerRef, allocation: AllocationAuthority)
                           -> Result<Self, Status>
     {
         if !owner.accepting() || allocation.owner() != owner.owner()
         {
             return Err(ACCESS_DENIED);
         }
-        if original.volume == 0
-           || original.id <= ROOT_ID
-           || original.parent < ROOT_ID
-           || original.kind != FILE
-        {
-            return Err(BAD_ABI);
-        }
         let subject=crate::drivers::jobs::subjects::resident()?.admit(&subject::Authority::Client(owner.clone()),Target::Owner {account:allocation,class:MemoryClass::Kernel})?;
         crate::context::with_allocation(subject.allocation().clone(), || {
             let state = Arc::try_new(pins::DirectoryState::new()).map_err(|_| NO_MEMORY)?;
             let kinds = crate::toolbox::handles::file_pin_kinds()?;
             let system = crate::toolbox::handles::system_owner()?;
-            let (alias, provider) = files(|manager| {
+            let (volume, provider) = files(|manager| {
                 manager.validate_file_authority(owner.owner().incarnation(), owner)?;
                 manager.prepare_executable_pins(system, kinds)?;
-                let provider = manager.read_provider(original.volume)?;
-                manager.validate_transfer_read(owner.owner().incarnation(),
-                                               original.volume,
-                                               original.parent)?;
-                let alias = manager.pins.begin_directory(owner,
-                                                          original.volume,
-                                                          original.parent,
-                                                          subject.scope().clone(),
-                                                          state.clone())?;
-                Ok((alias, provider))
+                let mut startup = None;
+                for (id, mounted) in manager.volumes.iter()
+                {
+                    if mounted.info().is_some_and(|info| info.startup != 0)
+                    {
+                        if startup.replace(id).is_some()
+                        {
+                            return Err(BAD_ABI);
+                        }
+                    }
+                }
+                let volume = startup.ok_or(NOT_FOUND)?;
+                let provider = if matches!(manager.volumes.get(volume), Some(Mounted::Provider(_)))
+                {
+                    manager.read_provider(volume)?
+                }
+                else
+                {
+                    None
+                };
+                manager.validate_transfer_read(owner.owner().incarnation(), volume, ROOT_ID)?;
+                // Protect the actual mounted root before resolving Documents.
+                // Publish the genuine Documents alias before retiring this one.
+                manager.pins.begin_directory(owner,
+                                              volume,
+                                              ROOT_ID,
+                                              subject.scope().clone(),
+                                              state.clone())?;
+                Ok((volume, provider))
             })?;
             let mut binding = Self { job: None,
                                      subject,
                                      owner: owner.clone(),
-                                     volume: original.volume,
-                                     parent: original.parent,
-                                     alias,
+                                     volume,
+                                     parent: ROOT_ID,
                                      provider,
                                      state,
                                      complete: false };
@@ -93,9 +103,10 @@ impl LaunchDirectory
                 binding.job =
                     Some(provider::runtime::submit_args(&binding.subject,
                                                         provider,
-                                                        SourceOperation::Catalog,
+                                                        SourceOperation::Lookup,
                                                         Arguments { volume: binding.volume,
-                                                                    node: binding.parent,
+                                                                    parent: ROOT_ID,
+                                                                    payload: b"Documents",
                                                                     ..Default::default() })?);
             }
             Ok(binding)
@@ -145,16 +156,22 @@ impl LaunchDirectory
                                                  Failure::Cancelled => OPERATION_CANCELLED
                                              }
                                          })?;
-            provider::catalog(self.volume, &bytes, Some(self.parent), None)?
+            provider::catalog(self.volume, &bytes, None, Some(ROOT_ID))?
         }
         else
         {
-            let call = FileCall { operation: CATALOG,
+            let call = FileCall { operation: LOOKUP,
                                   volume: self.volume,
                                   cnid: self.parent,
                                   ..Default::default() };
             let input = Arc::try_new(Input { call:  Call::from(&call),
-                                             name:  String::new(),
+                                             name:  {
+                                                 let mut name = String::new();
+                                                 name.try_reserve_exact(9)
+                                                     .map_err(|_| NO_MEMORY)?;
+                                                 name.push_str("Documents");
+                                                 name
+                                             },
                                              bytes: Vec::new(),
                                              when:  0 }).map_err(|_| NO_MEMORY)?;
             let subject = self.subject.clone();
@@ -187,25 +204,38 @@ impl LaunchDirectory
                 _ => return Err(BAD_ABI)
             }
         };
-        if entry.id != self.parent || entry.volume != self.volume || !entry.is_directory()
+        if entry.parent != ROOT_ID || entry.volume != self.volume || !entry.is_directory()
         {
             return Err(BAD_ABI);
         }
+        let state = Arc::try_new(pins::DirectoryState::new()).map_err(|_| NO_MEMORY)?;
         files(|manager| {
             manager.validate_file_authority(self.owner.owner().incarnation(), &self.owner)?;
-            if manager.read_provider(self.volume)? != self.provider
+            let provider = if matches!(manager.volumes.get(self.volume), Some(Mounted::Provider(_)))
+            {
+                manager.read_provider(self.volume)?
+            }
+            else
+            {
+                None
+            };
+            if provider != self.provider
             {
                 return Err(BAD_ABI);
             }
-            manager.pins.activate_directory(&self.owner, self.alias, &self.state)?;
-            let bound = manager.pins.directory(&self.owner)?;
-            if bound.volume != self.volume || bound.id != self.parent
-            {
-                return Err(BAD_ABI);
-            }
-            Ok(())
+            manager.pins.replace_directory(&self.owner,
+                                           pins::File { volume: entry.volume,
+                                                        id:     entry.id },
+                                           self.subject.scope().clone(),
+                                           state.clone())
         })?;
+        self.parent = entry.id;
+        self.state = state;
         self.complete = true;
+        serial!("LAUNCH_DIRECTORY_READY owner={} volume={} node={} policy=Documents",
+                self.owner.owner().incarnation(),
+                entry.volume,
+                entry.id);
         Ok(true)
     }
 }

@@ -1,6 +1,8 @@
-//! No process streams have been admitted yet. Refuse I/O explicitly instead of
-//! using the generic sink/EOF fallback. System panic reports use their own path.
-use crate::io::{self, Read, Write};
+//! Graphical APPL/FNDR profile: intentional null standard streams. GUI stdin is
+//! always at EOF; stdout/stderr discard bytes and flush successfully. This is
+//! not a Terminal/session endpoint or CLAP/pipe implementation. Panic reports
+//! use the independent System crash service.
+use crate::io::{self, BorrowedCursor, Read, Write};
 
 pub struct Stdin;
 pub struct Stdout;
@@ -13,15 +15,18 @@ impl Stdin
         Self
     }
 }
-
 impl Read for Stdin
 {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize>
+    fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize>
     {
-        if buffer.is_empty() { Ok(0) } else { Err(unavailable()) }
+        Ok(0)
+    }
+
+    fn read_buf(&mut self, _cursor: BorrowedCursor<'_, u8>) -> io::Result<()>
+    {
+        Ok(())
     }
 }
-
 impl Stdout
 {
     pub const fn new() -> Self
@@ -29,34 +34,25 @@ impl Stdout
         Self
     }
 }
-
 impl Write for Stdout
 {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize>
     {
-        if buffer.is_empty() { Ok(0) } else { Err(unavailable()) }
+        Ok(buffer.len())
     }
 
     fn flush(&mut self) -> io::Result<()>
     {
-        Err(unavailable())
+        Ok(())
     }
 }
-
-fn unavailable() -> io::Error
-{
-    io::const_error!(io::ErrorKind::Unsupported, "System RISC process stream is unavailable")
-}
-
-// A zero-sized BufReader would fabricate EOF without calling the service.
-pub const STDIN_BUF_SIZE: usize = 1024;
-
+// An empty input buffer reflects this profile's deliberate permanent EOF and
+// avoids allocating a read buffer for a GUI application with no input endpoint.
+pub const STDIN_BUF_SIZE: usize = 0;
 pub fn is_ebadf(_error: &io::Error) -> bool
 {
-    // stdio must not turn this refusal into a successful null-device operation.
     false
 }
-
 pub fn panic_output() -> Option<Vec<u8>>
 {
     None

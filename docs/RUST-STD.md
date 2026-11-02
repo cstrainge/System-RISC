@@ -2,7 +2,8 @@
 
 Status: incremental implementation, tracked as [platform workstream P8](CORE-TOOLBOX-ROADMAP.md#p8--rust-standard-library).
 The bounded [native File Manager foundation](NATIVE-FILE-IO.md) has finite target
-observations; it does not yet implement the std filesystem backend or streams.
+observations. Basic std File/cwd adapters and the deliberate GUI null-stream
+profile are under target qualification; real CLAP streams and pipes remain future work.
 The goal is ordinary `std` for every native userspace application, including
 Finder and all `apps/*`; userspace applications must no longer need `#![no_std]`,
 `#![no_main]`, a handwritten `_start` or a panic-handler macro. Toolbox libraries
@@ -108,15 +109,13 @@ Actual SDK builds also observed identical-declaration reuse, informative version
 conflict/duplicate refusals, then a restored successful build. These are finite
 packaging/launch/seeding cases, not source-security or complete adoption acceptance.
 
-Native writable files, process streams, launch data and the remaining readiness /
-role-default build and migration gates remain required. Installed apps have not
-begun migration.
-The current stdio backend reports Unsupported on unavailable I/O and flushing;
-it does not silently discard output or fabricate stdin EOF. Buffered Rust writes
-can defer that error until flushing. `println!` is not supported by an emergency
-serial log. File catalog/read and staged
-save services are not ordinary writable `File` descriptions. Networking remains
-[P7](NETWORKING.md).
+Basic native std File/cwd adapters are connected and under target qualification.
+Installed app sources now use ordinary main through the shared std SDK; final
+combined-system migration and launch-context qualification remain. The GUI profile
+uses intentional null stdin/stdout/stderr as documented below, without a Terminal
+or output view. This does not implement real CLAP/session streams or the future
+pipes extension. Panic reporting remains independent of these null streams.
+Networking remains [P7](NETWORKING.md).
 
 ## Application build and default panic contract
 
@@ -237,8 +236,8 @@ a linked std stub as an implemented service.
 | `thread_local!` and runtime TLS | Canonical per-thread OS-key TLS and bounded std teardown observations | Per-OS-thread keys/values, initialization/reentrancy, destructor order/reentrancy and teardown. Keep code and thread state alive through destructors. Test distinct values on workers, multiple apps and thread-slot reuse. |
 | Mutex/RwLock/Condvar/Once/OnceLock/LazyLock, channels | Interrupt-masked service guards; event-specific wait | General atomic check/enqueue-and-park plus wake/timeout; no lost wakeups, spins behind preempted owners or locks across switches. Specify memory ordering, spurious wakes and fairness. Test blocked-thread progress, initialization races and channels using real workers. |
 | `time::{Instant,SystemTime}`, thread sleep | Monotonic ns, signed Unix seconds and checked HFS conversion | Define precision/resolution, range, subtraction/overflow and wall adjustment. Sleep uses scheduler deadlines and never UI event consumption. Test 2026+, before/after epoch, 2040 HFS boundary and adjustment-independent Instant. |
-| `io` stdin/stdout/stderr, buffering and printing | Serial diagnostics and UI services | Owned stream/descriptor table, partial reads/writes, EOF, locks, redirection and pipe readiness. Define absent stdin and broken-pipe behavior. GUI apps need no terminal until actual output requests one; no serial log stream masquerading as user stdout. |
-| `fs`, File/OpenOptions, Read/Write/Seek, metadata/read_dir | Read-only fork streams, catalog/identity, mutations, bounded whole-data-file writer | General open/create/read/write/append/truncate/seek/sync, large offsets, cursor sharing on clone, flags and access errors, atomic replacement and directory races. A 4 MiB staging writer is not a writable File. Plain std files address the data fork; resource forks stay an explicit native extension. |
+| `io` stdin/stdout/stderr, buffering and printing | GUI null-stream profile; CLAP streams deferred | GUI APPL/FNDR stdin is permanent EOF and stdout/stderr intentionally discard writes with successful flush; all are non-terminal. No output window or serial delivery is implied. Future CLAP/Terminal sessions require real owned endpoints, partial I/O, EOF, locks, redirection and readiness. Full pipe functionality belongs to the planned pipes extension, replacing kernel stubs through the service boundary. |
+| `fs`, File/OpenOptions, Read/Write/Seek, metadata/read_dir | Native bounded writable descriptions and path services; basic std File/cwd adapter under qualification | General open/create/read/write/append/truncate/seek/sync, large offsets, cursor sharing on clone, flags and access errors, atomic replacement and directory races. A 4 MiB staging writer is not a writable File. Plain std files address the data fork; resource forks stay an explicit native extension. |
 | `path`, OsStr/OsString, environment/cwd/temp/exe paths | Native UTF-8 strings over classic HFS names | Define native path/volume syntax, encoding and invalid-input behavior, HFS case/name limitations, normalization and unsupported Unicode names without lossy substitution. Snapshot args/env and synchronize allowed mutations. Preferences remain JSON, separate from the process environment. |
 | `process::{Command,Child,Stdio}`, exit/abort | Resource-app launch/activation/exit | Child arguments/environment/cwd, process ownership, exit status, wait/try_wait, kill and redirected pipes. Launch resource-fork apps through the loader; no need to implement Unix fork to provide Command. Do not treat activate-existing-app as spawn-a-child. |
 | `net`, address resolution and socket readiness | No device/socket service | P7 sockets, owned descriptors, connect/accept, UDP, names, options, partial I/O, EOF, deadlines and cancellation, then std backend mapping. Verify IPv4/IPv6 and process cleanup without a second TCP/IP stack. |
@@ -413,3 +412,20 @@ final captures kept source/base fixed, reaped owned guests and removed cloned
 media without host cleanup errors. These observations do not enlarge the
 unqualified clock/cleanup/provider/platform cases listed above or complete std
 adoption.
+
+### GUI standard streams and deferred pipes
+
+The current graphical APPL/FNDR profile deliberately uses null standard streams:
+stdin immediately returns zero bytes/EOF without changing the caller's buffer;
+stdout and stderr discard arbitrary bytes, report successful writes and flush
+successfully. They are non-terminal. A GUI main Result error retains its real
+failure exit status while its stderr text may be intentionally discarded. Panic
+reporting remains independent through the System crash service.
+
+These semantics are the graphical application contract, not a real output
+stream, interactive input, serial console or CLAP acceptance. A future CLAP
+profile must bind actual session endpoints before it is supported. Full pipes
+functionality is planned for an external pipes extension that replaces resident
+kernel placeholders through the production service/module boundary; do not grow
+a parallel full kernel pipe implementation or treat unsupported stubs as pipe
+support. Redirection, pipe readiness/backpressure and lifecycle remain deferred.

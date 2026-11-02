@@ -255,6 +255,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
            || call.volume != 0
            || call.cnid != 0
            || call.index != 0
+              && !(call.operation == files::READ && call.index == files::READ_UNINITIALIZED)
            || call.fork != 0
            || call.reserved != 0
            || call.open_flags != 0
@@ -298,15 +299,29 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
                 }
                 else
                 {
-                    unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
+                    unsafe {
+                        core::slice::from_raw_parts_mut(call.output
+                                                            .cast::<core::mem::MaybeUninit<u8>>(),
+                                                        call.capacity)
+                    }
                 };
                 call.transferred = 0;
                 return Some(super::local::pending::request(owner, &caller.owner, call, &[], output)
                             as i64);
             }
             Ok(false) =>
-            {}
-            Err(error) => return Some(error as i64)
+            {
+                if call.index == files::READ_UNINITIALIZED
+                {
+                    return Some(NOT_SUPPORTED as i64);
+                }
+            }
+            Err(error) =>
+            {
+                serial!("FILE_READ_ADMISSION_REFUSED operation={} handle={} status={error}",
+                        call.operation, call.handle);
+                return Some(error as i64);
+            }
         }
     }
     if matches!(call.operation,
