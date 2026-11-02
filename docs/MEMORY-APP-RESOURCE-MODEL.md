@@ -3840,3 +3840,72 @@ Desktop owner walk on this artifact. Moving that work and actual table
 destruction to guard-free maintenance is a separate required follow-up. Genuine
 protected root/Node/publication stock, fresh Finder image backing, pressure and
 uncertain-acknowledgment scenarios remain unimplemented or unverified.
+
+## Guard-free Process-space retirement and authenticated clock integration
+
+The SPCE owner walk now closes admission and requests retirement through its
+original canonical ticket. It does not unlink page tables, wait for translation
+acknowledgment or destroy their physical backing under Desktop. Independent
+maintenance claims one ready root per checkpoint. It skips genuine live threads,
+readers and sticky failures before taking a translation command, then revalidates
+actual ownership and quiescence with the real command lease. Busy work waits for
+real pin/monitor release; successful completion coalesces the next-work hint.
+
+Canonical Root metadata holds the actual Space backing separately. Genuine Pins
+own Space and Root, dropping them in that order before their release marker.
+Publication and retirement snapshots borrow the same real backing; a claimed
+still-linked root refuses a late snapshot typed rather than disappearing from
+the registry view. After unlink, actual remote acknowledgment and attached-branch
+retirement, both canonical/work Space owners are destroyed outside guards before
+retired is published. Only then can the original SPCE ticket finish. Uncertain
+acknowledgments retain the original root, backing, account and typed cause. This
+adds one real Process-Kernel-attributed Space control allocation, with no new
+identity issuer, synthetic owner, duplicate mapper or public backing extraction.
+
+This source also integrates the authenticated 104-byte module Host clock and
+real-source deadline described in [Rust standard-library support](RUST-STD.md).
+Worker-token clocks retain their separate authority. A deadline never authorizes
+DMA reclamation: actual reset/unmap/release acknowledgment remains required.
+
+A private optimized release/LTO four-CPU, 8 GiB, 800x600 QEMU image ran with
+event/TextEdit tracing disabled. System ELF SHA-256 was
+`d1a6ca383d3d4cd10ce29504ee593ee29c40d1080071af910357ae843c213430`;
+System resource was
+`80fbc02fb53d294b4446e6c7ca497bd103249f34c62bfb17d93ad3b630ae5d3b`;
+ROM remained
+`cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+System explicitly rebuilt with actual content fingerprint records; matched native
+actor packages rebuilt against Host104. Older unrelated cache records were not
+claimed to have the same freshness mode.
+
+Two real app bodies used distinct private hierarchies with own images and shared
+modules, omitting the other app's low image. Four app/worker bodies migrated with
+their same stacks and overlapped on CPUs, followed by native register/service/
+cancellation checks, worker reclamation, actual process/account closure and input.
+The 136 paused read-only samples cost approximately33–77 ms of host time each;
+logs and observation perturb execution and establish no latency or race bound.
+
+Delayed initial Finder readiness again sampled all CPUs in System idle before
+author entry; source release led to desktop/input. A genuine withheld RNG reply
+during document launch reached the native deadline without debugger, clock or
+guest-memory writes. Actual reset, unstarted-account closure, typed refusal,
+dismissal, fresh retry, Text Edit document/quit/account closure and input followed.
+Six installed graphical applications entered/quit; sampled app leaves were absent
+after closure. System panic reporting/scroll/dismissal and an unchanged Panic Test
+with its own WDEF/CDEF overrides also completed actual closure, definition-page
+unmapping and fresh launch. Sources/base stayed fixed per capture; all owned
+guests/helpers were reaped and cloned media removed. No host Rust suite supplied
+OS acceptance.
+
+Visual review retained a separate Finder presentation defect: the asynchronous
+document refusal was headed as a Finder update and exposed Rust Debug detail.
+Typed identity, readable dismissal and successful retry do not qualify that error
+UX; retained original operation/subject presentation remains work. The earlier
+broader conformance ownership-fixture refusal is likewise not repaired here.
+
+These observations do not qualify arbitrary snapshot/retirement races, uncertain
+acknowledgments, pressure, complete SMP safety or U-mode isolation. Protected
+SPCE/Node/publication stock and fresh replacement-image backing still gate Finder
+restart under exhaustion. Existing module-binding unload and author/port callback
+work retain their limits; installed apps remain no_std pending the separate file/
+stream/runtime adoption gates.

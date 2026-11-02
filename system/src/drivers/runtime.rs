@@ -12,6 +12,7 @@ use crate::state::TryState;
 mod admission;
 mod allocation;
 mod critical;
+mod clock;
 mod invocation;
 mod scheduler_entry;
 pub(crate) use scheduler_entry::{Failure as SchedulerFailure, choose as choose_scheduler};
@@ -323,7 +324,7 @@ pub(crate) fn load(resources: Vec<Resource>, file_type: [u8; 4], directory: Pack
             context:u64::from(module),call:Some(broker),resolve:Some(resolve),allocate:Some(allocation::allocate),
             deallocate:Some(allocation::deallocate),reallocate:Some(allocation::reallocate),
             with_module_allocation:Some(allocation::with_module_allocation),workers:Some(workers::control),
-            critical_section:Some(critical::enter)})).map_err(|_|NO_MEMORY)?;
+            critical_section:Some(critical::enter),monotonic:Some(clock::monotonic)})).map_err(|_|NO_MEMORY)?;
         let loaded=crate::kernel::load_module(&owner,&account,source.clone(),&package.code)?;
         Ok::<_,Status>((host,loaded))
     });

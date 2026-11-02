@@ -137,3 +137,12 @@ Inspect actual generated Cargo fingerprint records for `content`; the feature
 flag alone does not change the default mtime mode. Build-script/resource inputs
 still require explicit rebuilds when changed. Record final packaged artifact
 hashes before native capture; compilation success is not runtime acceptance.
+
+
+Entropy device work has a 30-second deadline using the authenticated resident
+module clock and admitted machine timebase. Timeout or clock refusal enters the
+same real reset/unmap/release path; only positive cleanup acknowledgement permits
+a terminal reply or reuse. An unacknowledged reset retains the original work,
+DMA mapping and cleanup ticket. This is not forced recovery from arbitrary device
+faults. Public fallible fills preserve their actual initialized prefix and cause;
+std's infallible seeding reports genuine source loss through System then aborts.

@@ -1058,7 +1058,7 @@ impl Plan
                                               .map(|s| (s, None))
                                               .chain(processes.iter()
                                                               .map(|r| {
-                                                                  (&r.space, Some(&r.allocation))
+                                                                  (r.space(), Some(&r.allocation))
                                                               }))
         {
             let root = space.owner.root_physical();
@@ -1409,7 +1409,7 @@ fn process_entries(segments: &[SegmentMap], roots: &[super::process::Pin])
            .map_err(|_| Error::Metadata)?;
     for row in roots
     {
-        let space = &row.space;
+        let space = row.space();
         for segment in segments
         {
             'page: for offset in (0..segment.bytes).step_by(PAGE_BYTES as usize)

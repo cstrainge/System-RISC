@@ -220,7 +220,27 @@ pub(crate) fn module_dma_address(cpu: u64, bytes: u64) -> Result<u64, Status>
 /// owner walk through PTE removal, genuine target ACK and physical refund.
 pub(crate) fn pump_module_images()
 {
-    if !crate::machine::paging::modules::take_pending()
+    // Consume independent real notices without short-circuiting either one.
+    let mappings = crate::machine::paging::modules::take_pending();
+    let spaces = crate::machine::paging::process::take_retirement_pending();
+    if spaces
+    {
+        if let Some(claim) = crate::machine::paging::process::retirement()
+        {
+            let owner = claim.owner();
+            if let Err(cause) = claim.run()
+            {
+                if !matches!(cause, crate::machine::paging::process::Error::Threads
+                    | crate::machine::paging::process::Error::Readers(_)
+                    | crate::machine::paging::process::Error::Busy
+                    | crate::machine::paging::process::Error::Monitor(crate::machine::monitor::Error::Busy))
+                {
+                    serial!("PROCESS_SPACE_RETIREMENT_RETAINED owner={owner} cause={cause}");
+                }
+            }
+        }
+    }
+    if !mappings
     {
         return;
     }
