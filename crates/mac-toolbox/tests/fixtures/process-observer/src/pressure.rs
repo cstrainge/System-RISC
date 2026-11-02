@@ -353,12 +353,21 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     stage(system, "full-report")?;
     let crashes = system.crashes();
     let deadline = now(system)? + 8 * SECOND;
+    let mut reported_busy = false;
     loop
     {
         match crashes.begin()
         {
             Ok(_) => break,
-            Err(Error::ServiceBusy) if now(system)? < deadline => wait(system)?,
+            Err(Error::ServiceBusy) if now(system)? < deadline =>
+            {
+                if !reported_busy
+                {
+                    system.log("PRESSURE_REPORT_BEGIN_BUSY\n")?;
+                    reported_busy = true;
+                }
+                wait(system)?;
+            }
             Err(error) => return Err(error)
         }
     }
@@ -374,7 +383,31 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     {
         require(crashes.read(index * bytes.len(), &mut actual)? == bytes.len() && actual == bytes)?;
     }
-    let _ = crashes.show(mac_toolbox::crashes::ReportFlags::NONE)?;
+    system.log("PRESSURE_REPORT_DRAFT_READY bytes=1048576 content=exact\n")?;
+    // Another real application may own the shared modal while we retain the
+    // complete draft. SHOW is repeatable for this same capture; Busy does not
+    // acknowledge, dismiss or replace that application's dialog.
+    let deadline = now(system)? + 8 * SECOND;
+    let mut reported_busy = false;
+    loop
+    {
+        match crashes.show(mac_toolbox::crashes::ReportFlags::NONE)
+        {
+            Ok(_) => break,
+            Err(Error::ServiceBusy) if now(system)? < deadline =>
+            {
+                require(crashes.info()?.report_bytes == 1024 * 1024)?;
+                if !reported_busy
+                {
+                    system.log("PRESSURE_REPORT_SHOW_BUSY retained_bytes=1048576\n")?;
+                    reported_busy = true;
+                }
+                wait(system)?;
+            }
+            Err(error) => return Err(error)
+        }
+    }
+    require(crashes.info()?.report_bytes == 1024 * 1024)?;
     let _after_report = await_pressure(system, &ordinary, "after-report")?;
     system.log("PRESSURE_FULL_REPORT_PASS bytes=1048576 content=exact report=shown\n")?;
     crashes.dismiss()?;

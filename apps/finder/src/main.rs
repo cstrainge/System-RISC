@@ -30,6 +30,13 @@ fn update_menus(system: &System<'_>, browser: &browser::Browser, info: &get_info
 fn try_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, result: Result<T, Error>)
                      -> Result<Option<T>, Error>
 {
+    try_folder_action(system, alerts, result, None)
+}
+
+fn try_folder_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
+                            result: Result<T, Error>, retry: Option<browser::FailedFolder>)
+                            -> Result<Option<T>, Error>
+{
     use core::fmt::Write;
     match result
     {
@@ -40,12 +47,17 @@ fn try_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, result: R
             let _ = writeln!(&mut message,
                              "FINDER_ACTION_FAILED status={} error={status:?}",
                              status.status());
-            system.log(message.as_str())?;
-            if let Err(error) = alerts.error(system, status)
+            let _ = system.log(message.as_str());
+            let notice = match retry
+            {
+                Some(failed) => alerts.folder_error(system, status, failed),
+                None => alerts.error(system, status)
+            };
+            if let Err(error) = notice
             {
                 let mut message = browser::Text::<80>::default();
                 let _ = writeln!(&mut message, "FINDER_ALERT_FAILED status={}", error.status());
-                system.log(message.as_str())?;
+                let _ = system.log(message.as_str());
             }
             Ok(None)
         }
@@ -56,27 +68,30 @@ fn try_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, result: R
 /// objects; only a successful native acknowledgement retires this state.
 struct Startup<'a>
 {
-    menus:        Option<[mac_toolbox::menus::Menu<'a>; 6]>,
-    initialized:  bool,
-    menus_ready:  bool,
-    restore_menu: Option<usize>,
-    pending:      bool
+    menus:       Option<[mac_toolbox::menus::Menu<'a>; 6]>,
+    initialized: bool,
+    menus_ready: bool,
+    pending:     bool
 }
 impl<'a> Startup<'a>
 {
     fn new() -> Self
     {
-        Self { menus:        None,
-               initialized:  false,
-               menus_ready:  false,
-               restore_menu: None,
-               pending:      true }
+        Self { menus:       None,
+               initialized: false,
+               menus_ready: false,
+               pending:     true }
     }
 
     fn update_menus(&mut self, system: &System<'a>, alerts: &mut ui::Alerts<'a>,
                     browser: &browser::Browser, info: &get_info::Controller)
                     -> Result<(), Error>
     {
+        if self.menus.is_none() || !self.initialized
+        {
+            self.menus_ready = false;
+            return Ok(());
+        }
         let result = update_menus(system, browser, info);
         if !self.pending
         {
@@ -109,28 +124,24 @@ impl<'a> Startup<'a>
         Ok(())
     }
 
-    fn alert_event(&mut self, system: &System<'a>, alerts: &mut ui::Alerts<'a>, event: &Event<'a>)
-                   -> Result<bool, Error>
+    fn alert_event(&mut self, system: &System<'a>, alerts: &mut ui::Alerts<'a>,
+                   browser: &mut browser::Browser, event: &Event<'a>)
+                   -> Result<Option<ui::Completion>, Error>
     {
-        match alerts.event(system, event)
+        match alerts.event(system, browser, event)
         {
-            Err(error) if self.pending =>
+            Err(error) =>
             {
-                // Preserve the existing Alert when event/close refused. If it
-                // already closed, retry the failed menu restoration directly;
-                // opening another modal Alert would prevent that restoration.
+                // The notification owns its real Alert/item/menu progress for
+                // its entire lifetime, including after desktop acknowledgement.
                 self.menus_ready = false;
-                if alerts.window() == WindowId(0)
-                {
-                    self.restore_menu = Some(0);
-                }
                 use core::fmt::Write;
                 let mut line = browser::Text::<160>::default();
                 let _ = writeln!(&mut line,
                                  "FINDER_ALERT_EVENT_FAILED status={} error={error:?}",
                                  error.status());
-                system.log(line.as_str())?;
-                Ok(false)
+                let _ = system.log(line.as_str());
+                Ok(None)
             }
             result => result
         }
@@ -140,7 +151,7 @@ impl<'a> Startup<'a>
                browser: &mut browser::Browser, info: &get_info::Controller, settled_turn: bool)
                -> Result<(), Error>
     {
-        if !self.pending || alerts.window() != WindowId(0)
+        if !self.pending || alerts.active()
         {
             return Ok(());
         }
@@ -151,33 +162,18 @@ impl<'a> Startup<'a>
             {
                 return Ok(());
             }
+            alerts.menus_installed();
         }
         if !self.initialized
         {
-            self.initialized = try_action(system, alerts, browser.initialize(system))?.is_some();
+            let result = browser.initialize(system);
+            let target = browser.take_open_failure(result.as_ref().err().copied());
+            self.initialized = try_folder_action(system, alerts, result, target)?.is_some();
             if !self.initialized
             {
                 return Ok(());
             }
             self.menus_ready = false;
-        }
-        while let Some(index) = self.restore_menu
-        {
-            let Some(menus) = &self.menus
-            else
-            {
-                return Ok(());
-            };
-            if index == menus.len()
-            {
-                self.restore_menu = None;
-                break;
-            }
-            if try_action(system, alerts, menus[index].set_item_enabled(0, true))?.is_none()
-            {
-                return Ok(());
-            }
-            self.restore_menu = Some(index + 1);
         }
         if !settled_turn
         {
@@ -195,7 +191,7 @@ impl<'a> Startup<'a>
         {
             self.update_menus(system, alerts, browser, info)?;
         }
-        if !self.menus_ready || alerts.window() != WindowId(0)
+        if !self.menus_ready || alerts.active()
         {
             return Ok(());
         }
@@ -203,7 +199,7 @@ impl<'a> Startup<'a>
         {
             self.pending = false;
             browser.finish_startup_confirmation();
-            system.log("DESKTOP_READY: Finder and native Window Manager\n")?;
+            let _ = system.log("DESKTOP_READY: Finder and native Window Manager\n");
         }
         Ok(())
     }
@@ -223,7 +219,7 @@ fn try_document_open<'a>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
             {
                 let mut message = browser::Text::<80>::default();
                 let _ = writeln!(&mut message, "FINDER_ALERT_FAILED status={}", error.status());
-                system.log(message.as_str())?;
+                let _ = system.log(message.as_str());
             }
             Ok(false)
         }
@@ -233,23 +229,27 @@ fn try_document_open<'a>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
 fn about(system: &System<'_>, id: WindowId) -> Result<(), Error>
 {
     system.begin_update(id)?;
-    let port = system.quickdraw().graphics(id);
-    port.reset()?;
-    port.colors(0xffffff, 0xffffff)?;
-    port.paint_rect(Rect::new(0, 0, 300, 210))?;
-    for (y, index) in [(20, 4), (45, 5), (70, 6), (100, 7), (120, 8), (140, 9), (160, 10)]
-    {
-        let mut bytes = [0; 768];
-        let text = ui::text(system, index, &mut bytes)?;
-        port.text(mac_toolbox::quickdraw::fonts::FontSelection { family: 3,
-                                                                 size:   9,
-                                                                 face:   0 },
-                  Point { h: 16,
-                          v: y },
-                  text,
-                  0)?;
-    }
-    system.end_update(id)
+    let painted = (|| {
+        let port = system.quickdraw().graphics(id);
+        port.reset()?;
+        port.colors(0xffffff, 0xffffff)?;
+        port.paint_rect(Rect::new(0, 0, 300, 210))?;
+        for (y, index) in [(20, 4), (45, 5), (70, 6), (100, 7), (120, 8), (140, 9), (160, 10)]
+        {
+            let mut bytes = [0; 768];
+            let text = ui::text(system, index, &mut bytes)?;
+            port.text(mac_toolbox::quickdraw::fonts::FontSelection { family: 3,
+                                                                     size:   9,
+                                                                     face:   0 },
+                      Point { h: 16,
+                              v: y },
+                      text,
+                      0)?;
+        }
+        Ok(())
+    })();
+    let ended = system.end_update(id);
+    painted.and(ended)
 }
 fn open_about(system: &System<'_>, id: &mut WindowId) -> Result<(), Error>
 {
@@ -282,14 +282,106 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     let mut clipboard = clipboard::Viewer::default();
     let mut startup_retry = false;
     let mut deferred_command = None;
+    let mut retry_folder: Option<browser::FailedFolder> = None;
+    let mut prune_pending = false;
+    let mut deferred_about: Option<WindowId> = None;
+    let mut modal_input_owned = false;
     loop
     {
+        let mut serviced_update = false;
+        if alerts.active() && !modal_input_owned
+        {
+            dragging.cancel(&mut browser);
+            browser.take_modal_input();
+            modal_input_owned = true;
+            let result = browser.finish_modal_input(system);
+            if result.is_err()
+            {
+                alerts.defer_service(system);
+            }
+            let _ = try_action(system, &mut alerts, result)?;
+        }
+        if !alerts.active()
+        {
+            modal_input_owned = false;
+        }
+        if prune_pending && !alerts.active()
+        {
+            let result = browser.prune(system);
+            if result.is_ok()
+            {
+                prune_pending = false;
+            }
+            let _ = try_action(system, &mut alerts, result)?;
+        }
+        if !alerts.active()
+           && !dragging.runnable()
+           && !dragging.positions_pending(&browser)
+           && let Some(failed) = retry_folder.take()
+        {
+            let result = browser.retry_failed_folder(system, failed);
+            let target = result.as_ref()
+                               .err()
+                               .map(|_| browser.failed_folder(failed.window()).unwrap_or(failed));
+            let _ = try_folder_action(system, &mut alerts, result, target)?;
+        }
+        if !alerts.active()
+           && retry_folder.is_none()
+           && !dragging.runnable()
+           && !dragging.positions_pending(&browser)
+           && let Some(window) = browser.take_deferred_update()
+        {
+            serviced_update = true;
+            let result = browser.draw(system, window);
+            if let Err(cause) = result
+            {
+                browser.retain_draw_failure(window, cause);
+            }
+            let target = result.as_ref().err().and_then(|_| browser.failed_folder(window));
+            let _ = try_folder_action(system, &mut alerts, result, target)?;
+        }
+        if !serviced_update
+           && !alerts.active()
+           && retry_folder.is_none()
+           && !dragging.runnable()
+           && !dragging.positions_pending(&browser)
+        {
+            if let Some(id) = deferred_about
+            {
+                let result = if id != about_id
+                {
+                    Ok(())
+                }
+                else
+                {
+                    match system.window(id)
+                    {
+                        Ok(_) => about(system, id),
+                        Err(Error::NotFound) => Ok(()),
+                        Err(cause) => Err(cause)
+                    }
+                };
+                if result.is_ok()
+                {
+                    deferred_about = None;
+                }
+                let _ = try_action(system, &mut alerts, result)?;
+            }
+            else if clipboard.has_deferred_update()
+            {
+                let _ = try_action(system, &mut alerts, clipboard.draw_deferred(system))?;
+            }
+            else if info.has_deferred_update()
+            {
+                let _ = try_action(system, &mut alerts, info.draw_deferred(system))?;
+            }
+        }
         if startup_retry && !dragging.runnable() && !dragging.positions_pending(&browser)
         {
             startup_retry = false;
             startup.advance(system, &mut alerts, &mut browser, &info, true)?;
         }
-        if alerts.window() == WindowId(0)
+        if !alerts.active() && retry_folder.is_none()
         {
             let accepted = if let Some(document) = browser.take_document_open()
             {
@@ -301,57 +393,75 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             {
                 true
             };
-            if accepted && alerts.window() == WindowId(0)
+            if accepted && !alerts.active()
             {
                 let _ = try_document_open(system, &mut alerts, associations.advance(system))?;
             }
         }
-        let completed = match dragging.advance(system, &mut browser)
+        let completed = if alerts.active()
         {
-            Ok(completed) => completed,
-            Err(error) =>
+            false
+        }
+        else
+        {
+            match dragging.advance(system, &mut browser)
             {
-                if let Some(failure) = dragging.take_failure()
+                Ok(completed) => completed,
+                Err(error) =>
                 {
-                    alerts.transfer_error(system, failure)?;
+                    if let Some(failure) = dragging.take_failure()
+                    {
+                        let notice = alerts.transfer_error(system, failure);
+                        let _ = try_action(system, &mut alerts, notice)?;
+                    }
+                    else
+                    {
+                        let _ = try_action::<()>(system, &mut alerts, Err(error))?;
+                    }
+                    false
                 }
-                else
-                {
-                    let _ = try_action::<()>(system, &mut alerts, Err(error))?;
-                }
-                false
             }
         };
-        if let Some(recovery) = dragging.take_recovery()
+        if !alerts.active()
+           && let Some(recovery) = dragging.take_recovery()
         {
-            alerts.transfer_recovery(system, recovery)?;
+            let notice = alerts.transfer_recovery(system, recovery);
+            let _ = try_action(system, &mut alerts, notice)?;
         }
         if completed
         {
             startup.poll_watches(system, &mut alerts, &mut watches, &mut browser)?;
-            if alerts.window() == WindowId(0)
+            if !alerts.active()
             {
                 startup.update_menus(system, &mut alerts, &browser, &info)?;
             }
         }
-        if deferred_command.is_some() && dragging.saving_positions()
+        if !alerts.active() && deferred_command.is_some() && dragging.saving_positions()
         {
             system.events().next(events::EventMask::from_bits_retain(0))?;
             continue;
         }
-        let (event, position) = if let Some(input) =
+        let deferred = if alerts.active() || retry_folder.is_some()
+        {
+            None
+        }
+        else
+        {
             deferred_command.take().or_else(|| browser.next_deferred_pointer())
+        };
+        let (event, position) = if let Some(input) = deferred
         {
             input
         }
         else
         {
-            system.wait_positioned(mac_toolbox::events::EventMask::ALL,
-                                   if info.pending()
-                                      || browser.pending()
-                                      || dragging.runnable()
-                                      || dragging.positions_pending(&browser)
-                                      || (associations.pending() && alerts.window() == WindowId(0))
+            system.wait_positioned(alerts.event_mask(),
+                                   if !alerts.active()
+                                      && (info.pending()
+                                          || browser.pending()
+                                          || dragging.runnable()
+                                          || dragging.positions_pending(&browser)
+                                          || associations.pending())
                                    {
                                        0
                                    }
@@ -363,13 +473,16 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         };
         // Finish our owned background mutation before another storage command.
         // Pointer tracking remains live while that transaction is in flight.
-        if dragging.saving_positions() && matches!(event, Event::MenuCommand { .. })
+        if !alerts.active()
+           && dragging.saving_positions()
+           && matches!(event, Event::MenuCommand { .. })
         {
             deferred_command = Some((event, position));
             continue;
         }
         alerts.set_context(&event);
-        if dragging.ui_event(system, &event, position)
+        if (!alerts.active() || matches!(event, Event::FileTransferChanged { .. }))
+           && dragging.ui_event(system, &event, position)
         {
             continue;
         }
@@ -379,7 +492,14 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             let _ = try_action(system, &mut alerts, browser.geometry_changed(system, window))?;
             continue;
         }
-        if matches!(event, Event::Activate { .. }) && alerts.window() == WindowId(0)
+        if matches!(event, Event::Activate { .. }) && alerts.active()
+        {
+            if browser.contains(event.window().unwrap_or_default())
+            {
+                browser.activate(&event);
+            }
+        }
+        else if matches!(event, Event::Activate { .. })
         {
             browser.activate(&event);
             let _ = try_action(system, &mut alerts, browser.sync_desktop_activation(system))?;
@@ -403,14 +523,13 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             let completed = matches!(&event,
                 Event::Drag { offer: drag::DragEvent::Ended {
                     outcome: drag::DragOutcome::Moved | drag::DragOutcome::Copied }, .. });
-            if alerts.window() != WindowId(0)
+            if alerts.active()
                && matches!(&event,
                            Event::Drag { offer: drag::DragEvent::Tracking(_)
                                                 | drag::DragEvent::Dropped(_),
                                          .. })
             {
                 // Dropping an ignored offer/payload rejects it through the SDK.
-                dragging.cancel(&mut browser);
                 drop(event);
             }
             else
@@ -419,34 +538,103 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                                    &mut alerts,
                                    dragging.event(system, &mut browser, event, position))?;
             }
-            if completed
+            if completed && !alerts.active()
             {
                 startup.poll_watches(system, &mut alerts, &mut watches, &mut browser)?;
-                startup.update_menus(system, &mut alerts, &browser, &info)?;
-            }
-            continue;
-        }
-        if alerts.window() != WindowId(0)
-        {
-            let confirm = startup.alert_event(system, &mut alerts, &event)?;
-            if alerts.window() == WindowId(0)
-            {
-                if clipboard.window != WindowId(0)
+                if !alerts.active()
                 {
-                    let _ = try_action(system, &mut alerts, clipboard.draw(system))?;
+                    startup.update_menus(system, &mut alerts, &browser, &info)?;
                 }
-                startup.update_menus(system, &mut alerts, &browser, &info)?;
-            }
-            if confirm
-            {
-                let _ = try_action(system, &mut alerts, browser.empty_trash(system))?;
-                startup.update_menus(system, &mut alerts, &browser, &info)?;
             }
             continue;
         }
         if matches!(event,Event::Other{kind:events::classic::EventKind::OsEvent,message,..} if message & 0xff00_0000==0x0200_0000)
         {
-            let _ = try_action(system, &mut alerts, browser.prune(system))?;
+            // A modal cannot consume the sole real close notification.
+            prune_pending = true;
+            let _ = try_action(system, &mut alerts, info.event(system, &event, position))?;
+            continue;
+        }
+        if alerts.active()
+           && matches!(event, Event::Update { .. })
+           && browser.contains(event.window().unwrap_or_default())
+        {
+            let result = browser.defer_update(system, event.window().unwrap_or_default());
+            if result.is_err()
+            {
+                alerts.defer_service(system);
+            }
+            let _ = try_action(system, &mut alerts, result)?;
+            continue;
+        }
+        if alerts.active() && matches!(event, Event::Update { .. })
+        {
+            let window = event.window().unwrap_or_default();
+            if window == about_id && about_id != WindowId(0)
+            {
+                deferred_about = Some(window);
+                let result = system.windows().validate(window);
+                if result.is_err()
+                {
+                    alerts.defer_service(system);
+                }
+                let _ = try_action(system, &mut alerts, result)?;
+                continue;
+            }
+            if window == clipboard.window && clipboard.window != WindowId(0)
+            {
+                let result = clipboard.defer_update(system, window);
+                if result.is_err()
+                {
+                    alerts.defer_service(system);
+                }
+                let _ = try_action(system, &mut alerts, result)?;
+                continue;
+            }
+            let deferred = info.defer_update(system, window);
+            match deferred
+            {
+                Ok(true) => continue,
+                Ok(false) => (),
+                Err(cause) =>
+                {
+                    alerts.defer_service(system);
+                    let _ = try_action::<()>(system, &mut alerts, Err(cause))?;
+                    continue;
+                }
+            }
+        }
+        if alerts.active()
+        {
+            let completion = startup.alert_event(system, &mut alerts, &mut browser, &event)?;
+            match completion
+            {
+                Some(ui::Completion::EmptyTrash) =>
+                {
+                    let _ = try_action(system, &mut alerts, browser.empty_trash(system))?;
+                }
+                Some(ui::Completion::RetryFolder(failed)) => retry_folder = Some(failed),
+                _ => ()
+            }
+            if !alerts.active()
+            {
+                if clipboard.window != WindowId(0)
+                {
+                    let _ = try_action(system, &mut alerts, clipboard.draw(system))?;
+                }
+                if !alerts.active()
+                {
+                    let result = startup.update_menus(system, &mut alerts, &browser, &info);
+                    let _ = try_action(system, &mut alerts, result)?;
+                }
+            }
+            continue;
+        }
+        // Preserve the one acknowledged target while its existing storage
+        // owner drains. Do not replace it with a later folder notification.
+        if retry_folder.is_some()
+        {
+            continue;
         }
         if browser.marquee_tracking()
            && matches!(event, Event::Idle { .. } | Event::MouseUp { .. } | Event::KeyDown { .. })
@@ -466,39 +654,49 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 continue;
             }
             let _ = try_action(system, &mut alerts, browser.save_folder_states(system))?;
-            if startup.pending && alerts.window() != WindowId(0)
+            if alerts.active()
             {
                 continue;
             }
             let before = (browser.can_select_all(), browser.can_new_folder(system));
             startup.poll_watches(system, &mut alerts, &mut watches, &mut browser)?;
-            if startup.pending && alerts.window() != WindowId(0)
+            if alerts.active()
             {
                 continue;
             }
-            let _ = try_action(system, &mut alerts, browser.advance_cache(system))?;
+            let result = browser.advance_cache(system);
+            let target = result.as_ref().err().and_then(|_| browser.failed_cache());
+            let _ = try_folder_action(system, &mut alerts, result, target)?;
             if before != (browser.can_select_all(), browser.can_new_folder(system))
-               && alerts.window() == WindowId(0)
+               && !alerts.active()
             {
                 startup.update_menus(system, &mut alerts, &browser, &info)?;
             }
-            if alerts.window() != WindowId(0)
+            if alerts.active()
             {
                 continue;
             }
         }
         let _ = try_action(system, &mut alerts, clipboard.refresh(system))?;
-        if alerts.window() != WindowId(0)
+        if alerts.active()
         {
             continue;
         }
         let info_handled =
             try_action(system, &mut alerts, info.event(system, &event, position))?.unwrap_or(false);
+        if alerts.active()
+        {
+            continue;
+        }
         if info.take_changed()
         {
             // Native writes have already published exact parent notifications.
             // Consume those instead of repainting every cached folder.
             startup.poll_watches(system, &mut alerts, &mut watches, &mut browser)?;
+        }
+        if alerts.active()
+        {
+            continue;
         }
         if info_handled
         {
@@ -517,7 +715,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             }
             continue;
         }
-        if alerts.window() != WindowId(0)
+        if alerts.active()
         {
             continue;
         }
@@ -537,12 +735,12 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             }
             continue;
         }
-        if alerts.window() != WindowId(0)
+        if alerts.active()
         {
             continue;
         }
         let _ = try_action(system, &mut alerts, browser.track(system, &event, position))?;
-        if alerts.window() != WindowId(0)
+        if alerts.active()
         {
             continue;
         }
@@ -553,7 +751,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             let _ = writeln!(&mut log,
                              "FINDER_MENU menu={} item={} command={:08x}",
                              selection.menu_id, selection.item, selection.command);
-            system.log(log.as_str())?;
+            let _ = system.log(log.as_str());
             let action = match selection.command
             {
                 menus::NEW_FOLDER => browser.new_folder(system),
@@ -591,8 +789,9 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 }
                 _ => Ok(())
             };
-            let _ = try_action(system, &mut alerts, action)?;
-            if alerts.window() == WindowId(0)
+            let target = browser.take_open_failure(action.as_ref().err().copied());
+            let _ = try_folder_action(system, &mut alerts, action, target)?;
+            if !alerts.active()
             {
                 startup.update_menus(system, &mut alerts, &browser, &info)?;
             }
@@ -609,9 +808,10 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 }
                 else if browser.contains(event.window().unwrap_or_default())
                 {
-                    let _ = try_action(system,
-                                       &mut alerts,
-                                       browser.draw(system, event.window().unwrap_or_default()))?;
+                    let window = event.window().unwrap_or_default();
+                    let result = browser.draw(system, window);
+                    let target = result.as_ref().err().and_then(|_| browser.failed_folder(window));
+                    let _ = try_folder_action(system, &mut alerts, result, target)?;
                 }
             }
             Event::Activate { .. } =>
@@ -671,11 +871,11 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                                    .modifiers
                                    .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
-                    let _ =
-                        try_action(system,&mut alerts,
-                                   browser.open(system,
-                                         browser::Location { volume: browser.startup,
-                                                             folder: mac_toolbox::files::ROOT_ID }))?;
+                    let result = browser.open(system,
+                                       browser::Location { volume: browser.startup,
+                                                           folder: mac_toolbox::files::ROOT_ID });
+                    let target = browser.take_open_failure(result.as_ref().err().copied());
+                    let _ = try_folder_action(system, &mut alerts, result, target)?;
                 }
                 else if code == 0x33
                           && event.input()
@@ -689,7 +889,9 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                                   .modifiers
                                   .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
-                    let _ = try_action(system, &mut alerts, browser.parent(system))?;
+                    let result = browser.parent(system);
+                    let target = browser.take_open_failure(result.as_ref().err().copied());
+                    let _ = try_folder_action(system, &mut alerts, result, target)?;
                 }
                 else if key == '\r'
                           || key == 'o'
@@ -701,7 +903,9 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                                      .modifiers
                                      .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
-                    let _ = try_action(system, &mut alerts, browser.open_selection(system))?;
+                    let result = browser.open_selection(system);
+                    let target = browser.take_open_failure(result.as_ref().err().copied());
+                    let _ = try_folder_action(system, &mut alerts, result, target)?;
                 }
                 else if code == 0x74
                 {
@@ -716,7 +920,9 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 if event.window().is_none()
                    || browser.contains(event.window().unwrap_or_default()) =>
             {
-                match try_action(system, &mut alerts, browser.click(system, &event, position))?
+                let result = browser.click(system, &event, position);
+                let target = browser.take_open_failure(result.as_ref().err().copied());
+                match try_folder_action(system, &mut alerts, result, target)?
                 {
                     Some(browser::ClickOutcome::Completed) =>
                     {
@@ -730,14 +936,14 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             _ =>
             {}
         }
-        if alerts.window() == WindowId(0) && !matches!(event, Event::Idle { .. })
+        if !alerts.active() && !matches!(event, Event::Idle { .. })
         {
             startup.update_menus(system, &mut alerts, &browser, &info)?;
         }
         if click_handled
         {
             // Selection, drag admission and menu policy are all committed.
-            system.log("FINDER_CLICK_HANDLED\n")?;
+            let _ = system.log("FINDER_CLICK_HANDLED\n");
         }
     }
 }

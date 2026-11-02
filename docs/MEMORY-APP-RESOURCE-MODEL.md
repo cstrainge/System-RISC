@@ -4911,3 +4911,74 @@ performance equivalence. Forced allocation/counter-overflow/partial-boot
 rollback, reset reclamation, broad SMP and hardware/user-mode isolation remain
 unverified by these runs. The fixed allocator heap parent remains separately
 represented; it was not charged again as Foundation physical storage.
+
+### Finder modal refusal and exact-folder recovery
+
+Finder now retains a notification before trying to open it. Allocation errors use
+the existing System Core OOM service; other dialogs keep their resource-based
+text and owned controls. Actual item acceptance, fallible close, indexed menu
+restoration and the resulting action are distinct states. A real acknowledgment
+does not disappear when a later close/menu step refuses. Held key repeats cannot
+select another notice or prevent due service work. Refused service work uses a
+bounded native-clock cadence and Update wait policy, rather than depending on an
+Idle that undelivered damage can starve.
+
+The modal owns user input, while real drag/transfer lifecycle notifications still
+reach their retained operation. Interactive pointer/marquee state is cancelled
+once at takeover without cancelling an already submitted file transfer. Folder,
+About, Clipboard and Info painting retain their actual target identities and
+defer work until modality ends. Pure diagnostic output cannot manufacture a
+failed operation, erase a committed result or authorize another retry. Blank,
+normal and error paints balance their actual update transaction on refusal.
+
+A failed-folder retry carries the original WindowId generation, Location and
+cause. Only genuine dialog completion queues that retry; a front window or
+memory-relief observation is not authority. The same live binding/failure is
+checked again. Unpublished scan state resets coherently, ready content repairs
+its actual dirty frame, and a partially opened window retains its original
+admitted controls and resumes opening. Normal bounded idle scanning performs
+enumeration; a click does not rebuild layout. A failed retry can issue its own
+single notification, not an unbounded allocation retry loop.
+
+A fixed-source optimized release/LTO no_std RV64 image used System ELF
+`e2050126dac827824375f6b6b94e2d53f6caf0112ea9753096b0863e499d61f0`,
+System resource `5ebdf09c7d06e3431d703e7c9f677798228a8e801d9826f00ee3a53677edbc13`,
+Finder ELF `7c0f09c42f58c16eca4ef73852f854d68fbd6a7f989aab470ac06fb95f176b31`
+and resource `68f993af0e51e3823a2666d84cfb987d40e0caf0ca4b2fff64be92500159450d`.
+A private QEMU4/800x600/exactly 2 GiB installed Text Edit workflow completed all Save
+Changes choices, exact saved ab, malformed-file Core Error, fresh input and three
+actual account closures. The existing native pressure controller/44 holders and
+observer were rebuilt normally for the same System package; its private ACAP
+adds only the exact observer grant while preserving installed grants.
+
+The successful pressure case used one hart and exactly 2 GiB. It observed ordinary
+MemoryFull with retained 16 W bytes and caller Kernel-account headroom, healthy
+and pressured two-Save/Core-OOM sessions with competing Busy refusals, exact
+1,048,576-byte report capture/read/show, all 44 payload releases and all 44 actual
+worker-reclaimed records. A real Finder Core OOM was inspected. After actual
+acknowledgment and later memory release, its next visible notice was genuinely
+acknowledged; the same Applications window repainted its item, selection worked,
+and Get Info opened and closed. Native dismissal, current folder-ready and Info
+records plus reviewed before/after frames support this finite workflow.
+Checksums sample each holder chunk's first byte, not every payload byte.
+
+Earlier cases remain failed. An unchanged observer first refused its report
+because another owner held the legitimate shared modal. A later physical mouse
+input selected the inactive dialog without acknowledging it and hit the bounded
+Busy deadline. The final observer retains the original pressure thresholds,
+worker counts, Begin/refill/overall deadlines and reclamation assertions, adding
+only an eight-second retry of the same retained report Show and genuine observed
+UI input. It validates the unchanged 1 MiB draft while Busy. Its host recognizes
+the exact known same-artifact dialog interior before activation/default-button
+input; post-stress frame review and acknowledgment precede the original Get Info
+check. These are paced UI actions, not per-allocation host barriers or a timing
+qualification. The earlier no-ACK Get Info timeout alone did not establish an
+input-system stall, and was not relabelled green.
+
+Sources/base stayed fixed per run, owned guests exited zero and were reaped,
+and private raw/cloned media was removed on success and failure. This does not
+force every menu/close/publication/stop/refusal interleaving or establish native
+transfer-wake behavior under every modal, race absence, performance or SMP.
+Production Finder OOM restart, full preallocated recovery kits and std/combined
+control-suite integration remain separate work. No host Rust suite supplied
+OS acceptance; the diagnostic additions use the existing real no_std actor.
