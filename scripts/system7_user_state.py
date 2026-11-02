@@ -21,7 +21,8 @@ from system7_paths import ROOT, build_dir
 from system7_host import exclusive_lock, process_exists, sync_directory, sync_file, windows_process_name
 
 TREES = {'Preferences': ('/System Folder/Preferences', '/System Folder'),
-         'Documents': ('/Documents', '/')}
+         'Documents': ('/Documents', '/'),
+         'Desktop Folder': ('/Desktop Folder', '/')}
 
 
 def command(args):
@@ -115,7 +116,7 @@ def children(raw, parent):
 
 
 def snapshot_raw(root, raw, source):
-    """Publish only after both lossless recursive exports succeed."""
+    """Publish only after all present user folders export losslessly."""
     name = uuid.uuid4().hex
     directory = root / name
     directory.mkdir(mode=0o700)
@@ -190,7 +191,7 @@ def prepare(build, state):
         if disk.exists():
             if running(state):
                 current(root)  # Invalid saved state must still fail honestly.
-                print('Writable VM is running; latest Preferences/Documents will be preserved before replacement on restart.')
+                print('Writable VM is running; latest Preferences, Documents and Desktop Folder will be preserved before replacement on restart.')
                 return
             snapshot_disk(root, disk)
         elif current(root) is None:

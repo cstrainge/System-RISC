@@ -104,6 +104,14 @@ impl State
                                   index,
                                   position: self.when,
                                   ..Default::default() };
+        if operation == FIND_FOLDER
+        {
+            call.file_type = *b"desk";
+            if index == 0
+            {
+                call.position = 0;
+            }
+        }
         let progress = background::file(self.access(), &mut call, text, capacity);
         self.set_io(tag, progress);
     }
@@ -178,7 +186,7 @@ impl State
             {
                 let source = self.roots[self.current_root].input;
                 self.file(Tag::TrashDestination,
-                          TRASH_DIRECTORY,
+                          if self.mode == Mode::Desktop { FIND_FOLDER } else { TRASH_DIRECTORY },
                           Reference { volume: source.volume,
                                       id:     ROOT_ID },
                           0,
@@ -261,7 +269,7 @@ impl State
                     {
                         Stage::PrepareSourceStage
                     }
-                    else if self.mode == Mode::Trash
+                    else if matches!(self.mode, Mode::Trash | Mode::Desktop)
                     {
                         Stage::PrepareTrash
                     }
@@ -313,7 +321,14 @@ impl State
                     {
                         self.trash_dirs.try_reserve(1).map_err(|_| NO_MEMORY)?;
                         self.file(Tag::CreateTrash,
-                                  TRASH_DIRECTORY,
+                                  if self.mode == Mode::Desktop
+                                  {
+                                      FIND_FOLDER
+                                  }
+                                  else
+                                  {
+                                      TRASH_DIRECTORY
+                                  },
                                   Reference { volume: root.input.volume,
                                               id:     ROOT_ID },
                                   1,

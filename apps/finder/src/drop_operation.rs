@@ -393,7 +393,7 @@ impl<'a> PendingDrop<'a>
             self.result = Some(Ok(()));
             return Ok(());
         }
-        if !self.target.trash && self.target.frame == Rect::ZERO
+        if !self.target.trash && !self.target.desktop && self.target.frame == Rect::ZERO
         {
             let mut left = i16::MAX;
             let mut top = i16::MAX;
@@ -453,7 +453,7 @@ impl<'a> PendingDrop<'a>
             }
             self.transfer=Some(system.files().begin_transfer(files::TransferSpec{
                 mode:if copy {files::TransferMode::Copy} else {files::TransferMode::Move},
-                destination:if self.target.trash {files::TransferDestination::Trash} else {files::TransferDestination::Folder{volume:self.target.location.volume,parent:self.target.location.folder}},
+                destination:if self.target.trash {files::TransferDestination::Trash} else if self.target.desktop {files::TransferDestination::Desktop} else {files::TransferDestination::Folder{volume:self.target.location.volume,parent:self.target.location.folder}},
             },&sources[..self.count])?);
             self.ready = true;
         }

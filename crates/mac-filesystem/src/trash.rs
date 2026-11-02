@@ -1,20 +1,25 @@
 use super::{mutation::native_protection, *};
-fn native_trash<D: WritableBlockDevice>(v: &mut mac_hfs_b::Volume<'_, D>, create: bool, when: u64)
-                                        -> MutationResult<mac_hfs_b::Entry>
+fn native_folder<D: WritableBlockDevice>(v: &mut mac_hfs_b::Volume<'_, D>, name: &str, flags: u16,
+                                         create: bool, when: u64)
+                                         -> MutationResult<mac_hfs_b::Entry>
 {
-    match v.lookup(2, "Trash")
+    match v.lookup(2, name)
     {
         Ok(e) if e.directory => Ok(e),
         Ok(_) => Err(MutationError::Exists),
         Err(mac_hfs_b::Error::NotFound) if create =>
         {
             let mut info = [0; 32];
-            info[8..10].copy_from_slice(&0x1000u16.to_be_bytes());
-            v.create_with_finder_info(2, "Trash", true, info, Timestamp(when))
-             .map_err(mutation_error)
+            info[8..10].copy_from_slice(&flags.to_be_bytes());
+            v.create_with_finder_info(2, name, true, info, Timestamp(when)).map_err(mutation_error)
         }
         Err(e) => Err(mutation_error(e))
     }
+}
+fn native_trash<D: WritableBlockDevice>(v: &mut mac_hfs_b::Volume<'_, D>, create: bool, when: u64)
+                                        -> MutationResult<mac_hfs_b::Entry>
+{
+    native_folder(v, "Trash", 0x1000, create, when)
 }
 fn descendants<D: BlockDevice>(v: &mut mac_hfs_b::Volume<'_, D>, root: u32)
                                -> MutationResult<Vec<mac_hfs_b::Entry>>
@@ -51,10 +56,23 @@ impl<D: WritableBlockDevice> Volume<'_, D>
 {
     pub fn trash_directory(&mut self, create: bool, when: u64) -> MutationResult<CatalogEntry>
     {
+        self.find_folder(*b"trsh", create, when)
+    }
+
+    /// Resolve a special folder by its ordinary per-volume catalog name.
+    pub fn find_folder(&mut self, folder_type: [u8; 4], create: bool, when: u64)
+                       -> MutationResult<CatalogEntry>
+    {
+        let (name, flags) = match &folder_type
+        {
+            b"desk" => ("Desktop Folder", 0x5000),
+            b"trsh" => ("Trash", 0x1000),
+            _ => return Err(MutationError::NotFound)
+        };
         let e = match &mut self.backend
         {
-            Backend::Hfs(v) => v.trash_directory(create, legacy_time(when)?)?.into(),
-            Backend::HfsB(v) => native_trash(v, create, when)?.into()
+            Backend::Hfs(v) => v.find_folder(folder_type, create, legacy_time(when)?)?.into(),
+            Backend::HfsB(v) => native_folder(v, name, flags, create, when)?.into()
         };
         self.refresh();
         Ok(e)
@@ -69,6 +87,11 @@ impl<D: WritableBlockDevice> Volume<'_, D>
             Backend::HfsB(v) =>
             {
                 native_protection(v, id, protected)?;
+                let entry = v.entry(id).map_err(mutation_error)?;
+                if u16::from_be_bytes(entry.finder_info[8..10].try_into().unwrap()) & 0x1000 != 0
+                {
+                    return Err(MutationError::Protected);
+                }
                 let trash = native_trash(v, true, when)?;
                 if id == trash.id
                 {

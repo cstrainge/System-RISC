@@ -105,5 +105,5 @@ pub(super) fn writes_catalog(operation: u32, index: u32) -> bool
              | SET_ICON_LOCATION
              | MOVE_INTO
              | SET_COMMENT)
-    || (operation == TRASH_DIRECTORY && index != 0)
+    || (matches!(operation, TRASH_DIRECTORY | FIND_FOLDER) && index != 0)
 }

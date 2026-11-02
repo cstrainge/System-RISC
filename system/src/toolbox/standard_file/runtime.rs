@@ -536,10 +536,27 @@ impl super::Desktop
             if dialog.prompt.text()?.is_empty() { Text::new(label(2)?)? } else { dialog.prompt };
         let name = Text::new(dialog.name())?;
         let title = Text::new(dialog.ancestors.first().map_or(label(0)?, |entry| entry.name()))?;
-        let volume =
-            Text::new(if dialog.location.0 == 0 { "" } else { dialog.volume_info.name() })?;
+        let volume = Text::new(if dialog.location.0 == 0 && mode == GET
+                               {
+                                   ""
+                               }
+                               else if dialog.location.0 == 0 && dialog.volume_info.id == 0
+                               {
+                                   if dialog.desktop_volume == 0
+                                   {
+                                       "Startup disk"
+                                   }
+                                   else
+                                   {
+                                       "Loading disk..."
+                                   }
+                               }
+                               else
+                               {
+                                   dialog.volume_info.name()
+                               })?;
         let error = dialog.error;
-        let location = dialog.location;
+        let error_context = dialog.error_context;
         let focus = dialog.focus_name;
         let editor = dialog.editor.info();
         let caret = dialog.editor.caret_rect();
@@ -640,7 +657,12 @@ impl super::Desktop
                                                       DISK_FULL => 12,
                                                       ROLLBACK_FAILED => 13,
                                                       _ => 14
-                                                  })?)?
+                                                  })?)?;
+                        if !error_context.text()?.is_empty()
+                        {
+                            message.push("\n")?;
+                            message.push_bounded(error_context.text()?);
+                        }
                     }
                     Sheet::Main => return Err(BAD_ABI)
                 }
@@ -799,7 +821,7 @@ impl super::Desktop
             {
                 if damage.touches(template.item(12))
                 {
-                    self.sf_button(id, 11, location.0 != 0)?;
+                    self.sf_button(id, 11, true)?;
                 }
                 let edit = template.item(10);
                 if damage.touches(Rect::new(edit.left - 3,
@@ -896,7 +918,10 @@ impl super::Desktop
                  d.revision,
                  Text::new(d.name()),
                  d.editor.info(),
-                 d.can_accept())
+                 d.can_accept(),
+                 d.location,
+                 d.ancestors.first().map(|entry| (entry.volume, entry.id)),
+                 d.volume_info.id)
             }
             Err(_) => return
         };
@@ -912,8 +937,7 @@ impl super::Desktop
         {
             if let Ok(dialog) = self.standard_file.get_mut(self.owner, id)
             {
-                dialog.error = cause;
-                dialog.sheet = Sheet::Error;
+                dialog.fail(cause);
             }
         }
         if self.standard_file.get(self.owner, id).is_ok_and(|dialog| dialog.work_pending())
@@ -961,6 +985,16 @@ impl super::Desktop
             if before.3 != dialog.revision
             {
                 damage.add(template.item(7));
+            }
+            if before.7 != dialog.location
+               || before.8 != dialog.ancestors.first().map(|entry| (entry.volume, entry.id))
+            {
+                damage.add(template.item(8));
+                damage.add(Rect::new(238, 0, 344, 30));
+            }
+            if before.9 != dialog.volume_info.id
+            {
+                damage.add(Rect::new(238, 0, 344, 30));
             }
             if before.6 != dialog.can_accept()
             {
@@ -1768,6 +1802,7 @@ impl super::Desktop
                 let before_title = dialog.ancestors.first().map(|e| (e.volume, e.id));
                 let before_ancestors = dialog.ancestors.len();
                 let before_accept = dialog.can_accept();
+                let before_volume = dialog.volume_info.id;
                 let name_changed = matches!(&reply, Ok(Reply::Name(_)));
                 let volume_changed =
                     matches!(&reply,Ok(Reply::File(call))if call.operation==files::VOLUME_INFO);
@@ -1776,8 +1811,7 @@ impl super::Desktop
                     Ok(changed) => changed,
                     Err(cause) =>
                     {
-                        dialog.error = cause;
-                        dialog.sheet = Sheet::Error;
+                        dialog.fail(cause);
                         true
                     }
                 };
@@ -1804,7 +1838,16 @@ impl super::Desktop
                     {
                         damage = Damage::full();
                     }
-                    else
+                    else if dialog.sheet == Sheet::NewFolder
+                    {
+                        if name_changed
+                        {
+                            let mut edit = template.item(3);
+                            edit.inset(-3, -3);
+                            damage.add(edit);
+                        }
+                    }
+                    else if dialog.sheet == Sheet::Main
                     {
                         let list = template.item(7);
                         if before_first != dialog.first
@@ -1849,20 +1892,13 @@ impl super::Desktop
                         {
                             damage.add(template.item(8));
                         }
-                        if volume_changed
+                        if volume_changed || before_volume != dialog.volume_info.id
                         {
                             damage.add(Rect::new(238, 0, 344, 30));
                         }
                         if name_changed
                         {
-                            let mut edit = template.item(if dialog.sheet == Sheet::NewFolder
-                                                         {
-                                                             3
-                                                         }
-                                                         else
-                                                         {
-                                                             10
-                                                         });
+                            let mut edit = template.item(10);
                             edit.inset(-3, -3);
                             damage.add(edit);
                         }

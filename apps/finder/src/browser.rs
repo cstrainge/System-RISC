@@ -53,7 +53,6 @@ struct FolderWindow
 #[derive(Clone, Copy)]
 struct IconPress
 {
-    entry:    Location,
     source:   Location,
     anchor:   Point,
     collapse: Option<(usize, usize)>
@@ -203,7 +202,9 @@ impl Drawing for Port<'_, '_>
 fn visible(entry: &CatalogInfo) -> bool
 {
     !entry.finder_flags().contains(files::FinderFlags::INVISIBLE)
-    && !(entry.parent == ROOT_ID && entry.is_directory() && entry.name() == "Trash")
+    && !(entry.parent == ROOT_ID
+         && entry.is_directory()
+         && ["Trash", "Desktop Folder"].contains(&entry.name()))
 }
 fn volume_icon(volume: &VolumeInfo) -> i16
 {
@@ -265,8 +266,7 @@ pub(crate) fn entry_icon(system: &System<'_>, volume: &VolumeInfo, entry: &Catal
     // own BNDL/FREF icon family is its icon, with the generic extension
     // puzzle as fallback. The associated-type path below never opens the
     // file's own fork, so without this every extension shows the generic.
-    if entry.file_type == TypeCode::new(*b"APPL")
-       || entry.file_type == TypeCode::new(*b"INIT")
+    if entry.file_type == TypeCode::new(*b"APPL") || entry.file_type == TypeCode::new(*b"INIT")
     {
         Icon::Application { volume: volume.id,
                             cnid: entry.id,
@@ -373,11 +373,12 @@ impl Browser
 
     pub fn pending(&self) -> bool
     {
-        self.windows.iter().enumerate().any(|(slot, window)| {
-                                           window.is_some()
-                                           && self.failures[slot].get().is_none()
-                                           && !cache::with(slot, |folder| folder.ready)
-                                       })
+        desktop::pending()
+        || self.windows.iter().enumerate().any(|(slot, window)| {
+                                              window.is_some()
+                                              && self.failures[slot].get().is_none()
+                                              && !cache::with(slot, |folder| folder.ready)
+                                          })
     }
 
     /// Return queued pointer events to the application's normal dispatcher.
@@ -432,6 +433,7 @@ impl Browser
     /// validates a snapshot. ScanStale discards the unpublished partial result.
     pub fn advance_cache(&mut self, system: &System<'_>) -> Result<(), Error>
     {
+        self.advance_desktop(system)?;
         let active = self.cache_job.filter(|&slot| {
                                        self.windows[slot].is_some()
                                        && self.failures[slot].get().is_none()
@@ -1678,7 +1680,7 @@ impl Browser
                 {
                     next = Selection::singleton(index);
                 }
-                self.press = next.contains(index).then_some(IconPress { entry:  item.location(),
+                self.press = next.contains(index).then_some(IconPress {
                     source: window.location,
                                             anchor: position.screen().point(),
                                             collapse:(!shift && window.selected.contains(index) && window.selected.len()>1).then_some((slot,index)) });
@@ -1985,7 +1987,15 @@ impl Browser
             {
                 if let Some(item) = desktop::item(index)
                 {
-                    self.open(system, item.location())?;
+                    if let Some(entry) = item.entry
+                    {
+                        let entry = system.files().catalog(entry.volume, entry.id)?;
+                        self.open_entry(system, &entry)?;
+                    }
+                    else
+                    {
+                        self.open(system, item.location())?;
+                    }
                 }
             }
             return Ok(());
@@ -2179,7 +2189,13 @@ impl Browser
     {
         if self.desktop_active
         {
-            return None;
+            return self.desktop
+                       .selected
+                       .get()
+                       .iter()
+                       .filter_map(desktop::item)
+                       .find(|i| !i.is_trash())
+                       .map(|i| i.location());
         }
         let _ = system;
         let front = self.front;
@@ -2207,10 +2223,15 @@ impl Browser
         let mut result = [None; CAPACITY];
         if self.desktop_active
         {
-            for (index, volume) in self.desktop_volumes().enumerate()
+            for (index, item) in self.desktop
+                                     .selected
+                                     .get()
+                                     .iter()
+                                     .filter_map(desktop::item)
+                                     .filter(|i| !i.is_trash())
+                                     .enumerate()
             {
-                result[index] = Some(Location { volume,
-                                                folder: ROOT_ID });
+                result[index] = Some(item.location());
             }
         }
         else if let Some(slot) = self.front_slot()
@@ -2238,25 +2259,14 @@ impl Browser
 
     pub fn info_selection(&self, system: &System<'_>) -> Option<Location>
     {
-        if self.desktop_active
-        {
-            self.desktop_volumes().next().map(|volume| {
-                                             Location { volume,
-                                                        folder: ROOT_ID }
-                                         })
-        }
-        else
-        {
-            self.selection(system)
-        }
+        if self.desktop_active { self.selection(system) } else { self.selection(system) }
     }
 
     pub fn current_folder(&self, system: &System<'_>) -> Option<Location>
     {
         if self.desktop_active
         {
-            return (self.startup != VolumeId::NONE).then_some(Location { volume: self.startup,
-                                                                         folder: ROOT_ID });
+            return desktop::folder(self.startup);
         }
         let _ = system;
         let front = self.front;
@@ -2280,7 +2290,7 @@ impl Browser
     {
         if self.desktop_active
         {
-            return self.startup_writable;
+            return self.startup_writable && desktop::folder(self.startup).is_some();
         }
         self.front_slot().is_some_and(|slot| {
                              cache::with(slot, |folder| {
@@ -2292,6 +2302,16 @@ impl Browser
 
     pub fn can_trash(&self, _system: &System<'_>) -> bool
     {
+        if self.desktop_active
+        {
+            let selected = self.desktop.selected.get();
+            return !selected.is_empty()
+                   && selected.iter().all(|i| {
+                                         desktop::item(i).is_some_and(|i| {
+                                                             i.entry.is_some() && !i.read_only
+                                                         })
+                                     });
+        }
         !self.desktop_active
         && self.front_slot().is_some_and(|slot| {
                                 let selection = self.windows[slot].unwrap().selected;
@@ -2347,6 +2367,10 @@ impl Browser
 
     fn files_changed(&mut self, system: &System<'_>, affected: &[Location]) -> Result<(), Error>
     {
+        if desktop::folders().iter().flatten().any(|folder| affected.contains(folder))
+        {
+            desktop::refresh();
+        }
         self.refresh_trash(system)?;
         self.last_click = None;
         self.press = None;
@@ -2365,7 +2389,7 @@ impl Browser
                 self.invalidate_cache(slot);
             }
         }
-        self.draw_desktop(system)
+        self.redraw_trash_icon(system)
     }
 
     pub fn new_folder(&mut self, system: &System<'_>) -> Result<(), Error>
@@ -2402,7 +2426,8 @@ impl Browser
         self.files_changed(system, &[location])?;
         if self.desktop_active
         {
-            self.open(system, location)?;
+            self.desktop.select_after = Some(Location { volume: created.volume,
+                                                        folder: created.id });
         }
         if let Some(slot) =
             self.windows

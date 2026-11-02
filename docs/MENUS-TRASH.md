@@ -62,6 +62,70 @@ and [DITL format](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-438.html).
 
 ## Storage and identity
 
+### Desktop files
+
+Desktop files live in a real, hidden, name-locked `Desktop Folder` at the root of
+each writable volume. They are not entries in a global on-disk directory or the
+desktop database. File Manager owns the combined desktop iterator; Finder and
+Standard File consume that shared enumeration instead of constructing separate
+merged file lists. Every returned catalog entry retains its actual volume,
+parent and CNID, including identically named files on different volumes.
+Volume icons and the virtual Trash icon remain presentation items.
+
+The original folder-discovery contract is
+[`FindFolder`](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-472.html):
+`'desk'` locates a volume's Desktop Folder and `'trsh'` locates its Trash.
+It returns an actual volume and directory ID; ordinary File Manager directory
+enumeration operates on that result. A non-creating lookup does not mutate a
+missing directory. The native combined iterator is a convenience over those
+per-volume locations, not a new legacy global desktop directory ID or a claim
+that a 68k Folder Manager trap has been implemented.
+
+Dragging a file onto the desktop uses its own volume's Desktop Folder.
+Normal folder targets keep their normal transfer semantics; desktop files can
+be dragged back into folders, opened and moved to Trash through the same file
+services. Standard File's Desktop view combines volumes and desktop files.
+Saving or creating a folder from that virtual view resolves the current
+volume's actual Desktop Folder, retaining the volume when navigating to Desktop.
+Startup is the fallback when there is no current volume. Selecting an existing
+desktop file chooses its real volume/parent even when its filename is then
+edited; the resulting name is looked up there. The dialog displays the target
+volume. Navigating into a desktop folder icon resolves that item's real location.
+Read-only media, collisions, capacity refusal and cancellation must not be
+reported as successful persistence. The original Standard File Package's
+[current-directory and volume context](https://dev.os9.ca/techpubs/mac/Files/Files-309.html)
+and [navigation controls](https://dev.os9.ca/techpubs/mac/Files/Files-304.html)
+remain the reference; this is not a claim of full legacy dialog compatibility.
+
+Finder keeps a bounded local presentation snapshot, advances catalog work
+outside pointer handling, and observes the real per-volume directories,
+including empty ones. Changes reconcile selection by volume and CNID and damage
+only affected old/new icon bounds. Saved desktop icon positions use the same
+catalog Finder information as other folder items. Startup Desktop Folder user
+files join Preferences and Documents in lossless image-rebuild preservation.
+Finder's current desktop snapshot admits 512 presentation items, including
+volume and Trash icons; exhaustion refuses publication explicitly rather than
+silently truncating the list. This does not limit File Manager's stepped
+combined iterator. That iterator is not an atomic snapshot across volumes.
+An exhausted automatic icon layout also reports refusal.
+Bounded native functional replay used an optimized RV64/RVA23 release on Windows
+QEMU 11.1 with 2 GiB RAM, four exposed harts with primary-only application
+dispatch, and host clipboard/bridge disabled. It observed combined enumeration,
+secondary-volume file moves onto Desktop and back, startup and initially-empty
+secondary Desktop saves, New Folder creation, dialog cancellation followed by
+editing/saving, and Open-dialog selection of a real readonly secondary file.
+Startup Desktop file bytes and metadata survived lossless replacement and a
+restored boot; readonly refusal, cancellation and writable retry left the
+readonly image unchanged.
+
+These are functional observations, not general OS acceptance. The normal 8 GiB
+configuration could not launch because QEMU rejected host RAM allocation.
+An earlier open-document app-exit attempt left its window visible after process
+exit; that cleanup remains unresolved and is not qualified by the later dialog
+cancellation replay. Capacity exhaustion, pressure, rollback/fault injection,
+concurrent mutation races, SMP, original 68k compatibility and hardware timing
+remain unverified.
+
 New Folder, move to Trash, Put Away, usage queries and recursive Empty Trash use
 real HFS catalog records. Per-volume root Trash directories use the original
 name-lock flag0x1000 and retain the item's original parent in extended Finder
