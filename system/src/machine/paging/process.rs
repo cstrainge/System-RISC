@@ -37,6 +37,10 @@ pub(crate) enum Error
     {
         physical: u64
     },
+    DefinitionVisibility
+    {
+        status: mac_abi::Status
+    },
     Threads,
     Readers(usize),
     Closed,
@@ -54,6 +58,7 @@ impl Error
         match self
         {
             Self::Metadata => mac_abi::NO_MEMORY,
+            Self::DefinitionVisibility { status } => *status,
             Self::Authority => mac_abi::ACCESS_DENIED,
             Self::Threads | Self::Readers(_) => mac_abi::SERVICE_BUSY,
             Self::Closed => mac_abi::OPERATION_CANCELLED,
@@ -78,6 +83,12 @@ impl fmt::Display for Error
                 f.write_str("Process space does not match genuine Process/image/account")
             }
             Self::Metadata => f.write_str("Process page-table metadata admission refused"),
+            Self::DefinitionVisibility { status } =>
+            {
+                write!(f,
+                       "definition range visibility unavailable: status {status}; no Process root \
+                        published")
+            }
             Self::Template { physical } =>
             {
                 write!(f,
@@ -444,7 +455,10 @@ fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, image: core::
                               count:   0,
                               account: Some(allocation.clone()) };
     let source = spaces.kernel.owner.root_physical();
-    let physical = copy_table(&mut tables, source, 2, 0, &image)?;
+    let mut definitions = crate::toolbox::resources::definitions::visibility_snapshot()
+        .map_err(|cause| Error::DefinitionVisibility { status: cause.status() })?;
+    definitions.sort_unstable_by_key(|range| range.base);
+    let physical = copy_table(&mut tables, source, 2, 0, &image, owner.owner(), &definitions)?;
     let (root, charge) = tables.take_root(physical).map_err(Error::Tables)?;
     let owner=AddressSpace::<Rva>::reserve(owner.owner(),root,AsidTag::Untagged).map_err(|e|Error::Tables(super::Error::Policy(e)))?;
     let register = MODE | (physical.0 as usize >> 12);
@@ -475,7 +489,8 @@ fn keep_low(base: u64, end: u64, image: &core::ops::Range<u64>, overlap: bool) -
 }
 
 fn copy_table(tables: &mut Frames, source: PhysicalAddress, level: u8, prefix: u64,
-              image: &core::ops::Range<u64>)
+              image: &core::ops::Range<u64>, owner: DomainId,
+              definitions: &[crate::toolbox::resources::definitions::Range])
               -> Result<PhysicalAddress, Error>
 {
     let target=tables.allocate_zeroed().map_err(|e|Error::Tables(super::Error::Tables(mac_riscv_pages::mapping::MapError::Storage(e))))?;
@@ -508,7 +523,8 @@ fn copy_table(tables: &mut Frames, source: PhysicalAddress, level: u8, prefix: u
                 {
                     continue;
                 }
-                let child = copy_table(tables, physical, level - 1, address, image)?;
+                let child =
+                    copy_table(tables, physical, level - 1, address, image, owner, definitions)?;
                 Entry::table(child,global,mac_kernel_model::pages::PageOwnership::Automatic).map_err(Error::Encoding)?
             }
             Decoded::Leaf { physical,
@@ -521,6 +537,18 @@ fn copy_table(tables: &mut Frames, source: PhysicalAddress, level: u8, prefix: u
                 if low && !keep_low(address, end, image, false)
                 {
                     continue;
+                }
+                if address < DEFINITION_LIMIT && end > DEFINITION_BASE
+                {
+                    let at = definitions.partition_point(|range| range.base <= address);
+                    let range = at.checked_sub(1)
+                                  .and_then(|i| definitions.get(i))
+                                  .filter(|range| end <= range.limit)
+                                  .ok_or(Error::DefinitionVisibility { status: mac_abi::BAD_ABI })?;
+                    if range.owner.kind() == DomainKind::Process && range.owner != owner
+                    {
+                        continue;
+                    }
                 }
                 if permissions.access != mac_kernel_model::pages::Access::Supervisor
                 {

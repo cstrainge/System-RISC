@@ -42,26 +42,30 @@ pub struct Region
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MemorySummary
 {
-    pub revision:                          u64,
-    pub page_bytes:                        u64,
-    pub ram_bytes:                         u64,
-    pub free_pages:                        u64,
-    pub heap_used:                         u64,
-    pub heap_capacity:                     u64,
-    pub root_physical:                     u64,
-    pub region_count:                      u64,
+    pub revision:                               u64,
+    pub page_bytes:                             u64,
+    pub ram_bytes:                              u64,
+    pub free_pages:                             u64,
+    pub heap_used:                              u64,
+    pub heap_capacity:                          u64,
+    pub root_physical:                          u64,
+    pub region_count:                           u64,
     /// Foundation occupancy within the ordinary heap, not additional memory.
-    pub ordinary_foundation_heap_bytes:    u64,
+    pub ordinary_foundation_heap_bytes:         u64,
     /// Rounded physical leases for the covered CPU/service storage only.
     /// Excludes old page tables, pool metadata, ROM reservations and protected
     /// backing; mapping aliases are not charges. Whole-System accounting is
     /// still unavailable when accounting_unavailable is true.
-    pub tracked_foundation_physical_bytes: u64,
-    /// Applications still share this supervisor address space. Full per-domain
-    /// heap/accounting, recovery reserves and private-app gauges are unavailable;
-    /// domain rows separately expose their explicitly covered execution backing.
-    pub shared_supervisor:                 bool,
-    pub accounting_unavailable:            bool
+    pub tracked_foundation_physical_bytes:      u64,
+    /// Unique ordinary System raw-page leases outside the allocator heap.
+    /// These partial charges exclude Foundation, protected backing and aliases.
+    pub tracked_ordinary_system_physical_bytes: u64,
+    /// The inventory describes the permanent System map. Process roots retain
+    /// trusted supervisor aliases; separate table ownership does not imply
+    /// user-mode isolation. Domain rows expose their covered execution backing;
+    /// full accounting and private user-space gauges remain unavailable.
+    pub shared_supervisor:                      bool,
+    pub accounting_unavailable:                 bool
 }
 fn failure(error: Error, call: &wire::Call) -> Failure
 {
@@ -104,11 +108,16 @@ impl<'a> Inspection<'a>
                                 System and application together"));
         }
         Ok(SystemMemory { client:  self.client,
-                          summary: MemorySummary { revision:                          s.revision,
-                                                   page_bytes:                        s.page_bytes,
-                                                   ram_bytes:                         s.ram_bytes,
-                                                   free_pages:                        s.free_pages,
-                                                   heap_used:                         s.heap_used,
+                          summary: MemorySummary { revision:
+                                                       s.revision,
+                                                   page_bytes:
+                                                       s.page_bytes,
+                                                   ram_bytes:
+                                                       s.ram_bytes,
+                                                   free_pages:
+                                                       s.free_pages,
+                                                   heap_used:
+                                                       s.heap_used,
                                                    heap_capacity:
                                                        s.heap_capacity,
                                                    root_physical:
@@ -119,6 +128,8 @@ impl<'a> Inspection<'a>
                                                        s.ordinary_foundation_heap_bytes,
                                                    tracked_foundation_physical_bytes:
                                                        s.tracked_foundation_physical_bytes,
+                                                   tracked_ordinary_system_physical_bytes:
+                                                       s.tracked_ordinary_system_physical_bytes,
                                                    shared_supervisor:
                                                        s.flags & wire::SHARED_SUPERVISOR != 0,
                                                    accounting_unavailable:

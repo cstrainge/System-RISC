@@ -6,8 +6,7 @@ use mac_abi::{BAD_ARGUMENT, NOT_FOUND, Status};
 use mac_formats::{Error, Result,
                   code::{CodeRegistry, NoTranslator},
                   native::{Descriptor, Role, image},
-                  resource::Resource,
-                  text};
+                  resource::Resource};
 
 use super::definitions::{self, DefinitionRef};
 
@@ -18,7 +17,6 @@ use super::definitions::{self, DefinitionRef};
 pub(crate) enum LoadError
 {
     Format(Error),
-    Publication(crate::machine::monitor::Error),
     Mapping(crate::machine::paging::modules::Error),
     Definition(definitions::Error)
 }
@@ -30,8 +28,7 @@ impl fmt::Display for LoadError
         {
             Self::Format(cause) => cause.fmt(out),
             Self::Mapping(cause) => cause.fmt(out),
-            Self::Definition(cause) => cause.fmt(out),
-            Self::Publication(cause) => write!(out, "executable publication refused: {cause}")
+            Self::Definition(cause) => cause.fmt(out)
         }
     }
 }
@@ -40,13 +37,6 @@ impl From<Error> for LoadError
     fn from(cause: Error) -> Self
     {
         Self::Format(cause)
-    }
-}
-impl From<crate::machine::monitor::Error> for LoadError
-{
-    fn from(cause: crate::machine::monitor::Error) -> Self
-    {
-        Self::Publication(cause)
     }
 }
 impl From<crate::machine::paging::modules::Error> for LoadError
@@ -168,144 +158,170 @@ pub(crate) fn application_code(resources: &[Resource]) -> Result<(Descriptor, &[
     Ok((descriptor, bytes, &table.data))
 }
 
-fn load(descriptor: &Descriptor, bytes: &[u8], relocations: Option<&[u8]>, destination: u64)
-        -> LoadResult<usize>
+/// Native definition storage is initialized once by real System bootstrap.
+/// Caller staging must finish structural/owner validation before cold prepare.
+pub(crate) fn initialize_definitions() -> LoadResult<()>
 {
-    let plan = image::LoadPlan::new(bytes, descriptor, relocations, destination)?;
-    // The image registry/definition allocator owns this disjoint RAM reservation.
-    let output = unsafe { core::slice::from_raw_parts_mut(destination as *mut u8, plan.length()) };
-    plan.write(output)?;
-    // Entries remain unpublished until the architecture has synchronized
-    // instructions on every admitted participant, or refused with its typed
-    // cause. A loading-hart fence alone does not publish executable code.
-    crate::machine::monitor::publish_instructions()?;
-    Ok(plan.entry() as usize)
+    definitions::initialize().map_err(LoadError::Definition)
 }
-
-struct Binding
+fn family(kind: [u8; 4], id: i16) -> LoadResult<()>
 {
-    kind:   [u8; 4],
-    id:     i16,
-    origin: u64,
-    entry:  DefinitionRef
-}
-pub struct Definitions
-{
-    registry: CodeRegistry,
-    bindings: Vec<Binding>
-}
-impl Definitions
-{
-    pub fn new(_files: &'static super::manager::Files) -> LoadResult<Self>
+    if CodeRegistry::new().convention(kind, id).is_some()
     {
-        definitions::initialize()?;
-        Ok(Self { registry: CodeRegistry::new(),
-                  bindings: Vec::new() })
+        Ok(())
     }
-
-    pub(crate) fn evict_origin(&mut self, origin: u64)
+    else
     {
-        self.bindings.retain(|binding| binding.origin != origin);
+        Err(Error::Malformed("resource type is not declared executable").into())
     }
-
-    pub(crate) fn resolve(&mut self, kind: [u8; 4], id: i16) -> LoadResult<DefinitionRef>
+}
+pub(crate) fn cached_definition(kind: [u8; 4], id: i16) -> LoadResult<Option<DefinitionRef>>
+{
+    family(kind, id)?;
+    if let Some(activity) = crate::context::recovery_activity()
     {
-        // A process-resource cleanup wrapper can nest inside the resident
-        // service scope. The genuine Activity still selects System definitions.
-        // Ordinary window invocation clears Activity before reaching here.
-        if let Some(activity) = crate::context::recovery_activity()
+        let source =
+            activity.resource_source()
+                    .map_err(|_| Error::Malformed("System UI resource authority unavailable"))?;
+        return cached_system_definition(source, kind, id);
+    }
+    cached_selected(kind, id)
+}
+pub(crate) fn cached_system_definition(source: crate::kernel::SystemResources, kind: [u8; 4],
+                                       id: i16)
+                                       -> LoadResult<Option<DefinitionRef>>
+{
+    family(kind, id)?;
+    source.with(|| cached_selected(kind, id))
+          .map_err(|_| Error::Malformed("System definition source unavailable"))?
+}
+fn cached_selected(kind: [u8; 4], id: i16) -> LoadResult<Option<DefinitionRef>>
+{
+    let lookup = crate::kernel::definition_resource_scope();
+    crate::kernel::with_resources_in(lookup, |manager| {
+        let (scope, _) = manager.get(lookup,
+                                     mac_abi::ResourceKey { kind,
+                                                            id })
+                                .map_err(|_| Error::Missing("definition resource is missing"))?;
+        definitions::cached(kind, id, scope.image_id().unwrap_or(0)).map_err(LoadError::Definition)
+    }).map_err(|_| Error::Missing("selected definition catalog unavailable"))?
+}
+/// Decoding, page acquisition and real publication ACKs run here, outside
+/// Desktop/definition-manager guards. No author callback is part of this phase.
+pub(crate) fn prepare_definition(kind: [u8; 4], id: i16) -> LoadResult<DefinitionRef>
+{
+    family(kind, id)?;
+    if let Some(activity) = crate::context::recovery_activity()
+    {
+        let source =
+            activity.resource_source()
+                    .map_err(|_| Error::Malformed("System UI resource authority unavailable"))?;
+        return prepare_system_definition(source, kind, id);
+    }
+    prepare_selected(select_definition(kind, id)?, kind, id)
+}
+pub(crate) fn prepare_system_definition(source: crate::kernel::SystemResources, kind: [u8; 4],
+                                        id: i16)
+                                        -> LoadResult<DefinitionRef>
+{
+    family(kind, id)?;
+    let selected = source.with(|| select_definition(kind, id))
+                         .map_err(|_| Error::Malformed("System definition source unavailable"))??;
+    prepare_selected(selected, kind, id)
+}
+enum SelectedDefinition
+{
+    Ready(DefinitionRef),
+    Source
+    {
+        origin: u64,
+        source: definitions::SourceBinding
+    }
+}
+/// This callback owns no IMAGES guard. Nevertheless only exact owned source
+/// authority leaves it: neither a Manager/catalog borrow nor an unrelated
+/// selected application Read remains across mapping/monitor waits.
+fn select_definition(kind: [u8; 4], id: i16) -> LoadResult<SelectedDefinition>
+{
+    let lookup = crate::kernel::definition_resource_scope();
+    crate::kernel::with_resources_in(lookup, |manager| {
+        let (scope, _) = manager.get(lookup, mac_abi::ResourceKey { kind, id })
+            .map_err(|_| Error::Missing("definition resource is missing"))?;
+        let origin = scope.image_id().unwrap_or(0);
+        if let Some(reference) = definitions::cached(kind, id, origin)?
         {
-            let source =
-                activity.resource_source()
-                        .map_err(|_| {
-                            Error::Malformed("System UI resource authority is unavailable")
-                        })?;
-            return self.resolve_system(source, kind, id);
+            return Ok(SelectedDefinition::Ready(reference));
         }
-        self.resolve_selected(kind, id)
-    }
-
-    pub(crate) fn resolve_system(&mut self, source: crate::kernel::SystemResources, kind: [u8; 4],
-                                 id: i16)
-                                 -> LoadResult<DefinitionRef>
+        let source = if origin == 0
+        {
+            let owner = crate::toolbox::handles::system_owner().map_err(definitions::Error::OwnerUnavailable)?;
+            definitions::SourceBinding::System(crate::kernel::system_resources(&owner).map_err(definitions::Error::OwnerUnavailable)?)
+        }
+        else
+        {
+            let read = manager.retain_origin().map_err(|_| definitions::Error::Source)?.ok_or(definitions::Error::Source)?;
+            if read.binding().id() != origin
+            {
+                return Err(definitions::Error::Source.into());
+            }
+            definitions::SourceBinding::Image(read)
+        };
+        Ok(SelectedDefinition::Source { origin, source })
+    }).map_err(|_| Error::Missing("selected definition catalog unavailable"))?
+}
+fn prepare_selected(selected: SelectedDefinition, kind: [u8; 4], id: i16)
+                    -> LoadResult<DefinitionRef>
+{
+    let (origin, source) = match selected
     {
-        source.with(|| self.resolve_selected(kind, id))
-              .map_err(|_| Error::Malformed("System UI resource scope is unavailable"))?
-    }
-
-    fn resolve_selected(&mut self, kind: [u8; 4], id: i16) -> LoadResult<DefinitionRef>
+        SelectedDefinition::Ready(reference) => return Ok(reference),
+        SelectedDefinition::Source { origin,
+                                     source } => (origin, source)
+    };
+    if let Some(reference) = definitions::finish_existing(kind, id, origin)?
     {
-        let lookup = crate::kernel::definition_resource_scope();
-        crate::kernel::with_resources_in(lookup, |manager| {
-            let (scope, resource) =
-                manager.get(lookup,
-                            mac_abi::ResourceKey { kind,
-                                                   id })
-                       .map_err(|_| Error::Missing("definition resource is missing"))?;
-            let origin = scope.image_id().unwrap_or(0);
-            if let Some(binding) =
-                self.bindings.iter().find(|b| b.kind == kind && b.id == id && b.origin == origin)
-            {
-                return if definitions::matches(binding.entry, kind, id, origin)? {
-                    Ok(binding.entry)
-                } else {
-                    Err(Error::Missing("cached definition callable has retired").into())
-                };
-            }
-            // The shared definition loader owns code/relocation staging,
-            // independently of the application which first requested it.
-            let code =
-                crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-                    self.registry.prepare(resource, origin, &mut NoTranslator)
-                })?;
-            let d = &code.descriptor;
-            let extent = d.load_limit - d.load_base;
-            if extent
-               > crate::machine::memory::DEFINITION_LIMIT - crate::machine::memory::DEFINITION_BASE
-               || extent & 4095 != 0
-               || d.load_base & 4095 != 0
-            {
-                return Err(Error::Malformed("invalid code resource reservation").into());
-            }
-            let base = definitions::placement(extent)?;
-            // Reserve publication storage and retain the source before touching
-            // executable memory. Refusal leaves no half-published definition.
-            crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-                self.bindings.try_reserve(1)
-            }).map_err(|_| Error::AllocationFailed("definition binding allocation failed"))?;
-            let source = if origin == 0
-            {
-                None
-            }
-            else
-            {
-                manager.retain_origin()
-                       .map_err(|_| Error::AllocationFailed("definition source pin refused"))?
-            };
-            let owner = match &source {
-                Some(source) => source.owner().clone(),
-                None => crate::toolbox::handles::system_owner().map_err(definitions::Error::OwnerUnavailable)?,
-            };
-            if !owner.accepting() {
-                return Err(definitions::Error::Stopping.into());
-            }
-            let address = load(d, &code.code, Some(&code.relocations), base)?;
-            // This fixed-arena write exposes no callable until canonical
-            // publication succeeds. Desktop serializes placement during this
-            // transitional loader; physical preparation is the next stage.
-            let raw: mac_abi::DefinitionEntry = unsafe { core::mem::transmute(address) };
-            let entry = definitions::publish(owner, source, kind, id, origin, base, base + extent, raw)?;
-            self.bindings.push(Binding { kind, id, origin, entry });
-            serial!("CODE_LOADED {}{} entry=0x{:x} origin={} linked=0x{:x} actual=0x{:x}",
-                    text::decode(&kind),
-                    id,
-                    address,
-                    origin,
-                    d.load_base,
-                    base);
-            Ok(entry)
-        }).map_err(|_| Error::Missing("selected definition resource catalog is unavailable"))?
+        return Ok(reference);
     }
+    let target = source.allocation_target();
+    crate::allocator::with_target(target, || {
+        let code = match &source
+        {
+            definitions::SourceBinding::Image(read) =>
+            {
+                // Decode directly from the exact retained original source.
+                // Manager is an immutable stack view, not a registry guard.
+                let manager = super::manager::Manager::new(&[], &read.source().resources, &[]);
+                let (_, resource) =
+                    manager.get(mac_abi::resources::APPLICATION,
+                                mac_abi::ResourceKey { kind,
+                                                       id })
+                           .map_err(|_| {
+                               Error::Missing("retained definition resource is missing")
+                           })?;
+                CodeRegistry::new().prepare(resource, origin, &mut NoTranslator)?
+            }
+            definitions::SourceBinding::System(proof) =>
+            {
+                proof.with(|| {
+                         crate::kernel::with_resources_in(mac_abi::resources::SYSTEM, |manager| {
+                             let (_, resource) = manager.get(mac_abi::resources::SYSTEM,
+                                                             mac_abi::ResourceKey { kind,
+                                                                                    id })
+                                                        .map_err(|_| {
+                                                            Error::Missing("System definition \
+                                                                            resource is missing")
+                                                        })?;
+                             CodeRegistry::new().prepare(resource, origin, &mut NoTranslator)
+                         })
+                     })
+                     .map_err(|_| Error::Missing("System definition source unavailable"))?
+                     .map_err(|_| Error::Missing("System definition catalog unavailable"))??
+            }
+        };
+        // Owned NativeCode and original source authority remain. All resource
+        // callback borrows have ended before physical publication/ACK.
+        definitions::prepare(source, kind, id, code).map_err(LoadError::Definition)
+    })
 }
 
 pub(crate) fn status(error: impl Into<LoadError>) -> Status
@@ -319,7 +335,6 @@ pub(crate) fn status(error: impl Into<LoadError>) -> Status
         LoadError::Format(Error::Missing(_)) => NOT_FOUND,
         LoadError::Format(Error::TranslationRequired(_)) => mac_abi::TRANSLATION_REQUIRED,
         LoadError::Format(Error::Malformed(_)) => BAD_ARGUMENT,
-        LoadError::Publication(cause) => cause.status(),
         LoadError::Mapping(crate::machine::paging::modules::Error::Format(cause)) =>
         {
             status(LoadError::Format(cause))

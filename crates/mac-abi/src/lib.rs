@@ -134,6 +134,8 @@ pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
                  core::mem::offset_of!(inspection::memory::Call, regions),
                  core::mem::offset_of!(inspection::memory::Call, detail),
                  core::mem::size_of::<inspection::memory::Summary>(),
+                 core::mem::offset_of!(inspection::memory::Summary,
+                                       tracked_ordinary_system_physical_bytes),
                  core::mem::size_of::<inspection::memory::Region>(),
                  inspection::memory::BEGIN as usize,
                  inspection::memory::READ as usize,

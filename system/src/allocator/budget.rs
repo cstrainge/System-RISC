@@ -21,7 +21,8 @@ struct State
     ordinary:            u64,
     domains:             u64,
     // Attribution of separate page-pool leases, never heap occupancy/capacity.
-    foundation_physical: u64
+    foundation_physical: u64,
+    ordinary_physical:   u64
 }
 impl State
 {
@@ -40,7 +41,8 @@ static STATE: Spinlock<State> = Spinlock::new(State { capacity:            0,
                                                       foundation:          0,
                                                       ordinary:            0,
                                                       domains:             0,
-                                                      foundation_physical: 0 });
+                                                      foundation_physical: 0,
+                                                      ordinary_physical:   0 });
 
 #[derive(Clone, Copy)]
 pub(crate) struct Snapshot
@@ -50,7 +52,8 @@ pub(crate) struct Snapshot
     pub(crate) foundation:          u64,
     pub(crate) ordinary:            u64,
     pub(crate) domains:             u64,
-    pub(crate) foundation_physical: u64
+    pub(crate) foundation_physical: u64,
+    pub(crate) ordinary_physical:   u64
 }
 pub(super) fn snapshot() -> Snapshot
 {
@@ -61,7 +64,8 @@ pub(super) fn snapshot() -> Snapshot
                    foundation:          state.foundation,
                    ordinary:            state.ordinary,
                    domains:             state.domains,
-                   foundation_physical: state.foundation_physical }
+                   foundation_physical: state.foundation_physical,
+                   ordinary_physical:   state.ordinary_physical }
     })
 }
 
@@ -175,6 +179,51 @@ impl Drop for FoundationPhysicalReceipt
             crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
                                              format_args!("System Foundation physical refund \
                                                            exceeds its original attribution"));
+        }
+    }
+}
+
+/// Refundable ordinary System code/data pages, separate from both fixed heap
+/// occupancy and permanent Foundation physical attribution. No quota is inferred.
+pub(super) struct OrdinaryPhysicalReceipt
+{
+    bytes: u64
+}
+pub(super) fn reserve_ordinary_physical(
+    bytes: u64)
+    -> Result<OrdinaryPhysicalReceipt, super::ordinary_physical::Error>
+{
+    with_masked(|| {
+        let mut state = STATE.lock();
+        state.ordinary_physical = state.ordinary_physical.checked_add(bytes).ok_or(
+            super::ordinary_physical::Error::CounterOverflow {
+                used: state.ordinary_physical,
+                requested: bytes
+            })?;
+        Ok(OrdinaryPhysicalReceipt { bytes })
+    })
+}
+impl Drop for OrdinaryPhysicalReceipt
+{
+    fn drop(&mut self)
+    {
+        let valid = with_masked(|| {
+            let mut state = STATE.lock();
+            match state.ordinary_physical.checked_sub(self.bytes)
+            {
+                Some(next) =>
+                {
+                    state.ordinary_physical = next;
+                    true
+                }
+                None => false
+            }
+        });
+        if !valid
+        {
+            crate::machine::emergency::enter(crate::emergency::Kind::SystemPanic,
+                                             format_args!("Ordinary System physical refund \
+                                                           exceeds original admission"));
         }
     }
 }

@@ -646,15 +646,8 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
                   VM_SYSTEM_HEAP_LIMIT - VM_SYSTEM_HEAP_BASE,
                   READ | WRITE,
                   true)?;
-    // Definitions still use their explicit legacy loading path. Applications
-    // have independent physical payloads and sparse final-permission mappings.
-    // This remaining fixed definition arena is not userspace isolation.
-    leaves += map(&mut mapper,
-                  DEFINITION_BASE,
-                  DEFINITION_BASE,
-                  DEFINITION_LIMIT - DEFINITION_BASE,
-                  READ | WRITE | EXECUTE,
-                  false)?;
+    // Definition payloads are independently owned sparse physical mappings,
+    // published through their canonical DDEF record after bootstrap.
     for &(base, end) in BOOT_MMIO_REGIONS
     {
         leaves += map(&mut mapper, base, base, end - base, READ | WRITE, true)?;

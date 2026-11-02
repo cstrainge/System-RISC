@@ -9,7 +9,7 @@ guest = []
 event-trace = []
 emergency-qualification = []
 emergency-qualification-oom = ["emergency-qualification"]
-test-support = ["dep:mac-definition", "dep:mac-driver", "dep:mac-traps", "dep:toolbox-quickdraw"]
+test-support = ["dep:mac-driver", "dep:mac-traps", "dep:toolbox-quickdraw"]
 
 [[bin]]
 name = "System"
@@ -19,6 +19,7 @@ test = false
 bench = false
 
 [dependencies]
+mac-definition.workspace = true
 mac-file-types.workspace = true
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde-json-core = { version = "=0.6.0", default-features = false }
@@ -52,7 +53,6 @@ skrifa = { version = "0.48.0", default-features = false, features = ["libm"] }
 mac-build.workspace = true
 
 [dev-dependencies]
-mac-definition.workspace = true
 unicode-segmentation = "=1.13.3"
 mac-build.workspace = true
 mac-toolbox.workspace = true
@@ -69,6 +69,5 @@ linked_list_allocator = "0.10"
 
 [target.'cfg(not(target_arch = "riscv64"))'.dependencies]
 mac-driver = { path = "../crates/mac-driver", optional = true }
-mac-definition = { workspace = true, optional = true }
 mac-traps = { workspace = true, optional = true }
 toolbox-quickdraw = { path = "../toolbox/quickdraw", optional = true }

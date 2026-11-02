@@ -300,6 +300,7 @@ impl crate::toolbox::inspection::memory::Source for Native
                            region_count: regions.rows.len() as u64,
                            ordinary_foundation_heap_bytes: attribution.foundation,
                            tracked_foundation_physical_bytes: attribution.foundation_physical,
+                           tracked_ordinary_system_physical_bytes: attribution.ordinary_physical,
                            flags: wire::SHARED_SUPERVISOR | wire::ACCOUNTING_UNAVAILABLE,
                            reserved: 0 })
     }
