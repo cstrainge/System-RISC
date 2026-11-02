@@ -4515,3 +4515,28 @@ reaped with cloned media removed. This is normal-path regression evidence;
 it does not force stop during either wait or cancellation overlapping a fresh
 BEGIN. Those branches have source review only. A preceding build interrupted by
 host reboot remains explicitly interrupted; no success is inferred from its log.
+
+### Owned reserved payload publication
+
+Reserved Stores accept an already-owned value through
+`insert_reserved_in_scope_owned_with_acknowledgement`. Every prebirth refusal
+returns that same value for disposal after the caller releases its manager
+guard. The constructor and owned forms share reservation preparation, the one
+native identity issuer, registration use and final canonical slot allocation.
+Final owner/scope/slot refusal cannot consume the caller's unpublished payload.
+There is no alternate slot, identity, completion record or publication fallback.
+
+The caller retains preparation across the metadata turn. Existing constructors
+still destroy a refused value before returning the unused reserve and registration
+use, preserving their previous order. The owned form instead returns its value;
+its unused prebirth reservation rearms outside the owner gate before return.
+That is not a published object's cleanup ACK or permission to repeat an external
+effect. Actual published values retain their original reservation and endpoint
+until real destruction and acknowledgment.
+
+This shared interface has source ownership review and optimized no_std RV64
+compilation evidence only. A first source candidate changed old constructor
+refusal order; it was revised before publication and its original static receipt
+was retained separately. Native consumers, prebirth refusal disposal timing and
+exhaustion/stop/rearm behavior require connected target evidence. Earlier native
+report observations belong to their recorded artifacts, not this new method.
