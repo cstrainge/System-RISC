@@ -401,6 +401,34 @@ impl Work
 }
 impl Manager
 {
+    /// Check the actual canonical handle and immutable access mode before any
+    /// subject/staging allocation. Publication repeats this after allocation;
+    /// an already admitted continuation uses its retained genuine description.
+    fn preflight_local_file(&self, owner: u64, authority: &OwnerRef, call: &Call)
+                            -> Result<(), Status>
+    {
+        self.validate_file_authority(owner, authority)?;
+        let file = self.slot_access(subject::Access::Client(owner), call.handle)?;
+        if !matches!(&*file.description.fork.lock(), FileFork::Block(_))
+        {
+            return Err(NOT_SUPPORTED);
+        }
+        match call.operation
+        {
+            READ if file.description.flags & OPEN_READ == 0 => Err(ACCESS_DENIED),
+            WRITE | SET_LENGTH if file.description.flags & (OPEN_WRITE | OPEN_APPEND) == 0 =>
+            {
+                Err(ACCESS_DENIED)
+            }
+            SEEK if !matches!(call.whence, SEEK_START | SEEK_CURRENT | SEEK_END) =>
+            {
+                Err(BAD_ARGUMENT)
+            }
+            READ | WRITE | SET_LENGTH | SEEK | TELL | SYNC => Ok(()),
+            _ => Err(BAD_ARGUMENT)
+        }
+    }
+
     /// Restore the exact custodied device only after terminal synchronous I/O.
     /// If a Files reacquisition was refused, the canonical slot retains it here.
     pub(super) fn local_ready(&mut self) -> Result<(), Status>

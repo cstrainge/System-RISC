@@ -191,6 +191,15 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
     let readonly = open(system, volume, id, DATA_FORK, OPEN_READ, "")?.handle;
     assert_eq!(write(system, readonly, b"X"), Err(Error::AccessDenied));
     call(system, CLOSE, readonly)?;
+    // Exercise invalid canonical handles with a full-sized payload. These
+    // refusals precede Subject/staging allocation in the actual FILE path.
+    let refused = [0x5a; MAX_FILE_TRANSFER];
+    assert_eq!(write(system, readonly, &refused), Err(Error::NotFound));
+    let readonly_again = open(system, volume, id, DATA_FORK, OPEN_READ, "")?.handle;
+    assert_eq!(write(system, readonly_again, &refused), Err(Error::AccessDenied));
+    assert_eq!(call(system, TELL, clone)?.length, 5, "rejected write changed live file");
+    call(system, CLOSE, readonly_again)?;
+    system.log("STD_FILES_NATIVE_PREFLIGHT_REFUSAL_REUSE_OBSERVED\n")?;
     length(system, clone, 4)?;
     seek(system, clone, 0)?;
     write(system, clone, b"SYNC")?;

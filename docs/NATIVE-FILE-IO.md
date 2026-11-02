@@ -59,9 +59,10 @@ bound does not establish a bound on metadata processing or target latency.
 Two open-admission gaps remain before std adoption: create/truncate can commit
 before late FFRK/description allocation or publication refuses, and that open
 path still needs genuine preadmitted publication capacity plus explicit retained
-handling of any committed failure. Requests also need allocation-free actual
-handle/owner/mode preflight before owned staging, followed by revalidation at
-custody publication. The finite observations below do not qualify refusal under
+handling of any committed failure. Handle requests now perform allocation-free canonical owner/handle/access-mode
+preflight before admitting a Subject or copying write bytes, and repeat it before
+operation publication. An admitted continuation keeps its genuine description
+when the public handle closes; replay does not require reopening that handle. The finite observations below do not qualify refusal under
 memory pressure or make these paths ready for std OpenOptions.
 
 Ordinary writable operations currently support native HFS-B. Classic HFS and
@@ -120,3 +121,19 @@ memory/disk exhaustion, cancellation, rollback-failure recovery, SMP safety,
 latency bounds, other hardware or complete std/application adoption. Such paths
 remain unverified. Compilation and formatting are build checks; no host Rust
 suite is used as runtime validation.
+
+The preflight correction subsequently ran on an actual private RV64 QEMU guest
+with exactly 2 GiB RAM (both launch command and guest BOOT_RAM report checked).
+System ELF `74cb0db128c5c1f6028967c2f1dfad453e7442613952181857b4d7ce10b4cd54`,
+resources `25d969213970a2946afc4a6b9ef2ab090702959699bd6eb3062d9f30e7287b69`
+and diagnostic ELF
+`3c52203e4f59735d861e7515097bd14d3fc9704a5945af98fb622c6195300931`
+used the unchanged ROM listed above. Full 64 KiB writes through a closed handle
+and a read-only handle returned NotFound and AccessDenied, with live file length
+unchanged; subsequent resize/write/sync/reopen and the existing finite scenarios
+completed. Both actual Process/account exits, Finder refresh and folder closes,
+clean-reboot saved bytes and reviewed final screens were observed. Sources/base
+stayed fixed; owned guests exited zero and generated private media was removed.
+This does not qualify forced allocation failure, foreign-owner overlap, races,
+cancellation, global memory pressure or late open-publication failure. Older
+8 GiB observations retain their original configuration and are not relabeled.

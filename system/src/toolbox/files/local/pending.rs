@@ -178,7 +178,11 @@ pub(in crate::toolbox::files) fn request(owner: u64, authority: &OwnerRef, call:
                 entry.begin_cleanup();
                 Err(BAD_ABI)
             }
-            None => Ok(None)
+            None =>
+            {
+                manager.preflight_local_file(owner, authority, &key)?;
+                Ok(None)
+            }
         }
     });
     let (id, packet) = match existing
@@ -223,6 +227,7 @@ pub(in crate::toolbox::files) fn request(owner: u64, authority: &OwnerRef, call:
                 Err(error) => return error
             };
             match files(|manager| {
+                      manager.preflight_local_file(owner, authority, &key)?;
                       manager.operations.prepare(kinds)?;
                       let file = manager.slot(owner, call.handle)?;
                       if !matches!(&*file.description.fork.lock(), FileFork::Block(_))
