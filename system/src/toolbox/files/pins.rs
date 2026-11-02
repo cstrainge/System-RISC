@@ -122,13 +122,83 @@ impl Pins
             .ok_or(NOT_FOUND)
     }
 
+    /// Share the actual live directory alias, rather than treating copied
+    /// volume/CNID scalars as a lease. Absolute roots are admitted only after
+    /// the caller has validated the actual mounted volume under Files.
+    pub(super) fn snapshot_directory(&mut self, owner: &OwnerRef, scope: super::subject::Lease,
+                                     root: Option<File>)
+                                     -> Result<File, Status>
+    {
+        if scope.subject() != owner.owner() || scope.closed()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let store = self.aliases.as_mut().ok_or(NOT_SUPPORTED)?;
+        let role = Role::DirectoryRead { scope };
+        let file = if let Some(file) = root
+        {
+            store.insert(owner, file, role).map_err(status)?;
+            file
+        }
+        else
+        {
+            let (id, file) = store.iter().find_map(|(id, actual, file, role)| {
+                (actual == owner.owner() && matches!(role, Role::Directory {state,..}
+                    if state.ready.load(Ordering::Acquire) && !state.cancelled.load(Ordering::Acquire)))
+                    .then_some((id, *file))
+            }).ok_or(NOT_FOUND)?;
+            store.share(owner, id, owner, role).map_err(status)?;
+            file
+        };
+        directory_changed();
+        Ok(file)
+    }
+
+    /// Admit the new live alias before removing the old one. Any refusal leaves
+    /// the original process directory intact; an operation-scoped snapshot
+    /// remains protected independently across a concurrent directory change.
+    pub(super) fn replace_directory(&mut self, owner: &OwnerRef, file: File,
+                                    scope: super::subject::Lease, state: Arc<DirectoryState>)
+                                    -> Result<(), Status>
+    {
+        if scope.subject() != owner.owner() || scope.closed() || !owner.accepting()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let store = self.aliases.as_mut().ok_or(NOT_SUPPORTED)?;
+        state.ready.store(true, Ordering::Release);
+        store.insert(owner,
+                     file,
+                     Role::Directory { scope,
+                                       state: state.clone() })
+             .map_err(status)?;
+        store.remove_where(|actual, role| {
+                 actual == owner.owner()
+                 && matches!(role,
+            Role::Directory {state: old,..} if !Arc::ptr_eq(old,&state))
+             });
+        directory_changed();
+        Ok(())
+    }
+
     fn finish_directory_cleanup(&mut self) -> bool
     {
         if let Some(store) = &mut self.aliases
         {
-            store.remove_where(|_,role|matches!(role,Role::Directory {scope,state} if state.cancelled.load(Ordering::Acquire) && scope.closed()));
+            store.remove_where(|_, role| {
+                     match role
+                     {
+                         Role::Directory { scope,
+                                           state } =>
+                         {
+                             state.cancelled.load(Ordering::Acquire) && scope.closed()
+                         }
+                         Role::DirectoryRead { scope } => scope.closed(),
+                         _ => false
+                     }
+                 });
             store.finish_deferred(Role::cleanup_ready);
-            return store.iter().any(|(_,_,_,role)|matches!(role,Role::Directory {state,..} if state.cancelled.load(Ordering::Acquire))) || store.deferred_tags().any(|role|matches!(role,Role::Directory {..}));
+            return store.iter().any(|(_,_,_,role)|matches!(role,Role::Directory {state,..} if state.cancelled.load(Ordering::Acquire)) || matches!(role,Role::DirectoryRead {..})) || store.deferred_tags().any(|role|matches!(role,Role::Directory {..} | Role::DirectoryRead {..}));
         }
         false
     }
@@ -170,7 +240,8 @@ impl Pins
                      {
                          Role::Executable => true,
                          Role::Directory { scope,
-                                           .. } => scope.closed(),
+                                           .. }
+                         | Role::DirectoryRead { scope } => scope.closed(),
                          Role::Document { scope,
                                           .. } => scope.closed()
                      }
@@ -410,6 +481,10 @@ enum Role
         scope: super::subject::Lease,
         state: Arc<DirectoryState>
     },
+    DirectoryRead
+    {
+        scope: super::subject::Lease
+    },
     Document
     {
         batch: u64,
@@ -426,7 +501,8 @@ impl Role
             Self::Document { scope,
                              .. } => scope.closed(),
             Self::Directory { scope,
-                              .. } => scope.closed()
+                              .. }
+            | Self::DirectoryRead { scope } => scope.closed()
         }
     }
 
@@ -434,7 +510,7 @@ impl Role
     {
         match self
         {
-            Self::Executable | Self::Directory { .. } => None,
+            Self::Executable | Self::Directory { .. } | Self::DirectoryRead { .. } => None,
             Self::Document { batch,
                              .. } => Some(*batch)
         }

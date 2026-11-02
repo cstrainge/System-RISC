@@ -2,6 +2,8 @@
 //! admission, and a device is returned before the original thread can wake.
 use super::{super::objects::Payload, *};
 use crate::context::{DeferredIo, ThreadId};
+mod paths;
+pub(in crate::toolbox::files) use paths::request as request_path;
 
 static ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static PUMPING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -11,7 +13,7 @@ pub(super) struct Source
     pub(super) volume:      u32,
     pub(super) node:        core::sync::atomic::AtomicU32,
     opening:                bool,
-    pub(super) description: Arc<OpenDescription>,
+    pub(super) description: Option<Arc<OpenDescription>>,
     disk:                   u32,
     partition:              Partition
 }
@@ -19,13 +21,18 @@ impl Source
 {
     fn conflicts(&self, other: &Self) -> bool
     {
-        Arc::ptr_eq(&self.description, &other.description)
+        let (Some(description), Some(other_description)) = (&self.description, &other.description)
+        else
+        {
+            return false;
+        };
+        Arc::ptr_eq(description, other_description)
         || self.disk == other.disk
            && self.partition == other.partition
            && (self.node.load(Ordering::Acquire) == 0
                || other.node.load(Ordering::Acquire) == 0
                || self.node.load(Ordering::Acquire) == other.node.load(Ordering::Acquire))
-           && self.description.kind == other.description.kind
+           && description.kind == other_description.kind
     }
 }
 
@@ -49,7 +56,8 @@ struct Record
     open:          Option<open::Open>,
     open_complete: bool,
     catalog:       Option<CatalogInfo>,
-    handle:        u32
+    handle:        u32,
+    path:          Option<paths::State>
 }
 pub(in crate::toolbox::files) struct Entry
 {
@@ -299,7 +307,7 @@ fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &s
                       Ok(Source { volume,
                                   node: core::sync::atomic::AtomicU32::new(node),
                                   opening: key.operation == OPEN_OPTIONS,
-                                  description,
+                                  description: Some(description),
                                   disk: mounted.device.index,
                                   partition: mounted.partition })
                   })
@@ -309,7 +317,7 @@ fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &s
             };
             // Keep the outer Arc across canonical insertion. Refused insertion
             // cannot drop the last permit/description owner under Files.
-            let packet=match Arc::try_new(Packet {input,subject,source,record:spinning_top::Spinlock::new(Record {flight:None,terminal:None,abandoned:false,started:false,position:0,length:0,transferred:0,output:None,open,open_complete:false,catalog:None,handle:0})}) {Ok(packet)=>packet,Err(_)=>return NO_MEMORY};
+            let packet=match Arc::try_new(Packet {input,subject,source,record:spinning_top::Spinlock::new(Record {flight:None,terminal:None,abandoned:false,started:false,position:0,length:0,transferred:0,output:None,open,open_complete:false,catalog:None,handle:0,path:None})}) {Ok(packet)=>packet,Err(_)=>return NO_MEMORY};
             let kinds = match crate::toolbox::handles::file_operation_kinds()
             {
                 Ok(kinds) => kinds,
@@ -336,6 +344,12 @@ fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &s
             (id, packet)
         }
     };
+    finish_request(thread, id, packet, call, output)
+}
+fn finish_request(thread: ThreadId, id: u64, packet: Arc<Packet>, call: &mut FileCall,
+                  output: &mut [u8])
+                  -> Status
+{
     pump();
     let result = {
         let record = packet.record.lock();
@@ -364,7 +378,7 @@ fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &s
         call.position = position;
         call.length = length;
         call.transferred = transferred;
-        if packet.source.opening
+        if packet.source.opening || record_is_path(&packet)
         {
             let record = packet.record.lock();
             if let Some(catalog) = record.catalog
@@ -373,6 +387,17 @@ fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &s
                 call.entry = catalog;
             }
             call.handle = record.handle;
+            if record.path.is_some()
+            {
+                call.volume = packet.source.volume;
+            }
+        }
+        if !packet.source.opening && !record_is_path(&packet)
+        {
+            if let Some(catalog) = packet.record.lock().catalog
+            {
+                call.entry = catalog;
+            }
         }
         return status;
     }
@@ -492,6 +517,7 @@ pub(crate) fn pump()
             record.abandoned = true;
         }
     }
+    paths::publish(&packet, &authority);
     publish_open(&packet, owner, &authority);
     let (terminal, open_complete) = {
         let record = packet.record.lock();
@@ -504,11 +530,17 @@ pub(crate) fn pump()
         let step = crate::machine::io::run_owned(packet.clone(), |packet| {
             crate::context::with_bootstrap_io_subject(Some(packet.subject.clone()), || {
                 crate::context::with_allocation(packet.subject.allocation().clone(), || {
+                    let input =
+                        packet.record
+                              .lock()
+                              .path
+                              .as_ref()
+                              .map_or_else(|| packet.input.clone(), |state| state.input.clone());
                     let work = files(|manager| {
                         manager.begin_local(owner,
                                             &authority,
                                             packet.subject.clone(),
-                                            packet.input.clone(),
+                                            input,
                                             Some(&packet.source))
                     })?;
                     {
@@ -581,6 +613,10 @@ fn settle(packet: &Packet) -> bool
             record.position = position;
             record.length = length;
             record.transferred = transferred;
+            if packet.input.call.operation == TELL
+            {
+                record.catalog = *flight.catalog.lock();
+            }
             let complete = match packet.input.call.operation
             {
                 SET_LENGTH => length == packet.input.call.length,
@@ -622,7 +658,14 @@ fn settle(packet: &Packet) -> bool
             {
                 if let Some(fork) = fork
                 {
-                    *packet.source.description.fork.lock() = FileFork::Block(fork);
+                    if let Some(description) = &packet.source.description
+                    {
+                        *description.fork.lock() = FileFork::Block(fork);
+                    }
+                    else
+                    {
+                        record.terminal = Some(BAD_ABI);
+                    }
                 }
                 else
                 {
@@ -630,7 +673,12 @@ fn settle(packet: &Packet) -> bool
                 }
             }
         }
-        Ok(Reply::Directory(_)) => record.terminal = Some(BAD_ABI),
+        Ok(Reply::Directory(entry)) =>
+        {
+            drop(record);
+            paths::consume(packet, entry);
+            return true;
+        }
         Err(error) =>
         {
             if let Some(catalog) = *flight.catalog.lock()
@@ -694,4 +742,9 @@ fn publish_open(packet: &Packet, owner: u64, authority: &OwnerRef)
         {}
         Err(error) => record.terminal = Some(error)
     }
+}
+
+fn record_is_path(packet: &Packet) -> bool
+{
+    packet.record.lock().path.is_some()
 }

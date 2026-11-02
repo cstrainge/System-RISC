@@ -184,10 +184,70 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
         return None;
     }
     let call = unsafe { &mut *pointer.cast::<FileCall>() };
-    if call.operation != files::OPEN_OPTIONS && call.open_flags != 0
+    if !matches!(call.operation, files::OPEN_OPTIONS | files::OPEN_PATH) && call.open_flags != 0
        || call.operation != files::WRITE && call.input_length != 0
     {
         return Some(BAD_ARGUMENT as i64);
+    }
+    if matches!(call.operation,
+                files::CURRENT_DIRECTORY
+                | files::CHANGE_DIRECTORY
+                | files::RESOLVE_PATH
+                | files::OPEN_PATH)
+    {
+        let current = call.operation == files::CURRENT_DIRECTORY;
+        let opening = call.operation == files::OPEN_PATH;
+        if call.volume != 0
+           || call.cnid != 0
+           || call.index != 0
+           || call.handle != 0
+           || !opening && call.fork != 0
+           || call.whence != 0
+           || call.reserved != 0
+           || !opening && call.open_flags != 0
+           || call.offset != 0
+           || call.position != 0
+           || call.length != 0
+           || call.input_length != 0
+           || call.name_length > 4096
+           || current && call.name_length != 0
+           || call.name_length != 0 && call.name.is_null()
+           || call.capacity > 4096
+           || !current && call.capacity != 0
+           || call.capacity != 0 && call.output.is_null()
+        {
+            return Some(BAD_ARGUMENT as i64);
+        }
+        let name = if call.name_length == 0
+        {
+            ""
+        }
+        else
+        {
+            match core::str::from_utf8(unsafe {
+                      core::slice::from_raw_parts(call.name, call.name_length)
+                  })
+            {
+                Ok(name) => name,
+                Err(_) => return Some(BAD_ARGUMENT as i64)
+            }
+        };
+        let Some(caller) = caller
+        else
+        {
+            return Some(ACCESS_DENIED as i64);
+        };
+        let output = if call.capacity == 0
+        {
+            &mut [][..]
+        }
+        else
+        {
+            unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
+        };
+        call.transferred = 0;
+        return Some(super::local::pending::request_path(owner, &caller.owner, call, name, output)
+                    as i64);
     }
     if matches!(call.operation, files::READ | files::SEEK | files::TELL)
     {
@@ -735,7 +795,7 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
         return BAD_ARGUMENT as i64;
     }
     let call = unsafe { &mut *pointer.cast::<FileCall>() };
-    if call.operation != files::OPEN_OPTIONS && call.open_flags != 0
+    if !matches!(call.operation, files::OPEN_OPTIONS | files::OPEN_PATH) && call.open_flags != 0
        || call.operation != files::WRITE && call.input_length != 0
     {
         return BAD_ARGUMENT as i64;

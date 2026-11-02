@@ -2,6 +2,9 @@
 //! finite observations do not qualify std, arbitrary large files or pressure.
 #![no_std]
 #![no_main]
+extern crate alloc;
+use alloc::format;
+
 use mac_toolbox::{Error, System, ToolboxResult,
                   abi::{self, files::*}};
 
@@ -60,6 +63,65 @@ fn read(system: &System<'_>, handle: u32, output: &mut [u8]) -> ToolboxResult<us
     system.client().file(&mut call, "", output)?;
     Ok(call.transferred)
 }
+fn path(system: &System<'_>, operation: u32, name: &str, flags: u32, output: &mut [u8])
+        -> ToolboxResult<FileCall>
+{
+    let mut call = FileCall { operation,
+                              open_flags: flags,
+                              ..Default::default() };
+    system.client().file(&mut call, name, output)?;
+    Ok(call)
+}
+fn path_cases(system: &System<'_>, volume: u32) -> ToolboxResult<()>
+{
+    let mut info = FileCall { operation: VOLUME_INFO,
+                              volume,
+                              ..Default::default() };
+    system.client().file(&mut info, "", &mut [])?;
+    let root = format!("/Volumes/{}", info.volume_info.name());
+    let applications = format!("{root}/Applications");
+    let mut bytes = [0; 4096];
+    system.log("STD_FILES_NATIVE_PATH_CURRENT_BEGIN\n")?;
+    let current = path(system, CURRENT_DIRECTORY, "", 0, &mut bytes)?;
+    assert_eq!(&bytes[..current.transferred],
+               applications.as_bytes(),
+               "launch directory differs from actual executable parent");
+    system.log("STD_FILES_NATIVE_PATH_CURRENT_OBSERVED\n")?;
+    let parent = path(system, RESOLVE_PATH, ".././..", 0, &mut [])?;
+    assert_eq!((parent.volume, parent.cnid), (volume, ROOT_ID));
+    system.log("STD_FILES_NATIVE_PATH_PARENT_OBSERVED\n")?;
+    path(system, CHANGE_DIRECTORY, "..", 0, &mut [])?;
+    let current = path(system, CURRENT_DIRECTORY, "", 0, &mut bytes)?;
+    assert_eq!(&bytes[..current.transferred], root.as_bytes());
+    system.log("STD_FILES_NATIVE_PATH_ROOT_OBSERVED\n")?;
+    path(system, CHANGE_DIRECTORY, &applications, 0, &mut [])?;
+    system.log("STD_FILES_NATIVE_PATH_RESTORED_OBSERVED\n")?;
+    let opened = path(system,
+                      OPEN_PATH,
+                      "../Std Path File",
+                      OPEN_READ | OPEN_WRITE | OPEN_CREATE | OPEN_TRUNCATE,
+                      &mut [])?;
+    write(system, opened.handle, b"PATH")?;
+    call(system, SYNC, opened.handle)?;
+    call(system, CLOSE, opened.handle)?;
+    let opened = path(system, OPEN_PATH, &format!("{root}/Std Path File"), OPEN_READ, &mut [])?;
+    let mut saved = [0; 4];
+    assert_eq!(read(system, opened.handle, &mut saved)?, 4);
+    assert_eq!(&saved, b"PATH");
+    call(system, CLOSE, opened.handle)?;
+    assert_eq!(path(system, CHANGE_DIRECTORY, "../Std Path File", 0, &mut []).err(),
+               Some(Error::BadArgument));
+    assert_eq!(path(system, CHANGE_DIRECTORY, "No Such Native Directory", 0, &mut []).err(),
+               Some(Error::NotFound));
+    assert_eq!(path(system, RESOLVE_PATH, "bad\0name", 0, &mut []).err(), Some(Error::BadArgument));
+    let current = path(system, CURRENT_DIRECTORY, "", 0, &mut bytes)?;
+    assert_eq!(&bytes[..current.transferred],
+               applications.as_bytes(),
+               "failed directory change replaced old alias");
+    assert_eq!(path(system,OPEN_PATH,"../Std Path File",OPEN_WRITE|OPEN_CREATE_NEW,&mut []).err(),Some(Error::AlreadyExists));
+    system.log("STD_FILES_NATIVE_PATH_CWD_OPEN_REFUSAL_REUSE_OBSERVED\n")?;
+    Ok(())
+}
 fn run(system: &System<'_>) -> ToolboxResult<()>
 {
     system.log("STD_FILES_NATIVE_BEGIN\n")?;
@@ -78,6 +140,7 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
         }
     }
     let volume = volume.ok_or(Error::NotFound)?;
+    path_cases(system, volume)?;
     let mut lookup = FileCall { operation: LOOKUP,
                                 volume,
                                 cnid: ROOT_ID,
@@ -115,6 +178,9 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
                     "Std Native File").err(),
                Some(Error::AlreadyExists));
     write(system, first, b"abcdef")?;
+    assert_eq!(call(system, TELL, first)?.entry.id,
+               id,
+               "descriptor metadata must use its canonical live file");
     let clone = call(system, DUPLICATE, first)?.handle;
     seek(system, clone, 2)?;
     let mut pair = [0; 2];

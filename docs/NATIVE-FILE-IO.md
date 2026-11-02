@@ -2,9 +2,9 @@
 
 The resident File Manager has development operations for ordinary HFS-B fork
 writes and shared open descriptions. This is a bounded native foundation;
-`std::fs`, public path/current-directory resolution and process streams are not
-delivered by this milestone. Ordinary launch-directory admission and bounded
-prepared open/truncate now have connected resident implementations. The existing
+`std::fs` and process streams are not delivered by this milestone. Resident
+path/current-directory operations, ordinary launch-directory admission and
+bounded prepared open/truncate have connected native implementations. The existing
 transactional Save/replace writer remains a separate API.
 
 FileCall uses the existing FILE trap, ABI version 1 and the whole-world native
@@ -176,3 +176,64 @@ A preceding host launch was refused before boot because its QMP pathname was too
 long. Another capture is excluded because final evidence cleanup failed; its
 original logs remain failure evidence. The final repeat uses the same target
 artifacts with corrected host socket/receipt paths.
+
+## Process paths and current directories
+
+The native FileCall operations CURRENT_DIRECTORY (46), CHANGE_DIRECTORY (47),
+RESOLVE_PATH (48) and OPEN_PATH (49) use the existing FILE trap and genuine
+current-owner admission. Opcode 45 is reserved for the separate FindFolder
+contract. All affected artifacts and clients must be rebuilt together at ABI 1.
+
+Paths are UTF-8. Absolute paths start `/Volumes/<mounted volume name>/`;
+volume-name selection is exact and must be unique, with duplicate matching names
+returning AlreadyExists. Relative paths start at the process directory captured
+with its original executable launch. Slash-separated components, repeated slash,
+`.` and `..` are walked against actual catalog entries; `..` at a volume root
+stays at that root. Empty non-query paths and embedded NUL refuse as InvalidInput.
+Volume names containing slash or NUL are unrepresentable. Filesystem component
+encoding/case behavior remains the actual mounted filesystem's contract; there
+is no lossy name substitution. The virtual namespace `/Volumes` itself is not a
+filesystem object supplied by this initial native profile.
+
+A request shares the actual live FPIN directory alias into its original DIOP
+scope before any scheduler wait. Absolute requests protect their admitted actual
+mounted root instead. A copied volume/CNID is metadata, not a substitute lease.
+The process may change directories while another operation retains its genuine
+snapshot. Directory replacement admits the new alias before removing the old;
+refusal leaves the old directory intact. Temporary aliases release only after
+that actual operation scope closes, including owner cleanup and cancellation.
+
+The operations reuse FIOP/FIOB admission, real fixed-owner device handoff and
+one native catalog/lookup step per maintenance turn. Neither Files nor Record
+is held across firmware. Metadata steps do not build a mutation-protection
+vector. OPEN_PATH prepares the real FFRK identity/description before traversal,
+then resolves the final leaf and performs open/create/truncate within that same
+owned continuation; it does not implement a client-side resolve/open race.
+TELL also returns actual descriptor catalog metadata for later std File::metadata,
+without re-resolving a saved pathname. This initial path profile supports native
+HFS-B; provider path requests explicitly return Unsupported.
+
+The corrected implementation ran through ordinary native APPL loading and actual
+FILE traps on optimized release/LTO RV64 QEMU with four configured CPUs, exactly
+2 GiB (actual command and BOOT_RAM checked), and 800x600 output:
+
+- System ELF: `d49e606c1fbb0c38eb73529703db370ddbbcf088ba425bf5a138390d2d73c55e`
+- System resources: `ea23115743f60a3f9efcf22581cb2a9a9af7e5099120e7817dc28bfa542ddc73`
+- ROM: `19cc55b172094ec7505d461be6dca90f48f6d87e47cd078c150db2e8771a50e2`
+
+Both boots observed the actual launch parent, relative root traversal, relative
+and absolute directory changes, relative create/truncate and absolute reopen with
+PATH bytes. Change-to-file, missing-directory, embedded-NUL and create-new-existing
+requests refused, followed by successful current-directory reuse preserving the
+old directory after failed changes. Actual descriptor metadata identity was
+observed. The previous finite file/open/truncate/cursor/resource/refusal cases,
+clean-reboot SYNC bytes, original Process/account removal, Finder refresh/close
+and following input completed. Sources/base remained fixed, guests exited zero,
+private media was removed and both final screens were reviewed.
+
+The first two path captures remain failures: CURRENT_DIRECTORY was refused
+because its new trap opcode had not captured genuine caller authority. The fix
+extends the existing current_owner capture; it does not relax authority checks.
+Interrupted pre-reboot builds are not successful build evidence. The corrected
+repeat does not qualify forced concurrent chdir/unmount, cancellation/owner-stop,
+provider paths, namespace mutation races, exhaustion, general SMP or std adoption.
