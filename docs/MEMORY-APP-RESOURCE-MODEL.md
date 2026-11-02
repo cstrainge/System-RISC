@@ -4813,3 +4813,50 @@ exhaustion, module unloading, account closure beyond the recorded worker paths,
 SMP, timing or race absence. The original pre-refill renewed-pressure timeout
 and the first post-refill final Finder failure remain failed. No host Rust
 suite supplied acceptance.
+
+### Draw-only rectangle geometry without temporary region ownership
+
+Resident QuickDraw now validates scalar rectangle/rounded-rectangle drawing
+without first constructing and discarding an owned Region. Drawing those shapes
+streams rows into the existing Canvas through borrowed normalized clip spans.
+Frame subtracts the same inset inner geometry, emitting at most two disjoint
+spans per row. Rounded edges retain the existing integer predicate; local
+pattern phase, origin, transfer mode and pixel writer are shared with the
+unchanged owned-region drawing paths. Region-returning APIs still return owned
+Regions. There is no low-memory alternate renderer, extra stock or quota.
+
+This removes temporary region/Boolean-result allocation refusals for these
+draw-only primitives. It does not make the whole drawing invocation, clip
+decoding, command retention, text, resources, backing or dialogs allocation-free.
+Existing negative-size, area, pen and hidden-pen checks retain their boundary
+order; pressure-time error behavior deliberately changes where the eliminated
+temporary ownership was the sole failing allocation.
+
+The two-file source change passed an optimized no_std RV64 compiler check and
+a fixed-source complete image build. System ELF
+6973d0d3949d35223e34f0a7cee5ef022077558718d81894ab1e5af3a87483c6
+and System resource
+f837f8c63a89f161a18a43d803ced3cb026e2c16fff4d0b2c50af4032d33d023
+ran in private QEMU4/800x600 guests requesting and discovering exactly 2 GiB.
+Finder remained the preceding afac71a7/1b92ae0a artifacts. Installed Text Edit
+completed actual Save Changes Cancel/Save/Do Not Save, saved the exact bytes
+ab, acknowledged malformed-UTF8 Core Error, accepted fresh input and closed
+three actual accounts. Selected whole dialog bounds for Cancel, Save,
+Standard File PUT and Core Error matched the preceding native image pixel for
+pixel. Separately, six installed apps launched and quit with sampled nonidentity
+image mappings and absence in both permanent roots after actual Process close.
+Panic Test relaunched, scrolled/dismissed its 27,246-byte 331-line System report
+and closed. QuickDraw Test's Shapes-page frame, Cursor Test's frame and Reactor
+Room's frame were each identical to the preceding native captures; the Shapes
+page and current Core dialog frames were reviewed.
+
+Each native run kept its source/base artifacts fixed, exited its owned guest
+zero, reaped it and removed its private cloned/raw media. These comparisons
+establish equality only for the recorded current-System captures, not original
+Macintosh fidelity or unexercised geometry/modes. Negative admission, odd/thin
+rounded rows, sparse clips, arbitrary origins/pens, forced refusal/cancellation,
+pressure behavior and timing still need target evidence. The shared pixel
+writer's broader modes and Region outputs are not exhaustively qualified.
+Neither the source review nor the native observations close protected
+Save/Save As exhaustion, production Finder OOM recovery or general SMP gates.
+No host Rust suite supplied acceptance.

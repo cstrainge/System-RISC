@@ -237,10 +237,7 @@ pub fn graphics(port: &mut Port, call: &mut abi::GraphicsCall, points: &[Point],
                 _ => return Err(NOT_SUPPORTED)
             };
             // Reject invalid/oversized shape data before retaining a command.
-            if !matches!(geometry, Geometry::Rect(_))
-            {
-                port::shape_region(geometry.shape()).map_err(super::regions_service::graphics_status)?;
-            }
+            port::validate_drawing(geometry.shape()).map_err(super::regions_service::graphics_status)?;
             Some(Drawing { port: port.clone(),
                            geometry: Some(geometry),
                            verb,
