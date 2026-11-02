@@ -9,6 +9,8 @@ pub mod controls;
 pub mod resources;
 pub mod files;
 pub(crate) mod power;
+#[cfg(target_arch = "riscv64")]
+pub(crate) mod entropy;
 pub mod memory;
 pub(crate) mod inspection;
 pub(crate) mod theme;

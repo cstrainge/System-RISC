@@ -64,7 +64,7 @@ impl Write for Writer
     }
 }
 
-pub(super) fn report(arguments: fmt::Arguments<'_>) -> !
+pub(crate) fn report(arguments: fmt::Arguments<'_>) -> !
 {
     let Some(client) = runtime::installed_client()
     else

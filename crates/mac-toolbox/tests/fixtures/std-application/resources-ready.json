@@ -1,0 +1,18 @@
+{
+  "name": "Std Probe",
+  "binary_name": "StdProbe",
+  "file_type": "APPL",
+  "creator": "STDP",
+  "role": "application",
+  "abi_version": 1,
+  "load_base": "0x86000000",
+  "load_limit": "0x86a81000",
+  "description": "Native ordinary-main std application and TLS lifetime probe",
+  "resources": [],
+  "required_services": [
+    {
+      "class": "ENTR",
+      "version": 1
+    }
+  ]
+}

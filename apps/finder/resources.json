@@ -2411,7 +2411,7 @@
           "This application requires 68k translation.",
           "The item or service is busy. Try again after the current operation finishes.",
           "This operation must run in its owning thread.",
-          "A storage read or write failed.",
+          "An input or output operation failed.",
           "The volume is read-only.",
           "An item with that name already exists.",
           "Access was denied or the item is locked.",

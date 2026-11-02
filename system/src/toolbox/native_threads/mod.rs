@@ -39,17 +39,7 @@ impl RootBinding
     pub(crate) fn service_scope(&self, owner: &OwnerRef)
                                 -> Result<mac_object_table::scope::Lease<InvocationGate>, Error>
     {
-        let actual = root(self, owner)?;
-        if !actual.owner.accepting() || actual.closing.load(Ordering::Acquire)
-        {
-            return Err(Error::Finished);
-        }
-        if actual.scope.subject() != owner.owner()
-        {
-            return Err(Error::Authority);
-        }
-        actual.scope.admitting().map_err(|_| Error::Finished)?;
-        Ok(actual.scope.clone())
+        root(self, owner)?.service_scope()
     }
 }
 /// A sealed pin to this registered Process runtime admission root. System
@@ -70,6 +60,14 @@ impl RuntimeAdmission
     pub(crate) fn accepting(&self) -> bool
     {
         self.root.owner.accepting() && !self.root.closing.load(Ordering::Acquire)
+    }
+
+    /// Service admission derives only from this actual runtime; no copied
+    /// owner ID or caller-selected scope can reconstruct its dependency root.
+    pub(crate) fn service_scope(&self)
+                                -> Result<mac_object_table::scope::Lease<InvocationGate>, Error>
+    {
+        self.root.service_scope()
     }
 
     pub(crate) fn close(&self)
@@ -152,6 +150,20 @@ pub(super) struct Root
 }
 impl Root
 {
+    fn service_scope(&self) -> Result<mac_object_table::scope::Lease<InvocationGate>, Error>
+    {
+        if !self.owner.accepting() || self.closing.load(Ordering::Acquire)
+        {
+            return Err(Error::Finished);
+        }
+        if self.scope.subject() != self.owner.owner()
+        {
+            return Err(Error::Authority);
+        }
+        self.scope.admitting().map_err(|_| Error::Finished)?;
+        Ok(self.scope.clone())
+    }
+
     fn kernel<R>(&self, action: impl FnOnce() -> R) -> R
     {
         crate::allocator::with_target(crate::allocator::Target::Owner {

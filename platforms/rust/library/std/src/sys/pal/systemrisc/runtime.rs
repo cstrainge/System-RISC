@@ -62,21 +62,6 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     }
 }
 
-unsafe extern "C" {
-    // Creation consumes data iff it returns OK, and invokes start exactly once.
-    // join/detach consume a join right only after their successful native turn.
-    pub fn __system_risc_thread_create_v1(stack: usize, start: unsafe extern "C" fn(*mut u8),
-                                          data: *mut u8, handle: *mut u64)
-                                          -> Status;
-    pub fn __system_risc_thread_join_v1(handle: u64);
-    pub fn __system_risc_thread_detach_v1(handle: u64);
-    pub fn __system_risc_thread_name_v1(name: *const u8, length: usize);
-    pub fn __system_risc_thread_yield_v1();
-    pub fn __system_risc_thread_sleep_v1(seconds: u64, nanoseconds: u32);
-    pub fn __system_risc_parallelism_v1(count: *mut usize) -> Status;
-    pub fn __system_risc_entropy_v1(bytes: *mut u8, length: usize) -> Status;
-}
-
 /// Explicit process exit skips user TLS destructors. The startup return path
 /// performs its own teardown before entering this same signed exit boundary.
 #[unsafe(no_mangle)]

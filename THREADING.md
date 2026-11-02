@@ -1163,3 +1163,23 @@ does not qualify pristine-resource timing, first-paint ABORT, concurrent failure
 delayed-close acknowledgment races or queued publication interrupted by owner
 stop. Those paths, full Save/Save As exhaustion, production Finder OOM recovery,
 native std execution and concurrent child-thread behavior remain unverified.
+
+
+### Runtime ownership during entropy READY
+
+The ENTR1 launch continuation owns the same prospective Process and exact
+provider job through canonical park/replay. Its genuine RuntimeActivity travels
+in the broker subject/DREQ through completion or cancellation ACK; retaining an
+ID or directory selector is insufficient. Public entropy uses the same runtime
+service scope and exact DDEP instead of selecting another provider per request.
+Provider work executes outside Desktop/image/registry/flight guards. Completion
+notices wake only the matching startup or Finder recovery job. Initial pending
+Finder uses the sealed startup token and genuine System idle/maintenance path;
+no temporary worker, polling callback loop or runnable Finder is fabricated.
+
+Finite optimized four-CPU QEMU observations and their artifact/configuration
+limits are in [application runtime](docs/APPLICATION-RUNTIME.md#bounded-ready-observations--2026-11-01).
+They include cold initial READY, ordinary caller cancellation/reset/retry and
+asynchronous document failure/retry. Already-ready Finder-role replacements do
+not qualify pending replacement cancellation, production Finder OOM, provider
+withdrawal races, SMP safety or general race absence.

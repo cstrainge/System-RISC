@@ -4,17 +4,44 @@
           all(feature = "exit", feature = "oom"),
           all(feature = "panic", feature = "oom")))]
 compile_error!("select only one terminal scenario");
+#[cfg(any(all(feature = "child-panic", feature = "live-child"),
+          all(feature = "child-panic", feature = "exit"),
+          all(feature = "child-panic", feature = "panic"),
+          all(feature = "child-panic", feature = "oom"),
+          all(feature = "live-child", feature = "panic"),
+          all(feature = "live-child", feature = "oom"),
+          all(feature = "threads", feature = "child-panic"),
+          all(feature = "threads", feature = "live-child")))]
+compile_error!("select one child lifecycle scenario");
 
+#[cfg(feature = "launch-ready")]
+mod launch_ready;
+#[cfg(feature = "threads")]
+mod threads;
+#[cfg(feature = "thread-residency")]
+mod residency;
+#[cfg(any(feature = "child-panic", feature = "live-child"))]
+mod child_retirement;
+#[cfg(feature = "entropy")]
+mod entropy;
+#[cfg(feature = "std-random")]
+mod random;
+
+use std::error::Error;
+#[cfg(not(feature = "launch-ready"))]
 use std::{cell::RefCell,
-          error::Error,
           hint::black_box,
           io::{ErrorKind, Read, Write},
           sync::{Condvar, Mutex, OnceLock, TryLockError},
           time::{Duration, Instant, SystemTime}};
 
-use mac_toolbox::{Rect, System, windows::WindowSpec};
+use mac_toolbox::System;
+#[cfg(not(feature = "launch-ready"))]
+use mac_toolbox::{Rect, windows::WindowSpec};
 
+#[cfg(not(feature = "launch-ready"))]
 struct Witness(String);
+#[cfg(not(feature = "launch-ready"))]
 impl Drop for Witness
 {
     fn drop(&mut self)
@@ -27,6 +54,7 @@ impl Drop for Witness
         }
     }
 }
+#[cfg(not(feature = "launch-ready"))]
 thread_local! {
     static VALUE: RefCell<Option<Witness>> = const { RefCell::new(None) };
 }
@@ -34,6 +62,15 @@ thread_local! {
 fn main() -> Result<(), Box<dyn Error>>
 {
     let system = System::new()?;
+    #[cfg(feature = "launch-ready")]
+    return launch_ready::run(&system);
+    #[cfg(not(feature = "launch-ready"))]
+    run_standard(system)
+}
+
+#[cfg(not(feature = "launch-ready"))]
+fn run_standard(system: System) -> Result<(), Box<dyn Error>>
+{
     let repeated = System::new()?;
     let process = system.processes().current()?;
     assert_eq!(process.id, repeated.processes().current()?.id, "System acquisition changed caller");
@@ -91,6 +128,14 @@ fn main() -> Result<(), Box<dyn Error>>
     let window =
         system.windows().create(WindowSpec::new(Rect::new(60, 80, 290, 440), "Std Probe"))?;
     system.close_window(window)?;
+    #[cfg(feature = "entropy")]
+    entropy::run(&system)?;
+    #[cfg(feature = "std-random")]
+    random::run(&system)?;
+    #[cfg(feature = "threads")]
+    threads::run(&system)?;
+    #[cfg(any(feature = "child-panic", feature = "live-child"))]
+    child_retirement::run(&system)?;
     drop(boxed);
     drop(bytes);
     #[cfg(feature = "exit")]

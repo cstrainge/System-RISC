@@ -6,6 +6,7 @@ pub mod address_wait;
 pub mod native_threads;
 pub mod tls;
 pub mod power;
+pub mod entropy;
 
 pub const ABI_VERSION: u32 = 1;
 /// RV64 native segment wire record: offset, initialized length, memory length
@@ -16,7 +17,18 @@ pub const NATIVE_SEGMENT_RECORD_BYTES: usize = 28;
 /// Native descriptors carry this fingerprint so stale packages fail before
 /// entry rather than interpreting new payloads with an older struct layout.
 pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
-    let words = [core::mem::size_of::<processes::NativeExitCall>(),
+    let words = [core::mem::size_of::<entropy::Call>(),
+                 core::mem::align_of::<entropy::Call>(),
+                 core::mem::offset_of!(entropy::Call, output),
+                 core::mem::offset_of!(entropy::Call, capacity),
+                 core::mem::offset_of!(entropy::Call, written),
+                 core::mem::offset_of!(entropy::Call, detail),
+                 entropy::READY as usize,
+                 entropy::FILL as usize,
+                 entropy::MAX_CAPACITY,
+                 entropy::DETAIL_BYTES,
+                 traps::ENTROPY as usize,
+                 core::mem::size_of::<processes::NativeExitCall>(),
                  core::mem::align_of::<processes::NativeExitCall>(),
                  core::mem::offset_of!(processes::NativeExitCall, code),
                  core::mem::offset_of!(processes::NativeExitCall, flags),

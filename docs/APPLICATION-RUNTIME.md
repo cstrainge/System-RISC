@@ -67,8 +67,31 @@ Normal native launch, initial Finder and replacement Finder decode the same NREQ
 
 The TLRT scope belongs to the actual runtime Root, not its long-lived directory selector. Real runtime use keeps it open; closing author admission alone does not acknowledge it. DDEP retains a scope lease without retaining Root, avoiding an account-close cycle. Cleanup keeps the unique dependency ticket while the scope remains open, and actual closure/removal wakes both Process retirement and dependent module recovery. Prepared-root publication binds its reservation in the canonical owner-ledger turn and returns redundant pins for disposal after manager guards.
 
-Provider selection establishes registration availability and exact-version agreement. It does not establish hardware readiness, entropy availability, successful future requests or arbitrary fault containment. Provider readiness callbacks must execute outside registry, image and Desktop guards and retain the genuine runtime admission pin and owned request while pending. That asynchronous launch coordinator remains separate work. No installed application currently declares NREQ.
+Provider selection establishes registration availability and exact-version agreement.
+For ENTR1, launch also submits the real provider READY operation before author
+publication. The ordinary-launch continuation retains the original prospective
+Process, loaded package, heap/TLS roots and exact provider job across the actual
+launcher's park/replay. Document commits retain their batch identity and propagate
+the same typed refusal on replay. Caller stop before publication acceptance
+abandons the launch; acceptance and cancellation share one bounded slot turn.
+A later publication failure still retires the prospective owner.
 
+Initial Finder retains those original resources in an owned startup continuation.
+A sealed pending token permits the genuine System idle/scheduler path while the
+provider is pending; canonical driver-job wakes resume startup maintenance.
+Only READY completion publishes Finder's thread and desktop. An initial refusal
+enters the minimal startup-failure UI, retaining original boot ownership until
+machine reset. Replacement Finder uses its existing recovery coordinator and
+retains its admission and exact job through READY or cancellation.
+
+No manager, image or Desktop guard crosses a provider callback or wait. Queued
+requests carry genuine runtime activity through completion/cancellation ACK;
+dropping a launch continuation does not release that activity early. Public
+entropy requests reuse the runtime's exact scoped dependency, admitting it lazily
+for a caller without NREQ; they cannot reselect another provider after withdrawal.
+Readiness is an admission observation, not a promise of future device health.
+Installed applications still use no_std and do not yet declare NREQ by default;
+private packages below exercise these paths.
 Direct Process launch and document-commit refusals carry the required class/version through their respective call records and the public typed ServiceRequirement error. Finder obtains its explanatory template from resources. Existing numeric status values and development ABI version1 remain; the changed record fingerprint requires rebuilding every client. The DocumentCall adapter clears failure-only outputs before entry and accepts them only on a failed DOCUMENT_COMMIT. Both transports share the same checked payload decoder. Finder document associations and application drops use DocumentOpen::commit and retain the typed error through the existing resource-based alert. Other Open wrappers do not automatically gain this payload.
 
 ### Bounded native observations — 2026-11-01
@@ -99,7 +122,7 @@ withdrawal races, asynchronous READY completion, resource exhaustion, all Open
 transports, race absence, SMP safety or latency. Guest assertions and logging
 perturb execution; no timing claim follows from these observations.
 
-## Heap admission
+## Standard-library startup
 
 The staged std application target uses a platform-owned startup instead of the
 application feature. Authors provide ordinary `fn main()` and acquire the same
@@ -116,40 +139,6 @@ immediately. System owns dismissal and actual quiescence/reclamation; failed
 author code does not wait on the viewer. Early/recursive failures use the shared
 core-only emergency Abort transport. See [current std evidence and remaining
 gates](RUST-STD.md#current-evidence-and-gaps) for the bounded native observations.
-
-## Required provider services
-
-Native APPL build manifests can declare exact provider requirements separately
-from NABI's executable/ABI description:
-
-```json
-"required_services": [{ "class": "ENTR", "version": 1 }]
-```
-
-The compiler emits one `NREQ` resource with ID 0 and zero attributes. An absent
-or empty manifest list emits no resource. `mac-formats::requirements` owns the
-allocation-free decoder and encoder used by the packager and inspector. A class
-is the existing four-byte `mac_module::ClassId`; a version is an exact nonzero
-`u32`, not a range. Unknown nonzero classes remain valid metadata for external
-providers. Duplicate classes, including conflicting versions, are refused.
-
-Schema 1 uses a 16-byte header: `NREQ`, big-endian `u16` schema, big-endian `u16`
-record count, and eight zero reserved bytes. Each eight-byte record contains the
-four class bytes followed by a big-endian `u32` version. There are at most 32
-records (272 bytes total); length must match the count exactly. Unsupported
-schemas, zero class/version, nonzero reserved fields, duplicate resources or an
-NREQ under another resource ID are errors. Build manifests must use the declared
-list rather than supplying raw NREQ resources. Lossless resource archives still
-preserve their original bytes, including malformed metadata.
-
-This format and host inspection are staged infrastructure. The resident launch
-gate is not implemented yet: no installed application currently relies on NREQ
-for admission, and it does not establish std entropy readiness. Normal launch,
-initial Finder and copy/restart must eventually validate the same requirements
-and retain genuine provider/dependency ownership through author publication.
-Provider callbacks or readiness waits must occur outside Desktop/image/manager
-guards. A decoded record or interface lookup is not a lease; runtime requests
-must still handle provider loss after launch.
 
 ## Heap admission
 
@@ -296,7 +285,52 @@ Partial identities or success replies carrying error identity are BadAbi.
 
 The whole-world layout fingerprint includes DocumentCall size and both field
 offsets. Development ABI remains1; System, apps, modules, definitions and SDK
-clients must rebuild together. This source transport is not proof of asynchronous
-provider readiness or correct pending-document replay. Its updated native wire
-requires its own target-runtime evidence; previous artifact observations above
-remain scoped to their recorded earlier layouts.
+clients must rebuild together. The bounded observations below exercise this wire through genuine asynchronous
+document replay; earlier artifact observations remain scoped to their layouts.
+
+
+### Bounded READY observations — 2026-11-01
+
+Optimized release/LTO RV64 System resource
+`faccb1df3c35b79cb1454f84b759bc7e1e2dbc7dbefe214e114ed4c977639006`,
+ROM `73954623bc3ed093a15ddce337473768263e14dfc748cf5cfda39be07fbf1a09`
+and matching std SDK `056bc07dc1d2272fed1caf2c3a318a0b87ff16eee8a6ed434f6c39bdb04a58a3`
+ran in private 8 GiB, four-CPU QEMU guests. Holding the actual virtual RNG source
+left a real descriptor outstanding during initial production Finder READY; all
+four paused CPU samples were in genuine System idle, input responded, and no
+Finder thread had been published. Source release led to Finder entry/desktop.
+Ordinary launch exercised pending identity, caller termination, original unstarted
+Process/account closure, actual device reset and a fresh successful retry.
+
+A packaged production Text Edit declaring ENTR1, opened through the real Finder
+association, remained unstarted while READY was pending; source release opened
+the actual document. A private debugger-injected RNG DeviceStatus FAILED bit
+then exercised actual driver refusal/reset, typed document replay error, unstarted
+account closure while source was still withheld, alert dismissal and successful
+source-backed retry/document/quit. The final Finder resource
+`d1b2a1237d0f56b2067ae862be729ebf5a727f3b2df6392ce6169844a193eea2`
+displayed the required ENTR/version and the corrected general I/O cause. The
+original capture's storage-specific wording failed informative-cause review;
+a collector prematurely started during rebuilding also failed and is not counted.
+
+The same bounded device-status injection during initial Finder READY reached the
+startup-failure screen, retained unique original boot resources until reset, and
+its real Restart action reached a fresh Finder desktop. Two ENTR1 Finder-role
+fixture replacements exercised the recovery coordinator with an already-ready
+provider; they were not production Finder OOM or pending replacement cases.
+Actual THRD and Process/account closure and subsequent input were observed where
+applicable. Source and base media were fixed per accepted capture; owned guests
+were reaped and cloned media removed.
+
+Cargo's actual guest records selected content fingerprints with both the feature
+and content-mode settings; generated/resource inputs received explicit rebuilds.
+This corrects earlier feature-only freshness guidance: that flag alone left this
+Cargo's default mtime mode active. Earlier artifact observations still describe
+what ran, but do not establish freshness of a later source revision.
+
+Logs, paused CPU/device-metadata observations and the private debugger channel
+perturb execution. Device-status injection does not qualify spontaneous failure,
+malformed DMA, source security, timing, race absence, arbitrary fault recovery,
+provider-withdrawal races, pending replacement cancellation, stalled-source
+deadline policy, exhaustion, Windows
+or other hardware. These finite cases do not establish full std adoption.

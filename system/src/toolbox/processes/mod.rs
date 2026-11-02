@@ -10,6 +10,8 @@ pub(crate) mod documents;
 pub(crate) mod retirement;
 pub(crate) mod finder;
 pub(crate) mod termination;
+pub(crate) mod launch;
+pub(crate) mod startup;
 pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
 {
     let caller = crate::context::current_thread_context().identity().app.0;
@@ -628,9 +630,18 @@ pub(crate) fn request(call: &mut ProcessCall) -> Status
     let result = (|| {
         if call.operation != LAUNCH
         {
+            if launch::pending()
+            {
+                launch::abandon_thread(crate::context::current_thread());
+                return Err(BAD_ABI);
+            }
             return crate::kernel::with_desktop(|d| d.process(call)).map_err(|e| e.status());
         }
         crate::context::without_recovery(|| {
+            if launch::pending()
+            {
+                return launch::resume(call, launch::Origin::Process).map(|()| OK);
+            }
             // An app can quit and another launch it before the next timer tick.
             // This trap is already on the other app's stack: finish that real
             // checkpoint before deciding whether reloading the old image is safe.
@@ -644,7 +655,7 @@ pub(crate) fn request(call: &mut ProcessCall) -> Status
         }
             let owner = crate::context::current_thread_context().identity().app.0;
             let loaded = crate::toolbox::files::application::read(owner, call.volume, call.cnid)?;
-            launch_application(call, *loaded).map(|()| OK)
+            launch_application(call, *loaded, launch::Origin::Process).map(|()| OK)
         })
     })();
     result.unwrap_or_else(|error| error)
@@ -703,13 +714,14 @@ impl ServiceAdmissionFailure
     }
 }
 
-/// Validate declarations and retain exact live registrations in the actual
-/// runtime scope. Lifetime retention does not promise permanent readiness.
-pub(crate) fn admit_required_services(resources: &[mac_formats::resource::Resource],
-                                      owner: &crate::toolbox::handles::OwnerRef,
-                                      allocation: crate::machine::scheduler::accounting::AllocationAuthority,
-                                      tls: &crate::toolbox::native_threads::RootBinding)
-                                      -> Result<(), ServiceAdmissionFailure>
+/// Validate declarations and retain exact live registrations in the authentic
+/// Process runtime. The optional interface is the exact ENTR1 selection; all
+/// application paths must complete its READY before publishing author threads.
+pub(crate) fn select_required_services(resources: &[mac_formats::resource::Resource],
+                                       owner: &crate::toolbox::handles::OwnerRef,
+                                       allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+                                       tls: &crate::toolbox::native_threads::RootBinding)
+                                       -> Result<Option<u64>, ServiceAdmissionFailure>
 {
     let requirements =
         mac_formats::requirements::Requirements::from_resources(resources).map_err(|cause| {
@@ -718,119 +730,141 @@ pub(crate) fn admit_required_services(resources: &[mac_formats::resource::Resour
         })?;
     if requirements.iter().len() == 0
     {
-        return Ok(());
+        return Ok(None);
     }
     let scope = tls.service_scope(owner).map_err(ServiceAdmissionFailure::Runtime)?;
+    let mut entropy = None;
     for requirement in requirements.iter()
     {
-        crate::drivers::admit_process_provider(owner,
-                                               allocation.clone(),
-                                               &scope,
-                                               requirement.class,
-                                               requirement.version).map_err(|cause| {
-            serial!("PROCESS_SERVICE_REFUSED app={} class={:?} version={} status={}; {cause}",
-                    owner.owner().incarnation(),
-                    requirement.class,
-                    requirement.version,
-                    cause.status());
-            ServiceAdmissionFailure::Provider { requirement,
-                                                cause }
-        })?;
+        let selected =
+            crate::drivers::admit_process_provider(owner,
+                                                   allocation.clone(),
+                                                   &scope,
+                                                   requirement.class,
+                                                   requirement.version).map_err(|cause| {
+                serial!("PROCESS_SERVICE_REFUSED app={} class={:?} version={} status={}; {cause}",
+                        owner.owner().incarnation(),
+                        requirement.class,
+                        requirement.version,
+                        cause.status());
+                ServiceAdmissionFailure::Provider { requirement,
+                                                    cause }
+            })?;
+        if requirement.class == mac_entropy_interface::CLASS
+           && requirement.version == mac_entropy_interface::VERSION
+        {
+            entropy = Some(selected);
+        }
     }
-    Ok(())
+    Ok(entropy)
 }
 
 /// Ordinary Open and document delivery share this genuine launch coordinator.
 /// No Desktop guard spans root preparation or provider admission.
-pub(crate) fn launch_application(call: &mut ProcessCall,
-                                 loaded: crate::toolbox::files::application::Loaded)
-                                 -> Result<(), Status>
+fn launch_application(call: &mut ProcessCall, loaded: crate::toolbox::files::application::Loaded,
+                      origin: launch::Origin)
+                      -> Result<(), Status>
+{
+    crate::context::without_recovery(|| launch::start(call, loaded, origin))
+}
+
+fn prepare_launch(call: &mut ProcessCall, loaded: crate::toolbox::files::application::Loaded)
+                  -> Result<Option<launch::Prepared>, Status>
 {
     call.requirement_class = [0; 4];
     call.requirement_version = 0;
-    crate::context::without_recovery(|| {
-        let admission = crate::kernel::with_desktop(|desktop| {
-                            desktop.reserve_application(call, loaded.catalog.name())
-                        }).map_err(|error| error.status())??;
-        let Some(mut admission) = admission
-        else
-        {
-            return Ok(());
-        };
-        let result = (|| {
-            let prepared = crate::toolbox::application_heap::prepare_root(
+    let admission = crate::kernel::with_desktop(|desktop| {
+                        desktop.reserve_application(call, loaded.catalog.name())
+                    }).map_err(|error| error.status())??;
+    let Some(mut admission) = admission
+    else
+    {
+        return Ok(None);
+    };
+    let roots = (|| {
+        let prepared = crate::toolbox::application_heap::prepare_root(
                 admission.owner().clone(), admission.allocation()).map_err(|error| {
                     serial!("PROCESS_HEAP_REFUSED app={} {error}", admission.id());
                     error.status()
                 })?;
-            let heap =
-                crate::toolbox::application_heap::publish_root(prepared).map_err(|failure| {
-                    let status = failure.cause.status();
-                    serial!("PROCESS_HEAP_PUBLICATION_REFUSED app={} {}",
-                            admission.id(),
-                            failure.cause);
-                    failure.prepared.dispose();
-                    status
-                })?;
-            let prepared_tls = crate::toolbox::native_threads::prepare_root(
-                admission.owner().clone(), admission.allocation()).map_err(|cause| {
-                    serial!("PROCESS_TLS_REFUSED app={} {cause}",admission.id()); cause.status()
-                })?;
-            let tls =
-                crate::toolbox::native_threads::publish_root(prepared_tls).map_err(|failure| {
-                    let status = failure.cause.status();
-                    serial!("PROCESS_TLS_PUBLICATION_REFUSED app={} {}",
-                            admission.id(),
-                            failure.cause);
-                    failure.prepared.dispose();
-                    status
-                })?;
-            admit_required_services(&loaded.resources,
-                                    admission.owner(),
-                                    admission.allocation(),
-                                    &tls).map_err(|cause| {
-                                             serial!("PROCESS_ADMISSION_REFUSED app={} {cause}",
-                                                     admission.id());
-                                             cause.reply(call);
-                                             cause.status()
-                                         })?;
-            let crate::toolbox::files::application::Loaded { catalog,
-                                                             resources } = loaded;
-            let image = crate::allocator::with_target(crate::allocator::Target::Owner {
-                account: admission.allocation(),
-                class: mac_kernel_model::policy::MemoryClass::Kernel
-            }, || crate::kernel::load_application(admission.owner(), &admission.allocation(),
-                                                  catalog.creator, catalog.file_type, resources))?;
-            crate::kernel::with_desktop(|desktop| {
-                desktop.processes.bind_heap(admission.owner(), heap)?;
-                desktop.processes.bind_tls(admission.owner(), tls)?;
-                desktop.finish_application_launch(call, catalog, image, &mut admission)
-            }).map_err(|error| error.status())?
-        })();
-        if let Err(status) = result
+        let heap = crate::toolbox::application_heap::publish_root(prepared).map_err(|failure| {
+                       let status = failure.cause.status();
+                       serial!("PROCESS_HEAP_PUBLICATION_REFUSED app={} {}",
+                               admission.id(),
+                               failure.cause);
+                       failure.prepared.dispose();
+                       status
+                   })?;
+        let prepared_tls =
+            crate::toolbox::native_threads::prepare_root(admission.owner().clone(),
+                                                         admission.allocation()).map_err(|cause| {
+                serial!("PROCESS_TLS_REFUSED app={} {cause}", admission.id());
+                cause.status()
+            })?;
+        let tls =
+            crate::toolbox::native_threads::publish_root(prepared_tls).map_err(|failure| {
+                let status = failure.cause.status();
+                serial!("PROCESS_TLS_PUBLICATION_REFUSED app={} {}", admission.id(), failure.cause);
+                failure.prepared.dispose();
+                status
+            })?;
+        let selected = select_required_services(&loaded.resources,
+                                                admission.owner(),
+                                                admission.allocation(),
+                                                &tls).map_err(|cause| {
+                                                         serial!("PROCESS_ADMISSION_REFUSED \
+                                                                  app={} {cause}",
+                                                                 admission.id());
+                                                         cause.reply(call);
+                                                         cause.status()
+                                                     })?;
+        let ready = match selected
         {
-            // Stop before trying to acquire Desktop. If it is unavailable, the
-            // reachable directory checkpoint and common reaper retain the work.
-            admission.stop();
-            match crate::kernel::with_desktop(|desktop| desktop.retire_unstarted(admission.id()))
+            Some(provider) =>
             {
-                Ok(Ok(())) => (),
-                Ok(Err(cleanup)) =>
-                {
-                    serial!("PROCESS_LAUNCH_RETIRE_RETAINED app={} original={status} \
-                             cleanup={cleanup}",
-                            admission.id())
-                }
-                Err(error) =>
-                {
-                    serial!("PROCESS_LAUNCH_RETIRE_RETAINED app={} original={status} \
-                             desktop={error:?}",
-                            admission.id())
-                }
+                Some(launch::ready_job(&tls, admission.owner(), provider).map_err(|status| {
+                         call.requirement_class = mac_entropy_interface::CLASS.0;
+                         call.requirement_version = mac_entropy_interface::VERSION;
+                         status
+                     })?)
             }
+            None => None
+        };
+        Ok::<_, Status>((heap, tls, ready))
+    })();
+    match roots
+    {
+        Ok((heap, tls, ready)) =>
+        {
+            Ok(Some(launch::Prepared { admission,
+                                       heap,
+                                       tls,
+                                       loaded: Some(loaded),
+                                       ready }))
         }
-        result
-    })
+        Err(status) =>
+        {
+            launch::retire(&mut admission);
+            Err(status)
+        }
+    }
+}
+
+fn finish_launch(call: &mut ProcessCall, prepared: &mut launch::Prepared) -> Result<(), Status>
+{
+    let crate::toolbox::files::application::Loaded { catalog,
+                                                     resources } =
+        prepared.loaded.take().ok_or(BAD_ABI)?;
+    let image = crate::allocator::with_target(crate::allocator::Target::Owner {
+        account: prepared.admission.allocation(), class: mac_kernel_model::policy::MemoryClass::Kernel
+    }, || crate::kernel::load_application(prepared.admission.owner(),
+                                          &prepared.admission.allocation(),
+                                          catalog.creator, catalog.file_type, resources))?;
+    crate::kernel::with_desktop(|desktop| {
+        desktop.processes.bind_heap(prepared.admission.owner(), prepared.heap.clone())?;
+        desktop.processes.bind_tls(prepared.admission.owner(), prepared.tls.clone())?;
+        desktop.finish_application_launch(call, catalog, image, &mut prepared.admission)
+    }).map_err(|error| error.status())?
 }
 
 impl Default for Manager
