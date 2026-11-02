@@ -6,10 +6,8 @@ use alloc::vec::Vec;
 
 use mac_abi::*;
 
-use crate::toolbox::quickdraw::geometry::{sect_rect, union_rect};
-
 use super::{Canvas, Desktop, RenderCommand, SceneTarget, WHITE, background, paint};
-use crate::toolbox::quickdraw::{geometry::Rect,
+use crate::toolbox::quickdraw::{geometry::{Rect, sect_rect, union_rect},
                                 region::{BooleanOp, Region}};
 
 #[derive(Default)]
@@ -267,13 +265,9 @@ impl Desktop
             .paint(&mut canvas,
                    (self.foreground,
                     self.menus.selected_menu(),
-                    self.app_menu.is_tracking(),
-                    self.system_bar.bar_selected()),
-                   |canvas| {
-                       self.system_bar.draw_bar(canvas)?;
-                       self.menus.draw_bar(canvas)?;
-                       self.app_menu.draw_bar(canvas)
-                   })
+                    self.menus.application_selected(),
+                    self.menus.system_selected()),
+                   |canvas| self.menus.draw_bar(&mut self.system_bar, &mut self.app_menu, canvas))
             .map_err(|error| error.status)?;
         Ok(())
     }

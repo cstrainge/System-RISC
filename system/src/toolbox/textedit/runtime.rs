@@ -2,7 +2,10 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::fmt::Write;
 
-use mac_abi::{quickdraw::*, textedit::*, *, geometry::{Point, Rect}};
+use mac_abi::{geometry::{Point, Rect},
+              quickdraw::*,
+              textedit::*,
+              *};
 
 use crate::toolbox::quickdraw::{region::{BooleanOp, Region},
                                 retained::RenderCommand,
@@ -96,8 +99,6 @@ impl super::Desktop
         if self.redraw
            || !self.content_damage.is_empty()
            || self.menus.is_tracking()
-           || self.system_bar.is_tracking()
-           || self.app_menu.is_tracking()
            || self.windows.is_tracking()
         {
             self.content_changed_region(call.window.0, region);

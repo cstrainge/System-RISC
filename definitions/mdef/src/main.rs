@@ -2,7 +2,9 @@
 //! this independently loaded resource; System owns state and event routing.
 #![cfg_attr(target_arch = "riscv64", no_std)]
 #![cfg_attr(target_arch = "riscv64", no_main)]
-use mac_abi::{menus::*, *, geometry::{Point, Rect}};
+use mac_abi::{geometry::{Point, Rect},
+              menus::*,
+              *};
 use toolbox_quickdraw::SurfacePort;
 fn text(bytes: &[u8], length: u32) -> Result<&str, Status>
 {
@@ -29,7 +31,8 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
         // over the selected background rather than inverted after drawing.
         canvas.paint_rect(Rect::new(state.title_bounds.left - 1,
                                     1,
-                                    state.title_bounds.right + 4,
+                                    state.title_bounds.right
+                                    + if state.profile == APPLICATION_PROFILE { 4 } else { -1 },
                                     19),
                           if selected { 0 } else { 0xffffff })?;
         if state.profile == APPLICATION_PROFILE
@@ -49,9 +52,7 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
         // System small-icon family. Its rainbow colors survive title selection.
         if state.title_length == 1 && state.title[0] == 0x14
         {
-            let left = state.title_bounds.left
-                       + (state.title_bounds.right - state.title_bounds.left - 16) / 2
-                       + 1;
+            let left = state.title_bounds.left + 8;
             return canvas.icon_resource(mac_traps::types::ResourceScope::System,
                                         -16386,
                                         Rect::new(left, 1, left + 16, 17),
@@ -61,7 +62,7 @@ fn paint(state: &MenuDefinitionState, popup: bool, canvas: &mut SurfacePort)
                          state.title_bounds.left + 8,
                          14,
                          text(&state.title, state.title_length).map_err(mac_traps::Error::from_status)?,
-                         state.title_bounds.right - state.title_bounds.left - 13,
+                         state.title_bounds.right - state.title_bounds.left - 18,
                          if selected
                          {
                              0xffffff
@@ -198,9 +199,15 @@ fn measure(state: &mut MenuDefinitionState, canvas: &mut SurfacePort) -> mac_tra
     }
     else
     {
-        state.title_bounds.right = state.title_bounds.left
-                                   + canvas.text_width(toolbox_quickdraw::font::CHICAGO_12, title)?
-                                   + 13;
+        let width = if state.title_length == 1 && state.title[0] == 0x14
+        {
+            16
+        }
+        else
+        {
+            canvas.text_width(toolbox_quickdraw::font::CHICAGO_12, title)?
+        };
+        state.title_bounds.right = state.title_bounds.left + width + 18;
     }
     state.title_bounds.top = 0;
     state.title_bounds.bottom = 20;
@@ -227,7 +234,8 @@ fn measure(state: &mut MenuDefinitionState, canvas: &mut SurfacePort) -> mac_tra
     let left = if state.profile == APPLICATION_PROFILE
     {
         width = width.min(state.bar_bounds.right - 8);
-        state.bar_bounds.right - 7 - width
+        // The popup frame extends one pixel beyond its content bounds.
+        state.title_bounds.right + 3 - width
     }
     else
     {

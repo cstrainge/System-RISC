@@ -4,6 +4,27 @@ Finder links only `mac-toolbox`. The SDK marshals calls; System owns manager
 state and device access. Unique menu geometry, drawing and hit code lives in the
 independently loaded MDEF0 resource alongside WDEF0 and CDEF0/1.
 
+Standard menu-bar title slots reserve 18 pixels beyond the measured label.
+Their backgrounds span from one pixel before the slot's left edge to one pixel
+before its right edge, so adjacent titles cannot erase each other's highlight.
+Keyboard acknowledgement clips to those same bounds. The separately positioned
+right-hand application menu retains its existing icon-title geometry.
+Its dropdown frame's right edge aligns with the title highlight's right edge;
+the content bounds account for the one-pixel frame.
+The System/Apple title measures its actual 16-pixel icon rather than the font
+width of the Apple character, with the same nine-pixel highlight margins.
+One held menu-bar drag can switch between System/Apple, regular application
+menus and the right-hand application menu in either direction. Blank or disabled
+title space retains the current menu; Escape cancels the active menu group.
+The resident Menu Manager owns a single capture, highlighted row and keyboard
+acknowledgement state per application context for all of these menus. Its common
+MDEF hit-test, popup paint, release and feedback paths produce typed commands:
+resource commands go to their application, System/Apple commands retain their
+registered source owner, and application-menu commands go to the Process Manager.
+System and Process Manager menu content providers do not run separate trackers.
+Refreshing or disposing the relevant contents cancels capture before stale rows
+can dispatch.
+
 Uncached sizing is checked against eight executed original CalcMenuSize cases.
 Standard MDEF reserves24 pixels beyond the label for keyless items and48 for
 items with shortcuts. The latter preserves a10-pixel gap between the label and

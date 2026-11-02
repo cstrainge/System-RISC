@@ -3,7 +3,7 @@
 
 use alloc::boxed::Box;
 
-use mac_abi::{menus::*, *, geometry::{Point, Rect}};
+use mac_abi::{geometry::Rect, menus::*, *};
 
 use crate::toolbox::{quickdraw::{Canvas, SurfaceExt},
                      resources::manager::Manager as Resources};
@@ -35,15 +35,13 @@ pub struct Entry<'a>
 
 pub struct ApplicationMenu
 {
-    state:       Box<MenuDefinitionState>,
-    scratch:     Box<MenuDefinitionState>,
-    actions:     [Option<Action>; MAX_ITEMS],
-    labels:      [[u8; INLINE_STRING_BYTES]; 3],
-    lengths:     [usize; 3],
-    definition:  DefinitionEntry,
-    gate:        TrapGate,
-    tracking:    bool,
-    highlighted: i16
+    state:      Box<MenuDefinitionState>,
+    scratch:    Box<MenuDefinitionState>,
+    actions:    [Option<Action>; MAX_ITEMS],
+    labels:     [[u8; INLINE_STRING_BYTES]; 3],
+    lengths:    [usize; 3],
+    definition: DefinitionEntry,
+    gate:       TrapGate
 }
 
 impl ApplicationMenu
@@ -72,17 +70,14 @@ impl ApplicationMenu
                   labels,
                   lengths,
                   definition,
-                  gate,
-                  tracking: false,
-                  highlighted: 0 })
+                  gate })
     }
 
     /// Publish a complete snapshot, preserving old state if input or sizing fails.
     /// Applications appear alphabetically, as in the original Process Manager.
-    /// A refresh cancels tracking so a release cannot select a stale row.
+    /// The caller cancels Menu Manager tracking before refreshing its contents.
     pub fn refresh(&mut self, entries: &[Entry<'_>], foreground: u64) -> Result<(), Status>
     {
-        self.cancel();
         if entries.len() > MAX_APPLICATIONS
         {
             return Err(NO_MEMORY);
@@ -180,22 +175,11 @@ impl ApplicationMenu
     /// been published. Remove prior-owner actions rather than retaining them.
     pub fn suspend(&mut self)
     {
-        self.cancel();
         self.actions.fill(None);
         self.state.item_count = 0;
         self.state.title_length = 0;
         self.state.title_icon = Default::default();
         self.state.title_bounds = Rect::ZERO;
-    }
-
-    pub fn title_bounds(&self) -> Rect
-    {
-        self.state.title_bounds
-    }
-
-    pub fn popup_bounds(&self) -> Rect
-    {
-        self.state.popup_bounds
     }
 
     /// System-menu state is observable through the normal Menu Manager SDK.
@@ -234,130 +218,20 @@ impl ApplicationMenu
         Ok(())
     }
 
-    pub fn is_tracking(&self) -> bool
+    pub(crate) fn state(&self) -> &MenuDefinitionState
     {
-        self.tracking
+        &self.state
     }
 
-    pub fn begin(&mut self, point: Point) -> bool
+    pub(crate) fn state_mut(&mut self) -> &mut MenuDefinitionState
     {
-        if self.state.item_count == 0 || !self.state.title_bounds.contains(point)
-        {
-            return false;
-        }
-        self.tracking = true;
-        self.highlighted = 0;
-        true
+        &mut self.state
     }
 
-    pub fn hover(&mut self, point: Point) -> bool
+    pub(crate) fn action(&self, item: i16) -> Option<Action>
     {
-        if !self.tracking
-        {
-            return false;
-        }
-        let previous = self.highlighted;
-        self.highlighted = invoke(self.definition,
-                                  self.gate,
-                                  &mut self.state,
-                                  HIT_ITEM,
-                                  (((point.v as u16 as u32) << 16) | point.h as u16 as u32) as i64,
-                                  core::ptr::null_mut()) as i16;
-        previous != self.highlighted
-    }
-
-    pub fn release(&mut self, point: Point) -> Option<Action>
-    {
-        if !self.tracking
-        {
-            return None;
-        }
-        self.hover(point);
-        let selected =
-            usize::try_from(self.highlighted).ok()
-                                             .and_then(|row| row.checked_sub(1))
-                                             .filter(|row| *row < self.state.item_count as usize)
-                                             .filter(|row| self.state.items[*row].enabled != 0)
-                                             .and_then(|row| self.actions[row]);
-        if selected.is_none()
-        {
-            self.cancel();
-        }
-        selected
-    }
-
-    pub(crate) fn feedback_target(&self) -> Option<(i16, Rect)>
-    {
-        let index = usize::try_from(self.highlighted).ok()?.checked_sub(1)?;
-        Some((self.highlighted, self.state.items.get(index)?.bounds))
-    }
-
-    pub(crate) fn feedback_valid(&self, item: i16, action: Action) -> bool
-    {
-        let Some(index) = usize::try_from(item).ok().and_then(|row| row.checked_sub(1))
-        else
-        {
-            return false;
-        };
-        self.tracking
-        && index < self.state.item_count as usize
-        && self.state.items[index].enabled != 0
-        && self.actions[index] == Some(action)
-    }
-
-    pub(crate) fn feedback_highlight(&mut self, item: i16)
-    {
-        self.highlighted = item;
-    }
-
-    pub(crate) fn paint_feedback(&mut self, item: i16, canvas: &mut Canvas<'_>)
-                                 -> Result<(), Status>
-    {
-        let index =
-            usize::try_from(item).ok().and_then(|row| row.checked_sub(1)).ok_or(BAD_ARGUMENT)?;
-        self.state.highlighted = self.highlighted;
-        let mut surface = Surface::from_canvas(canvas);
-        surface.clip = self.state.items.get(index).ok_or(BAD_ARGUMENT)?.bounds;
-        let status = invoke(self.definition,
-                            self.gate,
-                            &mut self.state,
-                            DRAW_ITEM,
-                            i64::from(item),
-                            &mut surface);
-        if status == 0 { Ok(()) } else { Err(status as Status) }
-    }
-
-    pub fn cancel(&mut self)
-    {
-        self.tracking = false;
-        self.highlighted = 0;
-    }
-
-    pub(crate) fn draw_bar(&mut self, canvas: &mut Canvas<'_>)
-                           -> Result<(), crate::toolbox::menus::PaintError>
-    {
-        self.state.first = 0;
-        self.state.bar_selected = u32::from(self.tracking);
-        canvas.reset_port();
-        let mut surface = Surface::from_canvas(canvas);
-        crate::toolbox::menus::painted(MENU_ID,
-                                       invoke(self.definition, self.gate, &mut self.state,
-                                              DRAW_BAR, 0, &mut surface))
-    }
-
-    pub(crate) fn draw_popup(&mut self, canvas: &mut Canvas<'_>)
-                             -> Result<(), crate::toolbox::menus::PaintError>
-    {
-        if !self.tracking
-        {
-            return Ok(());
-        }
-        self.state.highlighted = self.highlighted;
-        canvas.reset_port();
-        let mut surface = Surface::from_canvas(canvas);
-        crate::toolbox::menus::painted(MENU_ID,
-                                       invoke(self.definition, self.gate, &mut self.state,
-                                              DRAW_POPUP, 0, &mut surface))
+        let index = usize::try_from(item).ok()?.checked_sub(1)?;
+        self.actions.get(index).copied().flatten()
     }
 }
 

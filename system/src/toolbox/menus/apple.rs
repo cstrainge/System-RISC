@@ -15,17 +15,14 @@ pub(crate) enum Action
 
 pub(crate) struct SystemBar
 {
-    template:    Box<MenuDefinitionState>,
-    state:       Box<MenuDefinitionState>,
-    scratch:     Box<MenuDefinitionState>,
-    rows:        [Option<Action>; MAX_ITEMS],
-    owner:       u64,
-    source:      Option<(u64, u64)>,
-    entry:       DefinitionEntry,
-    gate:        TrapGate,
-    tracking:    bool,
-    popup:       bool,
-    highlighted: i16
+    template:         Box<MenuDefinitionState>,
+    pub(super) state: Box<MenuDefinitionState>,
+    scratch:          Box<MenuDefinitionState>,
+    rows:             [Option<Action>; MAX_ITEMS],
+    pub(super) owner: u64,
+    source:           Option<(u64, u64)>,
+    entry:            DefinitionEntry,
+    gate:             TrapGate
 }
 impl SystemBar
 {
@@ -64,10 +61,7 @@ impl SystemBar
                       owner: 0,
                       source: None,
                       entry,
-                      gate,
-                      tracking: false,
-                      popup: true,
-                      highlighted: 0 })
+                      gate })
         })
     }
 
@@ -76,26 +70,8 @@ impl SystemBar
         self.template.title_bounds
     }
 
-    pub(crate) fn is_tracking(&self) -> bool
-    {
-        self.tracking
-    }
-
-    pub(crate) fn bar_selected(&self) -> bool
-    {
-        self.tracking && (self.popup || self.highlighted != 0)
-    }
-
-    pub(crate) fn cancel(&mut self)
-    {
-        self.tracking = false;
-        self.highlighted = 0;
-        self.popup = true;
-    }
-
     pub(crate) fn reset(&mut self, owner: u64)
     {
-        self.cancel();
         self.state.as_mut().clone_from(self.template.as_ref());
         self.rows.fill(None);
         self.rows[0] = Some(Action::AboutSystem);
@@ -168,7 +144,6 @@ impl SystemBar
         self.rows = rows;
         self.owner = owner;
         self.source = source;
-        self.cancel();
         Ok(true)
     }
 
@@ -217,142 +192,32 @@ impl SystemBar
         Ok(())
     }
 
-    pub(crate) fn begin(&mut self, point: Point) -> bool
+    pub(super) fn action(&self, item: i16) -> Option<Action>
     {
-        if !self.state.title_bounds.contains(point)
-        {
-            return false;
-        }
-        self.tracking = true;
-        self.popup = true;
-        self.highlighted = 0;
-        true
-    }
-
-    pub(crate) fn hover(&mut self, point: Point) -> bool
-    {
-        let previous = self.highlighted;
-        self.highlighted = invoke(self.entry,
-                                  self.gate,
-                                  &mut self.state,
-                                  HIT_ITEM,
-                                  ((u32::from(point.v as u16) << 16) | u32::from(point.h as u16))
-                                  as i64,
-                                  core::ptr::null_mut()) as i16;
-        self.highlighted != previous
-    }
-
-    pub(crate) fn release(&mut self, point: Point) -> Option<(i16, Action)>
-    {
-        self.hover(point);
-        let selected = self.selected();
-        if selected.is_none()
-        {
-            self.cancel();
-        }
-        selected
-    }
-
-    fn selected(&self) -> Option<(i16, Action)>
-    {
-        let at = usize::try_from(self.highlighted).ok()?.checked_sub(1)?;
+        let at = usize::try_from(item).ok()?.checked_sub(1)?;
         let row = self.state.items.get(at)?;
         if at >= self.state.item_count as usize || row.enabled == 0 || row.separator != 0
         {
             return None;
         }
-        Some((self.highlighted, self.rows[at]?))
+        self.rows[at]
     }
 
-    pub(crate) fn begin_key(&mut self, selection: Selection) -> Option<(i16, Action)>
+    pub(super) fn key_item(&self, selection: Selection) -> Option<i16>
     {
-        let (at, action) = self.rows.iter().enumerate().find_map(|(at, action)| {
-                                                            match action
-                                             {
-                                                 Some(action
-                                                      @ Action::Application { selection:
-                                                                                current,
-                                                                            .. })
-                                                     if *current == selection =>
-                                                 {
-                                                     Some((at, *action))
-                                                 }
-                                                 _ => None
-                                             }
-                                                        })?;
-        self.tracking = true;
-        self.popup = false;
-        self.highlighted = 0;
-        Some((at as i16 + 1, action))
-    }
-
-    pub(crate) fn feedback_bounds(&self, item: i16, keyboard: bool) -> Option<Rect>
-    {
-        if keyboard
-        {
-            let r = self.state.title_bounds;
-            return Some(Rect::new(r.left - 1, 1, r.right + 4, 19));
-        }
-        self.state.items.get(usize::try_from(item).ok()?.checked_sub(1)?).map(|row| row.bounds)
-    }
-
-    pub(crate) fn feedback_valid(&self, owner: u64, item: i16, action: Action) -> bool
-    {
-        let Some(at) = usize::try_from(item).ok().and_then(|n| n.checked_sub(1))
-        else
-        {
-            return false;
-        };
-        self.owner == owner
-        && self.tracking
-        && self.rows.get(at) == Some(&Some(action))
-        && self.state.items[at].enabled != 0
-        && self.state.items[at].separator == 0
-    }
-
-    pub(crate) fn highlight(&mut self, item: i16)
-    {
-        self.highlighted = item;
-    }
-
-    pub(crate) fn paint_feedback(&mut self, item: i16, keyboard: bool, canvas: &mut Canvas<'_>)
-                                 -> Result<(), Status>
-    {
-        let clip = self.feedback_bounds(item, keyboard).ok_or(BAD_ARGUMENT)?;
-        self.state.highlighted = self.highlighted;
-        self.state.first = 0;
-        self.state.bar_selected = u32::from(self.bar_selected());
-        let mut surface = Surface::from_canvas(canvas);
-        surface.clip = clip;
-        let status = invoke(self.entry,
-                            self.gate,
-                            &mut self.state,
-                            if keyboard { DRAW_BAR } else { DRAW_ITEM },
-                            i64::from(item),
-                            &mut surface);
-        if status == 0 { Ok(()) } else { Err(status as Status) }
-    }
-
-    pub(crate) fn draw_bar(&mut self, canvas: &mut Canvas<'_>) -> Result<(), PaintError>
-    {
-        self.state.first = 1;
-        self.state.bar_selected = u32::from(self.bar_selected());
-        canvas.reset_port();
-        let mut surface = Surface::from_canvas(canvas);
-        painted(SYSTEM_APPLE_MENU_ID,
-                invoke(self.entry, self.gate, &mut self.state, DRAW_BAR, 0, &mut surface))
-    }
-
-    pub(crate) fn draw_popup(&mut self, canvas: &mut Canvas<'_>) -> Result<(), PaintError>
-    {
-        if !self.tracking || !self.popup
-        {
-            return Ok(());
-        }
-        self.state.highlighted = self.highlighted;
-        canvas.reset_port();
-        let mut surface = Surface::from_canvas(canvas);
-        painted(SYSTEM_APPLE_MENU_ID,
-                invoke(self.entry, self.gate, &mut self.state, DRAW_POPUP, 0, &mut surface))
+        let at = self.rows.iter().enumerate().find_map(|(at, action)| {
+                                                  match action
+                                                  {
+                                                      Some(Action::Application { selection:
+                                                                                     current,
+                                                                                 .. })
+                                                          if *current == selection =>
+                                                      {
+                                                          Some(at)
+                                                      }
+                                                      _ => None
+                                                  }
+                                              })?;
+        Some(at as i16 + 1)
     }
 }
