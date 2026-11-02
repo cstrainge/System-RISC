@@ -1148,7 +1148,8 @@ fn prepare_system_idle(target: super::traps::execution::IdleTarget)
     })
 }
 
-pub(crate) fn start() -> Result<(), StartError>
+pub(crate) fn start(pending: Option<crate::toolbox::processes::startup::PendingStartup>)
+                    -> Result<(), StartError>
 {
     let interval = super::monitor::microseconds_to_ticks_ceil(QUANTUM_MICROSECONDS)
         .map_err(StartError::Clock)?;
@@ -1166,6 +1167,29 @@ pub(crate) fn start() -> Result<(), StartError>
     // Peers remain AdmittedIdle; this grants no dispatch policy permission.
     super::smp::initialize().map_err(StartError::Cpus)?;
     let wake_receiver = super::monitor::prepare_primary_wake().map_err(StartError::Wake)?;
+    if let Some(token) = pending
+    {
+        // Only the actual installed initial Finder flight authorizes this
+        // route. An absent runnable Finder alone must remain a boot error.
+        if !crate::toolbox::processes::startup::pending(&token)
+        {
+            return Err(mac_formats::Error::Malformed("scheduler startup token has no retained \
+                                                      initial Finder readiness flight").into());
+        }
+        let hart = selected_hart();
+        let frame = idle_frame();
+        activate_idle_context();
+        select_current(IDLE);
+        super::traps::execution::dispatch::idle_committed(hart, frame);
+        // StartupFlight owns all real admission/job/image/boot-panel resources.
+        // This sealed, non-Clone token owns no account pin and must not survive
+        // forever on the abandoned bootstrap stack.
+        drop(token);
+        arm();
+        wake::admitted(wake_receiver);
+        hart.resume_activity(true);
+        unsafe { __system_start_frame(frame) }
+    }
     let scheduler = SCHEDULER.lock();
     // Module preparations can precede Finder in the shared THRD store. Start
     // the genuine runnable Finder process, never an inert/armed module slot.
@@ -1700,6 +1724,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
                 reclaim_retired();
                 crate::drivers::scheduler::pump();
                 crate::drivers::pump_jobs();
+                crate::toolbox::processes::startup::pump();
                 crate::toolbox::files::pump_provider_operations();
                 crate::toolbox::runtime::Desktop::pump_standard_file();
                 pump_recovery_backing();
