@@ -3,7 +3,6 @@
 #![forbid(unsafe_code)]
 pub mod theme;
 pub mod graphics;
-pub mod desktop;
 pub mod fonts;
 pub mod regions;
 pub mod bitmaps;
@@ -38,6 +37,12 @@ impl<'a> QuickDraw<'a>
     pub const fn new(client: Client<'a>) -> Self
     {
         Self { client }
+    }
+
+    /// Classic `qd.screenBits.bounds`: the whole main screen in global coordinates.
+    pub fn screen_bounds(self) -> Result<Rect>
+    {
+        self.client.screen_bounds()
     }
 
     pub fn port(self, window: WindowId) -> Port<'a>

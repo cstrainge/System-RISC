@@ -2595,19 +2595,6 @@ impl WindowManager
         self.visibility.borrow_mut().visit(window.bounds, rectangles, visit);
     }
 
-    /// Desktop gaps for a selected layer use the same prepared visibility sweep.
-    pub(crate) fn for_each_layer_desktop_rect(&self, bounds: Rect,
-                                              include: &impl Fn(&Window) -> bool,
-                                              visit: impl FnMut(Rect))
-    {
-        let rectangles =
-            self.order[..self.len].iter()
-                                  .filter_map(|id| self.window(*id))
-                                  .filter(|window| !window.hidden && include(window))
-                                  .flat_map(|window| window.structure_pieces().iter().copied());
-        self.visibility.borrow_mut().visit(bounds, rectangles, visit);
-    }
-
     /// Copy committed ordinary pixels only where no genuine System source
     /// structure covers them. This never recomposes or samples service pixels.
     #[cfg(target_arch = "riscv64")]

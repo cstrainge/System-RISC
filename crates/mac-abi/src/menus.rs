@@ -17,6 +17,10 @@ pub const SET_ITEM: u32 = 9;
 pub const TRUNCATE: u32 = 10;
 /// Open the resident About System dialog for the foreground application.
 pub const SHOW_ABOUT_SYSTEM: u32 = 11;
+/// Classic `GetMBarHeight`: the menu bar height in `MenuCall::value`.
+pub const GET_BAR_HEIGHT: u32 = 12;
+/// Height of the menu bar, including its bottom rule; windows start below it.
+pub const MENU_BAR_HEIGHT: i16 = 21;
 /// Read-only desktop Apple menu; app sections retain their own menu identities.
 pub const SYSTEM_APPLE_MENU_ID: i16 = -16488;
 pub const MAX_ITEMS: usize = 31;

@@ -209,7 +209,7 @@ pub fn ensure(system: &System<'_>, selected: Selection) -> Result<Selection, Err
         ids
     };
     let mut mounted = [VolumeId::NONE; CAPACITY];
-    let bounds = system.quickdraw().desktop().bounds()?;
+    let bounds = desktop_bounds(system)?;
     let mut next = Selection::EMPTY;
     let mut column = 0i16;
     let mut top = 28i16;
@@ -671,13 +671,21 @@ impl icon_view::Drawing for Local<'_, '_>
         self.port.icon(id, name, bounds, state)
     }
 }
+/// Classic Finder derives the desktop from the main screen below the menu bar.
+pub(crate) fn desktop_bounds(system: &System<'_>) -> Result<Rect, Error>
+{
+    let mut bounds = system.quickdraw().screen_bounds()?;
+    bounds.top = bounds.top.saturating_add(system.menus().bar_height()?);
+    Ok(bounds)
+}
+
 impl Browser
 {
     /// The desktop is the first window created, so it stays at the back of the
     /// creation-ordered stack even before the flag is consulted.
     pub(super) fn create_desktop_window(&mut self, system: &System<'_>) -> Result<(), Error>
     {
-        let bounds = system.quickdraw().desktop().bounds()?;
+        let bounds = desktop_bounds(system)?;
         self.desktop.window =
             system.windows()
                   .create(WindowSpec::new(bounds, "").procedure(15).stay_in_back())?;

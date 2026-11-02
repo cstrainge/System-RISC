@@ -968,7 +968,7 @@ impl Browser
                          .iter()
                          .position(|saved| saved.is_some_and(|s| s.location == location));
         let saved = queued.and_then(|at| self.closed_states[at].map(|s| s.state)).or(persisted);
-        let desktop = system.quickdraw().desktop().bounds()?;
+        let desktop = desktop::desktop_bounds(system)?;
         let bounds =
             saved.map(|state| {
                      let w =

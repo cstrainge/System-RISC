@@ -192,7 +192,6 @@ impl Desktop
         super::window_layout::scene_admission(&self.windows,
                                               &self.content,
                                               &self.pending_content,
-                                              self.desktop.storage(),
                                               id)
     }
 
@@ -203,34 +202,18 @@ impl Desktop
         let font_snapshot = crate::kernel::fonts();
         let fonts = font_snapshot.as_deref();
         let cdef = self.cdef;
-        let desktop_visible =
-            self.processes.get(crate::context::finder_app().0).is_ok_and(|p| p.info.hidden == 0);
         self.content_cache.begin_frame();
         self.content_cache.retain(|id| {
-                              if id == SceneTarget::Desktop
-                              {
-                                  desktop_visible
-                              }
-                              else
-                              {
-                                  id.window().ok().and_then(|id| self.windows.window(id)).is_some()
-                                  && !self.content
-                                          .iter()
-                                          .find(|content| content.id == id)
-                                          .is_some_and(|content| {
-                                              content.iter_commands().any(|command| {
+                              id.window().ok().and_then(|id| self.windows.window(id)).is_some()
+                              && !self.content
+                                      .iter()
+                                      .find(|content| content.id == id)
+                                      .is_some_and(|content| {
+                                          content.iter_commands().any(|command| {
                                               matches!(command, RenderCommand::ScrollBox(_))
                                           })
-                                          })
-                              }
+                                      })
                           });
-        if desktop_visible
-        {
-            self.content_cache.try_paint(SceneTarget::Desktop, self.desktop.bounds(), &mut canvas,
-                |canvas| crate::kernel::with_resource_owner(crate::context::finder_app().0, || {
-                    self.desktop.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef))
-                }).and_then(core::convert::identity))?;
-        }
         let content = &self.content;
         let cache = &mut self.content_cache;
         self.windows.draw_layer(
@@ -295,31 +278,7 @@ impl Desktop
                                          })
         {
             let mut result = Ok(());
-            if *id == SceneTarget::Desktop
-            {
-                if !self.processes
-                        .get(crate::context::finder_app().0)
-                        .is_ok_and(|p| p.info.hidden == 0)
-                {
-                    continue;
-                }
-                self.windows.for_each_layer_desktop_rect(self.desktop.bounds(), &ordinary, |visible| {
-                    for band in region.bands() { for span in &band.spans {
-                        if result.is_err() { continue; }
-                        let mut rect = Rect::ZERO;
-                        if !sect_rect(Rect::new(span.left, band.top, span.right, band.bottom), visible, &mut rect)
-                        { continue; }
-                        canvas.reset_port(); canvas.set_clip(rect); background(&mut canvas);
-                        result = cache.try_paint(*id, self.desktop.bounds(), &mut canvas, |canvas| {
-                            crate::kernel::with_resource_owner(crate::context::finder_app().0, ||
-                                self.desktop.paint(canvas, fonts, |canvas, command| paint(canvas, command, cdef)))
-                                .and_then(core::convert::identity)
-                        });
-                        super::accumulate_presentation_damage(changed, copy_full, rect);
-                    }}
-                });
-            }
-            else if let Ok(window_id) = id.window()
+            if let Ok(window_id) = id.window()
             {
                 let Some(window) = self.windows.window(window_id)
                 else

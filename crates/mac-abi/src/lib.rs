@@ -275,8 +275,6 @@ pub const GET_WINDOW: u32 = 3;
 pub const INVALIDATE_WINDOW: u32 = 4;
 pub const BEGIN_UPDATE: u32 = 5;
 pub const END_UPDATE: u32 = 6;
-/// Deactivate every window while retaining their z order.
-pub const SELECT_DESKTOP: u32 = 7;
 /// Restrict automatic WDEF grow drawing to a window-local rectangle. A reserved
 /// value of1 restores the default unrestricted drawing;0 applies bounds.
 pub const SET_GROW_ICON_CLIP: u32 = 8;

@@ -543,7 +543,8 @@ impl super::Desktop
         }
         else if previous.is_none()
         {
-            checked(self.window(SELECT_DESKTOP, &mut call))
+            self.windows.deactivate_all(&mut self.events, Self::when());
+            Ok(())
         }
         else
         {
