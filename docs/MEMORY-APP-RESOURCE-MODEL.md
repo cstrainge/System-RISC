@@ -217,6 +217,11 @@ protected32 MiB partition is active, while complete private-heap/image enforceme
 and recovery-service kits remain behind their accounting/recovery gates. Physical admission can refuse a
 chosen heap capacity on a smaller RAM profile without silently changing policy.
 
+The temporary QEMU launch default selected on 2026-11-02 is **2 GiB**. The shared
+platform record supplies both Python and xtask launchers; heap, reserve and
+per-process budgets remain unchanged. Historical 8 GiB captures retain their
+original configuration and do not qualify the smaller profile.
+
 Other values, including the proposed minimum/maximum ranges below, remain
 **review proposals**. Evaluate them with real image/control/account usage,
 including Res Edit and a 200 MB Text Edit document, before enabling. Approval of
@@ -231,7 +236,7 @@ private process mappings remain a separate paging gate.
 
 | Configured policy | Minimum / initial default / maximum proposal | Reason |
 |---|---|---|
-| Physical RAM for native release VM | 512 MiB / 8 GiB / platform-discovered | Target class is ~8 GiB; small guest remains a deliberate test profile |
+| Physical RAM for native release VM | 512 MiB / 2 GiB temporary / platform-discovered | Longer-term target class is ~8 GiB; current launch default is 2 GiB |
 | Fixed System heap | 128 MiB / 512 MiB / 1 GiB | Must hold resident state plus charged process kernel allocations, including high-water reserve |
 | Protected recovery floor within System heap | 16 MiB / 32 MiB / 128 MiB | Measured kit + Finder restart, unavailable to ordinary process charges |
 | Finder restart portion of that floor | 8 MiB / 16 MiB / 64 MiB | Subset of floor, never added twice; final value measured from restart peak |
@@ -2564,7 +2569,7 @@ Prepared app stacks and the idle stack now hold actual page leases, rather than
 typed cause. Existing ThreadCore reader pins and noncurrent-stack retirement
 conditions remain the barriers: pages return before the original cleanup ticket
 acknowledges physical disposal. No timer-driven allocation or free-page scan is
-introduced. The configured QEMU default adopts 8 GiB. The static 10 MiB System
+introduced. The QEMU default at this historical stage was 8 GiB. The static 10 MiB System
 heap, domain charges/budgets, reserve and kernel trap-stack migration remain
 later work; page-backed stacks alone do not qualify those gates. The checked
 platform minimum is now 256 MiB, with an 8 MiB pinned module-code reservation.
