@@ -72,7 +72,11 @@ impl MonitorPolicy
 pub(super) struct Display
 {
     width:  u64,
-    height: u64
+    height: u64,
+    /// Largest mode a display driver may apply; frame storage is reserved for it.
+    /// Defaults to the initial size, which keeps the display fixed.
+    max_width:  Option<u64>,
+    max_height: Option<u64>
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +123,8 @@ pub struct Checked
     pub(super) display_scratch:             Range<u64>,
     pub(super) display_width:               u64,
     pub(super) display_height:              u64,
+    pub(super) display_max_width:           u64,
+    pub(super) display_max_height:          u64,
     pub(super) application_relocation_base: u64,
     pub(super) application_primary_base:    u64,
     pub(super) definitions:                 Range<u64>,
@@ -191,9 +197,19 @@ impl Definition
             return Err(error("platform display must be wider than 0, taller than 21 and fit \
                               signed 16-bit geometry"));
         }
-        let framebuffer = display_width.checked_mul(display_height)
-                                       .and_then(|pixels| pixels.checked_mul(4))
-                                       .ok_or_else(|| error("platform display size overflows"))?;
+        let display_max_width = self.display.max_width.unwrap_or(display_width);
+        let display_max_height = self.display.max_height.unwrap_or(display_height);
+        if display_max_width < display_width
+           || display_max_height < display_height
+           || display_max_width > i16::MAX as u64
+           || display_max_height > i16::MAX as u64
+        {
+            return Err(error("platform display maximum must not be smaller than the initial size \
+                              and must fit signed 16-bit geometry"));
+        }
+        let framebuffer = display_max_width.checked_mul(display_max_height)
+                                           .and_then(|pixels| pixels.checked_mul(4))
+                                           .ok_or_else(|| error("platform display size overflows"))?;
         let framebuffer_reservation =
             framebuffer.checked_add(page - 1)
                        .map(|bytes| bytes / page * page)
@@ -207,7 +223,7 @@ impl Definition
         if display_scratch.end - display_scratch.start < display_bytes
         {
             return Err(error(format!("platform display_scratch must cover the \
-                                      {display_width}x{display_height} framebuffer and \
+                                      {display_max_width}x{display_max_height} framebuffer and \
                                       tracking raster and backbuffer ({display_bytes} bytes)")));
         }
         let tail = address("fdt_tail_bytes", &self.fdt_tail_bytes)?;
@@ -320,6 +336,8 @@ impl Definition
                      display_scratch,
                      display_width,
                      display_height,
+                     display_max_width,
+                     display_max_height,
                      application_relocation_base,
                      application_primary_base,
                      definitions,
@@ -364,10 +382,12 @@ impl Checked
 
     pub fn display_constants(&self) -> String
     {
-        format!("// Generated from the checked platform display record.\npub(crate) const WIDTH: \
-                 usize = {};\npub(crate) const HEIGHT: usize = {};\n",
+        format!("// Generated from the checked platform display record.\npub(crate) const DEFAULT_WIDTH: \
+                 usize = {};\npub(crate) const DEFAULT_HEIGHT: usize = {};\npub(crate) const MAX_WIDTH: usize = {};\npub(crate) const MAX_HEIGHT: usize = {};\n",
                 self.display_dimensions().0,
-                self.display_dimensions().1)
+                self.display_dimensions().1,
+                self.display_max_width,
+                self.display_max_height)
     }
 
     pub(super) fn permits_mmio(&self, range: core::ops::Range<u64>) -> bool
@@ -512,7 +532,7 @@ impl Checked
     // reservation. Linker and resident constants consume this same record.
     fn display_buffers(&self) -> [(&'static str, u64); 3]
     {
-        let stride = (self.display_width * self.display_height * 4).div_ceil(self.page_bytes)
+        let stride = (self.display_max_width * self.display_max_height * 4).div_ceil(self.page_bytes)
                      * self.page_bytes;
         [("DISPLAY_FRONTBUFFER_BASE", self.display_scratch.start),
          ("DISPLAY_TRACKING_BASE", self.display_scratch.start + stride),
@@ -651,7 +671,7 @@ mod tests
         assert!(bad.check()
                    .unwrap_err()
                    .to_string()
-                   .contains("display_scratch must cover the 800x600 framebuffer"));
+                   .contains("display_scratch must cover the 1920x1200 framebuffer"));
         let mut bad = original.clone();
         bad.application_relocation_base = "0x87000000".into();
         assert!(bad.check()
@@ -659,8 +679,7 @@ mod tests
                    .to_string()
                    .contains("application_relocation_base must be page aligned inside images"));
         let mut bad = original.clone();
-        bad.minimum_ram_bytes = "0x8000000".into();
-        bad.fdt_tail_bytes = "0x900000".into();
+        bad.fdt_tail_bytes = "0x9000000".into();
         assert!(bad.check().unwrap_err().to_string().contains("FDT tail overlaps firmware_heap"));
         let mut bad = original.clone();
         bad.boot_stack_bytes = original.boot.bytes.clone();
@@ -706,11 +725,11 @@ mod tests
         assert!(rust.contains("DISPLAY_SCRATCH_BASE: u64 = 0x86a81000;"));
         assert!(rust.contains("DISPLAY_SCRATCH_BYTES: u64 = 0x57f000;"));
         assert!(rust.contains("DISPLAY_FRONTBUFFER_BASE: u64 = 0x86a81000;"));
-        assert!(rust.contains("DISPLAY_TRACKING_BASE: u64 = 0x86c56000;"));
+        assert!(rust.contains("DISPLAY_TRACKING_BASE: u64 = 0x888ca000;"));
         assert!(rust.contains("DISPLAY_BACKBUFFER_BASE: u64 = 0x86e2b000;"));
         assert!(linker.contains("__platform_DISPLAY_BACKBUFFER_BASE = 0x86e2b000;"));
-        assert!(checked.display_constants().contains("WIDTH: usize = 800;"));
-        assert!(checked.display_constants().contains("HEIGHT: usize = 600;"));
+        assert!(checked.display_constants().contains("DEFAULT_WIDTH: usize = 800;"));
+        assert!(checked.display_constants().contains("DEFAULT_HEIGHT: usize = 600;"));
         assert!(checked.boot_constants().contains("(0x86a81000,0x87000000)"));
         assert_eq!(checked.flash_base(), checked.flash.start);
         assert_eq!(checked.flash_bytes(), checked.flash.end - checked.flash.start);
