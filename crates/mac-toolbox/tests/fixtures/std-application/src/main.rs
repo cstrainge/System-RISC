@@ -144,7 +144,22 @@ fn run_standard(system: System) -> Result<(), Box<dyn Error>>
         std::process::exit(-23);
     }
     #[cfg(feature = "panic")]
-    panic!("STD_PROBE_DEFAULT_PANIC: UTF-8 αβ 🦀; default System hook");
+    {
+        #[cfg(feature = "panic-hook-restore")]
+        {
+            // Removing a custom hook must restore the platform's actual default,
+            // without author registration of the System reporting bridge.
+            std::panic::set_hook(Box::new(|_| {
+                                     if let Ok(system) = System::new()
+                                     {
+                                         let _ = system.log("STD_PROBE_REMOVED_CUSTOM_HOOK_RAN\n");
+                                     }
+                                 }));
+            drop(std::panic::take_hook());
+            system.log("STD_PROBE_DEFAULT_HOOK_RESTORED\n")?;
+        }
+        panic!("STD_PROBE_DEFAULT_PANIC: UTF-8 αβ 🦀; default System hook");
+    }
     #[cfg(feature = "oom")]
     {
         system.log("STD_PROBE_OOM_REQUEST bytes=536870912\n")?;

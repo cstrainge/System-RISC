@@ -125,10 +125,12 @@ on this target. The CRT must preserve that C entry signature; the internal
 compiler/target revisions. Emitting LLVM IR establishes compiler output only,
 not successful linking, startup or execution of an application.
 
-The next integration boundary is the kernel Thread Manager contract, especially
-TLS before std initialization, actual child completion/destruction before join,
-and address-lifetime-safe compare-and-park/wake. Native thread creation is a
-required delivery milestone, not an optional permanent stub.
+Native thread creation, TLS and compare-and-park/wake are implemented through the
+shared transport described above. Their acceptance still requires matching
+System/SDK observations of child completion, destruction before join, address
+lifetimes and process retirement; earlier artifacts do not qualify later builds.
+Writable files, launch data, streams, role-default builds and installed-app
+migration remain separate adoption gates.
 
 
 For this pinned Cargo, private native rebuilds select both

@@ -9,6 +9,7 @@ publish = false
 [features]
 exit = []
 panic = []
+panic-hook-restore = ["panic"]
 oom = []
 threads = []
 thread-transfer = ["threads"]
