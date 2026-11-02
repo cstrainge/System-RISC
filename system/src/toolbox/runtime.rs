@@ -583,7 +583,7 @@ impl Toolbox
                   core_dialogs_active: false,
                   menus: super::menus::Manager::new(super::handles::menu_kinds()?, mdef, crate::machine::traps::gateway)?,
                   system_bar,
-                  screen: Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16),
+                  screen: Rect::new(0, 0, crate::display::width() as i16, crate::display::height() as i16),
                   pointer: Pointer { cursors: Default::default(), busy_cursor, text_cursor, resize_cursors,
                                      responsiveness: Default::default(), automatic_cursor: None },
                   worlds: super::quickdraw::worlds::Worlds::new(super::handles::world_kinds()?)?,
@@ -2515,7 +2515,7 @@ impl Toolbox
               == CMD_KEY | mac_abi::events::OPTION_KEY | mac_abi::events::CONTROL_KEY
            && character.to_ascii_lowercase() == b'r'
         {
-            let full = Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16);
+            let full = Rect::new(0, 0, crate::display::width() as i16, crate::display::height() as i16);
             let reduced = Rect::new(0, 0, full.right * 3 / 4, full.bottom * 3 / 4);
             self.display_changed(if self.screen == full { reduced } else { full });
             return;
@@ -3011,8 +3011,8 @@ impl Toolbox
             {
                 let menu_paint = crate::context::without_recovery(|| {
                     let mut canvas = Canvas::new(platform::back_buffer(),
-                                                 crate::display::WIDTH,
-                                                 crate::display::HEIGHT);
+                                                 crate::display::width(),
+                                                 crate::display::height());
                     self.presentation.menu_cache.paint(&mut canvas,
                                                         (self.foreground,
                                                          self.menus.selected_menu(),
@@ -3047,8 +3047,8 @@ impl Toolbox
             self.presentation.frame_incomplete = false;
             crate::platform::with_tracking_mask(|scratch| {
                 let mut canvas = Canvas::new(platform::back_buffer(),
-                                             crate::display::WIDTH,
-                                             crate::display::HEIGHT);
+                                             crate::display::width(),
+                                             crate::display::height());
                 self.windows.draw_tracking(&mut canvas, scratch);
             });
             crate::trace::record(crate::trace::RENDER,
@@ -3227,8 +3227,8 @@ impl Toolbox
             platform::present_rects(back,
                                     [Rect::new(0,
                                                0,
-                                               crate::display::WIDTH as i16,
-                                               crate::display::HEIGHT as i16)],
+                                               crate::display::width() as i16,
+                                               crate::display::height() as i16)],
                                     overlays);
         }
         else

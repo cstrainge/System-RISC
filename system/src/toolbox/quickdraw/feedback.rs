@@ -161,8 +161,8 @@ impl VisibilityCache
                 {
                     windows.for_each_desktop_rect(Rect::new(0,
                                                             21,
-                                                            crate::display::WIDTH as i16,
-                                                            crate::display::HEIGHT as i16),
+                                                            crate::display::width() as i16,
+                                                            crate::display::height() as i16),
                                                   &mut collect);
                 }
                 if exhausted

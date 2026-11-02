@@ -221,8 +221,8 @@ impl Toolbox
         {
             let selected = feedback.phase % 2 != 0;
             let mut canvas = Canvas::new(crate::platform::back_buffer(),
-                                         crate::display::WIDTH,
-                                         crate::display::HEIGHT);
+                                         crate::display::width(),
+                                         crate::display::height());
             if keyboard
             {
                 self.presentation.menu_cache.invalidate();

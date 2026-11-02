@@ -174,7 +174,7 @@ impl Manager
     fn measure_with(entry: DefinitionRef, gate: TrapGate, state: &mut MenuDefinitionState)
                     -> Result<(), Status>
     {
-        state.bar_bounds = Rect::new(0, 0, crate::display::WIDTH as i16, 20);
+        state.bar_bounds = Rect::new(0, 0, crate::display::width() as i16, 20);
         let mut pixel = [0u32];
         let mut canvas = Canvas::new(&mut pixel, 1, 1);
         let mut surface = Surface::from_canvas(&mut canvas);

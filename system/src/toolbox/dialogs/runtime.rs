@@ -472,8 +472,8 @@ impl super::Toolbox
             }
             let r = state.structure;
             alert.bounds
-                 .offset((crate::display::WIDTH as i16 - (r.right - r.left)) / 2 - r.left,
-                         20 + ((crate::display::HEIGHT as i16 - 20) - (r.bottom - r.top)) / 5
+                 .offset((crate::display::width() as i16 - (r.right - r.left)) / 2 - r.left,
+                         20 + ((crate::display::height() as i16 - 20) - (r.bottom - r.top)) / 5
                          - r.top);
         }
         Ok(())

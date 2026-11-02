@@ -2,25 +2,24 @@
 use core::{arch::asm,
            sync::atomic::{AtomicBool, Ordering}};
 
-/// Display size in pixels, from the build-time platform record
-/// (`platforms/<platform>.json`, `memory.display`). This is the single source
-/// of display geometry: every consumer reads these constants.
-/// Control Panel hook: a future Display Control Panel changes the size by
-/// backing these with a runtime preference instead of the platform record;
-/// runtime switching also requires dynamic framebuffers, caches and scratch,
-/// not just this value.
-pub(crate) use crate::display::{HEIGHT, PIXELS, WIDTH};
+/// Live display geometry comes from `crate::display`; the platform record only
+/// fixes the default and the maximum the reservations are sized for.
+use crate::display::{height, pixels, width};
 
 static BACKBUFFER_INITIALIZED: AtomicBool = AtomicBool::new(false);
 // Window tracking never paints the menu bar's first 21 rows.
-const TRACKING_PIXELS: usize = WIDTH * (HEIGHT - 21);
+fn tracking_pixels() -> usize
+{
+    width() * (height() - 21)
+}
+const MAX_TRACKING_PIXELS: usize = crate::display::MAX_WIDTH * (crate::display::MAX_HEIGHT - 21);
 // This physical scratch reservation is generated from the same checked
 // platform record as the loader arena and BootInfo reservations. It is not
 // image BSS and cannot be allocated by the later physical page pool.
 const _: () =
-    assert!(super::memory::DISPLAY_TRACKING_BASE + (TRACKING_PIXELS * size_of::<u32>()) as u64
+    assert!(super::memory::DISPLAY_TRACKING_BASE + (MAX_TRACKING_PIXELS * size_of::<u32>()) as u64
             <= super::memory::DISPLAY_SCRATCH_BASE + super::memory::DISPLAY_SCRATCH_BYTES);
-const _: () = assert!(super::memory::DISPLAY_BACKBUFFER_BASE + (PIXELS * size_of::<u32>()) as u64
+const _: () = assert!(super::memory::DISPLAY_BACKBUFFER_BASE + (crate::display::MAX_PIXELS * size_of::<u32>()) as u64
                       <= super::memory::DISPLAY_SCRATCH_BASE
                          + super::memory::DISPLAY_SCRATCH_BYTES);
 
@@ -74,13 +73,13 @@ pub fn with_tracking_mask<R>(call: impl FnOnce(Option<&mut [u32]>) -> R) -> R
     if !TRACKING_INITIALIZED.load(Ordering::Acquire)
     {
         unsafe {
-            core::ptr::write_bytes(pointer, 0, TRACKING_PIXELS);
+            core::ptr::write_bytes(pointer, 0, tracking_pixels());
         }
         TRACKING_INITIALIZED.store(true, Ordering::Release);
     }
     // The platform checker proves page alignment, non-overlap and containment
     // in discovered minimum RAM; the guarded slice cannot escape this call.
-    call(Some(unsafe { core::slice::from_raw_parts_mut(pointer, TRACKING_PIXELS) }))
+    call(Some(unsafe { core::slice::from_raw_parts_mut(pointer, tracking_pixels()) }))
 }
 
 pub fn back_buffer() -> &'static mut [u32]
@@ -92,11 +91,25 @@ pub fn back_buffer() -> &'static mut [u32]
     if !BACKBUFFER_INITIALIZED.load(Ordering::Acquire)
     {
         unsafe {
-            core::ptr::write_bytes(pointer, 0, PIXELS);
+            core::ptr::write_bytes(pointer, 0, pixels());
         }
         BACKBUFFER_INITIALIZED.store(true, Ordering::Release);
     }
-    unsafe { core::slice::from_raw_parts_mut(pointer, PIXELS) }
+    unsafe { core::slice::from_raw_parts_mut(pointer, pixels()) }
+}
+/// Switches the live mode: publishes the geometry, then clears the back buffer and window-tracking mask so no stale-stride pixels survive.
+/// The caller is the serialized compositor and must fully damage the scene afterwards.
+pub(crate) fn apply_mode(width: usize, height: usize) -> Result<(), crate::display::ModeRefusal>
+{
+    crate::display::set_mode(width, height)?;
+    // SAFETY: the serialized compositor owns the reservations; both ranges
+    // are sized for the platform maximum and the new mode never exceeds it.
+    unsafe {
+        core::ptr::write_bytes(BACK_CPU as *mut u32, 0, pixels());
+        core::ptr::write_bytes(TRACKING_CPU as *mut u32, 0, tracking_pixels());
+        core::ptr::write_bytes(FRONT_CPU as *mut u32, 0, pixels());
+    }
+    Ok(())
 }
 pub fn setup_framebuffer() -> bool
 {
@@ -108,8 +121,8 @@ pub fn setup_framebuffer() -> bool
     let result = unsafe {
         mac_boot_screen::ramfb::configure(super::memory::FW_CFG_BASE as usize,
                                           address,
-                                          WIDTH,
-                                          HEIGHT,
+                                          width(),
+                                          height(),
                                           |pointer, bytes| {
                                               super::paging::bus_address(pointer as u64,
                                                                          bytes as u64)
@@ -123,11 +136,11 @@ pub fn setup_framebuffer() -> bool
     if ready
     {
         TRACKING_AVAILABLE.store(true, Ordering::Release);
-        serial!("RAMFB {}x{} addr=0x{:x}", WIDTH, HEIGHT, address);
+        serial!("RAMFB {}x{} addr=0x{:x}", width(), height(), address);
         serial!("DISPLAY_BUFFERS back={} front={} bytes={}",
                 super::memory::DISPLAY_BACKBUFFER_BASE,
                 address,
-                PIXELS * size_of::<u32>());
+                pixels() * size_of::<u32>());
     }
     ready
 }
@@ -145,7 +158,7 @@ pub fn ticks() -> u64
 pub fn present(back: &[u32])
 {
     present_rects(back,
-                  [mac_abi::geometry::Rect::new(0, 0, WIDTH as i16, HEIGHT as i16)],
+                  [mac_abi::geometry::Rect::new(0, 0, width() as i16, height() as i16)],
                   Default::default());
 }
 
@@ -156,10 +169,10 @@ pub(crate) fn present_rects(back: &[u32], rects: impl IntoIterator<Item = mac_ab
     use crate::toolbox::quickdraw::presentation::{PresentEvent, present_frame};
     // The serialized compositor owns both buffers. This exclusive frontbuffer
     // slice cannot escape; the scene stays read-only for the entire transition.
-    let front = unsafe { core::slice::from_raw_parts_mut(FRONT_CPU as *mut u32, PIXELS) };
+    let front = unsafe { core::slice::from_raw_parts_mut(FRONT_CPU as *mut u32, pixels()) };
     let mut started = 0;
     let owner = crate::context::current_thread_context().identity().app.0;
-    present_frame(back, front, WIDTH, HEIGHT, rects, overlays, |event| {
+    present_frame(back, front, width(), height(), rects, overlays, |event| {
         match event
         {
             PresentEvent::CopyStarted | PresentEvent::OutlineStarted =>
