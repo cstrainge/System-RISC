@@ -610,6 +610,8 @@ pub struct WindowManager
     // window-list changes invalidate it; cached IDs still validate on lookup.
     front_cache:           Cell<Option<(u64, Option<WindowId>)>>,
     windows:               Store<OwnedWindow>,
+    /// Main-screen bounds that interactive drag, grow and zoom stay within.
+    screen:                Rect,
     retained_failures:     VecDeque<mac_object_table::domain::CompletionError>,
     // One guaranteed modal service has one main window and one auxiliary
     // sheet. Keep their guards outside the Copy geometry payload, keyed by
@@ -669,6 +671,7 @@ impl WindowManager
                   recovery_windows: core::array::from_fn(|_| None),
                   #[cfg(target_arch = "riscv64")]
                   recovery_publications: None,
+                  screen: Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16),
                   order: Vec::new(),
                   len: 0,
                   active: None,
@@ -1198,11 +1201,11 @@ impl WindowManager
         // ordinary windows keep room for chrome.
         let (limit_left, limit_top, limit_right, limit_bottom) = if stay_in_back
         {
-            (0, MENU_BAR_BOTTOM, crate::display::width() as i16, crate::display::height() as i16)
+            (0, MENU_BAR_BOTTOM, crate::display::WIDTH as i16, crate::display::HEIGHT as i16)
         }
         else
         {
-            (1, 25, crate::display::width() as i16 - 2, crate::display::height() as i16 - 2)
+            (1, 25, crate::display::WIDTH as i16 - 2, crate::display::HEIGHT as i16 - 2)
         };
         if bounds.is_empty()
            || bounds.left < limit_left
@@ -1368,8 +1371,8 @@ impl WindowManager
         if structure.is_empty()
            || structure.left < 0
            || structure.top < if stay_in_back { MENU_BAR_BOTTOM } else { 25 }
-           || structure.right > crate::display::width() as i16
-           || structure.bottom > crate::display::height() as i16
+           || structure.right > crate::display::WIDTH as i16
+           || structure.bottom > crate::display::HEIGHT as i16
         {
             return Err(CreationError::Geometry { procedure });
         }
@@ -2124,9 +2127,9 @@ impl WindowManager
                             w.standard_bounds.unwrap_or_else(|| {
                                                  Rect::new(w.bounds.left - structure.left,
                                                            25 + w.bounds.top - structure.top,
-                                                           crate::display::width() as i16
+                                                           self.screen.right
                                                            - (structure.right - w.bounds.right),
-                                                           (crate::display::height() as i16 - 21)
+                                                           (self.screen.bottom - 21)
                                                            - (structure.bottom - w.bounds.bottom))
                                              });
                         w.state.zoomed = 1;
@@ -2155,7 +2158,7 @@ impl WindowManager
             {
                 // DragWindow constrains the cursor, not the entire window. A
                 // release outside the desktop cancels, including activation.
-                let preview = Rect::new(0, 21, crate::display::width() as i16, crate::display::height() as i16).contains(point).then(|| {
+                let preview = Rect::new(0, 21, self.screen.right, self.screen.bottom).contains(point).then(|| {
                     let dx = i32::from(point.h) - i32::from(start.h);
                     let dy = i32::from(point.v) - i32::from(start.v);
                     Rect::new((i32::from(bounds.left) + dx) as i16,
@@ -2194,13 +2197,13 @@ impl WindowManager
                 let structure = w.structure();
                 let width = (i32::from(bounds.right - bounds.left) + i32::from(point.h)
                              - i32::from(start.h)).clamp(i32::from(w.min_width),
-                                                       i32::from(crate::display::width() as i16
+                                                       i32::from(self.screen.right
                                                                  - (structure.right - w.bounds.right)
                                                                  - bounds.left).max(i32::from(w.min_width)))
                             as i16;
                 let height = (i32::from(bounds.bottom - bounds.top) + i32::from(point.v)
                               - i32::from(start.v)).clamp(i32::from(w.min_height),
-                                                         i32::from(crate::display::height() as i16
+                                                         i32::from(self.screen.bottom
                                                                    - (structure.bottom - w.bounds.bottom)
                                                                    - bounds.top).max(i32::from(w.min_height)))
                              as i16;
@@ -2282,8 +2285,8 @@ impl WindowManager
             return Ok(Region::new());
         };
         let mut visible =
-            Region::from_rect(window.bounds).combine(&Region::from_rect(Rect::new(0, 20, crate::display::width() as i16,
-                                                                                  crate::display::height() as i16)),
+            Region::from_rect(window.bounds).combine(&Region::from_rect(Rect::new(0, 20, crate::display::WIDTH as i16,
+                                                                                  crate::display::HEIGHT as i16)),
                                                      BooleanOp::Intersection)?;
         for front in &order[index + 1..]
         {
@@ -2501,6 +2504,54 @@ impl WindowManager
         Ok(Some(Action::Resize(id)))
     }
 
+    /// Adopt new main-screen bounds and move every ordinary window back onto
+    /// them without changing stacking: whole window when it fits, otherwise at
+    /// least its title bar, below the menu bar. Enlarging moves nothing.
+    /// Stay-in-back windows are left to their owner, who resizes them normally.
+    pub(crate) fn fit_to_screen(&mut self, screen: Rect, bar: i16, mut moved: impl FnMut(WindowId))
+    {
+        self.screen = screen;
+        let mut order = core::mem::take(&mut self.geometry_order);
+        order.clear();
+        order.extend_from_slice(&self.order[..self.len]);
+        for index in 0..order.len()
+        {
+            let id = order[index];
+            let Some(previous) = self.window(id).copied().filter(|w| !w.stay_in_back)
+            else
+            {
+                continue;
+            };
+            let structure = previous.structure();
+            let mut dx = (screen.right - structure.right).min(0);
+            dx = dx.max(screen.left - (structure.left + dx));
+            let mut dy = (screen.bottom - structure.bottom).min(0);
+            dy = dy.max(screen.top + bar - (structure.top + dy));
+            if dx == 0 && dy == 0
+            {
+                continue;
+            }
+            let mut staged = previous;
+            staged.bounds = Rect::new(previous.bounds.left + dx,
+                                      previous.bounds.top + dy,
+                                      previous.bounds.right + dx,
+                                      previous.bounds.bottom + dy);
+            staged.user_bounds = None;
+            staged.state.zoomed = 0;
+            if !staged.calculate()
+            {
+                continue;
+            }
+            if let Some(window) = self.window_mut(id)
+            {
+                *window = staged;
+            }
+            self.invalidate_geometry_exposure(&previous, &order, Action::Drag(id));
+            moved(id);
+        }
+        self.geometry_order = order;
+    }
+
     pub fn set_standard_bounds(&mut self, id: WindowId, bounds: Option<Rect>)
                                -> Result<(), Status>
     {
@@ -2525,8 +2576,8 @@ impl WindowManager
             let structure = proposed.structure();
             if structure.left < 0
                || structure.top < 25
-               || structure.right > crate::display::width() as i16
-               || structure.bottom > (crate::display::height() as i16 - 21)
+               || structure.right > crate::display::WIDTH as i16
+               || structure.bottom > (crate::display::HEIGHT as i16 - 21)
             {
                 return Err(BAD_ARGUMENT);
             }
@@ -2675,7 +2726,7 @@ impl WindowManager
         }
         else
         {
-            draw(Rect::new(0, 0, crate::display::width() as i16, crate::display::height() as i16));
+            draw(Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16));
         }
         result
     }
@@ -2875,8 +2926,8 @@ mod tests
     fn window_admission_uses_the_configured_right_and_bottom_edges()
     {
         let (mut wm, mut events, _, _) = make();
-        let right = crate::display::width() as i16;
-        let bottom = crate::display::height() as i16;
+        let right = crate::display::WIDTH as i16;
+        let bottom = crate::display::HEIGHT as i16;
         let id = wm.new_window(Rect::new(right - 140, bottom - 100, right - 12, bottom - 12),
                                "Platform corner",
                                99,
