@@ -455,9 +455,10 @@ frames were inspected; source and base media stayed fixed, and the private guest
 was reaped with its cloned media removed.
 
 The preceding full sequence and a drag-only partition failed account closure:
-the global outline visibility cache retained 264 bytes and two allocation pins
+the global outline visibility cache retained 264 bytes and two account pins
 charged to the invoking application. A launch/close-only partition closed its
-account. Newly constructed shared visibility snapshots now select ordinary
+account. Retained account pins count strong account references; they do not establish
+an allocation count. Newly constructed shared visibility snapshots now select ordinary
 System backing while preserving actual allocation receipts and cached refusal
 behavior. The original full sequence then reached the outcome above. This is
 finite evidence for that cache lifetime and GUI sequence, not general pressure,
