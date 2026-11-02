@@ -394,6 +394,11 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
             // delivery while cancellation safely drains the owned request.
             match job
             {
+                crate::context::DeferredIo::FileOperation(handle) =>
+                {
+                    crate::toolbox::files::local::pending::abandon(thread.identity().thread,
+                                                                   Some(handle))
+                }
                 crate::context::DeferredIo::FileTransfer(handle) =>
                 {
                     crate::toolbox::files::abandon_transfer_waiter(thread.identity().thread.0,
@@ -938,6 +943,9 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                             files::OPEN
                             | files::OPEN_OPTIONS
                             | files::WRITE
+                            | files::READ
+                            | files::SEEK
+                            | files::TELL
                             | files::SET_LENGTH
                             | files::SYNC
                             | files::WATCH_DIRECTORY

@@ -189,6 +189,66 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
     {
         return Some(BAD_ARGUMENT as i64);
     }
+    if matches!(call.operation, files::READ | files::SEEK | files::TELL)
+    {
+        if call.handle == 0
+           || call.volume != 0
+           || call.cnid != 0
+           || call.index != 0
+           || call.fork != 0
+           || call.reserved != 0
+           || call.open_flags != 0
+           || call.position != 0
+           || call.length != 0
+           || call.name_length != 0
+           || call.input_length != 0
+           || call.operation != files::SEEK && (call.whence != 0 || call.offset != 0)
+           || call.operation != files::READ && call.capacity != 0
+           || call.capacity > 1024 * 1024
+           || call.capacity != 0 && call.output.is_null()
+        {
+            return Some(BAD_ARGUMENT as i64);
+        }
+        let thread = crate::context::current_thread();
+        let block = crate::kernel::with_files(|manager| {
+                        // Replay uses its original owned description even if
+                        // another thread has since closed the public handle.
+                        if super::local::pending::has_waiter(manager, thread)
+                        {
+                            return Ok(true);
+                        }
+                        manager.slot(owner, call.handle).map(|file| {
+                                                            matches!(&*file.description.fork.lock(),
+                                                                     super::FileFork::Block(_))
+                                                        })
+                    }).map_err(|error| error.status())
+                      .and_then(core::convert::identity);
+        match block
+        {
+            Ok(true) =>
+            {
+                let Some(caller) = caller
+                else
+                {
+                    return Some(ACCESS_DENIED as i64);
+                };
+                let output = if call.capacity == 0
+                {
+                    &mut [][..]
+                }
+                else
+                {
+                    unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
+                };
+                call.transferred = 0;
+                return Some(super::local::pending::request(owner, &caller.owner, call, &[], output)
+                            as i64);
+            }
+            Ok(false) =>
+            {}
+            Err(error) => return Some(error as i64)
+        }
+    }
     if matches!(call.operation,
                 files::OPEN_OPTIONS | files::WRITE | files::SET_LENGTH | files::SYNC)
     {

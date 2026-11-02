@@ -14,7 +14,7 @@ use crate::toolbox::handles::InvocationGate;
 
 mod objects;
 #[cfg(target_arch = "riscv64")]
-mod local;
+pub(crate) mod local;
 mod subject;
 pub(crate) mod pins;
 pub(crate) mod forks;
@@ -464,6 +464,10 @@ pub struct Manager
 {
     #[cfg(target_arch = "riscv64")]
     local_operation:      Option<Arc<local::Operation>>,
+    #[cfg(target_arch = "riscv64")]
+    operations:           objects::Objects<local::pending::Entry>,
+    #[cfg(target_arch = "riscv64")]
+    operation_cursor:     usize,
     #[cfg(any(target_arch = "riscv64", feature = "test-support"))]
     file_icons:           icon_cache::Cache,
     pins:                 pins::Pins,
@@ -483,6 +487,11 @@ impl Default for Manager
     {
         Self { #[cfg(target_arch = "riscv64")]
                local_operation:                                                           None,
+               #[cfg(target_arch = "riscv64")]
+               operations:
+                   objects::Objects::new(),
+               #[cfg(target_arch = "riscv64")]
+               operation_cursor:                                                          0,
                pins:
                    pins::Pins::new(),
                volumes:
@@ -555,7 +564,9 @@ impl Manager
             return Err(SERVICE_BUSY);
         }
         #[cfg(target_arch = "riscv64")]
-        if self.transfers.iter().next().is_some() || !provider::runtime::power_ready()
+        if self.transfers.iter().next().is_some()
+           || self.operations.iter().next().is_some()
+           || !provider::runtime::power_ready()
         {
             return Err(SERVICE_BUSY);
         }
@@ -651,6 +662,17 @@ impl Manager
     fn validate_transfer_mutation<'a>(&self, owner: impl Into<subject::Access<'a>>, volume: u32)
                                       -> Result<(), Status>
     {
+        #[cfg(target_arch = "riscv64")]
+        if self.operations.iter().any(|(_, entry)| entry.uses(self, volume))
+        {
+            return Err(SERVICE_BUSY);
+        }
+        self.validate_transfer_conflicts(owner, volume)
+    }
+
+    fn validate_transfer_conflicts<'a>(&self, owner: impl Into<subject::Access<'a>>, volume: u32)
+                                       -> Result<(), Status>
+    {
         let owner = owner.into();
         #[cfg(target_arch = "riscv64")]
         if self.transfers
@@ -670,6 +692,11 @@ impl Manager
         let owner = authority.owner().incarnation();
         self.read_provider(volume)?;
         self.validate_transfer_read(owner, volume, id)?;
+        #[cfg(target_arch = "riscv64")]
+        if self.operations.iter().any(|(_, entry)| entry.protects(self, volume, id))
+        {
+            return Err(SERVICE_BUSY);
+        }
         if self.writes.iter().any(|(_, write)| write.volume == volume && write.expected_cnid == id)
            || self.streams
                   .iter()
@@ -699,6 +726,11 @@ impl Manager
 
     fn file_pinned(&self, volume: u32, id: u32) -> bool
     {
+        #[cfg(target_arch = "riscv64")]
+        if self.operations.iter().any(|(_, entry)| entry.protects(self, volume, id))
+        {
+            return true;
+        }
         self.pins.objects().any(|pin| pin.volume == volume && pin.id == id)
     }
 
@@ -725,6 +757,11 @@ impl Manager
     {
         let owner = authority.owner().incarnation();
         self.validate_transfer_read(owner, volume, id)?;
+        #[cfg(target_arch = "riscv64")]
+        if self.operations.iter().any(|(_, entry)| entry.protects(self, volume, id))
+        {
+            return Err(SERVICE_BUSY);
+        }
         if self.writes.iter().any(|(_, write)| write.volume == volume && write.expected_cnid == id)
            || self.streams
                   .iter()

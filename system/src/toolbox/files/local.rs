@@ -4,6 +4,8 @@
 use core::sync::atomic::Ordering;
 
 use super::*;
+pub(crate) mod lifetime;
+pub(crate) mod pending;
 use crate::drivers::jobs::subjects::Subject;
 static PENDING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 pub(in crate::toolbox::files) fn needs_cleanup() -> bool
@@ -14,10 +16,13 @@ pub(in crate::toolbox::files) fn needs_cleanup() -> bool
 pub(super) struct Operation
 {
     volume:    u32,
+    disk:      u32,
+    partition: Partition,
     info:      VolumeInfo,
     _subject:  Subject,
     finished:  spinning_top::Spinlock<Option<Finished>>,
-    completed: spinning_top::Spinlock<Option<Result<Reply, Status>>>
+    completed: spinning_top::Spinlock<Option<Result<Reply, Status>>>,
+    progress:  spinning_top::Spinlock<Option<(u64, u64)>>
 }
 struct Finished
 {
@@ -36,20 +41,52 @@ impl Operation
         self.info
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Call
+{
+    operation:  u32,
+    handle:     u32,
+    volume:     u32,
+    cnid:       u32,
+    fork:       u32,
+    open_flags: u32,
+    length:     u64,
+    index:      u32,
+    whence:     u32,
+    offset:     i64,
+    capacity:   usize
+}
+impl From<&FileCall> for Call
+{
+    fn from(call: &FileCall) -> Self
+    {
+        Self { operation:  call.operation,
+               handle:     call.handle,
+               volume:     call.volume,
+               cnid:       call.cnid,
+               fork:       call.fork,
+               open_flags: call.open_flags,
+               length:     call.length,
+               index:      call.index,
+               whence:     call.whence,
+               offset:     call.offset,
+               capacity:   call.capacity }
+    }
+}
 struct Input
 {
-    call:  FileCall,
+    call:  Call,
     name:  String,
     bytes: Vec<u8>,
     when:  u64
 }
-// FileCall's pointer fields are cleared at the checked native boundary. Input
-// never dereferences a caller pointer and remains local to the firmware hart.
+// Admission copies only semantic scalars and owned bytes. Input has no caller
+// pointers and no borrowed memory, including across scheduler park/replay.
 struct Work
 {
     operation:   Arc<Operation>,
     mounted:     BlockMounted,
-    input:       Input,
+    input:       Arc<Input>,
     description: Option<Arc<OpenDescription>>,
     node:        u32,
     protected:   Vec<u32>,
@@ -60,6 +97,12 @@ struct Work
 enum Reply
 {
     Open(CatalogEntry),
+    Read
+    {
+        position: u64,
+        length:   u64,
+        bytes:    Vec<u8>
+    },
     Progress
     {
         position:    u64,
@@ -194,25 +237,70 @@ impl Work
         let mut fork = selected(&mut entry, description.kind)?;
         let mut position = description.position.load(Ordering::Acquire);
         let mut transferred = 0;
+        *self.operation.progress.lock() = Some((position, fork.length));
         match call.operation
         {
+            READ =>
+            {
+                if description.flags & OPEN_READ == 0
+                {
+                    return Err(ACCESS_DENIED);
+                }
+                let mut bytes = Vec::new();
+                let capacity = call.capacity.min(MAX_FILE_TRANSFER);
+                bytes.try_reserve_exact(capacity).map_err(|_| NO_MEMORY)?;
+                bytes.resize(capacity, 0);
+                let count = io(volume.read(&mut fork, position, &mut bytes))?;
+                bytes.truncate(count);
+                position = position.checked_add(count as u64).ok_or(BAD_ABI)?;
+                let length = fork.length;
+                *self.operation.progress.lock() = Some((position, length));
+                *description.fork.lock() = FileFork::Block(fork);
+                description.position.store(position, Ordering::Release);
+                return Ok((Reply::Read { position,
+                                         length,
+                                         bytes },
+                           false,
+                           parent));
+            }
+            SEEK =>
+            {
+                let base = match call.whence
+                {
+                    SEEK_START => 0,
+                    SEEK_CURRENT => position,
+                    SEEK_END => fork.length,
+                    _ => return Err(BAD_ARGUMENT)
+                };
+                position = base.checked_add_signed(call.offset).ok_or(BAD_ARGUMENT)?;
+            }
+            TELL =>
+            {}
             WRITE =>
             {
                 if description.flags & (OPEN_WRITE | OPEN_APPEND) == 0
                 {
                     return Err(ACCESS_DENIED);
                 }
-                if description.flags & OPEN_APPEND != 0
+                if description.flags & OPEN_APPEND != 0 && !input.bytes.is_empty()
                 {
                     position = fork.length;
                 }
-                // A large gap is prepared through bounded SET_LENGTH calls by
-                // the std adapter. No zero-length "successful write" advances it.
-                if position.saturating_sub(fork.length) > MAX_FILE_TRANSFER as u64
+                if !input.bytes.is_empty() && position > fork.length
                 {
-                    return Err(BAD_ARGUMENT);
+                    let target = position.min(fork.length.saturating_add(MAX_FILE_TRANSFER as u64));
+                    let mut entry = volume.set_fork_len(self.node,
+                                                        description.kind == RESOURCE_FORK,
+                                                        target,
+                                                        input.when,
+                                                        &self.protected)
+                                          .map_err(mutation_status)?;
+                    fork = selected(&mut entry, description.kind)?;
+                    changed = true;
+                    self.changed = true;
+                    self.mounted.scanner = Some(io(volume.catalog_scanner())?);
                 }
-                if !input.bytes.is_empty()
+                else if !input.bytes.is_empty()
                 {
                     let mut entry = volume.write_fork(self.node,
                                                       description.kind == RESOURCE_FORK,
@@ -241,7 +329,7 @@ impl Work
                 }
                 else
                 {
-                    call.length
+                    call.length.max(fork.length.saturating_sub(MAX_FILE_TRANSFER as u64))
                 };
                 let mut entry = volume.set_fork_len(self.node,
                                                     description.kind == RESOURCE_FORK,
@@ -261,6 +349,7 @@ impl Work
             _ => return Err(BAD_ARGUMENT)
         }
         let length = fork.length;
+        *self.operation.progress.lock() = Some((position, length));
         *description.fork.lock() = FileFork::Block(fork);
         description.position.store(position, Ordering::Release);
         self.mounted.info.free_bytes = volume.free_bytes;
@@ -388,7 +477,8 @@ impl Manager
         Ok(())
     }
 
-    fn begin_local(&mut self, owner: u64, authority: &OwnerRef, subject: Subject, input: Input)
+    fn begin_local(&mut self, owner: u64, authority: &OwnerRef, subject: Subject,
+                   input: Arc<Input>, source: Option<&pending::Source>)
                    -> Result<Work, Status>
     {
         self.local_ready()?;
@@ -404,16 +494,37 @@ impl Manager
         }
         else
         {
-            let file = self.slot(owner, call.handle)?;
-            if !matches!(&*file.description.fork.lock(), FileFork::Block(_))
+            if let Some(source) = source
             {
-                return Err(NOT_SUPPORTED);
+                (source.volume, source.node, Some(source.description.clone()))
             }
-            (file.volume, file.id, Some(file.description.clone()))
+            else
+            {
+                let file = self.slot(owner, call.handle)?;
+                if !matches!(&*file.description.fork.lock(), FileFork::Block(_))
+                {
+                    return Err(NOT_SUPPORTED);
+                }
+                (file.volume, file.id, Some(file.description.clone()))
+            }
         };
-        self.validate_transfer_mutation(owner, volume)?;
-        if self.writes.iter().any(|(_, mark)| mark.volume == volume)
-           || self.streams.iter().any(|(_, mark)| mark.volume == volume)
+        if matches!(call.operation, READ | SEEK | TELL)
+        {
+            self.validate_transfer_read(owner, volume, node)?;
+        }
+        else if source.is_some()
+                  || call.open_flags & (OPEN_CREATE | OPEN_CREATE_NEW | OPEN_TRUNCATE) == 0
+        {
+            self.validate_transfer_conflicts(owner, volume)?;
+        }
+        else
+        {
+            self.validate_transfer_mutation(owner, volume)?;
+        }
+        if !matches!(call.operation, READ | SEEK | TELL)
+           && (self.writes.iter().any(|(_, mark)| mark.volume == volume)
+               || self.streams.iter().any(|(_, mark)| mark.volume == volume)
+               || self.groups.iter().any(|(_, mark)| mark.volume == volume))
         {
             return Err(SERVICE_BUSY);
         }
@@ -442,12 +553,14 @@ impl Manager
         let mut protected = Vec::new();
         protected.try_reserve_exact(self.pins.len()).map_err(|_| NO_MEMORY)?;
         protected.extend(self.pins.objects().filter(|pin| pin.volume == volume).map(|pin| pin.id));
-        if description.is_some() && call.operation != SYNC && protected.contains(&node)
+        if description.is_some()
+           && matches!(call.operation, WRITE | SET_LENGTH)
+           && protected.contains(&node)
         {
             return Err(ACCESS_DENIED);
         }
         let revision = scan::next_revision()?;
-        let operation=Arc::try_new(Operation {volume,info,_subject:subject,finished:spinning_top::Spinlock::new(None),completed:spinning_top::Spinlock::new(None)}).map_err(|_|NO_MEMORY)?;
+        let operation=Arc::try_new(Operation {volume,disk,partition,info,_subject:subject,finished:spinning_top::Spinlock::new(None),completed:spinning_top::Spinlock::new(None),progress:spinning_top::Spinlock::new(None)}).map_err(|_|NO_MEMORY)?;
         let slot = self.volumes.get_mut(volume).ok_or(NOT_FOUND)?;
         let original = core::mem::replace(slot, Mounted::Operating(operation.clone()));
         let mounted = match original
@@ -499,6 +612,10 @@ pub(super) fn request(owner: u64, authority: &OwnerRef, call: &mut FileCall, nam
             flags |= OPEN_WRITE;
         }
     }
+    if call.operation != OPEN_OPTIONS
+    {
+        return pending::request(owner, authority, call, bytes, &mut []);
+    }
     let subject = match crate::drivers::jobs::subjects::resident().and_then(|operations| {
                             operations.admit_current(&subject::Authority::Client(authority.clone()))
                         })
@@ -525,21 +642,19 @@ pub(super) fn request(owner: u64, authority: &OwnerRef, call: &mut FileCall, nam
         return NO_MEMORY;
     }
     owned_bytes.extend_from_slice(bytes);
-    let mut snapshot = *call;
+    let mut snapshot = Call::from(&*call);
     snapshot.open_flags = flags;
-    snapshot.name = core::ptr::null();
-    snapshot.name_length = 0;
-    snapshot.input = core::ptr::null();
-    snapshot.input_length = 0;
-    snapshot.output = core::ptr::null_mut();
-    snapshot.capacity = 0;
-    let input = Input { call: snapshot,
-                        name: owned_name,
-                        bytes: owned_bytes,
-                        when };
+    let input = match Arc::try_new(Input { call: snapshot,
+                                           name: owned_name,
+                                           bytes: owned_bytes,
+                                           when })
+    {
+        Ok(input) => input,
+        Err(_) => return NO_MEMORY
+    };
     let outcome=crate::context::with_io_subject(subject.clone(),|| {
         crate::machine::io::run(|| {
-            let work=crate::kernel::with_files(|manager|manager.begin_local(owner,authority,subject,input)).map_err(|error|error.status())??;
+            let work=crate::kernel::with_files(|manager|manager.begin_local(owner,authority,subject,input,None)).map_err(|error|error.status())??;
             let operation=work.operation.clone();
             // Fixed-owner I/O remains active; no Files/state lock crosses I/O.
             work.execute();
@@ -554,7 +669,7 @@ pub(super) fn request(owner: u64, authority: &OwnerRef, call: &mut FileCall, nam
                     Ok(Reply::Progress {position,length,transferred})=>{
                         call.position=*position;call.length=*length;call.transferred=*transferred;Err(refusal)
                     },
-                    Ok(Reply::Open(_))=>Err(refusal),
+                    Ok(Reply::Open(_))|Ok(Reply::Read {..})=>Err(refusal),
                 };
             }
             let outcome=operation.completed.lock().take().ok_or(BAD_ABI)?;
@@ -589,6 +704,7 @@ pub(super) fn request(owner: u64, authority: &OwnerRef, call: &mut FileCall, nam
                 Ok(handle)=>{call.handle=handle;call.position=0;call.length=length;call.cnid=entry.id;OK},Err(error)=>error,
             }
         }
+        Ok(Reply::Read { .. }) => BAD_ABI,
         Err(error) => error
     }
 }

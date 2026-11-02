@@ -1083,6 +1083,7 @@ pub(crate) fn pump()
         // terminal result. A subsequent legitimate maintenance pass retries.
         let _ = files(|manager| manager.local_ready());
     }
+    super::super::local::pending::pump();
     resident::pump_cleanup();
     crate::drivers::file_sources::runtime::pump();
     transfer::pump();

@@ -1,5 +1,5 @@
 //! Real target application using the public SDK and actual FILE trap. These
-//! finite observations do not qualify std, general large-gap I/O or pressure.
+//! finite observations do not qualify std, arbitrary large files or pressure.
 #![no_std]
 #![no_main]
 use mac_toolbox::{Error, System, ToolboxResult,
@@ -49,7 +49,7 @@ fn length(system: &System<'_>, handle: u32, target: u64) -> ToolboxResult<()>
                               length: target,
                               ..Default::default() };
     system.client().file(&mut call, "", &mut [])?;
-    assert_eq!(call.length, target, "small native resize length");
+    assert_eq!(call.length, target, "native resize did not reach requested target");
     Ok(())
 }
 fn read(system: &System<'_>, handle: u32, output: &mut [u8]) -> ToolboxResult<usize>
@@ -157,8 +157,37 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
     let mut rsrc = [0; 4];
     assert_eq!(read(system, resource, &mut rsrc)?, 4);
     assert_eq!(&rsrc, b"RSRC");
-    call(system, CLOSE, resource)?;
     system.log("STD_FILES_NATIVE_RESIZE_ZERO_RESOURCE_OBSERVED\n")?;
+    // Each request exceeds the resident device-step bound. Application code
+    // issues one FILE request, without SDK resize/write continuation loops.
+    const LARGE: u64 = 3 * MAX_FILE_TRANSFER as u64 + 19;
+    length(system, clone, LARGE)?;
+    assert_eq!(call(system, TELL, clone)?.position, 17, "large growth moved cursor");
+    seek(system, clone, (MAX_FILE_TRANSFER as u64 + 7) as i64)?;
+    let mut zero = [0x55; 32];
+    assert_eq!(read(system, clone, &mut zero)?, zero.len());
+    assert_eq!(zero, [0; 32]);
+    seek(system, clone, (LARGE + 2 * MAX_FILE_TRANSFER as u64 + 13) as i64)?;
+    let gap_position = call(system, TELL, clone)?.position;
+    write(system, clone, &[])?;
+    assert_eq!(call(system, TELL, clone)?.length, LARGE, "empty write grew gap");
+    write(system, clone, b"GAP")?;
+    let after = call(system, TELL, clone)?;
+    assert_eq!(after.position, gap_position + 3);
+    assert_eq!(after.length, gap_position + 3);
+    seek(system, clone, (gap_position - 8) as i64)?;
+    let mut tail = [0x55; 11];
+    assert_eq!(read(system, clone, &mut tail)?, tail.len());
+    assert_eq!(&tail[..8], &[0; 8]);
+    assert_eq!(&tail[8..], b"GAP");
+    length(system, clone, 5)?;
+    assert_eq!(call(system, TELL, clone)?.position, gap_position + 3, "large shrink moved cursor");
+    assert_eq!(read(system, clone, &mut tail)?, 0);
+    seek(system, resource, 0)?;
+    assert_eq!(read(system, resource, &mut rsrc)?, 4);
+    assert_eq!(&rsrc, b"RSRC");
+    system.log("STD_FILES_NATIVE_CONTINUATION_GROW_GAP_SHRINK_OBSERVED\n")?;
+    call(system, CLOSE, resource)?;
     let readonly = open(system, volume, id, DATA_FORK, OPEN_READ, "")?.handle;
     assert_eq!(write(system, readonly, b"X"), Err(Error::AccessDenied));
     call(system, CLOSE, readonly)?;

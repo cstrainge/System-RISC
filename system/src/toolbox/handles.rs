@@ -142,6 +142,9 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                registry.register(&owner, crate::toolbox::textedit::lifetime::specification(true), cleanup::context::Desktop(cleanup::Complete(crate::toolbox::textedit::lifetime::ReleaseStorage))).map_err(KindAccessError::Registry)?;
                                registry.register(&owner,crate::toolbox::dialogs::specification(false), cleanup::context::Desktop(crate::toolbox::dialogs::ReleaseAlerts)).map_err(KindAccessError::Registry)?;
                                registry.register(&owner,crate::toolbox::dialogs::specification(true), cleanup::context::Desktop(crate::toolbox::dialogs::ReleaseStorage)).map_err(KindAccessError::Registry)?;
+                               for storage in [false,true] {
+                                   registry.register(&owner,crate::toolbox::files::local::lifetime::specification(storage), cleanup::context::Desktop(crate::toolbox::files::local::lifetime::ReleaseOperations(storage))).map_err(KindAccessError::Registry)?;
+                               }
                                registry.register(&owner, crate::toolbox::files::forks::lifetime::specification(false), cleanup::context::Desktop(crate::toolbox::files::forks::lifetime::ReleaseForks)).map_err(KindAccessError::Registry)?;
                                registry.register(&owner, crate::toolbox::files::forks::lifetime::specification(true), cleanup::context::Desktop(crate::toolbox::files::forks::lifetime::ReleaseStorage)).map_err(KindAccessError::Registry)?;
                                registry.register(&owner,crate::toolbox::files::write::lifetime::specification(false), cleanup::context::Desktop(crate::toolbox::files::write::lifetime::ReleaseWrites)).map_err(KindAccessError::Registry)?;
@@ -468,4 +471,11 @@ pub(crate) fn document_batch_kinds() -> Result<(KindLease, KindLease), mac_abi::
 {
     registry(|registry| Ok((registry.get(KindCode(*b"DBAT"))?,registry.get(KindCode(*b"DBST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn file_operation_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry|Ok((registry.get(KindCode(*b"FIOP"))?,registry.get(KindCode(*b"FIOB"))?)))
+        .map_err(|error|error.status())?.map_err(|error|registry_status(&error))
 }
