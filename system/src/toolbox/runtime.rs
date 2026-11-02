@@ -60,13 +60,28 @@ mod ordinary_underlay;
 use ordinary_underlay::OrdinaryUnderlay;
 #[path = "processes/runtime.rs"]
 mod local;
-pub(crate) use local::{FinderAdmission, FinderCapacityError, FinderPreparation};
+pub(crate) use local::{FinderAdmission, FinderCapacityError, FinderPreparation,
+                       system_report::{SystemReportAction, SystemReportActionKind,
+                                       active as system_report_active,
+                                       changed as system_report_changed,
+                                       pump as pump_system_report}};
 #[path = "windows/runtime.rs"]
 mod window_runtime;
 pub(crate) use window_runtime::native_window;
 #[path = "controls/runtime.rs"]
 mod control_runtime;
 pub(crate) use control_runtime::native_control;
+fn note_recovery_input_refusal(owner: u64, status: Status)
+{
+    use core::sync::atomic::{AtomicI32, Ordering};
+    static LAST_REFUSAL: AtomicI32 = AtomicI32::new(OK);
+    if LAST_REFUSAL.swap(status, Ordering::AcqRel) != status
+    {
+        serial!("RECOVERY_INPUT_CONTEXT_REFUSED app={} status={status}; modal authority retained",
+                owner);
+    }
+}
+
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
@@ -75,6 +90,12 @@ pub struct Desktop
     scroll_boxes:                     super::controls::scrollbox::Manager,
     controls:                         super::controls::objects::Manager,
     crash:                            super::crashes::Manager,
+    system_report:                    Option<local::system_report::SystemReportSlot>,
+    system_report_active:             Option<local::system_report::ReportSession>,
+    system_ui_baseline:               bool,
+    system_report_temporary:          bool,
+    system_report_present_pending:    bool,
+    system_report_cursor_pending:     bool,
     dialogs:                          super::dialogs::Alerts,
     core_dialogs:                     super::dialogs::Alerts,
     core_dialogs_active:              bool,
@@ -239,6 +260,7 @@ impl Desktop
                 }
                 self.windows.prepare_recovery(&storage).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Window Manager status={status}"); status })?;
                 self.controls.prepare_recovery(&storage, controls).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Control Manager status={status}"); status })?;
+                self.prepare_system_report_slot(&storage)?;
                 self.prepare_core_dialogs().map_err(|status| {
                                                 serial!("RECOVERY_SERVICE_ADMISSION_REFUSED \
                                                          service=Core Alert Manager \
@@ -509,6 +531,12 @@ impl Desktop
         locals.push(local::Saved::try_placeholder(processes.ledger(finder)?, mdef)?);
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
+                  system_report: None,
+                  system_report_active: None,
+                  system_ui_baseline: false,
+                  system_report_temporary: false,
+                  system_report_present_pending: false,
+                  system_report_cursor_pending: false,
                   standard_file: super::standard_file::Manager::new(super::handles::file_dialog_kinds()?)?,
                   scroll_boxes: super::controls::scrollbox::Manager::new(super::handles::scroll_box_kinds()?)?,
                   controls,
@@ -2026,39 +2054,62 @@ impl Desktop
 
     fn input(&mut self, input: Input, when: u32)
     {
-        if let Some(activity) = crate::recovery::for_input(self.owner)
+        // Resolve this real ButtonDown once. Motion/keys/ticks use the actual
+        // report focus/capture and never add definition HIT calls.
+        let hit = if self.system_report_needs_hit()
+                     && !self.app_menu.is_tracking()
+                     && !self.menus.is_tracking()
+                     && !self.windows.is_tracking()
+                     && let Input::Button { point,
+                                            down: true } = input
+                     && point.v >= self.desktop.bounds().top
+        {
+            Some(self.windows.find_window(point))
+        }
+        else
+        {
+            None
+        };
+        match self.system_report_input(input, when, hit)
+        {
+            Ok(true) => return,
+            Err(status) =>
+            {
+                note_recovery_input_refusal(self.owner, status);
+                return;
+            }
+            Ok(false) => ()
+        }
+        if let Some(activity) =
+            crate::recovery::for_input(self.owner).filter(|activity| !activity.is_system_report())
         {
             let kind =
                 crate::recovery::active(self.owner, crate::recovery::Kind::CoreAlert).is_some();
-            if let Err(status) =
-                activity.run(|| {
-                            if kind
-                            {
-                                self.with_core_dialogs(|desktop| desktop.input_impl(input, when));
-                            }
-                            else
-                            {
-                                self.input_impl(input, when);
-                            }
-                        })
+            if let Err(status) = activity.run(|| {
+                                             if kind
+                                             {
+                                                 self.with_core_dialogs(|desktop| {
+                                                         desktop.input_impl_with_hit(input, when,
+                                                                                     hit)
+                                                     });
+                                             }
+                                             else
+                                             {
+                                                 self.input_impl_with_hit(input, when, hit);
+                                             }
+                                         })
             {
-                use core::sync::atomic::{AtomicI32, Ordering};
-                static LAST_REFUSAL: AtomicI32 = AtomicI32::new(OK);
-                if LAST_REFUSAL.swap(status, Ordering::AcqRel) != status
-                {
-                    serial!("RECOVERY_INPUT_CONTEXT_REFUSED app={} status={status}; modal \
-                             authority retained",
-                            activity.owner());
-                }
+                note_recovery_input_refusal(activity.owner(), status);
             }
         }
         else
         {
-            self.input_impl(input, when);
+            self.input_impl_with_hit(input, when, hit);
         }
     }
 
-    fn input_impl(&mut self, input: Input, when: u32)
+    fn input_impl_with_hit(&mut self, input: Input, when: u32,
+                           admitted_hit: Option<super::windows::Hit>)
     {
         let (kind, a, b, c) = match input
         {
@@ -2111,7 +2162,16 @@ impl Desktop
             self.cursor_dirty = true;
             self.redraw |= self.windows.tracking_repaints_scene();
         }
-        if self.crash_input(input, when)
+        let report_scope = !self.system_report_selected()
+                           || crate::context::recovery_activity().is_some_and(|activity| {
+                                                                     activity.is_system_report()
+                                                                 });
+        if report_scope
+           && match admitted_hit
+           {
+               Some(hit) => self.crash_input_with_hit(input, when, Some(hit)),
+               None => self.crash_input(input, when)
+           }
         {
             return;
         }
@@ -2173,7 +2233,7 @@ impl Desktop
                         self.redraw |= previous_menu != self.menus.selected_menu();
                         return;
                     }
-                    let hit = self.windows.find_window(point);
+                    let hit = admitted_hit.unwrap_or_else(|| self.windows.find_window(point));
                     let active_before = self.windows.active_window();
                     let owner = hit.window
                                    .and_then(|id| self.window_owner(id))
@@ -2468,6 +2528,11 @@ impl Desktop
 
     pub fn present(&mut self)
     {
+        if self.system_report_temporary
+        {
+            self.system_report_present_pending = true;
+            return;
+        }
         crate::trace::record(crate::trace::PRESENT, self.owner, 0, 0, 0, 0);
         self.tick_cursor();
         let available =
@@ -2594,6 +2659,11 @@ impl Desktop
     /// scene. It remains available when every app thread is CPU bound.
     fn present_cursor_overlay(&mut self)
     {
+        if self.system_report_temporary
+        {
+            self.system_report_cursor_pending = true;
+            return;
+        }
         // A refused scene replay may have touched only the private back buffer.
         // Never leak those uncommitted pixels through a later cursor-only copy.
         if self.frame_incomplete

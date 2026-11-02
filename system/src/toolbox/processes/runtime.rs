@@ -15,6 +15,9 @@ use crate::toolbox::{events::EventManager,
                      runtime::Desktop,
                      windows::{GroupFocus, WindowId}};
 
+#[path = "runtime/system_report.rs"]
+pub(super) mod system_report;
+
 pub(super) struct Saved
 {
     id:           u64,
@@ -208,13 +211,14 @@ impl Saved
 /// process. Lost preparations stop admission and enter the ordinary reaper.
 pub(crate) struct FinderAdmission
 {
-    old:        u64,
-    owner:      crate::toolbox::handles::OwnerRef,
-    original:   crate::images::Binding,
-    allocation: crate::machine::scheduler::accounting::AllocationAuthority,
-    permit:     crate::allocator::recovery::Permit,
-    activity:   crate::recovery::Activity,
-    active:     bool
+    old:           u64,
+    owner:         crate::toolbox::handles::OwnerRef,
+    original:      crate::images::Binding,
+    allocation:    crate::machine::scheduler::accounting::AllocationAuthority,
+    permit:        crate::allocator::recovery::Permit,
+    activity:      crate::recovery::Activity,
+    active:        bool,
+    system_report: Option<crate::recovery::SystemReportLease>
 }
 impl FinderAdmission
 {
@@ -246,6 +250,27 @@ impl FinderAdmission
     pub(crate) fn activity(&self) -> crate::recovery::Activity
     {
         self.activity.clone()
+    }
+
+    pub(crate) fn system_report(&self) -> Option<&crate::recovery::SystemReportLease>
+    {
+        self.system_report.as_ref()
+    }
+
+    /// The closure is called only after Desktop entry. Failed transfer restores
+    /// the same lease to this exclusively borrowed admission before returning.
+    pub(crate) fn handoff_system_report(&mut self, desktop: &mut Desktop) -> Result<(), Status>
+    {
+        let report = self.system_report.take().ok_or(BAD_ABI)?;
+        match desktop.retain_system_report(report)
+        {
+            Ok(()) => Ok(()),
+            Err((status, report)) =>
+            {
+                self.system_report = Some(report);
+                Err(status)
+            }
+        }
     }
 
     pub(crate) fn original(&self) -> crate::images::Binding
@@ -421,7 +446,8 @@ impl Desktop
                              allocation,
                              permit,
                              activity,
-                             active: true })
+                             active: true,
+                             system_report: None })
     }
 
     pub(crate) fn bind_finder_image(&mut self, admission: &FinderAdmission,
@@ -435,11 +461,14 @@ impl Desktop
         self.processes.bind_image(admission.id(), image)
     }
 
-    pub(crate) fn commit_finder_handoff(&mut self, admission: &FinderAdmission)
-                                        -> Result<(), Status>
+    pub(crate) fn commit_finder_role(&mut self, admission: &FinderAdmission) -> Result<(), Status>
     {
         let old = admission.old;
         let next = admission.id();
+        if admission.system_report().is_none()
+        {
+            return Err(BAD_ABI);
+        }
         if !self.locals.iter().any(|local| local.id == next)
            || self.processes.get(next)?.image.is_none()
         {
@@ -450,15 +479,6 @@ impl Desktop
         let ledger = self.processes.ledger(old)?;
         let checkpoint = self.processes.cleanup_checkpoint(old)?;
         let binding = self.processes.resource_binding(old)?;
-        if let Err(status) = self.close_crash_report(&admission.activity)
-        {
-            if status == SERVICE_BUSY && self.windows.window(self.crash.info().window).is_none()
-            {
-                crate::toolbox::processes::finder::report_cleanup_wait();
-            }
-            return Err(status);
-        }
-        self.crash.release_payload();
         {
             use mac_object_table::shared::InvocationGate as _;
             crate::toolbox::handles::InvocationGate::run(|| {
@@ -466,12 +486,11 @@ impl Desktop
                 {
                     return Err(SERVICE_BUSY);
                 }
-                admission.activity.handoff_recipient(&ledger, &admission.owner)?;
                 crate::context::replace_finder_app(old, &admission.owner)
             })?;
         }
         self.stop_process(file, ledger, checkpoint, binding, Some(next));
-        serial!("FINDER_HANDOFF old={old} new={next} state=waiting-for-old-stack");
+        serial!("FINDER_HANDOFF old={old} new={next} state=waiting-for-old-process");
         Ok(())
     }
 
@@ -489,13 +508,16 @@ impl Desktop
         }
         self.activate_process(id)?;
         self.refresh_app_menu();
-        self.crash.restart_pending = true;
-        if self.crash.info().report_bytes != 0
-        {
-            let window = self.resume_crash_report()?;
-            admission.activity.set_object(window.0);
-        }
-        Ok(())
+        let report = admission.system_report().ok_or(BAD_ABI)?;
+        self.with_system_report(report, |desktop| {
+                desktop.crash.restart_pending = true;
+                if desktop.crash.info().report_bytes != 0 && !report.activity().closing()
+                {
+                    let window = desktop.resume_crash_report()?;
+                    report.activity().set_object(window.0);
+                }
+                Ok(())
+            })?
     }
 
     /// Only the scheduler transition can commit this admission. The bounded
@@ -509,10 +531,15 @@ impl Desktop
         }
         {
             use mac_object_table::shared::InvocationGate as _;
+            let lease = admission.system_report().ok_or(BAD_ABI)?;
+            // Validate and borrow the actual System manager before runnable
+            // publication. The borrow prevents its replacement across commit;
+            // no fallible report step can roll back a running thread.
+            let report = self.system_report_manager(lease)?;
             crate::toolbox::handles::InvocationGate::run(|| {
                 crate::machine::scheduler::start_prepared(thread, admission.owner())?;
                 admission.started();
-                self.crash.finder_recovered();
+                report.finder_recovered();
                 Ok::<_, Status>(())
             })?;
         }
@@ -803,6 +830,11 @@ impl Desktop
         {
             return;
         }
+        if self.system_ui_baseline
+        {
+            self.enter_process_from_system(id);
+            return;
+        }
         let Some(old) = self.locals.iter().position(|s| s.id == self.owner)
         else
         {
@@ -880,6 +912,10 @@ impl Desktop
                                  event.message as u64,
                                  event.modifiers as u64);
             let position = self.event_position(event, target);
+            if self.route_system_report_event(event, target, position)
+            {
+                continue;
+            }
             if target == self.owner
             {
                 // post_positioned clears the trusted-routing flag. Requeue
@@ -899,6 +935,7 @@ impl Desktop
         let mouse = self.events.mouse;
         let modifiers = self.events.modifiers;
         let keys = self.events.keys;
+        self.sync_system_report_input(mouse, modifiers, keys);
         for local in &mut self.locals
         {
             local.events.mouse = mouse;
@@ -1427,6 +1464,14 @@ impl Desktop
             self.route_events();
             let previous = replacement.unwrap_or_else(|| self.processes.previous(caller));
             self.enter(previous);
+            if self.owner == caller
+            {
+                if let Err(status) = self.park_stopped_system_ui(&ledger)
+                {
+                    serial!("PROCESS_UI_RETIRE_RETAINED app={caller} status={status}; actual \
+                             charged UI remains owned pending a genuine System context");
+                }
+            }
             self.notify_finder_file_state(file.volume, file.cnid, false);
             if self.foreground == caller
             {
@@ -1462,11 +1507,18 @@ impl Desktop
                 {
                     continue;
                 };
+                if self.owner == owner && self.park_stopped_system_ui(&ledger).is_err()
+                {
+                    // Active charged state is still owned. Do not remove its
+                    // Saved placeholder and strand the account's last receipts.
+                    continue;
+                }
                 if self.processes.cleanup_drained(owner) == Ok(true)
                 {
                     let outcome = self.processes.exit_record(owner).ok().flatten();
                     if self.processes.remove(owner).is_ok()
                     {
+                        crate::toolbox::processes::finder::owner_removed(&ledger);
                         Self::log_actual_exit(owner, outcome);
                     }
                     continue;
@@ -1591,6 +1643,7 @@ impl Desktop
                     }
                     continue;
                 }
+                crate::toolbox::processes::finder::owner_removed(&ledger);
                 Self::log_actual_exit(owner, outcome);
             }
         });

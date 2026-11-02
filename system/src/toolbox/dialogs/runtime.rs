@@ -203,16 +203,15 @@ impl super::Desktop
         {
             OPEN_ALERT | VALIDATE_ALERT =>
             {
-                let alert = if dialogs::core_alerts::supported(call.scope, call.resource)
+                // Core OPEN/VALIDATE enter their detached native service path.
+                // Never reconstruct a core payload inside Desktop as a fallback.
+                if dialogs::core_alerts::supported(call.scope, call.resource)
                 {
-                    dialogs::core_alerts::instantiate(call)?
+                    return Err(NOT_SUPPORTED);
                 }
-                else
-                {
-                    crate::kernel::with_resources_in(call.scope, |resources| {
-                        dialogs::load(resources, call)
-                    })??
-                };
+                let alert = crate::kernel::with_resources_in(call.scope, |resources| {
+                    dialogs::load(resources, call)
+                })??;
                 call.item = alert.items.len() as u16;
                 if call.operation == VALIDATE_ALERT
                 {
@@ -301,6 +300,38 @@ impl super::Desktop
         self.open_decoded_alert(call, alert)
     }
 
+    /// The core factory owns its payload outside this borrowed Desktop. Keep
+    /// geometry and the actual child initialization shared with ordinary Alerts.
+    pub(crate) fn open_prepared_core_alert(&mut self, call: &mut DialogCall,
+                                           prepared: &mut dialogs::core_alerts::PreparedAlert)
+                                           -> Result<(), dialogs::core_alerts::OpenError>
+    {
+        use dialogs::core_alerts::OpenError;
+        let (recipient, storage) =
+            self.service_owners().map_err(|status| OpenError::service("service owners", status))?;
+        prepared.validate(&recipient, &storage, call)
+                .map_err(|status| OpenError::service("position admission", status))?;
+        if !self.core_dialogs_active || self.dialogs.owner().owner() != storage.owner()
+        {
+            return Err(OpenError::service("System dialog context", ACCESS_DENIED));
+        }
+        if self.dialogs.active()
+        {
+            return Err(OpenError::service("active dialog", SERVICE_BUSY));
+        }
+        if !prepared.positioned
+        {
+            self.position_alert(prepared.alert_mut()?)
+                .map_err(|status| OpenError::service("WDEF positioning", status))?;
+            prepared.positioned = true;
+        }
+        // Focus belongs to the current Desktop turn, not detached preparation.
+        let previous = self.windows.active_window();
+        self.dialogs.begin_core_prepared(&recipient, &storage, call, previous, prepared)?;
+        self.finish_opened_alert(call)
+            .map_err(|status| OpenError::service("initialization", status))
+    }
+
     fn open_decoded_alert(&mut self, call: &mut DialogCall, mut alert: dialogs::Alert)
                           -> Result<(), Status>
     {
@@ -308,6 +339,16 @@ impl super::Desktop
         {
             return Err(SERVICE_BUSY);
         }
+        self.position_alert(&mut alert)?;
+        let previous = self.windows.active_window();
+        self.dialogs.begin(alert, previous)?;
+        self.finish_opened_alert(call)
+    }
+
+    /// Original CALCULATE callback and positioning, before canonical DLOG birth.
+    /// No definition implementation or geometry formula is duplicated.
+    fn position_alert(&mut self, alert: &mut dialogs::Alert) -> Result<(), Status>
+    {
         if alert.position == 0x300a
         {
             // Inside Macintosh positions the structure in the upper fifth of
@@ -337,8 +378,11 @@ impl super::Desktop
                          20 + ((crate::display::HEIGHT as i16 - 20) - (r.bottom - r.top)) / 5
                          - r.top);
         }
-        let previous = self.windows.active_window();
-        self.dialogs.begin(alert, previous)?;
+        Ok(())
+    }
+
+    fn finish_opened_alert(&mut self, call: &mut DialogCall) -> Result<(), Status>
+    {
         let mut guard = InitializingAlert { desktop:   self,
                                             committed: false };
         guard.desktop.initialize_alert()?;
@@ -492,21 +536,35 @@ impl super::Desktop
 
     pub(super) fn restore_alert_focus(&mut self, previous: Option<WindowId>) -> Result<(), Status>
     {
-        let mut call = request(0, Rect::ZERO);
-        let result = if let Some(previous) =
-            previous.filter(|id| self.windows.window(*id).is_some())
+        // Background service windows preserve the real foreground plane on
+        // creation. Closing one must not select or deactivate that other app.
+        if self.owner != self.foreground
         {
-            call.id = previous.0;
-            checked(self.window(SELECT_WINDOW, &mut call))
+            return Ok(());
         }
-        else if previous.is_none()
+        // A modal can outlive the recipient's last document window. Its saved
+        // active window may then be absent or belong to a different process;
+        // neither grants the recipient authority to select Finder's desktop.
+        let previous =
+            previous.filter(|id| {
+                        self.owns(*id)
+                        && self.windows.window(*id).is_some_and(|window| !window.is_hidden())
+                    })
+                    .or_else(|| self.windows.front_for_owner(self.owner));
+        let result = if let Some(previous) = previous
         {
-            checked(self.window(SELECT_DESKTOP, &mut call))
+            checked(self.window(SELECT_WINDOW, &mut request(previous.0, Rect::ZERO)))
         }
         else
         {
+            // This is System's internal focus restoration, not SELECT_DESKTOP:
+            // retain the recipient's foreground/menu plane with no active window.
+            self.windows.deactivate_all(&mut self.events, Self::when());
             Ok(())
         };
+        // Route peer deactivation before coalescing this recipient's transient
+        // activations; the system queue must not discard another app's event.
+        self.route_events();
         // Modal handling consumed transient activation; publish the final focus.
         while self.events.next_matching(1 << EventKind::Activate as u16).is_some()
         {}
@@ -656,11 +714,18 @@ impl super::Desktop
                                        id: item.icon,
                                        destination: item.bounds,
                                        ..Default::default() };
-                        let drawing = crate::kernel::with_resources(|resources| {
-                                          icons_service::Drawing::new(resources,
-                                                                      &call,
-                                                                      service::Port::default())
-                                      }).ok_or(NOT_SUPPORTED)??;
+                        let drawing = if self.core_dialogs_active
+                        {
+                            dialogs::core_alerts::pinned_icon(item.icon, item.bounds)?
+                        }
+                        else
+                        {
+                            crate::kernel::with_resources(|resources| {
+                                icons_service::Drawing::new(resources,
+                                                            &call,
+                                                            service::Port::default())
+                            }).ok_or(NOT_SUPPORTED)??
+                        };
                         self.icon(&call, drawing)?;
                     }
                     _ => return Err(NOT_SUPPORTED)

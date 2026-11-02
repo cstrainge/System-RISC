@@ -1,5 +1,7 @@
 //! Registered immutable sources and private flat execution reservations.
 #![forbid(unsafe_code)]
+mod recovery;
+pub(crate) use recovery::{PendingRecoveryImage, RecoveryDisposition, RecoveryImageFailure};
 mod sharing;
 mod interning;
 use alloc::{sync::Arc, vec::Vec};
@@ -297,42 +299,54 @@ impl PreparedLoad
         self, account: &crate::machine::scheduler::accounting::AllocationAuthority)
         -> Result<Loaded, LoadError<crate::toolbox::resources::loader::LoadError>>
     {
-        self.write_application_from(account, None)
+        let mapping = self.prepare_application_mapping(account, None).map_err(LoadError::Write)?;
+        self.publish_mapping(mapping).map_err(|cause| LoadError::Write(cause.into()))
     }
 
-    pub(crate) fn write_recovery_application(
-        self, account: &crate::machine::scheduler::accounting::AllocationAuthority,
-        permit: crate::allocator::recovery::Permit)
-        -> Result<Loaded, LoadError<crate::toolbox::resources::loader::LoadError>>
+    /// Only an actual prepared alias can become a pending recovery image.
+    /// Original instance/account authority is retained, never reconstructed.
+    pub(crate) fn into_recovery(
+        self, permit: crate::allocator::recovery::Permit)
+        -> Result<PendingRecoveryImage, (crate::machine::paging::modules::Error, Self)>
     {
-        self.write_application_from(account, Some(permit))
+        use crate::machine::paging::modules::Error;
+        if self.read.instance.module
+           || self.read.instance.owner.owner().kind()
+              != mac_object_table::domain::DomainKind::Process
+           || self.read.instance.allocation.owner() != self.read.instance.owner.owner()
+        {
+            return Err((Error::Owner, self));
+        }
+        if let Err(cause) = self.ensure_active()
+        {
+            return Err((cause, self));
+        }
+        Ok(PendingRecoveryImage::new(self, permit))
     }
 
-    fn write_application_from(
-        self, account: &crate::machine::scheduler::accounting::AllocationAuthority,
-        recovery: Option<crate::allocator::recovery::Permit>)
-        -> Result<Loaded, LoadError<crate::toolbox::resources::loader::LoadError>>
+    fn prepare_application_mapping(
+        &self, account: &crate::machine::scheduler::accounting::AllocationAuthority,
+        recovery: Option<&crate::allocator::recovery::Permit>)
+        -> Result<Arc<crate::machine::paging::modules::Mapping>,
+                  crate::toolbox::resources::loader::LoadError>
     {
         let (descriptor, bytes, relocations) =
-            crate::toolbox::resources::loader::application_code(&self.read.source.resources)
-                .map_err(|cause| LoadError::Write(cause.into()))?;
+            crate::toolbox::resources::loader::application_code(&self.read.source.resources)?;
         use crate::machine::paging::modules::Mapping;
-        let mapping = match recovery
-                      {
-                          Some(permit) =>
-                          {
-                              Mapping::prepare_recovery_application(&self.read.instance.owner,
-                                                                    account, &permit, &descriptor,
-                                                                    bytes, relocations,
-                                                                    self.read.instance.base)
-                          }
-                          None =>
-                          {
-                              Mapping::prepare(&self.read.instance.owner, account, &descriptor,
-                                               bytes, relocations, self.read.instance.base)
-                          }
-                      }.map_err(|cause| LoadError::Write(cause.into()))?;
-        self.publish_mapping(mapping, &descriptor).map_err(|cause| LoadError::Write(cause.into()))
+        match recovery
+        {
+            Some(permit) =>
+            {
+                Mapping::prepare_recovery_application(&self.read.instance.owner, account, permit,
+                                                      &descriptor, bytes, relocations,
+                                                      self.read.instance.base)
+            }
+            None =>
+            {
+                Mapping::prepare(&self.read.instance.owner, account, &descriptor, bytes,
+                                 relocations, self.read.instance.base)
+            }
+        }.map_err(Into::into)
     }
 
     /// The alias already reserves this execution VA. Initialize private real
@@ -350,45 +364,79 @@ impl PreparedLoad
         }
         let mapping = Mapping::prepare(&self.read.instance.owner, account, &code.descriptor,
                                        &code.code, &code.relocations, self.read.instance.base)?;
-        self.publish_mapping(mapping, &code.descriptor)
+        self.publish_mapping(mapping)
     }
 
-    fn publish_mapping(self, mapping: Arc<crate::machine::paging::modules::Mapping>,
-                       descriptor: &mac_formats::native::Descriptor)
+    fn publish_mapping(self, mapping: Arc<crate::machine::paging::modules::Mapping>)
                        -> Result<Loaded, crate::machine::paging::modules::Error>
     {
-        use crate::machine::paging::modules::Error;
-        if !Arc::ptr_eq(self.read.instance.mapping.call_once(|| mapping.clone()), &mapping)
+        self.anchor_mapping(&mapping)?;
+        self.publish_anchored()?;
+        self.finish_mapping().map_err(|(cause, prepared)| {
+                                 drop(prepared);
+                                 cause
+                             })
+    }
+
+    fn anchor_mapping(&self, mapping: &Arc<crate::machine::paging::modules::Mapping>)
+                      -> Result<(), crate::machine::paging::modules::Error>
+    {
+        if !Arc::ptr_eq(self.read.instance.mapping.call_once(|| mapping.clone()), mapping)
         {
-            return Err(Error::State);
+            return Err(crate::machine::paging::modules::Error::State);
         }
-        // A stopping walk may have deferred this alias before the mapping
-        // anchor existed. Arm the same retained owner when that race occurs;
-        // otherwise final Read release could leave physical backing with no
-        // retirement request, despite the original removal guard being held.
+        self.ensure_active()
+    }
+
+    fn ensure_active(&self) -> Result<(), crate::machine::paging::modules::Error>
+    {
+        // A stopping walk may have deferred the alias before its anchor existed.
+        // Arm the same retained Mapping; only its real retirement/ACK frees it.
         if self.read.instance.activity.retiring.load(Ordering::Acquire)
            || !self.read.instance.owner.accepting()
         {
-            mapping.request_retirement();
-            return Err(Error::Closed);
+            if let Some(mapping) = self.read.instance.mapping.get()
+            {
+                mapping.request_retirement();
+            }
+            return Err(crate::machine::paging::modules::Error::Closed);
         }
+        Ok(())
+    }
+
+    fn publish_anchored(&self) -> Result<(), crate::machine::paging::modules::Error>
+    {
+        self.ensure_active()?;
+        let mapping = self.read
+                          .instance
+                          .mapping
+                          .get()
+                          .ok_or(crate::machine::paging::modules::Error::State)?;
         let published = mapping.publish();
-        if self.read.instance.activity.retiring.load(Ordering::Acquire)
-           || !self.read.instance.owner.accepting()
-        {
-            mapping.request_retirement();
-        }
+        let active = self.ensure_active();
         published?;
-        if !self.read.instance.owner.accepting()
+        active
+    }
+
+    fn finish_mapping(self) -> Result<Loaded, (crate::machine::paging::modules::Error, Self)>
+    {
+        use crate::machine::paging::modules::Error;
+        if let Err(cause) = self.ensure_active()
         {
-            mapping.request_retirement();
-            return Err(Error::Closed);
+            return Err((cause, self));
         }
-        let entry = self.read
-                        .instance
-                        .base
-                        .checked_add(descriptor.entry - descriptor.load_base)
-                        .ok_or(Error::State)? as usize;
+        // The real Mapping owns the checked relocated entry and reports it only
+        // after successful publication. No late descriptor arithmetic/reparse.
+        let Some(entry) = self.read
+                              .instance
+                              .mapping
+                              .get()
+                              .and_then(|mapping| mapping.entry())
+                              .and_then(|entry| usize::try_from(entry).ok())
+        else
+        {
+            return Err((Error::State, self));
+        };
         let Self { loading,
                    read } = self;
         let execution = loading.finish();
@@ -399,6 +447,7 @@ impl PreparedLoad
                                             _source:    read } })
     }
 }
+
 impl Loaded
 {
     pub(crate) fn into_module(self) -> Result<ModuleExecution, Status>

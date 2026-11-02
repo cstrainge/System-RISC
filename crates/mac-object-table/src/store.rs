@@ -195,6 +195,13 @@ struct Reserved<G: InvocationGate>
     mapping:    Spinlock<Option<CompletionKey>>,
     completion: Arc<crate::completion::Recycling>
 }
+struct ReservedPublication
+{
+    at:      usize,
+    id:      u64,
+    reserve: Option<Reserve>,
+    usage:   Option<Use>
+}
 impl<G: InvocationGate> Drop for Reserved<G>
 {
     fn drop(&mut self)
@@ -646,10 +653,43 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         self.insert_reserved(reservation, Some(scope.state()), make, pin)
     }
 
+    /// Publish an already-owned payload using the same reserved capacity and
+    /// canonical commit as the constructor form. Every refusal returns that
+    /// payload to its caller for disposal outside the caller's manager borrow.
+    pub fn insert_reserved_in_scope_owned_with_acknowledgement(
+        &mut self, reservation: &mut PublicationReservation<G>, scope: &crate::scope::Lease<G>,
+        pin: Option<AcknowledgementPin>, value: T)
+        -> Result<Publication, (PublicationError, T)>
+    {
+        if scope.subject() != reservation.inner.claim.owner.owner()
+        {
+            return Err((PoolError::ForeignOwner { expected: reservation.inner.claim.owner.owner(),
+                                                   actual:   scope.subject() }.into(), value));
+        }
+        let mut prepared = match self.prepare_reserved(reservation, Some(scope.state()), pin)
+        {
+            Ok(prepared) => prepared,
+            Err(error) => return Err((error, value))
+        };
+        self.publish_reserved(reservation, Some(scope.state()), &mut prepared, value)
+    }
+
     fn insert_reserved(&mut self, reservation: &mut PublicationReservation<G>,
                        scope: Option<&crate::scope::State>, make: impl FnOnce(u64) -> T,
                        pin: Option<AcknowledgementPin>)
                        -> Result<Publication, PublicationError>
+    {
+        let mut prepared = self.prepare_reserved(reservation, scope, pin)?;
+        let value = make(prepared.id);
+        self.publish_reserved(reservation, scope, &mut prepared, value).map_err(|(error, value)| {
+                                                                           drop(value);
+                                                                           error
+                                                                       })
+    }
+
+    fn prepare_reserved(&self, reservation: &PublicationReservation<G>,
+                        scope: Option<&crate::scope::State>, pin: Option<AcknowledgementPin>)
+                        -> Result<ReservedPublication, PublicationError>
     {
         let inner = &reservation.inner;
         let owner = &inner.claim.owner;
@@ -665,37 +705,55 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         }
         let reserve =
             inner.completion.take::<G>().ok_or(PublicationError::Busy)?.with_acknowledgement(pin);
-        let mut usage = self.registration.as_ref().map(|kind| kind.acquire(true)).transpose()?;
+        let usage = self.registration.as_ref().map(|kind| kind.acquire(true)).transpose()?;
         let id = issue_native_identity().map_err(|_| {
                                             PublicationError::Pool(PoolError::IdentityExhausted)
                                         })?
                                         .get();
-        let value = make(id);
-        // The constructor/destructor is outside the owner gate. Once the
-        // canonical allocation succeeds, publication contains no fallible work.
-        let mut payload = Some((value, reserve));
-        let key = owner.access(|index| {
-                           let key = index.allocate_reserved_value(self.kind, inner.slot, scope)?;
-                           debug_assert!(self.owners[at].slots[inner.slot].is_none(),
-                                         "a free reserved canonical slot has no retained payload");
-                           let (value, reserve) =
-                               payload.take().expect("reserved publication consumes its prepared \
-                                                      payload exactly once");
-                           self.owners[at].slots[inner.slot] =
-                               Some(Entry { id,
-                                            key,
-                                            value,
-                                            reserve,
-                                            reservation: Some(inner.clone()),
-                                            root: None,
-                                            registration_use: ManuallyDrop::new(usage.take()) });
-                           *inner.mapping.lock() = Some(CompletionKey { id,
-                                                                        key });
-                           self.owners[at].stored += 1;
-                           Ok::<ResourceKey, PoolError>(key)
-                       })?;
-        Ok(Publication { completion: CompletionKey { id,
-                                                     key } })
+        Ok(ReservedPublication { at,
+                                 id,
+                                 reserve: Some(reserve),
+                                 usage })
+    }
+
+    fn publish_reserved(&mut self, reservation: &PublicationReservation<G>,
+                        scope: Option<&crate::scope::State>, prepared: &mut ReservedPublication,
+                        value: T)
+                        -> Result<Publication, (PublicationError, T)>
+    {
+        let inner = &reservation.inner;
+        let owner = &inner.claim.owner;
+        let at = prepared.at;
+        let id = prepared.id;
+        // On refusal the closure returns the same value and leaves preparation
+        // with its caller. The constructor drops that value before preparation;
+        // the owned form returns it. Neither drops anything under this gate.
+        // Once canonical allocation succeeds, no fallible work remains.
+        owner.access(|index| {
+                 let key = match index.allocate_reserved_value(self.kind, inner.slot, scope)
+                 {
+                     Ok(key) => key,
+                     Err(error) => return Err((error.into(), value))
+                 };
+                 debug_assert!(self.owners[at].slots[inner.slot].is_none(),
+                               "a free reserved canonical slot has no retained payload");
+                 let reserve =
+                     prepared.reserve.take().expect("reserved publication consumes its prepared \
+                                                     payload exactly once");
+                 self.owners[at].slots[inner.slot] =
+                     Some(Entry { id,
+                                  key,
+                                  value,
+                                  reserve,
+                                  reservation: Some(inner.clone()),
+                                  root: None,
+                                  registration_use: ManuallyDrop::new(prepared.usage.take()) });
+                 *inner.mapping.lock() = Some(CompletionKey { id,
+                                                              key });
+                 self.owners[at].stored += 1;
+                 Ok(Publication { completion: CompletionKey { id,
+                                                              key } })
+             })
     }
 
     fn reserved_key(&self, id: u64) -> Option<ResourceKey>

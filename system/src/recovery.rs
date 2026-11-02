@@ -3,7 +3,7 @@
 //! still validate their ordinary owner and object IDs at the service boundary.
 #![forbid(unsafe_code)]
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, Ordering};
 
 use mac_abi::{ACCESS_DENIED, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED, SERVICE_BUSY, Status};
 use mac_object_table::shared::InvocationGate as _;
@@ -26,6 +26,10 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 // flag outside the Arc so the final use can signal after dropping that Arc.
 static CLOSING: AtomicBool = AtomicBool::new(false);
 
+const REPORT_PROCESS: u8 = 0;
+const REPORT_SYSTEM_LEASED: u8 = 1;
+const REPORT_SYSTEM_ABANDONED: u8 = 2;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind
 {
@@ -46,6 +50,8 @@ struct Session
     recipient_id:   AtomicU64,
     storage_owner:  OwnerRef,
     kind:           Kind,
+    system_report:  AtomicU8,
+    report_power:   Spinlock<Option<Option<(Status, u32)>>>,
     permit:         Permit,
     subject:        Subject,
     publication:    crate::drivers::jobs::RecoveryEndpoints,
@@ -65,6 +71,39 @@ pub(crate) struct Activity
     // is gone, even if preempted between Activity::drop and Arc destruction.
     _released: ReleasedActivity
 }
+/// The sole ownership of a Finder diagnostic which has become a System
+/// service. The same Session, Subject, permit and canonical child endpoints
+/// survive; no process is fabricated and no stopped owner is revived.
+#[must_use = "retain the full System report until its actual dismissal ACK"]
+pub(crate) struct SystemReportLease
+{
+    activity: Activity
+}
+impl SystemReportLease
+{
+    pub(crate) fn activity(&self) -> &Activity
+    {
+        &self.activity
+    }
+
+    pub(crate) fn matches_activity(&self, activity: &Activity) -> bool
+    {
+        self.activity.same_session(activity)
+    }
+}
+impl Drop for SystemReportLease
+{
+    fn drop(&mut self)
+    {
+        // Abandonment requests real service cleanup. Child records and the
+        // independent System UI slot retain the Session and full report until
+        // actual ACK; dropping a lease never resets/reuses live storage.
+        self.activity.session.system_report.store(REPORT_SYSTEM_ABANDONED, Ordering::Release);
+        self.activity.close();
+        crate::toolbox::runtime::system_report_changed();
+    }
+}
+
 impl Activity
 {
     pub(crate) fn subject(&self) -> Subject
@@ -112,6 +151,48 @@ impl Activity
     pub(crate) fn same_session(&self, other: &Self) -> bool
     {
         Arc::ptr_eq(&self.session, &other.session)
+    }
+
+    /// Admission for the same genuine Opening before Standard File birth.
+    /// Retained origin metadata or a matching recipient ID cannot substitute
+    /// for the active Session, live owners and its still-empty protocol slot.
+    pub(crate) fn validate_standard_file_begin(&self, recipient: &OwnerRef, storage: &OwnerRef)
+                                               -> Result<(), Status>
+    {
+        self.validate_modal_opening(Kind::StandardFile, recipient, storage)
+    }
+
+    pub(crate) fn validate_core_alert_open(&self, recipient: &OwnerRef, storage: &OwnerRef)
+                                           -> Result<(), Status>
+    {
+        self.validate_modal_opening(Kind::CoreAlert, recipient, storage)
+    }
+
+    fn validate_modal_opening(&self, kind: Kind, recipient: &OwnerRef, storage: &OwnerRef)
+                              -> Result<(), Status>
+    {
+        InvocationGate::run(|| {
+            let modal = MODAL.lock();
+            if !modal.session.as_ref().is_some_and(|session| Arc::ptr_eq(session, &self.session))
+               || self.session.kind != kind
+               || self.session.recipient.lock().owner() != recipient.owner()
+               || self.owner() != recipient.owner().incarnation()
+               || self.session.storage_owner.owner() != storage.owner()
+               || recipient.owner().kind() != mac_object_table::domain::DomainKind::Process
+               || storage.owner().kind() != mac_object_table::domain::DomainKind::System
+            {
+                return Err(ACCESS_DENIED);
+            }
+            if CLOSING.load(Ordering::Acquire)
+               || !recipient.accepting()
+               || !storage.accepting()
+               || self.session.object.load(Ordering::Acquire) != 0
+               || self.session.windows.lock().iter().any(|(id, closed)| *id != 0 && !*closed)
+            {
+                return Err(SERVICE_BUSY);
+            }
+            Ok(())
+        })
     }
 
     pub(crate) fn window_created(&self, id: mac_abi::WindowId) -> Result<(), Status>
@@ -164,28 +245,76 @@ impl Activity
         self.session.object.store(id, Ordering::Release);
     }
 
-    /// System's validated Finder handoff transfers the recipient, never the
-    /// System resource owner or the original I/O authority. No caller label can
-    /// construct either capability.
-    pub(crate) fn handoff_recipient(&self, previous: &OwnerRef, next: &OwnerRef)
-                                    -> Result<(), Status>
+    /// Transfer an already closed Finder report to its genuine System service
+    /// owner. Callers must retain the returned affine lease before any later
+    /// fallible Finder-role transition. Live child ownership never changes.
+    pub(crate) fn retain_as_system_report(&self, previous: &OwnerRef)
+                                          -> Result<SystemReportLease, Status>
     {
-        if next.owner().kind() != mac_object_table::domain::DomainKind::Process || !next.accepting()
-        {
-            return Err(ACCESS_DENIED);
-        }
-        let old = InvocationGate::run(|| {
-            let mut recipient = self.session.recipient.lock();
-            if recipient.owner() != previous.owner()
+        let previous = InvocationGate::run(|| {
+            let modal = MODAL.lock();
+            if !modal.session.as_ref().is_some_and(|session| Arc::ptr_eq(session, &self.session))
+               || self.session.kind != Kind::CrashReport
+               || CLOSING.load(Ordering::Acquire)
+               || self.session.storage_owner.owner().kind()
+                  != mac_object_table::domain::DomainKind::System
+               || !self.session.storage_owner.accepting()
+               || self.session.object.load(Ordering::Acquire) != 0
+               || self.session.windows.lock().iter().any(|(id, closed)| *id != 0 && !*closed)
             {
                 return Err(ACCESS_DENIED);
             }
-            let old = core::mem::replace(&mut *recipient, next.clone());
-            self.session.recipient_id.store(next.owner().incarnation(), Ordering::Release);
+            let mut recipient = self.session.recipient.lock();
+            if recipient.owner() != previous.owner()
+               || self.session.system_report.load(Ordering::Acquire) != REPORT_PROCESS
+            {
+                return Err(ACCESS_DENIED);
+            }
+            // The sole active Session and Desktop's actual empty System slot
+            // exclude another lease. All refusals precede this transition.
+            let old = core::mem::replace(&mut *recipient, self.session.storage_owner.clone());
+            self.session
+                .recipient_id
+                .store(self.session.storage_owner.owner().incarnation(), Ordering::Release);
+            self.session.system_report.store(REPORT_SYSTEM_LEASED, Ordering::Release);
             Ok(old)
         })?;
-        drop(old);
-        Ok(())
+        drop(previous);
+        Ok(SystemReportLease { activity: self.clone() })
+    }
+
+    pub(crate) fn system_report_power_result(&self, result: Option<(Status, u32)>)
+    {
+        InvocationGate::run(|| *self.session.report_power.lock() = Some(result));
+        crate::toolbox::runtime::system_report_changed();
+    }
+
+    pub(crate) fn restore_system_report_power_result(&self, result: Option<(Status, u32)>)
+    {
+        InvocationGate::run(|| *self.session.report_power.lock() = Some(result));
+    }
+
+    pub(crate) fn take_system_report_power_result(&self) -> Option<Option<(Status, u32)>>
+    {
+        InvocationGate::run(|| self.session.report_power.lock().take())
+    }
+
+    pub(crate) fn is_system_report(&self) -> bool
+    {
+        matches!(self.session.system_report.load(Ordering::Acquire),
+                 REPORT_SYSTEM_LEASED | REPORT_SYSTEM_ABANDONED)
+    }
+
+    pub(crate) fn system_report_abandoned(&self) -> bool
+    {
+        self.session.system_report.load(Ordering::Acquire) == REPORT_SYSTEM_ABANDONED
+    }
+
+    pub(crate) fn system_report_children_closed(&self) -> bool
+    {
+        self.system_report_abandoned()
+        && self.session.object.load(Ordering::Acquire) == 0
+        && !self.has_outstanding_windows()
     }
 
     pub(crate) fn closing(&self) -> bool
@@ -321,6 +450,8 @@ pub(crate) fn prepare_modal() -> Result<(), Status>
                                    recipient_id: AtomicU64::new(owner.owner().incarnation()),
                                    storage_owner: owner,
                                    kind: Kind::CoreAlert,
+                                   system_report: AtomicU8::new(REPORT_PROCESS),
+                                   report_power: Spinlock::new(None),
                                    permit,
                                    subject,
                                    publication,
@@ -374,6 +505,8 @@ pub(crate) fn begin(recipient: OwnerRef, kind: Kind) -> Result<Opening, Status>
     *unique.recipient.get_mut() = recipient;
     unique.recipient_id.store(unique.recipient.get_mut().owner().incarnation(), Ordering::Release);
     unique.kind = kind;
+    *unique.system_report.get_mut() = REPORT_PROCESS;
+    *unique.report_power.get_mut() = None;
     unique.object.store(0, Ordering::Release);
     *unique.windows.get_mut() = [(0, true); 2];
     CLOSING.store(false, Ordering::Release);
@@ -456,6 +589,7 @@ pub(crate) fn reap()
 /// logging or allocation is added to the resource-release hot path.
 pub(crate) fn acknowledgement_changed()
 {
+    crate::toolbox::runtime::system_report_changed();
     crate::toolbox::crashes::cleanup_progress();
     if ACTIVE.load(Ordering::Acquire)
     {
@@ -466,6 +600,9 @@ pub(crate) fn acknowledgement_changed()
 
 pub(crate) fn owner_stopped(owner: &OwnerRef)
 {
+    // The report may now have a System recipient. Its separate genuine
+    // beneficiary stop still wakes the coordinator through the service pump.
+    crate::toolbox::runtime::system_report_changed();
     crate::toolbox::crashes::pending_owner_stopped();
     InvocationGate::run(|| {
         if let Some(session) = MODAL.lock().session.as_ref()
@@ -476,11 +613,6 @@ pub(crate) fn owner_stopped(owner: &OwnerRef)
             REAP_REQUESTED.store(true, Ordering::Release);
         }
     });
-}
-
-pub(crate) fn standard_file_subject(owner: u64) -> Result<Subject, Status>
-{
-    Ok(for_input(owner).ok_or(NOT_FOUND)?.subject())
 }
 
 pub(crate) fn claim_report(recipient: OwnerRef) -> Result<Activity, Status>
@@ -614,12 +746,27 @@ pub(crate) fn standard_file_request(call: &mut mac_abi::standard_file::StandardF
         if call.operation == BEGIN
         {
             let opening = begin(owner, Kind::StandardFile)?;
+            let mut prepared = opening.activity().run(|| {
+                crate::toolbox::standard_file::PreparedDialog::prepare(opening.activity(), call)
+            })?.map_err(|cause| {
+                serial!("STANDARD_FILE_REFUSED: {cause}");
+                cause.status()
+            })?;
             let result = opening.activity().run(|| {
                                                 crate::kernel::with_desktop(|desktop| {
-                                                    desktop.standard_file_request(call)
-                                                }).map_err(|error| error.status())?
+                                           desktop.begin_standard_file(call, &mut prepared)
+                                       }).map_err(|error| {
+                                             crate::toolbox::standard_file::BeginError::service(
+                                                        "Desktop admission", error.status())
+                                         })?
                                             })?;
-            result?;
+            // Unpublished payload and admission pins are disposed after
+            // Desktop release. Published children keep their original cleanup.
+            drop(prepared);
+            result.map_err(|cause| {
+                      serial!("STANDARD_FILE_REFUSED: {cause}");
+                      cause.status()
+                  })?;
             opening.activity().session.object.store(call.handle, Ordering::Release);
             opening.commit();
             Ok(())
@@ -662,18 +809,41 @@ pub(crate) fn dialog_request(call: &mut mac_abi::dialogs::DialogCall) -> Status
         if is_core && call.operation == OPEN_ALERT
         {
             let opening = begin(owner, Kind::CoreAlert)?;
-            let status =
-                opening.activity().run(|| {
-                                       crate::kernel::with_desktop(|desktop| {
-                                           desktop.with_core_dialogs(|desktop| desktop.dialog(call))
-                                       }).unwrap_or_else(|error| error.status())
-                                   })?;
-            if status != mac_abi::OK
-            {
-                return Err(status);
-            }
+            let mut prepared = opening.activity().run(|| {
+                crate::toolbox::dialogs::core_alerts::PreparedAlert::prepare(opening.activity(), call)
+            })?.map_err(|cause| {
+                serial!("CORE_ALERT_REFUSED: {cause}");
+                cause.status()
+            })?;
+            let result = opening.activity().run(|| {
+                crate::kernel::with_desktop(|desktop| {
+                    desktop.with_core_dialogs(|desktop| desktop.open_prepared_core_alert(call, &mut prepared))
+                }).map_err(|error| {
+                    crate::toolbox::dialogs::core_alerts::OpenError::service("Desktop admission", error.status())
+                })?
+            })?;
+            // Every unpublished payload remains in this outer preparation;
+            // published children retain their original initialization cleanup.
+            drop(prepared);
+            result.map_err(|cause| {
+                      serial!("CORE_ALERT_REFUSED: {cause}");
+                      cause.status()
+                  })?;
             opening.activity().session.object.store(call.window, Ordering::Release);
             opening.commit();
+            return Ok(());
+        }
+        if is_core && call.operation == VALIDATE_ALERT
+        {
+            // Validation has no modal Opening or protected allocation right.
+            // Instantiate/count using the caller's existing scope, outside Desktop.
+            if call.reserved != 0
+            {
+                return Err(mac_abi::BAD_ARGUMENT);
+            }
+            call.item = 0;
+            let alert = crate::toolbox::dialogs::core_alerts::instantiate(call)?;
+            call.item = alert.items.len() as u16;
             return Ok(());
         }
         if !is_core && call.operation == OPEN_ALERT
@@ -734,6 +904,7 @@ pub(crate) fn dialog_request(call: &mut mac_abi::dialogs::DialogCall) -> Status
 /// retain the true Window/provider acknowledgements before returning the kit.
 pub(crate) fn pump()
 {
+    crate::toolbox::runtime::pump_system_report();
     if CLEANUP_REQUESTED.swap(false, Ordering::AcqRel)
     {
         let activity = InvocationGate::run(|| {
@@ -761,6 +932,10 @@ pub(crate) fn pump()
                                 desktop.cancel_standard_file_for_recovery(&activity.recipient())
                             }
                             Kind::CoreAlert => desktop.cancel_core_alert_for_recovery(&activity),
+                            Kind::CrashReport if activity.is_system_report() =>
+                            {
+                                desktop.cancel_system_report_for_recovery(&activity)
+                            }
                             Kind::CrashReport => desktop.cancel_crash_report_for_recovery(
                                 &activity, mac_abi::WindowId(activity.session.object.load(Ordering::Acquire)))
                         };
@@ -825,6 +1000,29 @@ pub(crate) fn crash_request(call: &mut mac_abi::crashes::CrashCall, input: &str,
     let result = (|| {
         let owner = crate::context::current_owner()?;
         let owner_id = owner.owner().incarnation();
+        if call.operation != BEGIN && crate::toolbox::runtime::system_report_active()
+        {
+            let handled = crate::kernel::with_desktop(|desktop| {
+                              desktop.system_report_request(&owner, call, input, output)
+                          }).map_err(|cause| cause.status())??;
+            if handled
+            {
+                if call.operation == DISMISS
+                {
+                    pump();
+                    let retained = crate::kernel::with_desktop(|desktop| {
+                                       desktop.system_report_for_beneficiary(&owner)
+                                   }).map_err(|cause| cause.status())??;
+                    if retained
+                    {
+                        return Err(SERVICE_BUSY);
+                    }
+                    call.info.window = mac_abi::WindowId(0);
+                    call.info.dismissed = 1;
+                }
+                return Ok(());
+            }
+        }
         match call.operation
         {
             BEGIN | APPEND | INFO | READ =>
@@ -833,6 +1031,23 @@ pub(crate) fn crash_request(call: &mut mac_abi::crashes::CrashCall, input: &str,
                 {
                     crate::kernel::with_desktop(|desktop| desktop.note_crash_capture_attempt())
                         .map_err(|error| error.status())?;
+                }
+                if call.operation == BEGIN && crate::toolbox::runtime::system_report_active()
+                {
+                    let closing = crate::kernel::with_desktop(|desktop| {
+                                      desktop.request_system_report_close_for(&owner)
+                                  }).map_err(|cause| cause.status())??;
+                    if closing
+                    {
+                        pump();
+                        let retained = crate::kernel::with_desktop(|desktop| {
+                                           desktop.system_report_for_beneficiary(&owner)
+                                       }).map_err(|cause| cause.status())??;
+                        if retained
+                        {
+                            return Err(SERVICE_BUSY);
+                        }
+                    }
                 }
                 if call.operation == BEGIN
                    && let Some(activity) = active(owner_id, Kind::CrashReport)
@@ -853,6 +1068,21 @@ pub(crate) fn crash_request(call: &mut mac_abi::crashes::CrashCall, input: &str,
                     {
                         return Err(SERVICE_BUSY);
                     }
+                }
+                if call.operation == BEGIN
+                   && InvocationGate::run(|| {
+                       let modal = MODAL.lock();
+                       modal.session.as_ref().is_some_and(|session| {
+                                                 session.system_report.load(Ordering::Acquire)
+                                                 != REPORT_PROCESS
+                                                 && CLOSING.load(Ordering::Acquire)
+                                             })
+                   })
+                {
+                    // The payload may already be archived while real old
+                    // Session/Subject pins are still draining. Never reset or
+                    // reuse that modal by treating an empty UI slot as ACK.
+                    return Err(SERVICE_BUSY);
                 }
                 crate::context::with_recovery_allocation(permit()?, || {
                     crate::allocator::with_system(SystemClass::Ordinary, || {

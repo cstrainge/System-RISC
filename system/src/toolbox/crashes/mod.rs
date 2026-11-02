@@ -5,6 +5,10 @@
 use alloc::vec::Vec;
 mod storage;
 #[cfg(target_arch = "riscv64")]
+mod detail;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use detail::FailureDetail;
+#[cfg(target_arch = "riscv64")]
 mod pending;
 use mac_abi::{crashes::*, *};
 #[cfg(target_arch = "riscv64")]
@@ -46,33 +50,37 @@ enum Capture
 
 pub struct Manager
 {
-    capture:                     Capture,
-    dismissal:                   Option<storage::Origin>,
-    superseded:                  bool,
-    payload:                     Payload,
-    archive_origin:              Option<storage::Origin>,
-    columns:                     usize,
-    column:                      usize,
-    previous_cr:                 bool,
-    info:                        CrashInfo,
+    capture:                         Capture,
+    dismissal:                       Option<storage::Origin>,
+    superseded:                      bool,
+    payload:                         Payload,
+    archive_origin:                  Option<storage::Origin>,
+    columns:                         usize,
+    column:                          usize,
+    previous_cr:                     bool,
+    info:                            CrashInfo,
     #[cfg(target_arch = "riscv64")]
-    pub(super) controls:         [Option<u64>; 6],
+    pub(super) controls:             [Option<u64>; 6],
     #[cfg(target_arch = "riscv64")]
-    pub(super) control_enabled:  [bool; 6],
+    pub(super) control_enabled:      [bool; 6],
     #[cfg(target_arch = "riscv64")]
-    pub(super) control_labels:   [u32; 6],
+    pub(super) control_labels:       [u32; 6],
     #[cfg(target_arch = "riscv64")]
-    pub(super) tracking:         Option<usize>,
+    pub(super) tracking:             Option<usize>,
     #[cfg(target_arch = "riscv64")]
-    pub(super) copy_failed:      bool,
+    pub(super) copy_failed:          bool,
     #[cfg(target_arch = "riscv64")]
-    pub(super) restart_pending:  bool,
+    pub(super) restart_pending:      bool,
     #[cfg(target_arch = "riscv64")]
-    pub(super) restart_error:    Option<Status>,
+    pub(super) restart_error:        Option<Status>,
     #[cfg(target_arch = "riscv64")]
-    pub(super) restart_terminal: bool,
+    pub(super) restart_terminal:     bool,
     #[cfg(target_arch = "riscv64")]
-    pub(super) power_failure:    Option<(Status, u32)>
+    pub(super) power_failure:        Option<(Status, u32)>,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) restart_detail:       Option<FailureDetail>,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) restart_detail_dirty: bool
 }
 
 /// Diagnostic data is independent of the dying application's window/control
@@ -133,35 +141,39 @@ impl Default for Manager
 {
     fn default() -> Self
     {
-        Self { capture:                                          Capture::None,
-               dismissal:                                        None,
-               superseded:                                       false,
-               payload:                                          Payload::default(),
-               archive_origin:                                   None,
-               columns:                                          DEFAULT_COLUMNS,
-               column:                                           0,
-               previous_cr:                                      false,
-               info:                                             CrashInfo { page_lines:
-                                                                                 PAGE_LINES,
-                                                                             ..Default::default() },
+        Self { capture:                                              Capture::None,
+               dismissal:                                            None,
+               superseded:                                           false,
+               payload:                                              Payload::default(),
+               archive_origin:                                       None,
+               columns:                                              DEFAULT_COLUMNS,
+               column:                                               0,
+               previous_cr:                                          false,
+               info:
+                   CrashInfo { page_lines: PAGE_LINES,
+                               ..Default::default() },
                #[cfg(target_arch = "riscv64")]
-               controls:                                         [None; 6],
+               controls:                                             [None; 6],
                #[cfg(target_arch = "riscv64")]
-               control_enabled:                                  [false; 6],
+               control_enabled:                                      [false; 6],
                #[cfg(target_arch = "riscv64")]
-               control_labels:                                   [u32::MAX; 6],
+               control_labels:                                       [u32::MAX; 6],
                #[cfg(target_arch = "riscv64")]
-               tracking:                                         None,
+               tracking:                                             None,
                #[cfg(target_arch = "riscv64")]
-               copy_failed:                                      false,
+               copy_failed:                                          false,
                #[cfg(target_arch = "riscv64")]
-               restart_pending:                                  false,
+               restart_pending:                                      false,
                #[cfg(target_arch = "riscv64")]
-               restart_error:                                    None,
+               restart_error:                                        None,
                #[cfg(target_arch = "riscv64")]
-               restart_terminal:                                 false,
+               restart_terminal:                                     false,
                #[cfg(target_arch = "riscv64")]
-               power_failure:                                    None }
+               power_failure:                                        None,
+               #[cfg(target_arch = "riscv64")]
+               restart_detail:                                       None,
+               #[cfg(target_arch = "riscv64")]
+               restart_detail_dirty:                                 false }
     }
 }
 #[cfg(target_arch = "riscv64")]
@@ -186,6 +198,33 @@ pub(crate) fn protected_stock_available() -> bool
 
 impl Manager
 {
+    /// Preserve the genuine capture/archive identity after its System-owned
+    /// presentation has acknowledged dismissal. This retains no protected
+    /// snapshot, so the single capture stock can be reused by a later BEGIN.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn dismissed_metadata(&self) -> Self
+    {
+        let mut info = self.info;
+        info.window = WindowId(0);
+        info.dismissed = 1;
+        Self { capture: self.capture,
+               dismissal: if self.superseded
+               {
+                   None
+               }
+               else
+               {
+                   self.archive_origin.or(self.payload.origin())
+               },
+               superseded: self.superseded,
+               archive_origin: self.archive_origin.or(self.payload.origin()),
+               columns: self.columns,
+               column: self.column,
+               previous_cr: self.previous_cr,
+               info,
+               ..Self::default() }
+    }
+
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn capture_attempt(&mut self)
     {
@@ -336,6 +375,8 @@ impl Manager
         self.restart_pending = false;
         self.restart_terminal = false;
         self.power_failure = None;
+        self.restart_detail = None;
+        self.restart_detail_dirty = true;
     }
 
     #[cfg(target_arch = "riscv64")]

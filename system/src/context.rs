@@ -790,6 +790,19 @@ impl ApplicationExecutor<'_>
         self.image
     }
 
+    /// The Process service first validates this exact live Finder main against
+    /// its canonical directory entry. Move only its future default out; the
+    /// caller disposes it after Desktop and the native metadata gates return.
+    pub(crate) fn take_recovery_default_after_desktop_ready(
+        &self)
+        -> Option<crate::allocator::recovery::Permit>
+    {
+        use mac_object_table::shared::InvocationGate as _;
+        crate::toolbox::handles::InvocationGate::run(|| {
+            self._context.recovery_default.lock().take()
+        })
+    }
+
     pub(crate) fn with_tls<R>(&self,
                               operation: impl FnOnce(&mut crate::toolbox::native_threads::ThreadSlots)
                                      -> R)

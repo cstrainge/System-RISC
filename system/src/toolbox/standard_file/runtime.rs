@@ -160,6 +160,31 @@ impl super::Desktop
         self.scroll_boxes.prepare_recovery(storage, standard_file::templates::raster_budget()?)
     }
 
+    /// BEGIN consumes the one detached payload; postbirth operations retain
+    /// their existing protocol path below.
+    pub(crate) fn begin_standard_file(&mut self, call: &mut StandardFileCall,
+                                      prepared: &mut standard_file::PreparedDialog)
+                                      -> Result<(), standard_file::BeginError>
+    {
+        let ledger =
+            self.processes
+                .ledger(self.owner)
+                .map_err(|status| standard_file::BeginError::service("recipient", status))?;
+        let activity = crate::context::recovery_activity()
+            .ok_or(standard_file::BeginError::service("service scope", WRONG_THREAD))?;
+        self.standard_file.begin_prepared(&ledger, &activity.storage_owner(), call, prepared)?;
+        let mut guard = InitializingDialog { desktop:   self,
+                                             handle:    call.handle,
+                                             committed: false };
+        guard.desktop
+             .initialize_file_dialog(call)
+             .map_err(|status| standard_file::BeginError::service("initialization", status))?;
+        InvocationGate::run(|| *CURRENT.lock() = Some((guard.desktop.owner, call.handle)));
+        WORK_READY.store(true, Ordering::Release);
+        guard.committed = true;
+        Ok(())
+    }
+
     pub fn standard_file_request(&mut self, call: &mut StandardFileCall) -> Result<(), Status>
     {
         if call.reserved != [0; 2]
@@ -171,14 +196,6 @@ impl super::Desktop
             return self.dispose_file_dialog(call.handle);
         }
         let ledger = self.processes.ledger(self.owner)?;
-        let subject = if call.operation == BEGIN
-        {
-            Some(crate::recovery::standard_file_subject(self.owner)?)
-        }
-        else
-        {
-            None
-        };
         self.standard_file
             .request(&ledger,
                      &crate::context::recovery_activity().ok_or(WRONG_THREAD)?.storage_owner(),
@@ -190,17 +207,6 @@ impl super::Desktop
                 }
                 status
             })?;
-        if call.operation == BEGIN
-        {
-            self.standard_file.get_mut(self.owner, call.handle)?.subject = subject;
-            let mut guard = InitializingDialog { desktop:   self,
-                                                 handle:    call.handle,
-                                                 committed: false };
-            guard.desktop.initialize_file_dialog(call)?;
-            InvocationGate::run(|| *CURRENT.lock() = Some((guard.desktop.owner, call.handle)));
-            WORK_READY.store(true, Ordering::Release);
-            guard.committed = true;
-        }
         Ok(())
     }
 
@@ -306,26 +312,6 @@ impl super::Desktop
                                                      })?;
         let dialog = self.standard_file.get_mut(self.owner, call.handle)?;
         dialog.window = WindowId(window.id);
-        let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
-        dialog.editor.set_font(FontSelection::default(), fonts).map_err(|status| {
-            if status == NO_MEMORY
-            {
-                serial!("STANDARD_FILE_REFUSED stage=font status={status}");
-            }
-            status
-        })?;
-        let mut characters = Text::default();
-        for byte in 32..=255
-        {
-            characters.push(mac_formats::text::character(byte).encode_utf8(&mut [0; 4]))?;
-        }
-        dialog.editor.prepare_font_input(characters.text()?, fonts).map_err(|status| {
-            if status == NO_MEMORY
-            {
-                serial!("STANDARD_FILE_REFUSED stage=font-input status={status}");
-            }
-            status
-        })?;
         checked(self.window(SET_GROW_ICON_CLIP, &mut request(WindowId(window.id))))?;
         checked(self.window(SELECT_WINDOW, &mut window))?;
         self.sf_create_widgets(call.handle, Sheet::Main).map_err(|status| {

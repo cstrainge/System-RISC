@@ -24,6 +24,10 @@ pub struct NativeExitCall
 }
 /// Exact mounted-volume/catalog identity, independent of path or creator code.
 pub const IS_RUNNING: u32 = 9;
+/// The genuine Finder main has committed its initial desktop. Release only its
+/// future recovery allocation default; existing backing retains its origins.
+/// All ProcessCall identity/input fields are zero; execution authenticates it.
+pub const FINDER_DESKTOP_READY: u32 = 10;
 /// Native lifecycle notification: payload packs volume low/CNID high; message
 /// low bit reports whether this exact file still has a running instance.
 pub const FILE_STATE_EVENT: u32 = 0x0c00_0000;
