@@ -50,11 +50,11 @@ impl FailureDetail
         let row = 1;
         while self.columns_used[row] > self.columns - 3 || self.lengths[row] > 253
         {
-            let last =
-                core::str::from_utf8(&self.rows[row][..self.lengths[row]]).ok().and_then(|text| {
-                                                                                   text.chars()
+            let last = core::str::from_utf8(&self.rows[row][..self.lengths[row]]).ok()
+                                                                                 .and_then(|text| {
+                                                                                     text.chars()
                                                                                        .next_back()
-                                                                               });
+                                                                                 });
             let Some(last) = last
             else
             {

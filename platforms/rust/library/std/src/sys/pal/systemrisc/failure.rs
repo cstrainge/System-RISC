@@ -5,9 +5,12 @@ use mac_traps::Client;
 
 use super::runtime;
 use crate::{fmt::{self, Write},
-            sync::atomic::{AtomicBool, Ordering}};
+            sync::atomic::{AtomicBool, AtomicU32, Ordering}};
 
 static REPORTING: AtomicBool = AtomicBool::new(false);
+// A draft, not a published report. The CRT consumes it only after normal std
+// cleanup and main-thread TLS destruction; a panic supersedes it immediately.
+static MAIN_ERROR_FLAGS: AtomicU32 = AtomicU32::new(0);
 
 struct Writer
 {
@@ -64,8 +67,78 @@ impl Write for Writer
     }
 }
 
+fn log_refusal(operation: &str, cause: mac_traps::Error)
+{
+    let mut writer = Writer { client:   runtime::client(),
+                              bytes:    [0; crashes::MAX_APPEND_BYTES],
+                              used:     0,
+                              resident: false,
+                              flags:    0 };
+    let _ = writeln!(writer, "STD_MAIN_ERROR_{operation}_REFUSED: {cause}");
+    writer.flush();
+}
+
+/// Called by the pinned Result Termination implementation while E is still alive.
+/// Keep Rust's E: Debug contract; no application hook or error-type specialization.
+pub(crate) fn main_error(arguments: fmt::Arguments<'_>)
+{
+    if !runtime::is_main_thread() || REPORTING.load(Ordering::Acquire)
+    {
+        return;
+    }
+    MAIN_ERROR_FLAGS.store(0, Ordering::Release);
+    let client = runtime::client();
+    let mut begin = CrashCall { operation: crashes::BEGIN,
+                                flags: crashes::MAIN_ERROR,
+                                ..Default::default() };
+    let begun = client.crash(&mut begin, "", &mut []);
+    let mut writer = Writer { client,
+                              bytes: [0; crashes::MAX_APPEND_BYTES],
+                              used: 0,
+                              resident: begun.is_ok(),
+                              flags: crashes::MAIN_ERROR };
+    if begun.is_ok()
+    {
+        let _ = writeln!(writer, "App: {}  Thread: {}", begin.info.app, begin.info.thread);
+    }
+    if writer.write_fmt(arguments).is_err()
+    {
+        writer.flags |= crashes::FORMAT_FAILED;
+        let _ = writer.write_str("\n[Formatting the main error failed.]\n");
+    }
+    let _ = writer.write_str("\n");
+    writer.flush();
+    match begun
+    {
+        Ok(()) => MAIN_ERROR_FLAGS.store(writer.flags, Ordering::Release),
+        Err(cause) =>
+        {
+            log_refusal("CAPTURE", cause);
+        }
+    }
+}
+
+pub(super) fn show_main_error(result: i32)
+{
+    let flags = MAIN_ERROR_FLAGS.swap(0, Ordering::AcqRel);
+    if result == 0 || flags == 0 || REPORTING.load(Ordering::Acquire)
+    {
+        return;
+    }
+    let mut show = CrashCall { operation: crashes::SHOW,
+                               flags,
+                               ..Default::default() };
+    if let Err(cause) = runtime::client().crash(&mut show, "", &mut [])
+    {
+        // Reporting refusal is distinct from the application's ordinary Err.
+        // Preserve its normal exit status and any real retained report custody.
+        log_refusal("SHOW", cause);
+    }
+}
+
 pub(crate) fn report(arguments: fmt::Arguments<'_>) -> !
 {
+    MAIN_ERROR_FLAGS.store(0, Ordering::Release);
     let Some(client) = runtime::installed_client()
     else
     {

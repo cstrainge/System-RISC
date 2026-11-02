@@ -13,17 +13,8 @@ path = "src/main.rs"
 test = false
 bench = false
 
-[[bin]]
-name = "package"
-path = "src/package.rs"
-test = false
-bench = false
-
 [dependencies]
 mac-toolbox = { path = "../../.." }
-
-[target.'cfg(not(target_arch = "riscv64"))'.dependencies]
-mac-build = { path = "../../../../../tools/mac-build" }
 
 [build-dependencies]
 mac-build = { path = "../../../../../tools/mac-build" }

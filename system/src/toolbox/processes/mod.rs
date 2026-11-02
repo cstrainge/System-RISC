@@ -63,6 +63,8 @@ pub struct Process
 {
     pub info:         ProcessInfo,
     pub(crate) image: Option<crate::images::Binding>,
+    // Original executable context, captured at its real read. Not authority.
+    original_catalog: Option<mac_abi::files::CatalogInfo>,
     heap:             Option<crate::toolbox::application_heap::RootBinding>,
     tls:              Option<crate::toolbox::native_threads::RootBinding>,
     pub stamp:        u64,
@@ -94,6 +96,37 @@ impl PreparedProcess
             .account
             .admit_use()
             .map_err(|cause| crate::machine::scheduler::accounting::account_status(&cause))
+    }
+
+    /// Set the original read's metadata before canonical recipient publication.
+    /// The genuine prepared owner/account are unchanged; this creates no lease.
+    pub(crate) fn bind_launch_catalog(&mut self, catalog: mac_abi::files::CatalogInfo)
+                                      -> Result<(), Status>
+    {
+        if let Some(original) = self.value.original_catalog
+        {
+            // A capacity-publication retry keeps the SAME original snapshot;
+            // it never refreshes metadata from a later filesystem lookup.
+            return if original.volume == catalog.volume
+                      && original.id == catalog.id
+                      && original.parent == catalog.parent
+            {
+                Ok(())
+            }
+            else
+            {
+                Err(BAD_ABI)
+            };
+        }
+        if (self.value.info.volume != 0 && self.value.info.volume != catalog.volume)
+           || (self.value.info.cnid != 0 && self.value.info.cnid != catalog.id)
+        {
+            return Err(BAD_ABI);
+        }
+        self.value.info.volume = catalog.volume;
+        self.value.info.cnid = catalog.id;
+        self.value.original_catalog = Some(catalog);
+        Ok(())
     }
 
     pub(crate) fn prepare(name: &str, volume: u32, cnid: u32) -> Result<Self, Status>
@@ -138,6 +171,7 @@ impl PreparedProcess
         Ok(Self { ledger,
                   value: Process { info,
                                    image: None,
+                                   original_catalog: None,
                                    heap: None,
                                    tls: None,
                                    stamp: 0,
@@ -151,12 +185,18 @@ impl PreparedProcess
 /// outside Desktop. Its account comes from that same entry, never from IDs.
 pub(crate) struct LaunchAdmission
 {
-    owner:      crate::toolbox::handles::OwnerRef,
-    allocation: crate::machine::scheduler::accounting::AllocationAuthority,
-    active:     bool
+    owner:            crate::toolbox::handles::OwnerRef,
+    allocation:       crate::machine::scheduler::accounting::AllocationAuthority,
+    active:           bool,
+    original_catalog: mac_abi::files::CatalogInfo
 }
 impl LaunchAdmission
 {
+    pub(crate) fn original_catalog(&self) -> mac_abi::files::CatalogInfo
+    {
+        self.original_catalog
+    }
+
     pub(crate) fn owner(&self) -> &crate::toolbox::handles::OwnerRef
     {
         &self.owner
@@ -197,6 +237,23 @@ impl Drop for LaunchAdmission
     {
         self.stop();
     }
+}
+
+/// Publish the real executable alias under the prospective process account.
+/// Startup and replacement call this once after READY/directory completion,
+/// outside Desktop, before publishing any author thread. Catalog IDs select
+/// the original read; only the captured owner supplies authority.
+fn pin_launch_executable(owner: &OwnerRef,
+                         allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+                         original: mac_abi::files::CatalogInfo)
+                         -> Result<(), Status>
+{
+    crate::allocator::with_target(crate::allocator::Target::Owner {
+        account: allocation,
+        class: mac_kernel_model::policy::MemoryClass::Kernel
+    }, || crate::kernel::with_files(|files| {
+        files.pin_executable(owner, original.volume, original.id)
+    })).map_err(crate::state::AccessError::status).and_then(|result| result)
 }
 
 /// A cleanup resource context is minted from one directory entry, never from
@@ -405,6 +462,28 @@ impl Manager
         Ok(())
     }
 
+    /// Retain only the original read's context metadata. Actual directory and
+    /// mount authority must still be admitted by Files using this process owner.
+    pub(crate) fn bind_launch_catalog(&mut self, id: u64, catalog: mac_abi::files::CatalogInfo)
+                                      -> Result<(), Status>
+    {
+        let process = self.get_mut(id)?;
+        if process.info.volume != catalog.volume
+           || process.info.cnid != catalog.id
+           || process.original_catalog.is_some()
+           || process.info.thread != 0
+        {
+            return Err(BAD_ABI);
+        }
+        process.original_catalog = Some(catalog);
+        Ok(())
+    }
+
+    pub(crate) fn original_catalog(&self, id: u64) -> Result<mac_abi::files::CatalogInfo, Status>
+    {
+        self.get(id)?.original_catalog.ok_or(BAD_ABI)
+    }
+
     pub(crate) fn launch_admission(&self, id: u64) -> Result<LaunchAdmission, Status>
     {
         let entry = self.entries.get(id).ok_or(NOT_FOUND)?;
@@ -417,7 +496,8 @@ impl Manager
         Ok(LaunchAdmission { owner: entry.ledger().clone(),
                              allocation: entry.value().account.admit_use().map_err(|error| {
                                  crate::machine::scheduler::accounting::account_status(&error)
-                             })?, active: true })
+                             })?, active: true,
+                             original_catalog: entry.value().original_catalog.ok_or(BAD_ABI)? })
     }
 
     pub(super) fn file_starting(&self, volume: u32, cnid: u32) -> bool
@@ -949,7 +1029,7 @@ fn prepare_launch(call: &mut ProcessCall, loaded: crate::toolbox::files::applica
     call.requirement_class = [0; 4];
     call.requirement_version = 0;
     let admission = crate::kernel::with_desktop(|desktop| {
-                        desktop.reserve_application(call, loaded.catalog.name())
+                        desktop.reserve_application(call, loaded.catalog)
                     }).map_err(|error| error.status())??;
     let Some(mut admission) = admission
     else

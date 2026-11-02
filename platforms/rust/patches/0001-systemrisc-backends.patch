@@ -337,3 +337,15 @@
          path.has_root()
      } else {
          path.has_root() && path.prefix().is_some()
+--- a/library/std/src/process.rs
++++ b/library/std/src/process.rs
+@@ -2715,6 +2715,9 @@
+         match self {
+             Ok(val) => val.report(),
+             Err(err) => {
++                #[cfg(target_os = "systemrisc")]
++                crate::sys::failure::main_error(format_args!("Error: {err:?}"));
++                #[cfg(not(target_os = "systemrisc"))]
+                 io::attempt_print_to_stderr(format_args_nl!("Error: {err:?}"));
+                 ExitCode::FAILURE
+             }

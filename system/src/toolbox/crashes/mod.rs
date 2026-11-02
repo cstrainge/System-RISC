@@ -248,6 +248,16 @@ impl Manager
     }
 
     #[cfg(target_arch = "riscv64")]
+    pub(crate) fn main_error_capture(&self, owner: u64, thread: u64) -> bool
+    {
+        !self.superseded
+        && matches!(self.capture, Capture::Submitted)
+        && self.info.app == owner
+        && self.info.thread == thread
+        && self.info.flags & MAIN_ERROR != 0
+    }
+
+    #[cfg(target_arch = "riscv64")]
     pub(crate) fn owns_protected_stock(&self) -> bool
     {
         self.payload.protected()
