@@ -408,6 +408,21 @@ impl super::Desktop
                           page_lines })
     }
 
+    /// Actual Full-scene producers bound every interchangeable report buffer.
+    /// Called once during protected modal admission, never while painting.
+    pub(crate) fn measure_crash_command_capacity(layout: ReportLayout) -> Result<usize, Status>
+    {
+        let rows = usize::try_from(layout.page_lines).map_err(|_| BAD_ABI)?;
+        let terms = [1usize, // Full-window erase
+                     1,      // Bomb icon
+                     2,      // Title and app/thread header
+                     2,      // Warning rows (including FailureDetail)
+                     1,      // Report frame
+                     1,      // Footer
+                     BUTTONS.len()]; // Actual managed button producers
+        terms.into_iter().try_fold(rows, |count, term| count.checked_add(term).ok_or(BAD_ABI))
+    }
+
     /// Count the actual shipped label formats and real scalar maxima once.
     /// Native line layout bounds expanded UTF-8/tab data by four bytes/column.
     pub(crate) fn measure_crash_paint_capacity(layout: ReportLayout) -> Result<usize, Status>
@@ -721,6 +736,8 @@ impl super::Desktop
             }
             paint.admits(length).map_err(paint_error)?;
         }
+        let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+        self.bind_report_scene(info.window, &activity)?;
         if mode == Paint::Full
         {
             checked(self.window(BEGIN_UPDATE, &mut request))?;

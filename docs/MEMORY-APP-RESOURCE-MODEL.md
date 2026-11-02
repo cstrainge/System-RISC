@@ -5335,3 +5335,82 @@ it does not establish every unhappy path. Editor/font/layout scratch, actual
 raster/COW backing, retained scenes and damage regions still need their own
 work. No host Rust suite supplied OS acceptance, and full-kit readiness is not
 established.
+
+### System report command ownership
+
+The reusable recovery Session now boot-admits four report-only command arrays
+under its original protected System Ordinary allocation scope. The native
+producer measures the bound from the prepared visible-row count and its actual
+fixed drawing/button producers: current resources require 36 commands per
+array. The original scene, latest report/footer patch, latest warning patch and
+one pending update can each retain their own array. Core alert stock stays
+separate. No report command-array growth fallback is available after admission.
+
+The Commands carrier owns both its original Vec and affine frame lease. Its
+borrows expose slices, never a mutable Vec that could be extracted, reserved or
+replaced independently of the lease. Checked push and complete-batch admission
+validate lengths, capacity and the backing's bound before mutation. Backed frames
+use in-capacity pushes; ordinary carriers retain their original fallible reserve
+behavior. TextEdit's existing prepared batch uses that same checked Content
+operation. A report base moved into fragments cannot acquire an unbacked tail.
+Whole-carrier moves, partial/full replacement, cancellation and destruction keep
+the original array and lease together. Readers are destroyed before the same
+empty array is parked and Activity's release wake occurs.
+
+Binding requires the actual active report Activity, current Window and owning
+scene. Full and masked BEGIN acquire the owned pending array before update/mask
+effects. A new Window binding requires all four original arrays returned and the
+original Window's real completion ACK. That ACK is retained separately from the
+reusable window-list slot and originates only after payload disposal and canonical
+cleanup completion. Final Session return preflights every report array and that
+ACK before any Core/Standard File payload return. Refusal retains the same
+original closing Session and stock. This supports the existing Finder-to-System
+report handoff without treating semantic close or a later lookup as completion.
+
+Exact final optimized no_std RV64/release/LTO artifact: System ELF
+`ae9582bd81faaa5895b4d7f76d68c644d5ce435071304c4b9aac921571aacd40`,
+resource `1a032367b0aa74eded47ec12420027e42791b04c9c79768a392ca81ba72de808`.
+The System/Finder compiler check and complete image build succeeded with fixed
+source. A final mechanical update of an existing excluded host fixture was
+followed by another fixed-source image build; its full ELF and resource hashes
+were actually identical. No host Rust suite supplied OS acceptance.
+
+Four finite private exact-2-GiB native workflows used that final image. Text Edit
+completed Save Changes Cancel/Save/Don't Save, actual Core-to-PUT handoff, saved
+ab, malformed-UTF8 Core Error acknowledgment/new input and three actual account
+closures. Four dialog crops matched the preceding artifact. Six installed normal
+app lifetimes completed; Panic Test's 27,246-byte/331-line Unicode/tab/wrapped
+report reached its end, accepted dismissal and reached actual abort account
+closure. Entire first/last report frames matched the preceding image; final and
+Core Save/Error frames were reviewed.
+
+The existing Finder-role/survivor fixture completed two crash/replacement cycles,
+stale Window/Handle and fresh-state checks, actual old Finder account closure,
+repeated desktop-readiness acknowledgment and malformed-request refusal, new
+Finder input and survivor input. Both replacement frames showed the independent
+System-owned report behind the replacement. Read-only paused page/text sampling
+matched the actual protected replacement image in both permanent supervisor roots;
+this observer perturbs timing and does not establish user-mode isolation or TLB
+race safety. The replacement and survivor remained live until guest shutdown;
+no final-account-closure claim is made for those live actors.
+
+A one-hart pressure run observed actual ordinary handle MemoryFull with retained
+16 W bytes and caller account headroom, healthy/pressured managed modal reuse,
+eight Core draws in each phase, strict report NoMemory/truncation refusal and
+all original 1 MiB report bytes before Show/Dismiss. All 44 holder payload
+releases and actual worker reclamations followed. After stress completed, actual
+modal acknowledgment restored Finder's same Applications folder and menus;
+reviewed frames, subsequent Get Info open/close and mouse input completed.
+All four captures recorded fixed source/base, actual exact-2-GiB argv and boot/
+page-bank RAM, owned guest exit zero/reap and removal of private media without
+cleanup errors. An earlier candidate's post-stress manual-review timeout remains
+a failed capture; it is not relabeled as a complete pressure result or kernel
+failure.
+
+These observations do not count command-array allocations or measure their live
+addresses. Forced frame exhaustion, failed paint/cancellation, retained-reader and
+uncertain-ACK interleavings, every warning branch, complete Save/Save As pressure,
+production Finder OOM restart, performance, hardware and SMP remain unqualified.
+Retained report text/Ports, masks/fragment/damage regions, pending scene storage,
+font/layout scratch, raster/COW and control payloads remain separate allocation
+work. This is not a complete allocation-free report or emergency-kit guarantee.

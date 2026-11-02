@@ -361,8 +361,7 @@ impl super::Desktop
         {
             return Err(NO_MEMORY);
         }
-        content.commands.try_reserve(commands.len()).map_err(|_| NO_MEMORY)?;
-        content.commands.extend(commands);
+        content.try_extend(commands)?;
         self.content_changed_rect(call.window.0, info.view);
         let staged = self.pending_content.iter().any(|content| content.id == call.window);
         self.textedit.bind_cursor(call.id, call.window, port, staged)?;

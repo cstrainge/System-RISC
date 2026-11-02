@@ -123,13 +123,53 @@ pub enum RenderCommand
     }
 }
 
-/// The original command array and its optional genuine Core frame ownership
-/// move together, including when ordinary patches move arrays into fragments.
+/// The original command array and its optional affine frame ownership move
+/// together, including when patches move arrays into fragments. Borrow only
+/// slices; mutation must preserve this SAME buffer and its backing.
 #[derive(Default)]
 pub struct Commands
 {
-    values: Vec<RenderCommand>,
-    core:   Option<CoreBacking>
+    values:  Vec<RenderCommand>,
+    backing: Option<CommandBacking>
+}
+enum CommandBacking
+{
+    Core(CoreBacking),
+    Report
+    {
+        lease: crate::recovery::ReportFrameLease,
+        limit: usize
+    }
+}
+/// Inert report-only command allocation; text and Ports keep their original
+/// owned representation and are destroyed before this buffer is parked.
+pub(crate) struct ReportFrame
+{
+    commands: Vec<RenderCommand>,
+    limit:    usize
+}
+impl ReportFrame
+{
+    pub(crate) fn prepare(limit: usize) -> Result<Self, Status>
+    {
+        if limit == 0 || limit > 512
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        let mut commands = Vec::new();
+        commands.try_reserve_exact(limit).map_err(|_| mac_abi::NO_MEMORY)?;
+        Ok(Self { commands,
+                  limit })
+    }
+
+    pub(crate) fn validate(&self, limit: usize) -> Result<(), Status>
+    {
+        if !self.commands.is_empty() || self.limit != limit || self.commands.capacity() < limit
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        Ok(())
+    }
 }
 struct CoreBacking
 {
@@ -244,27 +284,105 @@ impl Commands
 
     pub(crate) fn from_core(frame: CoreFrame, lease: crate::recovery::CoreFrameLease) -> Self
     {
-        Self { values: frame.commands,
-               core:   Some(CoreBacking { lease,
-                                          text: frame.text }) }
+        Self { values:  frame.commands,
+               backing: Some(CommandBacking::Core(CoreBacking { lease,
+                                                                text: frame.text })) }
+    }
+
+    pub(crate) fn from_report(frame: ReportFrame, lease: crate::recovery::ReportFrameLease)
+                              -> Self
+    {
+        Self { values:  frame.commands,
+               backing: Some(CommandBacking::Report { lease,
+                                                      limit: frame.limit }) }
+    }
+
+    fn is_report(&self) -> bool
+    {
+        matches!(self.backing, Some(CommandBacking::Report { .. }))
+    }
+
+    fn report_binding(&self, activity: &crate::recovery::Activity, window: WindowId) -> bool
+    {
+        matches!(&self.backing, Some(CommandBacking::Report { lease, .. })
+                 if lease.matches(activity, window))
+    }
+
+    fn admit_additional(&mut self, additional: usize) -> Result<(), Status>
+    {
+        let limit = match &self.backing
+        {
+            Some(CommandBacking::Report { limit,
+                                          .. }) => Some(*limit),
+            Some(CommandBacking::Core(_)) => Some(512),
+            None => None
+        };
+        if limit.is_some_and(|limit| self.values.capacity() < limit)
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        let end = self.values.len().checked_add(additional).ok_or(mac_abi::NO_MEMORY)?;
+        if limit.is_some_and(|limit| end > limit)
+        {
+            return Err(mac_abi::NO_MEMORY);
+        }
+        if self.backing.is_none()
+        {
+            self.values.try_reserve(additional).map_err(|_| mac_abi::NO_MEMORY)?;
+        }
+        Ok(())
+    }
+
+    fn try_push(&mut self, command: RenderCommand) -> Result<(), Status>
+    {
+        self.admit_additional(1)?;
+        self.values.push(command);
+        Ok(())
+    }
+
+    /// Admit the complete prepared batch before changing the original commands.
+    /// Backed frames keep their SAME allocation; only ordinary carriers grow.
+    fn try_extend(&mut self, commands: Vec<RenderCommand>) -> Result<(), Status>
+    {
+        self.admit_additional(commands.len())?;
+        for command in commands
+        {
+            self.values.push(command);
+        }
+        Ok(())
+    }
+
+    fn clear(&mut self)
+    {
+        self.values.clear();
+    }
+
+    fn retain(&mut self, keep: impl FnMut(&RenderCommand) -> bool)
+    {
+        self.values.retain(keep);
     }
 
     pub(crate) fn is_core(&self) -> bool
     {
-        self.core.is_some()
+        matches!(self.backing, Some(CommandBacking::Core(_)))
     }
 
     pub(crate) fn core_binding(&self, activity: &crate::recovery::Activity, window: WindowId)
                                -> bool
     {
-        self.core.as_ref().is_some_and(|core| core.lease.matches(activity, window))
+        matches!(&self.backing, Some(CommandBacking::Core(core))
+                 if core.lease.matches(activity, window))
     }
 
     pub(crate) fn prepare_core(&mut self, window: WindowId, alert: &super::super::dialogs::Alert,
                                activity: &crate::recovery::Activity)
                                -> Result<(), Status>
     {
-        let core = self.core.as_mut().ok_or(mac_abi::BAD_ABI)?;
+        let Some(CommandBacking::Core(core)) = self.backing.as_mut()
+        else
+        {
+            return Err(mac_abi::BAD_ABI);
+        };
         if !core.lease.matches(activity, window) || !self.values.is_empty()
         {
             return Err(mac_abi::ACCESS_DENIED);
@@ -311,7 +429,11 @@ impl Commands
                             activity: &crate::recovery::Activity)
                             -> Result<CoreTextItem, Status>
     {
-        let core = self.core.as_mut().ok_or(mac_abi::BAD_ABI)?;
+        let Some(CommandBacking::Core(core)) = self.backing.as_mut()
+        else
+        {
+            return Err(mac_abi::BAD_ABI);
+        };
         if !core.lease.matches(activity, window)
         {
             return Err(mac_abi::ACCESS_DENIED);
@@ -334,23 +456,29 @@ impl Commands
                            activity: &crate::recovery::Activity)
                            -> bool
     {
-        self.core.as_ref().is_some_and(|core| {
-                              core.lease.matches(activity, window)
-                              && item.window == window
-                              && item.activity.same_session(activity)
-                              && item.port.origin == port.origin
-                              && item.port.state == port.state
-                              && core.text.iter().any(|snapshot| {
-                                                     snapshot.captured
-                                                     && Arc::ptr_eq(&snapshot.source, &item.source)
-                                                     && Arc::ptr_eq(&snapshot.port, &item.port)
-                                                 })
-                          })
+        self.backing.as_ref().is_some_and(|backing| {
+                                 let CommandBacking::Core(core) = backing
+                                 else
+                                 {
+                                     return false;
+                                 };
+                                 core.lease.matches(activity, window)
+                                 && item.window == window
+                                 && item.activity.same_session(activity)
+                                 && item.port.origin == port.origin
+                                 && item.port.state == port.state
+                                 && core.text.iter().any(|snapshot| {
+                                                        snapshot.captured
+                                                        && Arc::ptr_eq(&snapshot.source,
+                                                                       &item.source)
+                                                        && Arc::ptr_eq(&snapshot.port, &item.port)
+                                                    })
+                             })
     }
 }
 impl Deref for Commands
 {
-    type Target = Vec<RenderCommand>;
+    type Target = [RenderCommand];
 
     fn deref(&self) -> &Self::Target
     {
@@ -368,11 +496,25 @@ impl Drop for Commands
 {
     fn drop(&mut self)
     {
-        if let Some(core) = self.core.take()
+        if let Some(backing) = self.backing.take()
         {
+            // Drop every retained text/Port/control reader before parking the
+            // SAME allocation and releasing its genuine Activity wake pin.
             self.values.clear();
-            core.lease.park(CoreFrame { commands: core::mem::take(&mut self.values),
-                                        text:     core.text });
+            match backing
+            {
+                CommandBacking::Core(core) =>
+                {
+                    core.lease.park(CoreFrame { commands: core::mem::take(&mut self.values),
+                                                text:     core.text })
+                }
+                CommandBacking::Report { lease,
+                                         limit } =>
+                {
+                    lease.park(ReportFrame { commands: core::mem::take(&mut self.values),
+                                             limit })
+                }
+            }
         }
     }
 }
@@ -515,20 +657,52 @@ impl Content
                outline:   None }
     }
 
-    pub(crate) fn empty_for_core_binding(&self) -> bool
+    pub(crate) fn empty_for_recovery_binding(&self) -> bool
     {
         self.commands.is_empty()
-        && !self.commands.is_core()
+        && self.commands.backing.is_none()
         && self.fragments.is_empty()
         && self.patch.is_none()
+    }
+
+    pub(crate) fn has_report_commands(&self) -> bool
+    {
+        // A bound report starts with its owned base; patching moves that
+        // SAME base into the first fragment. Ordinary scenes never mix in a
+        // report owner. Keep this classification O(1) for all ordinary draws.
+        self.commands.is_report() || self.fragments.first().is_some_and(|f| f.commands.is_report())
+    }
+
+    pub(crate) fn report_binding(&self, activity: &crate::recovery::Activity, window: WindowId)
+                                 -> bool
+    {
+        self.has_report_commands()
+        && self.fragments.iter().all(|f| f.commands.report_binding(activity, window))
+        && (self.commands.report_binding(activity, window)
+            || (self.commands.backing.is_none() && self.commands.is_empty()))
     }
 
     /// Admit command storage before publishing an additional retained drawing.
     pub fn record(&mut self, command: RenderCommand) -> Result<(), Status>
     {
-        self.commands.try_reserve(1).map_err(|_| mac_abi::NO_MEMORY)?;
-        self.commands.push(command);
-        Ok(())
+        if self.has_report_commands() && !self.commands.is_report()
+        {
+            // A patch moved the original owner into its fragment. Never grow
+            // an unowned tail beside the report's admitted command owners.
+            return Err(mac_abi::BAD_ABI);
+        }
+        self.commands.try_push(command)
+    }
+
+    /// Append a prepared resident batch through the same carrier checks as a
+    /// single record. An unbacked report tail cannot acquire a new allocation.
+    pub(crate) fn try_extend(&mut self, commands: Vec<RenderCommand>) -> Result<(), Status>
+    {
+        if self.has_report_commands() && !self.commands.is_report()
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        self.commands.try_extend(commands)
     }
 
     pub fn pending_patch(id: impl Into<SceneTarget>, port: service::Port, patch: Region) -> Self
@@ -933,12 +1107,12 @@ mod tests
     {
         layer.pending_mut()
              .unwrap()
-             .commands
-             .push(RenderCommand::Legacy(alloc::boxed::Box::new(DrawCommand { kind: PAINT_RECT,
+             .record(RenderCommand::Legacy(alloc::boxed::Box::new(DrawCommand { kind: PAINT_RECT,
                                                        bounds,
                                                        color,
                                                        text_length: 0,
-                                                       text: [0; mac_abi::INLINE_STRING_BYTES] })));
+                                                       text: [0; mac_abi::INLINE_STRING_BYTES] })))
+             .unwrap();
     }
     fn pixel(layer: &DesktopLayer) -> u32
     {
@@ -956,7 +1130,7 @@ mod tests
     {
         let bounds = Rect::new(0, 0, 64, 48);
         let mut scene = Content::new(WindowId(1));
-        scene.commands.push(command(bounds, 0xff0000));
+        scene.record(command(bounds, 0xff0000)).unwrap();
         let mask =
             Region::from_rect(Rect::new(4, 4, 12, 12)).combine(&Region::from_rect(Rect::new(24,
                                                                                             4,
@@ -969,7 +1143,7 @@ mod tests
         {
             let mut patch =
                 Content::pending_patch(scene.id, service::Port::default(), mask.clone());
-            patch.commands.push(command(bounds, iteration));
+            patch.record(command(bounds, iteration)).unwrap();
             let used = scene.storage() + patch.storage();
             scene.commit_patch(patch, bounds, used, 1024 * 1024).unwrap();
             assert_eq!(scene.fragments.len(), 2, "same mask must replace its earlier patch");
@@ -1005,7 +1179,7 @@ mod tests
              .unwrap();
         assert_eq!(replays, 1, "a local patch must not replay the old background");
         let mut rejected = Content::pending_patch(scene.id, service::Port::default(), mask);
-        rejected.commands.push(command(bounds, 0));
+        rejected.record(command(bounds, 0)).unwrap();
         let before = scene.storage();
         assert_eq!(scene.commit_patch(rejected, bounds, before, 0), Err(mac_abi::NO_MEMORY));
         assert_eq!(scene.storage(), before);

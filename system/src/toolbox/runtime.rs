@@ -971,6 +971,25 @@ impl Desktop
                     pending.commands =
                         super::quickdraw::retained::Commands::from_core(frame, lease);
                 }
+                else if content.has_report_commands()
+                {
+                    let Some(activity) = crate::context::recovery_activity()
+                    else
+                    {
+                        return ACCESS_DENIED;
+                    };
+                    if !content.report_binding(&activity, id)
+                    {
+                        return ACCESS_DENIED;
+                    }
+                    let (frame, lease) = match activity.take_report_frame(id)
+                    {
+                        Ok(pair) => pair,
+                        Err(status) => return status
+                    };
+                    pending.commands =
+                        super::quickdraw::retained::Commands::from_report(frame, lease);
+                }
                 // First cut repaints each complete rectangular content port.
                 let local = window.local_bounds();
                 self.windows.invalidate(id, local);
@@ -1575,6 +1594,30 @@ impl Desktop
         }
         if matches!(call.operation, QD_WINDOW_BEGIN_MASK | QD_WINDOW_BEGIN_RECTS)
         {
+            let commands = if !desktop
+            {
+                let content =
+                    self.content.iter().find(|content| content.id == id).ok_or(NOT_FOUND)?;
+                if content.has_report_commands()
+                {
+                    let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                    let window = id.window()?;
+                    if !content.report_binding(&activity, window)
+                    {
+                        return Err(ACCESS_DENIED);
+                    }
+                    let (frame, lease) = activity.take_report_frame(window)?;
+                    Some(super::quickdraw::retained::Commands::from_report(frame, lease))
+                }
+                else
+                {
+                    None
+                }
+            }
+            else
+            {
+                None
+            };
             let bounds = if desktop
             {
                 if self.desktop.is_updating()
@@ -1622,7 +1665,11 @@ impl Desktop
                 self.pending_content.try_reserve(1 + spare)
             }).map_err(|_| NO_MEMORY)?;
             let content = self.content.iter().find(|c| c.id == id).ok_or(NOT_FOUND)?;
-            let pending = Content::pending_patch(id, content.port.clone(), mask);
+            let mut pending = Content::pending_patch(id, content.port.clone(), mask);
+            if let Some(commands) = commands
+            {
+                pending.commands = commands;
+            }
             let (used, limit) = self.retained_admission(id);
             if used.saturating_add(pending.storage()) > limit
             {
@@ -1969,7 +2016,7 @@ impl Desktop
                 Err(ACCESS_DENIED)
             };
         }
-        if !content.empty_for_core_binding()
+        if !content.empty_for_recovery_binding()
         {
             return Err(BAD_ABI);
         }
@@ -1977,6 +2024,42 @@ impl Desktop
         let (frame, lease) = activity.take_core_frame(window)?;
         // No fallible work follows the affine transfer into its actual owner.
         content.commands = super::quickdraw::retained::Commands::from_core(frame, lease);
+        Ok(())
+    }
+
+    pub(super) fn bind_report_scene(&mut self, window: WindowId,
+                                    activity: &crate::recovery::Activity)
+                                    -> Result<(), Status>
+    {
+        activity.validate_report_paint(window)?;
+        if !self.owns(window)
+           || self.pending_content.iter().any(|content| content.id == window)
+           || self.crash.info().window != window
+           || self.crash.info().page_lines != super::crashes::prepared_layout()?.page_lines
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let content =
+            self.content.iter_mut().find(|content| content.id == window).ok_or(NOT_FOUND)?;
+        if content.has_report_commands()
+        {
+            return if content.report_binding(activity, window)
+            {
+                Ok(())
+            }
+            else
+            {
+                Err(ACCESS_DENIED)
+            };
+        }
+        if !content.empty_for_recovery_binding()
+        {
+            return Err(BAD_ABI);
+        }
+        activity.bind_report_frames(window)?;
+        let (frame, lease) = activity.take_report_frame(window)?;
+        // No fallible work follows minting this affine buffer owner.
+        content.commands = super::quickdraw::retained::Commands::from_report(frame, lease);
         Ok(())
     }
 

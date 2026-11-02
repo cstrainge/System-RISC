@@ -59,6 +59,7 @@ struct Session
     windows:        Spinlock<[(u64, bool); 2]>,
     core_payload:   Spinlock<CorePayloadState>,
     core_frames:    Spinlock<CoreFrames>,
+    report_frames:  Spinlock<ReportFrames>,
     file_vectors:   Spinlock<StandardFileVectorsState>,
     cleanup_status: AtomicI32
 }
@@ -189,6 +190,62 @@ impl CoreFrameLease
         // Activity excludes reaping/rebinding until AFTER this inert transfer.
         InvocationGate::run(|| {
             self.activity.session.core_frames.lock().ready[self.slot] = Some(frame);
+        });
+    }
+}
+
+/// Four command owners cover the original scene, the latest two disjoint
+/// report/warning patches, and one pending update. These inert buffers stay in
+/// the original reusable Session; they never borrow the Core frame pool.
+struct ReportFrames
+{
+    window: Option<(mac_abi::WindowId, bool)>,
+    limit:  usize,
+    ready:  [Option<crate::toolbox::quickdraw::retained::ReportFrame>; 4]
+}
+impl ReportFrames
+{
+    fn prepare(limit: usize) -> Result<Self, Status>
+    {
+        use crate::toolbox::quickdraw::retained::ReportFrame;
+        Ok(Self { window: None,
+                  limit,
+                  ready: [Some(ReportFrame::prepare(limit)?),
+                          Some(ReportFrame::prepare(limit)?),
+                          Some(ReportFrame::prepare(limit)?),
+                          Some(ReportFrame::prepare(limit)?)] })
+    }
+
+    fn returned(&self) -> Result<(), Status>
+    {
+        for frame in &self.ready
+        {
+            frame.as_ref().ok_or(SERVICE_BUSY)?.validate(self.limit)?;
+        }
+        Ok(())
+    }
+}
+
+#[must_use = "retain the report frame lease with its SAME command buffer"]
+pub(crate) struct ReportFrameLease
+{
+    activity: Activity,
+    window:   mac_abi::WindowId,
+    slot:     usize
+}
+impl ReportFrameLease
+{
+    pub(crate) fn matches(&self, activity: &Activity, window: mac_abi::WindowId) -> bool
+    {
+        self.window == window && self.activity.same_session(activity)
+    }
+
+    pub(crate) fn park(self, frame: crate::toolbox::quickdraw::retained::ReportFrame)
+    {
+        // The affine lease alone owns this absent slot. Commands destroyed
+        // their readers before this transfer; Activity drops/wakes afterwards.
+        InvocationGate::run(|| {
+            self.activity.session.report_frames.lock().ready[self.slot] = Some(frame);
         });
     }
 }
@@ -522,6 +579,80 @@ impl Activity
         })
     }
 
+    pub(crate) fn validate_report_paint(&self, window: mac_abi::WindowId) -> Result<(), Status>
+    {
+        InvocationGate::run(|| {
+            let modal = MODAL.lock();
+            if !modal.session.as_ref().is_some_and(|session| Arc::ptr_eq(session, &self.session))
+               || self.session.kind != Kind::CrashReport
+               || CLOSING.load(Ordering::Acquire)
+               || !self.session.recipient.lock().accepting()
+               || !self.session.storage_owner.accepting()
+               || self.session.object.load(Ordering::Acquire) != window.0
+               || !self.session
+                       .windows
+                       .lock()
+                       .iter()
+                       .any(|(id, closed)| *id == window.0 && !*closed)
+            {
+                return Err(ACCESS_DENIED);
+            }
+            Ok(())
+        })
+    }
+
+    pub(crate) fn bind_report_frames(&self, window: mac_abi::WindowId) -> Result<(), Status>
+    {
+        self.validate_report_paint(window)?;
+        InvocationGate::run(|| {
+            let mut frames = self.session.report_frames.lock();
+            if let Some((bound, acknowledged)) = frames.window
+            {
+                if bound == window
+                {
+                    return if acknowledged { Err(ACCESS_DENIED) } else { Ok(()) };
+                }
+                if !acknowledged
+                {
+                    return Err(SERVICE_BUSY);
+                }
+            }
+            // A genuine old Window ACK plus ALL original inert buffers is
+            // required before a Finder-to-System same-Session rebind.
+            frames.returned()?;
+            frames.window = Some((window, false));
+            Ok(())
+        })
+    }
+
+    pub(crate) fn take_report_frame(
+        &self, window: mac_abi::WindowId)
+        -> Result<(crate::toolbox::quickdraw::retained::ReportFrame, ReportFrameLease), Status>
+    {
+        self.validate_report_paint(window)?;
+        InvocationGate::run(|| {
+            let mut frames = self.session.report_frames.lock();
+            if frames.window != Some((window, false))
+            {
+                return Err(ACCESS_DENIED);
+            }
+            let limit = frames.limit;
+            for (slot, frame) in frames.ready.iter_mut().enumerate()
+            {
+                if let Some(ready) = frame.as_ref()
+                {
+                    ready.validate(limit)?;
+                    let frame = frame.take().ok_or(mac_abi::BAD_ABI)?;
+                    return Ok((frame,
+                               ReportFrameLease { activity: self.clone(),
+                                                  window,
+                                                  slot }));
+                }
+            }
+            Err(SERVICE_BUSY)
+        })
+    }
+
     fn validate_modal_opening(&self, kind: Kind, recipient: &OwnerRef, storage: &OwnerRef)
                               -> Result<(), Status>
     {
@@ -567,6 +698,14 @@ impl Activity
             if let Some(slot) = self.session.windows.lock().iter_mut().find(|(old, _)| *old == id.0)
             {
                 slot.1 = true;
+            }
+            let mut frames = self.session.report_frames.lock();
+            if let Some((bound, acknowledged)) = frames.window.as_mut()
+               && *bound == id
+            {
+                // This callback is the actual original Window completion ACK,
+                // not a later lookup after Session.windows slot reuse.
+                *acknowledged = true;
             }
         });
     }
@@ -800,6 +939,9 @@ pub(crate) fn prepare_modal() -> Result<(), Status>
     })?;
     let session = crate::context::with_recovery_allocation(permit.clone(), || {
         crate::allocator::with_system(SystemClass::Ordinary, || {
+            let limit = crate::toolbox::runtime::Desktop::measure_crash_command_capacity(
+                crate::toolbox::crashes::prepared_layout()?)?;
+            let report_frames = ReportFrames::prepare(limit)?;
             Arc::try_new(Session { recipient: Spinlock::new(owner.clone()),
                                    recipient_id: AtomicU64::new(owner.owner().incarnation()),
                                    storage_owner: owner,
@@ -814,6 +956,7 @@ pub(crate) fn prepare_modal() -> Result<(), Status>
                                    core_payload: Spinlock::new(CorePayloadState::Idle),
                                    core_frames: Spinlock::new(CoreFrames { window: None,
                                                                            ready:  [None, None] }),
+                                   report_frames: Spinlock::new(report_frames),
                                    file_vectors: Spinlock::new(StandardFileVectorsState::Idle),
                                    cleanup_status: AtomicI32::new(mac_abi::OK) }).map_err(|_| {
                                                                                      NO_MEMORY
@@ -936,7 +1079,15 @@ fn reap()
             let core_idle = matches!(unique.core_payload.get_mut(), CorePayloadState::Idle)
                             && unique.core_frames.get_mut().window.is_none()
                             && unique.core_frames.get_mut().ready.iter().all(Option::is_none);
-            let returned = if unique.kind == Kind::CoreAlert && file_vectors_idle
+            let returned = if let Err(status) = unique.report_frames.get_mut().returned()
+            {
+                Err(status)
+            }
+            else if unique.report_frames.get_mut().window.is_some_and(|(_, ack)| !ack)
+            {
+                Err(SERVICE_BUSY)
+            }
+            else if unique.kind == Kind::CoreAlert && file_vectors_idle
             {
                 crate::toolbox::dialogs::core_alerts::return_quiesced(CorePayloadQuiescence {
                     session: unique
@@ -958,6 +1109,7 @@ fn reap()
             };
             if returned.is_ok()
             {
+                unique.report_frames.get_mut().window = None;
                 let owner = unique.storage_owner.clone();
                 let old = core::mem::replace(unique.recipient.get_mut(), owner);
                 drop(old);
@@ -971,6 +1123,7 @@ fn reap()
         if let Err(status) = returned
         {
             let standard_file = session.kind == Kind::StandardFile;
+            let report = session.kind == Kind::CrashReport;
             let previous = session.cleanup_status.swap(status, Ordering::AcqRel);
             InvocationGate::run(|| {
                 let mut modal = MODAL.lock();
@@ -985,6 +1138,11 @@ fn reap()
                 {
                     serial!("STANDARD_FILE_VECTORS_RETURN_REFUSED status={status}; original \
                              closing Session retained");
+                }
+                else if report
+                {
+                    serial!("REPORT_COMMANDS_RETURN_REFUSED status={status}; original closing \
+                             Session retained");
                 }
                 else
                 {
