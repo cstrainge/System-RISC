@@ -863,7 +863,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         QUICKDRAW | FONT | REGION | COPY_BITS | WORLD | CURSOR | MAPPING | RESOURCE | PICTURE
         | ICON | IMAGE =>
         unsafe {
-            toolbox::quickdraw::native::dispatch(number, pointer, size, crate::kernel::fonts())
+            toolbox::quickdraw::native::dispatch(number, pointer, size, crate::kernel::fonts().as_deref())
         },
         WINDOW =>
         {

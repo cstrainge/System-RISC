@@ -34,7 +34,7 @@ streams the selected fork without overwriting an existing output file.
 
 ## Preserve user state across a System rebuild
 
-Export Preferences, Documents and Desktop Folder from the old **offline working volume**
+Export Preferences, Fonts, Documents and Desktop Folder from the old **offline working volume**
 before rebuilding; restore into the fresh generated image afterward. The VM's
 writable disk contains runtime changes; the pristine `dist` base does not. For
 the normal desktop's qcow2 working disk:
@@ -43,10 +43,12 @@ the normal desktop's qcow2 working disk:
 python3 scripts/system7_vm.py stop
 qemu-img convert -f qcow2 -O raw -S 4k ../working/system7-vm/system7.qcow2 ../working/user-state.hfsb
 cargo run -p hfs-b -- copy-out ../working/user-state.hfsb '/System Folder/Preferences' ../working/saved-preferences
+cargo run -p hfs-b -- copy-out ../working/user-state.hfsb '/System Folder/Fonts' ../working/saved-fonts
 cargo run -p hfs-b -- copy-out ../working/user-state.hfsb /Documents ../working/saved-documents
 cargo run -p hfs-b -- copy-out ../working/user-state.hfsb '/Desktop Folder' ../working/saved-desktop
 # Rebuild and check the pristine System volume here.
 cargo run -p hfs-b -- copy-in ../build/system7/dist/system7.hfsb ../working/saved-preferences '/System Folder' --replace
+cargo run -p hfs-b -- copy-in ../build/system7/dist/system7.hfsb ../working/saved-fonts '/System Folder' --replace
 cargo run -p hfs-b -- copy-in ../build/system7/dist/system7.hfsb ../working/saved-documents / --replace
 cargo run -p hfs-b -- copy-in ../build/system7/dist/system7.hfsb ../working/saved-desktop / --replace
 cargo run -p hfs-b -- check ../build/system7/dist/system7.hfsb
@@ -63,7 +65,7 @@ mv ../build/system7/dist/restored.qcow2 ../build/system7/dist/system7.qcow2
 python3 scripts/system7_vm.py start --no-build
 ```
 
-Export Desktop Folder only when it exists; an existing non-directory at that path
+Export Fonts and Desktop Folder only when they exist; an existing non-directory at either path
 is an error, not permission to discard it. Desktop Folders on other volumes stay
 on their respective media.
 

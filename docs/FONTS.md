@@ -1,11 +1,11 @@
 # Installed fonts, OpenType and color glyphs
 
-Status: design/backlog, tracked as [P9](CORE-TOOLBOX-ROADMAP.md#p9--system-fonts-folder)
-and [P10](CORE-TOOLBOX-ROADMAP.md#p10--opentype-and-color-fonts).
-The resident Font Manager currently takes the bundled FOND/FONT/NFNT/sfnt data
-from System at startup. Installed-folder discovery, modern layout, CFF rendering
-and color-font rendering are not established by those existing bitmap/TrueType
-tests. See [current implementation and evidence](../system/src/toolbox/quickdraw/fonts/README.md).
+Status: installed-folder discovery, watched catalog publication and read-only
+Finder suitcase windows have bounded single-hart native observations below.
+Broader runtime qualification remains open. Modern layout, CFF and color rendering remain backlog under
+[P9](CORE-TOOLBOX-ROADMAP.md#p9--system-fonts-folder) and
+[P10](CORE-TOOLBOX-ROADMAP.md#p10--opentype-and-color-fonts).
+See [catalog contracts and evidence limits](../system/src/toolbox/quickdraw/fonts/README.md).
 
 ## Fonts folder and discovery
 
@@ -24,15 +24,17 @@ not prevent boot or remove Chicago/Geneva/Monaco and the emergency UI font path.
 Use versioned JSON only for font settings/selection metadata; font payloads
 remain their actual font files/resources.
 
-Supported-source inventory:
+Source inventory and format boundaries:
 
 - Classic font suitcases, including `FFIL` resource forks, with FOND associations
   and FONT/NFNT/sfnt payloads. A suitcase may contain several families and faces.
   Preserve source-local associations and provenance; do not flatten every file's
   resource IDs into a single unqualified map or modify installed files to fix IDs.
-- Standalone native `.ttf`/`.otf` data-fork fonts and `.ttc`/`.otc` collections,
-  with individual collection-face identities. Validate actual format/tables;
-  filename extensions and Finder type codes are hints, not sufficient validation.
+- Standalone data-fork TrueType fonts and supported TrueType collection faces
+  have individual content/face identities. Only the implemented static TrueType
+  profile is admitted. Recognizing an `.otf` or `.otc` file does not establish CFF,
+  CFF2 or variable-font support. Validate actual format/tables; filename extensions
+  and Finder type codes are hints, not sufficient validation.
 - Explicit supported table/outline profiles for OpenType below. PostScript Type 1,
   legacy printer companions, aliases and compressed web-font containers require
   separate adapters; do not advertise them from recognizing their filenames.
@@ -47,12 +49,29 @@ new resident handle scheme: catalog/face/session objects use the shared
 generation-tagged facility and separate owner/lifetime checks. Do not reassign a
 live selection to an unrelated font when a source disappears.
 
-Initially discover and validate at boot, publish an immutable catalog, and state
-that installing/removing fonts requires restart. Add a supported refresh API
-later: build a new snapshot off the drawing path, publish atomically, retain
-payloads used by active layouts and retire generations/cache entries safely.
-Monitor actual folder/catalog changes rather than rescanning per draw or input.
-Separate changed family-list notifications from glyph-cache invalidation.
+System starts with bundled fonts, then discovers installed files asynchronously
+through scheduler maintenance. It watches both the startup volume's blessed
+System Folder and its Fonts directory, including replacement of that directory.
+Each maintenance step scans one entry, reads at most 32 KiB, or parses one bounded
+source. Publication swaps an immutable, reference-counted catalog outside drawing.
+This is not a guarantee of bounded parsing latency; target timing remains
+unmeasured. Changes elsewhere in a mounted System Folder do not install fonts.
+
+Removing a source hides its families from subsequent enumeration and key lookup.
+Existing numeric selections retain their payloads, and IDs are never rebound to
+replacement fonts. Retained versions count against explicit catalog limits.
+Persist selections using `Fonts::key`/`key_id`, not session family numbers.
+Keys identify canonical resource content and local face identity, independent of
+volume, filename and CNID. `Fonts::revision` exposes availability changes.
+Text Edit caches resident enumeration and refreshes an open options picker without
+discarding its existing selection.
+
+The loader admits at most 128 nonempty sources, 8 MiB per source and 32 MiB of
+source bytes per scan. Catalog retention has separate limits documented alongside
+the implementation. A malformed or unsupported source is logged and skipped;
+allocation or aggregate-budget failure retains the previous published catalog.
+Scanning retries after filesystem invalidation; ordinary failures are throttled.
+Every refresh rereads source bytes, including same-length replacements.
 
 System owns shared payloads/table indexes and bounded caches. No filesystem I/O
 or full font parsing occurs on each glyph draw. Bound font count, bytes, table
@@ -61,12 +80,45 @@ usable catalog. Loading font resources never executes INIT or other unrelated
 code from a suitcase. Resource Manager reads and legacy font enumeration need
 an explicit origin-aware view, not arbitrary changes to an app's resource chain.
 
-Finder shows the Fonts folder and appropriate original folder/suitcase icons
-from resources. Capture original install/drop routing and duplicate handling
-before adding that behavior; a font dropped into the active System Folder should
-be routed through the installation service rather than merged into System's fork.
-Folder display alone is not font installation. Font pickers and legacy font-menu
-enumeration must obtain their family list through resident services.
+Finder opens recognized suitcases and standalone TrueType files in read-only
+family-list windows with managed scrolling. Inspection uses the public
+`Fonts::inspect_file` API: ordinary file handles stream bounded chunks into an
+owner-bound resident snapshot, then the shared parser produces metadata without
+installing fonts or executing suitcase resources. Closing the snapshot or
+reaping its owner releases the resident state. Finder supports eight viewer
+windows; resident inspection allows sixteen snapshots per owner and 256 families
+per snapshot. Opening a suitcase outside Fonts does not install it.
+
+Installing and removing files uses ordinary Finder transfers into and out of the
+actual Fonts directory. Automatic routing of a loose font dropped onto System
+Folder and original installation UI remain separate work. Legacy resource-chain
+font enumeration is not expanded by merging installed sources into System's fork.
+
+### Bounded native observations
+
+On 2026-11-02, optimized RV64/RVA23 release artifacts ran in QEMU 11.1.0 with
+2 GiB RAM and one exposed hart. The artifact included unrelated dirty-tree work;
+this is not qualification of an isolated committed tree.
+
+- Startup discovery exposed nineteen families from nine bundled families, a
+  nine-family classic suitcase and a standalone TrueType file. A malformed
+  suitcase was rejected without removing valid fonts.
+- Ordinary Finder moves out of and back into Fonts changed enumeration from
+  nineteen to ten to nineteen. An open Text Edit picker retained the selected
+  classic family ID/content key while reporting it unavailable, then available
+  again. Typing continued after removal; no independent glyph-identity or pixel
+  comparison was made. A persisted TrueType content key resolved after its
+  session-local family number changed.
+- Finder displayed the nine suitcase family names, resized and scrolled the
+  window, selected an existing viewer on duplicate open, and closed it without
+  installing the inspected source. Seventeen malformed opens produced a
+  filename-specific damaged-data alert; a subsequent valid open succeeded.
+  This observes admission reuse, not general heap reclamation or owner reap.
+
+Folder-identity replacement, pressure/OOM, foreign/stale inspection objects,
+parser/input latency, observer overhead, arbitrary font formats, legacy resource
+chains and SMP remain unqualified. Functional observer-driven runs are not
+timing or stress evidence.
 
 ## OpenType outlines, layout and variations
 
@@ -143,10 +195,12 @@ justify a full-scene redraw or unbounded startup memory growth.
    demo showing installed OpenType fonts and both emoji and non-emoji color text.
 5. **F5 — Live updates and installation UI:** transactional catalog refresh,
    safe in-use removal/replacement and original Finder install/drop behavior.
-   Keep restart-required behavior explicit until this lifecycle gate passes.
+   The watched lifecycle and native Finder viewer require runtime qualification;
+   original installation/drop routing remains separate.
 
-Canonical conformance tests belong in `crates/mac-toolbox/tests`, through public
-SDK font/resource/file services and real resident rendering. Use private boot
+Qualification must exercise public SDK font/resource/file services and real
+resident rendering in the target OS; host compilation is not OS acceptance.
+Use private boot
 disks with Fonts present/missing/empty, several suitcases, colliding resource and
 family IDs, loose OpenType files, collections, corrupt tables and oversized
 payloads. Verify another mounted System Folder is ignored, sources survive

@@ -20,14 +20,15 @@ impl super::Desktop
 
     pub fn textedit_font_request(&mut self, call: &mut TextEditFontCall) -> Status
     {
-        crate::kernel::fonts().map_or(NOT_FOUND, |fonts| self.textedit.font_request(call, fonts))
+        crate::kernel::fonts().map_or(NOT_FOUND, |fonts| self.textedit.font_request(call, &fonts))
     }
 
     pub fn textedit_request(&mut self, call: &mut TextEditCall, input: &str, output: &mut [u8])
                             -> Status
     {
         let fallback = crate::toolbox::quickdraw::fonts::FontManager::default();
-        let fonts = crate::kernel::fonts().unwrap_or(&fallback);
+        let font_snapshot = crate::kernel::fonts();
+        let fonts = font_snapshot.as_deref().unwrap_or(&fallback);
         if matches!(call.operation, COPY | CUT | PASTE)
         {
             let status = crate::kernel::with_scrap(|scrap| {

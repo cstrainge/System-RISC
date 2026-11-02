@@ -151,7 +151,19 @@ impl<'a> Alerts<'a>
                 let _ = subject.write_str("Finder");
             }
         }
-        let body = error_text(system, status, op, subject.as_str())?;
+        self.show_error(system, status, op, subject.as_str())
+    }
+
+    pub fn open_error(&mut self, system: &System<'a>, status: Error, subject: &str)
+                      -> Result<(), Error>
+    {
+        self.show_error(system, status, 2, subject)
+    }
+
+    fn show_error(&mut self, system: &System<'a>, status: Error, operation: u32, subject: &str)
+                  -> Result<(), Error>
+    {
+        let body = error_text(system, status, operation, subject)?;
         let mut log = crate::browser::Text::<1024>::default();
         let _ = writeln!(&mut log, "FINDER_ALERT_TEXT {:?}", body.as_str());
         system.log(log.as_str())?;

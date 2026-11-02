@@ -1,5 +1,6 @@
 //! QuickDraw wire values. Drawing algorithms and font resources belong to System.
-use crate::{geometry::{Point, Rect}, Surface};
+use crate::{Surface,
+            geometry::{Point, Rect}};
 mod target;
 pub use target::{DrawingTarget, TARGET_DESKTOP, TARGET_WINDOW, TARGET_WORLD, Target, TargetError,
                  WorldId};
@@ -145,6 +146,54 @@ pub const FONT_DRAW: u32 = 6;
 /// Native layout measurement: refuse an unrepresentable local width instead of
 /// using the classic FONT_WIDTH saturating i16 result.
 pub const FONT_WIDTH_CHECKED: u32 = 7;
+pub const FONT_REVISION: u32 = 8;
+pub const FONT_KEY: u32 = 9;
+pub const FONT_KEY_ID: u32 = 10;
+
+pub const FONT_SUITCASE_CREATE: u32 = 0;
+pub const FONT_SUITCASE_FAMILY: u32 = 1;
+pub const FONT_SUITCASE_DISPOSE: u32 = 2;
+pub const FONT_SUITCASE_APPEND_DATA: u32 = 3;
+pub const FONT_SUITCASE_APPEND_RESOURCE: u32 = 4;
+pub const FONT_SUITCASE_FINISH: u32 = 5;
+pub const FONT_SUITCASE_MAX_BYTES: usize = 8 * 1024 * 1024;
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FontSuitcaseCall
+{
+    pub operation:         u32,
+    pub reserved:          u32,
+    pub id:                u64,
+    pub data:              *const u8,
+    pub data_length:       usize,
+    pub resource:          *const u8,
+    pub resource_length:   usize,
+    pub index:             u32,
+    pub count:             u32,
+    pub expected_data:     u32,
+    pub expected_resource: u32,
+    pub name:              [u8; 256],
+    pub name_length:       u32
+}
+impl Default for FontSuitcaseCall
+{
+    fn default() -> Self
+    {
+        Self { operation:         0,
+               reserved:          0,
+               id:                0,
+               data:              core::ptr::null(),
+               data_length:       0,
+               resource:          core::ptr::null(),
+               resource_length:   0,
+               index:             0,
+               count:             0,
+               expected_data:     0,
+               expected_resource: 0,
+               name:              [0; 256],
+               name_length:       0 }
+    }
+}
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct FontCall

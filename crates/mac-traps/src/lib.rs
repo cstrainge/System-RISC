@@ -508,6 +508,21 @@ impl Client<'_>
         Ok(call.bounds)
     }
 
+    pub fn font_suitcase(self, call: &mut quickdraw::FontSuitcaseCall, data: &[u8],
+                         resource: &[u8]) -> Result<()>
+    {
+        call.data = data.as_ptr();
+        call.data_length = data.len();
+        call.resource = resource.as_ptr();
+        call.resource_length = resource.len();
+        let result = status(self.invoke(FONT, call));
+        call.data = core::ptr::null();
+        call.resource = core::ptr::null();
+        call.data_length = 0;
+        call.resource_length = 0;
+        result
+    }
+
     pub fn font(self, operation: u32, selection: quickdraw::FontSelection, text: &str, index: u32)
                 -> Result<FontReply>
     {

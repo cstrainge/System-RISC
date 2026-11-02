@@ -381,7 +381,7 @@ pub(super) fn folder_flight<'a>(owner: impl Into<crate::toolbox::files::subject:
     let mut input = String::new();
     input.try_reserve_exact(name.len()).map_err(|_| NO_MEMORY)?;
     input.push_str(name);
-    let parent = if special_folder(call.operation) { ROOT_ID } else { call.cnid };
+    let parent = if special_folder(call.operation) { folder_parent(call)? } else { call.cnid };
     let authority = owner.authority()?;
     let mut plan = files(|m| {
         m.reserve_provider_directory_authorized(owner, &authority, call.volume, parent, name,

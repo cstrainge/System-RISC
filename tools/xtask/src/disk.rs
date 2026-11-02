@@ -240,7 +240,7 @@ mod tests
         }
         // Two actual builder runs, with user changes in the first writable disk.
         image(&workspace).unwrap();
-        let preferences = br#"{"version":2,"font_family":22,"font_size":18,"wrap":true,"line_numbers":false,"ruler_kind":0,"ruler_value":0}"#;
+        let preferences = br#"{"version":3,"font_key":"bundled:22","font_size":18,"wrap":true,"line_numbers":false,"ruler_kind":0,"ruler_value":0}"#;
         edit(&dist.join("system7.hfsb"), |volume| {
             let folder = hfs_b::copy::resolve(volume, "/System Folder/Preferences")?.id;
             let pref = volume.create(folder, "Text Edit Preferences", false, hfs_b::now()?)?.id;
