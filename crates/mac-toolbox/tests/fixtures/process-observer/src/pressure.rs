@@ -1,13 +1,14 @@
 //! Assertions run in the real prelaunched APPL, using public SDK traps. Native
 //! heap/account snapshots are observations, not allocation-event instrumentation.
 use core::{fmt::Write,
-           sync::atomic::{AtomicBool, Ordering}};
+           sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 
 use mac_toolbox::{Error, System, VolumeId,
                   files::{Fork, ROOT_ID},
                   inspection::{self, MemoryAccounting, Scope}};
 const SECOND: u64 = 1_000_000_000;
 static INSPECTION_RETRY_LOGGED: AtomicBool = AtomicBool::new(false);
+static LAST_CORE_WINDOW: AtomicU64 = AtomicU64::new(0);
 #[track_caller]
 fn require(ok: bool) -> Result<(), Error>
 {
@@ -218,17 +219,47 @@ fn modal(system: &System<'_>) -> Result<(), Error>
     }
     let alert = loop
     {
-        match system.dialogs().out_of_memory_owned("Ordinary memory is exhausted. Protected core \
-                                                    alert remains available.")
+        match system.dialogs().out_of_memory_owned("Ordinary memory is exhausted.\r\n  Protected \
+                                                    core alert  remains available: café.")
         {
             Ok(alert) => break alert,
             Err(Error::ServiceBusy) if now(system)? < limit => wait(system)?,
             Err(error) => return Err(error)
         }
     };
+    let previous = LAST_CORE_WINDOW.load(Ordering::Relaxed);
+    if previous != 0
+    {
+        // This token came from the prior real Core window, not a fabricated
+        // slot. Closing it must not cancel the newly admitted modal session.
+        require(previous != alert.window().0)?;
+        require(matches!(system.dialogs().close(mac_abi::WindowId(previous)),
+                         Err(Error::NotFound)))?;
+    }
+    let mut malformed = mac_abi::dialogs::DialogCall { operation: mac_abi::dialogs::CLOSE,
+                                                       window: alert.window().0,
+                                                       reserved: 1,
+                                                       ..Default::default() };
+    require(matches!(system.client().dialog(&mut malformed), Err(Error::BadArgument)))?;
+    // Repaint the SAME live Core window through its public SDK service. These
+    // target calls exercise pending/committed frame reuse without a host gate
+    // or per-operation acknowledgment. Busy has not admitted a paint.
+    for _ in 0..8
+    {
+        loop
+        {
+            match alert.draw()
+            {
+                Ok(()) => break,
+                Err(Error::ServiceBusy) if now(system)? < limit => wait(system)?,
+                Err(error) => return Err(error)
+            }
+        }
+    }
+    LAST_CORE_WINDOW.store(alert.window().0, Ordering::Relaxed);
     drop(alert);
     system.log("PRESSURE_MODAL_BEGIN_PASS sessions=2 concurrent=busy core-alert=opened \
-                disposed=RAII\n")
+                disposed=RAII redraws=8\n")
 }
 pub fn run(system: &System<'_>) -> Result<(), Error>
 {
@@ -353,12 +384,21 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
     stage(system, "full-report")?;
     let crashes = system.crashes();
     let deadline = now(system)? + 8 * SECOND;
+    let mut reported_busy = false;
     loop
     {
         match crashes.begin()
         {
             Ok(_) => break,
-            Err(Error::ServiceBusy) if now(system)? < deadline => wait(system)?,
+            Err(Error::ServiceBusy) if now(system)? < deadline =>
+            {
+                if !reported_busy
+                {
+                    system.log("PRESSURE_REPORT_BEGIN_BUSY\n")?;
+                    reported_busy = true;
+                }
+                wait(system)?;
+            }
             Err(error) => return Err(error)
         }
     }
@@ -369,12 +409,46 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
         crashes.append(text)?;
     }
     require(crashes.info()?.report_bytes == 1024 * 1024)?;
+    // Exercise a real report-capacity refusal, retaining the original bytes
+    // and the service's own warning flag rather than manufacturing a flag.
+    let overflow = crashes.append("overflow");
+    assert!(matches!(overflow, Err(Error::NoMemory)),
+            "report-limit append expected NoMemory with retained data, got {overflow:?}");
+    let refused = crashes.info()?;
+    require(refused.report_bytes == 1024 * 1024
+            && refused.flags.contains(mac_toolbox::crashes::ReportFlags::TRUNCATED))?;
+    system.log("PRESSURE_REPORT_LIMIT_REFUSAL cause=NoMemory retained_bytes=1048576 \
+                warning=Truncated\n")?;
     let mut actual = [0; 512];
     for index in 0..2048
     {
         require(crashes.read(index * bytes.len(), &mut actual)? == bytes.len() && actual == bytes)?;
     }
-    let _ = crashes.show(mac_toolbox::crashes::ReportFlags::NONE)?;
+    system.log("PRESSURE_REPORT_DRAFT_READY bytes=1048576 content=exact\n")?;
+    // Another real application may own the shared modal while we retain the
+    // complete draft. SHOW is repeatable for this same capture; Busy does not
+    // acknowledge, dismiss or replace that application's dialog.
+    let deadline = now(system)? + 8 * SECOND;
+    let mut reported_busy = false;
+    loop
+    {
+        match crashes.show(mac_toolbox::crashes::ReportFlags::NONE)
+        {
+            Ok(_) => break,
+            Err(Error::ServiceBusy) if now(system)? < deadline =>
+            {
+                require(crashes.info()?.report_bytes == 1024 * 1024)?;
+                if !reported_busy
+                {
+                    system.log("PRESSURE_REPORT_SHOW_BUSY retained_bytes=1048576\n")?;
+                    reported_busy = true;
+                }
+                wait(system)?;
+            }
+            Err(error) => return Err(error)
+        }
+    }
+    require(crashes.info()?.report_bytes == 1024 * 1024)?;
     let _after_report = await_pressure(system, &ordinary, "after-report")?;
     system.log("PRESSURE_FULL_REPORT_PASS bytes=1048576 content=exact report=shown\n")?;
     crashes.dismiss()?;

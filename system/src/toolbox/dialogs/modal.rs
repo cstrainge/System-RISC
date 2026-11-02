@@ -21,20 +21,38 @@ pub(crate) struct DialogState
     pub controls:                 Vec<Option<u64>>,
     pub tracking:                 Option<usize>,
     pub system_menu: bool,
-    pub(super) recovery_activity: Option<crate::recovery::Activity>
+    pub(super) recovery_activity: Option<crate::recovery::Activity>,
+    pub(super) core_payload:      Option<crate::recovery::CorePayloadLease>
 }
 static EMPTY: DialogState = DialogState { previous:          None,
                                           window:            0,
                                           alert:             None,
                                           controls:          Vec::new(),
                                           tracking:          None,
-                                          system_menu:       false,
-                                          recovery_activity: None };
+                                          system_menu: false,
+                                          recovery_activity: None,
+                                          core_payload:      None };
+impl Drop for DialogState
+{
+    fn drop(&mut self)
+    {
+        if let Some(lease) = self.core_payload.take()
+        {
+            // Semantic IDs die here; independently registered children retain
+            // their original cleanup and ACK pins. Only inert buffers park.
+            self.previous = None;
+            self.window = 0;
+            self.tracking = None;
+            super::core_alerts::park_payload(lease,
+                                             self.alert.take(),
+                                             core::mem::take(&mut self.controls));
+        }
+    }
+}
 impl DialogState
 {
-    /// The original payload factory; a caller chooses its genuine scope before
-    /// entering. Core Alert calls it outside Desktop, ordinary Alerts retain
-    /// their existing allocation path.
+    /// The original ordinary Alert payload factory. Protected Core Alerts use
+    /// their actual boot-stocked payload instead.
     pub(super) fn prepare(alert: Alert, activity: Option<crate::recovery::Activity>)
                           -> Result<Self, Status>
     {
@@ -48,7 +66,8 @@ impl DialogState
                   controls,
                   tracking: None,
                   system_menu: false,
-                  recovery_activity: activity })
+                  recovery_activity: activity,
+                  core_payload: None })
     }
 
     pub fn active(&self) -> bool

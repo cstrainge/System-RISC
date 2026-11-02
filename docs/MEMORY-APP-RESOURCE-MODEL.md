@@ -222,6 +222,11 @@ protected32 MiB partition is active, while complete private-heap/image enforceme
 and recovery-service kits remain behind their accounting/recovery gates. Physical admission can refuse a
 chosen heap capacity on a smaller RAM profile without silently changing policy.
 
+The temporary QEMU launch default selected on 2026-11-02 is **2 GiB**. The shared
+platform record supplies both Python and xtask launchers; heap, reserve and
+per-process budgets remain unchanged. Historical 8 GiB captures retain their
+original configuration and do not qualify the smaller profile.
+
 Other values, including the proposed minimum/maximum ranges below, remain
 **review proposals**. Evaluate them with real image/control/account usage,
 including Res Edit and a 200 MB Text Edit document, before enabling. Approval of
@@ -2569,7 +2574,7 @@ Prepared app stacks and the idle stack now hold actual page leases, rather than
 typed cause. Existing ThreadCore reader pins and noncurrent-stack retirement
 conditions remain the barriers: pages return before the original cleanup ticket
 acknowledges physical disposal. No timer-driven allocation or free-page scan is
-introduced. The configured QEMU default adopts 8 GiB. The static 10 MiB System
+introduced. The QEMU default at this historical stage was 8 GiB. The static 10 MiB System
 heap, domain charges/budgets, reserve and kernel trap-stack migration remain
 later work; page-backed stacks alone do not qualify those gates. The checked
 platform minimum is now 256 MiB, with an 8 MiB pinned module-code reservation.
@@ -4916,3 +4921,588 @@ performance equivalence. Forced allocation/counter-overflow/partial-boot
 rollback, reset reclamation, broad SMP and hardware/user-mode isolation remain
 unverified by these runs. The fixed allocator heap parent remains separately
 represented; it was not charged again as Foundation physical storage.
+
+### Finder modal refusal and exact-folder recovery
+
+Finder now retains a notification before trying to open it. Allocation errors use
+the existing System Core OOM service; other dialogs keep their resource-based
+text and owned controls. Actual item acceptance, fallible close, indexed menu
+restoration and the resulting action are distinct states. A real acknowledgment
+does not disappear when a later close/menu step refuses. Held key repeats cannot
+select another notice or prevent due service work. Refused service work uses a
+bounded native-clock cadence and Update wait policy, rather than depending on an
+Idle that undelivered damage can starve.
+
+The modal owns user input, while real drag/transfer lifecycle notifications still
+reach their retained operation. Interactive pointer/marquee state is cancelled
+once at takeover without cancelling an already submitted file transfer. Folder,
+About, Clipboard and Info painting retain their actual target identities and
+defer work until modality ends. Pure diagnostic output cannot manufacture a
+failed operation, erase a committed result or authorize another retry. Blank,
+normal and error paints balance their actual update transaction on refusal.
+
+A failed-folder retry carries the original WindowId generation, Location and
+cause. Only genuine dialog completion queues that retry; a front window or
+memory-relief observation is not authority. The same live binding/failure is
+checked again. Unpublished scan state resets coherently, ready content repairs
+its actual dirty frame, and a partially opened window retains its original
+admitted controls and resumes opening. Normal bounded idle scanning performs
+enumeration; a click does not rebuild layout. A failed retry can issue its own
+single notification, not an unbounded allocation retry loop.
+
+A fixed-source optimized release/LTO no_std RV64 image used System ELF
+`e2050126dac827824375f6b6b94e2d53f6caf0112ea9753096b0863e499d61f0`,
+System resource `5ebdf09c7d06e3431d703e7c9f677798228a8e801d9826f00ee3a53677edbc13`,
+Finder ELF `7c0f09c42f58c16eca4ef73852f854d68fbd6a7f989aab470ac06fb95f176b31`
+and resource `68f993af0e51e3823a2666d84cfb987d40e0caf0ca4b2fff64be92500159450d`.
+A private QEMU4/800x600/exactly 2 GiB installed Text Edit workflow completed all Save
+Changes choices, exact saved ab, malformed-file Core Error, fresh input and three
+actual account closures. The existing native pressure controller/44 holders and
+observer were rebuilt normally for the same System package; its private ACAP
+adds only the exact observer grant while preserving installed grants.
+
+The successful pressure case used one hart and exactly 2 GiB. It observed ordinary
+MemoryFull with retained 16 W bytes and caller Kernel-account headroom, healthy
+and pressured two-Save/Core-OOM sessions with competing Busy refusals, exact
+1,048,576-byte report capture/read/show, all 44 payload releases and all 44 actual
+worker-reclaimed records. A real Finder Core OOM was inspected. After actual
+acknowledgment and later memory release, its next visible notice was genuinely
+acknowledged; the same Applications window repainted its item, selection worked,
+and Get Info opened and closed. Native dismissal, current folder-ready and Info
+records plus reviewed before/after frames support this finite workflow.
+Checksums sample each holder chunk's first byte, not every payload byte.
+
+Earlier cases remain failed. An unchanged observer first refused its report
+because another owner held the legitimate shared modal. A later physical mouse
+input selected the inactive dialog without acknowledging it and hit the bounded
+Busy deadline. The final observer retains the original pressure thresholds,
+worker counts, Begin/refill/overall deadlines and reclamation assertions, adding
+only an eight-second retry of the same retained report Show and genuine observed
+UI input. It validates the unchanged 1 MiB draft while Busy. Its host recognizes
+the exact known same-artifact dialog interior before activation/default-button
+input; post-stress frame review and acknowledgment precede the original Get Info
+check. These are paced UI actions, not per-allocation host barriers or a timing
+qualification. The earlier no-ACK Get Info timeout alone did not establish an
+input-system stall, and was not relabelled green.
+
+Sources/base stayed fixed per run, owned guests exited zero and were reaped,
+and private raw/cloned media was removed on success and failure. This does not
+force every menu/close/publication/stop/refusal interleaving or establish native
+transfer-wake behavior under every modal, race absence, performance or SMP.
+Production Finder OOM restart, full preallocated recovery kits and std/combined
+control-suite integration remain separate work. No host Rust suite supplied
+OS acceptance; the diagnostic additions use the existing real no_std actor.
+
+### Boot-stocked Core alert payloads
+
+Boot now prepares one mutable payload for each of the three existing Core alert
+templates. Actual resource item counts determine the item/control vectors; each
+item string reserves the existing 768-byte substitution bound. Their Alert Arcs
+and buffers originate in the existing protected permit with explicit System
+Ordinary attribution. Moving or resetting them preserves their original
+allocation receipts. Immutable templates and icons retain their previous paths.
+Ordinary application alerts and validation keep their existing factories.
+
+A protected Core opening checks complete substituted lengths, vector shape,
+capacity and actual Alert uniqueness before resetting the same payload. Its
+affine lease retains the genuine originating modal Activity. Semantic state
+destruction parks only inert buffers inside that exact original Session; parked
+stock contains no Activity, Subject, owner reference, public object ID or Session
+Arc/Weak. Actual children, release tickets and completion acknowledgment pins
+retain their independent cleanup obligations.
+
+The existing closing reaper returns stock only after its original Session is
+unique, its Subject exclusive and publication endpoints idle. Alert uniqueness
+and the original template's empty stock slot are checked before moving the
+return. Refusal preserves the same pending payload in the same closing Session
+for retry. Neither a successful close call nor disappearance of a public ID
+authorizes reuse. This does not add a mutable extraction API to the object store,
+change an ID issuer, or substitute for the real completion protocol.
+
+The exact three-file production patch compiled with optimized no_std RV64 System
+and Finder; a fixed-source release/LTO full image build also completed. Native
+observations used System ELF
+`23347dd9d42e889ed9d78980c2b394cc107ca344b81e19ba8603630788a84bca`
+and resource
+`5ad35cf6ec2aae39970b42a3ea1c24e4d3fb6960a07322c4efa0e84f13e4cb0d`,
+with Finder ELF/resource unchanged from the preceding subsection.
+
+A private QEMU4/800x600 guest requesting and discovering exactly 2 GiB ran the
+installed Text Edit: Save Changes Cancel, Save and Do not Save; exact saved bytes
+ab; malformed UTF-8 Core Error acknowledgment; subsequent document input; and
+three actual process/account closures. Reviewed error and Save Changes frames,
+and four exact dialog-crop comparisons with the preceding image, retained the
+observed pixels. These comparisons cover those captures, not all geometry or
+original Macintosh fidelity.
+
+The existing native pressure packages were rebuilt for that same System. A
+separate one-hart, exactly 2 GiB guest observed ordinary MemoryFull with retained
+16 W bytes and caller account headroom, healthy/pressured managed sessions and
+competing Busy refusals, exact 1 MiB report capture/read/show, all 44 payload
+releases and all 44 actual worker reclamations. The visible Core OOM remained
+until genuine acknowledgment. Reviewed subsequent frames showed restored menus
+and the same Applications folder with its item; selection and Get Info open/close
+then completed. The finisher's checksum samples each chunk's first byte. Host
+UI review occurred after the original stress/reclamation assertions, not after
+each allocation. Sources/base stayed fixed, both owned guests exited zero and
+were reaped, and their private raw/cloned media was removed without cleanup
+errors. The host's older dialog-pixel reference was explicitly distinguished
+from the new System artifact and supplied no inherited kernel acceptance.
+
+These finite observations exercise real payload reuse, dialogs and account
+cleanup; they do not count allocation events or prove zero new allocations.
+Forced original/child ACK refusal, retained Alert readers, publication failure,
+caller stop/cancellation and complete rollback combinations remain unqualified.
+Managed control title/payload storage, retained drawing, Standard File editor/
+list/raster storage, report formatting and final non-application mapping cleanup
+still have separate stock requirements. The full emergency kit, production
+Finder OOM restart, combined std/control-suite integration, performance and SMP
+are not established by this slice. No host Rust suite supplied acceptance.
+
+### Core retained drawing stock
+
+The three Core alert templates now also admit two reusable scene frames for
+their sole live window: committed and pending. Each retains the existing
+512-command vector capacity and one shared text/Port snapshot per actual text
+item. The current templates require one such item, so the two text buffers
+request 1,536 bytes in total. Command arrays, Arc/Port metadata, allocator
+headers and rounding are additional; aggregate native footprint is unmeasured.
+Their original protected System Ordinary allocation receipts survive reuse.
+
+The real Core manager binds the pair to its authenticated Activity, Alert and
+actual window after window creation, before BEGIN_UPDATE. The original
+InitializingAlert retains rollback. Pending preparation copies the substituted
+text while the source is unique, then captures its real Port after the original
+item clip. Checked byte ranges reference that same immutable source. Commands
+use the existing shared Text representation and renderer. Ordinary drawing and
+editor snapshots retain their existing representations; the wrapping algorithm
+remains shared with its borrowed-string caller interface.
+
+An owning command container carries each affine frame lease through full
+replacement, cancel, removal and destruction. Clearing commands releases their
+read references while retaining the underlying source and Port stock. A failed
+pending paint preserves the committed scene. Frames return only to the same
+live window/session; global reuse requires both original frames, unique readers
+and the original Session/Subject/child/publication acknowledgment drain. Refusal
+retains the same owner. There is no third frame or allocation fallback. Managed
+button tracking still replaces its actual Control command and invalidates its
+own bounds; it does not enter the masked-scene route rejected for Core frames.
+
+The first actual RV64 compiler check found two missed iterator adaptations and
+one namespace error. After those corrections and formatting, the System/Finder
+compiler check and fixed-source optimized release/LTO image build completed.
+Native runs used System ELF
+`e15357607f16d16cc46b2c2d13ff3a1bec5f24d7ea279099e0ad557c453326e5`
+and resource
+`06f9fe17f480c09e801d333a9863a18bd60f48ec11a127573a2c3882b6b7e9c4`;
+Finder artifacts remained those recorded above. A private QEMU4/800x600/exact
+2 GiB installed Text Edit workflow completed the Save Changes choices, exact
+saved ab, malformed-file error acknowledgment, subsequent input and three actual
+account closures. Four dialog crops matched the preceding native image exactly;
+error and Save Changes frames were also reviewed.
+
+The existing native pressure application additionally made eight successful
+public-SDK draws of the same Core alert in each healthy/pressured modal phase,
+using CR/LF, repeated spaces and UTF-8 text. No host acknowledgment was inserted
+between draws. A separate one-hart/exact 2 GiB run retained the original ordinary
+refusal/headroom/report/44-worker assertions and completed them, followed by a
+genuine visible OOM acknowledgment, reviewed folder repaint and Get Info
+open/close. Sources/base stayed fixed; both owned guests exited zero, were
+reaped and had private raw/cloned media removed without cleanup errors.
+
+These are finite real loader/trap/allocator/UI observations, not allocation-event
+counts or proof of every rollback/reader/ACK interleaving. Exact rendering of
+the new diagnostic text, forced retained readers, cancellation/stop and failed
+publication/ACK combinations remain unqualified. System report/Standard File
+patch history, other payloads and formatting, control storage, teardown scratch
+and robust close-intent handling remain separate work. Full kit readiness,
+production Finder OOM restart, timing and SMP are not established.
+
+No new host configuration, stub or alternate implementation was introduced to
+preserve the old nonnative test-support harness. Its compatibility is unqualified;
+the shipping path above is the real no_std RV64 kernel. Host Rust tests supplied
+no acceptance, and the broader test-removal/audit work remains deferred.
+
+### Translation retirement workspace and authenticated Core close intent
+
+Non-application Mapping retirement now borrows one affine workspace admitted
+before publication and process-root inheritance. It retains storage for actual
+root pins and dynamic PTE/ancestor records. Shared mappings use the checked
+high-water mapped-page count times the actual registered-root count, including
+closing roots. Private process definitions use only roots matching the full
+owner identity; their capacity is tracked separately. Page demand comes from
+actual mapped segments, not a virtual reservation or a fixed process quota.
+Canonical definition visibility carries only the scalar page demand needed to
+admit a later root. No additional object registry or identity issuer is added.
+
+Growth uses ordinary System Foundation allocation with recovery suppressed,
+outside metadata guards and under the existing translation exclusion. It can
+honestly refuse before mapping/root publication. Existing backing receipts keep
+their origin. High-water capacity is retained; this is not protected recovery
+stock and does not guarantee that a later replacement with greater demand fits.
+
+Retirement checks out the workspace before acquiring a translation issuer. Real
+root pins are admitted outside the ROOTS guard and retained through the actual
+invalidation completion. Permanent and dynamic records participate in the same
+validate-all-before-write unmap transaction; no combined vector is allocated.
+Insufficient admitted capacity, PTE conflict or uncertain completion preserves
+the original mapping/account and typed quarantine path. The affine return clears
+pins outside guards, reinstalls the original workspace and wakes only an actual
+armed waiter through the existing progress mechanism. Application Mapping
+retirement retains its original per-mapping records.
+
+Core CLOSE also records the authenticated close intent before attempting Desktop
+entry. The current thread's owner, actual active Core session, nonzero matching
+window generation and reserved-field validation precede that intent. The
+original Desktop operation and returned status remain authoritative: Busy is
+not successful cleanup. The existing System maintenance path can retry the
+retained intent, and final reuse still requires the original session, children,
+frame readers and acknowledgments. Ordinary ALRT destructor behavior is a
+separate unresolved scope; this change does not provide a generic SDK retry queue.
+
+The actual optimized no_std RV64 System/Finder compiler check and release/LTO
+image build completed with fixed source. Native observations below used System
+ELF `7e7e6fd065b82f5fbc577ea9f7b49c26651c44309fc74520ccf42ed9815cb250`
+and resource
+`194b3f79e290ca4b9c80961891e7be398ca29404592bcf49c7d1bde5e7a596fa`.
+Finder artifacts remained those recorded above. Subsequent changes refreshed
+only the standalone diagnostic lock graph and its own-ledger assertion; they
+did not change the built kernel dependency graph. Each native run separately
+recorded fixed source, fixed base artifacts, exact 2 GiB argv/boot/page-bank RAM,
+and owned guest/media cleanup.
+
+The existing native Image Probe now queries its own canonical ledger through
+the public SDK while its actual app-owned definition control is alive. Three
+normal process lifetimes observed a live DDEF and reached real thread/account
+closure. A separate abort with that control alive displayed the System-owned
+panic report; genuine keyboard dismissal preceded actual abort-101 account
+closure. Transient definition Objects/Mapping-pending cleanup was observed before
+closure. These four-core-configured QEMU observations do not establish concurrent
+hart execution or exact definition-address/PTE reuse.
+
+A separate one-hart pressure run retained the existing ordinary-memory refusal,
+account headroom, retained 16 W bytes, exact 1 MiB report and all 44 real worker
+reclamations. In each healthy/pressured modal phase it rejected a malformed
+reserved-field CLOSE and then drew the same actual Core alert eight times.
+The second phase additionally rejected the previous real window's stale token.
+After the original stress assertions, reviewed frames and genuine acknowledgment
+showed the restored Applications folder; subsequent Get Info open/close and
+mouse input completed. All three owned guests exited zero, were reaped, and had
+their private cloned/raw media removed without cleanup errors.
+
+Two earlier Image Probe attempts remain failures: a stale standalone lock graph
+prevented guest launch, then an obsolete host expectation for removed CODE_LOADED
+logs failed after actual native definition execution. An offline workspace-only
+lock refresh added the already-used toolbox-entropy dependency without package
+version upgrades. The collector now observes genuine public-ledger DDEF state
+and real process closure; no production log/export was introduced. Former source
+ID and fixed-address assertions are not claimed by this narrower observation.
+
+Pre-Desktop Busy during Core CLOSE was not forced or observed. These results do
+not qualify that deferred-close branch, admission failure/late-root inheritance,
+shared-module final retirement, retained ACK/readers, cancellation, PTE conflict
+or uncertain-completion quarantine. They do not count allocation events, prove
+whole teardown allocation-free, establish performance/SMP, or finish the full
+emergency kit and production Finder OOM restart. Report/Standard File storage,
+remaining rollback/failure qualification and later user-mode isolation remain
+separate work. No host Rust test supplied OS acceptance.
+
+### Boot-prepared report bomb family
+
+Report bootstrap now admits the actual System bomb icon family alongside the
+measured report layout in one checked prepared record. Admission runs under the
+existing genuine recovery Permit and System Ordinary allocation scope. The same
+System resource ID -16400, flags, destination and default Port feed the existing
+decoder. Failed admission drops its local ownership and refuses initialization;
+full report paint has no decoder fallback. The immutable decoded family and its
+original protected receipt remain pinned for reset lifetime.
+
+Full report paint clones that prepared drawing and uses the unchanged actual
+window IconCall and Desktop.icon path, which captures the window's real Port.
+Retained commands own their family clones independently. This removes repeated
+icon decoding and family/Arc construction; it does not remove command, clip,
+text, Port, raster or formatting allocations elsewhere in report painting.
+
+The first actual RV64 compiler check caught an incorrect sibling-module lookup.
+After correcting the internal visibility/import, the optimized no_std System/
+Finder check and fixed-source release/LTO image build completed. Native runs
+used System ELF
+`73b8a96e44babc69775fa2f698b8b530c0b7da94d993984ebeb0543c6ede2ab2`
+and resource
+`cd2b9a783d395337be410c672fa7f3768d3bd95932bc07f6ece19c0653e0c8a3`;
+Finder and ROM remained the preceding recorded artifacts.
+
+In one private QEMU4/800x600/exact 2 GiB guest, six installed native applications
+entered and quit through their UI, with sampled nonidentity mappings absent
+after real account closure. Panic Test then displayed its 27,246-byte, 331-line
+report; scrolling to the end, genuine dismissal, actual abort account closure
+and subsequent mouse input completed. First/last report frames were reviewed.
+A separate guest ran the existing live-control Image Probe abort twice in the
+same boot. Both distinct process lifetimes observed their own live DDEF, showed
+the System report, accepted genuine dismissal and reached actual thread/account
+closure before subsequent reuse. Both report frames were reviewed. The finite
+visible bomb crop matched the preceding artifact exactly.
+
+Each run recorded fixed source/base artifacts, exact 2 GiB argv/boot/page-bank
+RAM, owned process exit zero/reap and private media removal without cleanup
+errors. The existing host driver only supplied UI input and collected actual
+guest observations. There were no host-linked replacement services or host Rust
+test acceptance. Decoder/allocation event counts, forced bootstrap failure,
+exhaustion on this artifact, every cancellation/refusal interleaving, original
+Macintosh visual fidelity, timing, SMP and full recovery-kit readiness remain
+unqualified. These observations do not inherit the preceding artifact's pressure
+result.
+
+### Reusable report staging and Standard File navigation backing
+
+Report bootstrap admits one reusable formatting String under the original
+protected System Ordinary allocation scope. Its checked byte bound comes from
+the actual label formats, scalar ranges and measured report columns; current
+resources require 360 bytes before allocator overhead. Paint takes the affine
+buffer before BEGIN_UPDATE or masked-update effects and checks visible expanded
+line lengths before writing. Its private owner always contains a valid String.
+Clear and borrowed access are infallible; append checks capacity before mutation
+and has no growth fallback. Header, warning, expanded body and footer use that
+same buffer sequentially. The existing font_draw copies the borrowed text into
+retained commands synchronously, so no staging borrow escapes. Every paint exit
+returns the same capacity; Busy is quiet and other failures retain typed cause.
+This does not stock the renderer's retained text, Port, commands or regions.
+
+Standard File bootstrap separately admits its existing icon-page and ancestor
+vector backing: eight and eleven entries from the original page policies. A
+genuine Standard File Opening checks out that pair and its affine session lease;
+no fallible work follows before the actual Dialog owns both. Final publication
+validates the same lease, owner, request and Subject. Dialog destruction parks
+only the two containers in the original Session, without clearing artwork under
+manager guards. The parked value contains no Activity or Subject and cannot
+cycle the Session. Original child/publication/Subject drain and session uniqueness
+precede guard-free value clearing and global return. Return refusal retains the
+same pair and closing session, including original allocation receipts.
+
+The inline BEGIN reaper was removed. The private reaper now runs only at the
+existing global recovery pump tail. Current scheduler and five internal call
+paths reach it after their Desktop/service guards have returned; future callers
+must preserve that contract. An immediate new modal can receive genuine Busy
+until actual return. No completion is fabricated. Editor/font scratch, raster
+and retained drawing backing remain separate work; this pair is not a pooled
+Dialog or a complete Save/Save As emergency guarantee.
+
+Exact native artifact: System ELF
+`0eee1f88c3d7a32f946d43c72b963ce1195b34e8f3fa67d14538b300ea55dba5`,
+resource `d338f32f3ee3058cbf672b4d14c2e4c01b747a1cd73f3e6e05846e629036a7be`.
+The optimized no_std RV64 System/Finder compiler check and release/LTO image
+completed with fixed source. Finder and ROM stayed at their prior hashes.
+
+Finite private exact-2-GiB observations: installed Text Edit completed all Save
+Changes choices, real Core-to-PUT handoff, saved ab, malformed UTF-8 error
+acknowledgment/new input and three actual account closures. Four dialog crops
+matched the preceding image. Installed Res Edit completed GET, PUT, Save As
+cancel/replacement, New Folder and duplicate-name error acknowledgment; original
+and subfolder JSON exports matched, followed by actual Res Edit/QuickDraw account
+closure/input. Reviewed frames showed the correct duplicate-name message and
+restored Save dialog. Six normal installed app lifetimes and Panic Test's
+27,246-byte/331-line report, end-scroll, dismissal and actual abort account
+closure completed; entire first/last report frames matched the preceding image.
+
+A separate one-hart/exact 2 GiB pressure run observed ordinary handle-resize
+MemoryFull with retained 16 W bytes and caller budget headroom, healthy/pressured
+managed modal reuse and eight same-alert draws in each phase. A real append past
+the retained report limit returned the distinct generic NoMemory error and set
+the native truncation flag. All original 1 MiB bytes remained exact, the report
+was shown with flags=1 and dismissed, and all 44 holders released and were
+actually reclaimed. After those stress assertions, genuine acknowledgment of
+Finder's visible OOM dialog restored its Applications folder/menus. Reviewed
+frames, subsequent Get Info open/close and mouse input completed.
+
+The first overflow observation failed a newly introduced diagnostic assertion
+which incorrectly expected the Memory Manager's MemoryFull instead of generic
+NoMemory. It discarded the actual result, so that old run cannot be relabeled
+as an observed NoMemory or Busy result. Source inspection found the erroneous
+expectation; the strict corrected assertion above then observed NoMemory on the
+same kernel. The original failure remains recorded. Diagnostic-only changes
+followed the shipping image and first three workflows; their kernel dependency
+graph stayed unchanged, and each capture separately recorded fixed source/base.
+The informative intermediate diagnostic compiled but was not run.
+
+All four successful private captures recorded matching exact-2-GiB argv/boot/
+page-bank RAM, fixed source/base artifacts, owned guest exit zero/reap and private
+media removal without cleanup errors. The pressure package changed only its
+recorded inspection grant through the normal resource producer; the executable
+stayed the base System above. Manual pressure UI review occurred after original
+stress/reclaim assertions, not as an allocation-by-allocation host barrier.
+
+These results do not count allocation events or observe navigation-buffer
+addresses. Forced constructor/publication refusal, retained readers, uncertain
+ACK, pending I/O stop/cancel, return-invariant failure/reuse, all warning variants,
+full Save/Save As exhaustion, production Finder OOM restart, timing and SMP remain
+unqualified. The controlled capacity refusal preserves an informative typed error;
+it does not establish every unhappy path. Editor/font/layout scratch, actual
+raster/COW backing, retained scenes and damage regions still need their own
+work. No host Rust suite supplied OS acceptance, and full-kit readiness is not
+established.
+
+### System report command ownership
+
+The reusable recovery Session now boot-admits four report-only command arrays
+under its original protected System Ordinary allocation scope. The native
+producer measures the bound from the prepared visible-row count and its actual
+fixed drawing/button producers: current resources require 36 commands per
+array. The original scene, latest report/footer patch, latest warning patch and
+one pending update can each retain their own array. Core alert stock stays
+separate. No report command-array growth fallback is available after admission.
+
+The Commands carrier owns both its original Vec and affine frame lease. Its
+borrows expose slices, never a mutable Vec that could be extracted, reserved or
+replaced independently of the lease. Checked push and complete-batch admission
+validate lengths, capacity and the backing's bound before mutation. Backed frames
+use in-capacity pushes; ordinary carriers retain their original fallible reserve
+behavior. TextEdit's existing prepared batch uses that same checked Content
+operation. A report base moved into fragments cannot acquire an unbacked tail.
+Whole-carrier moves, partial/full replacement, cancellation and destruction keep
+the original array and lease together. Readers are destroyed before the same
+empty array is parked and Activity's release wake occurs.
+
+Binding requires the actual active report Activity, current Window and owning
+scene. Full and masked BEGIN acquire the owned pending array before update/mask
+effects. A new Window binding requires all four original arrays returned and the
+original Window's real completion ACK. That ACK is retained separately from the
+reusable window-list slot and originates only after payload disposal and canonical
+cleanup completion. Final Session return preflights every report array and that
+ACK before any Core/Standard File payload return. Refusal retains the same
+original closing Session and stock. This supports the existing Finder-to-System
+report handoff without treating semantic close or a later lookup as completion.
+
+Exact final optimized no_std RV64/release/LTO artifact: System ELF
+`ae9582bd81faaa5895b4d7f76d68c644d5ce435071304c4b9aac921571aacd40`,
+resource `1a032367b0aa74eded47ec12420027e42791b04c9c79768a392ca81ba72de808`.
+The System/Finder compiler check and complete image build succeeded with fixed
+source. A final mechanical update of an existing excluded host fixture was
+followed by another fixed-source image build; its full ELF and resource hashes
+were actually identical. No host Rust suite supplied OS acceptance.
+
+Four finite private exact-2-GiB native workflows used that final image. Text Edit
+completed Save Changes Cancel/Save/Don't Save, actual Core-to-PUT handoff, saved
+ab, malformed-UTF8 Core Error acknowledgment/new input and three actual account
+closures. Four dialog crops matched the preceding artifact. Six installed normal
+app lifetimes completed; Panic Test's 27,246-byte/331-line Unicode/tab/wrapped
+report reached its end, accepted dismissal and reached actual abort account
+closure. Entire first/last report frames matched the preceding image; final and
+Core Save/Error frames were reviewed.
+
+The existing Finder-role/survivor fixture completed two crash/replacement cycles,
+stale Window/Handle and fresh-state checks, actual old Finder account closure,
+repeated desktop-readiness acknowledgment and malformed-request refusal, new
+Finder input and survivor input. Both replacement frames showed the independent
+System-owned report behind the replacement. Read-only paused page/text sampling
+matched the actual protected replacement image in both permanent supervisor roots;
+this observer perturbs timing and does not establish user-mode isolation or TLB
+race safety. The replacement and survivor remained live until guest shutdown;
+no final-account-closure claim is made for those live actors.
+
+A one-hart pressure run observed actual ordinary handle MemoryFull with retained
+16 W bytes and caller account headroom, healthy/pressured managed modal reuse,
+eight Core draws in each phase, strict report NoMemory/truncation refusal and
+all original 1 MiB report bytes before Show/Dismiss. All 44 holder payload
+releases and actual worker reclamations followed. After stress completed, actual
+modal acknowledgment restored Finder's same Applications folder and menus;
+reviewed frames, subsequent Get Info open/close and mouse input completed.
+All four captures recorded fixed source/base, actual exact-2-GiB argv and boot/
+page-bank RAM, owned guest exit zero/reap and removal of private media without
+cleanup errors. An earlier candidate's post-stress manual-review timeout remains
+a failed capture; it is not relabeled as a complete pressure result or kernel
+failure.
+
+These observations do not count command-array allocations or measure their live
+addresses. Forced frame exhaustion, failed paint/cancellation, retained-reader and
+uncertain-ACK interleavings, every warning branch, complete Save/Save As pressure,
+production Finder OOM restart, performance, hardware and SMP remain unqualified.
+Retained report text/Ports, masks/fragment/damage regions, pending scene storage,
+font/layout scratch, raster/COW and control payloads remain separate allocation
+work. This is not a complete allocation-free report or emergency-kit guarantee.
+
+### Same-frame report text and captured Ports
+
+Report bootstrap now prepares three immutable Port owners in the same reusable
+Session: the actual reset, report-viewport and restored full-body states. Native
+paint captures each actual pending Port once per real Window binding. Later
+paints compare the complete state and share the same immutable owner while old
+committed fragments retain readers. An unexpected state is a typed refusal;
+there is no fresh-owner fallback or geometry reconstruction. New-Window binding
+and final return require all four command frames, all three Port owners unique,
+and the original Window completion ACK before any reset or other payload return.
+Typed views release their Port before their Activity pin; command destruction
+releases readers before parking the original frame and waking cleanup.
+
+Each of those four original frames also boot-owns its own bounded text snapshots.
+The native producer derives Full's maximum as visible rows plus title, header,
+two warning/detail rows and footer. Current resources give Full 27, Report 23
+and Warnings 2 text calls. Each interchangeable slot's byte bound is the maximum
+of actual formatted-label/scalar/layout inputs and the actual FailureDetail row
+capacity. The latter is now shared with its private representation. Current
+resources require 360 bytes, yielding 108 Arc/String owners and 38,880 requested
+raw String bytes; headers, allocator rounding and target physical footprint are
+not measured by that arithmetic.
+
+Frame checkout and return preflight every original source's shape, capacity and
+uniqueness before resetting its cursor. Each text call performs bounded next-slot
+checks, fills that unique String completely, and then publishes an immutable
+Shared source with its checked range. It never grows or replaces the source.
+The sources and cursor move with the original command carrier and frame lease.
+All command readers die before that same stock is parked. Refusal retains the
+same original Session and stock rather than refunding or retargeting ownership.
+
+The native author still formats once in its original order. A private shared
+retained-text writer keeps original admission, metrics, copy, Port preparation,
+recording and damage ordering. Ordinary text still owns its original String and
+Port; Core's separate snapshot path and the early World path remain unchanged.
+Report text uses existing Shared rendering, without a new renderer or SDK path.
+Each snapshot's actual length equals the former Owned String length, preserving
+existing conservative retained-storage accounting. No per-row Session lock or
+whole-stock scan was added.
+
+Exact optimized no_std RV64/release/LTO System ELF:
+`ee3faa3660d52be7b4dc6d2fb8e890612fd6ac8efeebd57d50e83b6fe24f74c7`,
+resource `817dcec451ffd4d7f82a1f778f8aeb872abf9ddefdc2908781fb597e954b3c56`.
+The actual System/Finder compiler check and whole image build succeeded with
+fixed source. Finder and ROM hashes stayed unchanged.
+
+Four finite private exact-2-GiB native workflows used this image. Six normal
+installed app lifetimes and the 27,246-byte/331-line Unicode/tab/long-line Panic
+Test report completed, including end scroll, dismissal and actual abort account
+closure. Entire first/last report frames matched the preceding published image.
+Text Edit completed Core Save Changes choices, real PUT handoff, saved ab,
+malformed-UTF8 Error acknowledgment/new input and three account closures; four
+dialog crops also matched. Current Error and final-report frames were reviewed.
+
+The one-hart pressure workflow observed ordinary handle MemoryFull with retained
+16 W bytes and caller account headroom, healthy/pressured modal reuse and eight
+Core draws per phase. Report overflow returned strict NoMemory with truncation
+and all original 1 MiB bytes intact before Show/Dismiss. All 44 holder payload
+releases and actual worker reclamations completed. Genuine acknowledgment of
+Finder's remaining OOM modal restored its same Applications folder and menus;
+reviewed frames and subsequent Get Info open/close and mouse input completed.
+
+The existing Finder-role/survivor fixture separately completed two real
+crash/replacement cycles, actual old account closure, stale Window/Handle and
+fresh-state checks, repeated desktop-readiness acknowledgment with malformed
+request refusal, replacement input and survivor input. Genuine independent
+System-owned reports remained visible behind both replacements, exercising
+actual same-Session report handoff and rebind. Both frames were reviewed.
+Replacement/survivor actors remained live at guest shutdown; their final account
+closure is not claimed. Paused read-only page/text sampling matched actual
+protected replacement backing in both permanent supervisor roots; observer
+costs preclude race/timing conclusions and do not establish user-mode isolation.
+
+Every capture kept source/base fixed, recorded exact-2-GiB argv/boot/page-bank
+RAM, exited/reaped its owned guest with status zero and removed private media
+without cleanup errors. Existing fixture/package producers and actual target
+services supplied these observations; no host Rust suite supplied OS acceptance.
+
+Live source/Port addresses and allocation events were not measured. Forced
+constructor/frame/reader/cancel/ACK refusal combinations, all warning/detail
+branches and every World/font path remain unqualified. These results do not
+establish full Save/Save As exhaustion, production Finder OOM restart, arbitrary
+privileged-fault recovery, timing, hardware or SMP safety. Actual masks,
+fragment directories/clips, pending/damage backing, managed control payloads,
+font/layout and raster/COW work remain separate; report/whole-kit allocation-free
+readiness is not established.

@@ -121,6 +121,21 @@ struct StartupPatch
     frame:    Rect,
     origin:   Point
 }
+/// Retry authority names the actual failed folder, never the front window.
+#[derive(Clone, Copy)]
+pub(super) struct FailedFolder
+{
+    window:   WindowId,
+    location: Location,
+    cause:    Error
+}
+impl FailedFolder
+{
+    pub(super) fn window(self) -> WindowId
+    {
+        self.window
+    }
+}
 #[derive(Default)]
 pub struct Browser
 {
@@ -138,6 +153,10 @@ pub struct Browser
     pub startup:       VolumeId,
     trash_cached:      Cell<u32>,
     failures:          [Cell<Option<Error>>; 8],
+    content_dirty:     [Cell<bool>; 8],
+    open_failure:      Option<FailedFolder>,
+    input_cleanup:     bool,
+    deferred_updates:  u8,
     closed_states:     [Option<FolderSave>; 8],
     position_requests: Cell<u8>,
     startup_step:      Initialization,
@@ -977,14 +996,14 @@ impl Browser
                 });
                 if !layout.as_str().is_empty()
                 {
-                    system.log(layout.as_str())?;
+                    let _ = system.log(layout.as_str());
                 }
                 self.repaint_snapshot(system, slot)?;
                 if cache::edit(slot, |folder| core::mem::take(&mut folder.notify_changed))
                 {
                     let mut line = Text::<100>::default();
                     let _ = writeln!(&mut line, "FINDER_FOLDER_CHANGED window={}", window.window);
-                    system.log(line.as_str())?;
+                    let _ = system.log(line.as_str());
                 }
             }
             Ok(())
@@ -1018,7 +1037,8 @@ impl Browser
         let window = self.windows[slot].unwrap();
         // A failed/obsolete prior paint cannot be the retained baseline for a
         // partial snapshot update. Retry the actual content paint in that case.
-        if self.startup_paint.get().is_some() && self.startup_retained.get() & (1 << slot) == 0
+        if self.content_dirty[slot].get()
+           || (self.startup_paint.get().is_some() && self.startup_retained.get() & (1 << slot) == 0)
         {
             self.draw(system, window.window)?;
             cache::edit(slot, |folder| folder.refreshing = false);
@@ -1079,7 +1099,8 @@ impl Browser
         self.refresh_chrome(system, slot, header, bars, false)?;
         cache::edit(slot, |folder| folder.refreshing = false);
         self.startup_painted(slot, true);
-        system.log("FINDER_FOLDER_PATCHED\n")
+        let _ = system.log("FINDER_FOLDER_PATCHED\n");
+        Ok(())
     }
 
     fn refresh_chrome(&self, system: &System<'_>, slot: usize, header: bool, bars: bool,
@@ -1229,7 +1250,7 @@ impl Browser
                 let mut line = Text::<256>::default();
                 let _ =
                     writeln!(&mut line, "FINDER_VOLUME id={} name={}", volume.id, volume.name());
-                system.log(line.as_str())?;
+                let _ = system.log(line.as_str());
             }
             if startup == VolumeId::NONE
                && let Some((id, first_writable)) = first
@@ -1275,7 +1296,210 @@ impl Browser
         self.is_desktop_window(id) || self.windows.iter().flatten().any(|w| w.window == id)
     }
 
+    pub(super) fn take_modal_input(&mut self)
+    {
+        self.marquee = None;
+        self.press = None;
+        self.last_click = None;
+        self.desktop.marquee = None;
+        self.desktop.pressed = None;
+        for window in self.windows.iter_mut().flatten()
+        {
+            window.pending_clicks.fill(None);
+        }
+        self.input_cleanup = true;
+    }
+
+    pub(super) fn finish_modal_input(&mut self, system: &System<'_>) -> Result<(), Error>
+    {
+        if !self.input_cleanup
+        {
+            return Ok(());
+        }
+        for slot in 0..self.windows.len()
+        {
+            let Some(window) = self.windows[slot].filter(|window| window.outline.is_some())
+            else
+            {
+                continue;
+            };
+            match system.window(window.window)
+            {
+                Ok(_) =>
+                {
+                    self.change_selection_inner(system, slot, window.selected, &[])?;
+                }
+                Err(Error::NotFound) =>
+                {
+                    if let Some(window) = self.windows[slot].as_mut()
+                    {
+                        window.outline = None;
+                    }
+                }
+                Err(cause) => return Err(cause)
+            }
+        }
+        self.change_desktop_selection(system, self.desktop.selected.get(), Selection::EMPTY)?;
+        self.input_cleanup = false;
+        Ok(())
+    }
+
+    /// Retain this actual Update while a notification owns input. Validation
+    /// suppresses duplicate Update delivery; the retained bit survives refusal.
+    pub(super) fn defer_update(&mut self, system: &System<'_>, id: WindowId) -> Result<(), Error>
+    {
+        if let Some(slot) = self.windows.iter().position(|row| row.is_some_and(|w| w.window == id))
+        {
+            self.deferred_updates |= 1 << slot;
+            system.windows().validate(id)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn take_deferred_update(&mut self) -> Option<WindowId>
+    {
+        let slot = (0..self.windows.len()).find(|slot| self.deferred_updates & (1 << slot) != 0)?;
+        self.deferred_updates &= !(1 << slot);
+        self.windows[slot].map(|window| window.window)
+    }
+
+    pub(super) fn retain_draw_failure(&self, id: WindowId, cause: Error)
+    {
+        if let Some(slot) = self.windows.iter().position(|row| row.is_some_and(|w| w.window == id))
+        {
+            self.content_dirty[slot].set(true);
+            if self.failures[slot].get().is_none()
+            {
+                self.failures[slot].set(Some(cause));
+            }
+        }
+    }
+
+    pub(super) fn failed_folder(&self, id: WindowId) -> Option<FailedFolder>
+    {
+        let slot = self.windows.iter().position(|row| row.is_some_and(|w| w.window == id))?;
+        let window = self.windows[slot]?;
+        let cause = self.failures[slot].get()?;
+        cache::with(slot, |folder| folder.window == id && folder.location == window.location)
+            .then_some(FailedFolder { window: id, location: window.location, cause })
+    }
+
+    pub(super) fn failed_cache(&self) -> Option<FailedFolder>
+    {
+        self.failed_folder(self.windows.get(self.cache_job?)?.as_ref()?.window)
+    }
+
+    /// One genuinely acknowledged failure permits one repair of that binding.
+    /// Unpublished scans restart; a ready cache repairs its pixels without I/O.
+    pub(super) fn retry_failed_folder(&mut self, system: &System<'_>, failed: FailedFolder)
+                                      -> Result<(), Error>
+    {
+        let Some(slot) = self.windows.iter().position(|row| {
+                                                row.is_some_and(|w| {
+                                                       w.window == failed.window
+                                                       && w.location == failed.location
+                                                   })
+                                            })
+        else
+        {
+            return Ok(());
+        };
+        if !self.failed_folder(failed.window).is_some_and(|current| current.cause == failed.cause)
+        {
+            return Ok(());
+        }
+        let live = match system.window(failed.window)
+        {
+            Ok(live) => live,
+            Err(Error::NotFound) =>
+            {
+                self.prune(system)?;
+                return Ok(());
+            }
+            Err(error) => return Err(error)
+        };
+        let ready = cache::with(slot, |folder| folder.ready);
+        if !ready && self.windows[slot].is_some_and(|window| window.outline.is_some())
+        {
+            system.quickdraw().graphics(failed.window).content_outline(None)?;
+        }
+        self.content_dirty[slot].set(true);
+        self.failures[slot].set(None);
+        cache::edit(slot, |folder| folder.frame = live.bounds);
+        if self.windows[slot].is_some_and(|window| window.opening != Opening::Complete)
+        {
+            let result = self.finish_open(system, slot);
+            if let Err(error) = result
+            {
+                self.failures[slot].set(Some(error));
+            }
+            return result;
+        }
+        if ready
+        {
+            let result = self.draw(system, failed.window);
+            if let Err(error) = result
+            {
+                self.failures[slot].set(Some(error));
+            }
+            return result;
+        }
+        // The failed entry may have advanced cursor/next before its later
+        // preparation refused. Never resume beyond that unpublished entry.
+        cache::edit(slot, |folder| folder.reset(failed.window, failed.location));
+        if let Some(window) = self.windows[slot].as_mut()
+        {
+            window.selected = Selection::EMPTY;
+            window.outline = None;
+            window.pending_clicks.fill(None);
+        }
+        if self.marquee.is_some_and(|marquee| marquee.slot == slot)
+        {
+            self.marquee = None;
+        }
+        if self.press.is_some_and(|press| press.source == failed.location)
+        {
+            self.press = None;
+        }
+        if self.last_click.is_some_and(|(window, ..)| window == failed.window)
+        {
+            self.last_click = None;
+        }
+        self.cache_job = Some(slot);
+        Ok(())
+    }
+
+    pub(super) fn take_open_failure(&mut self, cause: Option<Error>) -> Option<FailedFolder>
+    {
+        let failed = self.open_failure.take()?;
+        if cause != Some(failed.cause)
+        {
+            return None;
+        }
+        let current = self.failed_folder(failed.window)?;
+        (current.location == failed.location && current.cause == failed.cause).then_some(failed)
+    }
+
     pub fn open(&mut self, system: &System<'_>, location: Location) -> Result<WindowId, Error>
+    {
+        self.open_failure = None;
+        let result = self.open_inner(system, location);
+        if let Err(cause) = result
+           && let Some((slot, window)) = self.windows.iter().enumerate().find_map(|(slot, row)| {
+                                                                            row.filter(|window| {
+                                                         window.location == location
+                                                         && window.opening != Opening::Complete
+                                                     })
+                                                     .map(|window| (slot, window.window))
+                                                                        })
+        {
+            self.failures[slot].set(Some(cause));
+            self.open_failure = self.failed_folder(window);
+        }
+        result
+    }
+
+    fn open_inner(&mut self, system: &System<'_>, location: Location) -> Result<WindowId, Error>
     {
         self.desktop_active = false;
         self.sync_desktop_activation(system)?;
@@ -1296,6 +1520,8 @@ impl Browser
         };
         self.failures[slot].set(None);
         self.startup_painted(slot, false);
+        self.content_dirty[slot].set(false);
+        self.deferred_updates &= !(1 << slot);
         let trash = location == Location::default();
         let folder = if trash
         {
@@ -1381,7 +1607,7 @@ impl Browser
                          location.folder,
                          id,
                          folder.name());
-        system.log(line.as_str())?;
+        let _ = system.log(line.as_str());
         Ok(id)
     }
 
@@ -1619,7 +1845,8 @@ impl Browser
         writeln!(&mut line, "FINDER_VOLUME_UNMOUNTED volume={volume}").map_err(|_| {
                                                                           Error::NoMemory
                                                                       })?;
-        system.log(line.as_str())
+        let _ = system.log(line.as_str());
+        Ok(())
     }
 
     pub fn prune(&mut self, system: &System<'_>) -> Result<(), Error>
@@ -1687,10 +1914,12 @@ impl Browser
                 let _ = writeln!(&mut line,
                                  "FINDER_FOLDER_CLOSE volume={} cnid={} window={}",
                                  w.location.volume, w.location.folder, w.window);
-                system.log(line.as_str())?;
+                let _ = system.log(line.as_str());
                 closed[count] = Some(w.location);
                 count += 1;
                 *window = None;
+                self.content_dirty[slot].set(false);
+                self.deferred_updates &= !(1 << slot);
                 self.startup_painted(slot, false);
                 self.startup_watches_polled(false);
                 changed = true;
@@ -1713,7 +1942,7 @@ impl Browser
             {
                 self.repaint_location(system, location)?;
             }
-            system.log("FINDER_CLOSE_COMMITTED\n")?;
+            let _ = system.log("FINDER_CLOSE_COMMITTED\n");
         }
         state_error.map_or(Ok(()), Err)
     }
@@ -1817,11 +2046,14 @@ impl Browser
                 return system.windows().validate(id);
             }
             system.begin_update(id)?;
-            let port = system.quickdraw().graphics(id);
-            port.reset()?;
-            port.colors(0xffffff, 0xffffff)?;
-            port.paint_rect(Rect::new(0, 0, width, height))?;
-            return system.end_update(id);
+            let painted = (|| {
+                let port = system.quickdraw().graphics(id);
+                port.reset()?;
+                port.colors(0xffffff, 0xffffff)?;
+                port.paint_rect(Rect::new(0, 0, width, height))
+            })();
+            let ended = system.end_update(id);
+            return painted.and(ended);
         }
         if cache::edit(slot, |folder| folder.layout(width))?
         {
@@ -1848,8 +2080,8 @@ impl Browser
             self.refresh_chrome(system, slot, false, true, true)?;
             Ok(())
         })();
-        system.end_update(id)?;
-        if let Err(error) = result
+        let ended = system.end_update(id);
+        if let Err(error) = result.and(ended)
         {
             self.failures[slot].set(Some(error));
             self.draw_failed(system, id, error)?;
@@ -1860,9 +2092,11 @@ impl Browser
             cache::edit(slot, |folder| folder.refreshing = false);
         }
         self.startup_painted(slot, true);
+        self.content_dirty[slot].set(false);
         let mut line = Text::<256>::default();
         let _ = writeln!(&mut line, "FINDER_FOLDER_READY window={}", id);
-        system.log(line.as_str())
+        let _ = system.log(line.as_str());
+        Ok(())
     }
 
     /// Full updates and selection patches share exactly the same cached item
@@ -2022,6 +2256,10 @@ impl Browser
 
     fn draw_failed(&self, system: &System<'_>, id: WindowId, error: Error) -> Result<(), Error>
     {
+        if let Some(slot) = self.windows.iter().position(|row| row.is_some_and(|w| w.window == id))
+        {
+            self.content_dirty[slot].set(true);
+        }
         let window = system.window(id)?;
         let body = crate::ui::error_text(system, error, 1, window.title())?;
         system.begin_update(id)?;
@@ -2045,8 +2283,8 @@ impl Browser
             }
             Ok(())
         })();
-        system.end_update(id)?;
-        result
+        let ended = system.end_update(id);
+        result.and(ended)
     }
 
     pub fn click(&mut self, system: &System<'_>, event: &Event, position: PointerPosition)
@@ -2949,7 +3187,8 @@ impl Browser
                          created.id,
                          created.parent,
                          created.name());
-        system.log(log.as_str())
+        let _ = system.log(log.as_str());
+        Ok(())
     }
 
     fn move_entry_to_trash(&mut self, system: &System<'_>, entry: Location) -> Result<(), Error>
@@ -2968,7 +3207,8 @@ impl Browser
                          moved.id,
                          moved.parent,
                          moved.put_away_parent());
-        system.log(log.as_str())
+        let _ = system.log(log.as_str());
+        Ok(())
     }
 
     pub fn trash_selection(&mut self, system: &System<'_>) -> Result<(), Error>
@@ -2999,7 +3239,8 @@ impl Browser
         let _ = writeln!(&mut log,
                          "FINDER_PUT_AWAY volume={} cnid={} parent={}",
                          moved.volume, moved.id, moved.parent);
-        system.log(log.as_str())
+        let _ = system.log(log.as_str());
+        Ok(())
     }
 
     pub fn empty_trash(&mut self, system: &System<'_>) -> Result<(), Error>
@@ -3031,13 +3272,14 @@ impl Browser
                              "FINDER_TRASH_PARTIAL removed={} status={}",
                              removed,
                              status.status());
-            system.log(log.as_str())?;
+            let _ = system.log(log.as_str());
             return Err(status);
         }
         refresh?;
         let mut log = Text::<80>::default();
         let _ = writeln!(&mut log, "FINDER_TRASH_EMPTIED removed={}", removed);
-        system.log(log.as_str())
+        let _ = system.log(log.as_str());
+        Ok(())
     }
 }
 impl Browser

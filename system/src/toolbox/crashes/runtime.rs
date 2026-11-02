@@ -1,6 +1,5 @@
 //! The report window is serviced by System even while its application has
 //! stopped executing. Input outside its content still reaches the desktop.
-use alloc::string::String;
 use core::fmt;
 
 use mac_abi::{crashes::*,
@@ -9,9 +8,9 @@ use mac_abi::{crashes::*,
               quickdraw::*,
               *};
 
-use crate::toolbox::{crashes::{RESOURCE_ID, ReportLayout},
+use crate::toolbox::{crashes::{PaintError, PaintScratch, RESOURCE_ID, ReportLayout, prepared_icon},
                      events::input::Input,
-                     quickdraw::{fonts_service, icons_service, service},
+                     quickdraw::fonts_service,
                      windows::WindowPart};
 
 const REPORT: Rect = Rect::new(14, 91, 566, 347);
@@ -100,44 +99,32 @@ fn label(index: u32) -> Result<Label, Status>
     Ok(Label { bytes,
                length: call.transferred })
 }
-fn append(output: &mut String, text: &str) -> Result<(), Status>
+fn formatted_bytes(arguments: fmt::Arguments<'_>) -> Result<usize, Status>
 {
-    output.try_reserve(text.len()).map_err(|_| NO_MEMORY)?;
-    output.push_str(text);
-    Ok(())
-}
-fn write_text(output: &mut String, arguments: fmt::Arguments<'_>) -> Result<(), Status>
-{
-    struct Writer<'a>
+    struct Counter
     {
-        output: &'a mut String,
-        error:  Option<Status>
+        bytes: usize
     }
-    impl fmt::Write for Writer<'_>
+    impl fmt::Write for Counter
     {
         fn write_str(&mut self, value: &str) -> fmt::Result
         {
-            if self.error.is_some()
-            {
-                return Err(fmt::Error);
-            }
-            if let Err(error) = append(self.output, value)
-            {
-                self.error = Some(error);
-                return Err(fmt::Error);
-            }
+            self.bytes = self.bytes.checked_add(value.len()).ok_or(fmt::Error)?;
             Ok(())
         }
     }
-    let mut writer = Writer { output,
-                              error: None };
-    fmt::write(&mut writer, arguments).map_err(|_| writer.error.unwrap_or(BAD_ARGUMENT))
+    let mut counter = Counter { bytes: 0 };
+    fmt::write(&mut counter, arguments).map_err(|_| BAD_ARGUMENT)?;
+    Ok(counter.bytes)
 }
-fn formatted(arguments: fmt::Arguments<'_>) -> Result<String, Status>
+
+fn paint_error(cause: PaintError) -> Status
 {
-    let mut output = String::new();
-    write_text(&mut output, arguments)?;
-    Ok(output)
+    if !matches!(cause, PaintError::Busy)
+    {
+        serial!("REPORT_PAINT_SCRATCH_REFUSED: {cause}");
+    }
+    cause.status()
 }
 /// Exact UTF-8 extent after the existing four-column tab expansion.
 fn expanded_line_length(line: &str) -> Result<usize, Status>
@@ -430,6 +417,74 @@ impl super::Toolbox
                           page_lines })
     }
 
+    /// Actual Full-scene producers bound every interchangeable report buffer.
+    /// Called once during protected modal admission, never while painting.
+    pub(crate) fn measure_crash_command_capacity(layout: ReportLayout) -> Result<usize, Status>
+    {
+        let rows = usize::try_from(layout.page_lines).map_err(|_| BAD_ABI)?;
+        let terms = [1usize, // Full-window erase
+                     1,      // Bomb icon
+                     2,      // Title and app/thread header
+                     2,      // Warning rows (including FailureDetail)
+                     1,      // Report frame
+                     1,      // Footer
+                     BUTTONS.len()]; // Actual managed button producers
+        terms.into_iter().try_fold(rows, |count, term| count.checked_add(term).ok_or(BAD_ABI))
+    }
+
+    /// Count the actual shipped label formats and real scalar maxima once.
+    /// Native line layout bounds expanded UTF-8/tab data by four bytes/column.
+    pub(crate) fn measure_crash_paint_capacity(layout: ReportLayout) -> Result<usize, Status>
+    {
+        let mut bytes = layout.columns.checked_mul(4).ok_or(BAD_ARGUMENT)?;
+        bytes = bytes.max(formatted_bytes(format_args!("{} {}   {} {}",
+                                                       label(12)?,
+                                                       u64::MAX,
+                                                       label(13)?,
+                                                       u64::MAX))?);
+        bytes = bytes.max(formatted_bytes(format_args!("{}   {}   {}",
+                                                       label(9)?,
+                                                       label(10)?,
+                                                       label(17)?))?);
+        for index in [25, 26, 27, 28, 29, 24, 18, 19]
+        {
+            bytes =
+                bytes.max(formatted_bytes(format_args!("{} ({})", label(index)?, Status::MIN))?);
+        }
+        bytes = bytes.max(formatted_bytes(format_args!("{}  {} ({})",
+                                                       label(22)?,
+                                                       label(7)?,
+                                                       Status::MIN))?);
+        bytes = bytes.max(formatted_bytes(format_args!("{} {}-{} {} {}   {} {}",
+                                                       label(14)?,
+                                                       u32::MAX,
+                                                       u32::MAX,
+                                                       label(15)?,
+                                                       u32::MAX,
+                                                       MAX_REPORT_BYTES,
+                                                       label(16)?))?);
+        Ok(bytes)
+    }
+
+    /// Actual retained Text calls, including the fixed owned detail branch.
+    /// Each interchangeable slot covers every input at the original copy point.
+    pub(crate) fn measure_crash_text_stock(layout: ReportLayout) -> Result<(usize, usize), Status>
+    {
+        let rows = usize::try_from(layout.page_lines).map_err(|_| BAD_ABI)?;
+        let fixed = [1usize, // Title
+                     1,      // App/thread header
+                     2,      // Warning/detail rows
+                     1]; // Footer
+        let count = fixed.into_iter()
+                         .try_fold(rows, |count, term| count.checked_add(term).ok_or(BAD_ABI))?;
+        let bytes = Self::measure_crash_paint_capacity(layout)?
+            .max(label(0)?.len())
+            .max(label(8)?.len())
+            .max(label(11)?.len())
+            .max(crate::toolbox::crashes::FailureDetail::line_capacity());
+        Ok((count, bytes))
+    }
+
     fn prepare_crash_layout(&mut self) -> Result<(), Status>
     {
         let layout = crate::toolbox::crashes::prepared_layout()?;
@@ -700,17 +755,18 @@ impl super::Toolbox
         Ok(())
     }
 
-    fn crash_text(&mut self, window: u64, font: FontSelection, x: i16, baseline: i16, text: &str)
+    fn crash_text(&mut self, window: u64, port: &crate::recovery::ReportPortView,
+                  font: FontSelection, x: i16, baseline: i16, text: &str)
                   -> Result<(), Status>
     {
-        self.font_draw(&mut FontCall { target:
+        self.font_draw_report_port(&mut FontCall { target:
                                            mac_abi::quickdraw::Target::window(WindowId(window)),
                                        selection: font,
                                        baseline: Point { h: x,
                                                          v: baseline },
                                        ..Default::default() },
                        text,
-                       crate::kernel::fonts().ok_or(NOT_SUPPORTED)?.as_ref())
+                       crate::kernel::fonts().ok_or(NOT_SUPPORTED)?.as_ref(), port)
     }
 
     fn is_current_finder_report(&self) -> bool
@@ -756,6 +812,25 @@ impl super::Toolbox
         let window = info.window.0;
         let target = mac_abi::quickdraw::Target::window(info.window);
         let mut request = window_request(info.window);
+        // Borrow the original boot stock before consuming update/mask state.
+        // Every later return/cancel drops this loan back to its exact stock.
+        let mut paint = PaintScratch::take().map_err(paint_error)?;
+        if matches!(mode, Paint::Full | Paint::Report)
+        {
+            let mut length = 0;
+            for visible in 0..info.page_lines
+            {
+                let Some(line) = self.crash.line((info.first_line + visible) as usize)
+                else
+                {
+                    break;
+                };
+                length = length.max(expanded_line_length(line)?);
+            }
+            paint.admits(length).map_err(paint_error)?;
+        }
+        let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+        self.bind_report_scene(info.window, &activity)?;
         if mode == Paint::Full
         {
             checked(self.window(BEGIN_UPDATE, &mut request))?;
@@ -803,40 +878,41 @@ impl super::Toolbox
                               &[],
                               &[])?;
             }
-            if mode == Paint::Full
-            {
-                let call = IconCall { target:
-                                          mac_abi::quickdraw::Target::window(WindowId(window)),
-                                      scope: resources::SYSTEM,
-                                      id: RESOURCE_ID,
-                                      destination: Rect::new(18, 14, 50, 46),
-                                      ..Default::default() };
-                let drawing =
-                    crate::kernel::with_resources(|resources| {
-                        icons_service::Drawing::new(resources, &call, service::Port::default())
-                    }).ok_or(NOT_SUPPORTED)??;
-                self.icon(&call, drawing)?;
-                let title = label(if info.flags & MAIN_ERROR != 0 { 30 } else { 0 })?;
-                self.crash_text(window, FontSelection::default(), 64, 29, title.text()?)?;
-                self.crash_text(window,
-                                MONACO,
-                                64,
-                                48,
-                                &formatted(format_args!("{} {}   {} {}",
-                                                        label(12)?,
-                                                        info.app,
-                                                        label(13)?,
-                                                        info.thread))?)?;
-            }
             if matches!(mode, Paint::Full | Paint::Warnings)
             {
+                let port =
+                    self.capture_report_port(info.window, crate::recovery::ReportPortKind::Reset)?;
+                if mode == Paint::Full
+                {
+                    let call = IconCall { target:
+                                              mac_abi::quickdraw::Target::window(WindowId(window)),
+                                          scope: resources::SYSTEM,
+                                          id: RESOURCE_ID,
+                                          destination: Rect::new(18, 14, 50, 46),
+                                          ..Default::default() };
+                    self.icon(&call, prepared_icon()?)?;
+                    self.crash_text(window,
+                                    &port,
+                                    FontSelection::default(),
+                                    64,
+                                    29,
+                                    label(if info.flags & MAIN_ERROR != 0 { 30 } else { 0 })?.text()?)?;
+                    paint.clear();
+                    paint.write(format_args!("{} {}   {} {}",
+                                             label(12)?,
+                                             info.app,
+                                             label(13)?,
+                                             info.thread))
+                         .map_err(paint_error)?;
+                    self.crash_text(window, &port, MONACO, 64, 48, paint.text())?;
+                }
                 if let Some(detail) =
                     self.crash.restart_detail.filter(|_| self.crash.power_failure.is_none())
                 {
                     // Fixed owned lines were formatted once outside Desktop.
                     // This paint touches only the bounded description/warning band.
-                    self.crash_text(window, MONACO, 14, 72, detail.line(0)?)?;
-                    self.crash_text(window, MONACO, 14, 84, detail.line(1)?)?;
+                    self.crash_text(window, &port, MONACO, 14, 72, detail.line(0)?)?;
+                    self.crash_text(window, &port, MONACO, 14, 84, detail.line(1)?)?;
                 }
                 else
                 {
@@ -852,24 +928,24 @@ impl super::Toolbox
                                             {
                                                 11
                                             })?;
-                    self.crash_text(window, MONACO, 14, 72, description.text()?)?;
-                    let mut warnings = String::new();
+                    self.crash_text(window, &port, MONACO, 14, 72, description.text()?)?;
+                    paint.clear();
                     for (enabled, index) in [(info.flags & TRUNCATED != 0, 9),
                                              (info.flags & FORMAT_FAILED != 0, 10),
                                              (self.crash.copy_failed, 17)]
                     {
                         if enabled
                         {
-                            if !warnings.is_empty()
+                            if !paint.text().is_empty()
                             {
-                                append(&mut warnings, "   ")?;
+                                paint.append("   ").map_err(paint_error)?;
                             }
-                            append(&mut warnings, label(index)?.text()?)?;
+                            paint.append(label(index)?.text()?).map_err(paint_error)?;
                         }
                     }
                     if self.crash.restart_terminal
                     {
-                        warnings.clear();
+                        paint.clear();
                         if let Some((status, stage)) = self.crash.power_failure
                         {
                             let message = match stage
@@ -880,35 +956,36 @@ impl super::Toolbox
                                 mac_abi::power::DEVICE_FAILURE => 28,
                                 _ => 29
                             };
-                            write_text(&mut warnings,
-                                       format_args!("{} ({status})", label(message)?))?;
+                            paint.write(format_args!("{} ({status})", label(message)?))
+                                 .map_err(paint_error)?;
                         }
                         else
                         {
-                            append(&mut warnings, label(24)?.text()?)?;
+                            paint.append(label(24)?.text()?).map_err(paint_error)?;
                             if let Some(status) = self.crash.restart_error
                             {
-                                write_text(&mut warnings, format_args!(" ({status})"))?;
+                                paint.write(format_args!(" ({status})")).map_err(paint_error)?;
                             }
                         }
                     }
                     else if self.crash.capture_superseded()
                     {
-                        warnings.clear();
-                        append(&mut warnings, label(22)?.text()?)?;
+                        paint.clear();
+                        paint.append(label(22)?.text()?).map_err(paint_error)?;
                         if let Some(status) = self.crash.restart_error
                         {
-                            write_text(&mut warnings, format_args!("  {} ({status})", label(7)?))?;
+                            paint.write(format_args!("  {} ({status})", label(7)?))
+                                 .map_err(paint_error)?;
                         }
                     }
                     else if let Some(status) = self.crash.restart_error
                     {
-                        warnings.clear();
-                        append(&mut warnings,
-                               label(if status == NO_MEMORY { 19 } else { 18 })?.text()?)?;
-                        write_text(&mut warnings, format_args!(" ({status})"))?;
+                        paint.clear();
+                        paint.append(label(if status == NO_MEMORY { 19 } else { 18 })?.text()?)
+                             .map_err(paint_error)?;
+                        paint.write(format_args!(" ({status})")).map_err(paint_error)?;
                     }
-                    self.crash_text(window, MONACO, 14, 84, &warnings)?;
+                    self.crash_text(window, &port, MONACO, 14, 84, paint.text())?;
                 }
             }
             if matches!(mode, Paint::Full | Paint::Report)
@@ -930,13 +1007,14 @@ impl super::Toolbox
                                               ..Default::default() },
                           &[],
                           &[])?;
+                let port = self.capture_report_port(info.window,
+                                                    crate::recovery::ReportPortKind::Viewport)?;
                 let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
                 let metrics = fonts.metrics(fonts_service::selection(MONACO))?;
                 let advance = metrics.ascent
                                      .saturating_add(metrics.descent)
                                      .saturating_add(metrics.leading)
                                      .max(1);
-                let mut length = 0;
                 for visible in 0..info.page_lines
                 {
                     let Some(line) = self.crash.line((info.first_line + visible) as usize)
@@ -944,18 +1022,7 @@ impl super::Toolbox
                     {
                         break;
                     };
-                    length = length.max(expanded_line_length(line)?);
-                }
-                let mut text = String::new();
-                text.try_reserve_exact(length).map_err(|_| NO_MEMORY)?;
-                for visible in 0..info.page_lines
-                {
-                    let Some(line) = self.crash.line((info.first_line + visible) as usize)
-                    else
-                    {
-                        break;
-                    };
-                    text.clear();
+                    paint.clear();
                     let mut column = 0;
                     for character in line.chars()
                     {
@@ -964,21 +1031,23 @@ impl super::Toolbox
                             let spaces = 4 - (column % 4);
                             for _ in 0..spaces
                             {
-                                text.push(' ');
+                                paint.append(" ").map_err(paint_error)?;
                             }
                             column += spaces;
                         }
                         else
                         {
-                            text.push(character);
+                            paint.append(character.encode_utf8(&mut [0; 4]))
+                                 .map_err(paint_error)?;
                             column += 1;
                         }
                     }
                     self.crash_text(window,
+                                    &port,
                                     MONACO,
                                     REPORT.left + 4,
                                     REPORT.top + 4 + metrics.ascent + visible as i16 * advance,
-                                    &text)?;
+                                    paint.text())?;
                 }
                 self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
                                               target: mac_abi::quickdraw::Target::window(WindowId(window)),
@@ -986,24 +1055,28 @@ impl super::Toolbox
                                               ..Default::default() },
                           &[],
                           &[])?;
-                let coverage = formatted(format_args!("{} {}-{} {} {}   {} {}",
-                                                      label(14)?,
-                                                      if info.line_count == 0
-                                                      {
-                                                          0
-                                                      }
-                                                      else
-                                                      {
-                                                          info.first_line + 1
-                                                      },
-                                                      info.first_line
-                                                          .saturating_add(info.page_lines)
-                                                          .min(info.line_count),
-                                                      label(15)?,
-                                                      info.line_count,
-                                                      info.report_bytes,
-                                                      label(16)?))?;
-                self.crash_text(window, MONACO, 14, 360, &coverage)?;
+                let port =
+                    self.capture_report_port(info.window, crate::recovery::ReportPortKind::Footer)?;
+                paint.clear();
+                paint.write(format_args!("{} {}-{} {} {}   {} {}",
+                                         label(14)?,
+                                         if info.line_count == 0
+                                         {
+                                             0
+                                         }
+                                         else
+                                         {
+                                             info.first_line + 1
+                                         },
+                                         info.first_line
+                                             .saturating_add(info.page_lines)
+                                             .min(info.line_count),
+                                         label(15)?,
+                                         info.line_count,
+                                         info.report_bytes,
+                                         label(16)?))
+                     .map_err(paint_error)?;
+                self.crash_text(window, &port, MONACO, 14, 360, paint.text())?;
             }
             if mode == Paint::Full
             {
