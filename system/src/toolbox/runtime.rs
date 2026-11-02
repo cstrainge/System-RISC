@@ -2772,6 +2772,54 @@ impl Toolbox
         self.next_with_presence(mask, true)
     }
 
+    /// Presents video damage and applies a settled host size. Returns true when
+    /// the display mode changed. Driver refusals leave the current mode alone.
+    fn service_video(&mut self) -> bool
+    {
+        use mac_video_interface::{Outcome, Size};
+
+        let settled = match crate::machine::video::service()
+        {
+            Ok(Some(size)) => size,
+            Ok(None) => return false,
+            Err(status) =>
+            {
+                serial!("VIDEO_SERVICE_FAILED status={status}");
+                return false;
+            }
+        };
+        let width = (settled.width as usize).clamp(crate::display::MIN_WIDTH, crate::display::MAX_WIDTH);
+        let height =
+            (settled.height as usize).clamp(crate::display::MIN_HEIGHT, crate::display::MAX_HEIGHT);
+        if width == crate::display::width() && height == crate::display::height()
+        {
+            return false;
+        }
+        let size = Size { width: width as u32, height: height as u32 };
+        match crate::machine::video::apply(size)
+        {
+            Ok(Outcome::Applied) => (),
+            Ok(refusal) =>
+            {
+                serial!("VIDEO_MODE_REFUSED {}x{}: {}", width, height, refusal.message());
+                return false;
+            }
+            Err(status) =>
+            {
+                serial!("VIDEO_MODE_APPLY_FAILED {}x{} status={status}", width, height);
+                return false;
+            }
+        }
+        if let Err(refusal) = crate::machine::display::apply_mode(width, height)
+        {
+            serial!("VIDEO_MODE_SYSTEM_REFUSED {}x{}: {:?}", width, height, refusal);
+            return false;
+        }
+        serial!("DISPLAY_MODE_CHANGED {}x{}", width, height);
+        self.display_changed(mac_abi::geometry::Rect::new(0, 0, width as i16, height as i16));
+        true
+    }
+
     fn poll_inputs(&mut self) -> bool
     {
         crate::trace::record(crate::trace::POLL, self.owner, 0, 0, 0, 0);
@@ -2786,12 +2834,13 @@ impl Toolbox
                                      }
                                  })
         });
+        let resized = self.service_video();
         // Idle polling must not copy every application's menus and event queues
         // into and out of the foreground context. Decoder state changes that
         // affect applications (including modifiers) always produce an Input.
         if count == 0
         {
-            return false;
+            return resized;
         }
         let when = Self::when();
         let caller = self.owner;
