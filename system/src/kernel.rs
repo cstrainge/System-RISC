@@ -1179,10 +1179,9 @@ fn initialize_desktop(
         .map_err(|status| recovery_boot_error("Control Manager admission failed", status))?;
     let mut boot_screen =
         crate::boot_screen::BootScreen::begin(&files.system, fonts, system_source, &mut controls)?;
-    if !crate::platform::setup_framebuffer()
-    {
-        return Err(mac_formats::Error::Malformed("RAM framebuffer is unavailable").into());
-    }
+    // ramfb is the bootstrap/emergency display. Without it System draws into
+    // its reservation until an installed video driver attaches below.
+    let ramfb = crate::platform::setup_framebuffer();
     serial!("BOOT_PANEL_READY stages=7");
     // Immutable publication is acquire/release synchronized by Once. Runtime
     // readers never spin or take a mutable catalog guard.
@@ -1253,6 +1252,22 @@ fn initialize_desktop(
             _ => mac_formats::Error::Malformed("module discovery failed; see recorded status")
         }
                                               })?;
+    match crate::machine::video::attach()
+    {
+        Ok(true) => (),
+        Ok(false) if ramfb => (),
+        Ok(false) =>
+        {
+            return Err(mac_formats::Error::Malformed("no display: install a video driver or \
+                                                      enable ramfb").into());
+        }
+        Err(status) if ramfb => serial!("VIDEO_DRIVER_UNAVAILABLE status={status}; staying on ramfb"),
+        Err(status) =>
+        {
+            return Err(recovery_boot_error("video driver attach refused and ramfb is absent",
+                                           status).into());
+        }
+    }
     let selected = select_application_services(&finder_owner,
                                                finder_allocation,
                                                &finder_tls,

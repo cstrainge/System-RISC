@@ -1,6 +1,6 @@
 //! QEMU virt display and clock; System owns the framebuffers.
 use core::{arch::asm,
-           sync::atomic::{AtomicBool, Ordering}};
+           sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}};
 
 /// Live display geometry comes from `crate::display`; the platform record only
 /// fixes the default and the maximum the reservations are sized for.
@@ -38,6 +38,78 @@ const TRACKING_CPU: usize = (super::memory::VM_PHYSMAP_START
                              + (super::memory::DISPLAY_TRACKING_BASE
                                 - super::memory::VM_PHYSMAP_PHYSICAL_BASE))
                             as usize;
+
+/// Scan-out memory System draws into: the platform reservation for ramfb, or
+/// the video driver's own framebuffer once one attaches.
+static FRONT: AtomicUsize = AtomicUsize::new(FRONT_CPU);
+/// Union of scan-out rectangles changed since the video driver last presented,
+/// packed as four i16 (left, top, right, bottom); zero is empty.
+static DIRTY: AtomicU64 = AtomicU64::new(0);
+static VIDEO_ATTACHED: AtomicBool = AtomicBool::new(false);
+
+fn front_cpu() -> usize
+{
+    FRONT.load(Ordering::Acquire)
+}
+
+pub(super) fn use_driver_front(address: usize)
+{
+    FRONT.store(address, Ordering::Release);
+    VIDEO_ATTACHED.store(true, Ordering::Release);
+}
+
+pub(super) fn video_attached() -> bool
+{
+    VIDEO_ATTACHED.load(Ordering::Acquire)
+}
+
+fn pack(rect: mac_abi::geometry::Rect) -> u64
+{
+    u64::from(rect.left as u16)
+    | u64::from(rect.top as u16) << 16
+    | u64::from(rect.right as u16) << 32
+    | u64::from(rect.bottom as u16) << 48
+}
+
+pub(super) fn mark_dirty(rect: mac_abi::geometry::Rect)
+{
+    if rect.right <= rect.left || rect.bottom <= rect.top || !video_attached()
+    {
+        return;
+    }
+    let _ = DIRTY.fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
+                     if old == 0
+                     {
+                         return Some(pack(rect));
+                     }
+                     let at = |shift: u32| (old >> shift) as u16 as i16;
+                     Some(pack(mac_abi::geometry::Rect::new(at(0).min(rect.left),
+                                                            at(16).min(rect.top),
+                                                            at(32).max(rect.right),
+                                                            at(48).max(rect.bottom))))
+                 });
+}
+
+pub(super) fn peek_dirty() -> bool
+{
+    DIRTY.load(Ordering::Acquire) != 0
+}
+
+/// Takes the accumulated changed rectangle clipped to the live mode.
+pub(super) fn take_dirty() -> Option<mac_abi::geometry::Rect>
+{
+    let packed = DIRTY.swap(0, Ordering::AcqRel);
+    if packed == 0
+    {
+        return None;
+    }
+    let at = |shift: u32| (packed >> shift) as u16 as i16;
+    let rect = mac_abi::geometry::Rect::new(at(0).max(0),
+                                            at(16).max(0),
+                                            at(32).min(width() as i16),
+                                            at(48).min(height() as i16));
+    (rect.right > rect.left && rect.bottom > rect.top).then_some(rect)
+}
 
 static TRACKING_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static TRACKING_AVAILABLE: AtomicBool = AtomicBool::new(false);
@@ -107,7 +179,7 @@ pub(crate) fn apply_mode(width: usize, height: usize) -> Result<(), crate::displ
     unsafe {
         core::ptr::write_bytes(BACK_CPU as *mut u32, 0, pixels());
         core::ptr::write_bytes(TRACKING_CPU as *mut u32, 0, tracking_pixels());
-        core::ptr::write_bytes(FRONT_CPU as *mut u32, 0, pixels());
+        core::ptr::write_bytes(front_cpu() as *mut u32, 0, pixels());
     }
     Ok(())
 }
@@ -132,7 +204,14 @@ pub fn setup_framebuffer() -> bool
     {
         serial!("RAMFB_REJECTED: {error}");
     }
+    // Without ramfb System renders into its reserved memory until a video
+    // driver attaches; boot fails later if none does.
     let ready = result.is_ok();
+    if !ready
+    {
+        serial!("DISPLAY_NO_RAMFB: continuing until a video driver attaches");
+        TRACKING_AVAILABLE.store(true, Ordering::Release);
+    }
     if ready
     {
         TRACKING_AVAILABLE.store(true, Ordering::Release);
@@ -169,7 +248,21 @@ pub(crate) fn present_rects(back: &[u32], rects: impl IntoIterator<Item = mac_ab
     use crate::toolbox::quickdraw::presentation::{PresentEvent, present_frame};
     // The serialized compositor owns both buffers. This exclusive frontbuffer
     // slice cannot escape; the scene stays read-only for the entire transition.
-    let front = unsafe { core::slice::from_raw_parts_mut(FRONT_CPU as *mut u32, pixels()) };
+    let front = unsafe { core::slice::from_raw_parts_mut(front_cpu() as *mut u32, pixels()) };
+    if video_attached()
+    {
+        // Overlays change the frontbuffer without scene damage. Cursor pixels
+        // are bounded; outline feedback is not, so it presents the whole mode.
+        mark_dirty(overlays.previous_cursor);
+        if let Some(cursor) = overlays.cursor
+        {
+            mark_dirty(cursor.bounds());
+        }
+        if overlays.feedback.is_some() || overlays.previous_feedback.is_some()
+        {
+            mark_dirty(mac_abi::geometry::Rect::new(0, 0, width() as i16, height() as i16));
+        }
+    }
     let mut started = 0;
     let owner = crate::context::current_thread_context().identity().app.0;
     present_frame(back, front, width(), height(), rects, overlays, |event| {
@@ -181,6 +274,7 @@ pub(crate) fn present_rects(back: &[u32], rects: impl IntoIterator<Item = mac_ab
             }
             PresentEvent::Copied(rect) =>
             {
+                mark_dirty(rect);
                 crate::trace::record(crate::trace::FRAME_COPY,
                                      owner,
                                      crate::trace::clock().wrapping_sub(started),

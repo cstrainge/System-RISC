@@ -634,6 +634,7 @@ dependencies = [
  "mac-scrap-extension-interface",
  "mac-toolbox",
  "mac-traps",
+ "mac-video-interface",
  "minipng",
  "miniz_oxide",
  "serde",
