@@ -26,8 +26,9 @@ fn request(caller: u64, operation: u32, input: &[u8], output: &mut [u8]) -> Resu
                           runtime.registry.preference_subject(caller).map_err(super::status)
                       })
                       .map_err(crate::state::AccessError::status)??;
-    let filename = wire::filename(identity);
-    let name = core::str::from_utf8(&filename).map_err(|_| CORRUPT_DATA)?;
+    let mut buffer = [0; 37];
+    let filename = wire::filename(identity, &mut buffer);
+    let name = core::str::from_utf8(filename).map_err(|_| CORRUPT_DATA)?;
     if operation == wire::REVISION && input.is_empty()
     {
         if output.len() < wire::REPLY_BYTES

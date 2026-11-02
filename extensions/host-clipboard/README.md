@@ -13,7 +13,8 @@ clipboard traffic on UI input or under the controller mutex, and retains owned
 protocol/cleanup state through refusals.
 
 The image installs version 1 JSON at
-`System Folder/Preferences/7731a000000000000000000000000080.json`:
+`System Folder/Preferences/Host Clipboard Prefs`, with Finder type `JSON` and
+creator `TEDT`:
 
 ```json
 {"version":1,"enabled":true,"direction":"both"}
