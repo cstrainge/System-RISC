@@ -139,7 +139,9 @@
           "Close other applications, then try Restart System again.",
           "Storage is not ready. Finish file operations, then retry.",
           "The power device refused System restart. The report is retained.",
-          "System restart failed. The report is retained."
+          "System restart failed. The report is retained.",
+          "Application error",
+          "The application returned an error. You can inspect or copy the report."
         ]
       }
     },

@@ -418,9 +418,15 @@ adoption.
 The current graphical APPL/FNDR profile deliberately uses null standard streams:
 stdin immediately returns zero bytes/EOF without changing the caller's buffer;
 stdout and stderr discard arbitrary bytes, report successful writes and flush
-successfully. They are non-terminal. A GUI main Result error retains its real
-failure exit status while its stderr text may be intentionally discarded. Panic
-reporting remains independent through the System crash service.
+successfully. They are non-terminal. An ordinary `Result::Err` from main uses the
+platform's separate System error-report path, including `ToolboxResult<()>`:
+retain its Debug details while the error is alive, complete normal std/TLS cleanup,
+then display the System-owned report and exit normally with failure status 1.
+System retains the report until genuine dismissal. The window is horizontally
+centered in the usable desktop, with one third of spare vertical space above its
+WDEF structure. A cleanup panic supersedes the draft and follows the separate
+panic/Abort101 contract. These new report/cleanup paths require matching native
+qualification; earlier silent-Err observations describe the previous policy.
 
 These semantics are the graphical application contract, not a real output
 stream, interactive input, serial console or CLAP acceptance. A future CLAP
