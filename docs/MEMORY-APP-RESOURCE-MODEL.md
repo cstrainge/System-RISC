@@ -4585,3 +4585,79 @@ by the focused run. These paced, observed UI workflows establish no latency,
 race absence, general switching behavior, prebirth allocation/publication refusal,
 stopped-recipient/ACK overlap, exhaustive error coverage or full Save/Save As
 exhaustion. No host Rust suite supplied OS acceptance.
+
+### Detached System Core Alert preparation
+
+The resource-derived Core Error, Out of Memory and Save Changes alerts now
+prepare their real strings, Item storage, Alert Arc and control-index storage
+before Desktop entry under the admitted Opening's original Activity. Ordinary
+alerts share the same payload constructor. Pure template validation runs under
+the caller's existing scope and acquires no modal or protected authority.
+
+Final admission rechecks the actual recipient and System storage owners, Session,
+Subject, exact resource/substitution intent, closing state and live protocol
+vacancy. The same reserved DLOG publisher receives the owned payload and returns
+that value into the outside-owned preparation on prebirth refusal. Positioning
+mutates only the unique real Alert and happens once; the selected WDEF callback,
+actual Window/control initialization and rollback remain shared with ordinary
+alerts. No new SDK surface, ABI, quota, fallback payload or alternate ID issuer
+is added. Fresh postbirth drawing and raster work still allocate; detached
+preparation alone is not a complete pinned low-memory recovery kit.
+
+Alert close restores only a live visible window belonging to the current
+recipient. With no such window, System restores a foreground application with
+no active window instead of asking that application to select Finder's desktop.
+A background recipient leaves the current foreground plane alone. Internal
+activation events are routed before local transient activations are coalesced,
+so deactivation intended for another application is retained. Public Window
+Manager ownership and Finder-only desktop-selection rules remain enforced.
+
+An unchanged-source optimized release/LTO no_std RVA23 image used System ELF
+`52b2ba162594bd970e11e6aa18505c58281b884a5b132b3441c1e56a45c226e1`
+and resource
+`4ef307790a1f437ac15fcc8506120dde332583df2c6eba982c87e07909436237`;
+ROM remained `cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+A private QEMU4/800x600 guest requested and discovered exactly 2 GiB. Installed
+Text Edit exercised Save Changes Cancel, default Save through the actual Save
+service, and Don't Save. Offline saved bytes were `ab`, including input after
+Cancel. A malformed UTF-8 TEXT file produced the visible System Core Error;
+after acknowledgment a new document accepted input and the app quit normally.
+All three actual Process accounts closed. Frames were reviewed, source/base
+remained fixed and the owned guest exited zero, was reaped and private media
+removed. The preceding run had drawn the Error correctly but aborted after
+Return with ACCESS_DENIED; that failed observation is retained. Source review
+identified restricted desktop/foreign-window focus restoration. Background
+focus, hidden-window and peer-activation ordering refinements have source review,
+not forced native interleaving evidence.
+
+An existing native ordinary-pressure workload then ran on the same System code
+in a private QEMU1/2 GiB guest. Its normally packaged controller and 44 distinct
+module workers applied real resident allocation demand. The diagnostic app's
+valid 1 MiB Memory-handle resize refused MemoryFull with the original 16 bytes
+intact and 16,464,408 bytes of caller Kernel headroom; ordinary heap free bytes
+were 99,168 of 503,316,480. It opened/disposed two Save dialogs and a Core OOM
+alert both before demand and after that refusal, with competing requests refused
+Busy. The private System resource package preserved existing inspection grants
+and added the exact diagnostic image grant; this differs from the shipping
+resource configuration. The diagnostic lockfile required only its existing
+Toolbox entropy path dependency; no registry versions or guest assertions changed.
+
+The pressure campaign FAILED its later 15-second renewed-pressure requirement,
+before full-report, worker-reclamation and following Finder checks. The finisher
+had reached its fixed 2,048 chunk descriptors while minimum_refused was false;
+its source cannot add demand once that table is full. This is a workload-limit
+candidate, not a measurement of exact later free bytes or proof of an OS cause's
+absence. No limits, assertions or deadlines were weakened and the failed campaign
+is not accepted. Source/base stayed fixed, the owned guest was reaped and all
+private media removed. These partial observations do not qualify persistent
+exhaustion, full Save/Save As, full report under pressure, protected-tail headroom,
+production Finder OOM restart, owner stop/uncertain ACK, latency, race absence,
+U-mode or general SMP/OS correctness. No host Rust suite supplied acceptance.
+
+A separate earlier aggregate native failure also remains failed. Its retained
+38-byte interruption report and matching fixture source place the failure after
+ordinary Alert lifecycle operations; the previous first-Alert/WDEF attribution
+was unsupported and is withdrawn. The later generic close of a System-owned
+report is a concrete ownership-refusal candidate, but its exact failing call was
+not separately traced. No public System-window authority was relaxed to obtain a
+passing aggregate.

@@ -159,10 +159,22 @@ impl Activity
     pub(crate) fn validate_standard_file_begin(&self, recipient: &OwnerRef, storage: &OwnerRef)
                                                -> Result<(), Status>
     {
+        self.validate_modal_opening(Kind::StandardFile, recipient, storage)
+    }
+
+    pub(crate) fn validate_core_alert_open(&self, recipient: &OwnerRef, storage: &OwnerRef)
+                                           -> Result<(), Status>
+    {
+        self.validate_modal_opening(Kind::CoreAlert, recipient, storage)
+    }
+
+    fn validate_modal_opening(&self, kind: Kind, recipient: &OwnerRef, storage: &OwnerRef)
+                              -> Result<(), Status>
+    {
         InvocationGate::run(|| {
             let modal = MODAL.lock();
             if !modal.session.as_ref().is_some_and(|session| Arc::ptr_eq(session, &self.session))
-               || self.session.kind != Kind::StandardFile
+               || self.session.kind != kind
                || self.session.recipient.lock().owner() != recipient.owner()
                || self.owner() != recipient.owner().incarnation()
                || self.session.storage_owner.owner() != storage.owner()
@@ -797,18 +809,41 @@ pub(crate) fn dialog_request(call: &mut mac_abi::dialogs::DialogCall) -> Status
         if is_core && call.operation == OPEN_ALERT
         {
             let opening = begin(owner, Kind::CoreAlert)?;
-            let status =
-                opening.activity().run(|| {
-                                       crate::kernel::with_desktop(|desktop| {
-                                           desktop.with_core_dialogs(|desktop| desktop.dialog(call))
-                                       }).unwrap_or_else(|error| error.status())
-                                   })?;
-            if status != mac_abi::OK
-            {
-                return Err(status);
-            }
+            let mut prepared = opening.activity().run(|| {
+                crate::toolbox::dialogs::core_alerts::PreparedAlert::prepare(opening.activity(), call)
+            })?.map_err(|cause| {
+                serial!("CORE_ALERT_REFUSED: {cause}");
+                cause.status()
+            })?;
+            let result = opening.activity().run(|| {
+                crate::kernel::with_desktop(|desktop| {
+                    desktop.with_core_dialogs(|desktop| desktop.open_prepared_core_alert(call, &mut prepared))
+                }).map_err(|error| {
+                    crate::toolbox::dialogs::core_alerts::OpenError::service("Desktop admission", error.status())
+                })?
+            })?;
+            // Every unpublished payload remains in this outer preparation;
+            // published children retain their original initialization cleanup.
+            drop(prepared);
+            result.map_err(|cause| {
+                      serial!("CORE_ALERT_REFUSED: {cause}");
+                      cause.status()
+                  })?;
             opening.activity().session.object.store(call.window, Ordering::Release);
             opening.commit();
+            return Ok(());
+        }
+        if is_core && call.operation == VALIDATE_ALERT
+        {
+            // Validation has no modal Opening or protected allocation right.
+            // Instantiate/count using the caller's existing scope, outside Desktop.
+            if call.reserved != 0
+            {
+                return Err(mac_abi::BAD_ARGUMENT);
+            }
+            call.item = 0;
+            let alert = crate::toolbox::dialogs::core_alerts::instantiate(call)?;
+            call.item = alert.items.len() as u16;
             return Ok(());
         }
         if !is_core && call.operation == OPEN_ALERT
