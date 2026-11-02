@@ -5,7 +5,7 @@ pub(crate) mod modules;
 pub(crate) mod process;
 mod alias;
 mod heap_partition;
-use core::{arch::asm, fmt, marker::PhantomData, ptr};
+use core::{alloc::Layout, arch::asm, fmt, marker::PhantomData, ptr};
 
 use heap_partition::HeapPartition;
 pub(crate) use heap_partition::{ProtectedHeapStatistics, ProtectedRange};
@@ -28,22 +28,106 @@ use super::{interrupts::{self, NativeInvocationGate},
 use crate::allocator::foundation::{self, Foundation};
 const MODE: usize = 8usize << 60;
 const PPN: usize = (1usize << 44) - 1;
-/// Only this native binding constructs table backing, by consuming a genuine
-/// RAM lease. The shared metadata trait alone cannot authenticate physical RAM.
-struct TableBacking(Backing);
-impl PageBacking for TableBacking
+/// Closed native physical ownership; neither variant can be made from a PPN.
+/// Recovery backing is an exclusive sublease of the real protected heap parent.
+enum PagingBacking
+{
+    Ordinary(Backing),
+    Protected(crate::allocator::recovery::Backing)
+}
+impl PagingBacking
+{
+    fn cpu_base(&self) -> usize
+    {
+        match self
+        {
+            Self::Ordinary(b) => b.cpu_base(),
+            Self::Protected(b) => b.cpu_base()
+        }
+    }
+}
+impl PageBacking for PagingBacking
 {
     fn physical(&self) -> PhysicalAddress
     {
-        self.0.physical()
+        match self
+        {
+            Self::Ordinary(b) => b.physical(),
+            Self::Protected(b) => b.physical()
+        }
     }
 
     fn bytes(&self) -> u64
     {
-        self.0.bytes()
+        match self
+        {
+            Self::Ordinary(b) => b.bytes(),
+            Self::Protected(b) => b.bytes()
+        }
     }
 }
-type RootPage = PageBox<[u64; 512], TableBacking>;
+#[derive(Clone)]
+enum BackingSource
+{
+    Ordinary,
+    Protected(crate::allocator::recovery::Permit)
+}
+impl BackingSource
+{
+    fn planned_bytes(&self, layout: Layout) -> Result<u64, FrameError>
+    {
+        match self
+        {
+            Self::Ordinary => Backing::planned_bytes(layout.size()).map_err(FrameError::Pages),
+            Self::Protected(_) => crate::allocator::recovery::Permit::backing_layout(layout)
+                .map(|layout| layout.size() as u64).map_err(FrameError::Recovery)
+        }
+    }
+
+    fn allocate_zeroed(&self, layout: Layout) -> Result<PagingBacking, FrameError>
+    {
+        match self
+        {
+            Self::Ordinary =>
+            {
+                Backing::allocate(layout.size()).map(PagingBacking::Ordinary)
+                                                .map_err(FrameError::Pages)
+            }
+            Self::Protected(permit) =>
+            {
+                permit.allocate_backing(layout)
+                      .map(PagingBacking::Protected)
+                      .map_err(FrameError::Recovery)
+            }
+        }
+    }
+
+    /// Origin follows the retained root, not a module publisher's ambient scope.
+    /// Attribution is separately selected from the genuine root account.
+    fn with_metadata<R>(&self, operation: impl FnOnce() -> R) -> R
+    {
+        match self
+        {
+            Self::Ordinary => crate::context::without_recovery(operation),
+            Self::Protected(permit) =>
+            {
+                crate::context::with_recovery_allocation(permit.clone(), operation)
+            }
+        }
+    }
+
+    fn accepts_existing(&self, existing: &Self) -> bool
+    {
+        match (self, existing)
+        {
+            // Ordinary reuse retains an already admitted root's actual policy.
+            (Self::Ordinary, _) => true,
+            (Self::Protected(a), Self::Protected(b)) => a.same_storage(b),
+            (Self::Protected(_), Self::Ordinary) => false
+        }
+    }
+}
+type RootPage = PageBox<[u64; 512], PagingBacking>;
 static BOOT: spin::Once<Bootstrap> = spin::Once::new();
 static SPACES: spin::Once<Spaces> = spin::Once::new();
 struct Bootstrap
@@ -299,6 +383,7 @@ pub(crate) enum FrameError
 {
     Pages(super::pages::Error),
     Account(mac_kernel_model::account::Error),
+    Recovery(crate::allocator::recovery::Error),
     Foreign
     {
         physical: u64
@@ -306,6 +391,24 @@ pub(crate) enum FrameError
     Slot
     {
         index: usize
+    }
+}
+impl FrameError
+{
+    fn status(&self) -> mac_abi::Status
+    {
+        match self
+        {
+            Self::Pages(e) => e.status(),
+            Self::Account(e) => crate::allocation::account_status(e),
+            Self::Recovery(crate::allocator::recovery::Error::Exhausted { .. }
+                           | crate::allocator::recovery::Error::BackingRefused { .. }) =>
+            {
+                mac_abi::NO_MEMORY
+            }
+            Self::Recovery(crate::allocator::recovery::Error::Layout) => mac_abi::BAD_ARGUMENT,
+            _ => mac_abi::BAD_ABI
+        }
     }
 }
 impl fmt::Display for FrameError
@@ -316,6 +419,7 @@ impl fmt::Display for FrameError
         {
             Self::Pages(e) => e.fmt(f),
             Self::Account(e) => e.fmt(f),
+            Self::Recovery(e) => e.fmt(f),
             Self::Foreign { physical } =>
             {
                 write!(f, "page table {physical:#x} is not retained by this root")
@@ -330,7 +434,7 @@ struct Node
     physical:        PhysicalAddress,
     cpu:             usize,
     next:            usize,
-    _storage:        Backing,
+    _storage:        PagingBacking,
     charge:          Option<mac_kernel_model::account::Committed<NativeInvocationGate>>,
     _storage_charge: Option<mac_kernel_model::account::Committed<NativeInvocationGate>>
 }
@@ -342,7 +446,8 @@ struct Frames
 {
     head:    usize,
     count:   usize,
-    account: Option<super::scheduler::accounting::AllocationAuthority>
+    account: Option<super::scheduler::accounting::AllocationAuthority>,
+    source:  BackingSource
 }
 impl Frames
 {
@@ -388,18 +493,31 @@ impl Tables for Frames
 
     fn allocate_zeroed(&mut self) -> Result<PhysicalAddress, FrameError>
     {
+        let table_layout = Layout::new::<[u64; 512]>().align_to(PAGE_BYTES as usize)
+            .map_err(|_| FrameError::Pages(super::pages::Error::Geometry))?;
         let charge = self.account
                          .as_ref()
-                         .map(|a| a.reserve_kernel(PAGE_BYTES))
-                         .transpose()
-                         .map_err(FrameError::Account)?;
-        let backing = Backing::allocate(PAGE_BYTES as usize).map_err(FrameError::Pages)?;
+                         .map(|a| {
+                             self.source
+                        .planned_bytes(table_layout)
+                        .and_then(|bytes| a.reserve_kernel(bytes).map_err(FrameError::Account))
+                         })
+                         .transpose()?;
+        let backing = self.source.allocate_zeroed(table_layout)?;
         let cpu = backing.cpu_base();
         let physical = backing.physical();
-        let table = RootPage::reserve(TableBacking(backing), Sv39::geometry())
+        let table = RootPage::reserve(backing, Sv39::geometry())
             .map_err(|cause| FrameError::Pages(super::pages::Error::Model(cause)))?;
-        let storage_charge = self.account.as_ref().map(|a| a.reserve_kernel(Backing::planned_bytes(size_of::<Node>()).map_err(FrameError::Pages)?).map_err(FrameError::Account)).transpose()?;
-        let storage = Backing::allocate(size_of::<Node>()).map_err(FrameError::Pages)?;
+        let storage_layout = Layout::new::<Node>();
+        let storage_charge = self.account
+                                 .as_ref()
+                                 .map(|a| {
+                                     self.source
+                        .planned_bytes(storage_layout)
+                        .and_then(|bytes| a.reserve_kernel(bytes).map_err(FrameError::Account))
+                                 })
+                                 .transpose()?;
+        let storage = self.source.allocate_zeroed(storage_layout)?;
         let pointer = storage.cpu_base();
         // SAFETY: exclusive aligned zeroed node storage is disjoint from table RAM;
         // moving its unique leases here precedes publishing the private chain link.
@@ -481,7 +599,7 @@ impl Architecture for Rva
 }
 struct Space
 {
-    owner:        AddressSpace<Rva, TableBacking>,
+    owner:        AddressSpace<Rva, PagingBacking>,
     tables:       Frames,
     register:     usize,
     leaves:       u64,
@@ -622,9 +740,11 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
                  heap: PhysicalAddress, tag: usize)
                  -> Result<Space, Error>
 {
-    let mut mapper = Mapper::new(Frames { head:    0,
-                                          count:   0,
-                                          account: None }).map_err(Error::Tables)?;
+    let mut mapper =
+        Mapper::new(Frames { head:    0,
+                             count:   0,
+                             account: None,
+                             source:  BackingSource::Ordinary }).map_err(Error::Tables)?;
     let mut leaves = 0;
     for bank in boot.ram.banks()
     {
@@ -674,7 +794,7 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
     }
     let (physical, mut tables) = mapper.into_tables();
     let (root, root_charge) = tables.take_root(physical)?;
-    let owner=AddressSpace::<Rva, TableBacking>::reserve(DomainId::SYSTEM,root,AsidTag::Permanent{hardware_value:tag as u64}).map_err(Error::Policy)?;
+    let owner=AddressSpace::<Rva, PagingBacking>::reserve(DomainId::SYSTEM,root,AsidTag::Permanent{hardware_value:tag as u64}).map_err(Error::Policy)?;
     let register = MODE | (tag << 44) | (owner.root_physical().0 as usize >> 12);
     Ok(Space { owner,
                tables,

@@ -9,7 +9,8 @@ use spinning_top::Spinlock;
 
 use super::ResourceBinding;
 use crate::{machine::scheduler::{self, PreparedThread},
-            toolbox::{handles::InvocationGate, runtime::FinderAdmission}};
+            toolbox::{handles::InvocationGate,
+                      runtime::{FinderAdmission, FinderPreparation}}};
 
 /// Unpublished backing is still owned here; published backing remains owned by
 /// its canonical THRD row. The admission authenticates both retry stages.
@@ -24,6 +25,8 @@ enum Work
     Requested
     {
         old:      ResourceBinding,
+        // Unpublished backing retires before its original recovery scope pins.
+        prepared: Option<FinderPreparation>,
         permit:   crate::allocator::recovery::Permit,
         activity: crate::recovery::Activity
     },
@@ -103,6 +106,16 @@ enum Work
         status:    Status,
         attempted: bool
     },
+    Terminal
+    {
+        next:          ResourceBinding,
+        admission:     FinderAdmission,
+        prepared:      PreparedThread,
+        status:        Status,
+        attempted:     bool,
+        restart:       bool,
+        power_failure: Option<(Status, u32)>
+    },
     Paused
     {
         next:      ResourceBinding,
@@ -157,7 +170,8 @@ pub(crate) fn request(binding: ResourceBinding, permit: crate::allocator::recove
         UI_PROGRESS.store(false, Ordering::Release);
         *flight = Some(Work::Requested { old: binding,
                                          permit,
-                                         activity });
+                                         activity,
+                                         prepared: None });
         WAKE.store(true, Ordering::Release);
         Ok(())
     })
@@ -183,6 +197,10 @@ pub(crate) fn retry(binding: &ResourceBinding) -> Result<(), Status>
             WAKE.store(true, Ordering::Release);
             return Ok(());
         }
+        if matches!(flight.as_ref(), Some(Work::Terminal { .. }))
+        {
+            return Err(NOT_SUPPORTED);
+        }
         let Some(Work::Paused { next,
                                 admission,
                                 .. }
@@ -201,6 +219,34 @@ pub(crate) fn retry(binding: &ResourceBinding) -> Result<(), Status>
             return Err(ACCESS_DENIED);
         }
         RETRY.store(true, Ordering::Release);
+        WAKE.store(true, Ordering::Release);
+        Ok(())
+    })
+}
+
+/// Called only from the System-owned terminal Finder report action.
+/// The real retained admission authorizes this request; no owner label creates it.
+pub(crate) fn restart_system(binding: &ResourceBinding) -> Result<(), Status>
+{
+    InvocationGate::run(|| {
+        let mut flight = FLIGHT.lock();
+        let Some(Work::Terminal { next,
+                                  admission,
+                                  restart,
+                                  .. }) = flight.as_mut()
+        else
+        {
+            return Err(NOT_FOUND);
+        };
+        if next.ledger().owner() != binding.ledger().owner()
+           || admission.owner().owner() != binding.ledger().owner()
+           || next.image().map(crate::images::Binding::id)
+              != binding.image().map(crate::images::Binding::id)
+           || !admission.owner().accepting()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        *restart = true;
         WAKE.store(true, Ordering::Release);
         Ok(())
     })
@@ -234,6 +280,43 @@ fn desktop<R>(binding: &ResourceBinding,
         desktop.enter(binding.owner());
         crate::kernel::with_process_resources(binding, || call(desktop))?
     }).map_err(|error| error.status())?
+}
+
+fn capacity_status(cause: crate::toolbox::runtime::FinderCapacityError) -> Status
+{
+    let status = cause.status();
+    // Capacity contention is not a fault or a reason to write UART on every
+    // retry. A terminal preparation refusal retains useful stage/cause detail.
+    if status != SERVICE_BUSY
+    {
+        serial!("FINDER_CAPACITY_REFUSED: {cause}");
+    }
+    status
+}
+
+fn reserve_finder(binding: &ResourceBinding, permit: &crate::allocator::recovery::Permit,
+                  prepared: &mut Option<FinderPreparation>)
+                  -> Result<FinderAdmission, Status>
+{
+    let plan = desktop(binding, |desktop| desktop.plan_finder_capacity().map_err(capacity_status))?;
+    // The real recovery allocation scope remains active, but no Desktop,
+    // directory or owner lock crosses these fresh shared-buffer allocations.
+    if prepared.is_none()
+    {
+        *prepared = Some(plan.prepare_recipient()?);
+    }
+    let mut capacity = plan.prepare().map_err(capacity_status)?;
+    let result = desktop(binding, |desktop| {
+        desktop.reserve_finder(binding.owner(), permit.clone(), &mut capacity, prepared)
+    });
+    // Successful installation leaves obsolete empty arrays here. On refusal
+    // these are still the original prepared arrays. Neither drops under Desktop.
+    drop(capacity);
+    if let Some(prepared) = prepared.as_mut()
+    {
+        prepared.release_report();
+    }
+    result
 }
 
 fn step(work: Work) -> Option<Work>
@@ -270,6 +353,8 @@ fn step(work: Work) -> Option<Work>
                           .. }
         | Work::BackingPaused { admission,
                               .. }
+        | Work::Terminal { admission,
+                         .. }
         | Work::Paused { admission,
                        .. } => (admission.permit(), admission.activity())
     };
@@ -286,9 +371,10 @@ fn step_inner(work: Work) -> Option<Work>
     {
         Work::Requested { old,
                           permit,
-                          activity } =>
+                          activity,
+                          mut prepared } =>
         {
-            match desktop(&old, |desktop| desktop.reserve_finder(old.owner(), permit.clone()))
+            match reserve_finder(&old, &permit, &mut prepared)
             {
                 Ok(admission) =>
                 {
@@ -300,7 +386,8 @@ fn step_inner(work: Work) -> Option<Work>
                 {
                     Some(Work::Requested { old,
                                            permit,
-                                           activity })
+                                           activity,
+                                           prepared })
                 }
                 Err(status) =>
                 {
@@ -592,9 +679,10 @@ fn step_inner(work: Work) -> Option<Work>
                                                   class:
                                                       mac_kernel_model::policy::MemoryClass::Kernel };
             match crate::allocator::with_target(target, || {
-                      crate::kernel::copy_application(admission.owner(),
-                                                      &admission.allocation(),
-                                                      admission.original())
+                      crate::kernel::copy_recovery_application(admission.owner(),
+                                                               &admission.allocation(),
+                                                               admission.original(),
+                                                               admission.permit())
                   })
             {
                 Ok(loaded) =>
@@ -765,11 +853,31 @@ fn step_inner(work: Work) -> Option<Work>
                 }
                 Err(failure) =>
                 {
-                    Some(Work::Paused { next,
-                                        admission,
-                                        thread: PendingThread::Unpublished(failure.prepared),
-                                        status: failure.status,
-                                        attempted: false })
+                    match failure.disposition
+                    {
+                        scheduler::SpawnRefusal::RetryableAdmission =>
+                        {
+                            Some(Work::Paused { next,
+                                                admission,
+                                                thread:
+                                                    PendingThread::Unpublished(failure.prepared),
+                                                status: failure.status,
+                                                attempted: false })
+                        }
+                        scheduler::SpawnRefusal::TerminalBinding =>
+                        {
+                            Some(Work::Terminal { next,
+                                                  admission,
+                                                  prepared: failure.prepared,
+                                                  status: failure.status,
+                                                  attempted: false,
+                                                  restart: false,
+                                                  power_failure: None })
+                        }
+                        // Stopping is irreversible. Dropping admission requests the real
+                        // walk; a row already owned by that walk keeps its own backing.
+                        scheduler::SpawnRefusal::Cancelled => None
+                    }
                 }
             }
         }
@@ -875,6 +983,44 @@ fn step_inner(work: Work) -> Option<Work>
                                        status,
                                        attempted })
         }
+        Work::Terminal { next,
+                         admission,
+                         prepared,
+                         status,
+                         mut attempted,
+                         restart,
+                         mut power_failure } =>
+        {
+            if !admission.owner().accepting()
+            {
+                return None;
+            }
+            if restart
+            {
+                // No Desktop/FLIGHT guard crosses the actual provider/flush path.
+                let mut call = mac_abi::power::PowerCall { operation: mac_abi::power::RESTART,
+                                                           ..Default::default() };
+                power_failure = match crate::toolbox::power::native(&mut call)
+                {
+                    Ok(()) => None,
+                    Err(cause) => Some((cause, call.failure_stage))
+                };
+                attempted = false;
+            }
+            if !attempted || UI_PROGRESS.swap(false, Ordering::AcqRel)
+            {
+                attempted = desktop(&next, |desktop| {
+                                desktop.finder_restart_terminal(status, power_failure)
+                            }).is_ok();
+            }
+            Some(Work::Terminal { next,
+                                  admission,
+                                  prepared,
+                                  status,
+                                  attempted,
+                                  restart: false,
+                                  power_failure })
+        }
         Work::Paused { next,
                        admission,
                        thread,
@@ -933,7 +1079,9 @@ pub(crate) fn pump()
     WAKE.store(false, Ordering::Release);
     let next = step(work);
     let sleep = matches!(&next,
-                         Some(Work::Ready { .. }
+                         Some(Work::Terminal { attempted: true,
+                                               .. }
+                              | Work::Ready { .. }
                               | Work::Paused { attempted: true,
                                                .. }
                               | Work::BackingPaused { attempted: true,

@@ -43,6 +43,7 @@ pub(crate) enum Error
 {
     Missing,
     Authority,
+    BackingOrigin,
     Metadata,
     CloneInventory(super::modules::CloneInventoryError),
     CloneFootprint
@@ -79,14 +80,13 @@ impl Error
         {
             Self::Metadata => mac_abi::NO_MEMORY,
             Self::DefinitionVisibility { status } => *status,
-            Self::Authority => mac_abi::ACCESS_DENIED,
+            Self::Authority | Self::BackingOrigin => mac_abi::ACCESS_DENIED,
             Self::Threads | Self::Readers(_) | Self::Pending | Self::Busy => mac_abi::SERVICE_BUSY,
             Self::Closed => mac_abi::OPERATION_CANCELLED,
             Self::Monitor(e) => e.status(),
             Self::Retirement(cause)=>cause.status(),
             Self::Pool(cause) | Self::Publication(PreparedError::Pool(cause)) =>crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(*cause)),
-            Self::Tables(super::Error::Tables(mac_riscv_pages::mapping::MapError::Storage(super::FrameError::Pages(e))))=>e.status(),
-            Self::Tables(super::Error::Tables(mac_riscv_pages::mapping::MapError::Storage(super::FrameError::Account(e))))=>crate::allocation::account_status(e),
+            Self::Tables(super::Error::Tables(mac_riscv_pages::mapping::MapError::Storage(cause))) => cause.status(),
             _ => mac_abi::BAD_ABI
         }
     }
@@ -102,9 +102,22 @@ impl fmt::Display for Error
             {
                 f.write_str("Process space does not match genuine Process/image/account")
             }
+            Self::BackingOrigin =>
+            {
+                f.write_str("protected Process space admission cannot reuse a root from a \
+                             different backing origin; original root retained")
+            }
             Self::Metadata => f.write_str("Process page-table metadata admission refused"),
             Self::CloneInventory(cause) => cause.fmt(f),
-            Self::CloneFootprint { expected, observed, revision } => write!(f, "Process clone exceeded System-owned table inventory at mapping revision {revision}: expected at most {expected} tables, observed {observed}; unpublished clone discarded"),
+            Self::CloneFootprint { expected,
+                                   observed,
+                                   revision } =>
+            {
+                write!(f,
+                       "Process clone exceeded System-owned table inventory at mapping revision \
+                        {revision}: expected at most {expected} tables, observed {observed}; \
+                        unpublished clone discarded")
+            }
             Self::DefinitionVisibility { status } =>
             {
                 write!(f,
@@ -484,6 +497,21 @@ pub(crate) fn admit(owner: &OwnerRef, allocation: &AllocationAuthority,
                     image: &crate::kernel::LoadedImage)
                     -> Result<Pin, Error>
 {
+    admit_with_source(owner, allocation, image, BackingSource::Ordinary)
+}
+/// The recovery scheduler supplies its actual retained kit capability. This
+/// selects backing origin, never a synthetic Process or larger account budget.
+pub(crate) fn admit_recovery(owner: &OwnerRef, allocation: &AllocationAuthority,
+                             image: &crate::kernel::LoadedImage,
+                             permit: crate::allocator::recovery::Permit)
+                             -> Result<Pin, Error>
+{
+    admit_with_source(owner, allocation, image, BackingSource::Protected(permit))
+}
+fn admit_with_source(owner: &OwnerRef, allocation: &AllocationAuthority,
+                     image: &crate::kernel::LoadedImage, source: BackingSource)
+                     -> Result<Pin, Error>
+{
     if owner.owner().kind() != DomainKind::Process
        || allocation.owner() != owner.owner()
        || image.binding().owner() != owner.owner().incarnation()
@@ -516,6 +544,10 @@ pub(crate) fn admit(owner: &OwnerRef, allocation: &AllocationAuthority,
         {
             return Err(Error::Authority);
         }
+        if !source.accepts_existing(&root.space().tables.source)
+        {
+            return Err(Error::BackingOrigin);
+        }
         return if root.registered.load(Ordering::Acquire) && !root.closing.load(Ordering::Acquire)
         {
             Ok(root)
@@ -525,29 +557,65 @@ pub(crate) fn admit(owner: &OwnerRef, allocation: &AllocationAuthority,
             Err(Error::Closed)
         };
     }
-    crate::allocator::with_target(crate::allocator::Target::Owner{account:allocation.clone(),class:mac_kernel_model::policy::MemoryClass::Kernel},|| {
-        let permit=permit(owner)?;
-        let lease=crate::machine::monitor::prepare_translation_invalidation().map_err(Error::Monitor)?;
-        let space=clone_space(owner,allocation,image.range())?;
-        let register = space.register;
-        // Move the sole backing Arc into canonical Root. No unobserved local
-        // Space clone survives publication or a failed execution-pin admission.
-        let space = Arc::try_new(space).map_err(|_| Error::Metadata)?;
-        let root=Arc::try_new(Root{backing:Spinlock::new(Some(space)),register,owner:owner.clone(),allocation:allocation.clone(),image:image.binding(),next:Spinlock::new(None),closing:AtomicBool::new(false),registered:AtomicBool::new(false),retired:AtomicBool::new(false),retirement_requested:AtomicBool::new(false),retirement_claimed:AtomicBool::new(false),retirement_failure:Spinlock::new(None)}).map_err(|_|Error::Metadata)?;
-        match interrupts::with_masked(||manager.lock().publish_prepared(permit,root.clone())) {
-            Ok((publication,old))=>{old.dispose();let _=publication.into_parts();link(&root);drop(lease);Pin::try_new(root, false)},
-            Err(failure)=>{let cause=failure.cause; drop(failure);Err(Error::Publication(cause))}
-        }
-    })
+    let target = crate::allocator::Target::Owner { account: allocation.clone(),
+                                                   class:
+                                                       mac_kernel_model::policy::MemoryClass::Kernel };
+    source.with_metadata(|| {
+              crate::allocator::with_target(target, || {
+                  let permit = permit(owner)?;
+                  let lease = crate::machine::monitor::prepare_translation_invalidation()
+                .map_err(Error::Monitor)?;
+                  let space = clone_space(owner, allocation, image.range(), source.clone())?;
+                  let register = space.register;
+                  // Move the sole backing Arc into canonical Root. No unobserved local
+                  // Space clone survives publication or a failed execution-pin admission.
+                  let space = Arc::try_new(space).map_err(|_| Error::Metadata)?;
+                  let root = Arc::try_new(Root {
+                backing: Spinlock::new(Some(space)),
+                register,
+                owner: owner.clone(),
+                allocation: allocation.clone(),
+                image: image.binding(),
+                next: Spinlock::new(None),
+                closing: AtomicBool::new(false),
+                registered: AtomicBool::new(false),
+                retired: AtomicBool::new(false),
+                retirement_requested: AtomicBool::new(false),
+                retirement_claimed: AtomicBool::new(false),
+                retirement_failure: Spinlock::new(None)
+            }).map_err(|_| Error::Metadata)?;
+                  match interrupts::with_masked(|| {
+                            manager.lock().publish_prepared(permit, root.clone())
+                        })
+                  {
+                      Ok((publication, old)) =>
+                      {
+                          old.dispose();
+                          let _ = publication.into_parts();
+                          link(&root);
+                          drop(lease);
+                          Pin::try_new(root, false)
+                      }
+                      Err(failure) =>
+                      {
+                          let cause = failure.cause;
+                          drop(failure);
+                          Err(Error::Publication(cause))
+                      }
+                  }
+              })
+          })
 }
 
-fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, image: core::ops::Range<u64>)
+fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, image: core::ops::Range<u64>,
+               source: BackingSource)
                -> Result<Space, Error>
 {
     let spaces = SPACES.get().ok_or(Error::Missing)?;
-    let mut tables = Frames { head:    0,
-                              count:   0,
-                              account: Some(allocation.clone()) };
+    let mut tables = Frames { head: 0,
+                              count: 0,
+                              account: Some(allocation.clone()),
+                              source };
     let source = spaces.kernel.owner.root_physical();
     // admit retains the real translation lease across inventory, copying and
     // publication. No source hierarchy growth can invalidate this bound.
@@ -565,7 +633,7 @@ fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, image: core::
                                            revision: footprint.revision });
     }
     let (root, charge) = tables.take_root(physical).map_err(Error::Tables)?;
-    let owner=AddressSpace::<Rva, TableBacking>::reserve(owner.owner(),root,AsidTag::Untagged).map_err(|e|Error::Tables(super::Error::Policy(e)))?;
+    let owner=AddressSpace::<Rva, PagingBacking>::reserve(owner.owner(),root,AsidTag::Untagged).map_err(|e|Error::Tables(super::Error::Policy(e)))?;
     let register = MODE | (physical.0 as usize >> 12);
     Ok(Space { owner,
                tables,

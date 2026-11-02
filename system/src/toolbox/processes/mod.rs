@@ -71,6 +71,82 @@ pub struct Process
     account:          crate::machine::scheduler::accounting::ProcessAccount
 }
 
+/// Complete authentic Process backing before directory publication. No ID is
+/// reconstructed from a label; this owns the one issued ledger and account.
+/// It contains no registered object, executable or running thread.
+pub(crate) struct PreparedProcess
+{
+    ledger: OwnerRef,
+    value:  Process
+}
+impl PreparedProcess
+{
+    pub(crate) fn owner(&self) -> &OwnerRef
+    {
+        &self.ledger
+    }
+
+    pub(crate) fn allocation(
+        &self)
+        -> Result<crate::machine::scheduler::accounting::AllocationAuthority, Status>
+    {
+        self.value
+            .account
+            .admit_use()
+            .map_err(|cause| crate::machine::scheduler::accounting::account_status(&cause))
+    }
+
+    pub(crate) fn prepare(name: &str, volume: u32, cnid: u32) -> Result<Self, Status>
+    {
+        let mut info = ProcessInfo { volume,
+                                     cnid,
+                                     ..Default::default() };
+        if name.is_empty() || name.len() > info.name.len()
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        info.name[..name.len()].copy_from_slice(name.as_bytes());
+        info.name_length = name.len() as u32;
+        use mac_kernel_model::policy::ConfiguredRange;
+
+        use crate::machine::{memory,
+                             scheduler::accounting::{ProcessAccount, account_status}};
+        let ledger = OwnerRef::issue(DomainKind::Process).map_err(|error| {
+                                                             serial!("PROCESS_DOMAIN_REFUSED: \
+                                                                      {error}");
+                                                             NO_MEMORY
+                                                         })?;
+        let id = ledger.owner().incarnation();
+        info.id = id;
+        let kernel =
+            ConfiguredRange::new(0,
+                                 memory::PROCESS_KERNEL_BUDGET_BYTES,
+                                 memory::PROCESS_KERNEL_BUDGET_BYTES).map_err(|_| BAD_ABI)?;
+        let application =
+            ConfiguredRange::new(0,
+                                 memory::PROCESS_APPLICATION_BUDGET_BYTES,
+                                 memory::PROCESS_APPLICATION_BUDGET_BYTES).map_err(|_| BAD_ABI)?;
+        let account =
+            ProcessAccount::try_new(ledger.clone(), kernel, application).map_err(|error| {
+                serial!("PROCESS_ACCOUNT_REFUSED: {error}");
+                account_status(&error)
+            })?;
+        let allocation = account.admit_use().map_err(|error| account_status(&error))?;
+        let cleanup = crate::allocator::with_target(crate::allocator::Target::Owner {
+            account: allocation, class: mac_kernel_model::policy::MemoryClass::Kernel
+        }, || crate::toolbox::handles::cleanup::Checkpoint::try_new()).map_err(|_| NO_MEMORY)?;
+        Ok(Self { ledger,
+                  value: Process { info,
+                                   image: None,
+                                   heap: None,
+                                   tls: None,
+                                   stamp: 0,
+                                   cleanup: Some(cleanup),
+                                   termination: Default::default(),
+                                   account } })
+    }
+}
+
 /// Owns one genuine, directory-published provisional process across preparation
 /// outside Desktop. Its account comes from that same entry, never from IDs.
 pub(crate) struct LaunchAdmission
@@ -408,62 +484,56 @@ impl Manager
         Ok(tls.clone())
     }
 
+    pub(crate) fn plan_provision_capacity(
+        &self)
+        -> Result<super::handles::DirectoryCapacityPlan<Process>,
+                  super::handles::DirectoryCapacityError>
+    {
+        self.entries.plan_insert_capacity()
+    }
+
+    pub(crate) fn install_provision_capacity(
+        &mut self, prepared: &mut super::handles::PreparedDirectoryCapacity<Process>)
+        -> Result<(), super::handles::DirectoryCapacityError>
+    {
+        self.entries.install_insert_capacity(prepared)
+    }
+
     pub(crate) fn provision(&mut self, name: &str, volume: u32, cnid: u32) -> Result<u64, Status>
     {
-        let mut info = ProcessInfo { volume,
-                                     cnid,
-                                     ..Default::default() };
-        if name.is_empty() || name.len() > info.name.len()
-        {
-            return Err(BAD_ARGUMENT);
-        }
-        info.name[..name.len()].copy_from_slice(name.as_bytes());
-        info.name_length = name.len() as u32;
-        use mac_kernel_model::policy::ConfiguredRange;
-
-        use crate::machine::{memory,
-                             scheduler::accounting::{ProcessAccount, account_status}};
-        let ledger = OwnerRef::issue(DomainKind::Process).map_err(|error| {
-                                                             serial!("PROCESS_DOMAIN_REFUSED: \
-                                                                      {error}");
-                                                             NO_MEMORY
-                                                         })?;
-        let id = ledger.owner().incarnation();
-        info.id = id;
-        let kernel =
-            ConfiguredRange::new(0,
-                                 memory::PROCESS_KERNEL_BUDGET_BYTES,
-                                 memory::PROCESS_KERNEL_BUDGET_BYTES).map_err(|_| BAD_ABI)?;
-        let application =
-            ConfiguredRange::new(0,
-                                 memory::PROCESS_APPLICATION_BUDGET_BYTES,
-                                 memory::PROCESS_APPLICATION_BUDGET_BYTES).map_err(|_| BAD_ABI)?;
-        let account =
-            ProcessAccount::try_new(ledger.clone(), kernel, application).map_err(|error| {
-                serial!("PROCESS_ACCOUNT_REFUSED: {error}");
-                account_status(&error)
-            })?;
-        let allocation = account.admit_use().map_err(|error| account_status(&error))?;
-        let cleanup = crate::allocator::with_target(crate::allocator::Target::Owner {
-            account: allocation, class: mac_kernel_model::policy::MemoryClass::Kernel
-        }, || crate::toolbox::handles::cleanup::Checkpoint::try_new()).map_err(|_| NO_MEMORY)?;
-        // Only a fully constructed owner/account/checkpoint is published. The
-        // directory scopes its retained shared vector independently.
-        self.entries
-            .insert(ledger,
-                    Process { info,
-                              image: None,
-                              heap: None,
-                              tls: None,
-                              stamp: 0,
-                              cleanup: Some(cleanup),
-                              termination: Default::default(),
-                              account })
-            .map_err(|error| {
-                serial!("PROCESS_DOMAIN_REFUSED: {error}");
-                NO_MEMORY
-            })?;
+        let prepared = PreparedProcess::prepare(name, volume, cnid)?;
+        let id = prepared.ledger.owner().incarnation();
+        self.entries.insert(prepared.ledger, prepared.value).map_err(|cause| {
+            serial!("PROCESS_DOMAIN_REFUSED: {cause}");
+            NO_MEMORY
+        })?;
         Ok(id)
+    }
+
+    /// No allocation or rejected-payload disposal in this publication turn.
+    pub(crate) fn provision_prepared(&mut self, prepared: PreparedProcess)
+                                     -> Result<u64, (Status, PreparedProcess)>
+    {
+        match self.entries.insert_prepared(prepared.ledger, prepared.value)
+        {
+            Ok(owner) => Ok(owner.incarnation()),
+            Err(failure) =>
+            {
+                let status = match failure.cause
+                {
+                    DirectoryError::Storage { .. } => SERVICE_BUSY,
+                    DirectoryError::Duplicate { .. }
+                    | DirectoryError::NotFound { .. }
+                    | DirectoryError::LiveResources { .. }
+                    | DirectoryError::PendingResources { .. }
+                    | DirectoryError::CompletionFaults { .. }
+                    | DirectoryError::AdmissionOpen { .. } => BAD_ABI
+                };
+                Err((status,
+                     PreparedProcess { ledger: failure.ledger,
+                                       value:  failure.value }))
+            }
+        }
     }
 
     pub fn get(&self, id: u64) -> Result<&Process, Status>
