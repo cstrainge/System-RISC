@@ -692,13 +692,19 @@ impl super::Toolbox
         self.pointer.cursors = Default::default();
         // An application can panic between BeginUpdate and EndUpdate. Its
         // uncommitted pixels must never leak into a later presentation.
-        while let Some(index) =
-            self.presentation.pending_content.iter().position(|content| {
-                                                        content.id
-                                                               .window()
-                                                               .is_ok_and(|id| self.owns(id))
-                                                    })
+        loop
         {
+            let pending =
+                self.presentation.pending_content.iter().position(|content| {
+                                                            content.id
+                                                                   .window()
+                                                                   .is_ok_and(|id| self.owns(id))
+                                                        });
+            let Some(index) = pending
+            else
+            {
+                break;
+            };
             let id = self.presentation.pending_content.remove(index).id.window()?;
             self.windows.end_update(id);
             self.textedit.begin_cursor_update(id);
