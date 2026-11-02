@@ -307,8 +307,13 @@ pub struct WindowRequest
     pub procedure:      i16,
     pub minimum_width:  i16,
     pub minimum_height: i16,
+    /// Creation flags for `NEW_WINDOW` (`WINDOW_STAY_IN_BACK`); other
+    /// operations use this word for their own small arguments.
     pub reserved:       i16
 }
+/// The window stays beneath every ordinary window and is never raised, though
+/// it can be activated. May also extend to the screen edges below the menu bar.
+pub const WINDOW_STAY_IN_BACK: i16 = 1;
 
 impl WindowRequest
 {

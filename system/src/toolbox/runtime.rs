@@ -694,6 +694,12 @@ impl Desktop
                     Ok(title) => title,
                     Err(_) => return BAD_ARGUMENT
                 };
+                let stay_in_back = match request.reserved
+                {
+                    0 => false,
+                    WINDOW_STAY_IN_BACK => true,
+                    _ => return BAD_ARGUMENT
+                };
                 let entry = match self.definitions.resolve(*b"WDEF", request.procedure >> 4)
                 {
                     Ok(entry) => entry,
@@ -727,7 +733,8 @@ impl Desktop
                                                                        entry,
                                                                        &mut self.events,
                                                                        when,
-                                                                       false)
+                                                                       false,
+                                                                       stay_in_back)
                 {
                     Ok(id) => id,
                     Err(error) =>
