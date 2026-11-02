@@ -15,7 +15,7 @@ use mac_kernel_model::{account::{AccountUse, Committed},
 use mac_riscv_pages::{Decoded, Entry, LeafSize, Sv39};
 use spinning_top::Spinlock as Mutex;
 
-use super::{BOOT, Backing, Foundation, PagingBacking, SPACES, interrupts};
+use super::{BOOT, Backing, BackingSource, Foundation, PagingBacking, SPACES, interrupts};
 use crate::{machine::{interrupts::NativeInvocationGate, memory::*},
             toolbox::handles::OwnerRef};
 
@@ -311,14 +311,6 @@ impl PayloadBacking
         }
     }
 }
-/// Storage policy is explicit and independent from the original account.
-/// A protected source requires the genuine resident recovery capability.
-#[derive(Clone, Copy)]
-enum PayloadSource<'a>
-{
-    Ordinary,
-    Protected(&'a crate::allocator::recovery::Permit)
-}
 /// Only genuine source authority can choose the corresponding physical receipt.
 pub(crate) enum DefinitionTarget
 {
@@ -457,6 +449,7 @@ pub(crate) struct Mapping
     owner:    OwnerRef,
     base:     u64,
     target:   TargetKind,
+    source:   BackingSource,
     entry:    u64,
     segments: Vec<SegmentMap>,
     leaves:   spin::Once<Entries>,
@@ -515,7 +508,7 @@ impl Mapping
         Self::prepare_payload(owner,
                               PayloadAuthority::Owner(account),
                               target,
-                              PayloadSource::Ordinary,
+                              BackingSource::Ordinary,
                               descriptor,
                               bytes,
                               relocations,
@@ -540,7 +533,7 @@ impl Mapping
         Self::prepare_payload(owner,
                               PayloadAuthority::Owner(account),
                               TargetKind::Application,
-                              PayloadSource::Protected(permit),
+                              BackingSource::Protected(permit.clone()),
                               descriptor,
                               bytes,
                               relocations,
@@ -575,7 +568,7 @@ impl Mapping
         Self::prepare_payload(owner,
                               authority,
                               TargetKind::Definition,
-                              PayloadSource::Ordinary,
+                              BackingSource::Ordinary,
                               descriptor,
                               bytes,
                               relocations,
@@ -583,7 +576,7 @@ impl Mapping
     }
 
     fn prepare_payload(owner: &OwnerRef, authority: PayloadAuthority<'_>, target: TargetKind,
-                       source: PayloadSource<'_>, descriptor: &Descriptor, bytes: &[u8],
+                       source: BackingSource, descriptor: &Descriptor, bytes: &[u8],
                        relocations: &[u8], base: u64)
                        -> Result<Arc<Self>, Error>
     {
@@ -638,9 +631,9 @@ impl Mapping
             {
                 PayloadAuthority::Owner(account) =>
                 {
-                    match source
+                    match &source
                     {
-                        PayloadSource::Ordinary =>
+                        BackingSource::Ordinary =>
                         {
                             let planned =
                                 Backing::planned_bytes(mapped as usize).map_err(Error::Pages)?;
@@ -653,7 +646,7 @@ impl Mapping
                             PayloadBacking::Owner { backing: PagingBacking::Ordinary(backing),
                                                     _charge: charge.commit() }
                         }
-                        PayloadSource::Protected(permit) =>
+                        BackingSource::Protected(permit) =>
                         {
                             let layout = Layout::from_size_align(mapped as usize, PAGE_BYTES as usize)
                             .map_err(|_| Error::Recovery(crate::allocator::recovery::Error::Layout))?;
@@ -707,6 +700,7 @@ impl Mapping
         Arc::try_new(Self { owner: owner.clone(),
                             base,
                             target,
+                            source,
                             entry: plan.entry(),
                             segments,
                             leaves: spin::Once::new(),
@@ -769,34 +763,46 @@ impl Mapping
         // treating a legitimate concurrently installed branch as corruption.
         let lease =
             crate::machine::monitor::prepare_translation_invalidation().map_err(Error::Monitor)?;
-        let plan = Plan::prepare(&self.segments, self.owner.owner(), self.target)?;
-        let mut leaves = Vec::new();
-        leaves.try_reserve_exact(plan.leaves.iter().filter(|s| is_permanent_root(s.root)).count())
-              .map_err(|_| Error::Metadata)?;
-        for slot in &plan.leaves
-        {
-            if is_permanent_root(slot.root)
-            {
-                leaves.push(*slot)
-            }
-        } // exact fallible capacity precedes effects
-        let mut ancestors = Vec::new();
-        ancestors.try_reserve_exact(plan.ancestors
-                                        .iter()
-                                        .filter(|s| is_permanent_root(s.root))
-                                        .count())
-                 .map_err(|_| Error::Metadata)?;
-        for slot in &plan.ancestors
-        {
-            if is_permanent_root(slot.root)
-            {
-                ancestors.push(*slot)
-            }
-        }
-        self.leaves.call_once(|| {
-                       Entries { leaves,
-                                 ancestors }
-                   });
+        // The Mapping retains its genuine origin across deferred publication;
+        // scratch and retained Entries do not borrow the executor's heap source.
+        let plan =
+            self.source.with_metadata(|| {
+                            let plan = Plan::prepare(&self.segments,
+                                                     self.owner.owner(),
+                                                     self.target,
+                                                     &self.source)?;
+                            let mut leaves = Vec::new();
+                            leaves.try_reserve_exact(plan.leaves
+                                                         .iter()
+                                                         .filter(|s| is_permanent_root(s.root))
+                                                         .count())
+                                  .map_err(|_| Error::Metadata)?;
+                            for slot in &plan.leaves
+                            {
+                                if is_permanent_root(slot.root)
+                                {
+                                    leaves.push(*slot)
+                                }
+                            } // exact fallible capacity precedes effects
+                            let mut ancestors = Vec::new();
+                            ancestors.try_reserve_exact(plan.ancestors
+                                                            .iter()
+                                                            .filter(|s| is_permanent_root(s.root))
+                                                            .count())
+                                     .map_err(|_| Error::Metadata)?;
+                            for slot in &plan.ancestors
+                            {
+                                if is_permanent_root(slot.root)
+                                {
+                                    ancestors.push(*slot)
+                                }
+                            }
+                            self.leaves.call_once(|| {
+                                           Entries { leaves,
+                                                     ancestors }
+                                       });
+                            Ok::<_, Error>(plan)
+                        })?;
         if !self.owner.accepting()
         {
             return Err(Error::Closed);
@@ -883,21 +889,36 @@ impl Mapping
                     }
                 };
                 let leaves = self.leaves.get().ok_or(Error::State)?;
-                let roots = participating_roots(self.target, self.owner.owner(), false)?;
-                let dynamic = process_entries(&self.segments, &roots)?;
-                let mut all = Entries { leaves:    Vec::new(),
-                                        ancestors: Vec::new() };
-                all.leaves
-                   .try_reserve_exact(leaves.leaves.len() + dynamic.leaves.len())
-                   .map_err(|_| Error::Metadata)?;
-                all.ancestors
-                   .try_reserve_exact(leaves.ancestors.len() + dynamic.ancestors.len())
-                   .map_err(|_| Error::Metadata)?;
-                all.leaves.extend_from_slice(&leaves.leaves);
-                all.leaves.extend_from_slice(&dynamic.leaves);
-                all.ancestors.extend_from_slice(&leaves.ancestors);
-                all.ancestors.extend_from_slice(&dynamic.ancestors);
-                if let Err(cause) = unmap(&all)
+                // These owners stay in the ACK scope, not the preparation
+                // branch: dynamic Process pins cannot drop before lease.finish.
+                let roots;
+                let mut all;
+                let entries = if matches!(self.target, TargetKind::Application)
+                {
+                    // Applications publish only permanent-root mappings. These
+                    // already owned Entries are the complete unmap set; no
+                    // snapshot, fresh vectors or stopped-owner charge is needed.
+                    leaves
+                }
+                else
+                {
+                    roots = participating_roots(self.target, self.owner.owner(), false)?;
+                    let dynamic = process_entries(&self.segments, &roots)?;
+                    all = Entries { leaves:    Vec::new(),
+                                    ancestors: Vec::new() };
+                    all.leaves
+                       .try_reserve_exact(leaves.leaves.len() + dynamic.leaves.len())
+                       .map_err(|_| Error::Metadata)?;
+                    all.ancestors
+                       .try_reserve_exact(leaves.ancestors.len() + dynamic.ancestors.len())
+                       .map_err(|_| Error::Metadata)?;
+                    all.leaves.extend_from_slice(&leaves.leaves);
+                    all.leaves.extend_from_slice(&dynamic.leaves);
+                    all.ancestors.extend_from_slice(&leaves.ancestors);
+                    all.ancestors.extend_from_slice(&dynamic.ancestors);
+                    &all
+                };
+                if let Err(cause) = unmap(entries)
                 {
                     let refusal = match &cause
                     {
@@ -1183,6 +1204,10 @@ impl Tables
 enum BranchBacking
 {
     Foundation(Foundation<Backing>),
+    // Suballocated from the already owned System heap, not a new page-pool
+    // lease. Its unique RawBacking receipt is the complete occupancy charge.
+    // Committed permanent branches remain retained after payload unmap.
+    ProtectedSystem(crate::allocator::recovery::Backing),
     Process
     {
         backing: PagingBacking,
@@ -1196,6 +1221,7 @@ impl BranchBacking
         match self
         {
             Self::Foundation(b) => b.cpu_base(),
+            Self::ProtectedSystem(b) => b.cpu_base(),
             Self::Process { backing,
                             .. } => backing.cpu_base()
         }
@@ -1206,6 +1232,7 @@ impl BranchBacking
         match self
         {
             Self::Foundation(b) => b.physical(),
+            Self::ProtectedSystem(b) => b.physical(),
             Self::Process { backing,
                             .. } => mac_kernel_model::pages::PageBacking::physical(backing)
         }
@@ -1224,7 +1251,7 @@ struct Plan
 impl Plan
 {
     fn prepare(segments: &[SegmentMap], owner: mac_object_table::domain::DomainId,
-               target: TargetKind)
+               target: TargetKind, source: &BackingSource)
                -> Result<Self, Error>
     {
         let mut plan = Self { _processes: Vec::new(),
@@ -1278,7 +1305,7 @@ impl Plan
                                                    root_table,
                                                    address,
                                                    space,
-                                                   account)?;
+                                                   account, source)?;
                             l1_cache = Some((l1_prefix, table));
                             table
                         }
@@ -1295,7 +1322,7 @@ impl Plan
                                                    l1,
                                                    address,
                                                    space,
-                                                   account)?;
+                                                   account, source)?;
                             l0_cache = Some((l0_prefix, table));
                             table
                         }
@@ -1331,7 +1358,8 @@ impl Plan
     }
 
     fn table(&mut self, key: Key, parent: Table, address: u64, space: &super::Space,
-             account: Option<&crate::machine::scheduler::accounting::AllocationAuthority>)
+             account: Option<&crate::machine::scheduler::accounting::AllocationAuthority>,
+             source: &BackingSource)
              -> Result<Table, Error>
     {
         if let Some(table) =
@@ -1409,9 +1437,20 @@ impl Plan
                     let backing = space.tables.source.allocate_zeroed(layout).map_err(Error::Frames)?;
                     BranchBacking::Process { backing, _charge: charge.commit() }
                 }
-                None => BranchBacking::Foundation(
-                    Foundation::<Backing>::allocate(PAGE_BYTES as usize).map_err(Error::Foundation)?
-                )
+                None => match source
+                {
+                    BackingSource::Ordinary => BranchBacking::Foundation(
+                        Foundation::<Backing>::allocate(PAGE_BYTES as usize).map_err(Error::Foundation)?
+                    ),
+                    BackingSource::Protected(permit) =>
+                    {
+                        let layout = Layout::new::<[u64; 512]>()
+                            .align_to(PAGE_BYTES as usize).map_err(|_| Error::State)?;
+                        let backing = permit.allocate_backing(layout)
+                            .map_err(|cause| Error::Frames(super::FrameError::Recovery(cause)))?;
+                        BranchBacking::ProtectedSystem(backing)
+                    }
+                }
             };
             Box::try_new(Branch { key,
                                   table,
@@ -1429,7 +1468,10 @@ impl Plan
             }
             None =>
             {
-                crate::allocator::with_system(crate::allocator::SystemClass::Foundation, prepare)
+                source.with_metadata(|| {
+                          crate::allocator::with_system(crate::allocator::SystemClass::Foundation,
+                                                        prepare)
+                      })
             }
         }?;
         self.branches.try_reserve(1).map_err(|_| Error::Metadata)?;

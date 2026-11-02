@@ -4022,3 +4022,54 @@ then completed the unchanged guest scenario. No host Rust test suite supplied OS
 acceptance. Permanent-root branches, publication/index headroom, standby stock,
 protected refusal/pressure and uncertain-ACK qualification remain separate gates;
 ordinary-memory fixture success is not an exhaustion guarantee.
+
+
+## Protected permanent branches and allocation-free application image unmap
+
+Mapping retains its genuine BackingSource through deferred publication. Its
+publication scratch and permanent leaf/ancestor records use that source rather
+than the executor's ambient heap origin. New permanent kernel/firmware branches
+for a protected replacement own real recovery backing; their raw occupancy is
+counted once. A protected heap suballocation is not a new buddy lease and receives
+no FoundationPhysicalReceipt. Its Box has separate System Foundation heap
+attribution. Private Process branches continue to use their own pinned root's
+source and account. Committed permanent branches remain owned until reset, even
+when empty; their growth consumes real reserve capacity.
+
+Application mappings have no dynamic private participants. Their stored permanent
+Entries already describe the complete unmap, so retirement now uses them directly
+without another root snapshot or combined-vector allocation. Module/definition
+retirement retains its existing dynamic path, with the actual participant pins
+and combined Entries held through real translation acknowledgment. Common typed
+refusals, quarantine and post-ACK payload destruction remain unchanged.
+
+A frozen release/LTO RVA23 four-CPU, 8 GiB, 800x600 private QEMU image used System
+ELF `8bbb2383003d24244ebcff1a549b7bfbee4447cf9b243eb435b9da48dd200355`
+and System resource
+`2ba60c2dc53a4343c5655eeecde1480822790b3d293c0bb0dda81ea3d461c169`;
+ROM remained `cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+System explicitly rebuilt with actual content fingerprints; tracing was off.
+The existing native Finder-role recovery workload again completed two real
+Abort/replacement cycles, fresh-state/stale-ID checks, old process/account closure
+and replacement/survivor input. Complete packaged immutable-code identity and all
+15 declared segment pages identified the replacement, rather than guessing from
+arbitrary protected leaves. Its first publication traversed distinct protected
+branch pages in both permanent roots. After that image's actual account closed,
+its payload leaves were absent while those permanent branches remained owned.
+The second replacement reused the original low placement. Paused mapping scans
+cost approximately267–316 ms of host time, plus immutable-code reads, and perturb
+execution; this is not a latency measurement.
+
+The unchanged actual Panic Test ELF, normally packaged with its own WDEF/CDEF
+resources, also exercised cold ordinary definition publication, panic, System
+report scrolling/dismissal, actual account closure, definition-page absence and
+fresh relaunch/quit. Sources/base stayed fixed per capture; owned guests were
+reaped and cloned media removed. No host Rust suite supplied OS acceptance.
+
+Ordinary publication metadata now explicitly uses ordinary origin. A cold
+ordinary WDEF/CDEF publication entered from a recovery caller can therefore
+refuse ordinary-heap exhaustion where its metadata previously borrowed protected
+storage; its raw payload was already ordinary. That definition-pressure behavior
+is unqualified. Shared-index publication headroom, dynamic retirement scratch,
+preallocated stock, pressure/refusal, uncertain ACK, private-SPCE physical-origin
+enumeration and complete production Finder OOM recovery remain separate gates.
