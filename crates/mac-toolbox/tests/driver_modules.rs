@@ -376,7 +376,9 @@ fn module_workspace_is_separate_from_stored_code_and_budget_failures_explain_the
 {
     let heap = mac_module::MAX_HEAP_BYTES;
     let stack = mac_module::MAX_STACK_BYTES;
-    let good = budget_package(heap, stack, 5 * 1024 * 1024);
+    // Parsing an extent larger than the old 6 MiB ceiling grants no RAM or
+    // execution authority. The resident loader still admits real backing.
+    let good = budget_package(heap, stack, 8 * 1024 * 1024);
     let package = mac_formats::module::Package::inspect(&good, *b"DRVR").unwrap();
     assert_eq!(package.contract.heap_bytes, heap);
     assert!(good[1].data.len() < 1024);
@@ -390,11 +392,7 @@ fn module_workspace_is_separate_from_stored_code_and_budget_failures_explain_the
           stack + 1,
           5 * 1024 * 1024,
           "module callback stack exceeds the 64 KiB admission budget; rebuild the corresponding \
-           package part"),
-         (heap,
-          stack,
-          mac_module::MAX_LOAD_BYTES + 4096,
-          "module runtime reservation exceeds the 6 MiB loading budget")]
+           package part")]
     {
         let bad = budget_package(heap, stack, reservation);
         let error =

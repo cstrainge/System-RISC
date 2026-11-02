@@ -1411,11 +1411,13 @@ until completed/cancelled. Module, interface and request identities use the shar
 generation-tagged facility, including rejection of foreign IDs and slot reuse.
 Code/backing and original cleanup tickets remain retained on uncertain failure.
 Hot replacement and arbitrary privileged fault recovery are not implemented.
-The admission profile fixes separate stored-code (2 MiB), runtime reservation
-(6 MiB), declared heap (4 MiB) and callback-stack (64 KiB) limits in mac-module.
-The packager/loader and resident registry use the same constants. In particular,
-a BSS-backed decoder workspace does not count as stored executable bytes.
-Alignment and each exhausted budget have distinct diagnostic errors. The machine
+The admission profile bounds stored code (2 MiB), declared heap (4 MiB) and
+callback stack (64 KiB) through shared mac-module constants. Module images have
+no separate fixed size ceiling or mandatory load address. System selects a free
+virtual extent from the validated descriptor and relocates the module there.
+BSS and image-owned DMA buffers do not count as stored executable bytes; their
+actual rounded physical backing is admitted against the original module account.
+Alignment and exhausted budgets retain distinct diagnostic errors. The machine
 adapter reserves execution VAs from the checked supervisor module window.
 Package descriptor spans must fit that virtual window; actual rounded payload
 pages and metadata must separately fit the original module Kernel account and

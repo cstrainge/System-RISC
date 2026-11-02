@@ -302,11 +302,10 @@ impl<'a> Package<'a>
         {
             return Err(Error::Malformed("module load reservation is not page aligned"));
         }
-        if code.descriptor.load_limit - code.descriptor.load_base > mac_module::MAX_LOAD_BYTES
-        {
-            return Err(Error::BudgetExceeded("module runtime reservation exceeds the 6 MiB \
-                                              loading budget"));
-        }
+        // The descriptor supplies the required image extent, not a fixed load
+        // address or a separate image-size budget. Runtime placement validates
+        // its checked extent against the module VA range; the original module
+        // account admits actual backing before physical allocation/publication.
         Ok(Self { contract,
                   code })
     }

@@ -310,3 +310,11 @@ event; legacy applications never see it.
   the launcher) those early screens are not visible.
 - Remaining gates: runtime loading of the large frame, present cost, and
   scheduling behavior of the service call are not yet qualified on target.
+
+The Virtio GPU package owns its 1920×1200 XRGB32 DMA framebuffer (9,216,000
+bytes) and a separate 4 KiB control page inside its relocatable image. These
+zero-filled buffers are runtime backing, not stored code. Package validation
+does not impose a separate image-size ceiling; the resident loader selects a
+free virtual extent and admits actual rounded backing against the module's
+original account and available physical memory before publishing executable
+mappings. DMA remains restricted to that live module-owned mapping.
