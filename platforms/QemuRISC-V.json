@@ -3,7 +3,7 @@
   "rust_target": "riscv64imac-unknown-none-elf",
   "llvm_profile": "rva23u64",
   "qemu_cpu": "rva23s64,mmu=on,pmp=on,sv39=on",
-  "qemu_ram": "8G",
+  "qemu_ram": "2G",
   "qemu_harts": 4,
   "scheduling": {
     "quantum_microseconds": 250,
