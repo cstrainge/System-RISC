@@ -31,11 +31,11 @@ impl OrdinaryUnderlay
     {
         for pixels in [&mut self.committed, &mut self.staging]
         {
-            if pixels.len() != crate::display::PIXELS
+            if pixels.len() != crate::display::pixels()
             {
-                pixels.try_reserve_exact(crate::display::PIXELS.saturating_sub(pixels.len()))
+                pixels.try_reserve_exact(crate::display::pixels().saturating_sub(pixels.len()))
                       .map_err(|_| NO_MEMORY)?;
-                pixels.resize(crate::display::PIXELS, 0);
+                pixels.resize(crate::display::pixels(), 0);
             }
         }
         self.previous_system
@@ -99,7 +99,7 @@ impl OrdinaryUnderlay
         let rect = clip(rect);
         for y in rect.top as usize..rect.bottom as usize
         {
-            let start = y * crate::display::WIDTH + rect.left as usize;
+            let start = y * crate::display::width() + rect.left as usize;
             let end = start + (rect.right - rect.left) as usize;
             for pixel in &mut self.committed[start..end]
             {
@@ -114,7 +114,7 @@ impl OrdinaryUnderlay
 }
 fn screen() -> Rect
 {
-    Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16)
+    Rect::new(0, 0, crate::display::width() as i16, crate::display::height() as i16)
 }
 fn clip(rect: Rect) -> Rect
 {
@@ -127,7 +127,7 @@ fn copy_rect(source: &[u32], destination: &mut [u32], rect: Rect)
     let rect = clip(rect);
     for y in rect.top as usize..rect.bottom as usize
     {
-        let start = y * crate::display::WIDTH + rect.left as usize;
+        let start = y * crate::display::width() + rect.left as usize;
         let end = start + (rect.right - rect.left) as usize;
         destination[start..end].copy_from_slice(&source[start..end]);
     }
@@ -146,8 +146,8 @@ impl Toolbox
         let mut staging = core::mem::take(&mut self.presentation.ordinary_underlay.staging);
         let result = crate::context::without_recovery(|| {
             crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-                if staging.len() != crate::display::PIXELS
-                   || self.presentation.ordinary_underlay.committed.len() != crate::display::PIXELS
+                if staging.len() != crate::display::pixels()
+                   || self.presentation.ordinary_underlay.committed.len() != crate::display::pixels()
                 {
                     return Err(NOT_SUPPORTED);
                 }
@@ -197,7 +197,7 @@ impl Toolbox
 
     fn paint_ordinary_full(&mut self, pixels: &mut [u32]) -> Result<(), Status>
     {
-        let mut canvas = Canvas::new(pixels, crate::display::WIDTH, crate::display::HEIGHT);
+        let mut canvas = Canvas::new(pixels, crate::display::width(), crate::display::height());
         background(&mut canvas);
         let font_snapshot = crate::kernel::fonts();
         let fonts = font_snapshot.as_deref();
@@ -266,7 +266,7 @@ impl Toolbox
         let fonts = font_snapshot.as_deref();
         let cdef = self.cdef;
         let cache = &mut self.presentation.content_cache;
-        let mut canvas = Canvas::new(pixels, crate::display::WIDTH, crate::display::HEIGHT);
+        let mut canvas = Canvas::new(pixels, crate::display::width(), crate::display::height());
         let ordinary =
             |window: &crate::toolbox::windows::manager::Window| !window.uses_system_resources();
         for (id, region) in
@@ -363,8 +363,8 @@ impl Toolbox
         let requested_full = full;
         let full = full || self.presentation.ordinary_underlay.full_deferred || !self.presentation.ordinary_underlay.valid;
         let mut copy_full = full;
-        let result = if staging.len() != crate::display::PIXELS
-                        || self.presentation.ordinary_underlay.committed.len() != crate::display::PIXELS
+        let result = if staging.len() != crate::display::pixels()
+                        || self.presentation.ordinary_underlay.committed.len() != crate::display::pixels()
         {
             Err(NOT_SUPPORTED)
         }
@@ -426,7 +426,7 @@ impl Toolbox
         }
         else
         {
-            if self.presentation.ordinary_underlay.valid && staging.len() == crate::display::PIXELS
+            if self.presentation.ordinary_underlay.valid && staging.len() == crate::display::pixels()
             {
                 copy_rect(&self.presentation.ordinary_underlay.committed, &mut staging, screen());
                 if requested_full
@@ -497,7 +497,7 @@ impl Toolbox
         let fonts = font_snapshot.as_deref();
         let content = &self.presentation.content;
         let cdef = self.system_cdef;
-        let mut canvas = Canvas::new(back, crate::display::WIDTH, crate::display::HEIGHT);
+        let mut canvas = Canvas::new(back, crate::display::width(), crate::display::height());
         self.windows.draw_layer(&mut canvas,
                                  |window| window.uses_system_resources(),
                                  |window, canvas| {
@@ -533,8 +533,8 @@ impl Toolbox
         let fonts = font_snapshot.as_deref();
         let cdef = self.system_cdef;
         let mut canvas = Canvas::new(crate::platform::back_buffer(),
-                                     crate::display::WIDTH,
-                                     crate::display::HEIGHT);
+                                     crate::display::width(),
+                                     crate::display::height());
         for (id, region) in damage
         {
             let Ok(id) = id.window()

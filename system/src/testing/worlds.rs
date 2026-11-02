@@ -54,7 +54,7 @@ pub(super) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> Opt
                                   }
                                   else
                                   {
-                                      if call.pixel_length > crate::display::PIXELS
+                                      if call.pixel_length > crate::display::pixels()
                            || call.pixels.is_null()
                            || !(call.pixels as usize).is_multiple_of(core::mem::align_of::<u32>())
                         {

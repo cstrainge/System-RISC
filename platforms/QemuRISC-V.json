@@ -67,11 +67,13 @@
     },
     "display": {
       "width": 800,
-      "height": 600
+      "height": 600,
+      "max_width": 1920,
+      "max_height": 1200
     },
     "display_scratch": {
-      "base": "0x86a81000",
-      "bytes": "0x57f000"
+      "base": "0x88000000",
+      "bytes": "0x1b00000"
     },
     "module_accounts": {
       "kernel_bytes": "0x1000000",

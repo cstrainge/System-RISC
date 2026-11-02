@@ -120,6 +120,7 @@ impl Workspace
                            "vhost-transport"
                            | "vdagent-channel"
                            | "virtio-rng"
+                           | "virtio-gpu"
                            | "host-clipboard-extension"
                            | "multi-scheduler-extension"
                            | "vhost-filesystem"
@@ -154,7 +155,8 @@ impl Workspace
                            "native-table-cdef", "native-splitter-cdef"])?;
         self.guest_build(&["mac-system", "bootrom", "vhost-transport", "vhost-filesystem",
                            "stuffit-filesystem", "qemu-power-device", "vdagent-channel",
-                           "virtio-rng", "host-clipboard-extension", "multi-scheduler-extension"])?;
+                           "virtio-rng", "virtio-gpu", "host-clipboard-extension",
+                           "multi-scheduler-extension"])?;
         boot::package_rom(self)?;
         let mut reports = Vec::new();
         for (directory, name, binary) in
@@ -162,6 +164,7 @@ impl Workspace
              ("drivers/vhost-transport", "Host Transport", "HostTransport"),
              ("drivers/vdagent-channel", "VDAgent Channel", "VDAgentChannel"),
              ("drivers/virtio-rng", "VirtIO RNG", "VirtioRng"),
+             ("drivers/virtio-gpu", "Virtio Gpu", "VirtioGpu"),
              ("extensions/host-clipboard", "Host Clipboard", "HostClipboard"),
              ("extensions/multi-scheduler", "Multi-Scheduler", "MultiScheduler"),
              ("drivers/vhost-filesystem", "Host Filesystem", "HostFilesystem"),

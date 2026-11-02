@@ -1,26 +1,25 @@
 //! QEMU virt display and clock; System owns the framebuffers.
 use core::{arch::asm,
-           sync::atomic::{AtomicBool, Ordering}};
+           sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}};
 
-/// Display size in pixels, from the build-time platform record
-/// (`platforms/<platform>.json`, `memory.display`). This is the single source
-/// of display geometry: every consumer reads these constants.
-/// Control Panel hook: a future Display Control Panel changes the size by
-/// backing these with a runtime preference instead of the platform record;
-/// runtime switching also requires dynamic framebuffers, caches and scratch,
-/// not just this value.
-pub(crate) use crate::display::{HEIGHT, PIXELS, WIDTH};
+/// Live display geometry comes from `crate::display`; the platform record only
+/// fixes the default and the maximum the reservations are sized for.
+use crate::display::{height, pixels, width};
 
 static BACKBUFFER_INITIALIZED: AtomicBool = AtomicBool::new(false);
 // Window tracking never paints the menu bar's first 21 rows.
-const TRACKING_PIXELS: usize = WIDTH * (HEIGHT - 21);
+fn tracking_pixels() -> usize
+{
+    width() * (height() - 21)
+}
+const MAX_TRACKING_PIXELS: usize = crate::display::MAX_WIDTH * (crate::display::MAX_HEIGHT - 21);
 // This physical scratch reservation is generated from the same checked
 // platform record as the loader arena and BootInfo reservations. It is not
 // image BSS and cannot be allocated by the later physical page pool.
 const _: () =
-    assert!(super::memory::DISPLAY_TRACKING_BASE + (TRACKING_PIXELS * size_of::<u32>()) as u64
+    assert!(super::memory::DISPLAY_TRACKING_BASE + (MAX_TRACKING_PIXELS * size_of::<u32>()) as u64
             <= super::memory::DISPLAY_SCRATCH_BASE + super::memory::DISPLAY_SCRATCH_BYTES);
-const _: () = assert!(super::memory::DISPLAY_BACKBUFFER_BASE + (PIXELS * size_of::<u32>()) as u64
+const _: () = assert!(super::memory::DISPLAY_BACKBUFFER_BASE + (crate::display::MAX_PIXELS * size_of::<u32>()) as u64
                       <= super::memory::DISPLAY_SCRATCH_BASE
                          + super::memory::DISPLAY_SCRATCH_BYTES);
 
@@ -39,6 +38,78 @@ const TRACKING_CPU: usize = (super::memory::VM_PHYSMAP_START
                              + (super::memory::DISPLAY_TRACKING_BASE
                                 - super::memory::VM_PHYSMAP_PHYSICAL_BASE))
                             as usize;
+
+/// Scan-out memory System draws into: the platform reservation for ramfb, or
+/// the video driver's own framebuffer once one attaches.
+static FRONT: AtomicUsize = AtomicUsize::new(FRONT_CPU);
+/// Union of scan-out rectangles changed since the video driver last presented,
+/// packed as four i16 (left, top, right, bottom); zero is empty.
+static DIRTY: AtomicU64 = AtomicU64::new(0);
+static VIDEO_ATTACHED: AtomicBool = AtomicBool::new(false);
+
+fn front_cpu() -> usize
+{
+    FRONT.load(Ordering::Acquire)
+}
+
+pub(super) fn use_driver_front(address: usize)
+{
+    FRONT.store(address, Ordering::Release);
+    VIDEO_ATTACHED.store(true, Ordering::Release);
+}
+
+pub(super) fn video_attached() -> bool
+{
+    VIDEO_ATTACHED.load(Ordering::Acquire)
+}
+
+fn pack(rect: mac_abi::geometry::Rect) -> u64
+{
+    u64::from(rect.left as u16)
+    | u64::from(rect.top as u16) << 16
+    | u64::from(rect.right as u16) << 32
+    | u64::from(rect.bottom as u16) << 48
+}
+
+pub(super) fn mark_dirty(rect: mac_abi::geometry::Rect)
+{
+    if rect.right <= rect.left || rect.bottom <= rect.top || !video_attached()
+    {
+        return;
+    }
+    let _ = DIRTY.fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
+                     if old == 0
+                     {
+                         return Some(pack(rect));
+                     }
+                     let at = |shift: u32| (old >> shift) as u16 as i16;
+                     Some(pack(mac_abi::geometry::Rect::new(at(0).min(rect.left),
+                                                            at(16).min(rect.top),
+                                                            at(32).max(rect.right),
+                                                            at(48).max(rect.bottom))))
+                 });
+}
+
+pub(super) fn peek_dirty() -> bool
+{
+    DIRTY.load(Ordering::Acquire) != 0
+}
+
+/// Takes the accumulated changed rectangle clipped to the live mode.
+pub(super) fn take_dirty() -> Option<mac_abi::geometry::Rect>
+{
+    let packed = DIRTY.swap(0, Ordering::AcqRel);
+    if packed == 0
+    {
+        return None;
+    }
+    let at = |shift: u32| (packed >> shift) as u16 as i16;
+    let rect = mac_abi::geometry::Rect::new(at(0).max(0),
+                                            at(16).max(0),
+                                            at(32).min(width() as i16),
+                                            at(48).min(height() as i16));
+    (rect.right > rect.left && rect.bottom > rect.top).then_some(rect)
+}
 
 static TRACKING_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static TRACKING_AVAILABLE: AtomicBool = AtomicBool::new(false);
@@ -74,13 +145,13 @@ pub fn with_tracking_mask<R>(call: impl FnOnce(Option<&mut [u32]>) -> R) -> R
     if !TRACKING_INITIALIZED.load(Ordering::Acquire)
     {
         unsafe {
-            core::ptr::write_bytes(pointer, 0, TRACKING_PIXELS);
+            core::ptr::write_bytes(pointer, 0, tracking_pixels());
         }
         TRACKING_INITIALIZED.store(true, Ordering::Release);
     }
     // The platform checker proves page alignment, non-overlap and containment
     // in discovered minimum RAM; the guarded slice cannot escape this call.
-    call(Some(unsafe { core::slice::from_raw_parts_mut(pointer, TRACKING_PIXELS) }))
+    call(Some(unsafe { core::slice::from_raw_parts_mut(pointer, tracking_pixels()) }))
 }
 
 pub fn back_buffer() -> &'static mut [u32]
@@ -92,11 +163,25 @@ pub fn back_buffer() -> &'static mut [u32]
     if !BACKBUFFER_INITIALIZED.load(Ordering::Acquire)
     {
         unsafe {
-            core::ptr::write_bytes(pointer, 0, PIXELS);
+            core::ptr::write_bytes(pointer, 0, pixels());
         }
         BACKBUFFER_INITIALIZED.store(true, Ordering::Release);
     }
-    unsafe { core::slice::from_raw_parts_mut(pointer, PIXELS) }
+    unsafe { core::slice::from_raw_parts_mut(pointer, pixels()) }
+}
+/// Switches the live mode: publishes the geometry, then clears the back buffer and window-tracking mask so no stale-stride pixels survive.
+/// The caller is the serialized compositor and must fully damage the scene afterwards.
+pub(crate) fn apply_mode(width: usize, height: usize) -> Result<(), crate::display::ModeRefusal>
+{
+    crate::display::set_mode(width, height)?;
+    // SAFETY: the serialized compositor owns the reservations; both ranges
+    // are sized for the platform maximum and the new mode never exceeds it.
+    unsafe {
+        core::ptr::write_bytes(BACK_CPU as *mut u32, 0, pixels());
+        core::ptr::write_bytes(TRACKING_CPU as *mut u32, 0, tracking_pixels());
+        core::ptr::write_bytes(front_cpu() as *mut u32, 0, pixels());
+    }
+    Ok(())
 }
 pub fn setup_framebuffer() -> bool
 {
@@ -108,8 +193,8 @@ pub fn setup_framebuffer() -> bool
     let result = unsafe {
         mac_boot_screen::ramfb::configure(super::memory::FW_CFG_BASE as usize,
                                           address,
-                                          WIDTH,
-                                          HEIGHT,
+                                          width(),
+                                          height(),
                                           |pointer, bytes| {
                                               super::paging::bus_address(pointer as u64,
                                                                          bytes as u64)
@@ -119,15 +204,22 @@ pub fn setup_framebuffer() -> bool
     {
         serial!("RAMFB_REJECTED: {error}");
     }
+    // Without ramfb System renders into its reserved memory until a video
+    // driver attaches; boot fails later if none does.
     let ready = result.is_ok();
+    if !ready
+    {
+        serial!("DISPLAY_NO_RAMFB: continuing until a video driver attaches");
+        TRACKING_AVAILABLE.store(true, Ordering::Release);
+    }
     if ready
     {
         TRACKING_AVAILABLE.store(true, Ordering::Release);
-        serial!("RAMFB {}x{} addr=0x{:x}", WIDTH, HEIGHT, address);
+        serial!("RAMFB {}x{} addr=0x{:x}", width(), height(), address);
         serial!("DISPLAY_BUFFERS back={} front={} bytes={}",
                 super::memory::DISPLAY_BACKBUFFER_BASE,
                 address,
-                PIXELS * size_of::<u32>());
+                pixels() * size_of::<u32>());
     }
     ready
 }
@@ -145,7 +237,7 @@ pub fn ticks() -> u64
 pub fn present(back: &[u32])
 {
     present_rects(back,
-                  [mac_abi::geometry::Rect::new(0, 0, WIDTH as i16, HEIGHT as i16)],
+                  [mac_abi::geometry::Rect::new(0, 0, width() as i16, height() as i16)],
                   Default::default());
 }
 
@@ -156,10 +248,24 @@ pub(crate) fn present_rects(back: &[u32], rects: impl IntoIterator<Item = mac_ab
     use crate::toolbox::quickdraw::presentation::{PresentEvent, present_frame};
     // The serialized compositor owns both buffers. This exclusive frontbuffer
     // slice cannot escape; the scene stays read-only for the entire transition.
-    let front = unsafe { core::slice::from_raw_parts_mut(FRONT_CPU as *mut u32, PIXELS) };
+    let front = unsafe { core::slice::from_raw_parts_mut(front_cpu() as *mut u32, pixels()) };
+    if video_attached()
+    {
+        // Overlays change the frontbuffer without scene damage. Cursor pixels
+        // are bounded; outline feedback is not, so it presents the whole mode.
+        mark_dirty(overlays.previous_cursor);
+        if let Some(cursor) = overlays.cursor
+        {
+            mark_dirty(cursor.bounds());
+        }
+        if overlays.feedback.is_some() || overlays.previous_feedback.is_some()
+        {
+            mark_dirty(mac_abi::geometry::Rect::new(0, 0, width() as i16, height() as i16));
+        }
+    }
     let mut started = 0;
     let owner = crate::context::current_thread_context().identity().app.0;
-    present_frame(back, front, WIDTH, HEIGHT, rects, overlays, |event| {
+    present_frame(back, front, width(), height(), rects, overlays, |event| {
         match event
         {
             PresentEvent::CopyStarted | PresentEvent::OutlineStarted =>
@@ -168,6 +274,7 @@ pub(crate) fn present_rects(back: &[u32], rects: impl IntoIterator<Item = mac_ab
             }
             PresentEvent::Copied(rect) =>
             {
+                mark_dirty(rect);
                 crate::trace::record(crate::trace::FRAME_COPY,
                                      owner,
                                      crate::trace::clock().wrapping_sub(started),

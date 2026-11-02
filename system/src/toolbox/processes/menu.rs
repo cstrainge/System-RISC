@@ -95,7 +95,7 @@ impl ApplicationMenu
         *state = MenuDefinitionState::default();
         state.menu_id = MENU_ID;
         state.profile = APPLICATION_PROFILE;
-        state.bar_bounds = Rect::new(0, 0, crate::display::WIDTH as i16, 20);
+        state.bar_bounds = Rect::new(0, 0, crate::display::width() as i16, 20);
         state.title_icon = icon(active.icon);
         state.item_count = (FIXED_ROWS + entries.len()) as u32;
         copy_text(&mut state.title, &mut state.title_length, active.name.as_bytes())?;

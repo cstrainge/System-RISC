@@ -132,6 +132,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                       (drivers, "System Folder/Drivers", "Host Transport"),
                                       (drivers, "System Folder/Drivers", "VDAgent Channel"),
                                       (drivers, "System Folder/Drivers", "VirtIO RNG"),
+                                      (drivers, "System Folder/Drivers", "Virtio Gpu"),
                                       (extensions, "System Folder/Extensions", "Host Clipboard"),
                                       (extensions, "System Folder/Extensions", "Multi-Scheduler"),
                                       (drivers, "System Folder/Drivers", "Host Filesystem"),
