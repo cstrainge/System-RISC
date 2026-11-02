@@ -107,8 +107,8 @@ impl super::Toolbox
         }
         let window = self.windows.window(call.window).ok_or(NOT_FOUND)?;
         let mut canvas = crate::toolbox::quickdraw::Canvas::new(crate::platform::back_buffer(),
-                                                                crate::display::WIDTH,
-                                                                crate::display::HEIGHT);
+                                                                crate::display::width(),
+                                                                crate::display::height());
         for band in region.bands()
         {
             for span in &band.spans
@@ -364,8 +364,7 @@ impl super::Toolbox
         {
             return Err(NO_MEMORY);
         }
-        content.commands.try_reserve(commands.len()).map_err(|_| NO_MEMORY)?;
-        content.commands.extend(commands);
+        content.try_extend(commands)?;
         self.content_changed_rect(call.window.0, info.view);
         let staged = self.presentation.pending_content.iter().any(|content| content.id == call.window);
         self.textedit.bind_cursor(call.id, call.window, port, staged)?;

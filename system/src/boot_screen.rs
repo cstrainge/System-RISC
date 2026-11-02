@@ -48,19 +48,19 @@ impl BootScreen
         // Package admission and theme resolution happen before any paint or
         // module callback. Every outcome then owns ready-to-copy pixels.
         let extensions =
-            strip::prepare_theme(resources, crate::display::WIDTH, crate::display::HEIGHT)?;
+            strip::prepare_theme(resources, crate::display::width(), crate::display::height())?;
         let pixels = crate::platform::back_buffer();
-        mac_boot_screen::draw_panel(&mut mac_boot_screen::Raster::new(pixels, crate::display::WIDTH, crate::display::HEIGHT)
+        mac_boot_screen::draw_panel(&mut mac_boot_screen::Raster::new(pixels, crate::display::width(), crate::display::height())
             .ok_or(Error::Malformed("invalid boot framebuffer"))?, icon);
-        let layout = mac_boot_screen::PanelLayout::new(crate::display::WIDTH as i16,
-                                                       crate::display::HEIGHT as i16);
+        let layout = mac_boot_screen::PanelLayout::new(crate::display::width() as i16,
+                                                       crate::display::height() as i16);
         let font = FontSelection::default();
         let width = fonts.text_width(font, &title)
                          .map_err(|_| Error::Malformed("boot title font unavailable"))?;
-        let mut canvas = Canvas::new(pixels, crate::display::WIDTH, crate::display::HEIGHT);
+        let mut canvas = Canvas::new(pixels, crate::display::width(), crate::display::height());
         fonts.draw(font,
                    &mut canvas,
-                   Point { h: crate::display::WIDTH as i16 / 2 - width / 2,
+                   Point { h: crate::display::width() as i16 / 2 - width / 2,
                            v: layout.title_baseline },
                    &title,
                    0)
@@ -242,7 +242,7 @@ impl BootScreen
         if let Some(drawing) = drawing
         {
             let pixels = crate::platform::back_buffer();
-            let mut canvas = Canvas::new(pixels, crate::display::WIDTH, crate::display::HEIGHT);
+            let mut canvas = Canvas::new(pixels, crate::display::width(), crate::display::height());
             let damage = drawing.damage();
             for rect in damage.into_iter().filter(|rect| !rect.is_empty())
             {

@@ -291,3 +291,22 @@ Failure details survive cleanup attempts. A reset that does not acknowledge keep
 the actual work, mapping and original cleanup ticket; elapsed time never permits
 forged completion or reclamation. This does not qualify arbitrary hardware fault
 recovery or source security.
+
+## Virtio Gpu video driver (VIDO)
+
+`System Folder/Drivers/Virtio Gpu` is an external driver for the `VIDO` video
+class (`crates/mac-video-interface`). It discovers a virtio-mmio GPU, watches
+host-window resize events, debounces them (250 ms quiet period) and reports the
+settled size. System then asks the driver to apply it (new 2D resource, scanout,
+flush) and announces the new bounds through the native-only display-changed
+event; legacy applications never see it.
+
+- The driver owns the frame memory (module DMA is limited to the module image);
+  System renders into it as its frontbuffer and sends damage rectangles with
+  each service call. Capacity bounds the maximum mode (1920x1200); out-of-range
+  requests get a typed `Outcome` refusal.
+- ramfb remains the ROM, early-boot strip, emergency screen and the fallback
+  when no video driver is installed. In GPU mode (`SYSTEM7_VIRTIO_GPU=1` for
+  the launcher) those early screens are not visible.
+- Remaining gates: runtime loading of the large frame, present cost, and
+  scheduling behavior of the service call are not yet qualified on target.

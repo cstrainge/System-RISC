@@ -27,38 +27,41 @@ enum Check
 }
 struct Info<'a>
 {
-    window:         WindowId,
-    identity:       Location,
-    entry:          files::CatalogInfo,
-    volume_info:    Option<files::VolumeInfo>,
-    layout:         Layout,
-    name:           textedit::Editor<'a>,
-    comments:       textedit::Editor<'a>,
-    focus:          Focus,
-    dirty_name:     bool,
-    dirty_comments: bool,
-    read_only:      bool,
-    active:         bool,
-    controls:       [Option<controls::ControlId>; 2],
-    status:         Option<Error>,
-    metadata_error: Option<Error>,
-    changed:        bool,
-    allocated:      Option<u64>,
-    logical:        u64,
-    job:            Option<totals::Job>,
-    kind:           Text<256>,
-    version:        Text<512>,
-    description:    Text<256>,
-    location:       Text<768>,
-    icon:           crate::icon_view::Icon
+    window:          WindowId,
+    deferred_update: bool,
+    identity:        Location,
+    entry:           files::CatalogInfo,
+    volume_info:     Option<files::VolumeInfo>,
+    layout:          Layout,
+    name:            textedit::Editor<'a>,
+    comments:        textedit::Editor<'a>,
+    focus:           Focus,
+    dirty_name:      bool,
+    dirty_comments:  bool,
+    read_only:       bool,
+    active:          bool,
+    controls:        [Option<controls::ControlId>; 2],
+    status:          Option<Error>,
+    metadata_error:  Option<Error>,
+    changed:         bool,
+    allocated:       Option<u64>,
+    logical:         u64,
+    job:             Option<totals::Job>,
+    kind:            Text<256>,
+    version:         Text<512>,
+    description:     Text<256>,
+    location:        Text<768>,
+    icon:            crate::icon_view::Icon
 }
 #[derive(Default)]
 pub struct Controller<'a>
 {
-    windows:     [Option<Info<'a>>; CAPACITY],
-    work_cursor: usize,
-    changed:     bool,
-    summary:     Option<summary::Summary<'a>>
+    windows:          [Option<Info<'a>>; CAPACITY],
+    work_cursor:      usize,
+    changed:          bool,
+    summary:          Option<summary::Summary<'a>>,
+    deferred_summary: Option<WindowId>,
+    deferred_update:  bool
 }
 fn editor<'a>(system: &System<'a>, dest: Rect, view: Rect, text: &str)
               -> Result<textedit::Editor<'a>, Error>
@@ -193,6 +196,7 @@ impl<'a> Info<'a>
                                  value
                              });
             let mut info = Self { window,
+                                  deferred_update: false,
                                   identity,
                                   entry,
                                   volume_info: is_volume.then_some(volume),
@@ -472,6 +476,65 @@ impl<'a> Controller<'a>
         {
             system.menus().set_item_enabled(MenuId(1253), item, enabled)?;
         }
+        Ok(())
+    }
+
+    pub fn defer_update(&mut self, system: &System<'_>, id: WindowId) -> Result<bool, Error>
+    {
+        if self.summary.as_ref().is_some_and(|summary| summary.id() == id)
+        {
+            self.deferred_summary = Some(id);
+        }
+        else if let Some(info) = self.windows.iter_mut().flatten().find(|info| info.window == id)
+        {
+            info.deferred_update = true;
+        }
+        else
+        {
+            return Ok(false);
+        }
+        self.deferred_update = true;
+        system.windows().validate(id)?;
+        Ok(true)
+    }
+
+    pub fn has_deferred_update(&self) -> bool
+    {
+        self.deferred_update
+    }
+
+    pub fn draw_deferred(&mut self, system: &System<'_>) -> Result<(), Error>
+    {
+        if !self.deferred_update
+        {
+            return Ok(());
+        }
+        if let Some(id) = self.deferred_summary
+        {
+            if let Some(summary) = self.summary.as_ref().filter(|summary| summary.id() == id)
+            {
+                match system.window(id)
+                {
+                    Ok(_) => summary.draw(system, false)?,
+                    Err(Error::NotFound) => (),
+                    Err(cause) => return Err(cause)
+                }
+            }
+            self.deferred_summary = None;
+        }
+        else if let Some(info) =
+            self.windows.iter_mut().flatten().find(|info| info.deferred_update)
+        {
+            match system.window(info.window)
+            {
+                Ok(_) => info.draw(system)?,
+                Err(Error::NotFound) => (),
+                Err(cause) => return Err(cause)
+            }
+            info.deferred_update = false;
+        }
+        self.deferred_update = self.deferred_summary.is_some()
+                               || self.windows.iter().flatten().any(|info| info.deferred_update);
         Ok(())
     }
 

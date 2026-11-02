@@ -471,10 +471,11 @@ impl super::Toolbox
                 return Err(status as Status);
             }
             let r = state.structure;
-            alert.bounds
-                 .offset((crate::display::WIDTH as i16 - (r.right - r.left)) / 2 - r.left,
-                         20 + ((crate::display::HEIGHT as i16 - 20) - (r.bottom - r.top)) / 5
-                         - r.top);
+            alert.bounds.offset((crate::display::width() as i16 - (r.right - r.left)) / 2 - r.left,
+                                20
+                                + ((crate::display::height() as i16 - 20) - (r.bottom - r.top))
+                                  / 5
+                                - r.top);
         }
         Ok(())
     }
@@ -695,7 +696,9 @@ impl super::Toolbox
                       &[])
     }
 
-    fn dialog_text(&mut self, window: u64, item: &dialogs::Item) -> Result<(), Status>
+    fn dialog_text(&mut self, window: u64, item: &dialogs::Item,
+                   source: Option<&crate::toolbox::quickdraw::retained::CoreTextItem>)
+                   -> Result<(), Status>
     {
         let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
         let selection = FontSelection::default();
@@ -704,24 +707,36 @@ impl super::Toolbox
             metrics.ascent.saturating_add(metrics.descent).saturating_add(metrics.leading).max(1);
         let mut y = item.bounds.top.saturating_add(metrics.ascent);
         // Preserve the original paragraph/wrap rules without candidate copies.
-        dialogs::wrapped_lines(&item.text,
-                               item.bounds.right - item.bounds.left - 2,
-                               |candidate| {
-                                   fonts.text_width(fonts_service::selection(selection), candidate)
-                               },
-                               |line, wrapped| {
-                                   if wrapped || y <= item.bounds.bottom.saturating_add(2)
-                                   {
-                                       self.font_draw(&mut FontCall { target: mac_abi::quickdraw::Target::window(WindowId(window)),
+        let text = source.map_or(item.text.as_str(), |source| source.text());
+        dialogs::wrapped_line_ranges(text,
+                                     item.bounds.right - item.bounds.left - 2,
+                                     |candidate| {
+                                         fonts.text_width(fonts_service::selection(selection),
+                                                          candidate)
+                                     },
+                                     |range, wrapped| {
+                                         if wrapped || y <= item.bounds.bottom.saturating_add(2)
+                                         {
+                                             let mut call = FontCall { target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                                                        selection,
                                                                        baseline: Point { h: item.bounds.left.saturating_add(1), v: y },
-                                                                       ..Default::default() },
-                                                       line,
-                                                       &fonts)?;
-                                   }
-                                   y = y.saturating_add(advance);
-                                   Ok(())
-                               })?;
+                                                                       ..Default::default() };
+                                             if let Some(source) = source
+                                             {
+                                                 self.font_draw_core_line(&mut call, source,
+                                                                          range, &fonts)?;
+                                             }
+                                             else
+                                             {
+                                                 self.font_draw(&mut call,
+                                                                text.get(range)
+                                                                    .ok_or(BAD_ARGUMENT)?,
+                                                                &fonts)?;
+                                             }
+                                         }
+                                         y = y.saturating_add(advance);
+                                         Ok(())
+                                     })?;
         Ok(())
     }
 
@@ -735,8 +750,11 @@ impl super::Toolbox
             return Err(ACCESS_DENIED);
         }
         let bounds = window.local_bounds();
-        let index =
-            self.presentation.pending_content.iter().position(|content| content.id == id).ok_or(BAD_ARGUMENT)?;
+        let index = self.presentation
+                        .pending_content
+                        .iter()
+                        .position(|content| content.id == id)
+                        .ok_or(BAD_ARGUMENT)?;
         let full = !self.presentation.pending_content[index].is_patch();
         self.presentation.pending_content.swap_remove(index);
         self.textedit.begin_cursor_update(id);
@@ -752,6 +770,17 @@ impl super::Toolbox
     {
         let window = self.dialogs.window;
         let alert = self.dialogs.alert.clone().ok_or(NOT_FOUND)?;
+        let core_activity = if self.core_dialogs_active
+        {
+            let activity =
+                dialogs::core_alerts::paint_activity(&self.dialogs, &alert, WindowId(window))?;
+            self.bind_core_scene(WindowId(window), &activity)?;
+            Some(activity)
+        }
+        else
+        {
+            None
+        };
         let mut request = WindowRequest { id:             window,
                                           bounds:         Rect::ZERO,
                                           title:          [0; WINDOW_TITLE_BYTES],
@@ -762,6 +791,15 @@ impl super::Toolbox
                                           reserved:       0 };
         checked(self.window(BEGIN_UPDATE, &mut request))?;
         let result = (|| {
+            if let Some(activity) = &core_activity
+            {
+                let content = self.presentation
+                                  .pending_content
+                                  .iter_mut()
+                                  .find(|content| content.id == WindowId(window))
+                                  .ok_or(BAD_ABI)?;
+                content.commands.prepare_core(WindowId(window), &alert, activity)?;
+            }
             self.graphics(&mut GraphicsCall { operation: QD_RESET,
                                               target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                               ..Default::default() },
@@ -794,7 +832,22 @@ impl super::Toolbox
                                                           ..Default::default() },
                                       &[],
                                       &[])?;
-                        let result = self.dialog_text(window, item);
+                        let core_item = if let Some(activity) = &core_activity
+                        {
+                            // Admit this actual item once. Its typed source and
+                            // frame lease keep the same Window/Session pinned.
+                            activity.validate_core_paint(WindowId(window))?;
+                            let content = self.content_mut(window)?;
+                            Some(content.commands.core_item(WindowId(window),
+                                                             index,
+                                                             &content.port,
+                                                             activity)?)
+                        }
+                        else
+                        {
+                            None
+                        };
+                        let result = self.dialog_text(window, item, core_item.as_ref());
                         self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
                                                           target: mac_abi::quickdraw::Target::window(WindowId(window)),
                                                           bounds: clip,

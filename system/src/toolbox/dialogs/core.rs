@@ -4,10 +4,11 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use core::fmt;
 
 use mac_abi::{dialogs::*, geometry::Rect, resources, *};
-use mac_object_table::store::PublicationError;
+use mac_object_table::{shared::InvocationGate as _, store::PublicationError};
+use spinning_top::Spinlock;
 
 use super::{Alert, Item, modal::DialogState};
-use crate::{recovery::Activity,
+use crate::{recovery::{Activity, CorePayloadLease, CorePayloadQuiescence},
             toolbox::{handles::OwnerRef,
                       quickdraw::{icons_service, service}}};
 
@@ -15,9 +16,123 @@ const IDS: [i16; 3] = [CORE_ERROR_ALERT, CORE_OUT_OF_MEMORY_ALERT, CORE_SAVE_CHA
 struct Templates
 {
     alerts: [Alert; IDS.len()],
-    icons:  Vec<(i16, icons_service::Drawing)>
+    icons:  Vec<(i16, icons_service::Drawing)>,
+    stock:  Spinlock<[Option<Payload>; IDS.len()]>,
+    frames: Spinlock<Option<super::super::quickdraw::retained::CoreFramePair>>
 }
 static TEMPLATES: spin::Once<Templates> = spin::Once::new();
+
+/// Only allocation stock: no live identity, owner, scope or Activity survives
+/// semantic DialogState destruction in this value.
+struct Payload
+{
+    alert:    Option<Arc<Alert>>,
+    controls: Vec<Option<u64>>
+}
+/// Parked in the exact original Session until its real completion/child drain.
+pub(crate) struct PendingReturn
+{
+    template: usize,
+    payload:  Payload
+}
+impl PendingReturn
+{
+    pub(crate) fn template(&self) -> usize
+    {
+        self.template
+    }
+
+    pub(crate) fn unique(&mut self) -> Result<(), Status>
+    {
+        let alert = self.payload.alert.as_mut().ok_or(BAD_ABI)?;
+        Arc::get_mut(alert).ok_or(SERVICE_BUSY)?;
+        Ok(())
+    }
+}
+
+pub(super) fn park_payload(lease: CorePayloadLease, alert: Option<Arc<Alert>>,
+                           mut controls: Vec<Option<u64>>)
+{
+    controls.fill(None);
+    let pending = PendingReturn { template: lease.template(),
+                                  payload:  Payload { alert,
+                                                      controls } };
+    lease.park(pending);
+}
+
+/// The opaque proof takes only its own original Session's pending return.
+/// Refusal leaves that SAME return in the closing Session for a real retry.
+pub(crate) fn return_quiesced(mut proof: CorePayloadQuiescence<'_>) -> Result<(), Status>
+{
+    let templates = TEMPLATES.get().ok_or(BAD_ABI)?;
+    crate::toolbox::handles::InvocationGate::run(|| {
+        let template = proof.template()?;
+        let mut stock = templates.stock.lock();
+        let slot = if let Some(template) = template
+        {
+            let slot = stock.get_mut(template).ok_or(BAD_ABI)?;
+            if slot.is_some()
+            {
+                return Err(BAD_ABI);
+            }
+            Some(slot)
+        }
+        else
+        {
+            None
+        };
+        let mut frames = templates.frames.lock();
+        if proof.has_frames() && frames.is_some()
+        {
+            return Err(BAD_ABI);
+        }
+        let returned = proof.take()?;
+        // All fallible checks precede taking this exact Session's owned return.
+        if let Some(slot) = slot
+        {
+            *slot = returned.payload.map(|pending| pending.payload);
+        }
+        if let Some(pair) = returned.frames
+        {
+            *frames = Some(pair);
+        }
+        Ok(())
+    })
+}
+
+pub(crate) fn bind_frames(activity: &Activity, window: WindowId) -> Result<(), Status>
+{
+    activity.bind_core_frames(window, || {
+                let templates = TEMPLATES.get().ok_or(NOT_SUPPORTED)?;
+                crate::toolbox::handles::InvocationGate::run(|| {
+                    let mut stock = templates.frames.lock();
+                    let pair = stock.as_mut().ok_or(SERVICE_BUSY)?;
+                    for frame in &mut pair.0
+                    {
+                        frame.unique()?;
+                    }
+                    stock.take().ok_or(BAD_ABI)
+                })
+            })
+}
+
+/// Only the selected actual Core manager can nominate the current Alert source.
+pub(crate) fn paint_activity(manager: &super::modal::Manager, alert: &Arc<Alert>, window: WindowId)
+                             -> Result<Activity, Status>
+{
+    if manager.window != window.0
+       || !manager.alert.as_ref().is_some_and(|actual| Arc::ptr_eq(actual, alert))
+    {
+        return Err(ACCESS_DENIED);
+    }
+    let activity = manager.recovery_activity.as_ref().ok_or(ACCESS_DENIED)?;
+    if !manager.core_payload.as_ref().is_some_and(|lease| lease.matches_activity(activity))
+    {
+        return Err(ACCESS_DENIED);
+    }
+    activity.validate_core_paint(window)?;
+    Ok(activity.clone())
+}
 
 pub(crate) fn supported(scope: resources::Scope, id: i16) -> bool
 {
@@ -38,38 +153,59 @@ pub(crate) fn required_control_count() -> Result<usize, Status>
 pub(crate) fn prepare() -> Result<(), Status>
 {
     TEMPLATES.try_call_once(|| {
-                 let load = |id| {
-                     let mut call = DialogCall { scope: resources::SYSTEM,
-                                                 resource: id,
-                                                 text_length: 2,
-                                                 ..Default::default() };
-                     call.text[..2].copy_from_slice(b"^0");
-                     crate::kernel::with_resources(|resources| super::load(resources, &call))
+        let load = |id| {
+            let mut call = DialogCall { scope: resources::SYSTEM,
+                                        resource: id,
+                                        text_length: 2,
+                                        ..Default::default() };
+            call.text[..2].copy_from_slice(b"^0");
+            crate::kernel::with_resources(|resources| super::load(resources, &call))
                 .ok_or(NOT_SUPPORTED)?
-                 };
-                 let alerts = [load(IDS[0])?, load(IDS[1])?, load(IDS[2])?];
-                 let mut icons = Vec::new();
-                 for item in
-                     alerts.iter().flat_map(|alert| &alert.items).filter(|item| item.kind == 32)
-                 {
-                     if icons.iter().any(|(id, _)| *id == item.icon)
-                     {
-                         continue;
-                     }
-                     icons.try_reserve(1).map_err(|_| NO_MEMORY)?;
-                     let call = mac_abi::quickdraw::IconCall { scope: resources::SYSTEM,
-                                                               id: item.icon,
-                                                               destination: item.bounds,
-                                                               ..Default::default() };
-                     let drawing =
-                         crate::kernel::with_resources(|resources| {
-                             icons_service::Drawing::new(resources, &call, service::Port::default())
-                         }).ok_or(NOT_SUPPORTED)??;
-                     icons.push((item.icon, drawing));
-                 }
-                 Ok::<_, Status>(Templates { alerts,
-                                             icons })
-             })?;
+        };
+        let alerts = [load(IDS[0])?, load(IDS[1])?, load(IDS[2])?];
+        let mut icons = Vec::new();
+        for item in alerts.iter().flat_map(|alert| &alert.items).filter(|item| item.kind == 32)
+        {
+            if icons.iter().any(|(id, _)| *id == item.icon)
+            {
+                continue;
+            }
+            icons.try_reserve(1).map_err(|_| NO_MEMORY)?;
+            let call = mac_abi::quickdraw::IconCall { scope: resources::SYSTEM,
+                                                      id: item.icon,
+                                                      destination: item.bounds,
+                                                      ..Default::default() };
+            let drawing =
+                crate::kernel::with_resources(|resources| {
+                    icons_service::Drawing::new(resources, &call, service::Port::default())
+                }).ok_or(NOT_SUPPORTED)??;
+            icons.push((item.icon, drawing));
+        }
+        let (stock, frames) =
+            crate::context::with_recovery_allocation(crate::recovery::permit()?, || {
+                crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                    let mut stock = core::array::from_fn(|_| None);
+                    for (slot, template) in stock.iter_mut().zip(&alerts)
+                    {
+                        *slot = Some(Payload::prepare(template)?);
+                    }
+                    let text_items =
+                        alerts.iter()
+                              .map(|alert| alert.items.iter().filter(|item| item.kind == 8).count())
+                              .max()
+                              .unwrap_or(0);
+                    let frames = super::super::quickdraw::retained::CoreFramePair([
+                    super::super::quickdraw::retained::CoreFrame::prepare(text_items)?,
+                    super::super::quickdraw::retained::CoreFrame::prepare(text_items)?
+                ]);
+                    Ok::<_, Status>((stock, frames))
+                })
+            })?;
+        Ok::<_, Status>(Templates { alerts,
+                                    icons,
+                                    stock: Spinlock::new(stock),
+                                    frames: Spinlock::new(Some(frames)) })
+    })?;
     Ok(())
 }
 
@@ -84,7 +220,7 @@ pub(crate) fn pinned_icon(id: i16, destination: Rect) -> Result<icons_service::D
     Ok(drawing)
 }
 
-fn substitute(template: &str, value: &str) -> Result<String, Status>
+fn substituted_length(template: &str, value: &str) -> Result<usize, Status>
 {
     let mut length = 0usize;
     for (at, part) in template.split("^0").enumerate()
@@ -99,8 +235,11 @@ fn substitute(template: &str, value: &str) -> Result<String, Status>
     {
         return Err(BAD_ARGUMENT);
     }
-    let mut output = String::new();
-    output.try_reserve_exact(length).map_err(|_| NO_MEMORY)?;
+    Ok(length)
+}
+
+fn append_substitution(output: &mut String, template: &str, value: &str)
+{
     for (at, part) in template.split("^0").enumerate()
     {
         if at != 0
@@ -109,7 +248,80 @@ fn substitute(template: &str, value: &str) -> Result<String, Status>
         }
         output.push_str(part);
     }
+}
+
+fn substitute(template: &str, value: &str) -> Result<String, Status>
+{
+    let length = substituted_length(template, value)?;
+    let mut output = String::new();
+    output.try_reserve_exact(length).map_err(|_| NO_MEMORY)?;
+    append_substitution(&mut output, template, value);
     Ok(output)
+}
+
+impl Payload
+{
+    fn prepare(template: &Alert) -> Result<Self, Status>
+    {
+        let mut items = Vec::new();
+        items.try_reserve_exact(template.items.len()).map_err(|_| NO_MEMORY)?;
+        for item in &template.items
+        {
+            if item.text.len() > INLINE_STRING_BYTES
+            {
+                return Err(BAD_ABI);
+            }
+            let mut text = String::new();
+            text.try_reserve_exact(INLINE_STRING_BYTES).map_err(|_| NO_MEMORY)?;
+            text.push_str(&item.text);
+            items.push(Item { bounds: item.bounds,
+                              kind: item.kind,
+                              enabled: item.enabled,
+                              text,
+                              icon: item.icon });
+        }
+        let mut controls = Vec::new();
+        controls.try_reserve_exact(items.len()).map_err(|_| NO_MEMORY)?;
+        controls.resize(items.len(), None);
+        let alert = Arc::try_new(Alert { bounds: template.bounds,
+                                         position: template.position,
+                                         items }).map_err(|_| NO_MEMORY)?;
+        Ok(Self { alert: Some(alert),
+                  controls })
+    }
+
+    fn reset(&mut self, template: &Alert, value: &str) -> Result<(), Status>
+    {
+        let alert = self.alert.as_mut().ok_or(BAD_ABI)?;
+        let alert = Arc::get_mut(alert).ok_or(SERVICE_BUSY)?;
+        if alert.items.len() != template.items.len()
+           || self.controls.len() != template.items.len()
+           || self.controls.iter().any(Option::is_some)
+        {
+            return Err(BAD_ABI);
+        }
+        // Validate every length/capacity before changing the original payload.
+        for (item, source) in alert.items.iter().zip(&template.items)
+        {
+            let length = substituted_length(&source.text, value)?;
+            if item.text.capacity() < length
+            {
+                return Err(BAD_ABI);
+            }
+        }
+        alert.bounds = template.bounds;
+        alert.position = template.position;
+        for (item, source) in alert.items.iter_mut().zip(&template.items)
+        {
+            item.bounds = source.bounds;
+            item.kind = source.kind;
+            item.enabled = source.enabled;
+            item.icon = source.icon;
+            item.text.clear();
+            append_substitution(&mut item.text, &source.text, value);
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn instantiate(call: &DialogCall) -> Result<Alert, Status>
@@ -253,10 +465,39 @@ impl PreparedAlert
                                                           OpenError::service("service admission",
                                                                              status)
                                                       })?;
-        let alert = instantiate(call).map_err(|status| OpenError::service("template", status))?;
-        call.item = alert.items.len() as u16;
-        let state = DialogState::prepare(alert, Some(activity.clone()))
-            .map_err(|status| OpenError::service("state backing", status))?;
+        let value = core::str::from_utf8(text).map_err(|_| {
+                                                  OpenError::service("template text", BAD_ARGUMENT)
+                                              })?;
+        let templates =
+            TEMPLATES.get().ok_or(OpenError::service("template stock", NOT_SUPPORTED))?;
+        let index = IDS.iter()
+                       .position(|&id| id == call.resource)
+                       .ok_or(OpenError::service("template", NOT_SUPPORTED))?;
+        let template = &templates.alerts[index];
+        let state = crate::toolbox::handles::InvocationGate::run(|| {
+                        let mut stock = templates.stock.lock();
+                        let slot = stock.get_mut(index).ok_or(BAD_ABI)?;
+                        slot.as_mut().ok_or(SERVICE_BUSY)?.reset(template, value)?;
+                        let payload = slot.take().ok_or(BAD_ABI)?;
+                        let lease = match activity.lease_core_payload(index)
+                        {
+                            Ok(lease) => lease,
+                            Err(status) =>
+                            {
+                                *slot = Some(payload);
+                                return Err(status);
+                            }
+                        };
+                        Ok(DialogState { previous:          None,
+                                         window:            0,
+                                         alert:             payload.alert,
+                                         controls:          payload.controls,
+                                         tracking:          None,
+                                         system_menu:       false,
+                                         recovery_activity: Some(activity.clone()),
+                                         core_payload:      Some(lease) })
+                    }).map_err(|status| OpenError::service("payload stock", status))?;
+        call.item = template.items.len() as u16;
         Ok(Self { state: Some(state),
                   positioned: false,
                   recipient,
@@ -282,6 +523,14 @@ impl PreparedAlert
         let state = self.state.as_ref().ok_or(BAD_ABI)?;
         let activity = state.recovery_activity.as_ref().ok_or(ACCESS_DENIED)?;
         validate_scope(activity, recipient, storage)?;
+        if !state.core_payload.as_ref().is_some_and(|lease| {
+                                           lease.matches_activity(activity)
+                                           && IDS.get(lease.template()).copied()
+                                              == Some(self.intent.resource)
+                                       })
+        {
+            return Err(ACCESS_DENIED);
+        }
         let alert = state.alert.as_ref().ok_or(BAD_ABI)?;
         if state.window != 0
            || state.tracking.is_some()

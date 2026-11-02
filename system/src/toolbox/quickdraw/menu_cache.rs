@@ -6,7 +6,7 @@ use mac_object_table::shared::InvocationGate as _;
 
 use super::Canvas;
 use crate::toolbox::handles::InvocationGate;
-pub const BYTES: usize = crate::display::WIDTH * 21 * 4;
+pub const BYTES: usize = crate::display::MAX_WIDTH * 21 * 4;
 
 #[derive(Default)]
 pub struct MenuBarCache

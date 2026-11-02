@@ -303,7 +303,7 @@ impl super::Toolbox
         let top = if call.mode == GET { 84 } else { 80 };
         let width = template.bounds.right - template.bounds.left;
         let height = template.bounds.bottom - template.bounds.top;
-        let left = (crate::display::WIDTH as i16 - width) / 2;
+        let left = (crate::display::width() as i16 - width) / 2;
         let mut window = request(WindowId(0));
         window.bounds = Rect::new(left, top, left + width, top + height);
         window.procedure = template.procedure;
@@ -502,7 +502,7 @@ impl super::Toolbox
             let width = template.bounds.right - template.bounds.left;
             let height = template.bounds.bottom - template.bounds.top;
             let mut window = request(WindowId(0));
-            let left = (crate::display::WIDTH as i16 - width) / 2;
+            let left = (crate::display::width() as i16 - width) / 2;
             window.bounds = Rect::new(left, 100, left + width, 100 + height);
             window.procedure = template.procedure;
             checked(self.window(NEW_WINDOW, &mut window))?;

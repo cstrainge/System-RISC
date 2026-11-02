@@ -24,6 +24,73 @@ static TABLES: Mutex<Tables> = Mutex::new(Tables { branches:        None,
                                                    kernel_branches: 0 });
 static PENDING: AtomicBool = AtomicBool::new(false);
 static RETIRING: AtomicUsize = AtomicUsize::new(0);
+static WORKSPACE: Mutex<Option<RetirementWorkspace>> = Mutex::new(Some(RetirementWorkspace::new()));
+static WAITING_WORKSPACE: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkspaceError
+{
+    Busy,
+    Capacity
+    {
+        pages: usize,
+        roots: usize
+    },
+    Allocation
+    {
+        part:     &'static str,
+        required: usize
+    },
+    Invariant
+    {
+        part:     &'static str,
+        required: usize,
+        capacity: usize
+    }
+}
+impl WorkspaceError
+{
+    pub(crate) fn status(self) -> Status
+    {
+        match self
+        {
+            Self::Busy => mac_abi::SERVICE_BUSY,
+            Self::Capacity { .. } | Self::Allocation { .. } => NO_MEMORY,
+            Self::Invariant { .. } => BAD_ABI
+        }
+    }
+}
+impl fmt::Display for WorkspaceError
+{
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        match self
+        {
+            Self::Busy => out.write_str("translation retirement workspace is still in use"),
+            Self::Capacity { pages,
+                             roots } =>
+            {
+                write!(out,
+                       "retirement workspace cannot represent {pages} pages across {roots} roots")
+            }
+            Self::Allocation { part,
+                               required } =>
+            {
+                write!(out,
+                       "ordinary System Foundation retirement workspace refused {required} {part} \
+                        entries before publication")
+            }
+            Self::Invariant { part,
+                              required,
+                              capacity } =>
+            {
+                write!(out,
+                       "admitted retirement workspace {part} capacity {capacity} cannot cover \
+                        {required} entries")
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) enum Error
@@ -34,6 +101,7 @@ pub(crate) enum Error
     Closed,
     State,
     Metadata,
+    Workspace(WorkspaceError),
     Extent
     {
         offset: u64,
@@ -70,6 +138,7 @@ impl Error
         {
             Self::Process(e) => e.status(),
             Self::Metadata => NO_MEMORY,
+            Self::Workspace(cause) => cause.status(),
             Self::Account(cause) => crate::allocation::account_status(cause),
             Self::Pages(cause) => cause.status(),
             Self::Recovery(crate::allocator::recovery::Error::Exhausted { .. }
@@ -96,6 +165,7 @@ impl fmt::Display for Error
         match self
         {
             Self::Process(e) => e.fmt(out),
+            Self::Workspace(cause) => cause.fmt(out),
             Self::Missing =>
             {
                 out.write_str("executable mappings require the actual permanent supervisor roots")
@@ -210,6 +280,10 @@ pub(crate) enum CleanupCause
     {
         base: u64
     },
+    Workspace
+    {
+        base: u64, cause: WorkspaceError
+    },
     Monitor
     {
         base: u64, stage: Stage, cause: MonitorRefusal
@@ -244,6 +318,7 @@ impl fmt::Display for CleanupCause
             {
                 write!(out, "executable image {base:#x} has an uncertain owning transition")
             }
+            Self::Workspace { base, cause } => write!(out, "executable image {base:#x}: {cause}"),
             Self::Monitor { base,
                             stage,
                             cause } =>
@@ -447,6 +522,182 @@ struct Entries
     leaves:    Vec<Slot>,
     ancestors: Vec<Slot>
 }
+#[derive(Clone, Copy)]
+struct RetirementDemand
+{
+    shared_pages:   usize,
+    private_leaves: usize,
+    private_roots:  usize
+}
+struct RetirementWorkspace
+{
+    roots:   Vec<super::process::Pin>,
+    dynamic: Entries,
+    demand:  RetirementDemand
+}
+impl RetirementWorkspace
+{
+    const fn new() -> Self
+    {
+        Self { roots:   Vec::new(),
+               dynamic: Entries { leaves:    Vec::new(),
+                                  ancestors: Vec::new() },
+               demand:  RetirementDemand { shared_pages:   0,
+                                           private_leaves: 0,
+                                           private_roots:  0 } }
+    }
+
+    fn admit(&mut self, demand: RetirementDemand, registered: usize) -> Result<(), WorkspaceError>
+    {
+        let leaves = demand.shared_pages
+                           .checked_mul(registered)
+                           .ok_or(WorkspaceError::Capacity { pages: demand.shared_pages,
+                                                             roots: registered })?
+                           .max(demand.private_leaves);
+        let ancestors = leaves.checked_mul(2).ok_or(WorkspaceError::Capacity { pages: leaves,
+                                                                                roots: 2 })?;
+        let roots = if demand.shared_pages == 0 { 0 } else { registered }.max(demand.private_roots);
+        // This is genuine shared coordinator storage, never a retiring subject
+        // or an ambient protected allocation. Existing headers keep this origin.
+        crate::context::without_recovery(|| {
+            crate::allocator::with_system(crate::allocator::SystemClass::Foundation, || {
+                reserve_workspace(&mut self.roots, "root pins", roots)?;
+                reserve_workspace(&mut self.dynamic.leaves, "leaves", leaves)?;
+                reserve_workspace(&mut self.dynamic.ancestors, "ancestors", ancestors)
+            })
+        })?;
+        self.demand = demand;
+        Ok(())
+    }
+}
+fn reserve_workspace<T>(values: &mut Vec<T>, part: &'static str, required: usize)
+                        -> Result<(), WorkspaceError>
+{
+    if !values.is_empty()
+    {
+        return Err(WorkspaceError::Invariant { part,
+                                               required: values.len(),
+                                               capacity: 0 });
+    }
+    if required > values.capacity()
+    {
+        values.try_reserve_exact(required).map_err(|_| {
+                                               WorkspaceError::Allocation { part,
+                                                                            required }
+                                           })?;
+    }
+    Ok(())
+}
+/// The sole owner moves out of its short metadata guard. No borrowed lock or
+/// persistent Process pin survives into an ACK wait or between turns.
+struct RetirementWorkspaceLoan
+{
+    workspace: RetirementWorkspace
+}
+impl RetirementWorkspaceLoan
+{
+    fn take() -> Result<Self, WorkspaceError>
+    {
+        interrupts::with_masked(|| {
+            let mut available = WORKSPACE.lock();
+            match available.take()
+            {
+                Some(workspace) => Ok(Self { workspace }),
+                None =>
+                {
+                    // Absence and arming share the return gate, so its actual
+                    // owner cannot return between this observation and arm.
+                    WAITING_WORKSPACE.store(true, Ordering::Release);
+                    Err(WorkspaceError::Busy)
+                }
+            }
+        })
+    }
+}
+impl Drop for RetirementWorkspaceLoan
+{
+    fn drop(&mut self)
+    {
+        let mut workspace = core::mem::replace(&mut self.workspace, RetirementWorkspace::new());
+        // Real Pin releases and their progress markers run outside all guards.
+        workspace.roots.clear();
+        workspace.dynamic.leaves.clear();
+        workspace.dynamic.ancestors.clear();
+        let waiting = interrupts::with_masked(|| {
+            // This non-Clone loan is the only writer after taking Some. The
+            // destination is still None; no owned payload is displaced here.
+            let mut available = WORKSPACE.lock();
+            *available = Some(workspace);
+            WAITING_WORKSPACE.swap(false, Ordering::AcqRel)
+        });
+        if waiting
+        {
+            // Issuer release can precede this availability transition. Wake
+            // only actually armed waiters, not an unchanged refusal/idle loop.
+            changed();
+        }
+    }
+}
+/// Field order releases an unissued command before returning scratch on every
+/// pre-effect exit. Issued commands finish while these actual Pins stay owned.
+struct RetirementTurn
+{
+    lease:     Option<crate::machine::monitor::TranslationLease>,
+    workspace: Option<RetirementWorkspaceLoan>
+}
+fn add_private_demand(demand: &mut RetirementDemand, pages: usize, roots: usize)
+                      -> Result<(), WorkspaceError>
+{
+    let leaves = pages.checked_mul(roots).ok_or(WorkspaceError::Capacity { pages,
+                                                                            roots })?;
+    demand.private_leaves = demand.private_leaves.max(leaves);
+    if pages != 0
+    {
+        demand.private_roots = demand.private_roots.max(roots);
+    }
+    Ok(())
+}
+/// Call only inside the existing clone-to-link translation exclusion. The
+/// counts and private page demand come from canonical roots/visibility records.
+pub(super) fn admit_process_workspace(_lease: &crate::machine::monitor::TranslationLease,
+                                      registered: usize, private_pages: usize, eligible: usize)
+                                      -> Result<(), WorkspaceError>
+{
+    let mut loan = RetirementWorkspaceLoan::take()?;
+    let mut demand = loan.workspace.demand;
+    add_private_demand(&mut demand, private_pages, eligible)?;
+    loan.workspace.admit(demand, registered)
+}
+fn admit_mapping_workspace(_lease: &crate::machine::monitor::TranslationLease, target: TargetKind,
+                           owner: mac_object_table::domain::DomainId, pages: usize)
+                           -> Result<(), Error>
+{
+    let registered = super::process::registered_count(None).map_err(Error::Process)?;
+    let mut loan = RetirementWorkspaceLoan::take().map_err(Error::Workspace)?;
+    let mut demand = loan.workspace.demand;
+    if matches!(target, TargetKind::Definition)
+       && owner.kind() == mac_object_table::domain::DomainKind::Process
+    {
+        let eligible = super::process::registered_count(Some(owner)).map_err(Error::Process)?;
+        add_private_demand(&mut demand, pages, eligible).map_err(Error::Workspace)?;
+    }
+    else
+    {
+        demand.shared_pages = demand.shared_pages.max(pages);
+    }
+    loan.workspace.admit(demand, registered).map_err(Error::Workspace)
+}
+fn mapped_pages(segments: &[SegmentMap]) -> Result<usize, WorkspaceError>
+{
+    segments.iter().try_fold(0usize, |total, segment| {
+                       let pages = usize::try_from(segment.bytes / PAGE_BYTES).map_err(|_| {
+                                       WorkspaceError::Capacity { pages: usize::MAX,
+                                                                  roots: 1 }
+                                   })?;
+                       total.checked_add(pages).ok_or(WorkspaceError::Capacity { pages,
+                                                                                 roots: 1 })
+                   })
+}
 struct State
 {
     phase:     Phase,
@@ -457,15 +708,16 @@ struct State
 /// itself performs no unmap, monitor wait or fallible teardown.
 pub(crate) struct Mapping
 {
-    owner:    OwnerRef,
-    base:     u64,
-    target:   TargetKind,
-    source:   BackingSource,
-    entry:    u64,
-    segments: Vec<SegmentMap>,
-    leaves:   spin::Once<Entries>,
-    payload:  Mutex<Option<Payload>>,
-    state:    Mutex<State>
+    owner:            OwnerRef,
+    base:             u64,
+    target:           TargetKind,
+    source:           BackingSource,
+    entry:            u64,
+    segments:         Vec<SegmentMap>,
+    retirement_pages: usize,
+    leaves:           spin::Once<Entries>,
+    payload:          Mutex<Option<Payload>>,
+    state:            Mutex<State>
 }
 impl Mapping
 {
@@ -713,12 +965,14 @@ impl Mapping
                                             image::WriteError::Destination(cause) => cause
                                         }
                                     })?;
+        let retirement_pages = mapped_pages(&segments).map_err(Error::Workspace)?;
         Arc::try_new(Self { owner: owner.clone(),
                             base,
                             target,
                             source,
                             entry: plan.entry(),
                             segments,
+                            retirement_pages,
                             leaves: spin::Once::new(),
                             payload: Mutex::new(Some(payload)),
                             state: Mutex::new(State { phase:     Phase::Prepared,
@@ -746,6 +1000,11 @@ impl Mapping
                     | Phase::Quarantined(_) => PublicationState::Blocked
                 }
             })
+    }
+
+    pub(crate) fn retirement_pages(&self) -> usize
+    {
+        self.retirement_pages
     }
 
     pub(crate) fn entry(&self) -> Option<u64>
@@ -800,6 +1059,13 @@ impl Mapping
         // treating a legitimate concurrently installed branch as corruption.
         let lease =
             crate::machine::monitor::prepare_translation_invalidation().map_err(Error::Monitor)?;
+        if !matches!(self.target, TargetKind::Application)
+        {
+            admit_mapping_workspace(&lease,
+                                    self.target,
+                                    self.owner.owner(),
+                                    self.retirement_pages)?;
+        }
         // The Mapping retains its genuine origin across deferred publication;
         // scratch and retained Entries do not borrow the executor's heap source.
         let plan =
@@ -913,6 +1179,17 @@ impl Mapping
             {}
             Phase::Mapped | Phase::Live =>
             {
+                // Arm a scratch wait before taking a new issuer. Otherwise a
+                // still-lent workspace after monitor release could make this
+                // unchanged Busy drop an unissued lease and wake itself.
+                let workspace = if matches!(self.target, TargetKind::Application)
+                {
+                    None
+                }
+                else
+                {
+                    Some(RetirementWorkspaceLoan::take().map_err(Error::Workspace)?)
+                };
                 let lease = match crate::machine::monitor::prepare_translation_invalidation()
                 {
                     Ok(lease) => lease,
@@ -926,36 +1203,42 @@ impl Mapping
                     }
                 };
                 let leaves = self.leaves.get().ok_or(Error::State)?;
-                // These owners stay in the ACK scope, not the preparation
-                // branch: dynamic Process pins cannot drop before lease.finish.
-                let roots;
-                let mut all;
-                let entries = if matches!(self.target, TargetKind::Application)
+                // Application uses only its original Entries. Other targets
+                // borrow the admitted workspace and keep real Pins through ACK.
+                let mut turn = RetirementTurn { lease: Some(lease), workspace };
+                let prepared = (|| {
+                    if let Some(loan) = &mut turn.workspace
+                    {
+                        let owner = (matches!(self.target, TargetKind::Definition)
+                            && self.owner.owner().kind() == mac_object_table::domain::DomainKind::Process)
+                            .then_some(self.owner.owner());
+                        let workspace = &mut loan.workspace;
+                        if self.retirement_pages != 0
+                        {
+                            super::process::snapshot_into(owner, &mut workspace.roots)
+                                .map_err(Error::Process)?;
+                        }
+                        process_entries(&self.segments, &workspace.roots, &mut workspace.dynamic)?;
+                    }
+                    Ok::<_, Error>(())
+                })();
+                if let Err(cause) = prepared
                 {
-                    // Applications publish only permanent-root mappings. These
-                    // already owned Entries are the complete unmap set; no
-                    // snapshot, fresh vectors or stopped-owner charge is needed.
-                    leaves
+                    let workspace_error = match &cause
+                    {
+                        Error::Workspace(cause)
+                        | Error::Process(super::process::Error::Workspace(cause)) => Some(*cause),
+                        _ => None
+                    };
+                    if let Some(cause) = workspace_error.filter(|cause| matches!(cause,
+                        WorkspaceError::Invariant { .. } | WorkspaceError::Capacity { .. }))
+                    {
+                        self.settle_phase(Phase::Quarantined(CleanupCause::Workspace { base: self.base, cause }));
+                    }
+                    return Err(cause);
                 }
-                else
-                {
-                    roots = participating_roots(self.target, self.owner.owner(), false)?;
-                    let dynamic = process_entries(&self.segments, &roots)?;
-                    all = Entries { leaves:    Vec::new(),
-                                    ancestors: Vec::new() };
-                    all.leaves
-                       .try_reserve_exact(leaves.leaves.len() + dynamic.leaves.len())
-                       .map_err(|_| Error::Metadata)?;
-                    all.ancestors
-                       .try_reserve_exact(leaves.ancestors.len() + dynamic.ancestors.len())
-                       .map_err(|_| Error::Metadata)?;
-                    all.leaves.extend_from_slice(&leaves.leaves);
-                    all.leaves.extend_from_slice(&dynamic.leaves);
-                    all.ancestors.extend_from_slice(&leaves.ancestors);
-                    all.ancestors.extend_from_slice(&dynamic.ancestors);
-                    &all
-                };
-                if let Err(cause) = unmap(entries)
+                let dynamic = turn.workspace.as_ref().map(|loan| &loan.workspace.dynamic);
+                if let Err(cause) = unmap(leaves, dynamic)
                 {
                     let refusal = match &cause
                     {
@@ -975,7 +1258,7 @@ impl Mapping
                     return Err(cause);
                 }
                 self.set_phase(Phase::Cleared);
-                match lease.finish()
+                match turn.lease.take().ok_or(Error::State)?.finish()
                 {
                     Ok(receipt) => self.confirm_unmapped(receipt),
                     Err(cause) =>
@@ -1590,11 +1873,13 @@ impl Plan
         Ok(self)
     }
 }
-fn unmap(entries: &Entries) -> Result<(), Error>
+fn unmap(entries: &Entries, dynamic: Option<&Entries>) -> Result<(), Error>
 {
     interrupts::with_masked(|| {
         let _tables = TABLES.lock();
-        for leaf in entries.ancestors.iter().chain(entries.leaves.iter())
+        let components = [Some(entries), dynamic];
+        for leaf in components.iter().flatten()
+                              .flat_map(|entries| entries.ancestors.iter().chain(entries.leaves.iter()))
         {
             let observed = leaf.load();
             if observed != leaf.bits
@@ -1607,7 +1892,7 @@ fn unmap(entries: &Entries) -> Result<(), Error>
         let revision = REVISION.load(Ordering::Acquire);
         let next = revision.checked_add(2).filter(|_| revision & 1 == 0).ok_or(Error::Revision)?;
         REVISION.store(revision + 1, Ordering::Release);
-        for leaf in &entries.leaves
+        for leaf in components.iter().flatten().flat_map(|entries| &entries.leaves)
         {
             leaf.store(0);
         }
@@ -1709,19 +1994,28 @@ fn table_in_space(space: &super::Space, physical: PhysicalAddress) -> Option<usi
         None
     })
 }
-fn process_entries(segments: &[SegmentMap], roots: &[super::process::Pin])
-                   -> Result<Entries, Error>
+fn process_entries(segments: &[SegmentMap], roots: &[super::process::Pin], entries: &mut Entries)
+                   -> Result<(), Error>
 {
-    let mut entries = Entries { leaves:    Vec::new(),
-                                ancestors: Vec::new() };
-    let count = segments.iter()
-                        .try_fold(0usize, |n, s| n.checked_add((s.bytes / PAGE_BYTES) as usize))
-                        .and_then(|n| n.checked_mul(roots.len()))
-                        .ok_or(Error::Metadata)?;
-    entries.leaves.try_reserve_exact(count).map_err(|_| Error::Metadata)?;
-    entries.ancestors
-           .try_reserve_exact(count.checked_mul(2).ok_or(Error::Metadata)?)
-           .map_err(|_| Error::Metadata)?;
+    let pages = mapped_pages(segments).map_err(Error::Workspace)?;
+    let count = pages.checked_mul(roots.len())
+                     .ok_or(Error::Workspace(WorkspaceError::Capacity { pages,
+                                                                        roots: roots.len() }))?;
+    let ancestors = count.checked_mul(2)
+                         .ok_or(Error::Workspace(WorkspaceError::Capacity { pages: count,
+                                                                            roots: 2 }))?;
+    for (part, required, capacity, len) in
+        [("leaves", count, entries.leaves.capacity(), entries.leaves.len()),
+         ("ancestors", ancestors, entries.ancestors.capacity(), entries.ancestors.len())]
+    {
+        if len != 0 || required > capacity
+        {
+            return Err(Error::Workspace(WorkspaceError::Invariant { part,
+                                                                    required:
+                                                                        required.max(len),
+                                                                    capacity }));
+        }
+    }
     for row in roots
     {
         let space = row.space();
@@ -1776,7 +2070,7 @@ fn process_entries(segments: &[SegmentMap], roots: &[super::process::Pin])
             }
         }
     }
-    Ok(entries)
+    Ok(())
 }
 /// Canonical SPCE retirement owns the actual invalidation ACK before taking
 /// these physical/receipt owners. No Mapping retains private-root raw Slots.
