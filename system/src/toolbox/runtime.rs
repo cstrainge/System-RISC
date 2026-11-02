@@ -92,6 +92,17 @@ pub(in crate::toolbox) struct Presentation
     compositions:           u64
 }
 
+/// Pointer shape selection and busy-cursor tracking.
+struct Pointer
+{
+    cursors:          super::quickdraw::cursors::Cursors,
+    busy_cursor:      super::quickdraw::cursors::Cursors,
+    responsiveness:   super::quickdraw::responsiveness::Responsiveness,
+    text_cursor:      mac_abi::quickdraw::MonoCursor,
+    resize_cursors:   [mac_abi::quickdraw::MonoCursor; 2],
+    automatic_cursor: Option<u32>
+}
+
 pub struct Toolbox
 {
     pub(in crate::toolbox) drag:      super::drag::Manager,
@@ -105,12 +116,6 @@ pub struct Toolbox
     core_dialogs_active:              bool,
     menus:                            super::menus::Manager,
     system_bar:                       super::menus::SystemBar,
-    cursors:                          super::quickdraw::cursors::Cursors,
-    busy_cursor:                      super::quickdraw::cursors::Cursors,
-    responsiveness:                   super::quickdraw::responsiveness::Responsiveness,
-    text_cursor:                      mac_abi::quickdraw::MonoCursor,
-    resize_cursors:                   [mac_abi::quickdraw::MonoCursor; 2],
-    automatic_cursor:                 Option<u32>,
     worlds:                           super::quickdraw::worlds::Worlds,
     classic_font:                     mac_abi::quickdraw::FontSelection,
     pub windows:                      WindowManager,
@@ -119,6 +124,7 @@ pub struct Toolbox
     textedit:                         super::textedit::Manager,
     definitions:                      Definitions,
     pub(in crate::toolbox) presentation: Presentation,
+    pointer: Pointer,
     decoders:                         [Decoder; 2],
     pub revision:                     u32,
     pub updates:                      u32,
@@ -494,12 +500,8 @@ impl Toolbox
                   core_dialogs_active: false,
                   menus: super::menus::Manager::new(super::handles::menu_kinds()?, mdef, crate::machine::traps::gateway)?,
                   system_bar,
-                  cursors: Default::default(),
-                  busy_cursor,
-                  responsiveness: Default::default(),
-                  text_cursor,
-                  resize_cursors,
-                  automatic_cursor:None,
+                  pointer: Pointer { cursors: Default::default(), busy_cursor, text_cursor, resize_cursors,
+                                     responsiveness: Default::default(), automatic_cursor: None },
                   worlds: super::quickdraw::worlds::Worlds::new(super::handles::world_kinds()?)?,
                   classic_font: Default::default(),
                   windows: WindowManager::with_kinds(super::handles::window_kinds()?, crate::machine::traps::gateway)?,
@@ -1850,7 +1852,7 @@ impl Toolbox
     pub fn cursor(&mut self, call: &mut mac_abi::quickdraw::CursorCall, colors: &[u32])
                   -> Result<(), Status>
     {
-        let changed = self.cursors.request(call, colors, self.events.mouse)?;
+        let changed = self.pointer.cursors.request(call, colors, self.events.mouse)?;
         self.presentation.cursor_dirty |= changed && self.owner == self.foreground;
         Ok(())
     }
@@ -1859,7 +1861,7 @@ impl Toolbox
                            -> Result<(), Status>
     {
         let changed = crate::kernel::with_resources_in(call.scope, |resources| {
-            self.cursors.resource_request(call,
+            self.pointer.cursors.resource_request(call,
                                           self.events.mouse,
                                           Self::when(),
                                           |kind, id, scope| {
@@ -1876,7 +1878,7 @@ impl Toolbox
     /// chrome and covered windows, while TextEdit accounts for its port clip.
     fn automatic_cursor_at_mouse(&self) -> Option<u32>
     {
-        if !self.cursors.is_automatic() || self.menus.is_tracking() || self.windows.is_tracking()
+        if !self.pointer.cursors.is_automatic() || self.menus.is_tracking() || self.windows.is_tracking()
         {
             return None;
         }
@@ -2476,8 +2478,8 @@ impl Toolbox
     pub(super) fn next_positioned(&mut self, mask: u16, remove: bool, positioned: bool)
                                   -> (Event, mac_abi::events::EventPosition, bool)
     {
-        self.presentation.cursor_dirty |= self.responsiveness.foreground(self.foreground, Self::when());
-        self.presentation.cursor_dirty |= self.responsiveness.polled(self.owner, Self::when());
+        self.presentation.cursor_dirty |= self.pointer.responsiveness.foreground(self.foreground, Self::when());
+        self.presentation.cursor_dirty |= self.pointer.responsiveness.polled(self.owner, Self::when());
         self.poll_inputs();
         self.automatic_control_layout();
         let when = Self::when();
@@ -2805,20 +2807,20 @@ impl Toolbox
     {
         let feedback = self.prepare_feedback(full);
         let automatic =
-            if self.responsiveness.active() { None } else { self.automatic_cursor_at_mouse() };
-        let cursor_changed = self.presentation.cursor_dirty || self.automatic_cursor != automatic;
-        self.automatic_cursor = automatic;
+            if self.pointer.responsiveness.active() { None } else { self.automatic_cursor_at_mouse() };
+        let cursor_changed = self.presentation.cursor_dirty || self.pointer.automatic_cursor != automatic;
+        self.pointer.automatic_cursor = automatic;
         let text_cursor = automatic.map(|id| {
                                        match id
                                        {
-                                           17 => self.resize_cursors[0],
-                                           21 => self.resize_cursors[1],
-                                           _ => self.text_cursor
+                                           17 => self.pointer.resize_cursors[0],
+                                           21 => self.pointer.resize_cursors[1],
+                                           _ => self.pointer.text_cursor
                                        }
                                    });
         let cursor =
-            if self.responsiveness.active() { &mut self.busy_cursor } else { &mut self.cursors };
-        let text_cursor = if self.responsiveness.active() { None } else { text_cursor };
+            if self.pointer.responsiveness.active() { &mut self.pointer.busy_cursor } else { &mut self.pointer.cursors };
+        let text_cursor = if self.pointer.responsiveness.active() { None } else { text_cursor };
         let sprite = cursor.sprite(self.events.mouse, text_cursor);
         let bounds = sprite.map_or(Rect::ZERO, |sprite| sprite.bounds());
         let overlays =

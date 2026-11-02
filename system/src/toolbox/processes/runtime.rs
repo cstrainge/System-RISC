@@ -440,7 +440,7 @@ impl Toolbox
 
     pub(super) fn observe_cursor_motion(&mut self, point: Point)
     {
-        self.presentation.cursor_dirty |= self.cursors.mouse_moved(point);
+        self.presentation.cursor_dirty |= self.pointer.cursors.mouse_moved(point);
         for local in &mut self.locals
         {
             local.cursors.mouse_moved(point);
@@ -455,7 +455,7 @@ impl Toolbox
         let now = Self::when();
         let changed = if self.owner == self.foreground
         {
-            self.cursors.animation_tick(now)
+            self.pointer.cursors.animation_tick(now)
         }
         else
         {
@@ -478,12 +478,12 @@ impl Toolbox
         let cursor_activity = self.tick_menu_feedback() | self.tick_cursor();
         let now = Self::when();
         self.presentation.cursor_dirty |=
-            self.responsiveness.tick(self.foreground,
+            self.pointer.responsiveness.tick(self.foreground,
                                      now,
                                      waiting.iter().any(|waiter| waiter.app == self.foreground));
-        if self.responsiveness.active()
+        if self.pointer.responsiveness.active()
         {
-            self.presentation.cursor_dirty |= self.busy_cursor.animation_tick(now);
+            self.presentation.cursor_dirty |= self.pointer.busy_cursor.animation_tick(now);
         }
         self.present_cursor_overlay();
         self.route_events();
@@ -597,7 +597,8 @@ impl Toolbox
             swap!(dialogs);
         }
         swap!(menus);
-        swap!(cursors);
+        core::mem::swap(&mut self.pointer.cursors, &mut self.locals[old].cursors);
+        core::mem::swap(&mut self.pointer.cursors, &mut self.locals[next].cursors);
         swap!(classic_font);
         swap!(events);
         swap!(textedit);
@@ -844,7 +845,7 @@ impl Toolbox
         self.enter(caller);
         self.processes.activate(id)?;
         self.foreground = id;
-        self.presentation.cursor_dirty |= self.responsiveness.foreground(id, Self::when());
+        self.presentation.cursor_dirty |= self.pointer.responsiveness.foreground(id, Self::when());
         self.windows.set_owner_hidden(id, false);
         self.windows.select_owner_group_focus(id, focus, &mut self.events, Self::when());
         self.route_events();
