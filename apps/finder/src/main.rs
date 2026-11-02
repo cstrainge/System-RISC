@@ -48,6 +48,29 @@ fn try_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, result: R
     }
 }
 
+fn try_open_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
+                          result: Result<T, browser::ActionFailure>)
+                          -> Result<Option<T>, Error>
+{
+    use core::fmt::Write;
+    match result
+    {
+        Ok(value) => Ok(Some(value)),
+        Err(browser::ActionFailure::Other(cause)) => try_action(system, alerts, Err(cause)),
+        Err(browser::ActionFailure::Open { item,
+                                           cause }) =>
+        {
+            if let Err(error) = alerts.item_open_error(system, item, cause)
+            {
+                let mut message = browser::Text::<80>::default();
+                let _ = writeln!(&mut message, "FINDER_ALERT_FAILED status={}", error.status());
+                system.log(message.as_str())?;
+            }
+            Ok(None)
+        }
+    }
+}
+
 fn try_document_open<'a>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
                          result: Result<(), associations::OpenFailure>)
                          -> Result<bool, Error>
@@ -407,7 +430,10 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             let action = match selection.command
             {
                 menus::NEW_FOLDER => browser.new_folder(system),
-                menus::OPEN => browser.open_selection(system),
+                menus::OPEN =>
+                {
+                    try_open_action(system, &mut alerts, browser.open_selection(system)).map(|_| ())
+                }
                 menus::SELECT_ALL => browser.select_all(system),
                 menus::GET_INFO => info.open_selection(system, browser.selected_locations()),
                 menus::CLOSE =>
@@ -551,7 +577,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                                      .modifiers
                                      .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
-                    let _ = try_action(system, &mut alerts, browser.open_selection(system))?;
+                    let _ = try_open_action(system, &mut alerts, browser.open_selection(system))?;
                 }
                 else if code == 0x74
                 {
@@ -566,7 +592,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 if event.window().is_none()
                    || browser.contains(event.window().unwrap_or_default()) =>
             {
-                match try_action(system, &mut alerts, browser.click(system, &event, position))?
+                match try_open_action(system, &mut alerts, browser.click(system, &event, position))?
                 {
                     Some(browser::ClickOutcome::Completed) =>
                     {

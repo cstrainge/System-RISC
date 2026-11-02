@@ -33,6 +33,25 @@ pub enum ClickOutcome
     Deferred
 }
 
+/// Open errors retain the catalog snapshot used by the actual operation.
+/// Later window activation or selection cannot change the failed subject.
+pub enum ActionFailure
+{
+    Other(Error),
+    Open
+    {
+        item:  CatalogInfo,
+        cause: Error
+    }
+}
+impl From<Error> for ActionFailure
+{
+    fn from(cause: Error) -> Self
+    {
+        Self::Other(cause)
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct FolderWindow
 {
@@ -835,34 +854,41 @@ impl Browser
         Ok(())
     }
 
-    fn open_entry(&mut self, system: &System<'_>, entry: &CatalogInfo) -> Result<(), Error>
+    fn open_entry(&mut self, system: &System<'_>, entry: &CatalogInfo)
+                  -> Result<(), ActionFailure>
     {
-        if entry.is_directory()
-        {
-            self.open(system,
-                      Location { volume: entry.volume,
-                                 folder: entry.id })?;
-        }
-        else if entry.file_type == TypeCode::new(*b"APPL")
-        {
-            system.processes().launch(entry.volume, entry.id)?;
-        }
-        else if let Some(mounted) = system.files().open_item(entry.volume, entry.id)?
-        {
-            desktop::invalidate();
-            self.open(system,
-                      Location { volume: mounted.id,
-                                 folder: ROOT_ID })?;
-        }
-        else
-        {
-            if self.document_open.is_some()
+        let result = (|| -> Result<(), Error> {
+            if entry.is_directory()
             {
-                return Err(Error::ServiceBusy);
+                self.open(system,
+                          Location { volume: entry.volume,
+                                     folder: entry.id })?;
             }
-            self.document_open = Some(*entry);
-        }
-        Ok(())
+            else if entry.file_type == TypeCode::new(*b"APPL")
+            {
+                system.processes().launch(entry.volume, entry.id)?;
+            }
+            else if let Some(mounted) = system.files().open_item(entry.volume, entry.id)?
+            {
+                desktop::invalidate();
+                self.open(system,
+                          Location { volume: mounted.id,
+                                     folder: ROOT_ID })?;
+            }
+            else
+            {
+                if self.document_open.is_some()
+                {
+                    return Err(Error::ServiceBusy);
+                }
+                self.document_open = Some(*entry);
+            }
+            Ok(())
+        })();
+        result.map_err(|cause| {
+                  ActionFailure::Open { item: *entry,
+                                        cause }
+              })
     }
 
     pub fn take_document_open(&mut self) -> Option<CatalogInfo>
@@ -1569,7 +1595,7 @@ impl Browser
     }
 
     pub fn click(&mut self, system: &System<'_>, event: &Event, position: PointerPosition)
-                 -> Result<ClickOutcome, Error>
+                 -> Result<ClickOutcome, ActionFailure>
     {
         self.press = None;
         self.marquee = None;
@@ -1970,7 +1996,7 @@ impl Browser
         self.change_selection(system, slot, next, &[]).map(|_| ())
     }
 
-    pub fn open_selection(&mut self, system: &System<'_>) -> Result<(), Error>
+    pub fn open_selection(&mut self, system: &System<'_>) -> Result<(), ActionFailure>
     {
         if self.desktop_active
         {

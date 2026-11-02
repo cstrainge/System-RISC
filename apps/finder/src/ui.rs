@@ -167,6 +167,19 @@ impl<'a> Alerts<'a>
         self.error_for(system, status, op, subject.as_str())
     }
 
+    pub fn item_open_error(&mut self, system: &System<'a>, item: files::CatalogInfo, cause: Error)
+                           -> Result<(), Error>
+    {
+        let mut log = crate::browser::Text::<384>::default();
+        let _ = writeln!(&mut log,
+                         "FINDER_ITEM_OPEN_FAILED volume={} cnid={} status={} error={cause:?}",
+                         item.volume,
+                         item.id,
+                         cause.status());
+        system.log(log.as_str())?;
+        self.error_for(system, cause, 2, item.name())
+    }
+
     pub fn document_open_error(&mut self, system: &System<'a>,
                                failure: crate::associations::OpenFailure)
                                -> Result<(), Error>
