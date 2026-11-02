@@ -42,6 +42,17 @@ impl Text
         Ok(())
     }
 
+    pub fn push_bounded(&mut self, text: &str)
+    {
+        let mut length = text.len().min(self.bytes.len() - self.length);
+        while !text.is_char_boundary(length)
+        {
+            length -= 1;
+        }
+        self.bytes[self.length..self.length + length].copy_from_slice(&text.as_bytes()[..length]);
+        self.length += length;
+    }
+
     pub fn text(&self) -> Result<&str, Status>
     {
         core::str::from_utf8(&self.bytes[..self.length]).map_err(|_| BAD_ABI)

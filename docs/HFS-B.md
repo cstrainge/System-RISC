@@ -15,8 +15,10 @@ current whole-data-file SDK writer stages at most4MiB, and resident resource
 loading has a4MiB selected-payload budget on the current8MiB heap, independent of
 total fork length. See [the implemented storage architecture](../ARCHITECTURE.md#native-hfs-b-storage).
 
-User-state preservation across regenerated images includes both
-`System Folder/Preferences` and `Documents`. The Linux tool provides recursive,
+User-state preservation across regenerated images includes
+`System Folder/Preferences`, `Documents` and the startup volume's `Desktop Folder`.
+Desktop Folders on other mounted volumes remain on those volumes; rebuilding the
+startup image does not rewrite them. The Linux tool provides recursive,
 path-based copy-in/copy-out, independent of catalog IDs. Exported bundles preserve
 both forks, Finder metadata, comments, Unicode names and precise dates; restoring
 them merges directories, with explicit opt-in to replace existing files. Keep

@@ -26,6 +26,8 @@ pub(in crate::toolbox) struct Page
     pub total:     usize,
     pub selected:  Option<usize>,
     pub scanning:  bool,
+    /// An internal viewport adjustment requires replaying an aggregate cursor.
+    pub rescan:    bool,
     cursor:        DirectoryScanCursor,
     seen:          usize,
     known:         bool,
@@ -43,6 +45,7 @@ impl Default for Page
                total:         0,
                selected:      None,
                scanning:      false,
+               rescan:        false,
                cursor:        DirectoryScanCursor::default(),
                seen:          0,
                known:         false,
@@ -76,6 +79,7 @@ impl Page
         self.seen = 0;
         self.cursor = DirectoryScanCursor::default();
         self.scanning = true;
+        self.rescan = false;
         self.search = search;
     }
 
@@ -111,13 +115,6 @@ impl Page
         }
     }
 
-    pub fn desktop_total(&mut self, total: usize)
-    {
-        self.known = true;
-        self.total = total;
-        self.scanning = false;
-    }
-
     pub fn query(&self, volume: u32, directory: u32) -> FileScanCall
     {
         FileScanCall { operation: mac_abi::files::SCAN_DIRECTORY,
@@ -136,6 +133,7 @@ impl Page
         {
             return Err(BAD_ABI);
         }
+        self.rescan = false;
         if self.revision != 0 && self.revision != reply.cursor.revision
         {
             self.known = false;
@@ -174,6 +172,7 @@ impl Page
                     if first < index
                     {
                         self.request(first, false);
+                        self.rescan = true;
                         self.selected = Some(index);
                         return Ok(false);
                     }
@@ -212,6 +211,7 @@ impl Page
                 if self.total != 0 && self.first > self.total.saturating_sub(capacity)
                 {
                     self.request(self.total.saturating_sub(capacity), false);
+                    self.rescan = true;
                 }
                 if self.selected.is_some_and(|index| index >= self.total)
                 {

@@ -242,7 +242,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
                            | files::ALLOCATION_INFO
                            | files::COMMENT
                            | files::PATH);
-    let trash_query = call.operation == files::TRASH_DIRECTORY;
+    let trash_query = matches!(call.operation, files::TRASH_DIRECTORY | files::FIND_FOLDER);
     let opening = call.operation == files::OPEN;
     let making_folder = call.operation == files::NEW_FOLDER;
     let mounting_file = matches!(call.operation, files::MOUNT_FILE | files::OPEN_ITEM);
@@ -280,11 +280,21 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
        || call.capacity > 1024 * 1024
        || (call.capacity != 0 && call.output.is_null())
        || trash_query && call.index > 1
+       || call.operation == files::FIND_FOLDER && call.index == 0 && call.position != 0
        || call.operation == files::HOST_EXPORT_COUNT && (call.volume != 0 || call.index != 0)
        || call.operation == files::MOUNT_HOST_EXPORT && call.volume != 0
        || call.operation == files::UNMOUNT_VOLUME && (call.volume == 0 || call.index != 0)
     {
         return Some(BAD_ARGUMENT as i64);
+    }
+    if call.operation == files::FIND_FOLDER
+    {
+        let resolved = crate::kernel::with_files(|m| m.resolve_folder_volume(call))
+            .map_err(crate::state::AccessError::status).and_then(|r| r);
+        if let Err(error) = resolved
+        {
+            return Some(error as i64);
+        }
     }
     let name = if call.name_length == 0
     {
@@ -504,6 +514,10 @@ unsafe fn dispatch_scan_async(owner: u64, pointer: *mut (), size: usize) -> i64
         return BAD_ARGUMENT as i64;
     }
     let call = unsafe { &mut *pointer.cast::<files::FileScanCall>() };
+    if call.operation == files::SCAN_DESKTOP
+    {
+        return super::provider::runtime::request_desktop(owner, call) as i64;
+    }
     let routed = crate::kernel::with_files(|manager| {
         match manager.read_provider(call.volume)
         {

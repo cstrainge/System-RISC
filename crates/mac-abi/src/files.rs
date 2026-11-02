@@ -60,6 +60,12 @@ pub const REMOVE: u32 = 38;
 /// Properties are in entry; name/name_length carry only the comment text.
 /// Every non-property input field of entry must be zero.
 pub const SET_PROPERTIES: u32 = 39;
+/// Locate a per-volume special directory. volume=0 selects the startup volume;
+/// file_type='desk' or 'trsh', index=create (0/1), position=creation timestamp
+/// (zero for lookup only). Returns entry and its actual volume.
+pub const FIND_FOLDER: u32 = 45;
+/// Native combined desktop iteration, using FileScanCall.desktop. Read-only.
+pub const SCAN_DESKTOP: u32 = 46;
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct IconMove
@@ -132,9 +138,20 @@ pub struct FileScanCall
     pub directory:          u32,
     pub step:               u32,
     pub cursor:             DirectoryScanCursor,
+    pub desktop:            DesktopScanCursor,
     pub entry:              CatalogInfo,
     pub data_allocated:     u64,
     pub resource_allocated: u64
+}
+/// Bounded continuation over live mounted volumes and their ordinary catalogs.
+/// Default starts enumeration; no synthetic volume or catalog identity exists.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DesktopScanCursor
+{
+    pub volume:    u32,
+    pub state:     u32,
+    pub directory: DirectoryScanCursor
 }
 pub const COMMENT_MAX_BYTES: usize = 255;
 pub const FILE_LOCKED: u16 = 0x0001;
@@ -316,8 +333,10 @@ impl CatalogInfo
 
     pub fn icon_location(&self) -> crate::geometry::Point
     {
-        crate::geometry::Point { v: i16::from_be_bytes([self.finder_info[10], self.finder_info[11]]),
-                                 h: i16::from_be_bytes([self.finder_info[12], self.finder_info[13]]) }
+        crate::geometry::Point { v: i16::from_be_bytes([self.finder_info[10],
+                                                        self.finder_info[11]]),
+                                 h: i16::from_be_bytes([self.finder_info[12],
+                                                        self.finder_info[13]]) }
     }
 
     /// Raw persisted DInfo.frRect for a directory. This does not imply the
@@ -340,10 +359,14 @@ impl CatalogInfo
     pub fn folder_scroll(&self) -> Option<crate::geometry::Point>
     {
         self.is_directory().then(|| {
-                               crate::geometry::Point { v: i16::from_be_bytes([self.finder_info[16],
-                                                                     self.finder_info[17]]),
-                                              h: i16::from_be_bytes([self.finder_info[18],
-                                                                     self.finder_info[19]]) }
+                               crate::geometry::Point { v: i16::from_be_bytes([self.finder_info
+                                                                                   [16],
+                                                                               self.finder_info
+                                                                                   [17]]),
+                                                        h: i16::from_be_bytes([self.finder_info
+                                                                                   [18],
+                                                                               self.finder_info
+                                                                                   [19]]) }
                            })
     }
 
@@ -365,6 +388,8 @@ impl CatalogInfo
 pub struct FileCall
 {
     pub operation:   u32,
+    /// FIND_FOLDER's requested special-folder type; zero for other operations.
+    pub file_type:   [u8; 4],
     pub volume:      u32,
     pub cnid:        u32,
     pub index:       u32,
@@ -503,6 +528,8 @@ pub const ABANDON_TRANSFER: u32 = 3;
 pub const TRANSFER_COPY: u32 = 0;
 pub const TRANSFER_MOVE: u32 = 1;
 pub const TRANSFER_TRASH: u32 = 2;
+/// Move each source to its own volume's Desktop Folder.
+pub const TRANSFER_DESKTOP: u32 = 3;
 pub const TRANSFER_PREPARING: u32 = 0;
 pub const TRANSFER_COPYING: u32 = 1;
 pub const TRANSFER_VERIFYING: u32 = 2;

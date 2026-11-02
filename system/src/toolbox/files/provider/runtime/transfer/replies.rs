@@ -203,15 +203,16 @@ impl State
                 {
                     return Err(READ_ONLY);
                 }
-                self.stage =
-                    if self.mode == Mode::Trash || self.put_away || self.mode.is_trash_query()
-                    {
-                        Stage::TrashDestination
-                    }
-                    else
-                    {
-                        Stage::SourceCatalog
-                    };
+                self.stage = if matches!(self.mode, Mode::Trash | Mode::Desktop)
+                                || self.put_away
+                                || self.mode.is_trash_query()
+                {
+                    Stage::TrashDestination
+                }
+                else
+                {
+                    Stage::SourceCatalog
+                };
             }
             Tag::TrashDestination =>
             {

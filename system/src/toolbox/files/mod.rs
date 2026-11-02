@@ -7,8 +7,8 @@ pub(crate) use resource::ModuleReadError;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod application;
 use alloc::{string::String, vec::Vec};
-use mac_abi::geometry::{Point, Rect};
 
+use mac_abi::geometry::{Point, Rect};
 use mac_object_table::shared::InvocationGate as _;
 
 use crate::toolbox::handles::InvocationGate;
@@ -417,6 +417,31 @@ impl Default for Manager
 }
 impl Manager
 {
+    fn resolve_folder_volume(&self, call: &mut FileCall) -> Result<(), Status>
+    {
+        if call.operation == FIND_FOLDER
+        {
+            if call.index > 1 || call.index == 0 && call.position != 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            if !matches!(&call.file_type, b"desk" | b"trsh")
+            {
+                return Err(NOT_FOUND);
+            }
+            if call.volume == 0
+            {
+                call.volume = self.volumes
+                                  .iter()
+                                  .filter_map(|(_, mounted)| mounted.info())
+                                  .find(|info| info.startup != 0)
+                                  .ok_or(NOT_FOUND)?
+                                  .id;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn prepare_forks(&mut self,
                                 kinds: (crate::toolbox::handles::KindLease,
                                  crate::toolbox::handles::KindLease))
@@ -1030,7 +1055,8 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        if matches!(call.operation, TRASH_DIRECTORY | SET_LOCKED | SET_STATIONERY) && call.index > 1
+        if matches!(call.operation, TRASH_DIRECTORY | FIND_FOLDER | SET_LOCKED | SET_STATIONERY)
+           && call.index > 1
         {
             return Err(BAD_ARGUMENT);
         }
@@ -1111,7 +1137,7 @@ impl Manager
             match call.operation
             {
                 NEW_FOLDER => Some(if call.cnid == 0 { ROOT_ID } else { call.cnid }),
-                TRASH_DIRECTORY => Some(ROOT_ID),
+                TRASH_DIRECTORY | FIND_FOLDER => Some(ROOT_ID),
                 EMPTY_TRASH | SET_ICON_LOCATION | SET_FOLDER_STATE => None,
                 _ => Some(self.entry(call.volume, call.cnid)?.parent)
             }
@@ -1150,6 +1176,7 @@ impl Manager
                                        when)
                       .map(Some)
             }
+            FIND_FOLDER => volume.find_folder(call.file_type, call.index != 0, when).map(Some),
             COMMENT => volume.comment(call.cnid).and_then(|bytes| {
                 let comment = core::str::from_utf8(&bytes).map_err(|_|MutationError::Io)?;
                 call.length = comment.len() as u64;
@@ -1308,6 +1335,36 @@ impl Manager
                        -> Result<(), Status>
     {
         call.transferred = 0;
+        self.resolve_folder_volume(call)?;
+        if matches!(call.operation, TRASH_DIRECTORY | FIND_FOLDER)
+        {
+            if call.index > 1
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let name = if call.operation == FIND_FOLDER && call.file_type == *b"desk"
+            {
+                "Desktop Folder"
+            }
+            else
+            {
+                "Trash"
+            };
+            match self.lookup(call.volume, ROOT_ID, name)
+            {
+                Ok(entry) =>
+                {
+                    if !entry.directory
+                    {
+                        return Err(ALREADY_EXISTS);
+                    }
+                    call.entry = metadata(call.volume, &entry);
+                    return Ok(());
+                }
+                Err(NOT_FOUND) if call.index == 1 => (),
+                Err(error) => return Err(error)
+            }
+        }
         if matches!(call.operation, WATCH_DIRECTORY | POLL_WATCH | DISPOSE_WATCH)
         {
             // Watch calls carry genuine owner authority through the checked
@@ -1317,6 +1374,7 @@ impl Manager
         if matches!(call.operation,
                     NEW_FOLDER
                     | TRASH_DIRECTORY
+                    | FIND_FOLDER
                     | MOVE_TO_TRASH
                     | PUT_AWAY
                     | EMPTY_TRASH

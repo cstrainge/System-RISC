@@ -931,7 +931,19 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
 
     pub fn trash_directory(&mut self, create: bool, when: u32) -> MutationResult<CatalogEntry>
     {
-        if let Some(e) = self.lookup(2, b"Trash").map_err(|_| MutationError::Io)?
+        self.find_folder(*b"trsh", create, when)
+    }
+
+    pub fn find_folder(&mut self, folder_type: [u8; 4], create: bool, when: u32)
+                       -> MutationResult<CatalogEntry>
+    {
+        let (name, flags): (&[u8], u16) = match &folder_type
+        {
+            b"desk" => (b"Desktop Folder", 0x5000),
+            b"trsh" => (b"Trash", 0x1000),
+            _ => return Err(MutationError::NotFound)
+        };
+        if let Some(e) = self.lookup(2, name).map_err(|_| MutationError::Io)?
         {
             return if e.directory { Ok(e) } else { Err(MutationError::Exists) };
         }
@@ -941,7 +953,7 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         }
         self.writable()?;
         let mut cat = self.mutation_catalog()?;
-        let id = cat.add_folder(2, b"Trash", when, 0x1000)?;
+        let id = cat.add_folder(2, name, when, flags)?;
         let entry = cat.entries[cat.index(id)?].clone();
         self.finish_mutation(cat, when, &[2], &[], None)?;
         Ok(entry)
@@ -1150,7 +1162,7 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         let mut cat = self.mutation_catalog()?;
         self.protection(&cat, id, protected)?;
         let e = &cat.entries[cat.index(id)?];
-        if e.flags & 1 != 0
+        if e.flags & 1 != 0 || word(&e.finder_info, 8)? & 0x1000 != 0
         {
             return Err(MutationError::Protected);
         }
