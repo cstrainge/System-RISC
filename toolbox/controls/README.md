@@ -34,8 +34,8 @@ other Finder controls use shared SDK tracking. TextEdit selections and Finder ic
 are content interactions rather than standard controls.
 
 Canonical tracking/ownership assertions live in
-`crates/mac-toolbox/tests/conformance/managed_controls.rs`, shared by host and
-disk-booted RV64 tests. Original CDEF pixel/hit fixtures remain the appearance
+`crates/mac-toolbox/tests/conformance/managed_controls.rs`, executed through disk-booted RV64 ECALL tests. Host-linked control validation
+is retired. Original CDEF pixel/hit fixtures remain the appearance
 oracle. Custom controls, focus traversal and arbitrary action callbacks remain
 separate work; this is not full classic Control Manager parity.
 
@@ -45,3 +45,13 @@ CDEF0 draws the outline and excludes it from activation hit testing. The dialog
 controller routes Return to its default action. Other control kinds reject the
 flag. `ScrollBoxRef::row_at` resolves current resident row geometry; blank space,
 partial bottom rows and the scrollbar return `None`, without painting.
+
+Managed configuration stages state and retained drawing together. If admission
+refuses the drawing, the prior state remains current and the same request can
+be retried. Range changes cancel a scrollbar thumb capture; page repetition
+rechecks CDEF geometry as the thumb moves beneath a stationary pointer.
+
+`ScrollBoxRef::cancel()` releases tracking without requiring missing rows or
+loading a CDEF. Modal SDK tracking attempts cancellation explicitly on return
+and retains a Drop fallback on errors. Inactive-window polls cancel scroll-box
+capture, and cancellation clears highlights in already retained drawings.

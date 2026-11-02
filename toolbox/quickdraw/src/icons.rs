@@ -80,6 +80,18 @@ impl<'a> Icons<'a>
                .id)
     }
 
+    /// Select the resident menubar icon before installing menus. Subsequent
+    /// loads of -16386 use -16387 when enabled; this does not draw or invalidate.
+    pub fn set_apple_menu_icon_flag(self, value: bool) -> Result<()>
+    {
+        self.client
+            .icon(IconCall { operation: ICON_APPLE_MENU_FLAG,
+                             scope: SYSTEM,
+                             id: i16::from(value),
+                             ..Default::default() })
+            .map(|_| ())
+    }
+
     pub fn plot(self, target: impl Into<DrawingTarget>, id: i16, destination: Rect,
                 flags: IconFlags)
                 -> Result<()>

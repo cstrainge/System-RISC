@@ -10,6 +10,7 @@ pub(super) enum Mode
     Copy,
     Move,
     Trash,
+    Desktop,
     DeleteTrash,
     CountTrash
 }
@@ -356,7 +357,7 @@ impl State
                   io: None,
                   reply: None,
                   tag: None,
-                  stage: if call.mode == TRANSFER_TRASH
+                  stage: if matches!(call.mode, TRANSFER_TRASH | TRANSFER_DESKTOP)
                   {
                       Stage::SourceVolume
                   }
@@ -370,6 +371,7 @@ impl State
                       TRANSFER_COPY => Mode::Copy,
                       TRANSFER_MOVE => Mode::Move,
                       TRANSFER_TRASH => Mode::Trash,
+                      TRANSFER_DESKTOP => Mode::Desktop,
                       _ => return Err(BAD_ARGUMENT)
                   },
                   when: call.when,
@@ -402,7 +404,7 @@ impl State
                   group: None,
                   put_away: false,
                   fast_move:
-                      call.mode == TRANSFER_TRASH
+                      matches!(call.mode, TRANSFER_TRASH | TRANSFER_DESKTOP)
                       || call.mode == TRANSFER_MOVE
                          && sources.iter().all(|source| source.volume == call.destination_volume),
                   cancelling: false,

@@ -25,15 +25,11 @@ System7.6.1 `NewControl` proc16 probe:7,696 pixels total, with source/crop hashe
 in `provenance/system7-scrollbar-assets.json`. It contains no full-window raster.
 `scripts/extract_scrollbar_assets.py` reproduces the inline indexed glyphs.
 
-`python3 scripts/check_scrollbar_pixels.py` compares every control-owned RGB
-pixel for both orientations and widths at minimum/middle/maximum, inactive,
-zero-range, and pressed up/down/thumb states. All32 controls/114,080 pixels match
-exactly. It also compares728 original `TestControl` samples: all agree, including
-arrow shadow-strip and cross-border cases. The unsampled exact midpoint split
-on a thumb's outer border remains inferred; this does not claim exhaustive hit
-parity at all values or dimensions. The report and difference images are under
-`results/system7/scrollbar-appearance-checks.json` and `results/system7/scrollbars/`.
-
-Host tests cover original thumb positions, hit parts, bad ABI/identity/pointers,
-relative thumb tracking, safe client transport, and resource replay with a moved
-origin and clip. The same no-std resource compiles and passes Clippy for RV64.
+Control appearance and hit assertions live in
+`crates/mac-toolbox/tests/conformance/controls.rs`, executed through the
+runtime-loaded resource in the disk-booted RV64 conformance fixture. The
+independent corpus contains 32 controls and 114,080 pixels, plus original hit
+observations. Host-linked rendering, replay tests and their capture script
+are retired. These samples do not establish exhaustive hit parity at every
+value or dimension; the exact midpoint split on a thumb's outer border remains
+inferred.

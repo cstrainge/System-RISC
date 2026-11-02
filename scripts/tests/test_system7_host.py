@@ -8,11 +8,55 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from system7_host import exclusive_lock, process_exists, sync_directory, sync_file
+from system7_host import exclusive_lock, process_exists, sync_directory, sync_file, windows_process_name
 from system7_exports import readiness, stop
 
 
 class HostTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Windows process identity')
+    def test_process_name_does_not_signal_a_process_and_detects_its_exit(self):
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+        try:
+            self.assertEqual(windows_process_name(child.pid).casefold(), Path(sys.executable).name.casefold())
+            self.assertIsNone(child.poll(), 'identity probe terminated its process')
+        finally:
+            child.terminate()
+            child.wait(timeout=5)
+        self.assertIsNone(windows_process_name(child.pid))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows process identity')
+    def test_empty_process_name_is_an_ownership_error(self):
+        import ctypes
+        kernel = Mock()
+        kernel.CreateToolhelp32Snapshot.return_value = 123
+        def entry_without_name(snapshot, entry):
+            entry._obj.th32ProcessID = 456
+            return True
+        kernel.Process32FirstW.side_effect = entry_without_name
+        with patch.object(ctypes, 'WinDLL', return_value=kernel):
+            with self.assertRaisesRegex(OSError, 'no readable executable name'):
+                windows_process_name(456)
+        kernel.CloseHandle.assert_called_once_with(123)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows process identity')
+    def test_process_name_query_failure_is_not_reported_as_absence(self):
+        import ctypes
+        for failed in ('CreateToolhelp32Snapshot', 'Process32FirstW', 'Process32NextW'):
+            with self.subTest(failed=failed):
+                kernel = Mock()
+                kernel.CreateToolhelp32Snapshot.return_value = (
+                    ctypes.c_void_p(-1).value if failed == 'CreateToolhelp32Snapshot' else 123)
+                kernel.Process32FirstW.return_value = failed != 'Process32FirstW'
+                kernel.Process32NextW.return_value = False
+                with patch.object(ctypes, 'WinDLL', return_value=kernel), \
+                        patch.object(ctypes, 'get_last_error', return_value=5):
+                    with self.assertRaisesRegex(OSError, 'Access is denied'):
+                        windows_process_name(456)
+                if failed == 'CreateToolhelp32Snapshot':
+                    kernel.CloseHandle.assert_not_called()
+                else:
+                    kernel.CloseHandle.assert_called_once_with(123)
+
     @unittest.skipUnless(os.name == 'nt', 'Windows process enumeration')
     def test_access_denied_pid_requires_an_active_process(self):
         import ctypes

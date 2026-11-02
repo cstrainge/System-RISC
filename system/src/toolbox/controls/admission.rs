@@ -90,7 +90,8 @@ struct Intent
 {
     operation: u32,
     window:    u64,
-    spec:      Spec
+    spec:      Spec,
+    reflow:    u32
 }
 impl Intent
 {
@@ -98,12 +99,15 @@ impl Intent
     {
         Self { operation: call.operation,
                window:    call.window,
-               spec:      Spec::from_call(call) }
+               spec:      Spec::from_call(call, call.operation == CREATE_SCROLLBAR),
+               reflow:    call.reflow }
     }
 
     fn call(&self) -> ControlCall
     {
-        let mut call = self.spec.call(self.operation);
+        let mut call = self.spec.draw();
+        call.operation = self.operation;
+        call.reflow = self.reflow;
         call.window = self.window;
         call
     }
@@ -114,13 +118,14 @@ impl Intent
         && call.reserved == 0
         && self.operation == call.operation
         && self.window == call.window
-        && self.spec == Spec::from_call(call)
+        && self.reflow == call.reflow
+        && self.spec == Spec::from_call(call, call.operation == CREATE_SCROLLBAR)
     }
 }
 
 pub(crate) struct ControlPlan
 {
-    publication: PublicationPlan<Object, InvocationGate>,
+    publication: PublicationPlan<Object, InvocationGate, automatic::Work>,
     recipient:   OwnerRef,
     storage:     OwnerRef,
     intent:      Intent,
@@ -145,7 +150,7 @@ pub(crate) struct ControlPreparation
 pub(crate) struct PreparedControl
 {
     object:     Object,
-    admission:  RetiredCapacity<Object, InvocationGate>,
+    admission:  RetiredCapacity<Object, InvocationGate, automatic::Work>,
     permit:     PublicationPermit<InvocationGate>,
     recipient:  OwnerRef,
     storage:    OwnerRef,
@@ -155,18 +160,18 @@ pub(crate) struct PreparedControl
 }
 pub(crate) struct ControlCapacityPlan
 {
-    publication: PublicationPlan<Object, InvocationGate>,
+    publication: PublicationPlan<Object, InvocationGate, automatic::Work>,
     allocation:  AllocationAuthority
 }
 #[must_use = "dispose refused or obsolete control capacity outside Desktop"]
 pub(crate) struct ControlCapacity
 {
-    publication: PreparedPublication<Object, InvocationGate>
+    publication: PreparedPublication<Object, InvocationGate, automatic::Work>
 }
 #[must_use = "dispose control publication metadata outside Desktop"]
 pub(crate) struct ControlRetired
 {
-    admission:   RetiredCapacity<Object, InvocationGate>,
+    admission:   RetiredCapacity<Object, InvocationGate, automatic::Work>,
     publication: RetiredPublication<InvocationGate>,
     recipient:   OwnerRef,
     storage:     OwnerRef,
@@ -189,11 +194,12 @@ impl ControlPlan
         crate::allocator::with_target(crate::allocator::Target::Owner {
             account: self.allocation.clone(), class: mac_kernel_model::policy::MemoryClass::Kernel
         }, || {
+            let validated = self.validated.draw();
             let title = if !self.scrollbar
-                           && !matches!(self.validated.procedure,
+                           && !matches!(validated.procedure,
                                         PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE)
             {
-                Some(super::super::snapshot::Title::admit(&self.validated.standard, None)
+                Some(super::super::snapshot::Title::admit(&validated.standard, None)
                      .map_err(CreationError::Title)?)
             }
             else
@@ -206,7 +212,8 @@ impl ControlPlan
                 publication: self.publication.prepare().map_err(CreationError::Facility)?
             };
             let object = Object::new(self.intent.window, self.recipient.owner().incarnation(),
-                                     self.validated, self.scrollbar, title, definition, false);
+                                     self.validated, title, definition, self.intent.reflow, 0, false)
+                .map_err(CreationError::Validation)?;
             Ok(ControlPreparation { object, recipient: self.recipient, storage: self.storage,
                                     allocation: self.allocation.clone(), intent: self.intent,
                                     gate: self.gate, capacity })
@@ -440,7 +447,9 @@ impl Manager
         {
             return Err(CreationError::DefinitionChanged);
         }
-        let Some(PreparedControl { object,
+        let next_order =
+            self.next_order.checked_add(1).ok_or(CreationError::Validation(NO_MEMORY))?;
+        let Some(PreparedControl { mut object,
                                    recipient,
                                    storage,
                                    allocation,
@@ -453,12 +462,22 @@ impl Manager
             return Err(CreationError::InvalidRequest);
         };
         let entry = object.definition.reference();
+        // Presentation order is selected atomically with real canonical birth.
+        // It is not an object identity and is never reserved by a stale plan.
+        object.tree = tree::Node::new(self.next_order);
         match self.objects.publish_prepared(permit, object)
         {
             Ok((publication, retired)) =>
             {
                 call.id = publication.id();
-                let result = self.finish_request(call, entry, gate, None, None);
+                self.next_order = next_order;
+                self.schedule_layout(call.id);
+                let result = self.finish_request(call,
+                                                 recipient.owner().incarnation(),
+                                                 entry,
+                                                 gate,
+                                                 None,
+                                                 None);
                 Ok(ControlCommit { result,
                                    retired: ControlRetired { admission,
                                                              publication: retired,

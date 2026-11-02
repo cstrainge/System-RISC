@@ -30,71 +30,95 @@ path. The event preserves signed 16-bit menu IDs and one-based item indices;
 The one-byte Apple title uses original System icon family -16386 through resident
 Icon Utilities; title selection preserves its rainbow colors.
 
-## Planned System-owned Apple menu
+A committed mouse selection flashes its item three times before the command or
+System application-menu action is delivered. Deferred app commands retain the
+selection-time timestamp, pointer position and modifiers. Command-key shortcuts flash the
+menu title three times. Each off/on phase holds for at least three 60 Hz ticks;
+late presentation delays a phase rather than skipping a flash. The resident
+input/timer path owns this state, so MDEF never waits or spins. The selected row
+or title is repainted through MDEF with bounded presentation damage; flash
+phases do not recompose unrelated windows. Escape cancels pending feedback.
+Foreground changes, menu disposal/mutation and application-menu membership
+refresh cancel stale selections before delivery.
 
-Status: backlog; drawing an installed Apple-title MENU resource does not yet
-guarantee a persistent System-owned Apple menu. Track delivery in
+MDEF draws a black highlight with white text and marks. Application-menu title
+and item icons keep their normal colours and resource flags, including hidden
+application dimming; selection does not invert icon pixels. The private native
+`DRAW_ITEM` definition message repaints the one-based row supplied in `param`,
+using the same row renderer as a full popup. Rebuild System and MDEF together.
+
+## System-owned Apple popup
+
+System supplies the leftmost Apple title and a real popup in every application,
+including applications with no menu resources or a cleared menu list. System's
+`MENU`/`MCMD` -16488 supplies **About System RISC…**; System handles the command
+and opens its own resource-backed About dialog through the resident Alert,
+Window and Control managers. Finder uses the same service and no longer owns a
+second System About window. Return, Escape or the managed OK button dismiss it.
+An existing modal dialog or crash report refuses a programmatic About request
+with `ServiceBusy`; background callers receive `AccessDenied`.
+
+The native SDK exposes `menus::APPLE_MENU` for read-only layout/item queries and
+`Menus::about_system()` to open About directly. Attempts to mutate the System
+menu are refused. System actions never generate an application MenuCommand.
+The About protocol is an ordinary registered modal record in the foreground
+application's domain: System consumes its input and updates, and normal domain
+cleanup releases it on application exit or failure. Applications cannot consume
+it through the public Alert API.
+
+An application installs an Apple section using an ordinary owned MENU resource
+with the one-byte Apple title (`0x14`). Resource ID and installation order do not
+identify that section. Its rows precede a single separator and the System rows;
+leading/trailing and adjacent separators are omitted from the visible projection.
+A second app Apple section is refused. Logical app item indices, menu IDs and
+commands remain unchanged: a captured visible row maps to its original command
+and generation-checked menu owner. App queries retain the logical item count;
+layout reflects the composed popup. Disposing/clearing an app section removes
+its rows while retaining System entries.
+
+The current MDEF limit permits 29 logical app Apple items plus the separator and
+System item. Oversized sections are refused before publication. Composition uses
+preallocated System scratch state and runs when the source owner, handle or
+revision changes; unrelated menu edits and input polls do not remeasure it.
+Foreground changes restore the correct section. Mutation/disposal, foreground
+changes and Escape cancel stale tracking or pending flash feedback. Selection
+uses the same three-flash acknowledgement and bounded row/title painting as
+ordinary menus. No application callback runs inside menu tracking.
+
+Menu definitions return paint failures to the compositor. A refused title or
+popup draw defers the frame for retry; a partially drawn bar never becomes the
+cached snapshot. The previous displayed frame remains intact. Native menu IDs
+reserved for the System Apple and application menus cannot be installed through
+an app resource, including resources whose internal MENU ID differs from their
+resource number.
+
+Apple Menu Items folder launching, desk accessories, hierarchical/scrolling menus
+and original 68k MENU/MBAR mutation/selection projection remain separate work.
+This native System RISC ownership policy does not imply that original Macintosh
+applications never constructed their own Apple menus. See
 [roadmap P5](../../../../docs/CORE-TOOLBOX-ROADMAP.md#p5--system-owned-apple-menu).
-
-- System always supplies exactly one leftmost Apple menu, just as it owns the
-  right-hand application menu. It remains present when an app has no menus,
-  clears/replaces its menus, switches, exits or crashes. System owns its title,
-  tracking and global entries; applications contribute their own section.
-- Provide a thin Rust Toolbox API for resource-based app contributions such as
-  About, with explicit command identity, enabled/check state, insertion/removal
-  and lifetime. Restore the foreground app's contribution on activation and
-  remove it on exit; background changes must not change the visible app section.
-  Localized labels, icons, separators and command metadata belong in resources.
-- Compose app and System sections without duplicate Apple titles or separators.
-  Keep System commands distinct from app commands and route selections once to
-  the correct owner. Capture command identity/owner during tracking; cancel or
-  validate pending selections across removal, exit and foreground changes.
-  Do not depend on shifting visible item indices as native command identity.
-- Preserve legacy MENU/MBAR installation and item-editing semantics through the
-  legacy menu-list projection. Recognize Apple-title menus by their actual
-  contract, not a hardcoded menu ID of 128; adopt their app section into the
-  composed menu instead of adding a second title. Preserve the app's expected
-  menu ID, one-based selection indices and MenuSelect/MenuKey results while
-  keeping System entries out of app command dispatch. Specify logical-to-visible
-  index mapping and legacy append/delete/query behavior before implementation.
-- Use the shared generation-tagged facility for new resident contribution/object
-  identities, with separate owner checks and cleanup. No app callbacks run under
-  manager locks or block tracking of System-owned entries. Keep app commands on
-  their own application thread; unavailable commands must not pretend to work.
-- Populate global entries through actual System services and resource templates.
-  Apple Menu Items folder contents and desk accessories require their respective
-  file/alias/launch/legacy services; do not claim those merely from listing names.
-  Cache composed layout/pixels and invalidate only changed menu bounds on actual
-  content/state changes, never on every input or event poll.
-
-Original reference: [Creating a Menu](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-98.html)
-defines an app's About item followed by a separator; ID 128 is a convention.
-[Adding Items to a Menu](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-102.html)
-describes dynamic editing and Apple Menu Items. Capture the pinned System 7.6.1
-section ordering, mutation, tracking and selection behavior, then encode public
-SDK conformance tests for empty/cleared/replaced bars, contributions, ownership,
-switch/exit/crash, stale IDs and bounded repainting. Add translated 68k MENU/MBAR
-mutation and selection probes when the adapter exists. Automatic native menu
-insertion is a System RISC ownership policy, not a claim that original apps did
-not construct Apple menus themselves.
 
 ## Existing evidence and limits
 
-The aggregate userspace tests install captured menu records and run a private
-SDK-only guest with real virtio input and the loaded MDEF. Original System7.6.1
-MenuProbe captures supply strict, unmasked RGB crops for the File popup's normal,
-highlighted and disabled-hover states. Capture transport performs no behavioral
-assertions. Existing Rust host checks do not qualify the production trap,
-allocator, MDEF or lifetime paths. A real packaged native SDK application must
-exercise each claimed lifecycle, failure and input workflow on the recorded
-target artifacts; finite observations do not establish absence of races.
+Runtime evidence must exercise the optimized native System, loaded MDEF and
+real application services. Host-linked Rust suites do not establish those paths.
+The System Apple slice needs graphical checks for default and composed popups,
+System About, logical item routing, state changes, disposal/clear, foreground
+switches, error/cancellation/retry and owner cleanup. Original Macintosh fidelity
+and legacy trap compatibility require their own reference captures and probes.
 
 This is a bounded native implementation: only MDEF0 is installed, menu item count
 is limited to 31 and installed menus to 8. Apple/Label icon rows, hierarchical and
 scrolling menus, tear-off/pop-up placement, arbitrary custom MDEFs, complete
-MacRoman mark/key handling, dynamic insertion/deletion and original menu flashing
+MacRoman mark/key handling, dynamic insertion/deletion and original menu-flash timing parity
 are not established by the current oracle. Original classic MenuSelect/MenuKey
 trap adaptation is a separate gate; native `MenuCommand` is not claimed as a
-classic Event Manager event. Current runtime ownership is the foreground
-application; multi-application menu bars require the scheduled application
-contexts described in `THREADING.md`.
+classic Event Manager event. Application menu state follows the foreground saved
+context. The persistent System title and right-hand application menu are
+desktop-owned.
+
+A held menu gesture retains its popup while the pointer crosses blank or
+disabled menu-bar space. Another enabled title switches menus; returning to
+the popup continues hit testing. Releasing over blank space or outside the
+items still cancels. A press on blank bar space starts no capture and does not
+activate the desktop behind the bar.

@@ -9,7 +9,7 @@
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::fmt;
 
-use mac_abi::{Status, *};
+use mac_abi::{Status, *, geometry::Rect};
 
 use crate::toolbox::quickdraw::{Canvas,
                                 icons::{IconError, IconFamily, IconFlags}};
@@ -518,12 +518,6 @@ impl Strip
                     {
                         *pixel = if distance <= 1 { 0 } else { 0xffffff };
                     }
-                }
-                if entry.outcome == Outcome::Pending && (22..32).contains(&x) && y >= 22
-                {
-                    // A small hollow badge distinguishes admitted/pending from
-                    // an active package without inventing a refusal X.
-                    *pixel = if x == 22 || x == 31 || y == 22 || y == 31 { 0 } else { 0xffffff };
                 }
             }
         }

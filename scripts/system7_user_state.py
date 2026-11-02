@@ -18,10 +18,12 @@ import uuid
 from hfs_b_tool import tool
 from riscv_vm import qmp, image_executable
 from system7_paths import ROOT, build_dir
-from system7_host import exclusive_lock, process_exists, sync_directory, sync_file
+from system7_host import exclusive_lock, process_exists, sync_directory, sync_file, windows_process_name
 
 TREES = {'Preferences': ('/System Folder/Preferences', '/System Folder'),
-         'Documents': ('/Documents', '/')}
+         'Fonts': ('/System Folder/Fonts', '/System Folder'),
+         'Documents': ('/Documents', '/'),
+         'Desktop Folder': ('/Desktop Folder', '/')}
 
 
 def command(args):
@@ -57,9 +59,20 @@ def running(state):
     except (OSError, ValueError) as error:
         raise RuntimeError(f'Cannot determine VM ownership in {state}: {error}; stop the VM and repair its process record before replacing user files') from error
     try:
-        return process_exists(pid)
+        if not process_exists(pid):
+            return False
+        if os.name != 'nt':
+            return True
+        command = json.loads((state / 'command.json').read_text())
+        if not isinstance(command, list) or not command or not isinstance(command[0], str) \
+                or not Path(command[0]).name:
+            raise ValueError('command.json must record the VM executable')
+        actual = windows_process_name(pid)
+        return actual is not None and actual.casefold() == Path(command[0]).name.casefold()
     except OSError as error:
         raise RuntimeError(f'Cannot query VM process {pid}: {error}; user files were not replaced') from error
+    except ValueError as error:
+        raise RuntimeError(f'Cannot determine VM ownership in {state}: {error}; repair its command record before replacing user files') from error
 
 
 def default_state(build):
@@ -104,7 +117,7 @@ def children(raw, parent):
 
 
 def snapshot_raw(root, raw, source):
-    """Publish only after both lossless recursive exports succeed."""
+    """Publish only after all present user folders export losslessly."""
     name = uuid.uuid4().hex
     directory = root / name
     directory.mkdir(mode=0o700)
@@ -117,7 +130,7 @@ def snapshot_raw(root, raw, source):
         system_children = children(raw, system['id'])
         present = []
         for label, (guest, _) in TREES.items():
-            entries = system_children if label == 'Preferences' else top
+            entries = system_children if guest.startswith('/System Folder/') else top
             entry = next((entry for entry in entries if entry['name'].casefold() == label.casefold()), None)
             if entry is None:
                 continue
@@ -179,7 +192,7 @@ def prepare(build, state):
         if disk.exists():
             if running(state):
                 current(root)  # Invalid saved state must still fail honestly.
-                print('Writable VM is running; latest Preferences/Documents will be preserved before replacement on restart.')
+                print('Writable VM is running; latest Preferences, Fonts, Documents and Desktop Folder will be preserved before replacement on restart.')
                 return
             snapshot_disk(root, disk)
         elif current(root) is None:

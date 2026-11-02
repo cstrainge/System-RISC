@@ -1,8 +1,10 @@
 //! Icons resolve through the same immutable resource chain as pictures and fonts.
 #![forbid(unsafe_code)]
 use alloc::{sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 
-use mac_abi::{quickdraw::*,
+use mac_abi::{geometry::Rect,
+              quickdraw::*,
               resources::{CHAIN, SYSTEM},
               *};
 use mac_formats::resource::ResourceRef;
@@ -11,6 +13,26 @@ use super::{Canvas,
             icons::{self, IconFamily, IconFlags},
             service::{self, Port}};
 use crate::toolbox::resources::manager::Manager;
+
+/// Menubar icon switch, set once at startup, read at resource choice time.
+///
+/// When true, loading icon family -16386 (the System R mark) loads -16387
+/// (the trans flag) instead. When false, -16386 loads normally.
+/// This is the switch point the menubar icon resource goes through:
+/// MDEF asks for -16386, QuickDraw chooses std or flag here.
+///
+/// Finder checks for `System Folder/Preferences/limit` before installing its
+/// menus and sets this through the native Icon Manager call. Lookup failures
+/// are reported and select false; a missing file also selects false.
+static APPLE_MENU_ICON_FLAG: AtomicBool = AtomicBool::new(false);
+
+/// Set the menubar icon switch. Intended to be called once at startup,
+/// before the menubar is first drawn. Not a per-paint check.
+pub fn set_apple_menu_icon_flag(value: bool)
+{
+    APPLE_MENU_ICON_FLAG.store(value, Ordering::SeqCst);
+}
+
 /// Resolve local bundle IDs inside one resource file, never across app forks.
 pub fn file_id(resources: &[mac_formats::resource::Resource], creator: [u8; 4], file_type: [u8; 4])
                -> Result<i16, Status>
@@ -53,6 +75,17 @@ pub fn status(error: icons::IconError) -> Status
 pub fn family(manager: Manager<'_>, scope: mac_abi::resources::Scope, id: i16)
               -> Result<IconFamily, Status>
 {
+    // Resource choice point for the menubar icon: std R (-16386) or
+    // trans flag (-16387), decided here, not in MDEF and not in Finder.
+    let id = if id == -16386 && APPLE_MENU_ICON_FLAG.load(Ordering::SeqCst)
+        {
+            -16387
+        }
+        else
+        {
+            id
+        };
+
     IconFamily::from_lookup(id, |kind, rid| {
         manager.get(if kind == *b"clut" { SYSTEM } else { scope },
                     ResourceKey { kind,

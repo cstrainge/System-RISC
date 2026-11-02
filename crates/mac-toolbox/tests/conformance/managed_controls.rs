@@ -138,7 +138,8 @@ pub fn tracking(system: &System<'_>, window: WindowId) -> Result<(), Failure>
     for kind in [StandardKind::Button, StandardKind::Checkbox, StandardKind::Radio]
     {
         let state = StandardState::new(Rect::new(8, 8, 128, 32), "Action");
-        let owned = system.controls().create_standard(window, kind, state)?;
+        let owned = system.controls()
+                          .create_standard(window, kind, state, mac_toolbox::controls::Reflow::No)?;
         let control = owned.control();
         let press = control.begin_tracking(inside, 0)?;
         assert!(press.handled && press.tracking && !press.action && press.changed);
@@ -182,7 +183,11 @@ pub fn tracking(system: &System<'_>, window: WindowId) -> Result<(), Failure>
                                  maximum: 100,
                                  active: 1,
                                  ..Default::default() };
-    let owned = system.controls().create_scrollbar(window, state, 5, 20)?;
+    let owned = system.controls().create_scrollbar(window,
+                                                    state,
+                                                    5,
+                                                    20,
+                                                    mac_toolbox::controls::Reflow::No)?;
     let control = owned.control();
     let up = Point { h: 16,
                      v: 44 };
@@ -256,7 +261,8 @@ pub fn reuse(system: &System<'_>, window: WindowId, gate: mac_abi::TrapGate)
                                                                    active: 1,
                                                                    ..Default::default() },
                                                   1,
-                                                  10)?;
+                                                  10,
+                                                  mac_toolbox::controls::Reflow::No)?;
     let mut configure =
         mac_abi::controls::ControlCall { operation: mac_abi::controls::CONFIGURE_OBJECT,
                                          id: bar.id().0,
@@ -278,10 +284,16 @@ pub fn reuse(system: &System<'_>, window: WindowId, gate: mac_abi::TrapGate)
     for _ in 0..8
     {
         let state = StandardState::new(Rect::new(8, 8, 128, 32), "Owned");
-        let owner = system.controls().create_standard(window, StandardKind::Button, state)?;
+        let owner = system.controls().create_standard(window,
+                                                       StandardKind::Button,
+                                                       state,
+                                                       mac_toolbox::controls::Reflow::No)?;
         let stale = owner.id();
         owner.control().dispose()?;
-        let replacement = system.controls().create_standard(window, StandardKind::Button, state)?;
+        let replacement = system.controls().create_standard(window,
+                                                             StandardKind::Button,
+                                                             state,
+                                                             mac_toolbox::controls::Reflow::No)?;
         assert!(replacement.id().0 > u64::from(u32::MAX),
                 "native identity is not a classic projection");
         assert_ne!(stale, replacement.id());
@@ -306,5 +318,168 @@ pub fn reuse(system: &System<'_>, window: WindowId, gate: mac_abi::TrapGate)
         drop(owner); // A stale Drop cannot dispose the replacement.
         assert!(replacement.control().info().is_ok());
     }
+    Ok(())
+}
+
+/// Focused production-path regressions, called by the disk-booted application.
+pub fn regressions(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Failure>
+{
+    use mac_toolbox::windows::WindowSpec;
+    let window =
+        system.windows()
+              .create_owned(WindowSpec::new(Rect::new(60, 60, 380, 280), "Control regressions"))?;
+    window.select()?;
+    let original = StandardState::new(Rect::new(8, 8, 128, 32), "Original");
+    let owned = system.controls().create_standard(window.id(),
+                                                   StandardKind::Button,
+                                                   original,
+                                                   mac_toolbox::controls::Reflow::No)?;
+    let control = owned.control();
+    system.windows().begin_update(window.id())?;
+    // Exhaust the real retained-command ceiling, without a substitute allocator.
+    let port = system.quickdraw().port(window.id());
+    let mut refused = false;
+    for _ in 0..513
+    {
+        match port.paint_rect(Rect::new(0, 0, 1, 1), 0xffffff)
+        {
+            Ok(()) => (),
+            Err(Error::NoMemory) =>
+            {
+                refused = true;
+                break;
+            }
+            Err(error) => return Err(error.into())
+        }
+    }
+    assert!(refused, "expected native retained-command admission refusal");
+    let next = StandardState::new(Rect::new(12, 8, 132, 32), "Replacement");
+    assert!(matches!(control.configure(StandardKind::Button, next), Err(Error::NoMemory)));
+    assert!(control.info()?.standard == original, "failed publish changed live control state");
+    assert!(matches!(control.begin_tracking(Point { h: 20,
+                                                    v: 20 },
+                                            0),
+                     Err(Error::NoMemory)));
+    let info = control.info()?;
+    assert!(!info.tracking && info.standard.highlighted == 0, "failed begin left capture");
+    control.cancel()?;
+    system.windows().end_update(window.id())?;
+    system.windows().begin_update(window.id())?;
+    assert!(control.configure(StandardKind::Button, next)?.changed, "retry must publish new state");
+    system.windows().end_update(window.id())?;
+    system.log("CONTROL_COMMIT_REGRESSION_PASS refusal=retained_limit state=unchanged \
+                retry=changed capture=clear\n")?;
+    drop(owned);
+
+    let bar = system.controls().create_scrollbar(window.id(),
+                                                  ScrollbarState { bounds: Rect::new(8, 8,
+                                                                                     24, 168),
+                                                                   value: 0,
+                                                                   maximum: 100,
+                                                                   active: 1,
+                                                                   ..Default::default() },
+                                                  1,
+                                                  20,
+                                                  mac_toolbox::controls::Reflow::No)?;
+    let control = bar.control();
+    let point = Point { h: 16,
+                        v: 98 };
+    assert!(control.begin_tracking(point, 0)?.tracking);
+    for ticks in [20, 23, 26, 29, 32]
+    {
+        control.poll_tracking(point, true, ticks)?;
+    }
+    assert_eq!(control.info()?.scrollbar.value, 60, "page repeat passed stationary pointer");
+    control.cancel()?;
+    let state = ScrollbarState { value: 80,
+                                 ..control.info()?.scrollbar };
+    control.configure_scrollbar(state, 1, 20)?;
+    let anchor = (8..168).map(|v| {
+                             Point { h: 16,
+                                     v }
+                         })
+                         .find(|point| {
+                             system.controls().scrollbar_hit(window.id(),
+                                                             state.bounds,
+                                                             state.value,
+                                                             state.maximum,
+                                                             true,
+                                                             *point)
+                             == Ok(controls::Part::Thumb)
+                         })
+                         .ok_or(Failure::Mismatch("thumb not found"))?;
+    assert!(control.begin_tracking(anchor, 100)?.tracking);
+    let changed = control.configure_scrollbar(ScrollbarState { value: 40,
+                                                               maximum: 50,
+                                                               ..state },
+                                              1,
+                                              20)?;
+    assert!(!changed.tracking && changed.scrollbar.highlighted == 0);
+    assert!(!control.poll_tracking(Point { v: anchor.v + 1,
+                                           ..anchor },
+                                   true,
+                                   101)?
+                    .tracking);
+    system.log("CONTROL_TRACKING_REGRESSION_PASS page_stop=60 range_change=cancelled\n")?;
+    drop(bar);
+
+    let viewport =
+        system.controls().create_scroll_box(window.id(),
+                                             controls::ScrollBoxSpec { viewport:
+                                                                           Rect::new(8, 8, 192, 72),
+                                                                       scrollbar:
+                                                                           Rect::new(192, 8, 208,
+                                                                                     72),
+                                                                       count: 100,
+                                                                       ..Default::default() })?;
+    let scroll = viewport.control();
+    // Arrow begin exposes missing rows; callback fails before any input wait.
+    assert_eq!(scroll.track(Point { h: 200,
+                                    v: 68 },
+                            |_| Err(Error::Cancelled)),
+               Err(Error::Cancelled));
+    assert!(!scroll.info()?.tracking, "callback error retained scroll capture");
+    let view = scroll.info()?;
+    for row in view.missing
+    {
+        scroll.set_row(row, "Row", false)?;
+    }
+    scroll.draw()?;
+    let mut begin = mac_abi::scrollbox::Call { operation: mac_abi::scrollbox::TRACK_BEGIN,
+                                               id: viewport.id().0,
+                                               point: Point { h: 200,
+                                                              v: 68 },
+                                               ..Default::default() };
+    assert_eq!(unsafe {
+                   gate(mac_abi::traps::PSTRING_SCROLL_BOX,
+                        core::ptr::from_mut(&mut begin).cast(),
+                        core::mem::size_of_val(&begin))
+               },
+               0);
+    assert!(scroll.info()?.tracking);
+    let other =
+        system.windows().create_owned(WindowSpec::new(Rect::new(90, 90, 300, 240), "Other"))?;
+    other.select()?;
+    let mut poll = mac_abi::scrollbox::Call { operation: mac_abi::scrollbox::TRACK_POLL,
+                                              id: viewport.id().0,
+                                              point: begin.point,
+                                              flags: mac_abi::scrollbox::BUTTON_DOWN,
+                                              ticks: 100,
+                                              ..Default::default() };
+    assert_eq!(unsafe {
+                   gate(mac_abi::traps::PSTRING_SCROLL_BOX,
+                        core::ptr::from_mut(&mut poll).cast(),
+                        core::mem::size_of_val(&poll))
+               },
+               0);
+    assert!(!scroll.info()?.tracking, "inactive window retained scroll capture");
+    window.select()?;
+    assert_eq!(scroll.track(Point { h: 200,
+                                    v: 68 },
+                            |_| Err(Error::Cancelled)),
+               Err(Error::Cancelled));
+    assert!(!scroll.info()?.tracking);
+    system.log("SCROLL_CAPTURE_REGRESSION_PASS callback_error=cancelled deactivation=cancelled \
+                retry=cancelled\n")?;
     Ok(())
 }

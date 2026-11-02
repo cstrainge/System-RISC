@@ -10,7 +10,7 @@ use alloc::{collections::VecDeque, vec::Vec};
 #[cfg(target_arch = "riscv64")]
 pub(crate) use admission::{PreparedReceiver, ReceiverError, ReceiverPlan, ReceiverRetired,
                            ReceiverTarget};
-use mac_abi::{drag::*, *};
+use mac_abi::{drag::*, events::{Event, EventKind}, geometry::{Point, Rect}, *};
 use mac_object_table::{domain::ReleasedResource, projected::Store};
 
 use super::super::handles::{InvocationGate, Kind, KindLease, OwnerRef};

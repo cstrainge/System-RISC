@@ -124,10 +124,10 @@ fn begin(flight: Flight, mut state: State) -> Progress
                 props.finder_info[..4].copy_from_slice(&plan.file_type);
                 props.finder_info[4..8].copy_from_slice(&plan.creator);
             }
-            if flight.key.operation == TRASH_DIRECTORY
+            if special_folder(flight.key.operation)
             {
-                // Match the native volume's named, protected Trash folder.
-                props.finder_info[8..10].copy_from_slice(&0x1000u16.to_be_bytes());
+                let flags: u16 = if flight.input == "Desktop Folder" { 0x5000 } else { 0x1000 };
+                props.finder_info[8..10].copy_from_slice(&flags.to_be_bytes());
             }
             let mut bytes = Vec::new();
             let count = fs::PROPERTIES_BYTES + name.len();
@@ -292,7 +292,7 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>, never
         }
         Stage::Lookup =>
         {
-            if flight.key.operation == TRASH_DIRECTORY
+            if special_folder(flight.key.operation)
                && let Ok(bytes) = &result
             {
                 let existing = super::super::catalog(state.volume, bytes, None, Some(ROOT_ID))
@@ -381,7 +381,7 @@ pub(super) fn folder_flight<'a>(owner: impl Into<crate::toolbox::files::subject:
     let mut input = String::new();
     input.try_reserve_exact(name.len()).map_err(|_| NO_MEMORY)?;
     input.push_str(name);
-    let parent = if call.operation == TRASH_DIRECTORY { ROOT_ID } else { call.cnid };
+    let parent = if special_folder(call.operation) { folder_parent(call)? } else { call.cnid };
     let authority = owner.authority()?;
     let mut plan = files(|m| {
         m.reserve_provider_directory_authorized(owner, &authority, call.volume, parent, name,

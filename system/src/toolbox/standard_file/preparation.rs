@@ -129,7 +129,7 @@ impl PreparedDialog
         // these operations need the System font service, not a born Window.
         let fonts =
             crate::kernel::fonts().ok_or(BeginError::service("font service", NOT_SUPPORTED))?;
-        editor.set_font(mac_abi::quickdraw::FontSelection::default(), fonts)
+        editor.set_font(mac_abi::quickdraw::FontSelection::default(), &fonts)
               .map_err(|status| BeginError::service("font", status))?;
         let mut characters = Text::default();
         for byte in 32..=255
@@ -140,7 +140,7 @@ impl PreparedDialog
         editor.prepare_font_input(characters.text().map_err(|status| {
                                                         BeginError::service("font input", status)
                                                     })?,
-                                  fonts)
+                                  &fonts)
               .map_err(|status| BeginError::service("font input", status))?;
         let mut types = [[0; 4]; MAX_TYPES];
         let type_count = call.type_count.max(0) as usize;
@@ -179,6 +179,7 @@ impl PreparedDialog
                      all: call.type_count == -1,
                      sheet: Sheet::Main,
                      error: OK,
+                     error_context: Text::default(),
                      last_click: None,
                      popup: false,
                      ancestors,
@@ -186,6 +187,7 @@ impl PreparedDialog
                      typed_at: 0,
                      name_format: None,
                      volume_info: VolumeInfo::default(),
+                     desktop_resume: None,
                      stage: Some(if call.volume == 0
                                  {
                                      Stage::DefaultVolume
@@ -197,6 +199,10 @@ impl PreparedDialog
                      issued: false,
                      revision: 1,
                      desktop_count: 0,
+                     desktop_volume: 0,
+                     save_destination: None,
+                     desktop_folder: None,
+                     desktop_cursor: mac_abi::files::DesktopScanCursor::default(),
                      create_when: 0,
                      main_widgets: Widgets::default(),
                      auxiliary_widgets: Widgets::default(),

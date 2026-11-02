@@ -45,10 +45,11 @@ pub use toolbox_standard_file as standard_file;
 pub use toolbox_textedit as textedit;
 pub use toolbox_windows as windows;
 
-/// Include build-generated resource keys and commands in a private module.
+/// Include build-generated resource constants in a private `resources` module.
 ///
-/// Invoke once at the crate root. The build script must call
-/// `mac_build::build_guest()` to generate this application's `resource_ids.rs`.
+/// Invoke once at the crate root with `include_resource_ids!();` after importing
+/// this macro. The application's build script must call `mac_build::build_guest()`
+/// to generate `resource_ids.rs` in its own `OUT_DIR`.
 #[macro_export]
 macro_rules! include_resource_ids {
     () => {
@@ -267,7 +268,9 @@ impl<'a> System<'a>
 #[cfg(test)]
 mod tests
 {
-    use mac_abi::{EventKind, Header, NEW_WINDOW, NOT_SUPPORTED, OK, traps};
+    use mac_abi::{Header, NEW_WINDOW, NOT_SUPPORTED, OK,
+                  events::{Event, EventKind},
+                  traps};
 
     use super::*;
     unsafe extern "C" fn gate(number: u32, request: *mut (), size: usize) -> i64
@@ -294,9 +297,9 @@ mod tests
             {
                 assert_eq!(size, core::mem::size_of::<traps::NextEventCall>());
                 let r = unsafe { &mut *request.cast::<traps::NextEventCall>() };
-                r.event = mac_abi::Event { kind: EventKind::KeyDown,
-                                           message: 65,
-                                           ..Default::default() };
+                r.event = Event { kind: EventKind::KeyDown,
+                                  message: 65,
+                                  ..Default::default() };
                 OK as i64
             }
             _ => NOT_SUPPORTED as i64

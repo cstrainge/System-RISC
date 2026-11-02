@@ -1,7 +1,7 @@
 //! Original TextEdit pixel cases rendered through actual resident RV64 traps.
 #![no_std]
 #![no_main]
-use mac_toolbox::{abi::EventKind, events::classic::EVERY_EVENT, textedit::EditorId, *};
+use mac_toolbox::{abi::events::EventKind, events::classic::EVERY_EVENT, textedit::EditorId, *};
 const SAMPLE: &str = "one two three\rfour five six\rseven eight";
 
 fn draw(system: &System<'_>, window: WindowId, editor: EditorId) -> ToolboxResult<()>

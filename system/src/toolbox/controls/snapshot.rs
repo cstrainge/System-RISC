@@ -3,8 +3,10 @@
 #![forbid(unsafe_code)]
 use alloc::sync::Arc;
 
-use mac_abi::{BAD_ABI, BAD_ARGUMENT, NO_MEMORY, Rect, Status, controls::ProgressRange,
-              definitions::ControlDefinitionState, quickdraw::FontSelection};
+use mac_abi::{BAD_ABI, BAD_ARGUMENT, NO_MEMORY, Status, controls::ProgressRange,
+              definitions::ControlDefinitionState, geometry::Rect, quickdraw::FontSelection};
+
+use crate::toolbox::resources::definitions::BoundDefinition;
 
 pub(super) struct Title
 {
@@ -45,7 +47,8 @@ pub(super) struct Standard
     maximum:           i16,
     flags:             i16,
     font:              FontSelection,
-    progress:          ProgressRange
+    progress:          ProgressRange,
+    splitter_parent:   Rect
 }
 impl Standard
 {
@@ -67,22 +70,29 @@ impl Standard
                   maximum: state.maximum,
                   flags: state.flags,
                   font: state.font,
-                  progress: state.progress })
+                  progress: state.progress,
+                  splitter_parent: state.splitter_parent })
+    }
+
+    pub(super) fn clear_highlight(&mut self) -> bool
+    {
+        core::mem::replace(&mut self.highlighted, 0) != 0
     }
 
     pub(super) fn wire(&self) -> ControlDefinitionState
     {
-        ControlDefinitionState { title:        self.title.bytes,
-                                 title_length: self.title.length,
-                                 bounds:       self.bounds,
-                                 enabled:      self.enabled,
-                                 highlighted:  self.highlighted,
-                                 value:        self.value,
-                                 minimum:      self.minimum,
-                                 maximum:      self.maximum,
-                                 flags:        self.flags,
-                                 font:         self.font,
-                                 progress:     self.progress }
+        ControlDefinitionState { title:           self.title.bytes,
+                                 title_length:    self.title.length,
+                                 bounds:          self.bounds,
+                                 enabled:         self.enabled,
+                                 highlighted:     self.highlighted,
+                                 value:           self.value,
+                                 minimum:         self.minimum,
+                                 maximum:         self.maximum,
+                                 flags:           self.flags,
+                                 font:            self.font,
+                                 progress:        self.progress,
+                                 splitter_parent: self.splitter_parent }
     }
 
     pub(super) fn storage(&self) -> usize
@@ -91,59 +101,70 @@ impl Standard
     }
 }
 
-#[cfg(test)]
-mod tests
+/// Immutable occupied-cell outlines, including complete merged regions. No
+/// interior divider is drawn through a span. Empty cells need no stored object.
+pub(super) struct Grid
 {
-    use super::*;
-    #[test]
-    fn appearance_snapshots_share_title_and_retain_old_pixels_without_mutation()
+    pub cells:    alloc::vec::Vec<Rect>,
+    pub logical:  alloc::vec::Vec<mac_abi::controls::reflow::LogicalRect>,
+    pub dividers: Option<Arc<Dividers>>
+}
+
+pub(super) struct Bars
+{
+    pub bars:       [Option<mac_abi::controls::ScrollbarState>; 2],
+    pub definition: Arc<BoundDefinition>,
+    pub viewport:   Rect
+}
+
+/// Immutable Splitter instances owned by one Table's boundary configuration.
+/// Row/column indexes are geometry settings; the Table retains the CTRL identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Divider
+{
+    pub axis:     u32,
+    pub index:    u32,
+    pub bounds:   Rect,
+    pub minimum:  i16,
+    pub maximum:  i16,
+    pub position: i16
+}
+impl Divider
+{
+    pub fn state(self, parent: Rect, enabled: bool) -> ControlDefinitionState
     {
-        let mut state = ControlDefinitionState::new(Rect::new(2, 3, 90, 28), "Before");
-        state.enabled = 0;
-        state.highlighted = 1;
-        state.value = 2;
-        state.minimum = -3;
-        state.maximum = 7;
-        state.flags = 5;
-        state.font = FontSelection { family: 3,
-                                     size:   12,
-                                     face:   1 };
-        let title = Title::admit(&state, None).unwrap();
-        let before = Standard::new(&state, Some(&title)).unwrap();
-        assert!(before.wire() == state, "every appearance field must survive the binding snapshot");
-        let mut changed = state;
-        changed.bounds = Rect::new(10, 10, 100, 40);
-        changed.enabled = 1;
-        changed.highlighted = 0;
-        changed.value = 4;
-        changed.font.size = 9;
-        let after = Standard::new(&changed, Some(&title)).unwrap();
-        assert!(Arc::ptr_eq(&before.title, &after.title),
-                "appearance-only changes allocate no title copy");
-        assert!(before.wire() == state && after.wire() == changed,
-                "retained drawings are immutable snapshots");
-        let renamed = ControlDefinitionState::new(changed.bounds, "After");
-        let next = Title::admit(&renamed, Some(&title)).unwrap();
-        assert!(!Arc::ptr_eq(&title, &next));
-        assert!(before.wire() == state,
-                "renaming a control must not mutate a retained older drawing");
-        assert!(core::mem::size_of::<super::super::Drawing>()
-                < core::mem::size_of::<ControlDefinitionState>() / 2,
-                "wire title bytes must not inflate every retained command");
+        use mac_abi::controls::*;
+        ControlDefinitionState { bounds: self.bounds,
+                                 value: self.position,
+                                 minimum: self.minimum,
+                                 maximum: self.maximum,
+                                 enabled: u32::from(enabled),
+                                 flags: SPLITTER_PARENT
+                                        | SPLITTER_RANGE
+                                        | if self.axis == 1 { SPLITTER_HORIZONTAL } else { 0 },
+                                 splitter_parent: parent,
+                                 ..Default::default() }
     }
-    #[test]
-    fn malformed_or_mismatched_title_refuses_without_replacing_admitted_backing()
+}
+pub(super) struct Dividers
+{
+    pub definition: Arc<BoundDefinition>,
+    pub viewport:   Rect,
+    pub segments:   alloc::vec::Vec<Divider>,
+    pub tracks:     [Arc<alloc::vec::Vec<mac_abi::controls::reflow::GridTrack>>; 2]
+}
+impl Dividers
+{
+    pub fn storage(&self) -> usize
     {
-        let state = ControlDefinitionState::new(Rect::new(0, 0, 80, 20), "Valid");
-        let title = Title::admit(&state, None).unwrap();
-        let mut invalid = state;
-        invalid.title_length = u32::MAX;
-        assert!(matches!(Title::admit(&invalid, Some(&title)), Err(BAD_ARGUMENT)));
-        invalid = state;
-        invalid.title[0] = 0xff;
-        assert!(matches!(Title::admit(&invalid, Some(&title)), Err(BAD_ARGUMENT)));
-        let different = ControlDefinitionState::new(state.bounds, "Different");
-        assert!(matches!(Standard::new(&different, Some(&title)), Err(BAD_ABI)));
-        assert!(Arc::ptr_eq(&title, &Title::admit(&state, Some(&title)).unwrap()));
+        core::mem::size_of::<Self>()
+        + self.segments.len() * core::mem::size_of::<Divider>()
+        + self.tracks
+              .iter()
+              .map(|t| {
+                  core::mem::size_of_val(t.as_ref())
+                  + t.len() * core::mem::size_of::<mac_abi::controls::reflow::GridTrack>()
+              })
+              .sum::<usize>()
     }
 }

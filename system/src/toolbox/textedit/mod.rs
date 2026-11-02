@@ -3,7 +3,7 @@
 #![deny(unsafe_code)]
 use alloc::vec::Vec;
 
-use mac_abi::{textedit::*, *};
+use mac_abi::{geometry::Point, textedit::*, *};
 
 use crate::toolbox::{handles::{KindLease, OwnerRef, Store},
                      quickdraw::{region::{BooleanOp, Region},

@@ -51,24 +51,53 @@ impl CaptionFont
         }
     }
 }
-fn handle<'a>(message: Message<'a, Button<'a>>, services: Services<'a>) -> Result<Reply>
+#[mac_definition::cdef_main]
+fn main<'a>(message: Message<'a, Button<'a>>, services: Services<'a>) -> Result<Reply>
 {
     match message
     {
+        Message::DrawGrid { .. } | Message::CalculateGridAxis(_) =>
+        {
+            return Err(Error::NotSupported);
+        }
+        Message::Reflow { request,
+                          creation,
+                          .. } =>
+        {
+            if services.reflow() != mac_definition::Reflow::Yes
+            {
+                return Err(Error::NotSupported);
+            }
+            return mac_definition::leaf_reflow(request,
+                                               creation,
+                                               mac_definition::reflow::Size::ZERO);
+        }
         Message::Draw { state,
-                        mut port } => draw(&mut port, &state, services.theme()?)?,
+                        mut port } =>
+        {
+            if services.reflow() != mac_definition::Reflow::Yes || !button_bounds(&state).is_empty()
+            {
+                draw(&mut port, &state, services.theme()?)?;
+            }
+        }
         Message::HitTest { state,
                            point } => return Ok(Reply::Hit(hit(&state, point))),
         Message::Validate(state) =>
         {
-            validate(&state)?;
+            if services.reflow() == mac_definition::Reflow::Yes
+            {
+                caption_font(&state)?;
+            }
+            else
+            {
+                validate(&state)?;
+            }
         }
         Message::CalculateRegions(_) | Message::Initialize(_) | Message::Dispose(_) => (),
         Message::Track { .. } | Message::ChangeBounds { .. } => return Err(Error::NotSupported)
     }
     Ok(Reply::Done)
 }
-mac_definition::define_buttons!(standard_control_definition, handle);
 /// Full control rectangle hit, including push-button rounded corners (original
 /// CDEF0 offsets3f4..424). Hilite254 is a distinct original part result.
 pub fn hit(state: &Button<'_>, point: Point) -> Part
@@ -145,7 +174,7 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &Button<'_>, theme: mac_definit
         if style == ButtonKind::Check
         {
             let glyph =
-                mac_abi::Rect::new(left as i16, top as i16, (left + 12) as i16, (top + 12) as i16);
+                mac_abi::geometry::Rect::new(left as i16, top as i16, (left + 12) as i16, (top + 12) as i16);
             port.pen_size = Point { h: if pressed { 2 } else { 1 },
                                     v: if pressed { 2 } else { 1 } };
             canvas.draw_shape(&mut port, Shape::Rect(glyph), Verb::Frame)?;
@@ -160,30 +189,7 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &Button<'_>, theme: mac_definit
         }
         else
         {
-            let outline = if pressed { RADIO_PRESSED } else { RADIO };
-            for (y, row) in outline.iter().enumerate()
-            {
-                for x in 0..12
-                {
-                    if row & (1 << (11 - x)) != 0
-                    {
-                        pixel(canvas, left + x, top + y as i32, theme.control_outline)?;
-                    }
-                }
-            }
-            if state.value & 1 != 0
-            {
-                for (y, row) in RADIO_DOT.iter().enumerate()
-                {
-                    for x in 0..12
-                    {
-                        if row & (1 << (11 - x)) != 0
-                        {
-                            pixel(canvas, left + x, top + y as i32, theme.control_outline)?;
-                        }
-                    }
-                }
-            }
+            draw_radio(canvas, left, top, pressed, state.value & 1 != 0, theme.control_outline)?;
         }
     }
     let metrics = font.metrics(canvas)?;
@@ -229,11 +235,15 @@ pub fn draw(canvas: &mut SurfacePort<'_>, state: &Button<'_>, theme: mac_definit
 }
 fn validate(state: &Button<'_>) -> mac_traps::Result<CaptionFont>
 {
-    use toolbox_quickdraw::font::GENEVA_9;
     if button_bounds(state).is_empty()
     {
         return Err(Error::BadArgument);
     }
+    caption_font(state)
+}
+fn caption_font(state: &Button<'_>) -> mac_traps::Result<CaptionFont>
+{
+    use toolbox_quickdraw::font::GENEVA_9;
     let font = if state.caption == CaptionMode::System
                   || (state.font.family == 0 && state.font.size == 12 && state.font.face == 0)
     {
@@ -253,7 +263,7 @@ fn validate(state: &Button<'_>) -> mac_traps::Result<CaptionFont>
     };
     Ok(font)
 }
-fn button_bounds(state: &Button<'_>) -> mac_abi::Rect
+fn button_bounds(state: &Button<'_>) -> mac_abi::geometry::Rect
 {
     let mut bounds = state.bounds;
     if state.kind == ButtonKind::Push && state.default_button
@@ -265,9 +275,40 @@ fn button_bounds(state: &Button<'_>) -> mac_abi::Rect
     }
     bounds
 }
+fn draw_radio(canvas: &mut SurfacePort<'_>, left: i32, top: i32, pressed: bool, selected: bool,
+              ink: u32)
+              -> mac_traps::Result<()>
+{
+    let outline = if pressed { &RADIO_PRESSED } else { &RADIO };
+    for (y, (&outline, &dot)) in outline.iter().zip(&RADIO_DOT).enumerate()
+    {
+        let row = outline | if selected { dot } else { 0 };
+        let mut x = 0;
+        while x < 12
+        {
+            if row & (1 << (11 - x)) == 0
+            {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            while x < 12 && row & (1 << (11 - x)) != 0
+            {
+                x += 1;
+            }
+            let y = top + y as i32;
+            canvas.paint_rect(mac_abi::geometry::Rect::new((left + start) as i16,
+                                                            y as i16,
+                                                            (left + x) as i16,
+                                                            (y + 1) as i16),
+                              ink)?;
+        }
+    }
+    Ok(())
+}
 fn pixel(canvas: &mut SurfacePort<'_>, x: i32, y: i32, ink: u32) -> mac_traps::Result<()>
 {
-    canvas.paint_rect(mac_abi::Rect::new(x as i16, y as i16, (x + 1) as i16, (y + 1) as i16), ink)
+    canvas.paint_rect(mac_abi::geometry::Rect::new(x as i16, y as i16, (x + 1) as i16, (y + 1) as i16), ink)
 }
 // Original CDEF0 FrameOval12×12 with1px/2px pen, and PaintOval inset3.
 // Provenance: results/control-tracking-reference/static-{0,1,3}.png; resource

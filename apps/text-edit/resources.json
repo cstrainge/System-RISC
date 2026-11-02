@@ -257,25 +257,6 @@
         "title": "Windows",
         "items": []
       }
-    },
-    {
-      "type": "STR#",
-      "id": 2005,
-      "symbol": "FONT_NAMES",
-      "payload": {
-        "format": "strings",
-        "strings": [
-          "Chicago",
-          "New York",
-          "Geneva",
-          "Monaco",
-          "Palatino",
-          "Times",
-          "Helvetica",
-          "Courier",
-          "Symbol"
-        ]
-      }
     }
   ]
 }

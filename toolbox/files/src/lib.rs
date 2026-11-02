@@ -22,6 +22,7 @@ mod info;
 pub use info::{CatalogFlags, CatalogInfo, EntryKind, FinderFlags, VolumeAttributes,
                VolumeCapacity, VolumeInfo, VolumeSource};
 pub const ROOT_ID: Cnid = Cnid::ROOT;
+pub use mac_abi::files::DesktopScanCursor as DesktopCursor;
 pub use mac_traps::{Client, Error, Result};
 pub use scan::{DirectoryCursor, SCAN_STALE, ScanStep};
 /// Native filesystem identity reported by the mounted backend. Classic HFS has
@@ -181,14 +182,15 @@ impl<'a> Files<'a>
     /// Save Finder placement with this file/folder's persistent catalog identity.
     /// None clears placement. Object dates, forks and unrelated Finder metadata
     /// are preserved. Coordinates are the catalog's cell origin, not screen pixels.
-    pub fn set_icon_location(self, volume: VolumeId, cnid: Cnid, location: Option<mac_abi::Point>)
+    pub fn set_icon_location(self, volume: VolumeId, cnid: Cnid,
+                             location: Option<mac_abi::geometry::Point>)
                              -> Result<CatalogInfo>
     {
         self.set_icon_location_at(volume, cnid, location, self.client.now()?)
     }
 
     pub fn set_icon_location_at(self, volume: VolumeId, cnid: Cnid,
-                                location: Option<mac_abi::Point>, when: Timestamp)
+                                location: Option<mac_abi::geometry::Point>, when: Timestamp)
                                 -> Result<CatalogInfo>
     {
         if cnid.0 < ROOT_ID.0 || location.is_some_and(|p| p.h == -1 && p.v == -1)
@@ -485,6 +487,48 @@ impl<'a> Files<'a>
     {
         let when = if create { self.client.now()? } else { Timestamp::from_mac_seconds(0) };
         self.trash_directory_at(volume, create, when)
+    }
+
+    /// Find Desktop (`desk`), Trash (`trsh`), or the blessed System Folder's Fonts (`font`).
+    /// Volume zero selects the startup volume. Lookup without creation never
+    /// mutates the volume; children use ordinary directory enumeration.
+    pub fn find_folder(self, volume: VolumeId, folder_type: TypeCode, create: bool)
+                       -> Result<CatalogInfo>
+    {
+        let when = if create { self.client.now()? } else { Timestamp::from_mac_seconds(0) };
+        self.call(FileCall { operation: FIND_FOLDER,
+                             volume: volume.0,
+                             file_type: folder_type.bytes(),
+                             index: u32::from(create),
+                             position: when.mac_microseconds().ok_or(Error::BadArgument)?,
+                             ..Default::default() },
+                  "")?
+            .entry
+            .try_into()
+    }
+
+    /// Iterate real desktop children across live mounted volumes, without
+    /// creating folders. Missing folders are skipped. This is not an atomic
+    /// cross-volume snapshot; mount changes may require restarting enumeration.
+    pub fn scan_desktop(self, cursor: &mut DesktopCursor) -> Result<ScanStep>
+    {
+        let mut call = FileScanCall { operation: SCAN_DESKTOP,
+                                      desktop: *cursor,
+                                      ..Default::default() };
+        self.client.file_scan(&mut call)?;
+        let step = match call.step
+        {
+            SCAN_ENTRY => ScanStep::Entry {
+                catalog: call.entry.try_into()?,
+                data_allocated: (call.data_allocated != ALLOCATION_UNKNOWN).then_some(call.data_allocated),
+                resource_allocated: (call.resource_allocated != ALLOCATION_UNKNOWN).then_some(call.resource_allocated)
+            },
+            SCAN_PENDING => ScanStep::Pending,
+            SCAN_DONE => ScanStep::Done,
+            _ => return Err(Error::BadAbi)
+        };
+        *cursor = call.desktop;
+        Ok(step)
     }
 
     pub fn trash_directory_at(self, volume: VolumeId, create: bool, when: Timestamp)

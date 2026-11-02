@@ -37,7 +37,12 @@ pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
                  processes::NATIVE_EXIT_ABORT as usize,
                  core::mem::size_of::<files::FileCall>(),
                  core::mem::align_of::<files::FileCall>(),
+                 core::mem::offset_of!(files::FileCall, file_type),
                  core::mem::offset_of!(files::FileCall, open_flags),
+                 core::mem::size_of::<files::FileScanCall>(),
+                 core::mem::align_of::<files::FileScanCall>(),
+                 core::mem::offset_of!(files::FileScanCall, desktop),
+                 core::mem::offset_of!(files::FileScanCall, entry),
                  core::mem::offset_of!(files::FileCall, offset),
                  core::mem::offset_of!(files::FileCall, position),
                  core::mem::offset_of!(files::FileCall, length),
@@ -267,8 +272,6 @@ pub mod textedit;
 pub mod menus;
 pub mod memory;
 pub mod images;
-pub use events::*;
-pub use geometry::{Point, Rect};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
@@ -442,7 +445,7 @@ pub const WINDOW_TITLE_BYTES: usize = INLINE_STRING_BYTES;
 pub struct WindowRequest
 {
     pub id:             u64,
-    pub bounds:         Rect,
+    pub bounds:         geometry::Rect,
     pub title:          [u8; WINDOW_TITLE_BYTES],
     pub title_length:   u32,
     pub procedure:      i16,
@@ -465,7 +468,7 @@ impl WindowRequest
 pub struct DrawCommand
 {
     pub kind:        u32,
-    pub bounds:      Rect,
+    pub bounds:      geometry::Rect,
     pub color:       u32,
     pub text_length: u32,
     pub text:        [u8; INLINE_STRING_BYTES]
@@ -481,8 +484,8 @@ pub struct Surface
     pub pixels: *mut u32,
     pub width:  u32,
     pub height: u32,
-    pub origin: Point,
-    pub clip:   Rect
+    pub origin: geometry::Point,
+    pub clip:   geometry::Rect
 }
 
 #[repr(C)]
@@ -497,7 +500,10 @@ pub struct DefinitionCall
     pub param:     i64,
     pub object:    *mut (),
     pub surface:   *mut Surface,
-    pub gate:      TrapGate
+    pub gate:      TrapGate,
+    /// Native control-instance metadata; zero for other definition families.
+    /// Independent of the original resource ID and variation encoding.
+    pub reflow:    u32
 }
 pub type DefinitionEntry = unsafe extern "C" fn(*mut DefinitionCall) -> i64;
 

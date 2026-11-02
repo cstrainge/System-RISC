@@ -89,6 +89,12 @@ pub const MAX_FILE_TRANSFER: usize = 64 * 1024;
 /// READ index flag: output may be uninitialized. Native HFS-B copies only the
 /// returned prefix; providers without this boundary must return Unsupported.
 pub const READ_UNINITIALIZED: u32 = 1;
+/// Locate a per-volume special directory. volume=0 selects the startup volume;
+/// file_type='desk' or 'trsh', index=create (0/1), position=creation timestamp
+/// (zero for lookup only). Returns entry and its actual volume.
+pub const FIND_FOLDER: u32 = 45;
+/// Native combined desktop iteration, using FileScanCall.desktop. Read-only.
+pub const SCAN_DESKTOP: u32 = 46;
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct IconMove
@@ -98,7 +104,7 @@ pub struct IconMove
     pub parent:          u32,
     /// 0 keeps placement, 1 sets point, 2 clears placement.
     pub placement:       u32,
-    pub point:           crate::Point
+    pub point:           crate::geometry::Point
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -161,9 +167,20 @@ pub struct FileScanCall
     pub directory:          u32,
     pub step:               u32,
     pub cursor:             DirectoryScanCursor,
+    pub desktop:            DesktopScanCursor,
     pub entry:              CatalogInfo,
     pub data_allocated:     u64,
     pub resource_allocated: u64
+}
+/// Bounded continuation over live mounted volumes and their ordinary catalogs.
+/// Default starts enumeration; no synthetic volume or catalog identity exists.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DesktopScanCursor
+{
+    pub volume:    u32,
+    pub state:     u32,
+    pub directory: DirectoryScanCursor
 }
 pub const COMMENT_MAX_BYTES: usize = 255;
 pub const FILE_LOCKED: u16 = 0x0001;
@@ -343,18 +360,20 @@ impl CatalogInfo
         u16::from_be_bytes([self.finder_info[8], self.finder_info[9]])
     }
 
-    pub fn icon_location(&self) -> crate::Point
+    pub fn icon_location(&self) -> crate::geometry::Point
     {
-        crate::Point { v: i16::from_be_bytes([self.finder_info[10], self.finder_info[11]]),
-                       h: i16::from_be_bytes([self.finder_info[12], self.finder_info[13]]) }
+        crate::geometry::Point { v: i16::from_be_bytes([self.finder_info[10],
+                                                        self.finder_info[11]]),
+                                 h: i16::from_be_bytes([self.finder_info[12],
+                                                        self.finder_info[13]]) }
     }
 
     /// Raw persisted DInfo.frRect for a directory. This does not imply the
     /// rectangle is initialized, visible, or valid for the current screen.
-    pub fn folder_window_bounds(&self) -> Option<crate::Rect>
+    pub fn folder_window_bounds(&self) -> Option<crate::geometry::Rect>
     {
         self.is_directory()
-            .then(|| crate::Rect::from_be_bytes(self.finder_info[..8].try_into().unwrap()))
+            .then(|| crate::geometry::Rect::from_be_bytes(self.finder_info[..8].try_into().unwrap()))
     }
 
     /// Raw persisted DInfo.frView word. Finder-specific view/flag interpretation
@@ -366,13 +385,17 @@ impl CatalogInfo
     }
 
     /// Raw persisted DXInfo.frScroll, without changing sign or coordinate origin.
-    pub fn folder_scroll(&self) -> Option<crate::Point>
+    pub fn folder_scroll(&self) -> Option<crate::geometry::Point>
     {
         self.is_directory().then(|| {
-                               crate::Point { v: i16::from_be_bytes([self.finder_info[16],
-                                                                     self.finder_info[17]]),
-                                              h: i16::from_be_bytes([self.finder_info[18],
-                                                                     self.finder_info[19]]) }
+                               crate::geometry::Point { v: i16::from_be_bytes([self.finder_info
+                                                                                   [16],
+                                                                               self.finder_info
+                                                                                   [17]]),
+                                                        h: i16::from_be_bytes([self.finder_info
+                                                                                   [18],
+                                                                               self.finder_info
+                                                                                   [19]]) }
                            })
     }
 
@@ -394,6 +417,8 @@ impl CatalogInfo
 pub struct FileCall
 {
     pub operation:    u32,
+    /// FIND_FOLDER special-directory type; zero for other operations.
+    pub file_type:    [u8; 4],
     pub volume:       u32,
     pub cnid:         u32,
     pub index:        u32,
@@ -537,6 +562,8 @@ pub const ABANDON_TRANSFER: u32 = 3;
 pub const TRANSFER_COPY: u32 = 0;
 pub const TRANSFER_MOVE: u32 = 1;
 pub const TRANSFER_TRASH: u32 = 2;
+/// Move each source to its own volume's Desktop Folder.
+pub const TRANSFER_DESKTOP: u32 = 3;
 pub const TRANSFER_PREPARING: u32 = 0;
 pub const TRANSFER_COPYING: u32 = 1;
 pub const TRANSFER_VERIFYING: u32 = 2;
@@ -558,7 +585,7 @@ pub struct FileTransferSource
     pub expected_parent: u32,
     /// 0 preserve copied placement; 1 place at point; 2 clear placement.
     pub placement:       u32,
-    pub point:           crate::Point,
+    pub point:           crate::geometry::Point,
     pub reserved:        u32
 }
 #[repr(C)]
@@ -611,3 +638,7 @@ const _: () = {
         left += 1;
     }
 };
+
+// Native FILE routing distinguishes these wire request families by size;
+// SCAN_DESKTOP and CURRENT_DIRECTORY have separate typed opcode namespaces.
+const _: () = assert!(core::mem::size_of::<FileCall>() != core::mem::size_of::<FileScanCall>());

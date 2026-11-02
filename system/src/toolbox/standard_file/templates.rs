@@ -61,7 +61,7 @@ pub(crate) fn prepare() -> Result<(), Status>
                      crate::kernel::with_resources(|resources| {
                          crate::toolbox::quickdraw::icons_service::Drawing::new(resources,
                 &mac_abi::quickdraw::IconCall { scope: resources::SYSTEM, id,
-                    destination: Rect::new(0,0,16,16), ..Default::default() },
+                    destination: geometry::Rect::new(0,0,16,16), ..Default::default() },
                 Default::default())
                      }).ok_or(NOT_SUPPORTED)?
                  };

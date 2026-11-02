@@ -1,5 +1,12 @@
 //! System-owned Standard File protocol. Catalog work is a bounded owned state
 //! machine; no Files guard or caller buffer survives its asynchronous requests.
+//!
+//! The virtual Desktop presents mounted-volume roots followed by the Files
+//! service's combined desktop iterator. Every row retains its real volume/CNID.
+//! Unselected Save and New Folder retain the current volume's real Desktop
+//! Folder, defaulting to startup only without a current volume. Selecting an
+//! existing file retains its real volume/parent even while editing its name.
+//! Desktop Folders are created only for writes; read-only failures are errors.
 #![forbid(unsafe_code)]
 pub mod layout;
 pub(super) mod page;
@@ -11,6 +18,7 @@ mod preparation;
 use alloc::vec::Vec;
 
 use mac_abi::{files::{self, CatalogInfo, FileCall, ROOT_ID, VolumeInfo},
+              geometry::Rect,
               standard_file::*,
               *};
 use page::Page;
@@ -60,6 +68,7 @@ pub(super) enum Stage
 {
     DefaultVolume,
     Volume,
+    NavigationDesktop,
     Directory,
     Ancestor(u32),
     Scan,
@@ -81,6 +90,20 @@ pub(super) enum Stage
     {
         index:  u32,
         volume: u32
+    },
+    DesktopScan,
+    DesktopDestination,
+    SaveDesktopVolume
+    {
+        folder:    bool,
+        volume:    u32,
+        directory: u32
+    },
+    SaveDesktopFolder(bool),
+    SaveVolume
+    {
+        volume:    u32,
+        directory: u32
     }
 }
 pub(super) enum Query
@@ -141,6 +164,7 @@ pub struct Dialog
     all:                          bool,
     pub sheet:                    Sheet,
     pub error:                    Status,
+    pub(super) error_context:     Text,
     pub last_click:               Option<(usize, u32)>,
     pub popup:                    bool,
     pub ancestors:                Vec<CatalogInfo>,
@@ -149,9 +173,14 @@ pub struct Dialog
     name_format:                  Option<mac_filesystem::Format>,
     pub(super) volume_info:       VolumeInfo,
     stage:                        Option<Stage>,
+    desktop_resume:               Option<Stage>,
     issued:                       bool,
     pub(super) revision:          u64,
     desktop_count:                u32,
+    pub(super) desktop_volume:    u32,
+    save_destination:             Option<(u32, u32)>,
+    desktop_folder:               Option<u32>,
+    desktop_cursor:               files::DesktopScanCursor,
     create_when:                  u64,
     pub(super) main_widgets:      Widgets,
     pub(super) auxiliary_widgets: Widgets,
@@ -192,14 +221,43 @@ impl Dialog
         else
         {
             self.selected.and_then(|i| self.entries.get(i)).is_some_and(CatalogInfo::is_directory)
-            || (!self.name().is_empty() && self.stage.is_none_or(|s| matches!(s, Stage::Scan)))
+            || (!self.name().is_empty()
+                && self.stage.is_none_or(|s| {
+                                 matches!(s,
+                                          Stage::Scan
+                                          | Stage::DesktopCount
+                                          | Stage::DesktopVolume(_)
+                                          | Stage::DesktopRoot { .. }
+                                          | Stage::DesktopScan
+                                          | Stage::DesktopDestination)
+                             }))
         }
     }
 
     fn restart(&mut self, location: (u32, u32)) -> Result<(), Status>
     {
         self.revision = self.revision.checked_add(1).ok_or(NO_MEMORY)?;
+        if location.0 == 0 && self.location.0 != 0
+        {
+            self.desktop_volume = self.location.0;
+        }
+        let desktop_info = self.volume_info;
         self.location = location;
+        self.name_format = None;
+        self.volume_info = if location.0 == 0
+                              && (desktop_info.id == self.desktop_volume
+                                  || self.desktop_volume == 0 && desktop_info.startup != 0)
+        {
+            desktop_info
+        }
+        else
+        {
+            VolumeInfo::default()
+        };
+        self.save_destination = None;
+        self.desktop_resume = None;
+        self.desktop_folder = None;
+        self.desktop_cursor = files::DesktopScanCursor::default();
         self.entries.reset();
         self.icons.clear();
         self.ancestors.clear();
@@ -209,8 +267,16 @@ impl Dialog
         self.name_tracking = false;
         self.popup = false;
         self.typeahead.clear();
+        self.error_context.clear();
         self.issued = false;
-        self.stage = Some(if location.0 == 0 { Stage::DesktopCount } else { Stage::Volume });
+        if location.0 == 0
+        {
+            self.start_scan();
+        }
+        else
+        {
+            self.stage = Some(Stage::Volume);
+        }
         Ok(())
     }
 
@@ -236,16 +302,113 @@ impl Dialog
                 self.issued = false;
                 self.first = first;
                 self.entries.request(first, false);
-                self.stage = Some(Stage::Scan);
+                self.start_scan();
             }
         }
         Ok(())
     }
 
+    fn start_scan(&mut self)
+    {
+        self.desktop_cursor = files::DesktopScanCursor::default();
+        self.desktop_resume = None;
+        self.stage = Some(if self.location.0 == 0
+                          {
+                              if self.mode == PUT
+                                 && self.desktop_volume != 0
+                                 && self.volume_info.id != self.desktop_volume
+                              {
+                                  self.desktop_resume = Some(Stage::DesktopCount);
+                                  Stage::DesktopDestination
+                              }
+                              else
+                              {
+                                  Stage::DesktopCount
+                              }
+                          }
+                          else
+                          {
+                              Stage::Scan
+                          });
+    }
+
+    fn include(&self, entry: &CatalogInfo) -> bool
+    {
+        entry.id == ROOT_ID && entry.is_directory()
+        || self.mode != GET
+        || self.all
+        || (entry.finder_flags() & 0x4000 == 0
+            && (entry.is_directory() || self.types[..self.type_count].contains(&entry.file_type)))
+    }
+
+    fn retain_save_destination(&mut self) -> Result<(), Status>
+    {
+        let Some(entry) =
+            self.selected
+                .and_then(|index| self.entries.get(index))
+                .copied()
+                .filter(|entry| self.mode == PUT && self.location.0 == 0 && !entry.is_directory())
+        else
+        {
+            return Ok(());
+        };
+        self.save_destination = Some((entry.volume, entry.parent));
+        if self.desktop_volume != entry.volume
+        {
+            self.revision = self.revision.checked_add(1).ok_or(NO_MEMORY)?;
+            self.issued = false;
+            if !matches!(self.stage, Some(Stage::DesktopDestination))
+            {
+                self.desktop_resume = self.stage;
+            }
+            self.desktop_volume = entry.volume;
+            self.volume_info = VolumeInfo::default();
+            self.name_format = None;
+            self.stage = Some(Stage::DesktopDestination);
+        }
+        Ok(())
+    }
+
+    fn accept_scan(&mut self, call: files::FileScanCall) -> Result<bool, Status>
+    {
+        let include = self.include(&call.entry);
+        let prefix = self.typeahead.text()?;
+        let prefix_match = prefix.is_empty() || prefix_equal(call.entry.name(), prefix);
+        let changed = self.entries.accept(call, self.page(), include, prefix_match)?;
+        if let Some(selected) = self.entries.selected.take()
+        {
+            self.selected = Some(selected);
+        }
+        if self.selected.is_none() && self.mode == GET && self.entries.length != 0
+        {
+            self.selected = Some(self.entries.first);
+        }
+        self.first = self.entries.first;
+        if !self.entries.scanning
+        {
+            self.stage = None;
+        }
+        else if self.location.0 == 0 && self.entries.rescan
+        {
+            self.start_scan();
+        }
+        self.retain_save_destination()?;
+        Ok(changed && self.entries.ready(self.page()))
+    }
+
     pub(super) fn fail(&mut self, cause: Status)
     {
+        if let Some(revision) = self.revision.checked_add(1)
+        {
+            self.revision = revision;
+        }
+        else
+        {
+            self.state = CANCELLED;
+        }
         self.issued = false;
         self.stage = None;
+        self.desktop_resume = None;
         self.error = cause;
         self.sheet = Sheet::Error;
     }
@@ -256,11 +419,7 @@ impl Dialog
         {
             return false;
         }
-        let include = self.mode != GET
-                      || self.all
-                      || (call.entry.finder_flags() & 0x4000 == 0
-                          && (call.entry.is_directory()
-                              || self.types[..self.type_count].contains(&call.entry.file_type)));
+        let include = self.include(&call.entry);
         let prefix =
             self.typeahead
                 .text()
@@ -284,7 +443,14 @@ impl Dialog
         {
             return Ok(None);
         };
-        if self.sheet != Sheet::Main && !matches!(stage, Stage::PrepareFolder | Stage::CreateFolder)
+        if self.sheet != Sheet::Main
+           && !(self.sheet == Sheet::NewFolder
+                && matches!(stage,
+                            Stage::PrepareFolder
+                            | Stage::CreateFolder
+                            | Stage::SaveDesktopVolume { folder: true,
+                                                         .. }
+                            | Stage::SaveDesktopFolder(true)))
         {
             return Ok(None);
         }
@@ -300,11 +466,23 @@ impl Dialog
                 call.index = 0;
             }
             Stage::Volume => call.operation = files::VOLUME_INFO,
+            Stage::DesktopDestination =>
+            {
+                call.operation = files::VOLUME_INFO;
+                call.volume = self.desktop_volume;
+                call.cnid = 0;
+            }
             Stage::Directory => call.operation = files::CATALOG,
             Stage::Ancestor(id) =>
             {
                 call.operation = files::CATALOG;
                 call.cnid = id;
+            }
+            Stage::NavigationDesktop =>
+            {
+                call.operation = files::FIND_FOLDER;
+                call.cnid = 0;
+                call.file_type = *b"desk";
             }
             Stage::Scan =>
             {
@@ -317,6 +495,22 @@ impl Dialog
                 return Ok(Some((self.revision,
                                 Query::Scan(self.entries
                                                 .query(self.location.0, self.location.1)))));
+            }
+            Stage::DesktopScan =>
+            {
+                if !self.entries.scanning
+                {
+                    self.stage = None;
+                    return Ok(None);
+                }
+                self.error_context = Text::new("Desktop")?;
+                self.issued = true;
+                return Ok(Some((self.revision,
+                                Query::Scan(files::FileScanCall { operation:
+                                                                      files::SCAN_DESKTOP,
+                                                                  desktop:
+                                                                      self.desktop_cursor,
+                                                                  ..Default::default() }))));
             }
             Stage::Lookup =>
             {
@@ -352,6 +546,27 @@ impl Dialog
                 call.volume = volume;
                 call.cnid = ROOT_ID;
             }
+            Stage::SaveDesktopVolume { volume,
+                                       .. } =>
+            {
+                call.operation = files::VOLUME_INFO;
+                call.volume = volume;
+            }
+            Stage::SaveDesktopFolder(_) =>
+            {
+                call.operation = files::FIND_FOLDER;
+                call.volume = self.desktop_volume;
+                call.cnid = 0;
+                call.file_type = *b"desk";
+                call.index = 1;
+                call.position = self.create_when;
+            }
+            Stage::SaveVolume { volume,
+                                .. } =>
+            {
+                call.operation = files::VOLUME_INFO;
+                call.volume = volume;
+            }
         }
         self.issued = true;
         Ok(Some((self.revision, Query::File(call, text))))
@@ -361,6 +576,22 @@ impl Dialog
     {
         self.revision = self.revision.checked_add(1).ok_or(NO_MEMORY)?;
         self.issued = false;
+        self.desktop_resume = None;
+        if self.location.0 == 0
+        {
+            self.error_context = if self.desktop_volume == 0
+            {
+                Text::new("Desktop: startup disk")?
+            }
+            else
+            {
+                let mut context = Text::new("Desktop: ")?;
+                context.push_bounded(self.volume_info.name());
+                context
+            };
+            self.stage = Some(Stage::SaveDesktopFolder(folder));
+            return Ok(());
+        }
         if self.volume_info.read_only != 0
         {
             return Err(READ_ONLY);
@@ -382,6 +613,17 @@ impl Dialog
         Ok(())
     }
 
+    fn set_volume(&mut self, volume: VolumeInfo)
+    {
+        self.volume_info = volume;
+        self.name_format = match volume.filesystem
+        {
+            files::FILESYSTEM_HFS => Some(mac_filesystem::Format::Hfs),
+            files::FILESYSTEM_HFS_B => Some(mac_filesystem::Format::HfsB),
+            _ => None
+        };
+    }
+
     pub(super) fn receive(&mut self, revision: u64, reply: Result<Reply, Status>)
                           -> Result<bool, Status>
     {
@@ -397,12 +639,19 @@ impl Dialog
         };
         let reply = match reply
         {
-            Err(SCAN_STALE) if matches!(stage, Stage::Scan) =>
+            Err(SCAN_STALE) if matches!(stage, Stage::Scan | Stage::DesktopScan) =>
             {
                 self.entries.reset();
                 self.selected = None;
                 self.first = 0;
+                self.start_scan();
                 return Ok(true);
+            }
+            Err(NOT_FOUND) if matches!(stage, Stage::NavigationDesktop) =>
+            {
+                self.desktop_folder = None;
+                self.stage = Some(Stage::Directory);
+                return Ok(false);
             }
             Err(NOT_FOUND) if matches!(stage, Stage::Lookup) =>
             {
@@ -434,13 +683,25 @@ impl Dialog
             }
             (Stage::Volume, Reply::File(call)) =>
             {
-                self.volume_info = call.volume_info;
-                self.name_format = match call.volume_info.filesystem
+                self.set_volume(call.volume_info);
+                self.stage = Some(Stage::NavigationDesktop);
+            }
+            (Stage::DesktopDestination, Reply::File(call)) =>
+            {
+                if call.volume_info.id != self.desktop_volume
                 {
-                    files::FILESYSTEM_HFS => Some(mac_filesystem::Format::Hfs),
-                    files::FILESYSTEM_HFS_B => Some(mac_filesystem::Format::HfsB),
-                    _ => None
-                };
+                    return Err(CORRUPT_DATA);
+                }
+                self.set_volume(call.volume_info);
+                self.stage = self.desktop_resume.take();
+            }
+            (Stage::NavigationDesktop, Reply::File(call)) =>
+            {
+                if !call.entry.is_directory() || call.entry.volume != self.location.0
+                {
+                    return Err(CORRUPT_DATA);
+                }
+                self.desktop_folder = Some(call.entry.id);
                 self.stage = Some(Stage::Directory);
             }
             (Stage::Directory, Reply::File(call)) =>
@@ -452,6 +713,8 @@ impl Dialog
                 self.ancestors.clear();
                 self.ancestors.push(call.entry);
                 self.stage = Some(if call.entry.id == ROOT_ID
+                                     || Some(call.entry.id) == self.desktop_folder
+                                     || Some(call.entry.parent) == self.desktop_folder
                                   {
                                       Stage::Scan
                                   }
@@ -469,6 +732,8 @@ impl Dialog
                 }
                 self.ancestors.push(call.entry);
                 self.stage = Some(if call.entry.id == ROOT_ID
+                                     || Some(call.entry.id) == self.desktop_folder
+                                     || Some(call.entry.parent) == self.desktop_folder
                                      || self.ancestors.len() == page::ANCESTORS
                                   {
                                       Stage::Scan
@@ -480,29 +745,7 @@ impl Dialog
             }
             (Stage::Scan, Reply::Scan(call)) =>
             {
-                let include = self.mode != GET
-                              || self.all
-                              || (call.entry.finder_flags() & 0x4000 == 0
-                                  && (call.entry.is_directory()
-                                      || self.types[..self.type_count].contains(&call.entry
-                                                                                     .file_type)));
-                let prefix = self.typeahead.text()?;
-                let prefix_match = prefix.is_empty() || prefix_equal(call.entry.name(), prefix);
-                let changed = self.entries.accept(call, self.page(), include, prefix_match)?;
-                if let Some(selected) = self.entries.selected.take()
-                {
-                    self.selected = Some(selected);
-                }
-                if self.selected.is_none() && self.mode == GET && self.entries.length != 0
-                {
-                    self.selected = Some(self.entries.first);
-                }
-                self.first = self.entries.first;
-                if !self.entries.scanning
-                {
-                    self.stage = None;
-                }
-                return Ok(changed && self.entries.ready(self.page()));
+                return self.accept_scan(call);
             }
             (Stage::Lookup, Reply::File(call)) =>
             {
@@ -577,38 +820,103 @@ impl Dialog
             (Stage::DesktopCount, Reply::File(call)) =>
             {
                 self.desktop_count = call.index;
-                self.entries.desktop_total(call.index as usize);
-                self.stage = if call.index == 0 { None } else { Some(Stage::DesktopVolume(0)) };
+                if call.index == 0
+                {
+                    return self.accept_scan(files::FileScanCall { step: files::SCAN_DONE,
+                                                                  ..Default::default() });
+                }
+                self.stage = Some(Stage::DesktopVolume(0));
             }
             (Stage::DesktopVolume(index), Reply::File(call)) =>
             {
+                if self.desktop_volume == 0 && call.volume_info.startup != 0
+                {
+                    self.set_volume(call.volume_info);
+                }
+                self.error_context = Text::new("Desktop: ")?;
+                self.error_context.push_bounded(call.volume_info.name());
                 self.stage = Some(Stage::DesktopRoot { index,
                                                        volume: call.volume_info.id });
             }
             (Stage::DesktopRoot { index,
-                                  .. },
+                                  volume },
              Reply::File(call)) =>
             {
-                let local = (index as usize).checked_sub(self.first);
-                if let Some(local) = local.filter(|&i| i < self.page())
+                if call.entry.volume != volume
+                   || call.entry.id != ROOT_ID
+                   || !call.entry.is_directory()
                 {
-                    self.entries.rows[local] = call.entry;
-                    self.entries.length = local + 1;
+                    return Err(CORRUPT_DATA);
                 }
-                let next = index + 1;
-                self.stage = if next < self.desktop_count
-                                && next < (self.first + self.page()) as u32
+                let changed = self.accept_scan(files::FileScanCall { step: files::SCAN_ENTRY,
+                                                                     entry: call.entry,
+                                                                     ..Default::default() })?;
+                if self.entries.scanning && !matches!(self.stage, Some(Stage::DesktopCount))
                 {
-                    Some(Stage::DesktopVolume(next))
+                    self.stage = Some(if index + 1 < self.desktop_count
+                                      {
+                                          Stage::DesktopVolume(index + 1)
+                                      }
+                                      else
+                                      {
+                                          Stage::DesktopScan
+                                      });
                 }
-                else
+                return Ok(changed);
+            }
+            (Stage::DesktopScan, Reply::Scan(mut call)) =>
+            {
+                self.desktop_cursor = call.desktop;
+                // Volume icons precede the shared desktop file projection.
+                // Catalog identity remains the service's real volume/CNID.
+                call.cursor = files::DirectoryScanCursor::default();
+                return self.accept_scan(call);
+            }
+            (Stage::SaveDesktopVolume { folder,
+                                        volume,
+                                        directory },
+             Reply::File(call)) =>
+            {
+                self.error_context = Text::new("Desktop: ")?;
+                self.error_context.push_bounded(call.volume_info.name());
+                if call.volume_info.id != volume
                 {
-                    None
-                };
-                if self.mode == GET && self.selected.is_none() && self.entries.length != 0
-                {
-                    self.selected = Some(self.first);
+                    return Err(CORRUPT_DATA);
                 }
+                if call.volume_info.read_only != 0
+                {
+                    return Err(READ_ONLY);
+                }
+                self.restart((volume, directory))?;
+                self.set_volume(call.volume_info);
+                self.desktop_folder = Some(directory);
+                self.error_context = Text::new("Desktop: ")?;
+                self.error_context.push_bounded(call.volume_info.name());
+                self.prepare_name(folder)?;
+            }
+            (Stage::SaveDesktopFolder(folder), Reply::File(call)) =>
+            {
+                if !call.entry.is_directory() || call.entry.volume == 0
+                {
+                    return Err(CORRUPT_DATA);
+                }
+                self.stage = Some(Stage::SaveDesktopVolume { folder,
+                                                             volume: call.entry.volume,
+                                                             directory: call.entry.id });
+            }
+            (Stage::SaveVolume { volume,
+                                 directory },
+             Reply::File(call)) =>
+            {
+                if call.volume_info.id != volume
+                {
+                    return Err(CORRUPT_DATA);
+                }
+                self.restart((volume, directory))?;
+                self.set_volume(call.volume_info);
+                self.error_context = Text::new("Desktop: ")?;
+                self.error_context.push_bounded(call.volume_info.name());
+                self.prepare_name(false)?;
             }
             _ => return Err(BAD_ABI)
         }
@@ -875,6 +1183,11 @@ impl Manager
                 {
                     d.editor.set_text(entry.name())?;
                     d.editor.select(0, d.name().len() as u32)?;
+                    d.retain_save_destination()?;
+                }
+                else if d.mode == PUT
+                {
+                    d.save_destination = None;
                 }
                 if matches!(action, Action::Open(_))
                 {
@@ -905,17 +1218,34 @@ impl Manager
                 }
                 else
                 {
-                    if d.location.0 == 0
+                    d.create_when = u64::from(when);
+                    if let Some((volume, directory)) =
+                        (d.location.0 == 0).then(|| {
+                                               entry.map(|entry| (entry.volume, entry.parent))
+                                                    .or(d.save_destination)
+                                           })
+                                           .flatten()
                     {
-                        return Err(BAD_ARGUMENT);
+                        d.revision = d.revision.checked_add(1).ok_or(NO_MEMORY)?;
+                        d.issued = false;
+                        d.desktop_resume = None;
+                        d.stage = Some(Stage::SaveVolume { volume,
+                                                           directory });
+                        return Ok(());
                     }
                     d.prepare_name(false)?;
                 }
             }
             Action::Parent =>
             {
+                if d.location.0 == 0
+                {
+                    return Ok(());
+                }
                 let entry = d.ancestors.first().copied().ok_or(SERVICE_BUSY)?;
                 return d.restart(if entry.id == ROOT_ID
+                                    || Some(entry.id) == d.desktop_folder
+                                    || Some(entry.parent) == d.desktop_folder
                                  {
                                      (0, 0)
                                  }
@@ -942,17 +1272,20 @@ impl Manager
                            * if matches!(action, Action::Page(_)) { d.page() as i64 } else { 1 };
                 d.selected = Some((d.selected.unwrap_or(0) as i64 + step).clamp(0, total as i64 - 1)
                                   as usize);
+                d.save_destination = None;
                 d.focus_name = false;
                 d.reveal()?;
             }
             Action::Home =>
             {
                 d.selected = (d.entries.count() != 0).then_some(0);
+                d.save_destination = None;
                 d.reveal()?;
             }
             Action::End =>
             {
                 d.selected = d.entries.count().checked_sub(1);
+                d.save_destination = None;
                 d.reveal()?;
             }
             Action::Scroll(first) =>
@@ -964,14 +1297,7 @@ impl Manager
                     d.issued = false;
                     d.first = first;
                     d.entries.request(first, false);
-                    d.stage = Some(if d.location.0 == 0
-                                   {
-                                       Stage::DesktopVolume(first as u32)
-                                   }
-                                   else
-                                   {
-                                       Stage::Scan
-                                   });
+                    d.start_scan();
                 }
             }
             Action::ToggleFocus =>
@@ -990,9 +1316,9 @@ impl Manager
             }
             Action::NewFolder =>
             {
-                if d.mode == PUT && d.location.0 != 0
+                if d.mode == PUT
                 {
-                    if d.volume_info.read_only != 0
+                    if d.location.0 != 0 && d.volume_info.read_only != 0
                     {
                         return Err(READ_ONLY);
                     }
@@ -1032,7 +1358,7 @@ impl Manager
                     d.issued = false;
                     d.entries.selected = d.selected;
                     d.entries.request(0, true);
-                    d.stage = Some(Stage::Scan);
+                    d.start_scan();
                     d.selected = None;
                     d.first = 0;
                 }
@@ -1054,6 +1380,7 @@ impl Manager
             }
             Action::Cancel | Action::Dismiss => ()
         }
+        d.retain_save_destination()?;
         Ok(())
     }
 }

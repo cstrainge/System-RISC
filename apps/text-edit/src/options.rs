@@ -5,12 +5,15 @@ use core::fmt::Write;
 use mac_toolbox::{controls::{Control, StandardKind, StandardState},
                   *};
 
-use crate::{Text, preferences::Settings};
+use crate::{Text, font_choices::Families, preferences::Settings};
 const ITEMS: usize = 20;
+const FONT_POLL_TICKS: u32 = 30;
 
 pub struct Options<'a>
 {
     fonts:      controls::ScrollBox<'a>,
+    families:   Families,
+    font_poll:  u32,
     controls:   [Option<Control<'a>>; ITEMS],
     states:     [StandardState; ITEMS],
     limit:      textedit::Editor<'a>,
@@ -46,6 +49,8 @@ impl<'a> Options<'a>
                 display: textedit::DisplayOptions)
                 -> Result<Self, Error>
     {
+        let families = Families::read(system)?;
+        let font_poll = system.events().ticks()?;
         let mut bytes = [0; 2048];
         let length = resource(system, *b"WIND", &mut bytes)?;
         if length != 20
@@ -98,8 +103,11 @@ impl<'a> Options<'a>
             }
             if let Some(procedure) = procedure
             {
-                controls[index] =
-                    Some(system.controls().create_standard(window.id(), procedure, *state)?);
+                controls[index] = Some(system.controls()
+                                             .create_standard(window.id(),
+                                                              procedure,
+                                                              *state,
+                                                              mac_toolbox::controls::Reflow::No)?);
             }
             at += 14 + count + (count & 1);
         }
@@ -108,14 +116,24 @@ impl<'a> Options<'a>
             return Err(Error::CorruptData);
         }
         let bounds = states[0].bounds;
-        let fonts = system.controls().create_scroll_box(window.id(), controls::ScrollBoxSpec {
-            viewport: Rect::new(bounds.left, bounds.top, bounds.right - 16, bounds.bottom),
-            scrollbar: Rect::new(bounds.right - 16, bounds.top, bounds.right, bounds.bottom),
-            count: crate::preferences::FAMILIES.len() as u32,
-            row_height: 20,
-            padding: Point { h: 5, v: 14 },
-            ..Default::default()
-        })?;
+        let fonts =
+            system.controls()
+                  .create_scroll_box(window.id(),
+                                     controls::ScrollBoxSpec { viewport:
+                                                                   Rect::new(bounds.left,
+                                                                             bounds.top,
+                                                                             bounds.right - 16,
+                                                                             bounds.bottom),
+                                                               scrollbar:
+                                                                   Rect::new(bounds.right - 16,
+                                                                             bounds.top,
+                                                                             bounds.right,
+                                                                             bounds.bottom),
+                                                               count: families.len(),
+                                                               row_height: 20,
+                                                               padding: Point { h: 5,
+                                                                                v: 14 },
+                                                               ..Default::default() })?;
         let rect = states[12].bounds;
         let limit = system.textedit().create_owned(rect, rect)?;
         limit.set_font(quickdraw::fonts::FontSelection { family: 4,
@@ -133,6 +151,8 @@ impl<'a> Options<'a>
         limit.select(0, u32::MAX)?;
         limit.activate(true)?;
         let mut dialog = Self { fonts,
+                                families,
+                                font_poll,
                                 controls,
                                 states,
                                 limit,
@@ -142,15 +162,16 @@ impl<'a> Options<'a>
                                 mode,
                                 tracking: false,
                                 last_mouse: Point::default() };
-        dialog.fill_fonts(system, dialog.fonts.control().info()?.missing)?;
+        dialog.fill_fonts(dialog.fonts.control().info()?.missing)?;
         dialog.refresh()?;
         dialog.draw(system)?;
         system.select_window(dialog.window.id())?;
+        dialog.record_fonts(system, "publish", None, true);
         system.log("TEXT_EDIT_OPTIONS_READY\n")?;
         Ok(dialog)
     }
 
-    fn fill_fonts(&self, system: &System<'a>, range: core::ops::Range<u32>) -> Result<(), Error>
+    fn fill_fonts(&self, range: core::ops::Range<u32>) -> Result<(), Error>
     {
         let list = self.fonts.control();
         let view = list.info()?;
@@ -160,13 +181,99 @@ impl<'a> Options<'a>
             {
                 continue;
             }
-            let mut bytes = [0; 128];
-            let name = system.resources().application().indexed_string(2005, row, &mut bytes)?;
-            list.set_row(row,
-                         name,
-                         self.font.family == crate::preferences::FAMILIES[row as usize])?;
+            let family = self.families.get(row)?;
+            list.set_row(row, family.name, self.font.family == family.family)?;
         }
         Ok(())
+    }
+
+    fn poll_fonts(&mut self, system: &System<'a>, ticks: u32) -> Result<(), Error>
+    {
+        if ticks.wrapping_sub(self.font_poll) < FONT_POLL_TICKS
+        {
+            return Ok(());
+        }
+        self.font_poll = ticks;
+        if system.quickdraw().fonts().revision()? == self.families.revision
+        {
+            return Ok(());
+        }
+        let next = Families::read(system)?;
+        if self.families.same_rows(&next)
+        {
+            self.families = next;
+            self.record_fonts(system, "publish", None, true);
+            return Ok(());
+        }
+        let list = self.fonts.control();
+        let view = list.info()?;
+        let anchor = if view.top < self.families.len()
+        {
+            next.position(self.families.get(view.top)?.family)
+        }
+        else
+        {
+            None
+        };
+        list.configure(controls::ScrollBoxSpec { count: next.len(),
+                                                 ..view.spec })?;
+        self.families = next;
+        list.scroll_to(anchor.unwrap_or(view.top))?;
+        let view = list.invalidate()?;
+        self.fill_fonts(view.missing)?;
+        list.draw()?;
+        self.record_fonts(system, "publish", None, true);
+        Ok(())
+    }
+
+    fn record_fonts(&self, system: &System<'a>, change: &str, key: Option<&str>, include_ids: bool)
+    {
+        let mut message = Text::<2304>::default();
+        let _ = write!(&mut message,
+                       "TEXT_EDIT_OPTIONS_FONTS change={change} revision={} count={} selected={} \
+                        available={}",
+                       self.families.revision,
+                       self.families.len(),
+                       self.font.family,
+                       self.families.position(self.font.family).is_some());
+        match key
+        {
+            Some(key) =>
+            {
+                let _ = write!(&mut message, " key={key:?}");
+            }
+            None =>
+            {
+                match system.quickdraw().fonts().key(self.font.family)
+                {
+                    Ok(key) =>
+                    {
+                        let _ = write!(&mut message, " key={:?}", key.name());
+                    }
+                    Err(error) =>
+                    {
+                        let _ = write!(&mut message, " key_error={error}");
+                    }
+                }
+            }
+        }
+        if include_ids
+        {
+            let _ = write!(&mut message, " ids=[");
+            for row in 0..self.families.len()
+            {
+                if let Ok(family) = self.families.get(row)
+                {
+                    let _ = write!(&mut message,
+                                   "{}{}",
+                                   if row == 0 { "" } else { "," },
+                                   family.family);
+                }
+            }
+            let _ = write!(&mut message, "]");
+        }
+        let _ = writeln!(&mut message);
+        let _ = system.log(message.as_str());
     }
 
     fn kind(index: usize) -> StandardKind
@@ -246,7 +353,7 @@ impl<'a> Options<'a>
         update.finish()
     }
 
-    fn settings(&self) -> Result<Settings, Error>
+    fn settings(&self, system: &System<'a>) -> Result<Settings, Error>
     {
         let ruler = if self.mode == 0
         {
@@ -267,13 +374,18 @@ impl<'a> Options<'a>
                 _ => return Err(Error::BadArgument)
             }
         };
-        Ok(Settings::from_font(self.font).with_options(textedit::DisplayOptions { ruler,
+        Ok(Settings::from_font(system, self.font)?.with_options(textedit::DisplayOptions { ruler,
                                                                                   ..self.display }))
     }
 
     pub fn event(&mut self, system: &System<'a>, event: &Event, position: PointerPosition)
                  -> Result<Outcome, Error>
     {
+        if matches!(event, Event::Idle { .. } | Event::Update { .. } | Event::Activate { .. })
+        {
+            self.poll_fonts(system, event.input().when)
+                .map_err(|error| crate::diagnostic(system, "font_catalog", error))?;
+        }
         match event
         {
             Event::Activate { .. } =>
@@ -330,22 +442,30 @@ impl<'a> Options<'a>
                 let list = self.fonts.control();
                 if let Some(row) = list.row_at(point.point()?)?
                 {
-                    let family = crate::preferences::FAMILIES[row as usize];
+                    let family = self.families.get(row)?.family;
                     if self.font.family != family
                     {
-                        let old = crate::preferences::FAMILIES.iter()
-                                                              .position(|&f| f == self.font.family);
+                        // A cached row can disappear between revision polls.
+                        // Never select its now-unavailable numeric ID.
+                        let fonts = system.quickdraw().fonts();
+                        let key = fonts.key(family)?;
+                        if fonts.key_id(key.name())? != family
+                        {
+                            return Err(Error::ScanStale);
+                        }
+                        let old = self.families.position(self.font.family);
                         self.font.family = family;
                         if let Some(old) = old
                         {
-                            self.fill_fonts(system, old as u32..old as u32 + 1)?;
+                            self.fill_fonts(old..old + 1)?;
                         }
-                        self.fill_fonts(system, row..row + 1)?;
+                        self.fill_fonts(row..row + 1)?;
                         list.draw()?;
+                        self.record_fonts(system, "select", Some(key.name()), false);
                     }
                     return Ok(Outcome::Pending);
                 }
-                list.track(point.point()?, |view| self.fill_fonts(system, view.missing))?;
+                list.track(point.point()?, |view| self.fill_fonts(view.missing))?;
                 if self.states[12].bounds.contains(point.point()?)
                 {
                     self.limit.click(point.point()?,
@@ -398,7 +518,7 @@ impl<'a> Options<'a>
 
     fn accept(&self, system: &System<'a>) -> Result<Outcome, Error>
     {
-        match self.settings()
+        match self.settings(system)
         {
             Ok(settings) => Ok(Outcome::Apply(settings)),
             Err(Error::BadArgument) =>

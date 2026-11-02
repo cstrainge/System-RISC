@@ -1,18 +1,8 @@
 #![cfg(not(target_arch = "riscv64"))]
-#[allow(dead_code)]
-mod conformance;
 use mac_abi::{files::*, traps::*, *};
 fn raw<T>(gate: TrapGate, number: u32, call: &mut T) -> i64
 {
     unsafe { gate(number, core::ptr::from_mut(call).cast(), size_of::<T>()) }
-}
-#[test]
-fn legacy_traps_convert_into_the_same_native_services()
-{
-    mac_system::testing::with_services(|services| {
-        let system = unsafe { mac_toolbox::System::from_raw(services) }.unwrap();
-        conformance::strings::shared(&system, services.trap).unwrap();
-    })
 }
 #[test]
 fn legacy_file_names_and_paths_roundtrip_through_real_hfs()

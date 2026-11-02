@@ -32,7 +32,10 @@ static JOB_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static DMA_GENERATIONS: [AtomicU16; 128] = [const { AtomicU16::new(0) }; 128];
 static FILE_SOURCE_GENERATIONS: [AtomicU16; 16] = [const { AtomicU16::new(0) }; 16];
 static HOST_NODE_GENERATIONS: [AtomicU16; 1024] = [const { AtomicU16::new(0) }; 1024];
-static FILE_WATCH_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
+// Room for every mounted desktop plus independent window subscriptions.
+const FILE_WATCH_CAPACITY: usize = 256;
+static FILE_WATCH_GENERATIONS: [AtomicU16; FILE_WATCH_CAPACITY] =
+    [const { AtomicU16::new(0) }; FILE_WATCH_CAPACITY];
 static DRAG_GENERATIONS: [AtomicU16; 32] = [const { AtomicU16::new(0) }; 32];
 static DRAG_RECEIVER_GENERATIONS: [AtomicU16; 64] = [const { AtomicU16::new(0) }; 64];
 
@@ -76,7 +79,7 @@ impl Kind
         {
             Self::Drags => 32,
             Self::DragReceivers => 64,
-            Self::FileWatches => 64,
+            Self::FileWatches => FILE_WATCH_CAPACITY,
             Self::HostNodes => 1024,
             Self::FileSources => 16,
             Self::DriverJobs => 128,

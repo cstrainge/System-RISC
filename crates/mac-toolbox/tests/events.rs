@@ -1,5 +1,6 @@
 //! Canonical public SDK tests, entering the actual resident host service gate.
 #![cfg(not(target_arch = "riscv64"))]
+use mac_toolbox::abi::events::Event;
 mod support;
 #[allow(dead_code)]
 mod conformance;
@@ -224,7 +225,7 @@ fn positioned_delivery_is_additive_and_shares_the_existing_native_queue()
                       events::{Input, Modifiers}};
     // Native records carry full-width window identity separately from payload.
     // The classic 16-byte codec is a separate projection, not this Rust ABI.
-    assert_eq!(core::mem::size_of::<mac_toolbox::abi::Event>(), 40);
+    assert_eq!(core::mem::size_of::<Event>(), 40);
     assert_eq!(core::mem::size_of::<mac_toolbox::abi::traps::NextEventCall>(), 48);
     assert_eq!(core::mem::size_of::<mac_toolbox::abi::traps::WaitEventCall>(), 56);
     assert_eq!(core::mem::size_of::<mac_toolbox::abi::events::EventCall>(), 88);

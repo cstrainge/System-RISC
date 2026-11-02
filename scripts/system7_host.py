@@ -68,6 +68,47 @@ def _windows_pid_present(kernel, pid):
         capacity *= 2
 
 
+def windows_process_name(pid):
+    """Read the executable name from a Windows process-list snapshot."""
+    from ctypes import wintypes
+
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD),
+                    ('th32ProcessID', wintypes.DWORD), ('th32DefaultHeapID', ctypes.c_size_t),
+                    ('th32ModuleID', wintypes.DWORD), ('cntThreads', wintypes.DWORD),
+                    ('th32ParentProcessID', wintypes.DWORD), ('pcPriClassBase', wintypes.LONG),
+                    ('dwFlags', wintypes.DWORD), ('szExeFile', wintypes.WCHAR * 260)]
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    for name in ('Process32FirstW', 'Process32NextW'):
+        function = getattr(kernel, name)
+        function.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry)]
+        function.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    snapshot = kernel.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
+    if snapshot == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        entry = ProcessEntry()
+        entry.dwSize = ctypes.sizeof(entry)
+        present = kernel.Process32FirstW(snapshot, ctypes.byref(entry))
+        while present:
+            if entry.th32ProcessID == pid:
+                if not entry.szExeFile:
+                    raise OSError(f'Windows process {pid} has no readable executable name')
+                return entry.szExeFile
+            present = kernel.Process32NextW(snapshot, ctypes.byref(entry))
+        error = ctypes.get_last_error()
+        if error != 18:  # ERROR_NO_MORE_FILES
+            raise ctypes.WinError(error)
+        return None
+    finally:
+        kernel.CloseHandle(snapshot)
+
+
 @contextmanager
 def exclusive_lock(path):
     # Keep the inode and lock byte stable: no unlink/recreate on release.

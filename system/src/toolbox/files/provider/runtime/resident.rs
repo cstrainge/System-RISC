@@ -35,7 +35,8 @@ struct Input
     volume:    u32,
     cnid:      u32,
     index:     u32,
-    position:  u64
+    position:  u64,
+    file_type: [u8; 4]
 }
 impl Input
 {
@@ -46,6 +47,7 @@ impl Input
                    cnid: self.cnid,
                    index: self.index,
                    position: self.position,
+                   file_type: self.file_type,
                    ..Default::default() }
     }
 }
@@ -73,7 +75,13 @@ impl Request
     pub(crate) fn file(subject: &IoSubject, call: FileCall, text: &str) -> Result<Self, Status>
     {
         if !matches!(call.operation,
-                     VOLUME_INFO | VOLUME_INDEX | VOLUME_COUNT | CATALOG | LOOKUP | NEW_FOLDER)
+                     VOLUME_INFO
+                     | VOLUME_INDEX
+                     | VOLUME_COUNT
+                     | CATALOG
+                     | LOOKUP
+                     | NEW_FOLDER
+                     | FIND_FOLDER)
         {
             return Err(NOT_SUPPORTED);
         }
@@ -89,7 +97,8 @@ impl Request
                             volume:    call.volume,
                             cnid:      call.cnid,
                             index:     call.index,
-                            position:  call.position };
+                            position:  call.position,
+                            file_type: call.file_type };
         Self::begin(subject, Call::File(input), text)
     }
 
@@ -120,7 +129,12 @@ impl Request
             match call
             {
                 Call::File(input) => background::metadata(access, &mut input.wire(), text, 0),
-                Call::Scan(mut call) => background::scan(access, &mut call),
+                Call::Scan(mut call) =>
+                {
+                    let progress = background::scan(access, &mut call);
+                    continuation.call = Call::Scan(call);
+                    progress
+                }
                 Call::PrepareName(volume) => background::prepare_name(access, volume, text)
             }
         })?;
@@ -177,7 +191,18 @@ impl Continuation
         match progress
         {
             Progress::Pending(flight) => self.flight = Some(flight),
-            Progress::Done(reply) => self.reply = Some(reply.and_then(|reply| self.project(reply)))
+            Progress::Done(reply) =>
+            {
+                let reply = match self.call
+                {
+                    Call::Scan(call) if call.operation == SCAN_DESKTOP =>
+                    {
+                        desktop::finish(call, reply)
+                    }
+                    _ => reply
+                };
+                self.reply = Some(reply.and_then(|reply| self.project(reply)));
+            }
         }
     }
 

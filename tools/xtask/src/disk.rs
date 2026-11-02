@@ -104,8 +104,10 @@ pub fn image(workspace: &Workspace) -> Result<Value>
             let module = macbinary::decode(&bytes)?;
             let resources = mac_formats::resource::decode(&module.resources)?;
             let package = mac_formats::module::Package::inspect(&resources, module.file_type)?;
-            let filename = mac_module::preferences::filename(package.contract.identity);
-            let filename = core::str::from_utf8(&filename)?;
+            let mut buffer = [0; 37];
+            let filename =
+                mac_module::preferences::filename(package.contract.identity, &mut buffer);
+            let filename = core::str::from_utf8(filename)?;
             let file = volume.create(folder, filename, false, when)?.id;
             volume.set_finder_metadata(file, 0, finder_info, when)?;
             let mut bytes = [0; mac_host_clipboard::MAX_SETTINGS_BYTES];
@@ -126,6 +128,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                       (applications, "Applications", "Panic Test"),
                                       (applications, "Applications", "Res Edit"),
                                       (applications, "Applications", "Reactor Room"),
+                                      (applications, "Applications", "Control Suite"),
                                       (drivers, "System Folder/Drivers", "Host Transport"),
                                       (drivers, "System Folder/Drivers", "VDAgent Channel"),
                                       (drivers, "System Folder/Drivers", "VirtIO RNG"),
@@ -238,7 +241,7 @@ mod tests
         }
         // Two actual builder runs, with user changes in the first writable disk.
         image(&workspace).unwrap();
-        let preferences = br#"{"version":2,"font_family":22,"font_size":18,"wrap":true,"line_numbers":false,"ruler_kind":0,"ruler_value":0}"#;
+        let preferences = br#"{"version":3,"font_key":"bundled:22","font_size":18,"wrap":true,"line_numbers":false,"ruler_kind":0,"ruler_value":0}"#;
         edit(&dist.join("system7.hfsb"), |volume| {
             let folder = hfs_b::copy::resolve(volume, "/System Folder/Preferences")?.id;
             let pref = volume.create(folder, "Text Edit Preferences", false, hfs_b::now()?)?.id;

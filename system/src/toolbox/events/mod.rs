@@ -4,5 +4,5 @@ pub mod position;
 pub mod input;
 #[cfg(any(target_arch = "riscv64", test))]
 pub(crate) mod priority;
-pub use mac_abi::{Point, events::*};
+pub use mac_abi::{geometry::Point, events::*};
 pub use queue::*;

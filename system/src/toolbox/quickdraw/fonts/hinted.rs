@@ -20,7 +20,7 @@ fn hint(outlines: &skrifa::OutlineGlyphCollection<'_>, size: i16)
                                           target: Target::Mono }).map_err(super::scratch::draw_error)
 }
 
-pub(super) fn width(resolved: &Resolved<'_>, text: &str) -> Result<i16, Status>
+pub(super) fn width(resolved: &Resolved<'_>, text: &str) -> Result<i32, Status>
 {
     let raw = FontRef::new(&resolved.resource.data).map_err(|_| BAD_ARGUMENT)?;
     let face = ttf_parser::Face::parse(&resolved.resource.data, 0).map_err(|_| BAD_ARGUMENT)?;
@@ -46,7 +46,7 @@ pub(super) fn width(resolved: &Resolved<'_>, text: &str) -> Result<i16, Status>
                                         });
         width = width.saturating_add(advance(step, resolved.synthetic));
     }
-    Ok(width.clamp(0, i32::from(i16::MAX)) as i16)
+    Ok(width.max(0))
 }
 
 pub(super) fn draw(resolved: &Resolved<'_>, canvas: &mut Canvas<'_>, baseline: Point, text: &str,

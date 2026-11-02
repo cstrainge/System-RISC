@@ -1,8 +1,12 @@
 //! Control Manager client bindings; standard CDEF drawing lives in System.
 #![no_std]
 #![forbid(unsafe_code)]
-pub use mac_abi::{Point, Rect, WindowId, controls::ScrollbarState,
+pub use mac_abi::{geometry::{Point, Rect}, WindowId, controls::ScrollbarState,
                   definitions::ControlDefinitionState as StandardState, quickdraw::FontSelection};
+pub use sr_control_reflow_handling::{Anchors, AxisConstraint, BorderOffsets, Constraints,
+                                     Error as LayoutError, Extent, Fill, Invalidation, LayoutRect,
+                                     Measurement, Reflow, Requirements, Size, SizeBounds,
+                                     SizePreferences, SizeUnit, Span};
 #[repr(i16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StandardKind
@@ -17,7 +21,10 @@ pub enum StandardKind
     ProgressBar           = mac_abi::controls::PROGRESS_BAR_PROCEDURE,
     MonochromeProgressBar = mac_abi::controls::MONOCHROME_PROGRESS_BAR_PROCEDURE,
     /// Prefer the typed StaticText owner for UTF-8 text and justification.
-    StaticText            = mac_abi::controls::STATIC_TEXT_PROCEDURE
+    StaticText            = mac_abi::controls::STATIC_TEXT_PROCEDURE,
+    /// Grid container; prefer the typed Table owner for child placement.
+    Table                 = mac_abi::controls::TABLE_PROCEDURE,
+    Splitter              = mac_abi::controls::SPLITTER_PROCEDURE
 }
 #[repr(i16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +38,7 @@ pub enum Part
     PageUp   = 22,
     PageDown = 23,
     Thumb    = 129,
+    Splitter = 130,
     Inactive = 254
 }
 impl Part
@@ -47,6 +55,7 @@ impl Part
             22 => Ok(Self::PageUp),
             23 => Ok(Self::PageDown),
             129 => Ok(Self::Thumb),
+            130 => Ok(Self::Splitter),
             254 => Ok(Self::Inactive),
             _ => Err(Error::BadArgument)
         }
@@ -87,7 +96,7 @@ impl<'a> Controls<'a>
 
     /// Resolve the CDEF hit part into the same vocabulary as standard controls.
     pub fn scrollbar_hit(&self, window: WindowId, bounds: Rect, value: i16, maximum: i16,
-                         active: bool, point: mac_abi::Point)
+                         active: bool, point: Point)
                          -> Result<Part>
     {
         let mut call=mac_abi::controls::ControlCall {operation:mac_abi::controls::HIT_SCROLLBAR,window:window.0,
@@ -99,7 +108,7 @@ impl<'a> Controls<'a>
     /// Map movement from a mouse-down anchor using CDEF-owned thumb geometry.
     /// Keep initial_value and anchor unchanged for the whole drag.
     pub fn scrollbar_track_value(&self, window: WindowId, bounds: Rect, initial_value: i16,
-                                 maximum: i16, anchor: mac_abi::Point, point: mac_abi::Point)
+                                 maximum: i16, anchor: Point, point: Point)
                                  -> Result<i16>
     {
         let mut call=mac_abi::controls::ControlCall {operation:mac_abi::controls::TRACK_SCROLLBAR,window:window.0,
@@ -171,7 +180,15 @@ pub use mac_abi::definitions::{CDEF, ControlDefinitionState, DEFAULT_BUTTON};
 
 pub mod scrollbox;
 pub use scrollbox::{ScrollBox, ScrollBoxId, ScrollBoxRef, ScrollBoxSpec};
+mod capture;
 pub mod objects;
 pub use objects::{Control, ControlId, ControlInfo, ControlRef};
+mod splitter;
+pub use splitter::{Splitter, SplitterOrientation, SplitterRef, SplitterSpec};
 mod passive;
-pub use passive::{Progress, ProgressBar, ProgressStyle, StaticText, TextAlignment};
+pub use passive::{Progress, ProgressBar, ProgressStyle, StaticText, StaticTextRef, StaticTextSpec,
+                  TextAlignment, TextLayout};
+
+mod table;
+pub use table::{AdoptionError, Cell, Child, ChildHit, Children, ContentRect, GridLines,
+                ScrollInfo, ScrollPosition, Scrolling, Table, TableRef};

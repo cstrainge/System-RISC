@@ -3,7 +3,7 @@
 use alloc::string::String;
 use core::fmt;
 
-use mac_abi::{crashes::*, quickdraw::*, *};
+use mac_abi::{crashes::*, events::CMD_KEY, quickdraw::*, *, geometry::{Point, Rect}};
 
 use crate::toolbox::{crashes::{RESOURCE_ID, ReportLayout},
                      events::input::Input,
@@ -637,7 +637,7 @@ impl super::Desktop
                                                          v: baseline },
                                        ..Default::default() },
                        text,
-                       crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)
+                       crate::kernel::fonts().ok_or(NOT_SUPPORTED)?.as_ref())
     }
 
     fn is_current_finder_report(&self) -> bool
@@ -1438,7 +1438,6 @@ impl super::Desktop
            || info.window.0 == 0
            || info.dismissed != 0
            || self.windows.window(info.window).is_none()
-           || self.app_menu.is_tracking()
            || self.menus.is_tracking()
            || self.windows.is_tracking()
         {

@@ -13,6 +13,7 @@ mod selection;
 mod watches;
 mod icon_view;
 mod get_info;
+mod font_suitcase;
 
 fn update_menus(system: &System<'_>, browser: &browser::Browser, info: &get_info::Controller)
                 -> Result<(), Error>
@@ -24,23 +25,12 @@ fn update_menus(system: &System<'_>, browser: &browser::Browser, info: &get_info
 fn try_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, result: Result<T, Error>)
                      -> Result<Option<T>, Error>
 {
-    use core::fmt::Write;
     match result
     {
         Ok(value) => Ok(Some(value)),
         Err(status) =>
         {
-            let mut message = browser::Text::<80>::default();
-            let _ = writeln!(&mut message,
-                             "FINDER_ACTION_FAILED status={} error={status:?}",
-                             status.status());
-            system.log(message.as_str())?;
-            if let Err(error) = alerts.error(system, status)
-            {
-                let mut message = browser::Text::<80>::default();
-                let _ = writeln!(&mut message, "FINDER_ALERT_FAILED status={}", error.status());
-                system.log(message.as_str())?;
-            }
+            action_error(system, alerts, status, None)?;
             Ok(None)
         }
     }
@@ -73,7 +63,7 @@ fn try_open_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
 /// objects; only a successful native acknowledgement retires this state.
 struct Startup<'a>
 {
-    menus:        Option<[mac_toolbox::menus::MenuRef<'a>; 6]>,
+    menus:        Option<[mac_toolbox::menus::MenuRef<'a>; 5]>,
     initialized:  bool,
     menus_ready:  bool,
     restore_menu: Option<usize>,
@@ -247,37 +237,30 @@ fn try_document_open<'a>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
     }
 }
 
-fn about(system: &System<'_>, id: WindowId) -> Result<(), Error>
+fn action_error<'a>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, status: Error,
+                    document: Option<&str>)
+                    -> Result<(), Error>
 {
-    system.begin_update(id)?;
-    let port = system.quickdraw().graphics(id);
-    port.reset()?;
-    port.colors(0xffffff, 0xffffff)?;
-    port.paint_rect(Rect::new(0, 0, 300, 210))?;
-    for (y, index) in [(20, 4), (45, 5), (70, 6), (100, 7), (120, 8), (140, 9), (160, 10)]
+    use core::fmt::Write;
+    let mut message = browser::Text::<80>::default();
+    let _ =
+        writeln!(&mut message, "FINDER_ACTION_FAILED status={} error={status:?}", status.status());
+    system.log(message.as_str())?;
+    let shown = if let Some(subject) = document
     {
-        let mut bytes = [0; 768];
-        let text = ui::text(system, index, &mut bytes)?;
-        port.text(mac_toolbox::quickdraw::fonts::FontSelection { family: 3,
-                                                                 size:   9,
-                                                                 face:   0 },
-                  Point { h: 16,
-                          v: y },
-                  text,
-                  0)?;
+        alerts.open_error(system, status, subject)
     }
-    system.end_update(id)
-}
-fn open_about(system: &System<'_>, id: &mut WindowId) -> Result<(), Error>
-{
-    if *id == WindowId(0) || system.window(*id).is_err()
+    else
     {
-        let mut bytes = [0; 768];
-        let title = ui::text(system, 3, &mut bytes)?;
-        *id = system.new_window(Rect::new(250, 150, 550, 345), title, (260, 180), 0)?;
+        alerts.error(system, status)
+    };
+    if let Err(error) = shown
+    {
+        let mut message = browser::Text::<80>::default();
+        let _ = writeln!(&mut message, "FINDER_ALERT_FAILED status={}", error.status());
+        system.log(message.as_str())?;
     }
-    system.select_window(*id)?;
-    about(system, *id)
+    Ok(())
 }
 fn main() -> Result<(), Error>
 {
@@ -292,11 +275,11 @@ fn main() -> Result<(), Error>
     let mut watches = watches::Controller::default();
     let mut associations = associations::Controller::default();
     let mut info = get_info::Controller::default();
+    let mut font_suitcases = font_suitcase::Controller::default();
     let mut alerts = ui::Alerts::default();
     let mut startup = Startup::new();
     browser.begin_startup_confirmation();
     startup.advance(system, &mut alerts, &mut browser, &info, false)?;
-    let mut about_id = WindowId(0);
     let mut clipboard = clipboard::Viewer::default();
     let mut startup_retry = false;
     let mut deferred_command = None;
@@ -311,9 +294,17 @@ fn main() -> Result<(), Error>
         {
             let accepted = if let Some(document) = browser.take_document_open()
             {
-                try_document_open(system,
-                                  &mut alerts,
-                                  associations.begin(system, browser.startup, document))?
+                let result =
+                    if font_suitcase::candidate(&document)
+                    {
+                        font_suitcases.open(system, &document)
+                                  .map_err(|cause| associations::OpenFailure { document, cause })
+                    }
+                    else
+                    {
+                        associations.begin(system, browser.startup, document)
+                    };
+                try_document_open(system, &mut alerts, result)?
             }
             else
             {
@@ -394,7 +385,11 @@ fn main() -> Result<(), Error>
         if let Event::WindowGeometryChanged { window,
                                               .. } = event
         {
-            let _ = try_action(system, &mut alerts, browser.geometry_changed(system, window))?;
+            if !try_action(system, &mut alerts, font_suitcases.geometry_changed(system, window))?
+                .unwrap_or(true)
+            {
+                let _ = try_action(system, &mut alerts, browser.geometry_changed(system, window))?;
+            }
             continue;
         }
         if matches!(event, Event::Activate { .. }) && alerts.window() == WindowId(0)
@@ -510,6 +505,27 @@ fn main() -> Result<(), Error>
         {
             continue;
         }
+        if try_action(system, &mut alerts, font_suitcases.event(system, &event, position))?
+            .unwrap_or(false)
+        {
+            if matches!(
+                event,
+                Event::Activate { .. }
+                    | Event::CloseRequested { .. }
+                    | Event::MenuCommand { .. }
+                    | Event::Other { .. }
+            ) || matches!(event, Event::KeyDown { .. })
+                && event.input().modifiers.contains(events::Modifiers::COMMAND)
+                && event.key().is_some_and(|key| key.character().eq_ignore_ascii_case(&'w'))
+            {
+                update_menus(system, &browser, &info)?;
+            }
+            continue;
+        }
+        if alerts.window() != WindowId(0)
+        {
+            continue;
+        }
         let info_handled =
             try_action(system, &mut alerts, info.event(system, &event, position))?.unwrap_or(false);
         if info.take_changed()
@@ -592,7 +608,6 @@ fn main() -> Result<(), Error>
                 menus::PUT_AWAY => browser.put_away(system),
                 menus::CLEAR => browser.trash_selection(system),
                 menus::EMPTY => alerts.confirm_empty(system, &browser),
-                menus::ABOUT => open_about(system, &mut about_id),
                 menus::SHOW_CLIPBOARD => clipboard.open(system),
                 menus::RESTART | menus::SHUTDOWN =>
                 {
@@ -624,11 +639,7 @@ fn main() -> Result<(), Error>
         {
             Event::Update { .. } =>
             {
-                if event.window().unwrap_or_default() == about_id && about_id != WindowId(0)
-                {
-                    about(system, about_id)?;
-                }
-                else if browser.contains(event.window().unwrap_or_default())
+                if browser.contains(event.window().unwrap_or_default())
                 {
                     let _ = try_action(system,
                                        &mut alerts,
@@ -663,7 +674,7 @@ fn main() -> Result<(), Error>
                                    .modifiers
                                    .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
-                    let _ = try_action(system, &mut alerts, open_about(system, &mut about_id))?;
+                    let _ = try_action(system, &mut alerts, system.menus().about_system())?;
                 }
                 else if key == 'i'
                           && event.input()

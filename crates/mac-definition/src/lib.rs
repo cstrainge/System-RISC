@@ -3,20 +3,27 @@
 #![no_std]
 #[doc(hidden)]
 pub use mac_abi as __abi;
+pub use reflow::Reflow;
+/// Shared layout message/state types for the staged control reflow migration.
+pub use sr_control_reflow_handling as reflow;
 mod binding;
 mod families;
 #[doc(hidden)]
 pub mod validation;
 pub use families::{Button, ButtonKind, CaptionMode, Highlight, Progress, ProgressRange,
-                   ProgressStyle, Reply, Scrollbar};
+                   ProgressStyle, Reply, Scrollbar, Splitter, Table};
+/// Generate the CDEF entry and panic scaffold for the family named by `Message`.
+pub use mac_definition_macros::cdef_main;
 pub use toolbox_controls::Part;
 #[cfg(any(target_arch = "riscv64", test))]
 #[doc(hidden)]
 pub mod runtime;
 #[doc(hidden)]
-pub use binding::{buttons_entry, progress_entry, scrollbar_entry, static_text_entry};
-pub use mac_abi::{quickdraw::FontSelection, theme::Palette as Theme};
+pub use binding::{buttons_entry, progress_entry, scrollbar_entry, splitter_entry,
+                  static_text_entry, table_entry};
+pub use mac_abi::{INLINE_STRING_BYTES, quickdraw::FontSelection, theme::Palette as Theme};
 pub use mac_traps::{Error, Result};
+pub use toolbox_controls::TextLayout;
 pub use toolbox_quickdraw::{Point, Rect, SurfacePort};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,12 +42,27 @@ pub struct StaticText<'a>
     pub text:      &'a str,
     pub font:      FontSelection,
     pub enabled:   bool,
-    pub alignment: Alignment
+    pub alignment: Alignment,
+    pub layout:    toolbox_controls::TextLayout
 }
 /// Exhaustive author dispatch. Unknown wire values never enter author code.
 /// Adding a supported message requires every author to answer it explicitly.
 pub enum Message<'a, S>
 {
+    /// Container-only pure calculation over resident-admitted scratch storage.
+    CalculateGridAxis(reflow::grid::AxisCalculation<'a>),
+    DrawGrid
+    {
+        state: S,
+        port:  SurfacePort<'a>,
+        cells: &'a [Rect]
+    },
+    Reflow
+    {
+        state:    S,
+        request:  reflow::Message,
+        creation: reflow::Size
+    },
     Draw
     {
         state: S,
@@ -69,68 +91,36 @@ pub enum Message<'a, S>
     }
 }
 
-/// Platform-owned entry/panic scaffold shared by all control families.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! control_entry {
-    ($entry:ident,$binding:ident,$handler:path) => {
-        #[allow(unsafe_code)]
-        pub unsafe extern "C" fn $entry(call: *mut $crate::__abi::DefinitionCall) -> i64
-        {
-            unsafe { $crate::$binding(call, $handler) }
-        }
-        #[cfg(target_arch = "riscv64")]
-        #[allow(unsafe_code)]
-        #[unsafe(no_mangle)]
-        #[unsafe(link_section = ".text.entry")]
-        pub unsafe extern "C" fn _start(call: *mut $crate::__abi::DefinitionCall) -> i64
-        {
-            unsafe { $entry(call) }
-        }
-        $crate::definition_panic_handler!();
-    };
-}
-#[macro_export]
-macro_rules! define_static_text {
-    ($entry:ident,$handler:path) => {
-        $crate::control_entry!($entry, static_text_entry, $handler);
-    };
-}
-#[macro_export]
-macro_rules! define_buttons {
-    ($entry:ident,$handler:path) => {
-        $crate::control_entry!($entry, buttons_entry, $handler);
-    };
-}
-#[macro_export]
-macro_rules! define_progress_bar {
-    ($entry:ident,$handler:path) => {
-        $crate::control_entry!($entry, progress_entry, $handler);
-    };
-}
-#[macro_export]
-macro_rules! define_scrollbar {
-    ($entry:ident,$handler:path) => {
-        $crate::control_entry!($entry, scrollbar_entry, $handler);
-    };
-}
-
 /// Synchronous resident services available during this definition invocation.
 #[derive(Clone, Copy)]
 pub struct Services<'a>
 {
-    client: mac_traps::Client<'a>
+    client: mac_traps::Client<'a>,
+    reflow: Reflow
 }
 impl<'a> Services<'a>
 {
-    pub(crate) fn new(client: mac_traps::Client<'a>) -> Self
+    pub(crate) fn new(client: mac_traps::Client<'a>, reflow: Reflow) -> Self
     {
-        Self { client }
+        Self { client,
+               reflow }
+    }
+
+    /// Immutable choice captured from the resident control object.
+    pub const fn reflow(self) -> Reflow
+    {
+        self.reflow
     }
 
     pub fn theme(self) -> Result<mac_abi::theme::Palette>
     {
         self.client.theme()
+    }
+
+    /// Measure with the same resident font service used by drawing.
+    pub fn font_width(self, font: FontSelection, text: &str) -> Result<i16>
+    {
+        Ok(self.client.font(mac_abi::quickdraw::FONT_WIDTH_CHECKED, font, text, 0)?.width)
     }
 
     pub fn font_metrics(self, font: FontSelection) -> Result<mac_abi::quickdraw::FontMetrics>
@@ -151,4 +141,26 @@ macro_rules! definition_panic_handler {
             $crate::runtime::panic(info)
         }
     };
+}
+
+/// Base leaf protocol. These fixed-content controls retain their creation size
+/// as preferred until their family supplies a calculated default. Constraints do
+/// not lower minimum requirements or perform assignment. Relationship messages
+/// require a container implementation and are explicitly refused.
+pub fn leaf_reflow(request: reflow::Message, creation: reflow::Size, minimum: reflow::Size)
+                   -> Result<Reply>
+{
+    match request
+    {
+        reflow::Message::AskSize(_) =>
+        {
+            let requirements = reflow::Requirements::new(minimum, creation);
+            Ok(Reply::Measurement(reflow::Measurement { intrinsic:   requirements,
+                                                        constrained: requirements }))
+        }
+        reflow::Message::AssignRect(_)
+        | reflow::Message::SetVisibleRect(_)
+        | reflow::Message::InvalidateLayout(_) => Ok(Reply::Done),
+        _ => Err(Error::NotSupported)
+    }
 }

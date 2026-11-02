@@ -59,6 +59,10 @@ fn file_with_count(owner: crate::toolbox::files::subject::Access<'_>, call: &mut
                    -> Progress
 {
     call.capacity = capacity;
+    if let Err(error) = files(|m| m.resolve_folder_volume(call))
+    {
+        return Progress::Done(Err(error));
+    }
     let routed: Result<Option<u64>, Status> = files(|m| {
         if matches!(call.operation, VOLUME_INFO | VOLUME_INDEX | VOLUME_COUNT)
         {
@@ -90,13 +94,21 @@ fn file_with_count(owner: crate::toolbox::files::subject::Access<'_>, call: &mut
     match call.operation
     {
         OPEN | READ | CLOSE => forks::begin(owner, 0, key, call, capacity),
-        LOOKUP | PATH | TRASH_DIRECTORY =>
+        LOOKUP | PATH | TRASH_DIRECTORY | FIND_FOLDER =>
         {
-            pending(paths::begin(owner,
-                                 0,
-                                 key,
-                                 call,
-                                 if call.operation == TRASH_DIRECTORY { "Trash" } else { text }))
+            let name = if special_folder(call.operation)
+            {
+                match folder_name(call)
+                {
+                    Ok(name) => name,
+                    Err(error) => return Progress::Done(Err(error))
+                }
+            }
+            else
+            {
+                text
+            };
+            pending(paths::begin(owner, 0, key, call, name))
         }
         NEW_FOLDER | super::super::super::properties::CREATE_PRIVATE_DIRECTORY =>
         {
@@ -296,6 +308,10 @@ fn immediate_file(owner: crate::toolbox::files::subject::Access<'_>, call: &mut 
 pub(super) fn scan(owner: crate::toolbox::files::subject::Access<'_>, call: &mut FileScanCall)
                    -> Progress
 {
+    if call.operation == SCAN_DESKTOP
+    {
+        return desktop::begin(owner, call);
+    }
     let provider = match files(|m| m.read_provider(call.volume))
     {
         Ok(Some(provider)) => provider,

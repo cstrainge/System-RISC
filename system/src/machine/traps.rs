@@ -1131,7 +1131,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         QUICKDRAW | FONT | REGION | COPY_BITS | WORLD | CURSOR | MAPPING | RESOURCE | PICTURE
         | ICON | IMAGE =>
         unsafe {
-            toolbox::quickdraw::native::dispatch(number, pointer, size, crate::kernel::fonts())
+            toolbox::quickdraw::native::dispatch(number, pointer, size, crate::kernel::fonts().as_deref())
         },
         WINDOW =>
         {
@@ -1169,7 +1169,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                                          0,
                                          0);
                     if let Err(status) =
-                        super::scheduler::wait_current(call.mask, call.timeout_ticks)
+                        super::scheduler::wait_current(call.mask, runtime.control_layout_wait(call.timeout_ticks))
                     {
                         return status;
                     }
@@ -1193,7 +1193,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                                          0,
                                          0);
                     if let Err(status) =
-                        super::scheduler::wait_current(call.mask, call.timeout_ticks)
+                        super::scheduler::wait_current(call.mask, runtime.control_layout_wait(call.timeout_ticks))
                     {
                         return status;
                     }

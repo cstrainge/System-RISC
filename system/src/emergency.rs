@@ -5,7 +5,8 @@
 #![forbid(unsafe_code)]
 use core::fmt::{self, Write};
 
-use mac_abi::{Point, Rect, definitions::DefinitionPanic, quickdraw::MonoCursor, theme::Palette};
+use mac_abi::{geometry::{Point, Rect},
+              definitions::DefinitionPanic, quickdraw::MonoCursor, theme::Palette};
 
 use crate::toolbox::{events::input::Input,
                      quickdraw::{Canvas, font::CHICAGO_12}};

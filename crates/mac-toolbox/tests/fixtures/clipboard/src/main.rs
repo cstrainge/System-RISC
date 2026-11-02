@@ -3,7 +3,8 @@
 #![no_main]
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-use mac_toolbox::{System, SystemServices, abi::EventKind, events::classic::Event};
+use mac_toolbox::{System, SystemServices, abi::events::{ACTIVE_FLAG, EventKind},
+                  events::classic::Event};
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 static FILES: AtomicUsize = AtomicUsize::new(0);
 static MENUS: AtomicUsize = AtomicUsize::new(0);
@@ -213,7 +214,7 @@ fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
                                  &mut viewer,
                                  Event { kind: EventKind::Activate,
                                          window: other_window,
-                                         modifiers: mac_toolbox::abi::ACTIVE_FLAG,
+                                         modifiers: ACTIVE_FLAG,
                                          ..Default::default() })?;
                     require(COMMITS.load(Ordering::Relaxed) == commits,
                             system,

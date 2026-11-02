@@ -465,8 +465,12 @@ impl<'a> Editor<'a>
         }
         else
         {
-            self.scrollbar =
-                Some(system.controls().create_scrollbar(self.window, state, 1, page)?);
+            self.scrollbar = Some(system.controls()
+                                        .create_scrollbar(self.window,
+                                                          state,
+                                                          1,
+                                                          page,
+                                                          mac_toolbox::controls::Reflow::No)?);
         }
         self.scrollbar_state = Some((state, page));
         if !self.options.wrap
@@ -501,7 +505,11 @@ impl<'a> Editor<'a>
             else
             {
                 self.horizontal =
-                    Some(system.controls().create_scrollbar(self.window, hstate, 1, hpage)?);
+                    Some(system.controls().create_scrollbar(self.window,
+                                                             hstate,
+                                                             1,
+                                                             hpage,
+                                                             mac_toolbox::controls::Reflow::No)?);
             }
             self.horizontal_scale = scale;
             self.horizontal_state = Some((hstate, hpage));

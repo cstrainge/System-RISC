@@ -220,7 +220,7 @@ def launch(state, frontend='headless', extra_disks=(), *, writable=False, preser
     """Launch a private disk copy. Tests default to read-only and fresh copies.
 
     Persistent desktop starts retain their writable copy while the build is unchanged.
-    A new OS build preserves Preferences/Documents into the replacement before
+    A new OS build preserves Preferences, Fonts, Documents and Desktop Folder into the replacement before
     retiring that copy; obsolete boot disks are not retained.
     """
     if type(harts) is not int or harts < 1:

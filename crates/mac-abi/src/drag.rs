@@ -1,5 +1,5 @@
 //! Shared Drag Manager transport. Native and classic boundaries use one store.
-use crate::{Point, Rect};
+use crate::geometry::{Point, Rect};
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DragId(pub u32);

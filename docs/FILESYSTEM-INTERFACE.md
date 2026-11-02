@@ -16,6 +16,59 @@ bounded progress, and source/provider leases survive cancellation until ACK.
 
 ## Bytes and operations
 
+### Native per-volume desktop folders
+
+The public `Files::find_folder(volume, TypeCode::new(*b"desk"), create)` locates
+the ordinary root child `Desktop Folder`; `trsh` uses the existing `Trash`
+foundation. Volume zero selects the startup volume, and returned metadata carries
+the actual volume and persistent directory identity. Missing lookup-only requests
+return `NotFound` without mutation. A file occupying the name returns
+`AlreadyExists`; creation on an immutable volume returns `ReadOnly`. Unsupported
+folder types return `NotFound`. Creation sets the Desktop Folder's real Finder
+flags to `0x5000` (`isInvisible | nameLocked`), not a catalog file-lock bit.
+Existing directories are returned unchanged, including on read-only volumes.
+HFS-B and writable legacy HFS use their existing catalog mutation paths; external
+providers use ordinary owned Lookup/BeginCreate/FinishWrite/AbortWrite requests.
+
+The development-v1 native `FIND_FOLDER` (45) FileCall uses `file_type`, `volume`,
+`index` (create 0/1) and `position` (creation timestamp, zero for lookup-only).
+It returns `entry` and the actual volume. Rebuild all native consumers after the
+record-layout change; no ABI version bump or old-layout decoder is provided.
+
+`Files::scan_desktop(&mut DesktopCursor)` is a native convenience over these real
+folders and ordinary bounded directory scans. Default starts a lookup-only live
+iteration, skipping missing folders and returning each child's actual volume,
+CNID and parent. It creates nothing and does not include volume-icon rows.
+`SCAN_DESKTOP` (46) uses `FileScanCall.desktop`; resident asynchronous callers use the
+same owned scan request/completion path. Pending means bounded progress, not an
+empty directory. Per-directory catalog revisions still reject stale cursors.
+This is not an atomic cross-volume snapshot: volumes are visited in increasing
+opaque identity order; mount changes may require restarting from Default.
+Other errors, including a file occupying the folder name, are not hidden.
+
+Directory watches retain the central generation-checked owner storage. Its
+shared hard bound is 256 watches, sufficient for 128 mounted Desktop Folders
+and eight folder windows with headroom for other subscriptions. This is a
+system-wide capacity, not a reservation for Finder: memory pressure or other
+clients can still produce typed admission failures. Expanding this development
+namespace shifts the following drag projection ranges; rebuild all consumers.
+
+`TransferDestination::Desktop` always moves each source to its own volume's
+Desktop Folder, independently of copy modifiers. It reuses the whole-batch
+per-source Trash destination planner, owned publication ledger and reverse
+cleanup, without setting Trash put-away metadata. Missing folders are created
+only during the transaction's mutation phase and recorded for rollback.
+Read-only sources are refused. Foreign/promised items requiring copying must
+explicitly select a writable `Folder` destination (for example the startup
+Desktop Folder); no implicit cross-volume fallback is performed.
+
+These are native interfaces, not an implementation of the original 68k
+FindFolder trap or a global legacy desktop directory/database. The semantic
+reference is [Inside Macintosh, FindFolder](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-472.html).
+Compilation establishes static properties only; per-backend guest creation,
+read-only/duplicate failures, cancellation, rollback and combined enumeration
+remain unqualified until exercised with the rebuilt target artifacts.
+
 File-backed providers use the resident [FORK v1 service](../FORMAT.md#backing-file-service-fork-v1),
 through `mac-driver::file_sources`. `Files::mount_file` binds the source's actual
 volume generation/CNID to its admitted module, and keeps a kernel-owned fork mark

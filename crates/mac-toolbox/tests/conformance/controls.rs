@@ -276,3 +276,135 @@ pub fn original_scrollbar_pixels(system: &System<'_>) -> Result<usize, Failure>
     require(at == data.len(), "trailing scrollbar fixture data")?;
     Ok(count)
 }
+
+/// Exercise the migrated progress and static-text families through loaded CDEFs.
+/// These checks formerly ran against host-linked definitions.
+pub fn author_families(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Failure>
+{
+    use mac_toolbox::{Error, abi::controls::ProgressRange, quickdraw::SurfacePort};
+    let theme = mac_toolbox::quickdraw::theme::current(system.client())?;
+    let bounds = Rect::new(2, 2, 24, 10);
+    for (kind, fill, track) in
+        [(StandardKind::ProgressBar, theme.progress_fill, theme.progress_track),
+         (StandardKind::MonochromeProgressBar, theme.control_outline, theme.content)]
+    {
+        let mut pixels = [0xff00ff; 26 * 12];
+        for (completed, in_progress, total, edge) in [(0, 10, 20, 3),
+                                                      (10, 5, 20, 13),
+                                                      (20, 0, 20, 23),
+                                                      (0, 0, 20, 3),
+                                                      (u64::MAX / 2, 0, u64::MAX, 12),
+                                                      (0, 0, 0, 23)]
+        {
+            let state = StandardState { bounds,
+                                        progress: ProgressRange { completed,
+                                                                  in_progress,
+                                                                  total,
+                                                                  determinate: 1,
+                                                                  reserved: 0 },
+                                        ..Default::default() };
+            system.controls().draw_standard_pixels(&mut pixels, 26, 12, kind, state)?;
+            for y in 0..12
+            {
+                for x in 0..26
+                {
+                    let expected = if !(2..24).contains(&x) || !(2..10).contains(&y)
+                    {
+                        0xff00ff
+                    }
+                    else if x == 2 || x == 23 || y == 2 || y == 9
+                    {
+                        theme.control_outline
+                    }
+                    else if x < edge
+                    {
+                        fill
+                    }
+                    else
+                    {
+                        track
+                    };
+                    require(pixels[y * 26 + x] == expected,
+                            "loaded progress CDEF frame/fill/clipping")?;
+                }
+            }
+        }
+        let before = pixels;
+        let invalid = StandardState { bounds,
+                                      progress: ProgressRange { completed: 2,
+                                                                total: 1,
+                                                                determinate: 1,
+                                                                ..Default::default() },
+                                      ..Default::default() };
+        let error =
+            system.controls().draw_standard_pixels(&mut pixels, 26, 12, kind, invalid).err();
+        require(error == Some(Error::BadArgument), "loaded progress CDEF invalid range cause")?;
+        struct Diagnostic
+        {
+            bytes:  [u8; 64],
+            length: usize
+        }
+        impl core::fmt::Write for Diagnostic
+        {
+            fn write_str(&mut self, text: &str) -> core::fmt::Result
+            {
+                let end = self.length.checked_add(text.len()).ok_or(core::fmt::Error)?;
+                let target = self.bytes.get_mut(self.length..end).ok_or(core::fmt::Error)?;
+                target.copy_from_slice(text.as_bytes());
+                self.length = end;
+                Ok(())
+            }
+        }
+        let mut diagnostic = Diagnostic { bytes:  [0; 64],
+                                          length: 0 };
+        if let Some(error) = error
+        {
+            core::fmt::write(&mut diagnostic, format_args!("{error}"))
+                .map_err(|_| Failure::Mismatch("progress diagnostic overflow"))?;
+        }
+        require(&diagnostic.bytes[..diagnostic.length] == b"invalid argument",
+                "invalid progress diagnostic")?;
+        require(pixels == before, "invalid progress changed pixels")?;
+        let valid = StandardState { bounds,
+                                    progress: ProgressRange { total: 1,
+                                                              determinate: 1,
+                                                              ..Default::default() },
+                                    ..Default::default() };
+        system.controls().draw_standard_pixels(&mut pixels, 26, 12, kind, valid)?;
+    }
+    let width = 96;
+    let height = 32;
+    let bounds = Rect::new(4, 4, 84, 15);
+    for (text, enabled) in [("", true), ("Glyph gj", true), ("Disabled", false)]
+    {
+        let mut state = StandardState::new(bounds, text);
+        state.maximum = 0;
+        state.enabled = u32::from(enabled);
+        let mut actual = [0x314159; 96 * 32];
+        system.controls().draw_standard_pixels(&mut actual,
+                                                width,
+                                                height,
+                                                StandardKind::StaticText,
+                                                state)?;
+        let mut expected = [0x314159; 96 * 32];
+        let metrics = system.quickdraw().fonts().metrics(state.font)?;
+        let mut surface = mac_abi::Surface { pixels: expected.as_mut_ptr(),
+                                             width:  width as u32,
+                                             height: height as u32,
+                                             origin: Point::default(),
+                                             clip:   bounds };
+        // This is a real resident surface service, not a replacement definition entry.
+        let connection = unsafe { mac_traps::SurfaceConnection::new(&mut surface, gate) };
+        let mut port = SurfacePort::new(connection);
+        port.font_text_clipped(state.font,
+                               Point { h: bounds.left,
+                                       v: bounds.top + metrics.ascent },
+                               text,
+                               bounds.right - bounds.left,
+                               if enabled { theme.text } else { theme.disabled_text })?;
+        require(actual == expected, "loaded static-text CDEF transparency/glyph clipping")?;
+    }
+    system.log("CDEF_FAMILIES_USERSPACE_PASS progress=12 static_text=3 range_refusal=passed \
+                retry=passed\n")?;
+    Ok(())
+}

@@ -3,7 +3,7 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::fmt;
 
-use mac_abi::{dialogs::*, resources, *};
+use mac_abi::{dialogs::*, geometry::Rect, resources, *};
 use mac_object_table::store::PublicationError;
 
 use super::{Alert, Item, modal::DialogState};

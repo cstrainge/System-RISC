@@ -264,17 +264,17 @@ separate from closing original System 7 font-fidelity differences in R4.
 
 ### P5 — System-owned Apple menu
 
-Status: backlog. System always inserts exactly one leftmost Apple menu, alongside
-its persistent right-hand application menu. Apps contribute resource-defined
-custom items through a Rust Toolbox interface; System retains its own entries,
-tracking and dispatch. Restore contributions on foreground changes and clean
-them up on exit without removing the Apple menu.
+Status: native core implemented. System supplies a persistent leftmost Apple
+popup with resource-backed About System RISC and resident dispatch in every app.
+Ordinary owned Apple-title resources contribute app rows without replacing the
+System section, regardless of resource ID or installation order. Native selection
+maps back to app menu IDs, logical item indices and captured command owners;
+foreground changes and cleanup retain the System popup.
 
-Compose legacy Apple-title MENU/MBAR content without duplication, preserving
-app-visible IDs, item indices, mutation and selection behavior through the legacy
-projection. Verify original behavior rather than hardcoding the conventional
-menu ID. Cover empty/cleared bars, app switching, crash cleanup, ownership and
-bounded menu-cache invalidation. See [the Menu Manager plan](../system/src/toolbox/menus/README.md#planned-system-owned-apple-menu).
+Remaining gates include Apple Menu Items folder launching, desk accessories,
+hierarchy/scrolling and original 68k MENU/MBAR mutation/selection semantics. The
+native implementation and its limits are described in
+[the Menu Manager contract](../system/src/toolbox/menus/README.md#system-owned-apple-popup).
 
 ### P6 — Control panels and kernel extensions
 
@@ -355,16 +355,19 @@ for current evidence, service requirements, Finder migration and guest tests.
 
 ### P9 — System Fonts folder
 
-Status: backlog. Build a Fonts folder inside the blessed System Folder and load
-installed font suitcases/files through the resident Font Manager. Resolve the
-active installation by identity; provide native folder lookup and legacy
-FindFolder behavior. Keep System-bundled UI/emoji fonts as dependable fallbacks.
+Status: partial implementation; bounded single-hart native folder-watch and
+suitcase-viewer workflows have been observed, not broad OS qualification. The builder
+creates Fonts inside the blessed System Folder. System watches that startup
+location, validates classic suitcases and supported static TrueType files, and
+publishes immutable catalogs while retaining old selections. Native FindFolder
+accepts `'font'`; System-bundled UI fonts remain available.
 
-Preserve source-local resource/family associations, handle duplicates explicitly,
-and share validated payloads across apps. Start with boot-time catalog discovery
-and restart-required installation; live refresh/removal needs snapshot lifetime
-and generation/cache gates. Include resource-based Finder icons, original install
-behavior, public SDK enumeration/rendering and private boot tests. See
+Source-local associations remain independent. Public SDK clients can enumerate
+families, observe revisions and persist content keys; Text Edit has a live picker.
+Finder has read-only suitcase family-list windows, and installed fonts join
+lossless user-file preservation. Original installation/drop routing, legacy
+resource-chain views, broader format coverage and lifecycle/pressure acceptance
+remain separate gates. See
 [the font installation plan](FONTS.md#fonts-folder-and-discovery).
 
 ### P10 — OpenType and color fonts

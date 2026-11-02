@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 
-use mac_abi::{quickdraw::BitmapCall, *};
+use mac_abi::{geometry::Rect, quickdraw::BitmapCall, *};
 
 use super::{Canvas,
             raster::{self, Bitmap, TransferMode},

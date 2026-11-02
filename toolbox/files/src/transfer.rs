@@ -19,7 +19,10 @@ pub enum TransferDestination
     },
     /// Each source uses its own volume's Trash. This always means move,
     /// independently of keyboard modifiers or the supplied transfer mode.
-    Trash
+    Trash,
+    /// Move each source to its own volume's Desktop Folder. Read-only sources
+    /// are refused; copying foreign/promised items requires an explicit Folder.
+    Desktop
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransferSpec
@@ -113,6 +116,7 @@ impl<'a> Files<'a>
         let (mode, volume, parent) = match spec.destination
         {
             TransferDestination::Trash => (TRANSFER_TRASH, 0, 0),
+            TransferDestination::Desktop => (TRANSFER_DESKTOP, 0, 0),
             TransferDestination::Folder { volume,
                                           parent } =>
             {

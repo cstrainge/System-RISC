@@ -1,4 +1,5 @@
 //! Native Rust ownership contracts through the public Toolbox and real services.
+use mac_abi::{events::{Event as Record, EventKind}, geometry::Point};
 use mac_toolbox::{Error, Rect, System, ToolboxResult, WindowId,
                   abi::NOT_FOUND,
                   windows::{Window, WindowSpec}};
@@ -286,9 +287,9 @@ fn file_watches(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), Fail
 /// Public input projections remain fresh across front-window lifetime changes.
 fn front_projection(system: &System<'_>) -> Result<(), Failure>
 {
-    let key = mac_toolbox::Event::from(mac_abi::Event { kind: mac_abi::EventKind::KeyDown,
+    let key = mac_toolbox::Event::from(Record { kind: EventKind::KeyDown,
                                                         message: u32::from(b'a'),
-                                                        where_: mac_abi::Point { h: 127,
+                                                        where_: Point { h: 127,
                                                                                  v: 139 },
                                                         ..Default::default() });
     let locate =
@@ -327,7 +328,7 @@ fn front_projection(system: &System<'_>) -> Result<(), Failure>
     let current = locate(Some(replacement.id()))?;
     assert_ne!(replacement.id(), stale);
     assert_eq!(current.in_window(stale), Err(Error::NotFound));
-    let explicit = mac_toolbox::Event::from(mac_abi::Event { kind: mac_abi::EventKind::Update,
+    let explicit = mac_toolbox::Event::from(Record { kind: EventKind::Update,
                                                              window: stale.0,
                                                              ..Default::default() });
     assert!(system.events().locate(&explicit)?.window().is_none(),
@@ -379,15 +380,20 @@ fn managed_controls(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), 
     super::managed_controls::tracking(system, window.id())?;
     super::managed_controls::reuse(system, window.id(), gate)?;
     let state = StandardState::new(Rect::new(8, 8, 128, 32), "Parent cleanup");
-    let owned = system.controls().create_standard(window.id(), StandardKind::Button, state)?;
+    let owned = system.controls().create_standard(window.id(),
+                                                   StandardKind::Button,
+                                                   state,
+                                                   mac_toolbox::controls::Reflow::No)?;
     let stale = owned.id();
     let before = pool(system)?;
     assert_eq!((before.live, before.slots), (1, 1), "prepare a sole-slot native control pool");
     drop(window);
     assert!(matches!(owned.control().info(), Err(Error::NotFound)));
     let replacement_window = create(system)?;
-    let replacement =
-        system.controls().create_standard(replacement_window.id(), StandardKind::Button, state)?;
+    let replacement = system.controls().create_standard(replacement_window.id(),
+                                                         StandardKind::Button,
+                                                         state,
+                                                         mac_toolbox::controls::Reflow::No)?;
     let after = pool(system)?;
     assert_eq!((after.live, after.slots), (1, 1), "parent cleanup must permit sole-slot reuse");
     assert_ne!(replacement.id(), stale);
@@ -681,10 +687,16 @@ fn alerts(system: &System<'_>) -> Result<(), Failure>
     let refused = reports.dismiss().unwrap_err();
     assert_eq!(refused, Error::AccessDenied);
     system.windows().info(report.window)?;
-    system.windows().close(report.window)?;
+    // A report window belongs to System's recovery session. The recipient may
+    // inspect it, but ordinary Window Manager calls cannot close it.
+    assert_eq!(system.windows().close(report.window), Err(Error::AccessDenied));
+    system.windows().info(report.window)?;
+    // Reset through the crash service, which owns the recovery capability and
+    // waits for the window's actual cleanup acknowledgement.
     reports.begin()?;
+    assert_eq!(system.windows().info(report.window), Err(Error::NotFound));
     system.log("ALERT_LEDGER_USERSPACE_PASS managed_buttons=2 stale=passed \
-                external_close=passed reserved=passed\n")?;
+                external_close=passed reserved=passed recovery_reset=passed\n")?;
     Ok(())
 }
 
@@ -777,7 +789,6 @@ pub fn alert_tracking(system: &System<'_>,
                       mut checkpoint: impl FnMut(&str, Rect) -> Result<(), Failure>)
                       -> Result<(), Failure>
 {
-    use mac_abi::{Event as Record, EventKind, Point};
     let alert =
         system.dialogs().alert_owned(mac_toolbox::ResourceScope::Application,
                                       6012,

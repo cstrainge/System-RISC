@@ -1,5 +1,5 @@
 //! Native resource-based Menu Manager ABI. Classic MenuSelect remains separate.
-use crate::{INLINE_STRING_BYTES, Rect};
+use crate::{INLINE_STRING_BYTES, geometry::Rect};
 pub const INSTALL: u32 = 0;
 pub const CLEAR: u32 = 1;
 pub const SET_ENABLED: u32 = 2;
@@ -15,12 +15,18 @@ pub const FIND: u32 = 8;
 pub const SET_ITEM: u32 = 9;
 /// Truncate a dynamic menu; growing requires initialized SET_ITEM requests.
 pub const TRUNCATE: u32 = 10;
+/// Open the resident About System dialog for the foreground application.
+pub const SHOW_ABOUT_SYSTEM: u32 = 11;
+/// Read-only desktop Apple menu; app sections retain their own menu identities.
+pub const SYSTEM_APPLE_MENU_ID: i16 = -16488;
 pub const MAX_ITEMS: usize = 31;
 pub const MDEF: u32 = u32::from_be_bytes(*b"MDEF");
 pub const MEASURE: i16 = 0;
 pub const DRAW_BAR: i16 = 1;
 pub const DRAW_POPUP: i16 = 2;
 pub const HIT_ITEM: i16 = 3;
+/// Repaint one one-based popup row, supplied in DefinitionCall::param.
+pub const DRAW_ITEM: i16 = 4;
 pub const STANDARD_PROFILE: u16 = 0;
 pub const APPLICATION_PROFILE: u16 = 1;
 /// An icon family identity. Registered application scopes remain owned by System.

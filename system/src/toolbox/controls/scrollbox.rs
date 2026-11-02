@@ -4,9 +4,11 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use mac_abi::{controls::*,
+              geometry::{Point, Rect},
               scrollbox::{BUTTON_DOWN, CHANGED, TRACKING, *},
               *};
 
+use super::tracking::{Action, Tracking};
 use crate::toolbox::{handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store},
                      quickdraw::{Canvas, fonts::FontManager, fonts_service},
                      resources::definitions::{BoundDefinition, DefinitionRef}};
@@ -46,13 +48,6 @@ struct Object
     definition:         BoundDefinition,
     #[cfg(target_arch = "riscv64")]
     _recovery_activity: Option<crate::recovery::Activity>
-}
-struct Tracking
-{
-    part:   i16,
-    anchor: Point,
-    value:  i16,
-    next:   u64
 }
 pub struct Manager
 {
@@ -147,6 +142,11 @@ pub struct Drawing
 }
 impl Drawing
 {
+    pub fn cancel_tracking(&mut self) -> Option<Rect>
+    {
+        self.bar.cancel_tracking().then(|| self.bar.bounds())
+    }
+
     pub fn bounds(&self) -> [Rect; 2]
     {
         [self.bounds, self.bar.bounds()]
@@ -431,6 +431,26 @@ impl Manager
                 Some(self.objects.reserve_publication(storage).map_err(pool_status)?);
         }
         self.reserved_raster_bytes = bytes;
+        Ok(())
+    }
+
+    pub(crate) fn cancel(&mut self, call: &mut Call, owner: u64) -> Result<(), Status>
+    {
+        if !call.surface.is_null() || call.reserved != [0; 3]
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let object = self.get_mut(call.id, owner)?;
+        object.tracking = None;
+        let changed = core::mem::replace(&mut object.highlight, 0) != 0;
+        call.window = object.window;
+        call.spec = object.spec;
+        call.top = object.top;
+        let missing = object.missing();
+        call.first = missing.start;
+        call.end = missing.end;
+        call.part = 0;
+        call.flags = u32::from(changed) * CHANGED;
         Ok(())
     }
 
@@ -757,6 +777,10 @@ impl Manager
             }
             TRACK_BEGIN =>
             {
+                if object.tracking.is_some()
+                {
+                    return Err(SERVICE_BUSY);
+                }
                 let mut c = ControlCall { operation: HIT_SCROLLBAR,
                                           scrollbar: object.state(),
                                           point: call.point,
@@ -771,78 +795,60 @@ impl Manager
                             | SCROLL_PAGE_DOWN
                             | SCROLL_THUMB)
                 {
-                    object.tracking = Some(Tracking { part,
-                                                      anchor: call.point,
-                                                      value: c.scrollbar.value,
-                                                      next: call.ticks.saturating_add(20) });
-                    object.highlight = part;
                     if part != SCROLL_THUMB
                     {
                         step(object, part)?;
                     }
+                    object.tracking =
+                        Some(Tracking::new(part, call.point, c.scrollbar.value, call.ticks));
+                    object.highlight = part;
                 }
             }
             TRACK_POLL =>
             {
-                if let Some(tracking) = object.tracking.take()
+                if let Some(tracking) = object.tracking
                 {
-                    let down = call.flags & BUTTON_DOWN != 0;
-                    let mut c = ControlCall { operation: if tracking.part == SCROLL_THUMB
-                                              {
-                                                  TRACK_SCROLLBAR
-                                              }
-                                              else
-                                              {
-                                                  HIT_SCROLLBAR
-                                              },
-                                              scrollbar: object.state(),
-                                              anchor: tracking.anchor,
-                                              point: call.point,
-                                              ..Default::default() };
-                    if tracking.part == SCROLL_THUMB
+                    let state = object.state();
+                    let transition =
+                        tracking.poll(call.point,
+                                      call.flags & BUTTON_DOWN != 0,
+                                      call.ticks,
+                                      Some(state),
+                                      0,
+                                      entry,
+                                      gate,
+                                      |point| {
+                                          let mut hit = ControlCall { operation: HIT_SCROLLBAR,
+                                                                      scrollbar: state,
+                                                                      point,
+                                                                      ..Default::default() };
+                                          super::prepare(&mut hit, entry, gate)?;
+                                          Ok(hit.result as i16)
+                                      })?;
+                    match transition.action
                     {
-                        c.scrollbar.value = tracking.value;
-                    }
-                    super::prepare(&mut c, entry, gate)?;
-                    if tracking.part == SCROLL_THUMB
-                    {
-                        let max = object.maximum().min(i16::MAX as u32);
-                        let top = if max == 0
+                        Action::None => (),
+                        Action::Step(part) => step(object, part)?,
+                        Action::Value(value) =>
                         {
-                            0
+                            let maximum = object.maximum();
+                            let scale = maximum.min(i16::MAX as u32);
+                            let top = if scale == 0
+                            {
+                                0
+                            }
+                            else
+                            {
+                                ((value.max(0) as u64 * u64::from(maximum) + u64::from(scale) / 2)
+                                 / u64::from(scale)).min(u64::from(maximum))
+                                as u32
+                            };
+                            object.scroll(top)?;
                         }
-                        else
-                        {
-                            ((c.result.max(0) as u64 * u64::from(object.maximum())
-                              + u64::from(max) / 2)
-                             / u64::from(max)).min(u64::from(object.maximum()))
-                            as u32
-                        };
-                        object.scroll(top)?;
-                        object.highlight = if down { SCROLL_THUMB } else { 0 };
+                        Action::Activate => return Err(BAD_ABI)
                     }
-                    else
-                    {
-                        let hot = c.result == i32::from(tracking.part);
-                        object.highlight = if down && hot { tracking.part } else { 0 };
-                        if down && hot && call.ticks >= tracking.next
-                        {
-                            step(object, tracking.part)?;
-                        }
-                    }
-                    if down
-                    {
-                        let next = if call.ticks >= tracking.next
-                        {
-                            call.ticks.saturating_add(3)
-                        }
-                        else
-                        {
-                            tracking.next
-                        };
-                        object.tracking = Some(Tracking { next,
-                                                          ..tracking });
-                    }
+                    object.highlight = transition.highlight;
+                    object.tracking = transition.tracking;
                 }
             }
             DRAW => (),

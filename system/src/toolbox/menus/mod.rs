@@ -1,19 +1,51 @@
 //! Resource-based native menu state and tracking; all geometry/drawing is MDEF.
 #![forbid(unsafe_code)]
-use crate::toolbox::resources::definitions::DefinitionRef;
 use alloc::{boxed::Box, vec::Vec};
 
-use mac_abi::{menus::*, *};
+use mac_abi::{geometry::{Point, Rect},
+              menus::*,
+              *};
 use mac_object_table::domain::{CompletionError, DomainId, PoolError, ReleasedResource};
 
 use crate::toolbox::{handles::{KindLease, OwnerRef, Store},
                      quickdraw::{Canvas, SurfaceExt},
-                     resources::manager::Manager as Resources};
+                     resources::{definitions::DefinitionRef, manager::Manager as Resources}};
 pub(crate) mod lifetime;
+
+mod apple;
+pub(crate) use apple::{Action as AppleAction, SystemBar};
+mod tracking;
+pub(crate) use tracking::Command;
+use tracking::Tracking;
+
+/// A definition refusal must never become a cached, partially painted menu bar.
+pub(crate) struct PaintError
+{
+    pub menu:   i16,
+    pub status: Status
+}
+pub(crate) fn painted(menu: i16, reply: i64) -> Result<(), PaintError>
+{
+    if reply == 0
+    {
+        Ok(())
+    }
+    else
+    {
+        Err(PaintError { menu,
+                         status: i32::try_from(reply).unwrap_or(BAD_ABI) })
+    }
+}
+
+fn is_apple(state: &MenuDefinitionState) -> bool
+{
+    state.title_length == 1 && state.title[0] == 0x14
+}
 struct Menu
 {
-    id:    u64,
-    state: Box<MenuDefinitionState>
+    id:       u64,
+    state:    Box<MenuDefinitionState>,
+    revision: u64
 }
 #[derive(Clone, Copy)]
 struct Layout
@@ -44,12 +76,9 @@ impl Layout
 
 struct Bar
 {
-    order:       Vec<u64>,
-    tracking:    bool,
-    active:      Option<u64>,
-    highlighted: i16,
-    scratch:     Box<MenuDefinitionState>,
-    reflow:      Vec<(u64, Layout)>
+    order:   Vec<u64>,
+    scratch: Box<MenuDefinitionState>,
+    reflow:  Vec<(u64, Layout)>
 }
 impl Bar
 {
@@ -73,25 +102,16 @@ impl Bar
             kind: crate::toolbox::handles::KindCode(*b"MNST"), used: 0, requested_slots: 1, limit: Some(1) })?;
         Ok(Self { order,
                   scratch,
-                  reflow,
-                  tracking: false,
-                  active: None,
-                  highlighted: 0 })
-    }
-
-    fn cancel(&mut self)
-    {
-        self.tracking = false;
-        self.active = None;
-        self.highlighted = 0;
+                  reflow })
     }
 }
 pub struct Manager
 {
-    objects: Store<Menu, Bar>,
-    owner:   Option<OwnerRef>,
-    entry:   DefinitionRef,
-    gate:    TrapGate
+    objects:  Store<Menu, Bar>,
+    owner:    Option<OwnerRef>,
+    entry:    DefinitionRef,
+    gate:     TrapGate,
+    tracking: Tracking
 }
 fn pool_status(error: PoolError) -> Status
 {
@@ -105,7 +125,8 @@ impl Manager
         Ok(Self { objects: Store::owned_state(kinds.0, kinds.1, Bar::new).map_err(pool_status)?,
                   owner: None,
                   entry,
-                  gate })
+                  gate,
+                  tracking: Tracking::default() })
     }
 
     fn bind(&mut self, owner: &OwnerRef) -> Result<(), Status>
@@ -164,7 +185,7 @@ impl Manager
     /// Return whether visible menu state changed. Read/no-change calls never
     /// allocate backing or invalidate the compositor.
     pub(crate) fn request(&mut self, owner: &OwnerRef, call: &mut MenuCall,
-                          resources: Resources<'_>)
+                          resources: Resources<'_>, system_bar: &SystemBar)
                           -> Result<bool, Status>
     {
         self.bind(owner)?;
@@ -203,7 +224,15 @@ impl Manager
                         self.objects.state_values(owner.owner().incarnation()).ok_or(NOT_FOUND)?;
                     let index = bar.order.iter().position(|other| *other == id).ok_or(NOT_FOUND)?;
                     bar.reflow.clear();
-                    let mut left = values.get(id).ok_or(NOT_FOUND)?.state.title_bounds.left;
+                    let removed = &values.get(id).ok_or(NOT_FOUND)?.state;
+                    let mut left = if is_apple(removed)
+                    {
+                        system_bar.title_bounds().right
+                    }
+                    else
+                    {
+                        removed.title_bounds.left
+                    };
                     for &next in &bar.order[index + 1..]
                     {
                         let menu = values.get(next).ok_or(NOT_FOUND)?;
@@ -266,7 +295,27 @@ impl Manager
                     }
                     Err(error) => return Err(error)
                 }
+                if state.menu_id == SYSTEM_APPLE_MENU_ID
+                   || state.menu_id == crate::toolbox::processes::menu::MENU_ID
+                {
+                    return Err(ACCESS_DENIED);
+                }
+                let apple = is_apple(&state);
+                if apple && state.item_count as usize > apple::MAX_APP_ITEMS
+                {
+                    return Err(NO_MEMORY);
+                }
                 if self.menu_id(state.menu_id).is_some()
+                   || (apple
+                       && self.bar().is_some_and(|bar| {
+                                        bar.order.iter().any(|id| {
+                                                            self.objects
+                                                                .get(*id)
+                                                                .is_some_and(|menu| {
+                                                                    is_apple(&menu.state)
+                                                                })
+                                                        })
+                                    }))
                 {
                     return Err(BAD_ARGUMENT);
                 }
@@ -284,10 +333,19 @@ impl Manager
                         item.command = u32::from_be_bytes(*bytes);
                     }
                 }
-                state.title_bounds.left = self.bar()
-                                              .and_then(|bar| bar.order.last())
-                                              .and_then(|id| self.objects.get(*id))
-                                              .map_or(10, |menu| menu.state.title_bounds.right);
+                state.title_bounds.left = if apple
+                {
+                    system_bar.title_bounds().left
+                }
+                else
+                {
+                    self.bar()
+                        .and_then(|bar| bar.order.last())
+                        .and_then(|id| self.objects.get(*id))
+                        .map_or(system_bar.title_bounds().right, |menu| {
+                            menu.state.title_bounds.right
+                        })
+                };
                 self.measure(&mut state)?;
                 if let Some(bar) = self.bar_mut()
                 {
@@ -306,7 +364,8 @@ impl Manager
                 let id = self.objects
                              .insert_with(owner, |id| {
                                  Menu { id,
-                                        state }
+                                        state,
+                                        revision: 1 }
                              })
                              .map_err(pool_status)?;
                 let Some(bar) = self.bar_mut()
@@ -317,7 +376,16 @@ impl Manager
                     drop(self.objects.remove(id));
                     return Err(SERVICE_BUSY);
                 };
-                bar.order.push(id);
+                if apple
+                {
+                    bar.order.insert(0, id);
+                }
+                else
+                {
+                    bar.order.push(id);
+                }
+                // A changed list invalidates any held or blinking selection.
+                self.cancel_tracking();
                 call.handle = id;
                 call.menu_id = resource;
                 Ok(true)
@@ -379,6 +447,12 @@ impl Manager
                         return Ok(false);
                     }
                 }
+                if is_apple(current)
+                   && call.operation == SET_ITEM
+                   && usize::from(call.item) > apple::MAX_APP_ITEMS
+                {
+                    return Err(NO_MEMORY);
+                }
                 // No-change exits precede both allocation and MDEF measurement.
                 let mut state = new_state()?;
                 state.as_mut().clone_from(current.as_ref());
@@ -393,11 +467,10 @@ impl Manager
                     state.item_count = state.item_count.max(u32::from(call.item));
                 }
                 self.measure(&mut state)?;
-                self.objects.get_mut(id).ok_or(NOT_FOUND)?.state = state;
-                if let Some(bar) = self.bar_mut()
-                {
-                    bar.cancel();
-                }
+                let menu = self.objects.get_mut(id).ok_or(NOT_FOUND)?;
+                menu.state = state;
+                menu.revision = menu.revision.wrapping_add(1);
+                self.cancel_tracking();
                 Ok(true)
             }
             SET_ENABLED | SET_CHECKED | COMMAND =>
@@ -419,6 +492,10 @@ impl Manager
                     let enabled = u32::from(call.value != 0);
                     let changed = menu.state.enabled != enabled;
                     menu.state.enabled = enabled;
+                    if changed
+                    {
+                        menu.revision = menu.revision.wrapping_add(1);
+                    }
                     return Ok(changed);
                 }
                 let item = menu.state
@@ -450,6 +527,10 @@ impl Manager
                         false
                     }
                 };
+                if changed
+                {
+                    menu.revision = menu.revision.wrapping_add(1);
+                }
                 Ok(changed)
             }
             _ => Err(NOT_SUPPORTED)
@@ -458,15 +539,12 @@ impl Manager
 
     pub(crate) fn clear(&mut self) -> bool
     {
-        let changed = self.bar().is_some_and(|bar| !bar.order.is_empty() || bar.tracking);
+        let changed = self.is_tracking() || self.bar().is_some_and(|bar| !bar.order.is_empty());
         while let Some(id) = self.bar_mut().and_then(|bar| bar.order.pop())
         {
             drop(self.objects.remove(id));
         }
-        if let Some(bar) = self.bar_mut()
-        {
-            bar.cancel();
-        }
+        self.cancel_tracking();
         changed
     }
 
@@ -475,8 +553,8 @@ impl Manager
         if let Some(bar) = self.bar_mut()
         {
             bar.order.retain(|other| *other != id);
-            bar.cancel();
         }
+        self.cancel_tracking();
     }
 
     pub(crate) fn release(&mut self, ticket: ReleasedResource) -> Result<(), CompletionError>
@@ -495,96 +573,6 @@ impl Manager
                                   -> Result<(), CompletionError>
     {
         self.objects.release_storage(ticket)
-    }
-
-    pub fn is_tracking(&self) -> bool
-    {
-        self.bar().is_some_and(|bar| bar.tracking)
-    }
-
-    pub fn begin(&mut self, point: Point) -> bool
-    {
-        if !(0..20).contains(&point.v)
-        {
-            return false;
-        }
-        let Some(bar) = self.bar_mut()
-        else
-        {
-            return false;
-        };
-        bar.tracking = true;
-        self.hover(point);
-        true
-    }
-
-    pub fn hover(&mut self, point: Point) -> bool
-    {
-        if !self.is_tracking()
-        {
-            return false;
-        }
-        let previous = self.bar().map(|bar| (bar.active, bar.highlighted));
-        if (0..20).contains(&point.v)
-        {
-            let active = self.bar().and_then(|bar| {
-                                       bar.order.iter().copied().find(|id| {
-                                                                    self.objects
-                                                                        .get(*id)
-                                                                        .is_some_and(|menu| {
-                                                                            menu.state.enabled != 0
-                                                                            && menu.state
-                                                                                   .title_bounds
-                                                                                   .contains(point)
-                                                                        })
-                                                                })
-                                   });
-            if let Some(bar) = self.bar_mut()
-            {
-                bar.active = active;
-                bar.highlighted = 0;
-            }
-        }
-        else
-        {
-            let active = self.bar().and_then(|bar| bar.active);
-            let highlighted = active.and_then(|id| self.objects.get_mut(id)).map_or(0, |menu| {
-                                                                                invoke(self.entry,
-                                                                         self.gate,
-                                                                         &mut menu.state,
-                                                                         HIT_ITEM,
-                                                                         ((u32::from(point.v
-                                                                                     as u16)
-                                                                           << 16)
-                                                                          | u32::from(point.h
-                                                                                      as u16))
-                                                                         as i64,
-                                                                         core::ptr::null_mut())
-                                                                  as i16
-                                                                            });
-            if let Some(bar) = self.bar_mut()
-            {
-                bar.highlighted = highlighted;
-            }
-        }
-        previous != self.bar().map(|bar| (bar.active, bar.highlighted))
-    }
-
-    pub fn release_tracking(&mut self, point: Point) -> Option<Selection>
-    {
-        if !self.is_tracking()
-        {
-            return None;
-        }
-        self.hover(point);
-        let selected =
-            self.bar()
-                .and_then(|bar| bar.active.and_then(|id| self.selection(id, bar.highlighted)));
-        if let Some(bar) = self.bar_mut()
-        {
-            bar.cancel();
-        }
-        selected
     }
 
     fn selection(&self, id: u64, item: i16) -> Option<Selection>
@@ -616,61 +604,28 @@ impl Manager
         })
     }
 
-    pub fn draw(&mut self, canvas: &mut Canvas)
+    pub(crate) fn refresh_apple(&mut self, system: &mut SystemBar, owner: u64)
+                                -> Result<(), Status>
     {
-        self.draw_bar(canvas);
-        self.draw_popup(canvas);
+        let id = self.id_at(0)
+                     .filter(|id| self.objects.get(*id).is_some_and(|menu| is_apple(&menu.state)));
+        let changed = system.refresh(owner, id.and_then(|id| self.objects.get(id)))?;
+        if changed
+        {
+            self.cancel_tracking();
+        }
+        if changed && let Some(menu) = id.and_then(|id| self.objects.get_mut(id))
+        {
+            // Public app layout reflects its displayed rows while logical
+            // item count and indices remain those of the app resource.
+            system.apply_layout(&mut menu.state);
+        }
+        Ok(())
     }
 
-    pub fn selected_menu(&self) -> Option<i16>
+    pub(crate) fn command_valid(&self, id: u64, selection: Selection) -> bool
     {
-        self.objects.get(self.bar()?.active?).map(|menu| menu.state.menu_id)
-    }
-
-    pub fn draw_bar(&mut self, canvas: &mut Canvas)
-    {
-        canvas.reset_port();
-        let count = self.bar().map_or(0, |bar| bar.order.len());
-        if count == 0
-        {
-            draw_empty(self.entry, self.gate, canvas);
-            return;
-        }
-        let active = self.bar().and_then(|bar| bar.active);
-        for index in 0..count
-        {
-            let Some(id) = self.id_at(index)
-            else
-            {
-                continue;
-            };
-            let Some(menu) = self.objects.get_mut(id)
-            else
-            {
-                continue;
-            };
-            menu.state.first = u32::from(index == 0);
-            menu.state.bar_selected = u32::from(active == Some(id));
-            let mut surface = Surface::from_canvas(canvas);
-            invoke(self.entry, self.gate, &mut menu.state, DRAW_BAR, 0, &mut surface);
-        }
-    }
-
-    pub fn draw_popup(&mut self, canvas: &mut Canvas)
-    {
-        canvas.reset_port();
-        let Some(bar) = self.bar()
-        else
-        {
-            return;
-        };
-        let (active, highlighted) = (bar.active, bar.highlighted);
-        if let Some(menu) = active.and_then(|id| self.objects.get_mut(id))
-        {
-            menu.state.highlighted = highlighted;
-            let mut surface = Surface::from_canvas(canvas);
-            invoke(self.entry, self.gate, &mut menu.state, DRAW_POPUP, 0, &mut surface);
-        }
+        self.selection(id, selection.item as i16) == Some(selection)
     }
 }
 fn copy_text(output: &mut [u8], length: &mut u32, raw: &[u8]) -> Result<(), Status>
@@ -782,22 +737,12 @@ fn parse_fmnu(bytes: &[u8], state: &mut MenuDefinitionState) -> Result<(), Statu
     Ok(())
 }
 
-// Empty bars need the definition's full ABI record too. Keep that rare temporary
-// out of the compositor and pointer-poll stack frames.
-#[inline(never)]
-fn draw_empty(entry: DefinitionRef, gate: TrapGate, canvas: &mut Canvas)
-{
-    let mut state = MenuDefinitionState { first: 1,
-                                          bar_bounds: Rect::new(0, 0, canvas.width as i16, 20),
-                                          ..Default::default() };
-    let mut surface = Surface::from_canvas(canvas);
-    invoke(entry, gate, &mut state, DRAW_BAR, 0, &mut surface);
-}
 fn invoke(entry: DefinitionRef, gate: TrapGate, state: &mut MenuDefinitionState, message: i16,
           param: i64, surface: *mut Surface)
           -> i64
 {
-    let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+    let mut call = DefinitionCall { reflow: 0,
+                                    header: Header::for_type::<DefinitionCall>(),
                                     kind: MDEF,
                                     id: 0,
                                     variation: 0,

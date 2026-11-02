@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 
-use mac_abi::{quickdraw::*, *};
+use mac_abi::{geometry::Point, quickdraw::*, *};
 
 use super::presentation::CursorSprite;
 
@@ -231,7 +231,7 @@ impl Cursors
             }
             CURSOR_RESOURCE_BUILTIN =>
             {
-                if call.builtin > 4
+                if !matches!(call.builtin, 0..=4 | 17 | 21)
                 {
                     return Err(BAD_ARGUMENT);
                 }

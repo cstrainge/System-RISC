@@ -311,8 +311,11 @@ failure requires acknowledged VBYT RESET before a new protocol epoch.
 Enablement/direction preferences use resident MPRE v1, with the admitted stable
 package identity obtained from the registry. Display names cannot redirect the
 storage scope. The 256-byte versioned JSON document lives at
-`System Folder/Preferences/7731a000000000000000000000000080.json`.
-The image builder derives this same key from the actual packaged EABI identity.
+`System Folder/Preferences/Host Clipboard Prefs`, with Finder type `JSON` and
+creator `TEDT` both when installed and when created by the resident service.
+The shared identity-to-filename mapping selects this readable name for Host
+Clipboard; other modules use their hexadecimal identity. The image builder
+uses the same mapping with the actual packaged EABI identity.
 LOAD and exact-byte
 compare/exchange use the real Files service; a successful write requires writable
 media. Comparison, writer admission and commit share its guard. Stale writes

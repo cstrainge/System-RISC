@@ -48,9 +48,10 @@ impl CodeViewer
         if self.radios.is_none()
         {
             let create = |hex| {
-                ctx.system
-                   .controls()
-                   .create_standard(ctx.window, StandardKind::Radio, self.state(ctx, hex)?)
+                ctx.system.controls().create_standard(ctx.window,
+                                                      StandardKind::Radio,
+                                                      self.state(ctx, hex)?,
+                                                      mac_toolbox::controls::Reflow::No)
             };
             let hex = create(true)?;
             let disassembly = create(false)?;

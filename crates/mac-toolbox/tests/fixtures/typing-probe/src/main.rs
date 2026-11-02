@@ -5,7 +5,7 @@
 use core::{fmt::Write,
            sync::atomic::{AtomicPtr, AtomicUsize, Ordering}};
 
-use mac_toolbox::{abi::EventKind, events::classic::Event, *};
+use mac_toolbox::{abi::events::EventKind, events::classic::Event, *};
 #[path = "../../../../../../apps/text-edit/src/editor.rs"]
 mod editor;
 #[path = "../../../../../../apps/text-edit/src/encoding.rs"]

@@ -76,22 +76,13 @@
       }
     },
     {
-      "type": "MENU",
-      "id": 1251,
-      "symbol": "APPLE_MENU",
-      "name": "Native Finder \u0014 menu",
+      "type": "WIND",
+      "id": 2003,
+      "symbol": "FONT_SUITCASE_LAYOUT",
+      "name": "Font suitcase native Finder layout",
       "payload": {
-        "format": "menu",
-        "title": "\u0014",
-        "items": [
-          {
-            "text": "About System RISC…",
-            "enabled": true,
-            "command": "abou",
-            "command_symbol": "ABOUT"
-          },
-          "-"
-        ]
+        "format": "hex",
+        "hex": "00600064015001cc000801000100000000000000"
       }
     },
     {
@@ -813,16 +804,6 @@
     },
     {
       "type": "ICN#",
-      "id": 14500,
-      "symbol": "ORIGINAL_VISUAL_49434E23_14500",
-      "attributes": 32,
-      "payload": {
-        "format": "file",
-        "path": "assets/visual/49434e23-14500.bin"
-      }
-    },
-    {
-      "type": "ICN#",
       "id": 14501,
       "symbol": "ORIGINAL_VISUAL_49434E23_14501",
       "attributes": 32,
@@ -839,16 +820,6 @@
       "payload": {
         "format": "file",
         "path": "assets/visual/49434e23-14750.bin"
-      }
-    },
-    {
-      "type": "ICN#",
-      "id": 15500,
-      "symbol": "ORIGINAL_VISUAL_49434E23_15500",
-      "attributes": 32,
-      "payload": {
-        "format": "file",
-        "path": "assets/visual/49434e23-15500.bin"
       }
     },
     {
@@ -1683,16 +1654,6 @@
     },
     {
       "type": "icl4",
-      "id": 14500,
-      "symbol": "ORIGINAL_VISUAL_69636C34_14500",
-      "attributes": 32,
-      "payload": {
-        "format": "file",
-        "path": "assets/visual/69636c34-14500.bin"
-      }
-    },
-    {
-      "type": "icl4",
       "id": 14501,
       "symbol": "ORIGINAL_VISUAL_69636C34_14501",
       "attributes": 32,
@@ -1709,16 +1670,6 @@
       "payload": {
         "format": "file",
         "path": "assets/visual/69636c34-14750.bin"
-      }
-    },
-    {
-      "type": "icl4",
-      "id": 15500,
-      "symbol": "ORIGINAL_VISUAL_69636C34_15500",
-      "attributes": 32,
-      "payload": {
-        "format": "file",
-        "path": "assets/visual/69636c34-15500.bin"
       }
     },
     {
@@ -1763,16 +1714,6 @@
     },
     {
       "type": "icl8",
-      "id": 14500,
-      "symbol": "ORIGINAL_VISUAL_69636C38_14500",
-      "attributes": 32,
-      "payload": {
-        "format": "file",
-        "path": "assets/visual/69636c38-14500.bin"
-      }
-    },
-    {
-      "type": "icl8",
       "id": 14501,
       "symbol": "ORIGINAL_VISUAL_69636C38_14501",
       "attributes": 32,
@@ -1789,16 +1730,6 @@
       "payload": {
         "format": "file",
         "path": "assets/visual/69636c38-14750.bin"
-      }
-    },
-    {
-      "type": "icl8",
-      "id": 15500,
-      "symbol": "ORIGINAL_VISUAL_69636C38_15500",
-      "attributes": 32,
-      "payload": {
-        "format": "file",
-        "path": "assets/visual/69636c38-15500.bin"
       }
     },
     {
@@ -1863,16 +1794,6 @@
     },
     {
       "type": "ics#",
-      "id": 14500,
-      "symbol": "ORIGINAL_VISUAL_69637323_14500",
-      "attributes": 32,
-      "payload": {
-        "format": "file",
-        "path": "assets/visual/69637323-14500.bin"
-      }
-    },
-    {
-      "type": "ics#",
       "id": 14501,
       "symbol": "ORIGINAL_VISUAL_69637323_14501",
       "attributes": 32,
@@ -1889,16 +1810,6 @@
       "payload": {
         "format": "file",
         "path": "assets/visual/69637323-14750.bin"
-      }
-    },
-    {
-      "type": "ics#",
-      "id": 15500,
-      "symbol": "ORIGINAL_VISUAL_69637323_15500",
-      "attributes": 32,
-      "payload": {
-        "format": "file",
-        "path": "assets/visual/69637323-15500.bin"
       }
     },
     {
@@ -1983,16 +1894,6 @@
     },
     {
       "type": "ics4",
-      "id": 14500,
-      "symbol": "ORIGINAL_VISUAL_69637334_14500",
-      "attributes": 32,
-      "payload": {
-        "format": "file",
-        "path": "assets/visual/69637334-14500.bin"
-      }
-    },
-    {
-      "type": "ics4",
       "id": 14501,
       "symbol": "ORIGINAL_VISUAL_69637334_14501",
       "attributes": 32,
@@ -2009,16 +1910,6 @@
       "payload": {
         "format": "file",
         "path": "assets/visual/69637334-14750.bin"
-      }
-    },
-    {
-      "type": "ics4",
-      "id": 15500,
-      "symbol": "ORIGINAL_VISUAL_69637334_15500",
-      "attributes": 32,
-      "payload": {
-        "format": "file",
-        "path": "assets/visual/69637334-15500.bin"
       }
     },
     {
@@ -2103,16 +1994,6 @@
     },
     {
       "type": "ics8",
-      "id": 14500,
-      "symbol": "ORIGINAL_VISUAL_69637338_14500",
-      "attributes": 32,
-      "payload": {
-        "format": "file",
-        "path": "assets/visual/69637338-14500.bin"
-      }
-    },
-    {
-      "type": "ics8",
       "id": 14501,
       "symbol": "ORIGINAL_VISUAL_69637338_14501",
       "attributes": 32,
@@ -2129,16 +2010,6 @@
       "payload": {
         "format": "file",
         "path": "assets/visual/69637338-14750.bin"
-      }
-    },
-    {
-      "type": "ics8",
-      "id": 15500,
-      "symbol": "ORIGINAL_VISUAL_69637338_15500",
-      "attributes": 32,
-      "payload": {
-        "format": "file",
-        "path": "assets/visual/69637338-15500.bin"
       }
     },
     {

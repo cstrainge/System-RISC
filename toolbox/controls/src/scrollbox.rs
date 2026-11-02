@@ -167,6 +167,14 @@ impl ScrollBoxRef<'_>
         self.client.scroll_box_pixels(&mut call, pixels, width, height)
     }
 
+    /// Release capture without applying a final scroll or requiring missing rows.
+    pub fn cancel(self) -> Result<()>
+    {
+        self.call(Call { operation: TRACK_CANCEL,
+                         ..Default::default() })
+            .map(|_| ())
+    }
+
     /// The thin event-pump bridge never decides geometry, repeat timing or row
     /// ranges. Callback errors leave the previously committed raster visible.
     pub fn track(self, anchor: Point, mut paint: impl FnMut(View) -> Result<()>) -> Result<()>
@@ -182,51 +190,70 @@ impl ScrollBoxRef<'_>
         {
             return Ok(());
         }
-        let mut query = Call { id: self.id.0,
-                               ..Default::default() };
-        self.client.scroll_box(&mut query)?;
-        let origin = self.client
-                         .window(mac_abi::GET_WINDOW,
-                                 mac_abi::WindowRequest { id:             query.window,
-                                                          bounds:         crate::Rect::ZERO,
-                                                          title:
-                                                              [0; mac_abi::WINDOW_TITLE_BYTES],
-                                                          title_length:   0,
-                                                          procedure:      0,
-                                                          minimum_width:  1,
-                                                          minimum_height: 1,
-                                                          reserved:       0 })?
-                         .bounds;
-        loop
-        {
-            if !state.missing.is_empty()
+        let capture = crate::capture::Capture::new(self);
+        let result = (|| {
+            let mut query = Call { id: self.id.0,
+                                   ..Default::default() };
+            self.client.scroll_box(&mut query)?;
+            let origin = self.client
+                             .window(mac_abi::GET_WINDOW,
+                                     mac_abi::WindowRequest { id:             query.window,
+                                                              bounds:         crate::Rect::ZERO,
+                                                              title:
+                                                                  [0; mac_abi::WINDOW_TITLE_BYTES],
+                                                              title_length:   0,
+                                                              procedure:      0,
+                                                              minimum_width:  1,
+                                                              minimum_height: 1,
+                                                              reserved:       0 })?
+                             .bounds;
+            loop
             {
-                paint(state.clone())?;
+                if !state.missing.is_empty()
+                {
+                    paint(state.clone())?;
+                }
+                if state.changed || !state.missing.is_empty()
+                {
+                    self.draw()?;
+                }
+                if !state.tracking
+                {
+                    return Ok(());
+                }
+                self.client.wait_event(0, 1)?;
+                self.client.event(&mut input)?;
+                state = self.call(Call { operation: TRACK_POLL,
+                                         point: Point { h: input.event
+                                                                .where_
+                                                                .h
+                                                                .saturating_sub(origin.left),
+                                                        v: input.event
+                                                                .where_
+                                                                .v
+                                                                .saturating_sub(origin.top) },
+                                         ticks: input.uptime_ticks,
+                                         flags: if input.event.modifiers
+                                                   & mac_abi::events::BTN_STATE
+                                                   == 0
+                                         {
+                                             BUTTON_DOWN
+                                         }
+                                         else
+                                         {
+                                             0
+                                         },
+                                         ..Default::default() })?;
             }
-            if state.changed || !state.missing.is_empty()
-            {
-                self.draw()?;
-            }
-            if !state.tracking
-            {
-                return Ok(());
-            }
-            self.client.wait_event(0, 1)?;
-            self.client.event(&mut input)?;
-            state = self.call(Call { operation: TRACK_POLL,
-                                     point: Point { h: input.event.where_.h - origin.left,
-                                                    v: input.event.where_.v - origin.top },
-                                     ticks: input.uptime_ticks,
-                                     flags: if input.event.modifiers & mac_abi::events::BTN_STATE
-                                               == 0
-                                     {
-                                         BUTTON_DOWN
-                                     }
-                                     else
-                                     {
-                                         0
-                                     },
-                                     ..Default::default() })?;
-        }
+        })();
+        capture.finish(result)
+    }
+}
+
+impl crate::capture::Cancel for ScrollBoxRef<'_>
+{
+    fn cancel(self) -> Result<()>
+    {
+        ScrollBoxRef::cancel(self)
     }
 }

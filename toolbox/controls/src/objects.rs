@@ -1,5 +1,6 @@
 //! Owned Control Manager objects. Tracking and pressed pixels belong to System.
 use mac_abi::{controls::*,
+              geometry::{Point, Rect},
               events::{BTN_STATE, EventCall, INPUT_STATE},
               *};
 
@@ -20,14 +21,25 @@ pub struct Control<'a>
 #[derive(Clone, Copy)]
 pub struct ControlInfo
 {
-    pub window:    WindowId,
-    pub standard:  StandardState,
-    pub scrollbar: ScrollbarState,
-    pub tracking:  bool,
-    pub handled:   bool,
-    pub action:    bool,
-    pub changed:   bool,
-    pub part:      super::Part
+    pub window:              WindowId,
+    pub parent:              Option<ControlId>,
+    pub reflow:              super::Reflow,
+    pub anchors:             super::Anchors,
+    pub window_border:       super::BorderOffsets,
+    /// Work waiting for the next event boundary or explicit assignment.
+    pub measurement_pending: bool,
+    pub arrangement_pending: bool,
+    /// Last automatic refusal of this control's root. Geometry remains usable;
+    /// success clears the cause. Busy waits for paint/capture release; memory
+    /// refusal retries at a bounded interval. Other causes need a settings edit.
+    pub layout_error:        Option<super::Error>,
+    pub standard:            StandardState,
+    pub scrollbar:           ScrollbarState,
+    pub tracking:            bool,
+    pub handled:             bool,
+    pub action:              bool,
+    pub changed:             bool,
+    pub part:                super::Part
 }
 impl TryFrom<ControlCall> for ControlInfo
 {
@@ -35,16 +47,30 @@ impl TryFrom<ControlCall> for ControlInfo
 
     fn try_from(c: ControlCall) -> Result<Self>
     {
-        Ok(Self { window:    WindowId(c.window),
-                  standard:  c.standard,
-                  scrollbar: c.scrollbar,
-                  tracking:  c.flags & TRACKING != 0,
-                  handled:   c.flags & HANDLED != 0,
-                  action:    c.flags & ACTION != 0,
-                  changed:   c.flags & CHANGED != 0,
-                  part:      super::Part::from_code(c.result as i16).map_err(|_| {
-                                                                        super::Error::BadAbi
-                                                                    })? })
+        Ok(Self { window:              WindowId(c.window),
+                  parent:              (c.relation.parent != 0).then_some(ControlId(c.relation
+                                                                                     .parent)),
+                  reflow:              c.reflow.try_into().map_err(|_| super::Error::BadAbi)?,
+                  anchors:             c.layout
+                                        .anchors
+                                        .try_into()
+                                        .map_err(|_| super::Error::BadAbi)?,
+                  window_border:       c.layout
+                                        .window_border
+                                        .try_into()
+                                        .map_err(|_| super::Error::BadAbi)?,
+                  measurement_pending: c.layout.invalidation & reflow::INVALIDATE_MEASUREMENT != 0,
+                  arrangement_pending: c.layout.invalidation & reflow::INVALIDATE_ARRANGEMENT != 0,
+                  layout_error:
+                      (c.layout.status != OK).then(|| super::Error::from_status(c.layout.status)),
+                  standard:            c.standard,
+                  scrollbar:           c.scrollbar,
+                  tracking:            c.flags & TRACKING != 0,
+                  handled:             c.flags & HANDLED != 0,
+                  action:              c.flags & ACTION != 0,
+                  changed:             c.flags & CHANGED != 0,
+                  part:
+                      super::Part::from_code(c.result as i16).map_err(|_| super::Error::BadAbi)? })
     }
 }
 impl<'a> super::Controls<'a>
@@ -61,20 +87,24 @@ impl<'a> super::Controls<'a>
         Ok(Control { control: self.control(ControlId(call.id)) })
     }
 
-    pub fn create_standard(&self, window: WindowId, kind: StandardKind, state: StandardState)
+    pub fn create_standard(&self, window: WindowId, kind: StandardKind, state: StandardState,
+                           reflow: super::Reflow)
                            -> Result<Control<'a>>
     {
-        self.create(ControlCall { operation: CREATE_STANDARD,
+        self.create(ControlCall { reflow: reflow.into(),
+                                  operation: CREATE_STANDARD,
                                   window: window.0,
                                   procedure: kind as i16,
                                   standard: state,
                                   ..Default::default() })
     }
 
-    pub fn create_scrollbar(&self, window: WindowId, state: ScrollbarState, step: i16, page: i16)
+    pub fn create_scrollbar(&self, window: WindowId, state: ScrollbarState, step: i16, page: i16,
+                            reflow: super::Reflow)
                             -> Result<Control<'a>>
     {
-        self.create(ControlCall { operation: CREATE_SCROLLBAR,
+        self.create(ControlCall { reflow: reflow.into(),
+                                  operation: CREATE_SCROLLBAR,
                                   window: window.0,
                                   scrollbar: state,
                                   step,
@@ -84,6 +114,11 @@ impl<'a> super::Controls<'a>
 }
 impl<'a> Control<'a>
 {
+    pub fn reflow(&self) -> Result<super::Reflow>
+    {
+        self.control.reflow()
+    }
+
     pub fn id(&self) -> ControlId
     {
         self.control.id
@@ -121,6 +156,116 @@ impl ControlRef<'_>
         call.id = self.id.0;
         self.client.control(&mut call)?;
         call.try_into()
+    }
+
+    /// Query the immutable choice held by System, including on borrowed refs.
+    pub fn reflow(self) -> Result<super::Reflow>
+    {
+        Ok(self.info()?.reflow)
+    }
+
+    pub(super) fn layout(self, layout: reflow::Payload) -> Result<reflow::Payload>
+    {
+        let mut call = ControlCall { id: self.id.0,
+                                     operation: REFLOW_OBJECT,
+                                     layout,
+                                     ..Default::default() };
+        self.client.control(&mut call)?;
+        Ok(call.layout)
+    }
+
+    /// Inside a Table, defer arrangement in its cell. At the window root,
+    /// nonempty anchors immediately arrange against the window's content borders
+    /// and follow resize/zoom. An unanchored axis centers; opposing edges stretch.
+    /// NONE disables automatic window placement and preserves current geometry.
+    /// Window placement failure leaves both old settings and geometry intact.
+    pub fn set_anchors(self, anchors: super::Anchors) -> Result<()>
+    {
+        self.layout(reflow::Payload { message: reflow::SET_ANCHORS,
+                                      anchors: anchors.into(),
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    /// Set per-side offsets from the owning window's content borders. Only root
+    /// reflow controls accept this property. Active anchors rearrange atomically.
+    pub fn set_window_border(self, border: super::BorderOffsets) -> Result<()>
+    {
+        self.layout(reflow::Payload { message: reflow::SET_WINDOW_BORDER,
+                                      window_border: border.into(),
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    pub fn ask_size(self, constraints: super::Constraints) -> Result<super::Measurement>
+    {
+        self.layout(reflow::Payload { message: reflow::ASK_SIZE,
+                                      constraints: constraints.into(),
+                                      ..Default::default() })?
+            .measurement
+            .try_into()
+            .map_err(|_| super::Error::BadAbi)
+    }
+
+    pub fn assign_rect(self, bounds: super::LayoutRect) -> Result<()>
+    {
+        self.layout(reflow::Payload { message: reflow::ASSIGN_RECT,
+                                      rect: bounds.rect(),
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    /// Window-local clip, independent of the assigned rectangle.
+    pub fn set_visible_rect(self, bounds: super::LayoutRect) -> Result<()>
+    {
+        self.layout(reflow::Payload { message: reflow::SET_VISIBLE_RECT,
+                                      rect: bounds.rect(),
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    pub fn invalidate_layout(self, invalidation: super::Invalidation) -> Result<()>
+    {
+        self.layout(reflow::Payload { message: reflow::INVALIDATE_LAYOUT,
+                                      invalidation: invalidation.into(),
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    pub fn set_minimum(self, size: super::Size) -> Result<()>
+    {
+        self.set_size(reflow::SET_MINIMUM, size)
+    }
+
+    pub fn clear_minimum(self) -> Result<()>
+    {
+        self.set_size(reflow::CLEAR_MINIMUM, super::Size::ZERO)
+    }
+
+    pub fn set_preferred(self, size: super::Size) -> Result<()>
+    {
+        self.set_size(reflow::SET_PREFERRED, size)
+    }
+
+    pub fn clear_preferred(self) -> Result<()>
+    {
+        self.set_size(reflow::CLEAR_PREFERRED, super::Size::ZERO)
+    }
+
+    fn set_size(self, message: i16, size: super::Size) -> Result<()>
+    {
+        self.layout(reflow::Payload { message,
+                                      size: size.into(),
+                                      ..Default::default() })
+            .map(|_| ())
+    }
+
+    pub fn set_size_preferences(self, preferences: super::SizePreferences) -> Result<()>
+    {
+        self.layout(reflow::Payload { message: reflow::SET_SIZE_PREFERENCES,
+                                      preferences: preferences.into(),
+                                      ..Default::default() })
+            .map(|_| ())
     }
 
     pub fn info(self) -> Result<ControlInfo>
@@ -239,43 +384,62 @@ impl ControlRef<'_>
         {
             return Ok(false);
         }
-        struct Capture<'a>(ControlRef<'a>);
-        impl Drop for Capture<'_>
-        {
-            fn drop(&mut self)
+        let capture = crate::capture::Capture::new(self);
+        let result = (|| {
+            loop
             {
-                let _ = self.0.cancel();
-            }
-        }
-        let _capture = Capture(self);
-        loop
-        {
-            if state.action
-            {
-                action(state)?;
-            }
-            if !state.tracking
-            {
-                return Ok(handled);
-            }
-            // Present only changed control bounds, then sleep until motion/tick.
-            self.client.wait_event(0, 1)?;
-            self.client.event(&mut input)?;
-            let origin = self.client
-                             .window(GET_WINDOW,
-                                     WindowRequest { id:             state.window.0,
-                                                     bounds:         Rect::ZERO,
-                                                     title:          [0; WINDOW_TITLE_BYTES],
-                                                     title_length:   0,
-                                                     procedure:      0,
-                                                     minimum_width:  1,
-                                                     minimum_height: 1,
-                                                     reserved:       0 })?
-                             .bounds;
-            state = self.poll_tracking(Point { h: input.event.where_.h.saturating_sub(origin.left),
+                if state.action
+                {
+                    action(state)?;
+                }
+                if !state.tracking
+                {
+                    return Ok(handled);
+                }
+                // Present only changed control bounds, then sleep until motion/tick.
+                self.client.wait_event(0, 1)?;
+                self.client.event(&mut input)?;
+                let origin = self.client
+                                 .window(GET_WINDOW,
+                                         WindowRequest { id:             state.window.0,
+                                                         bounds:         Rect::ZERO,
+                                                         title:          [0; WINDOW_TITLE_BYTES],
+                                                         title_length:   0,
+                                                         procedure:      0,
+                                                         minimum_width:  1,
+                                                         minimum_height: 1,
+                                                         reserved:       0 })?
+                                 .bounds;
+                state =
+                    self.poll_tracking(Point { h: input.event.where_.h.saturating_sub(origin.left),
                                                v: input.event.where_.v.saturating_sub(origin.top) },
                                        input.event.modifiers & BTN_STATE == 0,
                                        input.uptime_ticks)?;
-        }
+            }
+        })();
+        capture.finish(result)
+    }
+}
+
+impl crate::capture::Cancel for ControlRef<'_>
+{
+    fn cancel(self) -> Result<()>
+    {
+        ControlRef::cancel(self)
+    }
+}
+
+impl<'a> Control<'a>
+{
+    pub(super) fn from_ref(control: ControlRef<'a>) -> Self
+    {
+        Self { control }
+    }
+}
+impl<'a> ControlRef<'a>
+{
+    pub(super) fn client(self) -> Client<'a>
+    {
+        self.client
     }
 }

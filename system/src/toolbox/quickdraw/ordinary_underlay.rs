@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use mac_abi::*;
 
 use super::{Canvas, Desktop, RenderCommand, SceneTarget, WHITE, background, paint};
-use crate::toolbox::quickdraw::{geometry,
+use crate::toolbox::quickdraw::{geometry::{Rect, sect_rect, union_rect},
                                 region::{BooleanOp, Region}};
 
 #[derive(Default)]
@@ -80,7 +80,7 @@ impl OrdinaryUnderlay
         // This is the same bounded metadata-refusal fallback as the ordinary
         // active damage queue. No successfully retained region is discarded.
         *previous = previous.combine(&region, BooleanOp::Union).unwrap_or_else(|_| {
-            Region::from_rect(geometry::union_rect(previous.bounds(), region.bounds()))
+            Region::from_rect(union_rect(previous.bounds(), region.bounds()))
         });
         Ok(())
     }
@@ -119,7 +119,7 @@ fn screen() -> Rect
 fn clip(rect: Rect) -> Rect
 {
     let mut result = Rect::ZERO;
-    geometry::sect_rect(rect, screen(), &mut result);
+    sect_rect(rect, screen(), &mut result);
     result
 }
 fn copy_rect(source: &[u32], destination: &mut [u32], rect: Rect)
@@ -189,27 +189,19 @@ impl Desktop
     /// retained commands. This is not a protected-pool-fit assertion.
     pub(super) fn retained_admission(&self, id: SceneTarget) -> (usize, usize)
     {
-        let system = self.system_scene(id);
-        let used = self.content
-                       .iter()
-                       .chain(&self.pending_content)
-                       .filter(|content| self.system_scene(content.id) == system)
-                       .fold(0usize, |bytes, content| bytes.saturating_add(content.storage()));
-        if system
-        {
-            (used, usize::MAX)
-        }
-        else
-        {
-            (used.saturating_add(self.desktop.storage()), super::MAX_RETAINED_BYTES)
-        }
+        super::window_layout::scene_admission(&self.windows,
+                                              &self.content,
+                                              &self.pending_content,
+                                              self.desktop.storage(),
+                                              id)
     }
 
     fn paint_ordinary_full(&mut self, pixels: &mut [u32]) -> Result<(), Status>
     {
         let mut canvas = Canvas::new(pixels, crate::display::WIDTH, crate::display::HEIGHT);
         background(&mut canvas);
-        let fonts = crate::kernel::fonts();
+        let font_snapshot = crate::kernel::fonts();
+        let fonts = font_snapshot.as_deref();
         let cdef = self.cdef;
         let desktop_visible =
             self.processes.get(crate::context::finder_app().0).is_ok_and(|p| p.info.hidden == 0);
@@ -270,14 +262,14 @@ impl Desktop
                                      }
                                  }
         )?;
-        self.menu_cache.paint(&mut canvas,
-                              (self.foreground,
-                               self.menus.selected_menu(),
-                               self.app_menu.is_tracking()),
-                              |canvas| {
-                                  self.menus.draw_bar(canvas);
-                                  self.app_menu.draw_bar(canvas);
-                              });
+        self.menu_cache
+            .paint(&mut canvas,
+                   (self.foreground,
+                    self.menus.selected_menu(),
+                    self.menus.application_selected(),
+                    self.menus.system_selected()),
+                   |canvas| self.menus.draw_bar(&mut self.system_bar, &mut self.app_menu, canvas))
+            .map_err(|error| error.status)?;
         Ok(())
     }
 
@@ -287,7 +279,8 @@ impl Desktop
                              -> Result<(), Status>
     {
         let scopes = self.windows.resource_scopes();
-        let fonts = crate::kernel::fonts();
+        let font_snapshot = crate::kernel::fonts();
+        let fonts = font_snapshot.as_deref();
         let cdef = self.cdef;
         let cache = &mut self.content_cache;
         let mut canvas = Canvas::new(pixels, crate::display::WIDTH, crate::display::HEIGHT);
@@ -314,7 +307,7 @@ impl Desktop
                     for band in region.bands() { for span in &band.spans {
                         if result.is_err() { continue; }
                         let mut rect = Rect::ZERO;
-                        if !geometry::sect_rect(Rect::new(span.left, band.top, span.right, band.bottom), visible, &mut rect)
+                        if !sect_rect(Rect::new(span.left, band.top, span.right, band.bottom), visible, &mut rect)
                         { continue; }
                         canvas.reset_port(); canvas.set_clip(rect); background(&mut canvas);
                         result = cache.try_paint(*id, self.desktop.bounds(), &mut canvas, |canvas| {
@@ -354,7 +347,7 @@ impl Desktop
                                             Rect::new(span.left, band.top, span.right, band.bottom);
                                         rect.offset(window.bounds.left, window.bounds.top);
                                         let mut hit = Rect::ZERO;
-                                        if !geometry::sect_rect(rect, visible, &mut hit)
+                                        if !sect_rect(rect, visible, &mut hit)
                                         {
                                             continue;
                                         }
@@ -541,7 +534,8 @@ impl Desktop
             super::accumulate_presentation_damage(damage, copy_full, window.structure());
             copy_rect(&self.ordinary_underlay.committed, back, window.structure());
         }
-        let fonts = crate::kernel::fonts();
+        let font_snapshot = crate::kernel::fonts();
+        let fonts = font_snapshot.as_deref();
         let content = &self.content;
         let cdef = self.system_cdef;
         let mut canvas = Canvas::new(back, crate::display::WIDTH, crate::display::HEIGHT);
@@ -576,7 +570,8 @@ impl Desktop
                                       -> Result<(), Status>
     {
         let scopes = self.windows.resource_scopes();
-        let fonts = crate::kernel::fonts();
+        let font_snapshot = crate::kernel::fonts();
+        let fonts = font_snapshot.as_deref();
         let cdef = self.system_cdef;
         let mut canvas = Canvas::new(crate::platform::back_buffer(),
                                      crate::display::WIDTH,
@@ -613,7 +608,7 @@ impl Desktop
                                         Rect::new(span.left, band.top, span.right, band.bottom);
                                     rect.offset(window.bounds.left, window.bounds.top);
                                     let mut hit = Rect::ZERO;
-                                    if !geometry::sect_rect(rect, visible, &mut hit)
+                                    if !sect_rect(rect, visible, &mut hit)
                                     {
                                         continue;
                                     }

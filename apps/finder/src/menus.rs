@@ -2,13 +2,73 @@
 use mac_toolbox::{Error, *};
 
 use crate::browser::Browser;
-pub use crate::resources::commands::{ABOUT, CLEAR, CLOSE, EMPTY, GET_INFO, NEW_FOLDER, OPEN,
-                                     PUT_AWAY, RESTART, SELECT_ALL, SHOW_CLIPBOARD, SHUTDOWN};
-pub fn install<'a>(system: &System<'a>) -> Result<[mac_toolbox::menus::MenuRef<'a>; 6], Error>
+pub const NEW_FOLDER: u32 = crate::resources::commands::NEW_FOLDER;
+pub const OPEN: u32 = crate::resources::commands::OPEN;
+pub const SELECT_ALL: u32 = crate::resources::commands::SELECT_ALL;
+pub const GET_INFO: u32 = crate::resources::commands::GET_INFO;
+pub const CLOSE: u32 = crate::resources::commands::CLOSE;
+pub const PUT_AWAY: u32 = crate::resources::commands::PUT_AWAY;
+pub const CLEAR: u32 = crate::resources::commands::CLEAR;
+pub const SHOW_CLIPBOARD: u32 = crate::resources::commands::SHOW_CLIPBOARD;
+pub const EMPTY: u32 = crate::resources::commands::EMPTY;
+pub const RESTART: u32 = crate::resources::commands::RESTART;
+pub const SHUTDOWN: u32 = crate::resources::commands::SHUTDOWN;
+fn apple_menu_icon_flag(system: &System<'_>) -> Result<bool, Error>
 {
+    let files = system.files();
+    let mut startup = None;
+    for index in 0..files.volume_count()?
+    {
+        let volume = files.volume_at(index)?;
+        if volume.startup
+        {
+            startup = Some(volume.id);
+            break;
+        }
+        if startup.is_none()
+        {
+            startup = Some(volume.id);
+        }
+    }
+    let Some(startup) = startup
+    else
+    {
+        return Ok(false);
+    };
+    match files.lookup(startup, files::ROOT_ID, "System Folder/Preferences/limit")
+    {
+        Ok(_) => Ok(true),
+        Err(Error::NotFound) => Ok(false),
+        Err(error) => Err(error)
+    }
+}
+
+fn report_icon_flag_error(system: &System<'_>, operation: &str, error: Error) -> Result<(), Error>
+{
+    use core::fmt::Write;
+    let mut line = crate::browser::Text::<256>::default();
+    let _ = writeln!(&mut line, "FINDER_APPLE_MENU_ICON_{operation}: {error}");
+    system.log(line.as_str())
+}
+
+pub fn install<'a>(system: &System<'a>) -> Result<[mac_toolbox::menus::MenuRef<'a>; 5], Error>
+{
+    let flag = match apple_menu_icon_flag(system)
+    {
+        Ok(flag) => flag,
+        Err(error) =>
+        {
+            report_icon_flag_error(system, "LOOKUP_FAILED", error)?;
+            false
+        }
+    };
+    if let Err(error) = system.quickdraw().icons().set_apple_menu_icon_flag(flag)
+    {
+        report_icon_flag_error(system, "SET_FAILED", error)?;
+    }
     let menus = system.menus();
     menus.clear()?;
-    for id in [1251, 1252, 1253, 1254, 1256, 1255]
+    for id in [1252, 1253, 1254, 1256, 1255]
     {
         menus.install_menu_resource(resources::APPLICATION, id)?;
     }
@@ -37,8 +97,7 @@ pub fn install<'a>(system: &System<'a>) -> Result<[mac_toolbox::menus::MenuRef<'
     }
     // The resident application menu bar owns installation and disposal.
     // Retain generation-checked views for startup menu restoration.
-    Ok([menus.find(MenuId(1251))?,
-        menus.find(MenuId(1252))?,
+    Ok([menus.find(MenuId(1252))?,
         menus.find(MenuId(1253))?,
         menus.find(MenuId(1254))?,
         menus.find(MenuId(1256))?,

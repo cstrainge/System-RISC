@@ -1,5 +1,5 @@
 //! Native resource-based Alert subset. Item indices retain classic one-based IDs.
-use crate::{Event, INLINE_STRING_BYTES};
+use crate::{events::Event, INLINE_STRING_BYTES};
 pub const OPEN_ALERT: u32 = 0;
 pub const HANDLE_EVENT: u32 = 1;
 pub const CLOSE: u32 = 2;

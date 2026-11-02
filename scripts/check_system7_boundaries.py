@@ -188,7 +188,10 @@ def check(args):
     assert normal_dependencies(by_name['mac-code-resource']) == ['mac-abi'], \
         'wire codec may depend only on the allocation-free ABI contract'
     assert 'standard_window_definition' not in system_symbols, 'WDEF implementation belongs to the resource'
-    assert 'standard_control_definition' not in system_symbols, 'CDEF implementation belongs to the resource'
+    for _, binary in binaries:
+        if binary.startswith('CDEF_'):
+            assert binary + '::' not in system_symbols, 'CDEF implementation belongs to the resource: ' + binary
+    assert '__cdef_entry' not in system_symbols, 'CDEF entry scaffold belongs to the resource'
     assert 'standard_menu_definition' not in system_symbols, 'MDEF implementation belongs to the resource'
     report = {'status': 'passed', 'abi_has_no_dependencies': True,
               'system_has_no_client_dependencies': True, 'definition_code_resident_in_resources': True,

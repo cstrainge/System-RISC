@@ -116,6 +116,9 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                .map_err(|error| {
                                    serial!("KIND_REGISTRATION_REFUSED: {error}");
                                    KindAccessError::Registry(error)
+                               }).map_err(|error| {
+                                   serial!("KIND_REGISTRY_INIT_REFUSED: {error}");
+                                   error
                                })?;
                                registry.register(&owner,
                                          crate::toolbox::controls::objects::storage_specification(), cleanup::context::Desktop(crate::toolbox::controls::objects::ReleaseStorage))
@@ -132,6 +135,14 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                registry.register(&owner,
                                          crate::toolbox::standard_file::specification(true), cleanup::context::Desktop(crate::toolbox::handles::cleanup::Complete(crate::toolbox::standard_file::ReleaseStorage)))
                                .map_err(KindAccessError::Registry)?;
+                               for storage in [false, true]
+                               {
+                                   registry.register(&owner,
+                                       crate::toolbox::font_suitcases::specification(storage),
+                                       cleanup::context::Desktop(cleanup::Complete(
+                                           crate::toolbox::font_suitcases::ReleasePreviews(storage))))
+                                       .map_err(KindAccessError::Registry)?;
+                               }
                                registry.register(&owner,
                                          crate::toolbox::quickdraw::worlds::specification(false), cleanup::context::Desktop(crate::toolbox::handles::cleanup::Complete(crate::toolbox::quickdraw::worlds::ReleaseWorlds)))
                                .map_err(KindAccessError::Registry)?;
@@ -376,6 +387,13 @@ pub(crate) fn drag_kinds(
 pub(crate) fn file_watch_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
 {
     registry(|registry| Ok((registry.get(KindCode(*b"FWCH"))?, registry.get(KindCode(*b"FWST"))?)))
+        .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
+}
+
+#[cfg(target_arch = "riscv64")]
+pub(crate) fn font_suitcase_kinds() -> Result<(KindLease, KindLease), mac_abi::Status>
+{
+    registry(|registry| Ok((registry.get(KindCode(*b"FTSU"))?, registry.get(KindCode(*b"FTST"))?)))
         .map_err(|error| error.status())?.map_err(|error| registry_status(&error))
 }
 

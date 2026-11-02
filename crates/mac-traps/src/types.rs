@@ -342,8 +342,8 @@ impl TransferSource
                                                   cnid:            id.0,
                                                   expected_parent: expected_parent.0,
                                                   placement:       0,
-                                                  point:           mac_abi::Point { h: 0,
-                                                                                    v: 0 },
+                                                  point:           mac_abi::geometry::Point { h: 0,
+                                                                                              v: 0 },
                                                   reserved:        0 })
     }
 
@@ -362,7 +362,7 @@ impl TransferSource
         Cnid(self.0.expected_parent)
     }
 
-    pub const fn at(mut self, point: mac_abi::Point) -> Self
+    pub const fn at(mut self, point: mac_abi::geometry::Point) -> Self
     {
         self.0.placement = 1;
         self.0.point = point;
@@ -372,8 +372,7 @@ impl TransferSource
     pub const fn clear_placement(mut self) -> Self
     {
         self.0.placement = 2;
-        self.0.point = mac_abi::Point { h: 0,
-                                        v: 0 };
+        self.0.point = mac_abi::geometry::Point { h: 0, v: 0 };
         self
     }
 }

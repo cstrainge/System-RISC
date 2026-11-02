@@ -337,23 +337,33 @@ impl<T, G: InvocationGate> Store<T, G>
     pub fn owned_prepared(registration: KindLease<G>, storage: KindLease<G>)
                           -> Result<Self, PoolError>
     {
+        Self::owned_state_prepared(registration, storage, |_| Ok(()))
+    }
+}
+
+impl<T, G: InvocationGate, S> Store<T, G, S>
+{
+    /// Construct a prepared store with its genuine per-owner saved state.
+    /// The factory remains attached to the same registered backing and is run
+    /// by detached preparation outside manager and owner guards.
+    pub fn owned_state_prepared(registration: KindLease<G>, storage: KindLease<G>,
+                                make_state: fn(DomainId) -> Result<S, PoolError>)
+                                -> Result<Self, PoolError>
+    {
         let descriptor = registration.registration();
         let error = PoolError::Storage { owner:           descriptor.release.registration.owner(),
                                          kind:            descriptor.code,
                                          used:            0,
                                          requested_slots: 1,
                                          limit:           descriptor.capacity.limit() };
-        let mut store = Self::owned(registration, storage)?;
+        let mut store = Self::owned_state(registration, storage, make_state)?;
         store.incarnation = Some(G::with_system_allocation(|| {
                                      Arc::try_new(Incarnation { live:    AtomicBool::new(true),
                                                                 credits: AtomicUsize::new(0) })
                                  }).map_err(|_| error)?);
         Ok(store)
     }
-}
 
-impl<T, G: InvocationGate, S> Store<T, G, S>
-{
     /// Observation for registered backing cleanup. A provider may retain its
     /// original ticket until the final real unpublished permit ends, instead
     /// of escrowing it where no semantic object exists to trigger disposal.
