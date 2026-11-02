@@ -28,7 +28,7 @@ static FONTS: Once<alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManage
 static INSTALLED_FONTS: spinning_top::Spinlock<
     Option<alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>>> =
     spinning_top::Spinlock::new(None);
-static DESKTOP: TryState<crate::toolbox::runtime::Desktop> = TryState::new();
+static TOOLBOX: TryState<crate::toolbox::runtime::Toolbox> = TryState::new();
 static SCRAP: TryState<crate::toolbox::scrap::Manager> = TryState::new();
 static MEMORY: TryState<crate::toolbox::memory::Manager> = TryState::new();
 // SAFETY: storage executes on hart0's fixed-owner service stack, with interrupts
@@ -218,7 +218,7 @@ pub(crate) fn release_image(ticket: mac_object_table::domain::ReleasedResource,
         }
     }
 }
-pub(crate) fn finish_image_origins(desktop: &mut crate::toolbox::runtime::Desktop)
+pub(crate) fn finish_image_origins(toolbox: &mut crate::toolbox::runtime::Toolbox)
 {
     let mut previous = 0;
     while let Ok(Some((owner, origin))) = IMAGES.with(|images| images.next_retiring(previous))
@@ -226,7 +226,7 @@ pub(crate) fn finish_image_origins(desktop: &mut crate::toolbox::runtime::Deskto
         previous = owner;
         if !crate::machine::scheduler::has_threads(owner)
         {
-            desktop.evict_image_origin(origin);
+            toolbox.evict_image_origin(origin);
         }
     }
     let _ = IMAGES.with(|images| images.finish_retiring());
@@ -309,12 +309,12 @@ pub(crate) unsafe extern "C" fn log(bytes: *const u8, length: usize) -> Status
 // Mutable state never exposes unchecked static references. These guards do not
 // wait for a preempted holder. Stateful recursive calls return Busy; immutable
 // resources/fonts and independent Surface services stay available during WDEFs.
-pub(crate) fn with_desktop<R>(call: impl FnOnce(&mut crate::toolbox::runtime::Desktop) -> R)
+pub(crate) fn with_toolbox<R>(call: impl FnOnce(&mut crate::toolbox::runtime::Toolbox) -> R)
                               -> Result<R, AccessError>
 {
-    DESKTOP.with(|desktop| {
-               desktop.enter_caller();
-               call(desktop)
+    TOOLBOX.with(|toolbox| {
+               toolbox.enter_caller();
+               call(toolbox)
            })
 }
 
@@ -330,12 +330,12 @@ pub(crate) fn poll_waiting_events() -> bool
     };
     let context = crate::context::current_thread_context();
     let _scope = context.traps.enter();
-    let Ok((foreground, fresh_input)) = DESKTOP.with(|desktop| {
+    let Ok((foreground, fresh_input)) = TOOLBOX.with(|toolbox| {
                                             if crate::toolbox::inspection::take_membership_change()
                                             {
-                                                desktop.notify_inspectors();
+                                                toolbox.notify_inspectors();
                                             }
-                                            desktop.wake_waiters(&mut waiting)
+                                            toolbox.wake_waiters(&mut waiting)
                                         })
     else
     {
@@ -813,7 +813,7 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     // stock before any installed module initializer can consume that heap.
     // BootScreen retains its Control identity without borrowing the manager;
     // move that manager once and keep the welcome panel until publication.
-    let mut runtime = crate::toolbox::runtime::Desktop::new(definitions, processes, finder_owner,
+    let mut runtime = crate::toolbox::runtime::Toolbox::new(definitions, processes, finder_owner,
                                                             controls).map_err(|cause| {
                           match cause
                           {
@@ -882,30 +882,30 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     serial!("UI_OBSERVER address={} bytes=128 version=1",
             crate::toolbox::quickdraw::observer::address());
     runtime.boot_progress(&mut boot_screen, 4)?;
-    DESKTOP.publish(runtime)
+    TOOLBOX.publish(runtime)
            .map_err(|_| mac_formats::Error::Malformed("desktop already published"))?;
-    with_desktop(|desktop| desktop.boot_progress(&mut boot_screen, 5))
+    with_toolbox(|toolbox| toolbox.boot_progress(&mut boot_screen, 5))
         .map_err(|error| recovery_boot_error("boot progress manager unavailable", error.status()))??;
     serial!("BOOT_SYSTEM_READY: services=0x{:x}", &SERVICES as *const SystemServices as usize);
     serial!("SYSTEM_FINDER_LAUNCH entry=0x{:x}", finder_entry);
     let thread =
-        with_desktop(|desktop| {
-            desktop.spawn_process(crate::context::finder_app().0, finder_loaded)
+        with_toolbox(|toolbox| {
+            toolbox.spawn_process(crate::context::finder_app().0, finder_loaded)
         }).map_err(|_| mac_formats::Error::Malformed("Finder owner directory is unavailable"))?
           .map_err(|status| {
               serial!("FINDER_THREAD_CREATION_FAILED status={status}");
               mac_formats::Error::Malformed("Finder thread creation failed")
           })?;
-    with_desktop(|desktop| desktop.boot_progress(&mut boot_screen, 6))
+    with_toolbox(|toolbox| toolbox.boot_progress(&mut boot_screen, 6))
         .map_err(|error| recovery_boot_error("boot progress manager unavailable", error.status()))??;
-    with_desktop(|desktop| desktop.started(crate::context::finder_app().0, thread)).map_err(|_| {
+    with_toolbox(|toolbox| toolbox.started(crate::context::finder_app().0, thread)).map_err(|_| {
                                                           mac_formats::Error::Malformed("Finder context \
                                                                               initialization \
                                                                               failed")
                                                       })?;
-    with_desktop(|desktop| desktop.boot_progress(&mut boot_screen, 7))
+    with_toolbox(|toolbox| toolbox.boot_progress(&mut boot_screen, 7))
         .map_err(|error| recovery_boot_error("boot progress manager unavailable", error.status()))??;
-    with_desktop(|desktop| desktop.finish_boot_progress(&mut boot_screen))
+    with_toolbox(|toolbox| toolbox.finish_boot_progress(&mut boot_screen))
         .map_err(|error| recovery_boot_error("boot progress cleanup unavailable", error.status()))??;
     drop(boot_screen);
     let allocations = crate::allocator::statistics();

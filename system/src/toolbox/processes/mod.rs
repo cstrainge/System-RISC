@@ -12,7 +12,7 @@ pub(crate) mod finder;
 pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
 {
     let caller = crate::context::current_thread_context().identity().app.0;
-    crate::kernel::with_desktop(|desktop| {
+    crate::kernel::with_toolbox(|toolbox| {
         if matches!(call.operation,
                     mac_abi::inspection::KIND_BEGIN
                     | mac_abi::inspection::KIND
@@ -20,13 +20,13 @@ pub(crate) fn inspection_request(call: &mut mac_abi::inspection::Call) -> Status
         {
             crate::toolbox::handles::registry(|registry| {
                 crate::toolbox::inspection::registered_kinds(registry,
-                                                             desktop.processes.get(caller).is_ok(),
+                                                             toolbox.processes.get(caller).is_ok(),
                                                              call)
             }).unwrap_or_else(|error| error.status())
         }
         else
         {
-            desktop.processes.inspect(caller, call)
+            toolbox.processes.inspect(caller, call)
         }
     }).unwrap_or_else(|error| error.status())
 }
@@ -34,8 +34,8 @@ pub(crate) fn memory_inspection_request(call: &mut mac_abi::inspection::memory::
 {
     use crate::toolbox::inspection::Subject;
     let caller = crate::context::current_thread_context().identity().app.0;
-    crate::kernel::with_desktop(|desktop| {
-        let authority = desktop.processes.entries.get(caller).map(|e| e.value().authority());
+    crate::kernel::with_toolbox(|toolbox| {
+        let authority = toolbox.processes.entries.get(caller).map(|e| e.value().authority());
         crate::toolbox::inspection::memory::request(authority,
                                                     &crate::machine::paging::inspection::Native,
                                                     call)
@@ -45,8 +45,8 @@ pub(crate) fn memory_inspection_request(call: &mut mac_abi::inspection::memory::
 pub(crate) fn cpu_inspection_request(call: &mut mac_abi::inspection::cpus::Call) -> Status
 {
     let caller = crate::context::current_thread_context().identity().app.0;
-    crate::kernel::with_desktop(|desktop| {
-        crate::toolbox::inspection::cpus::request(desktop.processes
+    crate::kernel::with_toolbox(|toolbox| {
+        crate::toolbox::inspection::cpus::request(toolbox.processes
                                                          .entries
                                                          .get(caller)
                                                          .is_some_and(|entry| {
@@ -456,7 +456,7 @@ pub(crate) fn request(call: &mut ProcessCall) -> Status
     let result = (|| {
         if call.operation != LAUNCH
         {
-            return crate::kernel::with_desktop(|d| d.process(call)).map_err(|e| e.status());
+            return crate::kernel::with_toolbox(|d| d.process(call)).map_err(|e| e.status());
         }
         crate::context::without_recovery(|| {
             // An app can quit and another launch it before the next timer tick.
@@ -465,14 +465,14 @@ pub(crate) fn request(call: &mut ProcessCall) -> Status
             crate::machine::scheduler::reclaim_retired();
             retirement::pump();
             if !crate::toolbox::files::application::pending()
-           && crate::kernel::with_desktop(|d| d.activate_existing_application(call))
+           && crate::kernel::with_toolbox(|d| d.activate_existing_application(call))
                 .map_err(|e| e.status())??
         {
             return Ok(OK);
         }
             let owner = crate::context::current_thread_context().identity().app.0;
             let loaded = crate::toolbox::files::application::read(owner, call.volume, call.cnid)?;
-            crate::kernel::with_desktop(|d| d.launch_application(call, *loaded)).map_err(|e| {
+            crate::kernel::with_toolbox(|d| d.launch_application(call, *loaded)).map_err(|e| {
                                                                                     e.status()
                                                                                 })?
                                                                                 .map(|()| OK)

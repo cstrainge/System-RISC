@@ -68,7 +68,7 @@ use ordinary_underlay::OrdinaryUnderlay;
 mod local;
 pub(crate) use local::FinderAdmission;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
-pub struct Desktop
+pub struct Toolbox
 {
     pub(in crate::toolbox) drag:      super::drag::Manager,
     standard_file:                    super::standard_file::Manager,
@@ -130,28 +130,28 @@ pub struct Desktop
     app_menu:                         super::processes::menu::ApplicationMenu
 }
 
-impl super::controls::objects::ControlHost for Desktop
+impl super::controls::objects::ControlHost for Toolbox
 {
     fn managed_controls(&mut self) -> &mut super::controls::objects::Manager
     {
         &mut self.controls
     }
 }
-impl super::controls::scrollbox::ScrollBoxHost for Desktop
+impl super::controls::scrollbox::ScrollBoxHost for Toolbox
 {
     fn managed_scroll_boxes(&mut self) -> &mut super::controls::scrollbox::Manager
     {
         &mut self.scroll_boxes
     }
 }
-impl super::standard_file::FileDialogHost for Desktop
+impl super::standard_file::FileDialogHost for Toolbox
 {
     fn file_dialogs(&mut self) -> &mut super::standard_file::Manager
     {
         &mut self.standard_file
     }
 }
-impl super::font_suitcases::Host for Desktop
+impl super::font_suitcases::Host for Toolbox
 {
     fn font_suitcases(&mut self) -> &mut super::font_suitcases::Manager
     {
@@ -159,7 +159,7 @@ impl super::font_suitcases::Host for Desktop
     }
 }
 
-impl Desktop
+impl Toolbox
 {
     /// Separate the actual System storage owner from the app receiving a modal
     /// service. Only a genuine private Activity supplies that authority.
@@ -2124,7 +2124,7 @@ impl Desktop
                 activity.run(|| {
                             if kind
                             {
-                                self.with_core_dialogs(|desktop| desktop.input_impl(input, when));
+                                self.with_core_dialogs(|toolbox| toolbox.input_impl(input, when));
                             }
                             else
                             {
@@ -2944,7 +2944,7 @@ fn background(canvas: &mut Canvas)
     }
 }
 
-impl super::classic::Services for Desktop
+impl super::classic::Services for Toolbox
 {
     fn drag(&mut self, call: &mut mac_abi::drag::Call, input: &[u8], output: &mut [u8])
             -> Result<(), Status>
@@ -3006,7 +3006,7 @@ impl super::classic::Services for Desktop
 
     fn cursor(&mut self, call: &mut mac_abi::quickdraw::CursorCall) -> Result<(), Status>
     {
-        Desktop::cursor(self, call, &[])
+        Toolbox::cursor(self, call, &[])
     }
 
     fn ticks(&self) -> u32
@@ -3015,7 +3015,7 @@ impl super::classic::Services for Desktop
     }
 }
 
-impl super::quickdraw::worlds::WorldHost for Desktop
+impl super::quickdraw::worlds::WorldHost for Toolbox
 {
     fn offscreen_worlds(&mut self) -> &mut super::quickdraw::worlds::Worlds
     {
@@ -3023,7 +3023,7 @@ impl super::quickdraw::worlds::WorldHost for Desktop
     }
 }
 
-impl super::windows::lifetime::WindowHost for Desktop
+impl super::windows::lifetime::WindowHost for Toolbox
 {
     fn release_window(&mut self, ticket: mac_object_table::domain::ReleasedResource)
                       -> Result<(), super::handles::cleanup::Failure>

@@ -220,11 +220,11 @@ pub(crate) fn specification(storage: bool) -> Specification<'static>
                     } }
 }
 pub(crate) struct ReleaseBatches(pub(crate) bool);
-impl Release<crate::toolbox::runtime::Desktop, Failure> for ReleaseBatches
+impl Release<crate::toolbox::runtime::Toolbox, Failure> for ReleaseBatches
 {
-    fn release(&self, desktop: &mut crate::toolbox::runtime::Desktop, ticket: ReleasedResource)
+    fn release(&self, toolbox: &mut crate::toolbox::runtime::Toolbox, ticket: ReleasedResource)
                -> Result<(), Failure>
     {
-        desktop.processes.documents.release(ticket, self.0)
+        toolbox.processes.documents.release(ticket, self.0)
     }
 }

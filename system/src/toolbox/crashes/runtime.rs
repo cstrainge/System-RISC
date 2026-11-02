@@ -148,7 +148,7 @@ fn window_request(id: WindowId) -> WindowRequest
                     reserved:       0 }
 }
 
-impl super::Desktop
+impl super::Toolbox
 {
     /// Boot preparation uses the renderer's actual managed-button requirement.
     pub(crate) const fn crash_control_count() -> usize

@@ -506,8 +506,8 @@ pub(crate) fn standard_file_request(call: &mut mac_abi::standard_file::StandardF
         {
             let opening = begin(owner, Kind::StandardFile)?;
             let result = opening.activity().run(|| {
-                                                crate::kernel::with_desktop(|desktop| {
-                                                    desktop.standard_file_request(call)
+                                                crate::kernel::with_toolbox(|toolbox| {
+                                                    toolbox.standard_file_request(call)
                                                 }).map_err(|error| error.status())?
                                             })?;
             result?;
@@ -534,8 +534,8 @@ pub(crate) fn standard_file_request(call: &mut mac_abi::standard_file::StandardF
                               _released: ReleasedActivity })
             })?;
             let result = activity.run(|| {
-                                     crate::kernel::with_desktop(|desktop| {
-                                         desktop.standard_file_request(call)
+                                     crate::kernel::with_toolbox(|toolbox| {
+                                         toolbox.standard_file_request(call)
                                      }).map_err(|error| error.status())?
                                  })?;
             result
@@ -555,8 +555,8 @@ pub(crate) fn dialog_request(call: &mut mac_abi::dialogs::DialogCall) -> Status
             let opening = begin(owner, Kind::CoreAlert)?;
             let status =
                 opening.activity().run(|| {
-                                       crate::kernel::with_desktop(|desktop| {
-                                           desktop.with_core_dialogs(|desktop| desktop.dialog(call))
+                                       crate::kernel::with_toolbox(|toolbox| {
+                                           toolbox.with_core_dialogs(|toolbox| toolbox.dialog(call))
                                        }).unwrap_or_else(|error| error.status())
                                    })?;
             if status != mac_abi::OK
@@ -574,15 +574,15 @@ pub(crate) fn dialog_request(call: &mut mac_abi::dialogs::DialogCall) -> Status
         let status = if let Some(activity) = activity
         {
             let status = activity.run(|| {
-                                     crate::kernel::with_desktop(|desktop| {
-                                         desktop.with_core_dialogs(|desktop| desktop.dialog(call))
+                                     crate::kernel::with_toolbox(|toolbox| {
+                                         toolbox.with_core_dialogs(|toolbox| toolbox.dialog(call))
                                      }).unwrap_or_else(|error| error.status())
                                  })?;
             status
         }
         else
         {
-            crate::kernel::with_desktop(|desktop| desktop.dialog(call)).unwrap_or_else(|error| {
+            crate::kernel::with_toolbox(|toolbox| toolbox.dialog(call)).unwrap_or_else(|error| {
                                                                            error.status()
                                                                        })
         };
@@ -610,9 +610,9 @@ pub(crate) fn pump()
             let entered = core::cell::Cell::new(false);
             let result =
                 activity.run(|| {
-                    crate::kernel::with_desktop(|desktop| {
+                    crate::kernel::with_toolbox(|toolbox| {
                         entered.set(true);
-                        desktop.windows.retry_recovery_cleanup();
+                        toolbox.windows.retry_recovery_cleanup();
                         if !CLOSING.load(Ordering::Acquire)
                         {
                             return Ok(());
@@ -621,10 +621,10 @@ pub(crate) fn pump()
                         {
                             Kind::StandardFile =>
                             {
-                                desktop.cancel_standard_file_for_recovery(&activity.recipient())
+                                toolbox.cancel_standard_file_for_recovery(&activity.recipient())
                             }
-                            Kind::CoreAlert => desktop.cancel_core_alert_for_recovery(&activity),
-                            Kind::CrashReport => desktop.cancel_crash_report_for_recovery(
+                            Kind::CoreAlert => toolbox.cancel_core_alert_for_recovery(&activity),
+                            Kind::CrashReport => toolbox.cancel_crash_report_for_recovery(
                                 &activity, mac_abi::WindowId(activity.session.object.load(Ordering::Acquire)))
                         };
                         // A failed close can already have invalidated its protocol.
@@ -638,9 +638,9 @@ pub(crate) fn pump()
                                 continue;
                             }
                             let id = mac_abi::WindowId(id);
-                            if desktop.windows.window(id).is_some()
+                            if toolbox.windows.window(id).is_some()
                             {
-                                let status = desktop.window(mac_abi::CLOSE_WINDOW,
+                                let status = toolbox.window(mac_abi::CLOSE_WINDOW,
                                 &mut mac_abi::WindowRequest { id: id.0, bounds: mac_abi::geometry::Rect::ZERO,
                                     title: [0; mac_abi::WINDOW_TITLE_BYTES], title_length: 0,
                                     procedure: 0, minimum_width: 0, minimum_height: 0, reserved: 0 });
@@ -649,7 +649,7 @@ pub(crate) fn pump()
                                     failure.get_or_insert(status);
                                 }
                             }
-                            if desktop.windows.recovery_close_pending(id, &activity)?
+                            if toolbox.windows.recovery_close_pending(id, &activity)?
                             {
                                 failure.get_or_insert(SERVICE_BUSY);
                             }
@@ -698,8 +698,8 @@ pub(crate) fn crash_request(call: &mut mac_abi::crashes::CrashCall, input: &str,
                     // Reset is a real service close, including WDEF/child ACK.
                     // Retained old-origin metadata is never used as authority.
                     let closed = activity.run(|| {
-                                             crate::kernel::with_desktop(|desktop| {
-                                                 desktop.close_crash_report(&activity)
+                                             crate::kernel::with_toolbox(|toolbox| {
+                                                 toolbox.close_crash_report(&activity)
                                              }).map_err(|error| error.status())?
                                          })
                                          .and_then(core::convert::identity);
@@ -714,8 +714,8 @@ pub(crate) fn crash_request(call: &mut mac_abi::crashes::CrashCall, input: &str,
                 }
                 crate::context::with_recovery_allocation(permit()?, || {
                     crate::allocator::with_system(SystemClass::Ordinary, || {
-                        crate::kernel::with_desktop(|desktop| {
-                            desktop.crash_request(call, input, output)
+                        crate::kernel::with_toolbox(|toolbox| {
+                            toolbox.crash_request(call, input, output)
                         }).map_err(|error| error.status())?
                     })
                 })
@@ -723,10 +723,10 @@ pub(crate) fn crash_request(call: &mut mac_abi::crashes::CrashCall, input: &str,
             SHOW =>
             {
                 // Do not let a malformed SHOW cancel a valid, unrelated dialog.
-                let info = crate::kernel::with_desktop(|desktop| {
+                let info = crate::kernel::with_toolbox(|toolbox| {
                                let mut info = CrashCall { operation: INFO,
                                                           ..Default::default() };
-                               desktop.crash_request(&mut info, "", &mut [])?;
+                               toolbox.crash_request(&mut info, "", &mut [])?;
                                Ok::<_, Status>(info.info)
                            }).map_err(|error| error.status())??;
                 if info.app == 0
@@ -751,8 +751,8 @@ pub(crate) fn crash_request(call: &mut mac_abi::crashes::CrashCall, input: &str,
                     {
                         call.info = crate::context::with_recovery_allocation(permit()?, || {
                             crate::allocator::with_system(SystemClass::Ordinary, || {
-                                crate::kernel::with_desktop(|desktop| {
-                                    desktop.queue_crash_report(call.flags)
+                                crate::kernel::with_toolbox(|toolbox| {
+                                    toolbox.queue_crash_report(call.flags)
                                 }).map_err(|error| error.status())?
                             })
                         })?;
@@ -761,8 +761,8 @@ pub(crate) fn crash_request(call: &mut mac_abi::crashes::CrashCall, input: &str,
                     Err(status) => return Err(status)
                 };
                 let result = activity.run(|| {
-                                         crate::kernel::with_desktop(|desktop| {
-                                             desktop.crash_request(call, input, output)
+                                         crate::kernel::with_toolbox(|toolbox| {
+                                             toolbox.crash_request(call, input, output)
                                          }).map_err(|error| error.status())?
                                      })?;
                 if result.is_err() && !already_shown
@@ -782,8 +782,8 @@ pub(crate) fn crash_request(call: &mut mac_abi::crashes::CrashCall, input: &str,
             {
                 let activity = active(owner_id, Kind::CrashReport).ok_or(NOT_FOUND)?;
                 activity.run(|| {
-                            crate::kernel::with_desktop(|desktop| {
-                                desktop.crash_request(call, input, output)
+                            crate::kernel::with_toolbox(|toolbox| {
+                                toolbox.crash_request(call, input, output)
                             }).map_err(|error| error.status())?
                         })?
             }

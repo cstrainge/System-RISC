@@ -60,7 +60,7 @@ pub(crate) fn native(call: &mut PowerCall) -> Result<(), Status>
     {
         fn applications_ready(&mut self) -> Result<(), Status>
         {
-            crate::kernel::with_desktop(|runtime|runtime.power_applications_ready())
+            crate::kernel::with_toolbox(|runtime|runtime.power_applications_ready())
                 .map_err(|error|error.status())?
         }
 

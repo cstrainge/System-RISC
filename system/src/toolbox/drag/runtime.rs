@@ -6,7 +6,7 @@ use mac_abi::{drag::*,
 
 use crate::toolbox::{events::input::Input,
                      windows::{WindowId, WindowPart}};
-impl super::super::runtime::Desktop
+impl super::super::runtime::Toolbox
 {
     pub(super) fn drag_hot(&self, point: Point) -> Option<u32>
     {
@@ -157,7 +157,7 @@ impl super::super::runtime::Desktop
     }
 }
 
-impl crate::toolbox::drag::lifetime::Host for crate::toolbox::runtime::Desktop
+impl crate::toolbox::drag::lifetime::Host for crate::toolbox::runtime::Toolbox
 {
     fn release_drag(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                     kind: crate::toolbox::drag::lifetime::Registration)

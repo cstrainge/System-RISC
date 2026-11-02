@@ -3,7 +3,7 @@
 use mac_abi::{Status,
               events::{Event, EventCall, EventKind}};
 
-impl super::Desktop
+impl super::Toolbox
 {
     pub fn event_service(&mut self, call: &mut EventCall) -> Status
     {
@@ -34,7 +34,7 @@ impl super::Desktop
     }
 }
 
-impl super::Desktop
+impl super::Toolbox
 {
     pub(super) fn event_position(&self, event: Event, owner: u64)
                                  -> mac_abi::events::EventPosition

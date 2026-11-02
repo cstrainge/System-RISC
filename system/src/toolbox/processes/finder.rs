@@ -167,13 +167,13 @@ impl Drop for Running
     }
 }
 
-fn desktop<R>(binding: &ResourceBinding,
-              call: impl FnOnce(&mut crate::toolbox::runtime::Desktop) -> Result<R, Status>)
+fn toolbox<R>(binding: &ResourceBinding,
+              call: impl FnOnce(&mut crate::toolbox::runtime::Toolbox) -> Result<R, Status>)
               -> Result<R, Status>
 {
-    crate::kernel::with_desktop(|desktop| {
-        desktop.enter(binding.owner());
-        crate::kernel::with_process_resources(binding, || call(desktop))?
+    crate::kernel::with_toolbox(|toolbox| {
+        toolbox.enter(binding.owner());
+        crate::kernel::with_process_resources(binding, || call(toolbox))?
     }).map_err(|error| error.status())?
 }
 
@@ -221,7 +221,7 @@ fn step_inner(work: Work) -> Option<Work>
                           permit,
                           activity } =>
         {
-            match desktop(&old, |desktop| desktop.reserve_finder(old.owner(), permit.clone()))
+            match toolbox(&old, |toolbox| toolbox.reserve_finder(old.owner(), permit.clone()))
             {
                 Ok(admission) =>
                 {
@@ -278,9 +278,9 @@ fn step_inner(work: Work) -> Option<Work>
                         admission,
                         loaded } =>
         {
-            match desktop(&old, |desktop| {
-                      desktop.bind_finder_image(&admission, loaded.binding())?;
-                      desktop.processes.resource_binding(admission.id())
+            match toolbox(&old, |toolbox| {
+                      toolbox.bind_finder_image(&admission, loaded.binding())?;
+                      toolbox.processes.resource_binding(admission.id())
                   })
             {
                 Ok(next) =>
@@ -310,7 +310,7 @@ fn step_inner(work: Work) -> Option<Work>
                        admission,
                        loaded } =>
         {
-            match desktop(&old, |desktop| desktop.commit_finder_handoff(&admission))
+            match toolbox(&old, |toolbox| toolbox.commit_finder_handoff(&admission))
             {
                 Ok(()) =>
                 {
@@ -366,7 +366,7 @@ fn step_inner(work: Work) -> Option<Work>
             };
             WAITING_FOR_STACK.store(false, Ordering::Release);
             let charges =
-                match desktop(&next, |desktop| desktop.processes.thread_charges(admission.id()))
+                match toolbox(&next, |toolbox| toolbox.processes.thread_charges(admission.id()))
                 {
                     Ok(charges) => charges,
                     Err(status) =>
@@ -428,11 +428,11 @@ fn step_inner(work: Work) -> Option<Work>
         {
             // The inner result belongs only to post-commit presentation. It
             // cannot turn a runnable thread back into failed preparation.
-            match desktop(&next, |desktop| {
-                      desktop.prepare_finder_start(&admission, thread)?;
-                      desktop.commit_finder_start(&mut admission, thread)?;
+            match toolbox(&next, |toolbox| {
+                      toolbox.prepare_finder_start(&admission, thread)?;
+                      toolbox.commit_finder_start(&mut admission, thread)?;
                       UI_PROGRESS.store(false, Ordering::Release);
-                      Ok(desktop.finish_finder_start_ui(&admission))
+                      Ok(toolbox.finish_finder_start_ui(&admission))
                   })
             {
                 Ok(Ok(())) => None,
@@ -466,7 +466,7 @@ fn step_inner(work: Work) -> Option<Work>
                 return None;
             }
             UI_PROGRESS.store(false, Ordering::Release);
-            match desktop(&next, |desktop| desktop.finish_finder_start_ui(&admission))
+            match toolbox(&next, |toolbox| toolbox.finish_finder_start_ui(&admission))
             {
                 Ok(()) => None,
                 Err(status) =>
@@ -489,7 +489,7 @@ fn step_inner(work: Work) -> Option<Work>
                         permit,
                         activity } =>
         {
-            match desktop(&target, |desktop| desktop.finder_restart_failed(status))
+            match toolbox(&target, |toolbox| toolbox.finder_restart_failed(status))
             {
                 Ok(()) => None,
                 Err(_) =>
@@ -515,7 +515,7 @@ fn step_inner(work: Work) -> Option<Work>
             }
             if !attempted || UI_PROGRESS.swap(false, Ordering::AcqRel)
             {
-                let _notification = desktop(&next, |desktop| desktop.finder_restart_failed(status));
+                let _notification = toolbox(&next, |toolbox| toolbox.finder_restart_failed(status));
                 attempted = true;
             }
             Some(Work::BackingPaused { next,
@@ -550,7 +550,7 @@ fn step_inner(work: Work) -> Option<Work>
             }
             if !attempted || UI_PROGRESS.swap(false, Ordering::AcqRel)
             {
-                let _notification = desktop(&next, |desktop| desktop.finder_restart_failed(status));
+                let _notification = toolbox(&next, |toolbox| toolbox.finder_restart_failed(status));
                 attempted = true;
             }
             Some(Work::Paused { next,
