@@ -59,7 +59,77 @@ struct Session
     windows:        Spinlock<[(u64, bool); 2]>,
     core_payload:   Spinlock<CorePayloadState>,
     core_frames:    Spinlock<CoreFrames>,
+    file_vectors:   Spinlock<StandardFileVectorsState>,
     cleanup_status: AtomicI32
+}
+
+enum StandardFileVectorsState
+{
+    Idle,
+    Borrowed,
+    Pending(crate::toolbox::standard_file::Vectors)
+}
+
+/// Sole return authority for the pair checked out by this genuine Opening.
+#[must_use = "retain the Standard File vector lease with its actual Dialog"]
+pub(crate) struct StandardFileVectorsLease
+{
+    activity: Activity
+}
+impl StandardFileVectorsLease
+{
+    pub(crate) fn matches_activity(&self, activity: &Activity) -> bool
+    {
+        self.activity.same_session(activity)
+    }
+
+    pub(crate) fn park(self, vectors: crate::toolbox::standard_file::Vectors)
+    {
+        // This non-Clone lease is the sole writer to its Borrowed slot. Its
+        // Activity excludes reaping until after the inert transfer; the pair
+        // contains no Activity/Subject and cannot keep this Session alive.
+        InvocationGate::run(|| {
+            *self.activity.session.file_vectors.lock() = StandardFileVectorsState::Pending(vectors);
+        });
+    }
+}
+
+/// Produced only after the original Session/Subject/publication and child ACK
+/// drain. Refusal retains this Session's same pending pair for a later reap.
+pub(crate) struct StandardFileVectorsQuiescence<'a>
+{
+    session: &'a mut Session
+}
+impl StandardFileVectorsQuiescence<'_>
+{
+    pub(crate) fn clear(&mut self) -> Result<bool, Status>
+    {
+        match self.session.file_vectors.get_mut()
+        {
+            StandardFileVectorsState::Idle => Ok(false),
+            StandardFileVectorsState::Pending(vectors) =>
+            {
+                vectors.clear();
+                Ok(true)
+            }
+            StandardFileVectorsState::Borrowed => Err(mac_abi::BAD_ABI)
+        }
+    }
+
+    pub(crate) fn take(self) -> Result<Option<crate::toolbox::standard_file::Vectors>, Status>
+    {
+        let slot = self.session.file_vectors.get_mut();
+        match core::mem::replace(slot, StandardFileVectorsState::Idle)
+        {
+            StandardFileVectorsState::Idle => Ok(None),
+            StandardFileVectorsState::Pending(vectors) => Ok(Some(vectors)),
+            StandardFileVectorsState::Borrowed =>
+            {
+                *slot = StandardFileVectorsState::Borrowed;
+                Err(mac_abi::BAD_ABI)
+            }
+        }
+    }
 }
 
 enum CorePayloadState
@@ -351,6 +421,20 @@ impl Activity
                                            -> Result<(), Status>
     {
         self.validate_modal_opening(Kind::CoreAlert, recipient, storage)
+    }
+
+    pub(crate) fn lease_standard_file_vectors(&self) -> Result<StandardFileVectorsLease, Status>
+    {
+        self.validate_standard_file_begin(&self.recipient(), &self.storage_owner())?;
+        InvocationGate::run(|| {
+            let mut slot = self.session.file_vectors.lock();
+            if !matches!(*slot, StandardFileVectorsState::Idle)
+            {
+                return Err(SERVICE_BUSY);
+            }
+            *slot = StandardFileVectorsState::Borrowed;
+            Ok(StandardFileVectorsLease { activity: self.clone() })
+        })
     }
 
     pub(crate) fn lease_core_payload(&self, template: usize) -> Result<CorePayloadLease, Status>
@@ -730,6 +814,7 @@ pub(crate) fn prepare_modal() -> Result<(), Status>
                                    core_payload: Spinlock::new(CorePayloadState::Idle),
                                    core_frames: Spinlock::new(CoreFrames { window: None,
                                                                            ready:  [None, None] }),
+                                   file_vectors: Spinlock::new(StandardFileVectorsState::Idle),
                                    cleanup_status: AtomicI32::new(mac_abi::OK) }).map_err(|_| {
                                                                                      NO_MEMORY
                                                                                  })
@@ -746,7 +831,9 @@ pub(crate) fn begin(recipient: OwnerRef, kind: Kind) -> Result<Opening, Status>
     {
         return Err(ACCESS_DENIED);
     }
-    reap();
+    // Returning old stock belongs to pump's guard-free checkpoint. A recursive
+    // BEGIN can still have an outer definition/Desktop invocation on its stack.
+    // Until the original Session drains there, this request honestly gets Busy.
     let mut session = InvocationGate::run(|| {
         let mut modal = MODAL.lock();
         if modal.opening || modal.session.is_some()
@@ -814,7 +901,7 @@ pub(crate) fn active(owner: u64, kind: Kind) -> Option<Activity>
 
 /// Bounded checkpoint: no per-event registry scan or retry loop. Quarantined
 /// children keep their real Activity; queued I/O keeps its original Subject.
-pub(crate) fn reap()
+fn reap()
 {
     if !REAP_REQUESTED.swap(false, Ordering::AcqRel)
     {
@@ -844,15 +931,24 @@ pub(crate) fn reap()
     {
         let returned = if let Some(unique) = Arc::get_mut(&mut session)
         {
-            let returned = if unique.kind == Kind::CoreAlert
+            let file_vectors_idle =
+                matches!(unique.file_vectors.get_mut(), StandardFileVectorsState::Idle);
+            let core_idle = matches!(unique.core_payload.get_mut(), CorePayloadState::Idle)
+                            && unique.core_frames.get_mut().window.is_none()
+                            && unique.core_frames.get_mut().ready.iter().all(Option::is_none);
+            let returned = if unique.kind == Kind::CoreAlert && file_vectors_idle
             {
                 crate::toolbox::dialogs::core_alerts::return_quiesced(CorePayloadQuiescence {
                     session: unique
                 })
             }
-            else if matches!(unique.core_payload.get_mut(), CorePayloadState::Idle)
-                      && unique.core_frames.get_mut().window.is_none()
-                      && unique.core_frames.get_mut().ready.iter().all(Option::is_none)
+            else if unique.kind == Kind::StandardFile && core_idle
+            {
+                crate::toolbox::standard_file::return_vectors(StandardFileVectorsQuiescence {
+                    session: unique
+                })
+            }
+            else if core_idle && file_vectors_idle
             {
                 Ok(())
             }
@@ -874,6 +970,7 @@ pub(crate) fn reap()
         };
         if let Err(status) = returned
         {
+            let standard_file = session.kind == Kind::StandardFile;
             let previous = session.cleanup_status.swap(status, Ordering::AcqRel);
             InvocationGate::run(|| {
                 let mut modal = MODAL.lock();
@@ -884,8 +981,16 @@ pub(crate) fn reap()
             });
             if previous != status
             {
-                serial!("CORE_PAYLOAD_RETURN_REFUSED status={status}; original closing Session \
-                         retained");
+                if standard_file
+                {
+                    serial!("STANDARD_FILE_VECTORS_RETURN_REFUSED status={status}; original \
+                             closing Session retained");
+                }
+                else
+                {
+                    serial!("CORE_PAYLOAD_RETURN_REFUSED status={status}; original closing \
+                             Session retained");
+                }
             }
             return;
         }

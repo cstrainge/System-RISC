@@ -2,6 +2,7 @@
 //! authority; immutable snapshots share it without retaining the dying account.
 #![forbid(unsafe_code)]
 use alloc::{string::String, sync::Arc, vec::Vec};
+use core::fmt;
 
 use mac_abi::{BAD_ABI, NO_MEMORY, NOT_SUPPORTED, SERVICE_BUSY, Status, crashes::MAX_REPORT_BYTES};
 use mac_object_table::shared::InvocationGate as _;
@@ -48,11 +49,13 @@ impl Data
 struct Pool
 {
     initialized: bool,
-    archive:     Option<Arc<Data>>
+    archive:     Option<Arc<Data>>,
+    paint:       Option<String>
 }
 static POOL: Spinlock<Pool> = Spinlock::new(Pool { initialized: false,
-                                                   archive:     None });
-pub(super) fn prepare() -> Result<(), Status>
+                                                   archive:     None,
+                                                   paint:       None });
+pub(super) fn prepare(paint_bytes: usize) -> Result<(), Status>
 {
     if InvocationGate::run(|| POOL.lock().initialized)
     {
@@ -62,6 +65,8 @@ pub(super) fn prepare() -> Result<(), Status>
     data.report.try_reserve_exact(MAX_REPORT_BYTES).map_err(|_| NO_MEMORY)?;
     data.starts.try_reserve_exact(MAX_REPORT_BYTES + 1).map_err(|_| NO_MEMORY)?;
     let data = Arc::try_new(data).map_err(|_| NO_MEMORY)?;
+    let mut paint = String::new();
+    paint.try_reserve_exact(paint_bytes).map_err(|_| NO_MEMORY)?;
     InvocationGate::run(|| {
         let mut pool = POOL.lock();
         if pool.initialized
@@ -69,9 +74,147 @@ pub(super) fn prepare() -> Result<(), Status>
             return Err(BAD_ABI);
         }
         pool.archive = Some(data);
+        pool.paint = Some(paint);
         pool.initialized = true;
         Ok(())
     })
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(in crate::toolbox) enum PaintError
+{
+    Unprepared,
+    Busy,
+    Capacity
+    {
+        required: usize,
+        capacity: usize
+    },
+    Format
+}
+impl PaintError
+{
+    pub(in crate::toolbox) fn status(self) -> Status
+    {
+        match self
+        {
+            Self::Unprepared => NOT_SUPPORTED,
+            Self::Busy => SERVICE_BUSY,
+            Self::Capacity { .. } => BAD_ABI,
+            Self::Format => mac_abi::BAD_ARGUMENT
+        }
+    }
+}
+impl fmt::Display for PaintError
+{
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        match self
+        {
+            Self::Unprepared => out.write_str("report paint scratch was not boot-admitted"),
+            Self::Busy => out.write_str("report paint scratch is still borrowed"),
+            Self::Capacity { required,
+                             capacity } =>
+            {
+                write!(out,
+                       "report paint scratch needs {required} bytes but admitted capacity is \
+                        {capacity}")
+            }
+            Self::Format => out.write_str("report paint formatter refused the original value")
+        }
+    }
+}
+
+/// One affine staging buffer. Retained font_draw copies its borrowed bytes;
+/// no read pin or account/Activity is retained when this loan returns.
+#[must_use = "return the same report paint scratch on every paint exit"]
+pub(in crate::toolbox) struct PaintScratch
+{
+    text: String
+}
+impl PaintScratch
+{
+    pub(in crate::toolbox) fn take() -> Result<Self, PaintError>
+    {
+        InvocationGate::run(|| {
+            let mut pool = POOL.lock();
+            if !pool.initialized
+            {
+                return Err(PaintError::Unprepared);
+            }
+            Ok(Self { text: pool.paint.take().ok_or(PaintError::Busy)? })
+        })
+    }
+
+    pub(in crate::toolbox) fn clear(&mut self)
+    {
+        self.text.clear();
+    }
+
+    pub(in crate::toolbox) fn text(&self) -> &str
+    {
+        &self.text
+    }
+
+    pub(in crate::toolbox) fn admits(&self, required: usize) -> Result<(), PaintError>
+    {
+        let capacity = self.text.capacity();
+        if required > capacity
+        {
+            return Err(PaintError::Capacity { required,
+                                              capacity });
+        }
+        Ok(())
+    }
+
+    pub(in crate::toolbox) fn append(&mut self, value: &str) -> Result<(), PaintError>
+    {
+        let required = self.text
+                           .len()
+                           .checked_add(value.len())
+                           .ok_or(PaintError::Capacity { required: usize::MAX,
+                                                         capacity: self.text.capacity() })?;
+        self.admits(required)?;
+        self.text.push_str(value);
+        Ok(())
+    }
+
+    pub(in crate::toolbox) fn write(&mut self, arguments: fmt::Arguments<'_>)
+                                    -> Result<(), PaintError>
+    {
+        struct Writer<'a>
+        {
+            scratch: &'a mut PaintScratch,
+            error:   Option<PaintError>
+        }
+        impl fmt::Write for Writer<'_>
+        {
+            fn write_str(&mut self, value: &str) -> fmt::Result
+            {
+                if self.error.is_some()
+                {
+                    return Err(fmt::Error);
+                }
+                self.scratch.append(value).map_err(|error| {
+                                              self.error = Some(error);
+                                              fmt::Error
+                                          })
+            }
+        }
+        let mut writer = Writer { scratch: self,
+                                  error:   None };
+        fmt::write(&mut writer, arguments).map_err(|_| writer.error.unwrap_or(PaintError::Format))
+    }
+}
+impl Drop for PaintScratch
+{
+    fn drop(&mut self)
+    {
+        let mut text = core::mem::take(&mut self.text);
+        text.clear();
+        // This non-Clone loan is the sole writer to its absent stock slot.
+        InvocationGate::run(|| POOL.lock().paint = Some(text));
+    }
 }
 /// Availability is a scheduling hint, not capture authority. The actual claim
 /// still validates unique ownership under this same stock gate.

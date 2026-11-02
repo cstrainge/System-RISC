@@ -17,6 +17,7 @@ pub(crate) use pending::owner_stopped as pending_owner_stopped;
 pub(crate) use pending::{cleanup_progress, modal_available, pump_dismissals, pump_reports,
                          take_for_termination};
 use storage::Payload;
+pub(super) use storage::{PaintError, PaintScratch};
 
 pub const RESOURCE_ID: i16 = -16400;
 pub const DEFAULT_COLUMNS: usize = 90;
@@ -199,6 +200,8 @@ pub(crate) fn initialize_protected_report(permit: crate::allocator::recovery::Pe
             PREPARED.try_call_once(|| {
                         let layout =
                             crate::toolbox::runtime::Desktop::measure_crash_report_layout()?;
+                        let paint_bytes =
+                            crate::toolbox::runtime::Desktop::measure_crash_paint_capacity(layout)?;
                         let call = quickdraw::IconCall { scope: resources::SYSTEM,
                                                          id: RESOURCE_ID,
                                                          destination: Rect::new(18, 14, 50, 46),
@@ -207,7 +210,7 @@ pub(crate) fn initialize_protected_report(permit: crate::allocator::recovery::Pe
                                        super::quickdraw::icons_service::Drawing::new(
                         resources, &call, super::quickdraw::service::Port::default())
                                    }).ok_or(NOT_SUPPORTED)??;
-                        storage::prepare()?;
+                        storage::prepare(paint_bytes)?;
                         Ok::<_, Status>(PreparedReport { layout,
                                                          icon })
                     })?;

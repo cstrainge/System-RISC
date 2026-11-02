@@ -4,14 +4,45 @@
 use alloc::{string::String, vec::Vec};
 
 use mac_abi::{resources, standard_file::GET, *};
+use mac_object_table::shared::InvocationGate as _;
+use spinning_top::Spinlock;
 
 use super::{Sheet, layout::Layout};
+use crate::{recovery::{Activity, StandardFileVectorsLease, StandardFileVectorsQuiescence},
+            toolbox::handles::InvocationGate};
+
+/// Allocation stock only. Live protocol identity and the return lease stay in
+/// the actual Dialog; parked vectors cannot retain their original Session.
+pub(crate) struct Vectors
+{
+    pub(super) icons: Vec<(files::CatalogInfo, crate::toolbox::quickdraw::icons_service::Drawing)>,
+    pub(super) ancestors: Vec<files::CatalogInfo>
+}
+impl Vectors
+{
+    fn prepare() -> Result<Self, Status>
+    {
+        let mut icons = Vec::new();
+        icons.try_reserve_exact(super::page::ROWS).map_err(|_| NO_MEMORY)?;
+        let mut ancestors = Vec::new();
+        ancestors.try_reserve_exact(super::page::ANCESTORS).map_err(|_| NO_MEMORY)?;
+        Ok(Self { icons,
+                  ancestors })
+    }
+
+    pub(crate) fn clear(&mut self)
+    {
+        self.icons.clear();
+        self.ancestors.clear();
+    }
+}
 
 struct Templates
 {
     layouts: [Layout; 5],
     labels:  [String; 15],
-    icons:   [crate::toolbox::quickdraw::icons_service::Drawing; 3]
+    icons:   [crate::toolbox::quickdraw::icons_service::Drawing; 3],
+    vectors: Spinlock<Option<Vectors>>
 }
 static TEMPLATES: spin::Once<Templates> = spin::Once::new();
 
@@ -66,11 +97,58 @@ pub(crate) fn prepare() -> Result<(), Status>
                      }).ok_or(NOT_SUPPORTED)?
                  };
                  let icons = [icon(-3999)?, icon(-4000)?, icon(-3996)?];
+                 let vectors =
+                     crate::context::with_recovery_allocation(crate::recovery::permit()?, || {
+                         crate::allocator::with_system(crate::allocator::SystemClass::Ordinary,
+                                                       Vectors::prepare)
+                     })?;
                  Ok::<_, Status>(Templates { layouts,
                                              icons,
+                                             vectors: Spinlock::new(Some(vectors)),
                                              labels: labels.try_into().map_err(|_| BAD_ABI)? })
              })?;
     Ok(())
+}
+
+pub(super) fn take_vectors(activity: &Activity)
+                           -> Result<(Vectors, StandardFileVectorsLease), Status>
+{
+    let templates = TEMPLATES.get().ok_or(NOT_SUPPORTED)?;
+    InvocationGate::run(|| {
+        activity.validate_standard_file_begin(&activity.recipient(), &activity.storage_owner())?;
+        let mut stock = templates.vectors.lock();
+        let vectors = stock.take().ok_or(SERVICE_BUSY)?;
+        let lease = match activity.lease_standard_file_vectors()
+        {
+            Ok(lease) => lease,
+            Err(status) =>
+            {
+                *stock = Some(vectors);
+                return Err(status);
+            }
+        };
+        Ok((vectors, lease))
+    })
+}
+
+/// The original Session is already exclusive and its real children have ACKed.
+/// Clear old artwork outside Desktop/metadata guards before returning backing.
+pub(crate) fn return_vectors(mut proof: StandardFileVectorsQuiescence<'_>) -> Result<(), Status>
+{
+    let pending = proof.clear()?;
+    let templates = TEMPLATES.get().ok_or(BAD_ABI)?;
+    InvocationGate::run(|| {
+        let mut stock = templates.vectors.lock();
+        if pending && stock.is_some()
+        {
+            return Err(BAD_ABI);
+        }
+        if let Some(vectors) = proof.take()?
+        {
+            *stock = Some(vectors);
+        }
+        Ok(())
+    })
 }
 
 pub(in crate::toolbox) fn layout(mode: u32, sheet: Sheet) -> Result<&'static Layout, Status>

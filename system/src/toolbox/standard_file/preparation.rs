@@ -145,15 +145,17 @@ impl PreparedDialog
         let mut types = [[0; 4]; MAX_TYPES];
         let type_count = call.type_count.max(0) as usize;
         types[..type_count].copy_from_slice(&call.types[..type_count]);
-        let mut icons = Vec::new();
-        icons.try_reserve_exact(page::ROWS)
-             .map_err(|_| BeginError::service("icon page", NO_MEMORY))?;
-        let mut ancestors = Vec::new();
-        ancestors.try_reserve_exact(page::ANCESTORS)
-                 .map_err(|_| BeginError::service("ancestors", NO_MEMORY))?;
         let mut entries = Page::default();
         entries.reset();
         let subject = activity.subject();
+        let (Vectors { icons,
+                       ancestors },
+             vector_lease) =
+            templates::take_vectors(activity).map_err(|status| {
+                                                 BeginError::service("vector stock", status)
+                                             })?;
+        // No fallible work follows checkout before the actual Dialog owns the
+        // same pair and its affine return route.
         let dialog =
             Dialog { saved_name: None,
                      owner,
@@ -201,7 +203,8 @@ impl PreparedDialog
                      main_widgets: Widgets::default(),
                      auxiliary_widgets: Widgets::default(),
                      subject: Some(subject),
-                     recovery_activity: Some(activity.clone()) };
+                     recovery_activity: Some(activity.clone()),
+                     vector_lease: Some(vector_lease) };
         Ok(Self { dialog: Some(dialog),
                   recipient,
                   storage,
@@ -214,6 +217,10 @@ impl PreparedDialog
         let (prompt, name) = validate_call(call)?;
         let dialog = self.dialog.as_ref().ok_or(BAD_ABI)?;
         let activity = dialog.recovery_activity.as_ref().ok_or(ACCESS_DENIED)?;
+        if !dialog.vector_lease.as_ref().is_some_and(|lease| lease.matches_activity(activity))
+        {
+            return Err(ACCESS_DENIED);
+        }
         if recipient.owner() != self.recipient.owner()
            || storage.owner() != self.storage.owner()
            || dialog.owner != recipient.owner().incarnation()

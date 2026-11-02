@@ -409,6 +409,16 @@ pub fn run(system: &System<'_>) -> Result<(), Error>
         crashes.append(text)?;
     }
     require(crashes.info()?.report_bytes == 1024 * 1024)?;
+    // Exercise a real report-capacity refusal, retaining the original bytes
+    // and the service's own warning flag rather than manufacturing a flag.
+    let overflow = crashes.append("overflow");
+    assert!(matches!(overflow, Err(Error::NoMemory)),
+            "report-limit append expected NoMemory with retained data, got {overflow:?}");
+    let refused = crashes.info()?;
+    require(refused.report_bytes == 1024 * 1024
+            && refused.flags.contains(mac_toolbox::crashes::ReportFlags::TRUNCATED))?;
+    system.log("PRESSURE_REPORT_LIMIT_REFUSAL cause=NoMemory retained_bytes=1048576 \
+                warning=Truncated\n")?;
     let mut actual = [0; 512];
     for index in 0..2048
     {

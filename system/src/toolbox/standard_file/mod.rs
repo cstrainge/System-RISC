@@ -18,6 +18,8 @@ use page::Page;
 pub(crate) use preparation::{BeginError, PreparedDialog};
 #[cfg(target_arch = "riscv64")]
 pub(crate) use templates::prepare as prepare_templates;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use templates::{Vectors, return_vectors};
 use view::Text;
 
 use crate::toolbox::{handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store},
@@ -158,7 +160,23 @@ pub struct Dialog
     #[cfg(target_arch = "riscv64")]
     pub(super) subject:           Option<crate::drivers::jobs::subjects::Subject>,
     #[cfg(target_arch = "riscv64")]
-    pub(super) recovery_activity: Option<crate::recovery::Activity>
+    pub(super) recovery_activity: Option<crate::recovery::Activity>,
+    #[cfg(target_arch = "riscv64")]
+    vector_lease:                 Option<crate::recovery::StandardFileVectorsLease>
+}
+#[cfg(target_arch = "riscv64")]
+impl Drop for Dialog
+{
+    fn drop(&mut self)
+    {
+        if let Some(lease) = self.vector_lease.take()
+        {
+            // Move only backing into the original Session. Clearing artwork
+            // waits for its real quiescent return outside Desktop and gates.
+            lease.park(Vectors { icons:     core::mem::take(&mut self.icons),
+                                 ancestors: core::mem::take(&mut self.ancestors) });
+        }
+    }
 }
 impl Dialog
 {

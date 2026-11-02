@@ -5247,3 +5247,91 @@ exhaustion on this artifact, every cancellation/refusal interleaving, original
 Macintosh visual fidelity, timing, SMP and full recovery-kit readiness remain
 unqualified. These observations do not inherit the preceding artifact's pressure
 result.
+
+### Reusable report staging and Standard File navigation backing
+
+Report bootstrap admits one reusable formatting String under the original
+protected System Ordinary allocation scope. Its checked byte bound comes from
+the actual label formats, scalar ranges and measured report columns; current
+resources require 360 bytes before allocator overhead. Paint takes the affine
+buffer before BEGIN_UPDATE or masked-update effects and checks visible expanded
+line lengths before writing. Its private owner always contains a valid String.
+Clear and borrowed access are infallible; append checks capacity before mutation
+and has no growth fallback. Header, warning, expanded body and footer use that
+same buffer sequentially. The existing font_draw copies the borrowed text into
+retained commands synchronously, so no staging borrow escapes. Every paint exit
+returns the same capacity; Busy is quiet and other failures retain typed cause.
+This does not stock the renderer's retained text, Port, commands or regions.
+
+Standard File bootstrap separately admits its existing icon-page and ancestor
+vector backing: eight and eleven entries from the original page policies. A
+genuine Standard File Opening checks out that pair and its affine session lease;
+no fallible work follows before the actual Dialog owns both. Final publication
+validates the same lease, owner, request and Subject. Dialog destruction parks
+only the two containers in the original Session, without clearing artwork under
+manager guards. The parked value contains no Activity or Subject and cannot
+cycle the Session. Original child/publication/Subject drain and session uniqueness
+precede guard-free value clearing and global return. Return refusal retains the
+same pair and closing session, including original allocation receipts.
+
+The inline BEGIN reaper was removed. The private reaper now runs only at the
+existing global recovery pump tail. Current scheduler and five internal call
+paths reach it after their Desktop/service guards have returned; future callers
+must preserve that contract. An immediate new modal can receive genuine Busy
+until actual return. No completion is fabricated. Editor/font scratch, raster
+and retained drawing backing remain separate work; this pair is not a pooled
+Dialog or a complete Save/Save As emergency guarantee.
+
+Exact native artifact: System ELF
+`0eee1f88c3d7a32f946d43c72b963ce1195b34e8f3fa67d14538b300ea55dba5`,
+resource `d338f32f3ee3058cbf672b4d14c2e4c01b747a1cd73f3e6e05846e629036a7be`.
+The optimized no_std RV64 System/Finder compiler check and release/LTO image
+completed with fixed source. Finder and ROM stayed at their prior hashes.
+
+Finite private exact-2-GiB observations: installed Text Edit completed all Save
+Changes choices, real Core-to-PUT handoff, saved ab, malformed UTF-8 error
+acknowledgment/new input and three actual account closures. Four dialog crops
+matched the preceding image. Installed Res Edit completed GET, PUT, Save As
+cancel/replacement, New Folder and duplicate-name error acknowledgment; original
+and subfolder JSON exports matched, followed by actual Res Edit/QuickDraw account
+closure/input. Reviewed frames showed the correct duplicate-name message and
+restored Save dialog. Six normal installed app lifetimes and Panic Test's
+27,246-byte/331-line report, end-scroll, dismissal and actual abort account
+closure completed; entire first/last report frames matched the preceding image.
+
+A separate one-hart/exact 2 GiB pressure run observed ordinary handle-resize
+MemoryFull with retained 16 W bytes and caller budget headroom, healthy/pressured
+managed modal reuse and eight same-alert draws in each phase. A real append past
+the retained report limit returned the distinct generic NoMemory error and set
+the native truncation flag. All original 1 MiB bytes remained exact, the report
+was shown with flags=1 and dismissed, and all 44 holders released and were
+actually reclaimed. After those stress assertions, genuine acknowledgment of
+Finder's visible OOM dialog restored its Applications folder/menus. Reviewed
+frames, subsequent Get Info open/close and mouse input completed.
+
+The first overflow observation failed a newly introduced diagnostic assertion
+which incorrectly expected the Memory Manager's MemoryFull instead of generic
+NoMemory. It discarded the actual result, so that old run cannot be relabeled
+as an observed NoMemory or Busy result. Source inspection found the erroneous
+expectation; the strict corrected assertion above then observed NoMemory on the
+same kernel. The original failure remains recorded. Diagnostic-only changes
+followed the shipping image and first three workflows; their kernel dependency
+graph stayed unchanged, and each capture separately recorded fixed source/base.
+The informative intermediate diagnostic compiled but was not run.
+
+All four successful private captures recorded matching exact-2-GiB argv/boot/
+page-bank RAM, fixed source/base artifacts, owned guest exit zero/reap and private
+media removal without cleanup errors. The pressure package changed only its
+recorded inspection grant through the normal resource producer; the executable
+stayed the base System above. Manual pressure UI review occurred after original
+stress/reclaim assertions, not as an allocation-by-allocation host barrier.
+
+These results do not count allocation events or observe navigation-buffer
+addresses. Forced constructor/publication refusal, retained readers, uncertain
+ACK, pending I/O stop/cancel, return-invariant failure/reuse, all warning variants,
+full Save/Save As exhaustion, production Finder OOM restart, timing and SMP remain
+unqualified. The controlled capacity refusal preserves an informative typed error;
+it does not establish every unhappy path. Editor/font/layout scratch, actual
+raster/COW backing, retained scenes and damage regions still need their own
+work. No host Rust suite supplied OS acceptance, and full-kit readiness is not
+established.
