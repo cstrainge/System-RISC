@@ -8804,6 +8804,154 @@
         "format": "file"
       },
       "symbol": "NATIVE_DRIVER_ICON_REFERENCE"
+    },
+    {
+      "type": "ICN#",
+      "id": 14500,
+      "symbol": "TRUETYPE_LARGE_MONO",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/fonts/49434e23-14500.bin"
+      }
+    },
+    {
+      "type": "icl4",
+      "id": 14500,
+      "symbol": "TRUETYPE_LARGE_COLOR_4",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/fonts/69636c34-14500.bin"
+      }
+    },
+    {
+      "type": "icl8",
+      "id": 14500,
+      "symbol": "TRUETYPE_LARGE_COLOR_8",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/fonts/69636c38-14500.bin"
+      }
+    },
+    {
+      "type": "ics#",
+      "id": 14500,
+      "symbol": "TRUETYPE_SMALL_MONO",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/fonts/69637323-14500.bin"
+      }
+    },
+    {
+      "type": "ics4",
+      "id": 14500,
+      "symbol": "TRUETYPE_SMALL_COLOR_4",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/fonts/69637334-14500.bin"
+      }
+    },
+    {
+      "type": "ics8",
+      "id": 14500,
+      "symbol": "TRUETYPE_SMALL_COLOR_8",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/fonts/69637338-14500.bin"
+      }
+    },
+    {
+      "type": "ICN#",
+      "id": 15500,
+      "symbol": "FONT_SUITCASE_LARGE_MONO",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/fonts/49434e23-15500.bin"
+      }
+    },
+    {
+      "type": "icl4",
+      "id": 15500,
+      "symbol": "FONT_SUITCASE_LARGE_COLOR_4",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/fonts/69636c34-15500.bin"
+      }
+    },
+    {
+      "type": "icl8",
+      "id": 15500,
+      "symbol": "FONT_SUITCASE_LARGE_COLOR_8",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/fonts/69636c38-15500.bin"
+      }
+    },
+    {
+      "type": "ics#",
+      "id": 15500,
+      "symbol": "FONT_SUITCASE_SMALL_MONO",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/fonts/69637323-15500.bin"
+      }
+    },
+    {
+      "type": "ics4",
+      "id": 15500,
+      "symbol": "FONT_SUITCASE_SMALL_COLOR_4",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/fonts/69637334-15500.bin"
+      }
+    },
+    {
+      "type": "ics8",
+      "id": 15500,
+      "symbol": "FONT_SUITCASE_SMALL_COLOR_8",
+      "attributes": 32,
+      "payload": {
+        "format": "file",
+        "path": "assets/icons/fonts/69637338-15500.bin"
+      }
+    },
+    {
+      "type": "BNDL",
+      "id": 15500,
+      "symbol": "FONT_ICON_BUNDLE",
+      "name": "Generic font file icons",
+      "payload": {
+        "format": "hex",
+        "hex": "4d4143530000000149434e23000100003c8c000138a446524546000100003c8c000138a4"
+      }
+    },
+    {
+      "type": "FREF",
+      "id": 15500,
+      "symbol": "FONT_SUITCASE_ICON_REFERENCE",
+      "payload": {
+        "format": "hex",
+        "hex": "4646494c000000"
+      }
+    },
+    {
+      "type": "FREF",
+      "id": 14500,
+      "symbol": "TRUETYPE_ICON_REFERENCE",
+      "payload": {
+        "format": "hex",
+        "hex": "73666e74000100"
+      }
     }
   ]
 }

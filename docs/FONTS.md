@@ -89,6 +89,15 @@ reaping its owner releases the resident state. Finder supports eight viewer
 windows; resident inspection allows sixteen snapshots per owner and 256 families
 per snapshot. Opening a suitcase outside Fonts does not install it.
 
+System owns the original Finder font icon families: 14500 for standalone
+TrueType (`sfnt`) and 15500 for font suitcases (`FFIL`). Generic type-bundle
+lookup supplies these defaults for any creator in Finder and file dialogs.
+The original large/small monochrome and 4-/8-bit color payloads are unchanged.
+For untyped files (zero type or `BINA`), the shared File Manager classification
+recognizes `.ttf` case-insensitively when no File Types preference association
+matches. Explicit file types and matching user associations take precedence;
+classification does not rewrite the stored Finder metadata.
+
 Installing and removing files uses ordinary Finder transfers into and out of the
 actual Fonts directory. Automatic routing of a loose font dropped onto System
 Folder and original installation UI remain separate work. Legacy resource-chain
@@ -114,6 +123,16 @@ this is not qualification of an isolated committed tree.
   installing the inspected source. Seventeen malformed opens produced a
   filename-specific damaged-data alert; a subsequent valid open succeeded.
   This observes admission reuse, not general heap reclamation or owner reap.
+
+A subsequent artifact in the same configuration exercised the shared font icons:
+five Finder icons matched the original 32-pixel artwork exactly, and three
+Save-dialog icons matched the original 16-pixel artwork exactly, using the
+existing System7Indexed presentation table. This included an otherwise untyped
+`BINA` `.ttf` file. Physical suitcase double-click displayed all nine families;
+a malformed suitcase reported its filename and CorruptData(-18), followed by
+successful dismissal and valid retry. Save cancellation returned to an editable
+document. Uppercase extensions, zero-type metadata and explicit type/user-rule
+precedence were not separately exercised in that native run.
 
 Folder-identity replacement, pressure/OOM, foreign/stale inspection objects,
 parser/input latency, observer overhead, arbitrary font formats, legacy resource
