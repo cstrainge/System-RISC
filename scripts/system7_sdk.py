@@ -21,7 +21,7 @@ PORT = SOURCE / "platforms" / "rust"
 
 
 def capture(command: list[str], **kwargs) -> str:
-    return subprocess.check_output(command, text=True, **kwargs).strip()
+    return subprocess.check_output(command, text=True, encoding="utf-8", **kwargs).strip()
 
 
 def digest_tree(path: Path) -> str:
@@ -92,7 +92,7 @@ def prepare(args) -> dict:
     target = json.loads(target_bytes)
     if target["features"] != "+" + args.llvm_profile:
         raise RuntimeError("SDK target and selected platform instruction profiles differ")
-    package = tomllib.loads((SOURCE / "Cargo.toml").read_text())["workspace"]["package"]
+    package = tomllib.loads((SOURCE / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]
     inputs = {
         "schema": 1,
         "compiler_commit": pin["rustc_commit"],
@@ -198,7 +198,7 @@ def build_std(args, sdk: dict) -> None:
     # workspace release profile. No host environment changes SDK code generation.
     if args.features:
         command.extend(["--features", args.features])
-    profile = tomllib.loads((SOURCE / "Cargo.toml").read_text())["profile"]["release"]
+    profile = tomllib.loads((SOURCE / "Cargo.toml").read_text(encoding="utf-8"))["profile"]["release"]
     for name in ("panic", "opt-level", "lto", "codegen-units", "debug", "strip"):
         command.extend(["--config", f"profile.release.{name}={json.dumps(profile[name])}"])
     completed = subprocess.run(command, cwd=SOURCE, env=env)
@@ -237,7 +237,7 @@ def built_sdk(sdk: dict) -> bool:
     receipt = root / "build.json"
     if not receipt.is_file():
         return False
-    result = json.loads(receipt.read_text())
+    result = json.loads(receipt.read_text(encoding="utf-8"))
     if result.get("returncode") != 0 or not result.get("libraries"):
         return False
     return all((root / path).is_file() and
@@ -249,9 +249,9 @@ def application_input(args) -> tuple:
     if args.manifest_path is None:
         raise RuntimeError("sdk app requires --manifest-path Cargo.toml")
     manifest = args.manifest_path.resolve()
-    cargo = tomllib.loads(manifest.read_text())
+    cargo = tomllib.loads(manifest.read_text(encoding="utf-8"))
     resources = manifest.parent / "resources.json"
-    resource_data = json.loads(resources.read_text())
+    resource_data = json.loads(resources.read_text(encoding="utf-8"))
     if (resource_data.get("role") != "application" or
             resource_data.get("file_type") not in ("APPL", "FNDR")):
         raise RuntimeError("sdk app requires a native application role with APPL or FNDR file type")
@@ -281,10 +281,11 @@ def build_app(args, sdk: dict, application: tuple) -> None:
                "--message-format=json-render-diagnostics", "-Zjson-target-spec"]
     if args.features:
         command.extend(["--features", args.features])
-    profile = tomllib.loads((SOURCE / "Cargo.toml").read_text())["profile"]["release"]
+    profile = tomllib.loads((SOURCE / "Cargo.toml").read_text(encoding="utf-8"))["profile"]["release"]
     for name in ("panic", "opt-level", "lto", "codegen-units", "debug", "strip"):
         command.extend(["--config", f"profile.release.{name}={json.dumps(profile[name])}"])
-    completed = subprocess.run(command, cwd=manifest.parent, env=env, stdout=subprocess.PIPE, text=True)
+    completed = subprocess.run(command, cwd=manifest.parent, env=env, stdout=subprocess.PIPE,
+                               text=True, encoding="utf-8")
     (output / "cargo-messages.jsonl").write_text(completed.stdout, encoding="utf-8")
     binaries = []
     for line in completed.stdout.splitlines():
