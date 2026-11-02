@@ -319,7 +319,50 @@ impl<T, G: InvocationGate> Store<T, G>
 
     pub fn release_storage(&mut self, ticket: ReleasedResource) -> Result<(), CompletionError>
     {
-        self.values.release_storage(ticket)
+        self.release_storage_owned(ticket).map(drop)
+    }
+
+    /// Accept the same native backing ticket, returning actual detached owner
+    /// storage for destruction after the surrounding manager guard has ended.
+    /// Pending backing remains canonical. If unpublished permits still exist,
+    /// the caller must either retain the original ticket before this call or
+    /// arrange targeted reap after the actual publication-release wake. Permit
+    /// cancellation alone does not remove escrowed empty owner backing.
+    pub fn release_storage_owned(&mut self, ticket: ReleasedResource)
+                                 -> Result<Option<RetiredOwner<T, G>>, CompletionError>
+    {
+        self.values
+            .release_storage_with_backing(ticket)
+            .map(|retired| retired.map(|native| RetiredOwner { native }))
+    }
+
+    /// Targeted completion after the final original permit releases. This
+    /// forwards the actual native backing owner, never a fabricated ACK.
+    pub fn reap_publication_capacity(&mut self, owner: DomainId) -> Option<RetiredOwner<T, G>>
+    {
+        self.values.reap_publication_capacity(owner).map(|native| RetiredOwner { native })
+    }
+
+    /// All genuine unpublished native permits in this Store, across owners.
+    /// This capacity observation is not a slot reservation or owner authority.
+    pub fn publication_credits(&self) -> usize
+    {
+        self.values.publication_credits()
+    }
+}
+
+/// Actual detached native owner backing. No payload or completion authority
+/// can be extracted; dispose only after the surrounding manager guard ends.
+#[must_use = "dispose projected backing outside the manager guard"]
+pub struct RetiredOwner<T, G: InvocationGate>
+{
+    native: store::RetiredOwner<Entry<T>, G>
+}
+impl<T, G: InvocationGate> RetiredOwner<T, G>
+{
+    pub fn dispose(self)
+    {
+        self.native.dispose();
     }
 }
 
