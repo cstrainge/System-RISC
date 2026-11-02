@@ -68,6 +68,30 @@ use ordinary_underlay::OrdinaryUnderlay;
 mod local;
 pub(crate) use local::FinderAdmission;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
+/// Scene retention, damage and compositing state for the screen. It owns no
+/// window or application policy; Toolbox managers publish into it.
+pub(in crate::toolbox) struct Presentation
+{
+    content:                Vec<Content>,
+    pending_content:        Vec<Content>,
+    content_cache:          super::quickdraw::content_cache::ContentCache,
+    ordinary_underlay:      OrdinaryUnderlay,
+    menu_cache:             super::quickdraw::menu_cache::MenuBarCache,
+    redraw:                 bool,
+    content_damage:         Vec<(SceneTarget, super::quickdraw::region::Region)>,
+    presentation_damage:    Vec<Rect>,
+    presentation_copy_full: bool,
+    pub(in crate::toolbox) feedback_dirty: bool,
+    feedback:               super::quickdraw::feedback::Feedback,
+    outline_clip:           super::quickdraw::feedback::VisibilityCache,
+    highlight_clip:         super::quickdraw::feedback::VisibilityCache,
+    cursor_dirty:           bool,
+    frame_incomplete:       bool,
+    cursor_bounds:          Rect,
+    presentations:          u64,
+    compositions:           u64
+}
+
 pub struct Toolbox
 {
     pub(in crate::toolbox) drag:      super::drag::Manager,
@@ -94,31 +118,14 @@ pub struct Toolbox
     events:                           Box<EventManager>,
     textedit:                         super::textedit::Manager,
     definitions:                      Definitions,
-    content:                          Vec<Content>,
-    pending_content:                  Vec<Content>,
-    content_cache:                    super::quickdraw::content_cache::ContentCache,
-    ordinary_underlay:                OrdinaryUnderlay,
-    menu_cache:                       super::quickdraw::menu_cache::MenuBarCache,
+    pub(in crate::toolbox) presentation: Presentation,
     decoders:                         [Decoder; 2],
     pub revision:                     u32,
     pub updates:                      u32,
     last_key:                         u8,
     last_action:                      &'static str,
-    redraw:                           bool,
-    content_damage:                   Vec<(SceneTarget, super::quickdraw::region::Region)>,
-    presentation_damage:              Vec<Rect>,
-    presentation_copy_full:           bool,
-    pub(super) feedback_dirty:        bool,
-    feedback:                         super::quickdraw::feedback::Feedback,
-    outline_clip:                     super::quickdraw::feedback::VisibilityCache,
-    highlight_clip:                   super::quickdraw::feedback::VisibilityCache,
-    cursor_dirty:                     bool,
-    frame_incomplete:                 bool,
-    cursor_bounds:                    Rect,
     activity:                         u64,
     last_observed:                    (u64, u32, u64),
-    presentations:                    u64,
-    compositions:                     u64,
     cdef:                             DefinitionEntry,
     system_cdef:                      DefinitionEntry,
     mdef:                             DefinitionEntry,
@@ -227,12 +234,12 @@ impl Toolbox
                                                 status
                                             })?;
                 self.prepare_standard_file_storage(&storage).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Standard File Manager status={status}"); status })?;
-                self.content.try_reserve_exact(2).map_err(|_| NO_MEMORY)?;
-                self.pending_content.try_reserve_exact(2).map_err(|_| NO_MEMORY)?;
-                self.content_damage.try_reserve_exact(3).map_err(|_| NO_MEMORY)?;
-                self.presentation_damage.try_reserve_exact(4).map_err(|_| NO_MEMORY)?;
-                self.ordinary_underlay.prepare(self.windows.recovery_window_capacity(),
-                                                self.content.capacity().saturating_add(1))?;
+                self.presentation.content.try_reserve_exact(2).map_err(|_| NO_MEMORY)?;
+                self.presentation.pending_content.try_reserve_exact(2).map_err(|_| NO_MEMORY)?;
+                self.presentation.content_damage.try_reserve_exact(3).map_err(|_| NO_MEMORY)?;
+                self.presentation.presentation_damage.try_reserve_exact(4).map_err(|_| NO_MEMORY)?;
+                self.presentation.ordinary_underlay.prepare(self.windows.recovery_window_capacity(),
+                                                self.presentation.content.capacity().saturating_add(1))?;
                 Ok(())
             })
         })
@@ -254,7 +261,7 @@ impl Toolbox
 
     fn retained_bytes(&self) -> usize
     {
-        window_layout::ordinary_retained_bytes(&self.windows, &self.content, &self.pending_content)
+        window_layout::ordinary_retained_bytes(&self.windows, &self.presentation.content, &self.presentation.pending_content)
     }
 
     fn content_mut(&mut self, id: impl Into<SceneTarget>) -> Result<&mut Content, Status>
@@ -271,9 +278,9 @@ impl Toolbox
                            NOT_FOUND
                        });
         }
-        self.pending_content
+        self.presentation.pending_content
             .iter_mut()
-            .chain(&mut self.content)
+            .chain(&mut self.presentation.content)
             .find(|content| content.id == id)
             .ok_or(NOT_FOUND)
     }
@@ -293,7 +300,7 @@ impl Toolbox
     fn content_changed_rect(&mut self, id: impl Into<SceneTarget>, rect: Rect)
     {
         let id = id.into();
-        if self.pending_content.iter().any(|content| content.id == id)
+        if self.presentation.pending_content.iter().any(|content| content.id == id)
         {
             return;
         }
@@ -305,7 +312,7 @@ impl Toolbox
     {
         let id = id.into();
         use super::quickdraw::region::{BooleanOp, Region};
-        if self.pending_content.iter().any(|content| content.id == id)
+        if self.presentation.pending_content.iter().any(|content| content.id == id)
         {
             return;
         }
@@ -340,7 +347,7 @@ impl Toolbox
         {
             for span in &band.spans
             {
-                self.content_cache
+                self.presentation.content_cache
                     .invalidate_rect(id, Rect::new(span.left, band.top, span.right, band.bottom));
             }
         }
@@ -353,8 +360,8 @@ impl Toolbox
         let id = id.into();
         if !self.system_scene(id)
         {
-            self.ordinary_underlay.changed();
-            match self.ordinary_underlay.queue_if_deferred(id, region)
+            self.presentation.ordinary_underlay.changed();
+            match self.presentation.ordinary_underlay.queue_if_deferred(id, region)
             {
                 Ok(()) => return,
                 Err(pending) => return self.queue_active_content_damage(id, pending)
@@ -372,7 +379,7 @@ impl Toolbox
             return;
         }
         if let Some((_, previous)) =
-            self.content_damage.iter_mut().find(|(window, _)| *window == id)
+            self.presentation.content_damage.iter_mut().find(|(window, _)| *window == id)
         {
             *previous=previous.combine(&region,BooleanOp::Union).unwrap_or_else(|_| {
                 Region::from_rect(super::quickdraw::geometry::union_rect(previous.bounds(),region.bounds()))
@@ -380,18 +387,18 @@ impl Toolbox
         }
         else
         {
-            if self.content_damage.capacity().saturating_sub(self.content_damage.len())
+            if self.presentation.content_damage.capacity().saturating_sub(self.presentation.content_damage.len())
                <= self.scene_spare()
                && shared_scene_allocation(|| {
-                      self.content_damage.try_reserve(1 + self.scene_spare())
+                      self.presentation.content_damage.try_reserve(1 + self.scene_spare())
                   }).is_err()
             {
                 // Full composition is an explicit last resort when bounded
                 // damage bookkeeping cannot be admitted; painting never panics.
-                self.redraw = true;
+                self.presentation.redraw = true;
                 return;
             }
-            self.content_damage.push((id, region));
+            self.presentation.content_damage.push((id, region));
         }
     }
 
@@ -400,13 +407,13 @@ impl Toolbox
     {
         let id = id.into();
         let changed = self.windows.content_outline(id.window()?, next)?;
-        self.feedback_dirty |= changed;
+        self.presentation.feedback_dirty |= changed;
         Ok(())
     }
 
     fn apply_control_outline(&mut self, window: u64, next: Option<Rect>) -> Result<(), Status>
     {
-        self.feedback_dirty |= self.windows.control_outline(WindowId(window), next)?;
+        self.presentation.feedback_dirty |= self.windows.control_outline(WindowId(window), next)?;
         Ok(())
     }
 
@@ -501,32 +508,15 @@ impl Toolbox
                           super::drag::Manager::new(sessions, receivers)? },
                   textedit: super::textedit::Manager::new(super::handles::editor_kinds()?, processes.ledger(finder)?)?,
                   definitions,
-                  content: Vec::new(),
-                  pending_content: Vec::new(),
-                  content_cache: Default::default(),
-                  ordinary_underlay: Default::default(),
-                  menu_cache: Default::default(),
+                  presentation: Presentation { content: Vec::new(), pending_content: Vec::new(), content_cache: Default::default(), ordinary_underlay: Default::default(), menu_cache: Default::default(), redraw: true, content_damage, presentation_damage, presentation_copy_full:false, feedback_dirty: false, feedback: Default::default(), outline_clip: Default::default(), highlight_clip: Default::default(), cursor_dirty: true, frame_incomplete: false, cursor_bounds: Rect::ZERO, presentations: 0, compositions: 0, },
                   decoders: [Decoder::new(), Decoder::new()],
                   revision: 0,
                   updates: 0,
                   last_key: 0,
                   last_action: "READY",
-                  redraw: true,
-                  content_damage,
-                  presentation_damage,
-                  presentation_copy_full:false,
                   menu_feedback: None,
-                  feedback_dirty: false,
-                  feedback: Default::default(),
-                  outline_clip: Default::default(),
-                  highlight_clip: Default::default(),
-                  cursor_dirty: true,
-                  frame_incomplete: false,
-                  cursor_bounds: Rect::ZERO,
                   activity: 0,
                   last_observed: (u64::MAX, u32::MAX, u64::MAX),
-                  presentations: 0,
-                  compositions: 0,
                   cdef,system_cdef,mdef,owner:finder,foreground:finder,locals,
                   processes,
                   app_menu:crate::kernel::with_resources(|resources| super::processes::menu::ApplicationMenu::new(mdef,crate::machine::traps::gateway,resources)).ok_or(NOT_SUPPORTED)?? })
@@ -581,8 +571,8 @@ impl Toolbox
         if matches!(result, Ok(true)) && self.owner == self.foreground
         {
             self.refresh_system_menu();
-            self.menu_cache.invalidate();
-            self.redraw = true;
+            self.presentation.menu_cache.invalidate();
+            self.presentation.redraw = true;
         }
         result.map_or_else(|status| status, |_| OK)
     }
@@ -672,14 +662,14 @@ impl Toolbox
                     Err(error) => return crate::loader::status(error)
                 };
                 if shared_scene_allocation(|| {
-                       self.content.try_reserve(1 + self.scene_spare()).map_err(|_| NO_MEMORY)?;
-                       self.ordinary_underlay
-                           .prepare_scenes(self.content.capacity().saturating_add(1))?;
-                       self.content_damage
-                           .try_reserve(self.content
+                       self.presentation.content.try_reserve(1 + self.scene_spare()).map_err(|_| NO_MEMORY)?;
+                       self.presentation.ordinary_underlay
+                           .prepare_scenes(self.presentation.content.capacity().saturating_add(1))?;
+                       self.presentation.content_damage
+                           .try_reserve(self.presentation.content
                                             .len()
                                             .saturating_add(2 + self.scene_spare())
-                                            .saturating_sub(self.content_damage.len()))
+                                            .saturating_sub(self.presentation.content_damage.len()))
                            .map_err(|_| NO_MEMORY)
                    }).is_err()
                 {
@@ -750,7 +740,7 @@ impl Toolbox
                     }
                     self.windows.restore_owner_group(self.foreground, &mut self.events, when);
                 }
-                self.content.push(Content::new(id));
+                self.presentation.content.push(Content::new(id));
                 self.last_action = "NEW";
             }
             CLOSE_WINDOW =>
@@ -810,10 +800,10 @@ impl Toolbox
                 }
                 self.scroll_boxes.remove_window(id.0);
                 self.controls.remove_window(id.0);
-                self.content.retain(|content| content.id != id);
-                self.content_damage.retain(|(target, _)| *target != id);
-                self.ordinary_underlay.forget(SceneTarget::from(id));
-                self.pending_content.retain(|content| content.id != id);
+                self.presentation.content.retain(|content| content.id != id);
+                self.presentation.content_damage.retain(|(target, _)| *target != id);
+                self.presentation.ordinary_underlay.forget(SceneTarget::from(id));
+                self.presentation.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);
                 self.last_action = "CLOSE";
                 if let Some(alert) = alert
@@ -928,12 +918,12 @@ impl Toolbox
                     return BAD_ARGUMENT;
                 }
                 if shared_scene_allocation(|| {
-                       self.pending_content.try_reserve(1 + self.scene_spare())
+                       self.presentation.pending_content.try_reserve(1 + self.scene_spare())
                    }).is_err()
                 {
                     return NO_MEMORY;
                 }
-                let Some(content) = self.content.iter().find(|content| content.id == id)
+                let Some(content) = self.presentation.content.iter().find(|content| content.id == id)
                 else
                 {
                     return NOT_FOUND;
@@ -954,25 +944,25 @@ impl Toolbox
                     return NOT_FOUND;
                 };
                 request.bounds = damage;
-                self.pending_content.push(pending);
+                self.presentation.pending_content.push(pending);
                 self.textedit.begin_cursor_update(id);
                 self.updates += 1;
             }
             END_UPDATE =>
             {
-                let Some(index) = self.pending_content.iter().position(|content| content.id == id)
+                let Some(index) = self.presentation.pending_content.iter().position(|content| content.id == id)
                 else
                 {
                     return BAD_ARGUMENT;
                 };
                 let (used, limit) = self.retained_admission(SceneTarget::from(id));
                 let bounds = self.windows.window(id).unwrap().local_bounds();
-                let Some(content) = self.content.iter_mut().find(|content| content.id == id)
+                let Some(content) = self.presentation.content.iter_mut().find(|content| content.id == id)
                 else
                 {
                     return NOT_FOUND;
                 };
-                let mut pending = self.pending_content.swap_remove(index);
+                let mut pending = self.presentation.pending_content.swap_remove(index);
                 let outline = pending.outline.take();
                 if let Some(mask) = pending.patch_mask().cloned()
                 {
@@ -1024,7 +1014,7 @@ impl Toolbox
         else if !matches!(operation, BEGIN_UPDATE | INVALIDATE_WINDOW | SET_CLOSE_DEFERRED)
                   && (operation != SELECT_WINDOW || self.windows.active_window() != active_before)
         {
-            self.redraw = true;
+            self.presentation.redraw = true;
         }
         // Retained drawing is committed before EndUpdate returns. Applications
         // can report readiness only after the corresponding pixels are visible.
@@ -1116,9 +1106,9 @@ impl Toolbox
         {
             let mut removed = Vec::new();
             let mut coalesced = None;
-            for content in self.content
+            for content in self.presentation.content
                                .iter_mut()
-                               .chain(self.pending_content.iter_mut())
+                               .chain(self.presentation.pending_content.iter_mut())
                                .filter(|content| content.id == SceneTarget::from(window))
             {
                 content.retain_commands(|command| {
@@ -1170,7 +1160,7 @@ impl Toolbox
                 }
                 content.record(RenderCommand::ScrollBox(drawing))?;
             }
-            if !self.pending_content.iter().any(|content| content.id == SceneTarget::from(window))
+            if !self.presentation.pending_content.iter().any(|content| content.id == SceneTarget::from(window))
             {
                 for rect in old_bounds.into_iter().flatten().chain(bounds)
                 {
@@ -1186,9 +1176,9 @@ impl Toolbox
     {
         let mut removed = Vec::new();
         let mut coalesced = None;
-        for content in self.content
+        for content in self.presentation.content
                            .iter_mut()
-                           .chain(&mut self.pending_content)
+                           .chain(&mut self.presentation.pending_content)
                            .filter(|content| content.id == SceneTarget::from(window))
         {
             for command in content.iter_commands_mut()
@@ -1217,7 +1207,7 @@ impl Toolbox
         {
             self.content_changed_rect(window, bounds);
         }
-        if changed && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        if changed && !self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
         {
             self.present();
         }
@@ -1277,7 +1267,7 @@ impl Toolbox
         if matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
            && self.controls.splitter_request(call, owner, crate::machine::traps::gateway)?
         {
-            let pending = self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let pending = self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
             let prepared = self.controls.prepare_splitter(call,
                                                            owner,
                                                            pending,
@@ -1328,7 +1318,7 @@ impl Toolbox
             // transaction. Refuse before consuming the child's owner; retry after
             // EndUpdate. No old scene is re-clipped against a half-built new one.
             let paint_pending =
-                self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+                self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
             if self.controls.change_parent(call, owner, paint_pending)?
             {
                 self.sync_control_tree(window);
@@ -1346,7 +1336,7 @@ impl Toolbox
            || (matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
                && self.controls.scrolling(call.id, owner)?)
         {
-            let pending = self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let pending = self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
             let prepared = self.controls.prepare_scroll(call,
                                                          owner,
                                                          pending,
@@ -1380,7 +1370,7 @@ impl Toolbox
                 return Err(BAD_ARGUMENT);
             }
             let viewport = self.windows.window(WindowId(window)).ok_or(NOT_FOUND)?.local_bounds();
-            let pending = self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let pending = self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
             let prepared = self.controls.prepare_window(window,
                                                          viewport,
                                                          pending,
@@ -1399,7 +1389,7 @@ impl Toolbox
            && self.controls.is_table(call.id, owner)?
         {
             let paint_pending =
-                self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+                self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
             let (used, limit) = self.retained_admission(SceneTarget::from(window));
             let prepared = self.controls.prepare_layout(call,
                                                          owner,
@@ -1415,7 +1405,7 @@ impl Toolbox
             self.publish_control_layout(window, prepared, used, limit)?;
             return Ok(());
         }
-        if self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        if self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
            && self.controls.changes_tree_geometry(call, owner)?
         {
             return Err(SERVICE_BUSY);
@@ -1437,9 +1427,9 @@ impl Toolbox
         let definition = self.controls.definition(call, owner)?;
         let entry = self.control_definition(definition)?;
         let (used, limit) = self.retained_admission(SceneTarget::from(window));
-        let content = self.pending_content
+        let content = self.presentation.pending_content
                           .iter_mut()
-                          .chain(&mut self.content)
+                          .chain(&mut self.presentation.content)
                           .find(|content| content.id == SceneTarget::from(window));
         let drawing = self.controls.request_with(&recipient,
                                                   &storage,
@@ -1505,7 +1495,7 @@ impl Toolbox
             // A control state change commits its own pixels before returning.
             // Full window updates remain private until EndUpdate.
             if damage.iter().any(|r| !r.is_empty())
-               && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+               && !self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
             {
                 self.present();
             }
@@ -1517,9 +1507,9 @@ impl Toolbox
     {
         let mut removed = Vec::new();
         let mut coalesced = None;
-        for content in self.content
+        for content in self.presentation.content
                            .iter_mut()
-                           .chain(self.pending_content.iter_mut())
+                           .chain(self.presentation.pending_content.iter_mut())
                            .filter(|c| c.id == SceneTarget::from(window))
         {
             content.retain_commands(|command| {
@@ -1538,7 +1528,7 @@ impl Toolbox
         {
             self.content_changed_rect(window, bounds);
         }
-        if changed && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        if changed && !self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
         {
             self.present();
         }
@@ -1548,9 +1538,9 @@ impl Toolbox
     {
         let mut damage = Vec::new();
         let mut coalesced = None;
-        if let Some(content) = self.pending_content
+        if let Some(content) = self.presentation.pending_content
                                    .iter_mut()
-                                   .chain(&mut self.content)
+                                   .chain(&mut self.presentation.content)
                                    .find(|c| c.id == SceneTarget::from(window))
         {
             content.sync_control_tree(&self.controls, |bounds| {
@@ -1562,7 +1552,7 @@ impl Toolbox
         {
             self.content_changed_rect(window, bounds);
         }
-        if changed && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        if changed && !self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
         {
             self.present();
         }
@@ -1697,9 +1687,9 @@ impl Toolbox
                 return Err(BAD_ARGUMENT);
             }
             shared_scene_allocation(|| {
-                self.pending_content.try_reserve(1 + self.scene_spare())
+                self.presentation.pending_content.try_reserve(1 + self.scene_spare())
             }).map_err(|_| NO_MEMORY)?;
-            let content = self.content.iter().find(|c| c.id == id).ok_or(NOT_FOUND)?;
+            let content = self.presentation.content.iter().find(|c| c.id == id).ok_or(NOT_FOUND)?;
             let pending = Content::pending_patch(id, content.port.clone(), mask);
             let (used, limit) = self.retained_admission(id);
             if used.saturating_add(pending.storage()) > limit
@@ -1710,18 +1700,18 @@ impl Toolbox
             {
                 return Err(BAD_ARGUMENT);
             }
-            self.pending_content.push(pending);
+            self.presentation.pending_content.push(pending);
             self.textedit.begin_cursor_update(id.window()?);
         }
         else
         {
-            let index = self.pending_content
+            let index = self.presentation.pending_content
                             .iter()
                             .position(|c| c.id == id && c.is_patch())
                             .ok_or(BAD_ARGUMENT)?;
             if call.operation == QD_WINDOW_CANCEL_MASK
             {
-                self.pending_content.swap_remove(index);
+                self.presentation.pending_content.swap_remove(index);
                 self.textedit.begin_cursor_update(id.window()?);
                 self.windows.end_update(id.window()?);
             }
@@ -1775,7 +1765,7 @@ impl Toolbox
             }
             let id = target;
             if let Some(pending) =
-                self.pending_content.iter_mut().find(|content| content.id == id)
+                self.presentation.pending_content.iter_mut().find(|content| content.id == id)
             {
                 pending.outline = Some(next);
             }
@@ -1861,7 +1851,7 @@ impl Toolbox
                   -> Result<(), Status>
     {
         let changed = self.cursors.request(call, colors, self.events.mouse)?;
-        self.cursor_dirty |= changed && self.owner == self.foreground;
+        self.presentation.cursor_dirty |= changed && self.owner == self.foreground;
         Ok(())
     }
 
@@ -1877,7 +1867,7 @@ impl Toolbox
                                               super::quickdraw::cursors::copy_resource(&resource.data)
                                           })
         })??;
-        self.cursor_dirty |= changed && self.owner == self.foreground;
+        self.presentation.cursor_dirty |= changed && self.owner == self.foreground;
         Ok(())
     }
 
@@ -2059,7 +2049,7 @@ impl Toolbox
     {
         // Held drag motion changes only the frontbuffer outline. Accepted
         // geometry/close changes are the point where the real scene changes.
-        self.redraw |= !matches!(action, Action::CloseRequest(_));
+        self.presentation.redraw |= !matches!(action, Action::CloseRequest(_));
         if let Action::Drag(id) | Action::Resize(id) = action
         {
             self.events.post_system(Event { kind: EventKind::OsEvent,
@@ -2095,10 +2085,10 @@ impl Toolbox
             {
                 self.scroll_boxes.remove_window(id.0);
                 self.controls.remove_window(id.0);
-                self.content.retain(|content| content.id != id);
-                self.content_damage.retain(|(target, _)| *target != id);
-                self.ordinary_underlay.forget(SceneTarget::from(id));
-                self.pending_content.retain(|content| content.id != id);
+                self.presentation.content.retain(|content| content.id != id);
+                self.presentation.content_damage.retain(|(target, _)| *target != id);
+                self.presentation.ordinary_underlay.forget(SceneTarget::from(id));
+                self.presentation.pending_content.retain(|content| content.id != id);
                 self.forget_cursor_window(id);
                 self.events.post_system_for(closed_owner,
                                             Event { kind: EventKind::OsEvent,
@@ -2198,8 +2188,8 @@ impl Toolbox
         // overlays or a changed stacking plane have their own scene damage.
         if !matches!(input, Input::Key { .. })
         {
-            self.cursor_dirty = true;
-            self.redraw |= self.windows.tracking_repaints_scene();
+            self.presentation.cursor_dirty = true;
+            self.presentation.redraw |= self.windows.tracking_repaints_scene();
         }
         if self.crash_input(input, when)
         {
@@ -2229,7 +2219,7 @@ impl Toolbox
                 self.events.mouse = point;
                 if self.menus.is_tracking()
                 {
-                    self.redraw |=
+                    self.presentation.redraw |=
                         self.menus.hover(point, &mut self.system_bar, &mut self.app_menu);
                     return;
                 }
@@ -2254,7 +2244,7 @@ impl Toolbox
                 {
                     if self.menus.begin(point, &self.system_bar, &self.app_menu)
                     {
-                        self.redraw = true;
+                        self.presentation.redraw = true;
                         return;
                     }
                     if (0..20).contains(&point.v)
@@ -2276,7 +2266,7 @@ impl Toolbox
                     if let Some(id) = hit.window
                     {
                         let active = active_before == Some(id);
-                        self.redraw |= hit.part != WindowPart::Drag
+                        self.presentation.redraw |= hit.part != WindowPart::Drag
                                        && (!active
                                            || matches!(hit.part,
                                                        WindowPart::Grow
@@ -2304,7 +2294,7 @@ impl Toolbox
                                     || self.windows.window(id).is_some_and(|w| w.stays_in_back()))
                         {
                             let local = self.windows.window(id).unwrap().global_to_local(point);
-                            let button = self.content.iter().find(|c| c.id == id).and_then(|c| c.iter_commands().filter_map(|command| match command { RenderCommand::Legacy(c)=>Some(c),_=>None }).find(|command| command.kind == DRAW_BUTTON && command.bounds.contains(local)));
+                            let button = self.presentation.content.iter().find(|c| c.id == id).and_then(|c| c.iter_commands().filter_map(|command| match command { RenderCommand::Legacy(c)=>Some(c),_=>None }).find(|command| command.kind == DRAW_BUTTON && command.bounds.contains(local)));
                             if let Some(command) = button
                             {
                                 let mut state = control(command);
@@ -2362,7 +2352,7 @@ impl Toolbox
                         }
                         else
                         {
-                            self.redraw = true;
+                            self.presentation.redraw = true;
                         }
                         return;
                     }
@@ -2371,7 +2361,7 @@ impl Toolbox
                     {
                         self.action(action, when);
                     }
-                    self.redraw |= active_before != self.windows.active_window();
+                    self.presentation.redraw |= active_before != self.windows.active_window();
                     self.events.post_system(Event { payload: 0,
                                                     kind: EventKind::MouseUp,
                                                     message: 0,
@@ -2389,7 +2379,7 @@ impl Toolbox
                 if down && character == 27 && self.menus.is_tracking()
                 {
                     self.menus.cancel_tracking();
-                    self.redraw = true;
+                    self.presentation.redraw = true;
                     return;
                 }
                 if down
@@ -2486,8 +2476,8 @@ impl Toolbox
     pub(super) fn next_positioned(&mut self, mask: u16, remove: bool, positioned: bool)
                                   -> (Event, mac_abi::events::EventPosition, bool)
     {
-        self.cursor_dirty |= self.responsiveness.foreground(self.foreground, Self::when());
-        self.cursor_dirty |= self.responsiveness.polled(self.owner, Self::when());
+        self.presentation.cursor_dirty |= self.responsiveness.foreground(self.foreground, Self::when());
+        self.presentation.cursor_dirty |= self.responsiveness.polled(self.owner, Self::when());
         self.poll_inputs();
         self.automatic_control_layout();
         let when = Self::when();
@@ -2581,7 +2571,7 @@ impl Toolbox
         self.tick_menu_feedback();
         self.tick_cursor();
         let available =
-            if self.redraw || !self.content_damage.is_empty() || self.ordinary_underlay.pending()
+            if self.presentation.redraw || !self.presentation.content_damage.is_empty() || self.presentation.ordinary_underlay.pending()
             {
                 crate::kernel::heap_available()
             }
@@ -2589,13 +2579,13 @@ impl Toolbox
             {
                 0
             };
-        let retry_ordinary = self.ordinary_underlay.retry_due(available);
-        if !self.redraw
-           && !self.cursor_dirty
-           && self.content_damage.is_empty()
-           && !self.feedback_dirty
-           && self.presentation_damage.is_empty()
-           && !self.presentation_copy_full
+        let retry_ordinary = self.presentation.ordinary_underlay.retry_due(available);
+        if !self.presentation.redraw
+           && !self.presentation.cursor_dirty
+           && self.presentation.content_damage.is_empty()
+           && !self.presentation.feedback_dirty
+           && self.presentation.presentation_damage.is_empty()
+           && !self.presentation.presentation_copy_full
            && !retry_ordinary
         {
             self.publish_observation();
@@ -2606,21 +2596,21 @@ impl Toolbox
         {
             self.enter(self.foreground);
         }
-        let full = self.redraw;
-        let mut damage = core::mem::take(&mut self.content_damage);
-        let mut damaged = core::mem::take(&mut self.presentation_damage);
-        let mut copy_full = core::mem::take(&mut self.presentation_copy_full);
+        let full = self.presentation.redraw;
+        let mut damage = core::mem::take(&mut self.presentation.content_damage);
+        let mut damaged = core::mem::take(&mut self.presentation.presentation_damage);
+        let mut copy_full = core::mem::take(&mut self.presentation.presentation_copy_full);
         let ordinary_damage = damage.iter().any(|(id, _)| !self.system_scene(*id));
         let compose = full || !damage.is_empty() || retry_ordinary;
         if compose
         {
             let started = crate::trace::clock();
             self.revision = self.revision.wrapping_add(1);
-            self.compositions = self.compositions.wrapping_add(1);
+            self.presentation.compositions = self.presentation.compositions.wrapping_add(1);
             let cache_budget = super::quickdraw::content_cache::PIXEL_BUDGET
                 .saturating_sub(self.scroll_boxes.raster_storage())
                 .saturating_sub(super::quickdraw::menu_cache::BYTES);
-            self.content_cache.preserve_headroom(available, 2 * 1024 * 1024, cache_budget);
+            self.presentation.content_cache.preserve_headroom(available, 2 * 1024 * 1024, cache_budget);
             if full || ordinary_damage || retry_ordinary
             {
                 // Refusal retains the exact owned ordinary regions. The
@@ -2628,7 +2618,7 @@ impl Toolbox
                 let _ = self.update_ordinary_underlay(&mut damage, full, available, &mut damaged,
                                                       &mut copy_full);
             }
-            let rendered = if full || self.frame_incomplete
+            let rendered = if full || self.presentation.frame_incomplete
             {
                 self.paint_system_layer(&mut damaged, &mut copy_full)
             }
@@ -2638,8 +2628,8 @@ impl Toolbox
             };
             if rendered.is_err()
             {
-                self.content_damage = damage;
-                self.frame_incomplete = true;
+                self.presentation.content_damage = damage;
+                self.presentation.frame_incomplete = true;
                 self.restore_presentation_damage(damaged, copy_full);
                 if self.processes.ledger(caller).is_ok_and(|owner| owner.accepting())
                 {
@@ -2649,14 +2639,14 @@ impl Toolbox
             }
             // A metadata refusal may leave an exact ordinary entry active.
             damage.retain(|(id, _)| !self.system_scene(*id));
-            self.content_damage = damage;
+            self.presentation.content_damage = damage;
             if full || self.menus.is_tracking()
             {
                 let menu_paint = crate::context::without_recovery(|| {
                     let mut canvas = Canvas::new(platform::back_buffer(),
                                                  crate::display::WIDTH,
                                                  crate::display::HEIGHT);
-                    self.menu_cache.paint(&mut canvas,
+                    self.presentation.menu_cache.paint(&mut canvas,
                                            (self.foreground,
                                             self.menus.selected_menu(),
                                             self.menus.application_selected(),
@@ -2669,13 +2659,13 @@ impl Toolbox
                 });
                 if let Err(error) = menu_paint
                 {
-                    if !self.frame_incomplete
+                    if !self.presentation.frame_incomplete
                     {
                         serial!("MENU_PAINT_FAILED menu={} status={}; incomplete frame deferred",
                                 error.menu, error.status);
                     }
-                    self.redraw = true;
-                    self.frame_incomplete = true;
+                    self.presentation.redraw = true;
+                    self.presentation.frame_incomplete = true;
                     self.restore_presentation_damage(damaged, copy_full);
                     if self.processes.ledger(caller).is_ok_and(|owner| owner.accepting())
                     {
@@ -2684,8 +2674,8 @@ impl Toolbox
                     return;
                 }
             }
-            self.redraw = false;
-            self.frame_incomplete = false;
+            self.presentation.redraw = false;
+            self.presentation.frame_incomplete = false;
             crate::platform::with_tracking_mask(|scratch| {
                 let mut canvas = Canvas::new(platform::back_buffer(),
                                              crate::display::WIDTH,
@@ -2699,7 +2689,7 @@ impl Toolbox
                                  0,
                                  self.revision as u64);
         }
-        if full || copy_full || self.cursor_dirty || self.feedback_dirty || !damaged.is_empty()
+        if full || copy_full || self.presentation.cursor_dirty || self.presentation.feedback_dirty || !damaged.is_empty()
         {
             self.compose_cursor(full, damaged, copy_full);
         }
@@ -2720,18 +2710,18 @@ impl Toolbox
     {
         // A refused scene replay may have touched only the private back buffer.
         // Never leak those uncommitted pixels through a later cursor-only copy.
-        if self.frame_incomplete
-           || !self.cursor_dirty
-              && !self.feedback_dirty
-              && self.presentation_damage.is_empty()
-              && !self.presentation_copy_full
+        if self.presentation.frame_incomplete
+           || !self.presentation.cursor_dirty
+              && !self.presentation.feedback_dirty
+              && self.presentation.presentation_damage.is_empty()
+              && !self.presentation.presentation_copy_full
         {
             return;
         }
         let caller = self.owner;
         self.enter(self.foreground);
-        let damage = core::mem::take(&mut self.presentation_damage);
-        let copy_full = core::mem::take(&mut self.presentation_copy_full);
+        let damage = core::mem::take(&mut self.presentation.presentation_damage);
+        let copy_full = core::mem::take(&mut self.presentation.presentation_copy_full);
         self.compose_cursor(false, damage, copy_full);
         self.publish_observation();
         self.enter(caller);
@@ -2739,17 +2729,17 @@ impl Toolbox
 
     fn restore_presentation_damage(&mut self, mut damaged: Vec<Rect>, copy_full: bool)
     {
-        self.presentation_copy_full |= copy_full;
-        if self.presentation_damage.is_empty()
+        self.presentation.presentation_copy_full |= copy_full;
+        if self.presentation.presentation_damage.is_empty()
         {
-            core::mem::swap(&mut self.presentation_damage, &mut damaged);
+            core::mem::swap(&mut self.presentation.presentation_damage, &mut damaged);
         }
         else
         {
             for rect in damaged
             {
-                accumulate_presentation_damage(&mut self.presentation_damage,
-                                               &mut self.presentation_copy_full, rect);
+                accumulate_presentation_damage(&mut self.presentation.presentation_damage,
+                                               &mut self.presentation.presentation_copy_full, rect);
             }
         }
     }
@@ -2760,14 +2750,14 @@ impl Toolbox
                                presentation::Outline};
         // A pending geometry change has not reached the retained scene yet.
         // Keep its old visibility snapshot until composition commits it.
-        if !full && self.redraw
+        if !full && self.presentation.redraw
         {
-            return self.feedback.clone();
+            return self.presentation.feedback.clone();
         }
         if full
         {
-            self.outline_clip.invalidate();
-            self.highlight_clip.invalidate();
+            self.presentation.outline_clip.invalidate();
+            self.presentation.highlight_clip.invalidate();
         }
         if let Some(shape) = self.windows.drag_outline()
         {
@@ -2782,7 +2772,7 @@ impl Toolbox
         {
             let target = (window != 0).then_some(WindowId(window));
             feedback.highlight = Some(Highlight { bounds,
-                                                  clip: self.highlight_clip
+                                                  clip: self.presentation.highlight_clip
                                                             .get(&self.windows, target) });
         }
         if let Some(bounds) = self.drag.feedback()
@@ -2801,7 +2791,7 @@ impl Toolbox
                 let shape = Outline::new(&[bounds],
                                          i32::from(window.bounds.left),
                                          i32::from(window.bounds.top));
-                let clip = self.outline_clip.get(&self.windows, Some(window.id));
+                let clip = self.presentation.outline_clip.get(&self.windows, Some(window.id));
                 feedback.outline = shape.map(|shape| {
                                             ClippedOutline { shape,
                                                              clip }
@@ -2816,7 +2806,7 @@ impl Toolbox
         let feedback = self.prepare_feedback(full);
         let automatic =
             if self.responsiveness.active() { None } else { self.automatic_cursor_at_mouse() };
-        let cursor_changed = self.cursor_dirty || self.automatic_cursor != automatic;
+        let cursor_changed = self.presentation.cursor_dirty || self.automatic_cursor != automatic;
         self.automatic_cursor = automatic;
         let text_cursor = automatic.map(|id| {
                                        match id
@@ -2832,10 +2822,10 @@ impl Toolbox
         let sprite = cursor.sprite(self.events.mouse, text_cursor);
         let bounds = sprite.map_or(Rect::ZERO, |sprite| sprite.bounds());
         let overlays =
-            super::quickdraw::presentation::Overlays { previous_cursor: self.cursor_bounds,
+            super::quickdraw::presentation::Overlays { previous_cursor: self.presentation.cursor_bounds,
                                                        cursor: sprite,
                                                        cursor_changed,
-                                                       previous_feedback: Some(&self.feedback),
+                                                       previous_feedback: Some(&self.presentation.feedback),
                                                        feedback: Some(&feedback) };
         let back = platform::back_buffer();
         if full || copy_full
@@ -2852,22 +2842,22 @@ impl Toolbox
             platform::present_rects(back, damaged.iter().copied(), overlays);
         }
         self.acknowledge_menu_feedback();
-        self.feedback = feedback;
-        self.feedback_dirty = !full && self.redraw;
-        if self.presentation_damage.is_empty()
-           && self.presentation_damage.capacity() < damaged.capacity()
+        self.presentation.feedback = feedback;
+        self.presentation.feedback_dirty = !full && self.presentation.redraw;
+        if self.presentation.presentation_damage.is_empty()
+           && self.presentation.presentation_damage.capacity() < damaged.capacity()
         {
             damaged.clear();
-            self.presentation_damage = damaged;
+            self.presentation.presentation_damage = damaged;
         }
-        self.cursor_bounds = bounds;
-        self.cursor_dirty = false;
-        self.presentations = self.presentations.wrapping_add(1);
+        self.presentation.cursor_bounds = bounds;
+        self.presentation.cursor_dirty = false;
+        self.presentation.presentations = self.presentation.presentations.wrapping_add(1);
     }
 
     fn publish_observation(&mut self)
     {
-        if self.last_observed == (self.activity, self.revision, self.presentations)
+        if self.last_observed == (self.activity, self.revision, self.presentation.presentations)
         {
             return;
         }
@@ -2891,10 +2881,10 @@ impl Toolbox
                                              u64::from(self.events.dropped),
                                              u64::from_le_bytes(action[..8].try_into().unwrap()),
                                              u64::from_le_bytes(action[8..].try_into().unwrap()),
-                                             self.menu_cache.paints,
-                                             self.presentations,
-                                             self.compositions]);
-        self.last_observed = (self.activity, self.revision, self.presentations);
+                                             self.presentation.menu_cache.paints,
+                                             self.presentation.presentations,
+                                             self.presentation.compositions]);
+        self.last_observed = (self.activity, self.revision, self.presentation.presentations);
     }
 }
 
@@ -3052,12 +3042,12 @@ impl super::windows::lifetime::WindowHost for Toolbox
             }
             self.scroll_boxes.remove_window(id.0);
             self.controls.remove_window(id.0);
-            self.content.retain(|content| content.id != id);
-            self.content_damage.retain(|(target, _)| *target != id);
-            self.ordinary_underlay.forget(SceneTarget::from(id));
-            self.pending_content.retain(|content| content.id != id);
+            self.presentation.content.retain(|content| content.id != id);
+            self.presentation.content_damage.retain(|(target, _)| *target != id);
+            self.presentation.ordinary_underlay.forget(SceneTarget::from(id));
+            self.presentation.pending_content.retain(|content| content.id != id);
             self.forget_cursor_window(id);
-            self.redraw = true;
+            self.presentation.redraw = true;
         }
         result.map(|_| ())
     }

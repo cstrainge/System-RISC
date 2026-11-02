@@ -23,7 +23,7 @@ impl super::super::runtime::Toolbox
     {
         let after = self.drag.feedback();
         let highlight_changed = self.drag.take_highlight_changed();
-        self.feedback_dirty |= before != after || highlight_changed;
+        self.presentation.feedback_dirty |= before != after || highlight_changed;
         while let Some(notice) = self.drag.next_notice()
         {
             self.post_drag_notice(notice);

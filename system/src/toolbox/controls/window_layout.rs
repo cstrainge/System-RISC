@@ -138,7 +138,7 @@ impl Toolbox
                                          -> Result<(), Status>
     {
         let feedback = prepared.feedback;
-        let damage = publish(&mut self.content, &mut self.controls, window, prepared, used, limit)?;
+        let damage = publish(&mut self.presentation.content, &mut self.controls, window, prepared, used, limit)?;
         let changed = !damage.is_empty() || feedback.is_some();
         if let Some(feedback) = feedback
         {
@@ -185,11 +185,11 @@ impl Toolbox
                     }
                     let prepared = self.controls.prepare_automatic(
                     root, owner, window.local_bounds(),
-                    self.pending_content.iter().any(|c| c.id == SceneTarget::from(root.window)),
+                    self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(root.window)),
                     crate::machine::traps::gateway,
                     |id| self.definitions.resolve(*b"CDEF", id).map_err(crate::loader::status))?;
                     let (used, limit) = self.retained_admission(SceneTarget::from(root.window));
-                    publish(&mut self.content, &mut self.controls, root.window, prepared, used,
+                    publish(&mut self.presentation.content, &mut self.controls, root.window, prepared, used,
                             limit)
                 })();
             match result
@@ -247,8 +247,8 @@ impl Toolbox
     pub(super) fn track_window(&mut self, point: Point, released: bool, when: u32)
                                -> Option<Action>
     {
-        let content = &mut self.content;
-        let pending = &self.pending_content;
+        let content = &mut self.presentation.content;
+        let pending = &self.presentation.pending_content;
         let controls = &mut self.controls;
         let definitions = &mut self.definitions;
         let mut damage = None;

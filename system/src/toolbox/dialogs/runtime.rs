@@ -623,9 +623,9 @@ impl super::Toolbox
         }
         let bounds = window.local_bounds();
         let index =
-            self.pending_content.iter().position(|content| content.id == id).ok_or(BAD_ARGUMENT)?;
-        let full = !self.pending_content[index].is_patch();
-        self.pending_content.swap_remove(index);
+            self.presentation.pending_content.iter().position(|content| content.id == id).ok_or(BAD_ARGUMENT)?;
+        let full = !self.presentation.pending_content[index].is_patch();
+        self.presentation.pending_content.swap_remove(index);
         self.textedit.begin_cursor_update(id);
         self.windows.end_update(id);
         if full
