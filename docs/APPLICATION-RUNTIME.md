@@ -246,5 +246,28 @@ The whole-world layout fingerprint includes DocumentCall size and both field
 offsets. Development ABI remains1; System, apps, modules, definitions and SDK
 clients must rebuild together. This source transport is not proof of asynchronous
 provider readiness or correct pending-document replay. Its updated native wire
-requires its own target-runtime evidence; previous artifact observations above
-remain scoped to their recorded earlier layouts.
+was exercised separately in the bounded observations below; previous artifact
+observations above remain scoped to their recorded earlier layouts.
+
+An optimized, checksum-fresh QemuRISC-V whole-world build ran in private QEMU
+virt guests with four CPUs, 8 GiB RAM and event/TextEdit input tracing disabled.
+System resource SHA-256 was
+`2f23cf112f75dda00feef4b4af3903581cd2f7eb2a742d8083a2b3b5b73cc629`;
+System ELF was
+`9c3629856fb18ed77478a023e783c4a94eec52750a64415459212087287774c8`;
+boot ROM was
+`831c68a54582b71736b0b5f45853fc9c7311a1b958610614c5115088380e4708`.
+The actual packaged Finder opened a TEXT/TEDT document through its association
+and public DocumentOpen::commit. The actual rebuilt Text Edit package declared
+either absent MISS1 or incompatible POWR2. Each variant refused twice before
+author entry, retained class/version and cause in the System-owned Finder alert,
+closed the original unstarted Process/account, accepted dismissal and retried.
+A direct application-open variant also retained MISS1 through the common decoder.
+Following mouse input was observed after the refusals. Source/base artifacts
+were unchanged; owned guests were reaped and private media removed.
+
+These finite scenarios cover the synchronous declared-provider refusal paths
+and updated native transport. They do not establish asynchronous READY ordering,
+pending-document replay/cancellation, exhaustive malformed-wire rejection,
+latency or race absence. Existing diagnostic output, screenshots and injected
+input affect execution. No host-linked service supplied these observations.
