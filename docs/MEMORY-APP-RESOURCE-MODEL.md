@@ -4860,3 +4860,54 @@ writer's broader modes and Region outputs are not exhaustively qualified.
 Neither the source review nor the native observations close protected
 Save/Save As exhaustion, production Finder OOM recovery or general SMP gates.
 No host Rust suite supplied acceptance.
+
+### Foundation attribution for initial page-table and metadata owners
+
+Initial System and firmware page-table preparation now selects the existing
+sealed Foundation physical owner. Each table page and its separate Node storage
+page carries its original receipt beside its actual ordinary page-pool lease.
+Taking the root moves the same Foundation-backed PageBox into its AddressSpace;
+the corresponding Node retains only its metadata storage. Root/table metadata
+stays independently owned through preparation and eventual destruction. No
+System DomainAccount, second physical counter, page-number-derived owner,
+relabelled header or extra heap capacity was introduced.
+
+The private source enum distinguishes Foundation boot backing from process
+ordinary/protected backing. Process roots still use their original genuine
+accounts and sources. Module payload/branch constructors reject an impossible
+Foundation selector rather than treating it as another allocation fallback.
+Typed Foundation refusal retains its cause; partial preparation drops actual
+leases before refunding their distinct physical attribution. Those rollback
+paths were source-reviewed, not forced in the following native observations.
+
+A complete fixed-source optimized release/LTO no_std RV64 image build and
+compiler check completed. Two existing normally packaged native
+memory-inspection scenarios ran through the real loader, traps and page layer in
+private QEMU4/800x600 guests requesting/discovering exactly 2 GiB. The diagnostic
+retains its existing manual native entry and assertions; it is not production
+Finder/std acceptance. Its private System package adds only the exact
+INSPECT_DOMAINS image grant, preserving existing grants and native fork encoding.
+No guest service was replaced and no host Rust test runner supplied acceptance.
+
+Before the production change, System6973d0d3/f837f8c6 reported 42 initial
+tables and 33,734,656 tracked Foundation physical bytes. After it, System ELF
+1b6f1b4cf13e4f47d3f2f2ded3b116f61d343ffe7b403665c5a693a0158eecb2
+and resource
+5ebdf09c7d06e3431d703e7c9f677798228a8e801d9826f00ee3a53677edbc13
+reported the same 42 tables and 34,078,720 bytes. The observed increase is
+344,064 bytes: exactly 84 four-KiB pages for the initial tables and their
+separate metadata owners. Both samples reported 347,619 free physical pages,
+503,316,480 bytes of ordinary heap capacity, four four-MiB System stacks and
+eight actual guards. The native scenario also exercised mapping reads, a typed
+out-of-range refusal with informative detail, and subsequent usable reads.
+
+A separate shipping-app workflow on the new image completed six app entries/
+own quits with sampled nonidentity image mappings and absence in both permanent
+roots after actual Process closure, plus Panic Test relaunch, scrolling and
+dismissal of its long System report. Each guest kept its source/base fixed,
+exited zero, was reaped and had its private raw/cloned media removed. Counter
+differences establish the recorded attribution, not whole-System usage or
+performance equivalence. Forced allocation/counter-overflow/partial-boot
+rollback, reset reclamation, broad SMP and hardware/user-mode isolation remain
+unverified by these runs. The fixed allocator heap parent remains separately
+represented; it was not charged again as Foundation physical storage.

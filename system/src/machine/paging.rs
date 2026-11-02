@@ -28,10 +28,11 @@ use super::{interrupts::{self, NativeInvocationGate},
 use crate::allocator::foundation::{self, Foundation};
 const MODE: usize = 8usize << 60;
 const PPN: usize = (1usize << 44) - 1;
-/// Closed native physical ownership; neither variant can be made from a PPN.
+/// Closed native physical ownership; no variant can be made from a PPN.
 /// Recovery backing is an exclusive sublease of the real protected heap parent.
 enum PagingBacking
 {
+    Foundation(Foundation<Backing>),
     Ordinary(Backing),
     Protected(crate::allocator::recovery::Backing)
 }
@@ -41,6 +42,7 @@ impl PagingBacking
     {
         match self
         {
+            Self::Foundation(b) => b.cpu_base(),
             Self::Ordinary(b) => b.cpu_base(),
             Self::Protected(b) => b.cpu_base()
         }
@@ -52,6 +54,7 @@ impl PageBacking for PagingBacking
     {
         match self
         {
+            Self::Foundation(b) => b.physical(),
             Self::Ordinary(b) => b.physical(),
             Self::Protected(b) => b.physical()
         }
@@ -61,6 +64,7 @@ impl PageBacking for PagingBacking
     {
         match self
         {
+            Self::Foundation(b) => b.bytes(),
             Self::Ordinary(b) => b.bytes(),
             Self::Protected(b) => b.bytes()
         }
@@ -69,6 +73,8 @@ impl PageBacking for PagingBacking
 #[derive(Clone)]
 enum BackingSource
 {
+    // Only initial System root/table/Node preparation selects this source.
+    Foundation,
     Ordinary,
     Protected(crate::allocator::recovery::Permit)
 }
@@ -78,7 +84,10 @@ impl BackingSource
     {
         match self
         {
-            Self::Ordinary => Backing::planned_bytes(layout.size()).map_err(FrameError::Pages),
+            Self::Foundation | Self::Ordinary =>
+            {
+                Backing::planned_bytes(layout.size()).map_err(FrameError::Pages)
+            }
             Self::Protected(_) => crate::allocator::recovery::Permit::backing_layout(layout)
                 .map(|layout| layout.size() as u64).map_err(FrameError::Recovery)
         }
@@ -88,6 +97,11 @@ impl BackingSource
     {
         match self
         {
+            Self::Foundation =>
+            {
+                Foundation::<Backing>::allocate(layout.size()).map(PagingBacking::Foundation)
+                                                              .map_err(FrameError::Foundation)
+            }
             Self::Ordinary =>
             {
                 Backing::allocate(layout.size()).map(PagingBacking::Ordinary)
@@ -108,6 +122,13 @@ impl BackingSource
     {
         match self
         {
+            Self::Foundation =>
+            {
+                crate::context::without_recovery(|| {
+                    crate::allocator::with_system(crate::allocator::SystemClass::Foundation,
+                                                  operation)
+                })
+            }
             Self::Ordinary => crate::context::without_recovery(operation),
             Self::Protected(permit) =>
             {
@@ -120,6 +141,8 @@ impl BackingSource
     {
         match (self, existing)
         {
+            (Self::Foundation, Self::Foundation) => true,
+            (Self::Foundation, _) | (_, Self::Foundation) => false,
             // Ordinary reuse retains an already admitted root's actual policy.
             (Self::Ordinary, _) => true,
             (Self::Protected(a), Self::Protected(b)) => a.same_storage(b),
@@ -381,6 +404,7 @@ pub(crate) fn report_refusal(error: &impl fmt::Display)
 #[derive(Debug)]
 pub(crate) enum FrameError
 {
+    Foundation(foundation::Error),
     Pages(super::pages::Error),
     Account(mac_kernel_model::account::Error),
     Recovery(crate::allocator::recovery::Error),
@@ -399,6 +423,7 @@ impl FrameError
     {
         match self
         {
+            Self::Foundation(e) => e.status(),
             Self::Pages(e) => e.status(),
             Self::Account(e) => crate::allocation::account_status(e),
             Self::Recovery(crate::allocator::recovery::Error::Exhausted { .. }
@@ -417,6 +442,7 @@ impl fmt::Display for FrameError
     {
         match self
         {
+            Self::Foundation(e) => e.fmt(f),
             Self::Pages(e) => e.fmt(f),
             Self::Account(e) => e.fmt(f),
             Self::Recovery(e) => e.fmt(f),
@@ -744,7 +770,7 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
     let mut mapper = Mapper::new(Frames { head:    0,
                                           count:   0,
                                           account: None,
-                                          source: BackingSource::Ordinary }).map_err(Error::Tables)?;
+                                          source: BackingSource::Foundation }).map_err(Error::Tables)?;
     let mut leaves = 0;
     for bank in boot.ram.banks()
     {
