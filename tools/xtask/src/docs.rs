@@ -4,13 +4,21 @@ use super::*;
 
 pub(super) fn generate(workspace: &Workspace) -> Result<()>
 {
-    // --lib covers the facade, its sub-crates, shared formats, resident library
-    // and host-tool libraries. Guest entry binaries require the native linker
-    // and do not contribute a public library API.
-    run(workspace.cargo()
-                 .args(["doc", "--locked", "--workspace", "--lib", "--no-deps", "--target-dir"])
-                 .arg(workspace.build.join("host")))?;
+    // The resident System library contains real native kernel paths. Host
+    // rustdoc is appropriate for shared/SDK/tool libraries, not a substitute
+    // implementation of those paths. Guest entry binaries are excluded by --lib.
     let source = workspace.build.join("host/doc");
+    // Cargo/rustdoc retains pages and search metadata for previously selected
+    // packages. Rebuild just the generated docs, retaining compilation caches,
+    // so an older host mac_system tree cannot survive the new package selection.
+    if source.exists()
+    {
+        fs::remove_dir_all(&source)?;
+    }
+    run(workspace.cargo()
+                 .args(["doc", "--locked", "--workspace", "--exclude", "mac-system", "--lib",
+                        "--no-deps", "--target-dir"])
+                 .arg(workspace.build.join("host")))?;
     let destination = workspace.root.join("docs/api");
     sync_tree(&source, &destination)?;
     fs::write(destination.join("index.html"),
@@ -25,8 +33,10 @@ pub(super) fn generate(workspace: &Workspace) -> Result<()>
                href=\"mac_sit/index.html\">StuffIt archive formats</a></p><p><a \
                href=\"mac_kernel_model/index.html\">Kernel model structures \
                (staged)</a></p><p>Library documentation uses the host configuration. Guest-only \
-               hardware code and application entry binaries are not included. Regenerate with \
-               <code>cargo xtask doc</code>.</p></html>\n")?;
+               hardware code, the resident <code>mac-system</code> library, and application \
+               entry binaries are not included. These pages do not describe a host kernel or \
+               establish target-runtime correctness. Regenerate with <code>cargo xtask \
+               doc</code>.</p></html>\n")?;
     println!("Rust API documentation: {}", destination.join("index.html").display());
     Ok(())
 }
