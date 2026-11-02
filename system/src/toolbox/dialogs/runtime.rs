@@ -27,7 +27,7 @@ fn request(window: u64, bounds: Rect) -> WindowRequest
 // Every fallible exit clears the parent, even if a child WDEF refuses disposal.
 struct InitializingAlert<'a>
 {
-    desktop:   &'a mut super::Desktop,
+    toolbox:   &'a mut super::Toolbox,
     committed: bool
 }
 impl Drop for InitializingAlert<'_>
@@ -36,11 +36,11 @@ impl Drop for InitializingAlert<'_>
     {
         if !self.committed
         {
-            if let Err(status) = self.desktop.close_dialog()
+            if let Err(status) = self.toolbox.close_dialog()
             {
                 serial!("ALERT_INITIALIZATION_CHILD_REFUSED: owner={} status={status}; parent \
                          protocol released, child cleanup retained by Window Manager",
-                        self.desktop.owner);
+                        self.toolbox.owner);
             }
         }
     }
@@ -50,18 +50,18 @@ impl Drop for InitializingAlert<'_>
 /// restoration is scoped and cannot escape to application code.
 struct CoreDialogs<'a>
 {
-    desktop: &'a mut super::Desktop
+    toolbox: &'a mut super::Toolbox
 }
 impl Drop for CoreDialogs<'_>
 {
     fn drop(&mut self)
     {
-        core::mem::swap(&mut self.desktop.dialogs, &mut self.desktop.core_dialogs);
-        self.desktop.core_dialogs_active = false;
+        core::mem::swap(&mut self.toolbox.dialogs, &mut self.toolbox.core_dialogs);
+        self.toolbox.core_dialogs_active = false;
     }
 }
 
-impl super::Desktop
+impl super::Toolbox
 {
     pub(crate) fn with_core_dialogs<R>(&mut self, operation: impl FnOnce(&mut Self) -> R) -> R
     {
@@ -71,8 +71,8 @@ impl super::Desktop
         }
         core::mem::swap(&mut self.dialogs, &mut self.core_dialogs);
         self.core_dialogs_active = true;
-        let restore = CoreDialogs { desktop: self };
-        operation(&mut *restore.desktop)
+        let restore = CoreDialogs { toolbox: self };
+        operation(&mut *restore.toolbox)
     }
 
     /// Cancel the actual core protocol for this retained session, without
@@ -82,8 +82,8 @@ impl super::Desktop
                                                  -> Result<(), Status>
     {
         activity.run(|| {
-                    self.with_core_dialogs(|desktop| {
-                            let Some(record) = desktop.dialogs.take_recovery(activity)?
+                    self.with_core_dialogs(|toolbox| {
+                            let Some(record) = toolbox.dialogs.take_recovery(activity)?
                             else
                             {
                                 // Protocol cancellation already completed. This does not
@@ -96,7 +96,7 @@ impl super::Desktop
                             }
                             else
                             {
-                                checked(desktop.window(CLOSE_WINDOW,
+                                checked(toolbox.window(CLOSE_WINDOW,
                                                        &mut request(record.window, Rect::ZERO)))
                             };
                             drop(record);
@@ -107,7 +107,7 @@ impl super::Desktop
 
     pub(crate) fn prepare_core_dialogs(&mut self) -> Result<(), Status>
     {
-        self.with_core_dialogs(|desktop| desktop.dialogs.prepare_recovery())
+        self.with_core_dialogs(|toolbox| toolbox.dialogs.prepare_recovery())
     }
 
     pub(super) fn dialog_input(&mut self, input: crate::toolbox::events::input::Input, when: u32)
@@ -342,10 +342,10 @@ impl super::Desktop
                 }
                 let previous = self.windows.active_window();
                 self.dialogs.begin(alert, previous)?;
-                let mut guard = InitializingAlert { desktop:   self,
+                let mut guard = InitializingAlert { toolbox:   self,
                                                     committed: false };
-                guard.desktop.initialize_alert()?;
-                call.window = guard.desktop.dialogs.window;
+                guard.toolbox.initialize_alert()?;
+                call.window = guard.toolbox.dialogs.window;
                 guard.committed = true;
             }
             CLOSE =>
@@ -729,7 +729,7 @@ impl super::Desktop
     }
 }
 
-impl super::Desktop
+impl super::Toolbox
 {
     pub(crate) fn release_alert(&mut self, ticket: mac_object_table::domain::ReleasedResource)
                                 -> Result<(), crate::toolbox::handles::cleanup::Failure>

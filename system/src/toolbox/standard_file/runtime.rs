@@ -65,7 +65,7 @@ impl Drop for Pumping
 
 struct InitializingDialog<'a>
 {
-    desktop:   &'a mut super::Desktop,
+    toolbox:   &'a mut super::Toolbox,
     handle:    u64,
     committed: bool
 }
@@ -75,10 +75,10 @@ impl Drop for InitializingDialog<'_>
     {
         if !self.committed
         {
-            if let Err(status) = self.desktop.dispose_file_dialog(self.handle)
+            if let Err(status) = self.toolbox.dispose_file_dialog(self.handle)
             {
                 serial!("STANDARD_FILE_ROLLBACK_RETAINED app={} handle={} status={status}",
-                        self.desktop.owner, self.handle);
+                        self.toolbox.owner, self.handle);
             }
         }
     }
@@ -151,7 +151,7 @@ fn row_bounds(list: Rect, first: usize, index: usize) -> Option<Rect>
                    (top + 16).min(i32::from(list.bottom) - 1) as i16))
 }
 
-impl super::Desktop
+impl super::Toolbox
 {
     pub(crate) fn prepare_standard_file_storage(&mut self,
                                                 storage: &crate::toolbox::handles::OwnerRef)
@@ -187,11 +187,11 @@ impl super::Desktop
         if call.operation == BEGIN
         {
             self.standard_file.get_mut(self.owner, call.handle)?.subject = subject;
-            let mut guard = InitializingDialog { desktop:   self,
+            let mut guard = InitializingDialog { toolbox:   self,
                                                  handle:    call.handle,
                                                  committed: false };
-            guard.desktop.initialize_file_dialog(call)?;
-            InvocationGate::run(|| *CURRENT.lock() = Some((guard.desktop.owner, call.handle)));
+            guard.toolbox.initialize_file_dialog(call)?;
+            InvocationGate::run(|| *CURRENT.lock() = Some((guard.toolbox.owner, call.handle)));
             WORK_READY.store(true, Ordering::Release);
             guard.committed = true;
         }
@@ -1474,8 +1474,8 @@ impl super::Desktop
             let live =
                 if current == Some((active.owner, active.handle))
                 {
-                    crate::kernel::with_desktop(|desktop| {
-                        desktop.standard_file
+                    crate::kernel::with_toolbox(|toolbox| {
+                        toolbox.standard_file
                                .get(active.owner, active.handle)
                                .is_ok_and(|d| d.active() && d.revision == active.revision)
                     })
@@ -1513,11 +1513,11 @@ impl super::Desktop
             {
                 return;
             };
-            let taken = crate::kernel::with_desktop(|desktop| {
-                let previous = desktop.owner;
-                desktop.enter(owner);
+            let taken = crate::kernel::with_toolbox(|toolbox| {
+                let previous = toolbox.owner;
+                toolbox.enter(owner);
                 let result = (|| {
-                    let tracking = desktop.standard_file
+                    let tracking = toolbox.standard_file
                                           .get(owner, handle)
                                           .ok()
                                           .and_then(|dialog| {
@@ -1529,15 +1529,15 @@ impl super::Desktop
                                           });
                     if let Some((window, activity)) = tracking
                     {
-                        let mouse = desktop.events.mouse;
+                        let mouse = toolbox.events.mouse;
                         let down =
-                            desktop.events.modifiers & crate::toolbox::events::BTN_STATE == 0;
-                        if let Some(window) = desktop.windows.window(window)
+                            toolbox.events.modifiers & crate::toolbox::events::BTN_STATE == 0;
+                        if let Some(window) = toolbox.windows.window(window)
                         {
                             let point = Point { h: mouse.h - window.bounds.left,
                                                 v: mouse.v - window.bounds.top };
                             let mut poll = || {
-                                desktop.sf_track_scroll(handle,
+                                toolbox.sf_track_scroll(handle,
                                                         point,
                                                         down,
                                                         false,
@@ -1554,7 +1554,7 @@ impl super::Desktop
                             result?;
                         }
                     }
-                    let dialog = desktop.standard_file.get_mut(owner, handle)?;
+                    let dialog = toolbox.standard_file.get_mut(owner, handle)?;
                     let Some((revision, query)) = dialog.query()?
                     else
                     {
@@ -1565,7 +1565,7 @@ impl super::Desktop
                                           dialog.subject.clone().ok_or(WRONG_THREAD)?,
                                           dialog.recovery_activity.clone())))
                 })();
-                desktop.enter(previous);
+                toolbox.enter(previous);
                 result
             });
             let (revision, query, subject, activity) = match taken
@@ -1578,23 +1578,23 @@ impl super::Desktop
                 }
                 Ok(Err(cause)) =>
                 {
-                    let _ = crate::kernel::with_desktop(|desktop| {
-                        let previous = desktop.owner;
-                        desktop.enter(owner);
+                    let _ = crate::kernel::with_toolbox(|toolbox| {
+                        let previous = toolbox.owner;
+                        toolbox.enter(owner);
                         let result = (|| {
-                            let activity = desktop.standard_file
+                            let activity = toolbox.standard_file
                                                   .get(owner, handle)?
                                                   .recovery_activity
                                                   .clone()
                                                   .ok_or(WRONG_THREAD)?;
                             activity.run(|| {
-                                        desktop.standard_file.get_mut(owner, handle)?.fail(cause);
-                                        desktop.sf_sync_sheet(handle)
-                                   .and_then(|_| desktop.standard_file_draw(handle, Damage::full()))
+                                        toolbox.standard_file.get_mut(owner, handle)?.fail(cause);
+                                        toolbox.sf_sync_sheet(handle)
+                                   .and_then(|_| toolbox.standard_file_draw(handle, Damage::full()))
                                     })
                                     .and_then(core::convert::identity)
                         })();
-                        desktop.enter(previous);
+                        toolbox.enter(previous);
                         result
                     });
                     return;
@@ -1719,8 +1719,8 @@ impl super::Desktop
             {
                 Some(Ok(Reply::Scan(call))) if call.step == files::SCAN_ENTRY =>
                 {
-                    match crate::kernel::with_desktop(|desktop| {
-                              desktop.standard_file
+                    match crate::kernel::with_toolbox(|toolbox| {
+                              toolbox.standard_file
                                      .get(work.owner, work.handle)
                                      .is_ok_and(|dialog| {
                                          dialog.revision == work.revision && dialog.wants_icon(call)
@@ -1783,11 +1783,11 @@ impl super::Desktop
                           crate::toolbox::quickdraw::icons_service::Drawing)>)
                   -> bool
     {
-        let outcome = crate::kernel::with_desktop(|desktop| {
-            let previous = desktop.owner;
-            desktop.enter(owner);
+        let outcome = crate::kernel::with_toolbox(|toolbox| {
+            let previous = toolbox.owner;
+            toolbox.enter(owner);
             let result = (|| {
-                let dialog = desktop.standard_file.get_mut(owner, handle)?;
+                let dialog = toolbox.standard_file.get_mut(owner, handle)?;
                 if dialog.revision != revision || !dialog.active()
                 {
                     return Ok(());
@@ -1914,12 +1914,12 @@ impl super::Desktop
                             damage.add(Rect::new(pop.left, pop.top, pop.right, pop.top + 12 * 18));
                         }
                     }
-                    desktop.sf_sync_sheet(handle)?;
-                    desktop.standard_file_draw(handle, damage)?;
+                    toolbox.sf_sync_sheet(handle)?;
+                    toolbox.standard_file_draw(handle, damage)?;
                 }
                 Ok::<_, Status>(())
             })();
-            desktop.enter(previous);
+            toolbox.enter(previous);
             result
         });
         match outcome

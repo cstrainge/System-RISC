@@ -2,7 +2,7 @@
 use mac_abi::{geometry::{Point, Rect},
               menus::Selection};
 
-use super::{Desktop, Input};
+use super::{Toolbox, Input};
 use crate::toolbox::{events::BTN_STATE, menus::Command, quickdraw::Canvas};
 
 const PHASE_TICKS: u32 = 3;
@@ -42,7 +42,7 @@ impl Feedback
                presented: false }
     }
 }
-impl Desktop
+impl Toolbox
 {
     pub(super) fn start_menu_key_feedback(&mut self, selection: Selection, when: u32)
     {

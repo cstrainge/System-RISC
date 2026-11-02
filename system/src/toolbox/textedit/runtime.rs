@@ -11,7 +11,7 @@ use crate::toolbox::quickdraw::{region::{BooleanOp, Region},
                                 retained::RenderCommand,
                                 service};
 
-impl super::Desktop
+impl super::Toolbox
 {
     pub fn textedit_display_request(&mut self, call: &mut TextEditDisplayCall) -> Status
     {

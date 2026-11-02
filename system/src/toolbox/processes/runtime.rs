@@ -10,7 +10,7 @@ use mac_abi::{events::{Event, EventKind},
 
 use crate::toolbox::{events::EventManager,
                      processes::menu::{Action, Entry},
-                     runtime::Desktop,
+                     runtime::Toolbox,
                      windows::{GroupFocus, WindowId}};
 
 pub(super) struct Saved
@@ -140,7 +140,7 @@ impl Drop for FinderAdmission
         }
     }
 }
-impl Desktop
+impl Toolbox
 {
     pub(crate) fn reserve_finder(&mut self, old: u64, permit: crate::allocator::recovery::Permit)
                                  -> Result<FinderAdmission, Status>
@@ -1362,7 +1362,7 @@ impl Desktop
     }
 }
 
-impl crate::toolbox::files::watch::lifetime::WatchHost for Desktop
+impl crate::toolbox::files::watch::lifetime::WatchHost for Toolbox
 {
     fn release_file_watch(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                           storage: bool)
@@ -1383,7 +1383,7 @@ impl crate::toolbox::files::watch::lifetime::WatchHost for Desktop
     }
 }
 
-impl crate::toolbox::files::forks::lifetime::ForkHost for Desktop
+impl crate::toolbox::files::forks::lifetime::ForkHost for Toolbox
 {
     fn release_file_fork(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                          storage: bool)
@@ -1404,7 +1404,7 @@ impl crate::toolbox::files::forks::lifetime::ForkHost for Desktop
     }
 }
 
-impl crate::toolbox::files::write::lifetime::WriteHost for Desktop
+impl crate::toolbox::files::write::lifetime::WriteHost for Toolbox
 {
     fn release_file_write(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                           storage: bool)
@@ -1425,7 +1425,7 @@ impl crate::toolbox::files::write::lifetime::WriteHost for Desktop
     }
 }
 
-impl crate::toolbox::menus::lifetime::MenuHost for Desktop
+impl crate::toolbox::menus::lifetime::MenuHost for Toolbox
 {
     fn release_menu(&mut self, ticket: mac_object_table::domain::ReleasedResource)
                     -> Result<(), mac_object_table::domain::CompletionError>
@@ -1458,7 +1458,7 @@ impl crate::toolbox::menus::lifetime::MenuHost for Desktop
     }
 }
 
-impl crate::toolbox::memory::lifetime::MemoryHost for Desktop
+impl crate::toolbox::memory::lifetime::MemoryHost for Toolbox
 {
     fn release_memory(&mut self, ticket: mac_object_table::domain::ReleasedResource, storage: bool)
                       -> Result<(), crate::toolbox::handles::cleanup::Failure>
@@ -1476,7 +1476,7 @@ impl crate::toolbox::memory::lifetime::MemoryHost for Desktop
     }
 }
 
-impl crate::toolbox::textedit::lifetime::EditorHost for Desktop
+impl crate::toolbox::textedit::lifetime::EditorHost for Toolbox
 {
     fn release_editor(&mut self, ticket: mac_object_table::domain::ReleasedResource, storage: bool)
                       -> Result<(), mac_object_table::domain::CompletionError>
@@ -1502,7 +1502,7 @@ impl crate::toolbox::textedit::lifetime::EditorHost for Desktop
     }
 }
 
-impl crate::toolbox::files::streams::lifetime::StreamHost for Desktop
+impl crate::toolbox::files::streams::lifetime::StreamHost for Toolbox
 {
     fn release_file_stream(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                            storage: bool)
@@ -1523,7 +1523,7 @@ impl crate::toolbox::files::streams::lifetime::StreamHost for Desktop
     }
 }
 
-impl crate::toolbox::files::groups::lifetime::GroupHost for Desktop
+impl crate::toolbox::files::groups::lifetime::GroupHost for Toolbox
 {
     fn release_file_group(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                           storage: bool)
@@ -1544,7 +1544,7 @@ impl crate::toolbox::files::groups::lifetime::GroupHost for Desktop
     }
 }
 
-impl crate::toolbox::files::transfer_lifetime::TransferHost for Desktop
+impl crate::toolbox::files::transfer_lifetime::TransferHost for Toolbox
 {
     fn release_file_transfer(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                              storage: bool)
@@ -1565,7 +1565,7 @@ impl crate::toolbox::files::transfer_lifetime::TransferHost for Desktop
     }
 }
 
-impl crate::toolbox::files::pins::PinHost for Desktop
+impl crate::toolbox::files::pins::PinHost for Toolbox
 {
     fn release_file_pin(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                         kind: crate::toolbox::files::pins::Registration)

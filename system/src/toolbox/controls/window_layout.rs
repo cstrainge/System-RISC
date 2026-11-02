@@ -131,7 +131,7 @@ fn publish(content: &mut [Content], controls: &mut Manager, window: u64, mut pre
     }
     Ok(damage)
 }
-impl Desktop
+impl Toolbox
 {
     pub(super) fn publish_control_layout(&mut self, window: u64, prepared: Prepared, used: usize,
                                          limit: usize)

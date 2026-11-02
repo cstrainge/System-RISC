@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use mac_abi::*;
 
-use super::{Canvas, Desktop, RenderCommand, SceneTarget, WHITE, background, paint};
+use super::{Canvas, Toolbox, RenderCommand, SceneTarget, WHITE, background, paint};
 use crate::toolbox::quickdraw::{geometry::{Rect, sect_rect, union_rect},
                                 region::{BooleanOp, Region}};
 
@@ -132,7 +132,7 @@ fn copy_rect(source: &[u32], destination: &mut [u32], rect: Rect)
         destination[start..end].copy_from_slice(&source[start..end]);
     }
 }
-impl Desktop
+impl Toolbox
 {
     /// Commit the initial ordinary scene before foreign startup code can exert
     /// pressure. Use the normal renderer on the actual admitted staging lease;
