@@ -10,7 +10,7 @@ use mac_object_table::shared::InvocationGate as _;
 use super::quickdraw::{SurfaceExt,
                        fonts::FontManager,
                        fonts_service,
-                       retained::{Content, DesktopLayer, RenderCommand, SceneTarget},
+                       retained::{Content, RenderCommand, SceneTarget},
                        service};
 use crate::{loader::Definitions,
             platform,
@@ -79,7 +79,6 @@ pub struct Desktop
     dialogs:                          super::dialogs::Alerts,
     core_dialogs:                     super::dialogs::Alerts,
     core_dialogs_active:              bool,
-    desktop:                          DesktopLayer,
     menus:                            super::menus::Manager,
     system_bar:                       super::menus::SystemBar,
     cursors:                          super::quickdraw::cursors::Cursors,
@@ -255,39 +254,28 @@ impl Desktop
 
     fn retained_bytes(&self) -> usize
     {
-        self.retained_admission(SceneTarget::Desktop).0
+        window_layout::ordinary_retained_bytes(&self.windows, &self.content, &self.pending_content)
     }
 
     fn content_mut(&mut self, id: impl Into<SceneTarget>) -> Result<&mut Content, Status>
     {
         let id = id.into();
-        if id == SceneTarget::Desktop
+        if !self.owns(id.window()?)
         {
-            if self.owner != crate::context::finder_app().0
-            {
-                return Err(ACCESS_DENIED);
-            }
-            self.desktop.pending_mut()
+            return Err(if self.windows.window(id.window()?).is_some()
+                       {
+                           ACCESS_DENIED
+                       }
+                       else
+                       {
+                           NOT_FOUND
+                       });
         }
-        else
-        {
-            if !self.owns(id.window()?)
-            {
-                return Err(if self.windows.window(id.window()?).is_some()
-                           {
-                               ACCESS_DENIED
-                           }
-                           else
-                           {
-                               NOT_FOUND
-                           });
-            }
-            self.pending_content
-                .iter_mut()
-                .chain(&mut self.content)
-                .find(|content| content.id == id)
-                .ok_or(NOT_FOUND)
-        }
+        self.pending_content
+            .iter_mut()
+            .chain(&mut self.content)
+            .find(|content| content.id == id)
+            .ok_or(NOT_FOUND)
     }
 
     /// A retained update is private until EndUpdate. Other threads can poll,
@@ -321,28 +309,12 @@ impl Desktop
         {
             return;
         }
-        let local = if id == SceneTarget::Desktop
-        {
-            if self.desktop.is_updating()
-            {
-                return;
-            }
-            self.desktop.bounds()
-        }
+        let Some(window) = id.window().ok().and_then(|window| self.windows.window(window))
         else
         {
-            let SceneTarget::Window(window) = id
-            else
-            {
-                return;
-            };
-            let Some(window) = self.windows.window(window)
-            else
-            {
-                return;
-            };
-            window.local_bounds()
+            return;
         };
+        let local = window.local_bounds();
         let bounds = region.bounds();
         let region = if bounds.left >= local.left
                         && bounds.top >= local.top
@@ -427,14 +399,7 @@ impl Desktop
                              -> Result<(), Status>
     {
         let id = id.into();
-        let changed = if id == SceneTarget::Desktop
-        {
-            self.desktop.set_outline(next)
-        }
-        else
-        {
-            self.windows.content_outline(id.window()?, next)?
-        };
+        let changed = self.windows.content_outline(id.window()?, next)?;
         self.feedback_dirty |= changed;
         Ok(())
     }
@@ -522,10 +487,6 @@ impl Desktop
                   core_dialogs_active: false,
                   menus: super::menus::Manager::new(super::handles::menu_kinds()?, mdef, crate::machine::traps::gateway)?,
                   system_bar,
-                  desktop: DesktopLayer::new(Rect::new(0,
-                                                        21,
-                                                        crate::display::WIDTH as i16,
-                                                        crate::display::HEIGHT as i16)),
                   cursors: Default::default(),
                   busy_cursor,
                   responsiveness: Default::default(),
@@ -587,6 +548,11 @@ impl Desktop
         if call.reserved != 0
         {
             return BAD_ARGUMENT;
+        }
+        if call.operation == mac_abi::menus::GET_BAR_HEIGHT
+        {
+            call.value = mac_abi::menus::MENU_BAR_HEIGHT as u32;
+            return OK;
         }
         if call.operation == mac_abi::menus::SHOW_ABOUT_SYSTEM
         {
@@ -657,7 +623,7 @@ impl Desktop
             };
             request.id = id.0;
         }
-        if !matches!(operation, NEW_WINDOW | SELECT_DESKTOP)
+        if operation != NEW_WINDOW
            && request.id != 0
            && !(if operation == GET_WINDOW
            {
@@ -872,21 +838,6 @@ impl Desktop
                 }
                 self.windows.select_window(id, &mut self.events, when);
                 self.last_action = "SELECT";
-            }
-            SELECT_DESKTOP =>
-            {
-                if self.owner != crate::context::finder_app().0
-                {
-                    return ACCESS_DENIED;
-                }
-                if self.foreground != crate::context::finder_app().0
-                   && let Err(status) =
-                       self.activate_process_window(crate::context::finder_app().0, None)
-                {
-                    return status;
-                }
-                self.windows.deactivate_all(&mut self.events, when);
-                self.last_action = "DESKTOP_SELECT";
             }
             GET_WINDOW =>
             {
@@ -1713,30 +1664,10 @@ impl Desktop
         let target = SceneTarget::decode(call.target)?;
         let id = target;
         // Use the ordinary owner/generation gate, including stale window IDs.
-        let desktop = SceneTarget::decode(call.target)? == SceneTarget::Desktop;
-        if desktop
-        {
-            if self.owner != crate::context::finder_app().0
-            {
-                return Err(ACCESS_DENIED);
-            }
-        }
-        else
-        {
-            self.content_mut(SceneTarget::decode(call.target)?)?;
-        }
+        self.content_mut(target)?;
         if matches!(call.operation, QD_WINDOW_BEGIN_MASK | QD_WINDOW_BEGIN_RECTS)
         {
-            let bounds = if desktop
-            {
-                if self.desktop.is_updating()
-                {
-                    return Err(BAD_ARGUMENT);
-                }
-                self.desktop.bounds()
-            }
-            else
-            {
+            let bounds = {
                 let window = self.windows.window(id.window()?).ok_or(NOT_FOUND)?;
                 if window.updating
                 {
@@ -1761,10 +1692,6 @@ impl Desktop
             };
             let mask = mask.combine(&Region::from_rect(bounds), BooleanOp::Intersection)
                            .map_err(super::quickdraw::regions_service::status)?;
-            if desktop
-            {
-                return self.desktop.begin_mask(mask, self.retained_bytes(), MAX_RETAINED_BYTES);
-            }
             if mask.is_empty()
             {
                 return Err(BAD_ARGUMENT);
@@ -1788,22 +1715,6 @@ impl Desktop
         }
         else
         {
-            if desktop
-            {
-                if call.operation == QD_WINDOW_CANCEL_MASK
-                {
-                    return self.desktop.cancel_mask();
-                }
-                let outline = self.desktop.pending_outline();
-                let mask = self.desktop.commit_mask(self.retained_bytes(), MAX_RETAINED_BYTES)?;
-                if let Some(outline) = outline
-                {
-                    self.apply_content_outline(SceneTarget::Desktop, outline)?;
-                }
-                self.content_changed_region(SceneTarget::Desktop, mask);
-                self.present();
-                return Ok(());
-            }
             let index = self.pending_content
                             .iter()
                             .position(|c| c.id == id && c.is_patch())
@@ -1838,26 +1749,14 @@ impl Desktop
                     region: &[u8])
                     -> Result<(), Status>
     {
-        use mac_abi::quickdraw::{QD_DESKTOP_BEGIN, QD_DESKTOP_BOUNDS, QD_DESKTOP_CANCEL,
-                                 QD_DESKTOP_END, QD_GET_STATE};
+        use mac_abi::quickdraw::QD_SCREEN_BOUNDS;
         if call.operation == mac_abi::quickdraw::QD_WINDOW_OUTLINE
         {
             if call.verb > 1
             {
                 return Err(BAD_ARGUMENT);
             }
-            let desktop = SceneTarget::decode(call.target)? == SceneTarget::Desktop;
-            if desktop
-            {
-                if self.owner != crate::context::finder_app().0
-                {
-                    return Err(ACCESS_DENIED);
-                }
-            }
-            else
-            {
-                self.content_mut(SceneTarget::decode(call.target)?)?;
-            }
+            self.content_mut(SceneTarget::decode(call.target)?)?;
             let next = (call.verb == 1 && !call.bounds.is_empty()).then_some(call.bounds);
             let target = SceneTarget::decode(call.target)?;
             #[cfg(feature = "event-trace")]
@@ -1870,16 +1769,12 @@ impl Desktop
                 crate::trace::record(crate::trace::WINDOW,
                                      self.owner,
                                      crate::trace::CONTENT_OUTLINE_REQUEST,
-                                     if desktop { 0 } else { target.window()?.0 },
+                                     target.window()?.0,
                                      packed,
                                      u64::from(next.is_some()));
             }
             let id = target;
-            if desktop && self.desktop.is_updating()
-            {
-                self.desktop.pending_mut()?.outline = Some(next);
-            }
-            else if let Some(pending) =
+            if let Some(pending) =
                 self.pending_content.iter_mut().find(|content| content.id == id)
             {
                 pending.outline = Some(next);
@@ -1899,33 +1794,9 @@ impl Desktop
         {
             return self.masked_update(call, region);
         }
-        if matches!(call.operation,
-                    QD_DESKTOP_BEGIN | QD_DESKTOP_END | QD_DESKTOP_CANCEL | QD_DESKTOP_BOUNDS)
+        if call.operation == QD_SCREEN_BOUNDS
         {
-            if self.owner != crate::context::finder_app().0 && call.operation != QD_DESKTOP_BOUNDS
-            {
-                return Err(ACCESS_DENIED);
-            }
-            let outline = self.desktop.pending_outline();
-            let committed = self.desktop.request(call)?;
-            if committed
-            {
-                if let Some(outline) = outline
-                {
-                    self.apply_content_outline(SceneTarget::Desktop, outline)?;
-                }
-                self.content_cache.invalidate(SceneTarget::Desktop);
-                self.last_action = "DESKTOP";
-                self.redraw = true;
-                self.present();
-            }
-            return Ok(());
-        }
-        if call.operation == QD_GET_STATE
-           && call.target.decode().map_err(|_| BAD_ARGUMENT)?
-              == mac_abi::quickdraw::DrawingTarget::Desktop
-        {
-            call.state = self.desktop.port().wire();
+            call.bounds = Rect::new(0, 0, crate::display::WIDTH as i16, crate::display::HEIGHT as i16);
             return Ok(());
         }
         if let mac_abi::quickdraw::DrawingTarget::World(world) =
@@ -2935,17 +2806,6 @@ impl Desktop
                                             ClippedOutline { shape,
                                                              clip }
                                         });
-            }
-        }
-        else if self.foreground == crate::context::finder_app().0
-        {
-            if let Some(bounds) = self.desktop.outline()
-            {
-                let clip = self.outline_clip.get(&self.windows, None);
-                feedback.outline = Outline::new(&[bounds], 0, 0).map(|shape| {
-                                                                    ClippedOutline { shape,
-                                                                                     clip }
-                                                                });
             }
         }
         feedback

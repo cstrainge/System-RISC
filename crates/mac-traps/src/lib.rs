@@ -497,12 +497,10 @@ impl Client<'_>
         Ok(())
     }
 
-    /// Control the retained onscreen desktop through the normal QuickDraw gate.
-    /// The returned bounds use screen coordinates and exclude System's menu bar.
-    pub fn desktop(self, operation: u32) -> Result<Rect>
+    /// Classic `qd.screenBits.bounds`: the whole main screen, global coordinates.
+    pub fn screen_bounds(self) -> Result<Rect>
     {
-        let mut call = quickdraw::GraphicsCall { operation,
-                                                 target: quickdraw::Target::desktop(),
+        let mut call = quickdraw::GraphicsCall { operation: quickdraw::QD_SCREEN_BOUNDS,
                                                  ..Default::default() };
         status(self.invoke(QUICKDRAW, &mut call))?;
         Ok(call.bounds)

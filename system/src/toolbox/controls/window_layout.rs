@@ -3,8 +3,22 @@
 use super::*;
 use crate::toolbox::controls::objects::{Manager, Prepared};
 
+pub(super) fn ordinary_retained_bytes(windows: &WindowManager, content: &[Content],
+                                      pending: &[Content])
+                                      -> usize
+{
+    content.iter()
+           .chain(pending)
+           .filter(|c| {
+               !c.id.window().ok().and_then(|id| windows.window(id)).is_some_and(|w| {
+                                                                         w.uses_system_resources()
+                                                                     })
+           })
+           .fold(0usize, |bytes, c| bytes.saturating_add(c.storage()))
+}
+
 pub(super) fn scene_admission(windows: &WindowManager, content: &[Content], pending: &[Content],
-                              desktop_bytes: usize, id: SceneTarget)
+                              id: SceneTarget)
                               -> (usize, usize)
 {
     let system_scene = |id: SceneTarget| {
@@ -24,7 +38,7 @@ pub(super) fn scene_admission(windows: &WindowManager, content: &[Content], pend
     }
     else
     {
-        (used.saturating_add(desktop_bytes), MAX_RETAINED_BYTES)
+        (used, MAX_RETAINED_BYTES)
     }
 }
 
@@ -237,7 +251,6 @@ impl Desktop
         let pending = &self.pending_content;
         let controls = &mut self.controls;
         let definitions = &mut self.definitions;
-        let desktop = &self.desktop;
         let mut damage = None;
         let result =
             self.windows.track(point, released, &mut self.events, when, |windows, id, viewport| {
@@ -257,7 +270,6 @@ impl Desktop
                             let (used, limit) = scene_admission(windows,
                                                                 content,
                                                                 pending,
-                                                                desktop.storage(),
                                                                 SceneTarget::from(id));
                             let changed = publish(content, controls, id.0, prepared, used, limit)?;
                             damage = Some((id, changed));

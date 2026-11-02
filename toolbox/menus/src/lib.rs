@@ -35,6 +35,15 @@ impl<'a> Menus<'a>
                                          ..Default::default() })
     }
 
+    /// Classic `GetMBarHeight`.
+    pub fn bar_height(self) -> Result<i16>
+    {
+        let mut call = MenuCall { operation: GET_BAR_HEIGHT,
+                                  ..Default::default() };
+        self.client.menu(&mut call)?;
+        i16::try_from(call.value).map_err(|_| Error::BadArgument)
+    }
+
     pub fn about_system(self) -> Result<()>
     {
         self.client.menu(&mut MenuCall { operation: SHOW_ABOUT_SYSTEM,

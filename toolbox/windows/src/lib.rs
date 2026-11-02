@@ -147,12 +147,6 @@ impl<'a> Windows<'a>
         self.client.window(SELECT_WINDOW, request(id)).map(|_| ())
     }
 
-    /// Focus the desktop without closing or reordering any windows.
-    pub fn select_desktop(self) -> Result<()>
-    {
-        self.client.window(SELECT_DESKTOP, request(WindowId(0))).map(|_| ())
-    }
-
     pub fn info(self, id: WindowId) -> Result<WindowInfo>
     {
         self.client.window(GET_WINDOW, request(id))?.try_into()

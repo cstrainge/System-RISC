@@ -82,7 +82,7 @@ fn window_layout(system: &System<'_>) -> Result<(Rect, i16), Error>
     let word = |at| i16::from_be_bytes([data[at], data[at + 1]]);
     let bounds = Rect::new(word(2), word(0), word(6), word(4));
     let procedure = word(8);
-    let desktop = system.quickdraw().desktop().bounds()?;
+    let desktop = crate::browser::desktop::desktop_bounds(system)?;
     if bounds.left < 0
        || bounds.top < 20
        || bounds.right > desktop.right
