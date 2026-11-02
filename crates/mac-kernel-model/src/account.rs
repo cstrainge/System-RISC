@@ -186,6 +186,13 @@ impl<G: InvocationGate> Account<G>
         G::run(|| self.inner.owner.owner())
     }
 
+    /// Compare the original account root without admitting another use or
+    /// treating a matching owner identity as authority for a different root.
+    pub fn owns_use(&self, usage: &AccountUse<G>) -> bool
+    {
+        Arc::ptr_eq(&self.inner, &usage.inner)
+    }
+
     pub fn kernel(&self) -> AccountUsage
     {
         G::run(|| *self.inner.state.lock().account.kernel())

@@ -4697,3 +4697,74 @@ sample was logged, but the cause remains unresolved. The one-hart observation
 does not qualify that four-hart configuration. Boot resource-negative cases,
 pressure, interleavings, full reserve recovery, performance and general SMP remain
 unverified. No host Rust suite supplied acceptance.
+
+### Authenticated Finder desktop readiness and future allocation defaults
+
+`Processes::finder_desktop_ready()` is a no-ID acknowledgment from the genuine
+Finder main thread. Process operation 10 validates the pinned native executor
+against the current Finder role, canonical live Process ledger, exact image,
+main thread and original account root. Matching owner numbers alone cannot
+substitute for the account: `Account::owns_use` compares its actual Arc root.
+Malformed identity inputs, another application, wrong execution context,
+termination or account closure refuse before the default is touched.
+
+The request takes only that context's optional recovery allocation default under
+the native metadata gate, then disposes the moved capability after Desktop,
+executor and native critical borrows return. Initial ordinary Finder and repeat
+acknowledgments are idempotent. Future ordinary allocations use ordinary storage;
+existing headers, reallocations, receipts, protected Process roots and explicitly
+admitted service scopes keep their original sources. No account, heap, stack,
+page table, resource backing or old receipt is migrated or refunded by this call.
+
+Finder now acknowledges only after successful initialization, actual desktop and
+current ready folder content commits, watch registration and menu setup, with
+no active app alert, drag or position operation. The old unconditional readiness
+log and lack of pending scans were not positive success proofs. Bounded startup
+receipts distinguish real content from blank/error/validation-only updates and
+retained current content; native bounds must match the committed frame. A move
+preserves unchanged local pixels, while a successful drag can restore a receipt
+only after the original matching content/layout/chrome commit. Failed work cannot
+promote readiness.
+
+Initialization and opening retries retain their actual Window and each admitted
+control, resuming the failed stage without publishing duplicates. Window pruning
+preflights each ID once, treats only NotFound as closed and preserves every live
+ID on Busy or other refusal. Known-closed debt survives a fallible retirement log
+until those slots are actually retired. Idle and normal alert handling service
+only real pending startup debt; successful native acknowledgment retires the
+startup checks. No extra scan or forced full repaint manufactures readiness.
+
+A fixed-source optimized release/LTO no_std RVA23 image used System ELF
+`be63664005abb09f22c66bfcd17f852e7fcac3d1e7e85ec962f64bf0b86a86d1`,
+System resource
+`f2208d0bc1d76b365e5db89afbf4c37eb1eba33589308d64bb5c8ee1427cb54f`,
+Finder ELF
+`afac71a7a5d6aada2a2bdc4de1246aab5c251aeb9ea3d1ed552ff44874f06fd0`
+and Finder resource
+`1b92ae0afee95c6623ab65354cf1b97189869ca7ce5c68b895731c39949d350a`.
+Private QEMU4/800x600 guests requested and discovered exactly 2 GiB. Shipping
+Finder reached the ACK-gated readiness log; six installed apps launched and quit
+with actual account closure and sampled image unmapping. Panic Test's 27,246-byte,
+331-line report scrolled, dismissed and closed its account. A separate installed
+Text Edit workflow exercised all Save Changes choices, saved `ab`, acknowledged
+a malformed-file Core Error, accepted fresh input and closed three accounts.
+
+The existing normally packaged native FNDR recovery diagnostic was extended only
+to commit actual window content and call the new public SDK. Its initial main
+and both real replacement mains acknowledged and repeated successfully; wire-ID
+requests returned BadArgument and the independent surviving APPL returned
+AccessDenied. Two actual crash/replacement cycles retained stale-ID/fresh-state
+checks, original account closure, protected replacement image leaves and survivor
+input. Physical System report Copy/Close and fresh panic also completed. This
+uses the existing no_std diagnostic entry, not the separately developed std
+fixture or the production Finder UI. Production Source/SDK code stayed equal to
+the image build; the sole subsequent code change was this diagnostic probe.
+Sources/base stayed fixed per run; owned guests exited zero and were reaped,
+with all private raw/cloned media removed. Reviewed frames are bounded evidence.
+
+These observations do not independently sample every default-slot instruction
+or allocation origin, force the wrong-main-thread/module/stopping/refusal matrix,
+or qualify production Finder restart under OOM, persistent reserve exhaustion,
+all startup failure interleavings, timing, race absence, U-mode or general SMP.
+The earlier failed pressure campaign and heavy four-hart folder-readiness case
+remain failed. No host Rust pass supplied OS acceptance.

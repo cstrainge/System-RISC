@@ -741,6 +741,52 @@ impl Manager
         Ok(info)
     }
 }
+/// Acknowledgement belongs to the actual current Finder main, never a wire ID.
+/// The moved future-default capability leaves every critical turn before Drop.
+fn finder_desktop_ready() -> Result<(), Status>
+{
+    use mac_object_table::shared::InvocationGate as _;
+
+    let released = crate::context::with_application_executor(|executor| {
+                       crate::kernel::with_desktop(|desktop| {
+                           crate::toolbox::handles::InvocationGate::run(|| {
+                               let owner = executor.owner().owner();
+                               let id = owner.incarnation();
+                               if id != crate::context::finder_app().0
+                               {
+                                   return Err(ACCESS_DENIED);
+                               }
+                               let entry = desktop.processes.entries.get(id).ok_or(NOT_FOUND)?;
+                               let process = entry.value();
+                               if entry.ledger().owner() != owner
+                                  || process.info.id != id
+                                  || process.image != Some(executor.image())
+                                  || process.account.owner() != owner
+                                  || !process.account.owns_use(executor.allocation())
+                               {
+                                   return Err(ACCESS_DENIED);
+                               }
+                               if !entry.ledger().accepting()
+                                  || process.info.thread == 0
+                                  || process.termination.record().is_some()
+                                  || process.account.snapshot().closing
+                               {
+                                   return Err(SERVICE_BUSY);
+                               }
+                               if process.info.thread != executor.thread()
+                               {
+                                   return Err(WRONG_THREAD);
+                               }
+                               // All fallible validation precedes this pointer transition.
+                               // Scoped service permits and original receipts are untouched.
+                               Ok(executor.take_recovery_default_after_desktop_ready())
+                           })
+                       }).map_err(|cause| cause.status())?
+                   }).map_err(|cause| cause.status())??;
+    drop(released);
+    Ok(())
+}
+
 /// Dispatch native and classic process requests without holding desktop state
 /// across storage reads, provider callbacks or scheduler waits.
 pub(crate) fn request(call: &mut ProcessCall) -> Status
@@ -754,6 +800,15 @@ pub(crate) fn request(call: &mut ProcessCall) -> Status
             {
                 launch::abandon_thread(crate::context::current_thread());
                 return Err(BAD_ABI);
+            }
+            if call.operation == FINDER_DESKTOP_READY
+            {
+                if call.id != 0 || call.index != 0 || call.volume != 0 || call.cnid != 0
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                finder_desktop_ready()?;
+                return Ok(OK);
             }
             return crate::kernel::with_desktop(|d| d.process(call)).map_err(|e| e.status());
         }
