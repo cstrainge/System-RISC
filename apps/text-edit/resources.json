@@ -68,30 +68,35 @@
           {
             "text": "Cut",
             "command": "cut ",
+            "command_symbol": "CUT",
             "enabled": true,
             "key": "X"
           },
           {
             "text": "Copy",
             "command": "copy",
+            "command_symbol": "COPY",
             "enabled": true,
             "key": "C"
           },
           {
             "text": "Paste",
             "command": "past",
+            "command_symbol": "PASTE",
             "enabled": true,
             "key": "V"
           },
           {
             "text": "Clear",
             "command": "cler",
+            "command_symbol": "CLEAR",
             "enabled": true
           },
           "-",
           {
             "text": "Select All",
             "command": "sela",
+            "command_symbol": "SELECT_ALL",
             "enabled": true,
             "key": "A"
           }

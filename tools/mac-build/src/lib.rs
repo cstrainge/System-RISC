@@ -78,7 +78,18 @@ pub fn build_guest() -> Result<()>
     {
         println!("cargo:rerun-if-changed={}", source.display());
     }
-    fs::write(out.join("resource_ids.rs"), manifest.rust_ids())?;
+    let resource_ids = manifest.rust_ids()?;
+    let resource_ids_path = out.join("resource_ids.rs");
+    match fs::read(&resource_ids_path)
+    {
+        Ok(previous) if previous == resource_ids.as_bytes() => (),
+        Ok(_) => fs::write(&resource_ids_path, resource_ids)?,
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound =>
+        {
+            fs::write(&resource_ids_path, resource_ids)?
+        }
+        Err(cause) => return Err(cause.into())
+    }
     if module::kind(&manifest).is_some()
     {
         println!("cargo:rerun-if-changed={}", Path::new(&root).join("module.json").display());

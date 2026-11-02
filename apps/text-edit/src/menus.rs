@@ -1,12 +1,7 @@
 use mac_toolbox::{Error, *};
 
 use crate::editor;
-
-pub const CUT: u32 = u32::from_be_bytes(*b"cut ");
-pub const COPY: u32 = u32::from_be_bytes(*b"copy");
-pub const PASTE: u32 = u32::from_be_bytes(*b"past");
-pub const CLEAR: u32 = u32::from_be_bytes(*b"cler");
-pub const SELECT_ALL: u32 = u32::from_be_bytes(*b"sela");
+pub use crate::resources::commands::{CLEAR, COPY, CUT, PASTE, SELECT_ALL};
 
 
 pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 4], Error>

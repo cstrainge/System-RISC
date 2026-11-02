@@ -43,6 +43,21 @@ pub use toolbox_standard_file as standard_file;
 pub use toolbox_textedit as textedit;
 pub use toolbox_windows as windows;
 
+/// Include build-generated resource keys and commands in a private module.
+///
+/// Invoke once at the crate root. The build script must call
+/// `mac_build::build_guest()` to generate this application's `resource_ids.rs`.
+#[macro_export]
+macro_rules! include_resource_ids {
+    () => {
+        mod resources
+        {
+            use $crate as mac_abi;
+            ::core::include!(::core::concat!(::core::env!("OUT_DIR"), "/resource_ids.rs"));
+        }
+    };
+}
+
 
 #[derive(Clone, Copy)]
 pub struct System<'a>

@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Result, error};
 
+mod commands;
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest
@@ -276,19 +278,21 @@ pub enum MenuItem
 #[serde(deny_unknown_fields)]
 pub struct MenuItemDefinition
 {
-    pub text:    String,
+    pub text:           String,
     #[serde(default)]
-    pub key:     Option<String>,
+    pub key:            Option<String>,
     #[serde(default)]
-    pub mark:    u8,
+    pub mark:           u8,
     #[serde(default)]
-    pub style:   u8,
+    pub style:          u8,
     #[serde(default = "menu_enabled")]
-    pub enabled: bool,
+    pub enabled:        bool,
     #[serde(default)]
-    pub checked: bool,
+    pub checked:        bool,
     #[serde(default)]
-    pub command: Option<String>
+    pub command:        Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_symbol: Option<String>
 }
 fn menu_enabled() -> bool
 {
@@ -312,22 +316,6 @@ impl MenuItem
         {
             Self::Text(_) => true,
             Self::Definition(item) => item.enabled
-        }
-    }
-
-    fn command(&self) -> Result<u32>
-    {
-        match self
-        {
-            Self::Definition(item) =>
-            {
-                item.command
-                    .as_deref()
-                    .map(fourcc)
-                    .transpose()
-                    .map(|v| v.map_or(0, u32::from_be_bytes))
-            }
-            _ => Ok(0)
         }
     }
 
@@ -371,6 +359,11 @@ impl Manifest
     }
 
     pub fn validate(&self) -> Result<()>
+    {
+        self.validated_commands().map(|_| ())
+    }
+
+    fn validated_commands(&self) -> Result<commands::Commands>
     {
         if self.binary_name.as_deref().is_some_and(|name| {
                                           name.is_empty()
@@ -459,7 +452,7 @@ impl Manifest
                 return Err(error("compressed resource payloads are not supported"));
             }
         }
-        Ok(())
+        commands::Commands::parse(self)
     }
 
     pub fn binary_name(&self) -> &str
@@ -578,8 +571,9 @@ impl Manifest
         Ok(d)
     }
 
-    pub fn rust_ids(&self) -> String
+    pub fn rust_ids(&self) -> Result<String>
     {
+        let commands = self.validated_commands()?;
         let mut output = String::from("// Generated from resources.json; do not edit.\n");
         let module = crate::module::kind(self);
         let code = module.map_or(*b"RV64", PackageKind::code_type);
@@ -598,12 +592,19 @@ impl Manifest
                                                                      r.id)
                                                                 }))
         {
-            let kind = fourcc(kind).expect("validated manifest");
+            let kind = fourcc(kind)?;
             output.push_str(&format!("#[allow(dead_code)]\npub const {symbol}: \
                                       mac_abi::ResourceKey = \
                                       mac_abi::ResourceKey::from_bytes({kind:?}, {id});\n"));
         }
-        output
+        output.push_str("pub mod commands {\n");
+        for (symbol, value) in commands.symbols
+        {
+            output.push_str(&format!("    #[allow(dead_code)]\n    pub const {symbol}: u32 = \
+                                      0x{value:08x};\n"));
+        }
+        output.push_str("}\n");
+        Ok(output)
     }
 
     pub(crate) fn module_code_id(&self) -> i16
@@ -637,7 +638,7 @@ impl Manifest
     pub fn compile_resources(&self, path: &Path, elf: &[u8], artifacts: Option<&Path>)
                              -> Result<Vec<Resource>>
     {
-        self.validate()?;
+        let command_table = self.validated_commands()?;
         let mut resources = Vec::new();
         if !self.archive
         {
@@ -728,11 +729,11 @@ impl Manifest
                     out.extend_from_slice(&enable_bits.to_be_bytes());
                     out.extend(text::pstring(title)?);
                     let mut commands = Vec::new();
-                    for item in items
+                    for (item, command) in items.iter().zip(&command_table.menus[&definition.id])
                     {
                         out.extend(text::pstring(item.text())?);
                         out.extend_from_slice(&item.metadata()?);
-                        commands.extend_from_slice(&item.command()?.to_be_bytes());
+                        commands.extend_from_slice(&command.to_be_bytes());
                     }
                     if commands.iter().any(|byte| *byte != 0)
                     {
@@ -903,7 +904,7 @@ mod tests
         assert_eq!(&commands[..8], b"new sope");
         let vers = &resources.iter().find(|r| r.kind == *b"vers").unwrap().data;
         assert_eq!(&vers[..7], &[0, 0x10, 0x80, 0, 0, 0, 5]);
-        assert!(m.rust_ids().contains("FILE_MENU"));
+        assert!(m.rust_ids().unwrap().contains("FILE_MENU"));
         let mut m = manifest();
         m.cargo_version = "12.3.4".into();
         let resources = m.compile_resources(&path, &elf_fixture(), None).unwrap();
@@ -985,7 +986,7 @@ version="12.3.4-beta.2"
             m.role = "code_resource".into();
             m.extension_target = Some(target);
             m.validate().unwrap();
-            let generated = m.rust_ids();
+            let generated = m.rust_ids().unwrap();
             assert!(generated.contains(&format!("NATIVE_CODE: mac_abi::ResourceKey = \
                                                  mac_abi::ResourceKey::from_bytes({:?}, {});",
                                                 *b"RV64",
