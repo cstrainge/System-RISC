@@ -26,6 +26,9 @@ selection and xtask's build-directory lease apply. The native xtask executable
 also acts as Cargo's rustc proxy, allowing private sysroot discovery without
 requiring an executable shell/Python wrapper on Windows.
 
+SDK JSON/TOML files and captured compiler output use UTF-8 explicitly, including
+on Windows with a different default code page. No Python UTF-8-mode override is required.
+
 `prepare` materializes matching rust-src, applies the pinned patch series and
 overlays, and records hashes. It exposes the original host-target libraries
 read-only through a directory link, or copies them where links are unavailable.
