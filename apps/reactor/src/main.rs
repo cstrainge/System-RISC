@@ -1,7 +1,5 @@
 //! First inspection customer. Plain managed lists precede the shared view
 //! protocol; incomplete model coverage is visible rather than fabricated.
-#![no_std]
-#![no_main]
 extern crate alloc;
 use core::{cell::Cell,
            fmt::{self, Write}};
@@ -623,8 +621,9 @@ impl<'a> Panes<'a>
     }
 }
 
-fn run(system: &System<'_>) -> ToolboxResult<()>
+fn main() -> ToolboxResult<()>
 {
+    let system = &System::new()?;
     system.menus().clear()?;
     system.menus().install_menu_resource(ResourceScope::Application, 128)?;
     system.menus().install_menu_resource(ResourceScope::Application, 129)?;
@@ -840,5 +839,3 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
         }
     }
 }
-
-mac_toolbox::application!(run);

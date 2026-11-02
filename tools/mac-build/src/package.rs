@@ -101,6 +101,17 @@ pub fn build_requiring(manifest_path: &Path, elf_path: &Path, out: &Path,
                        runtime: &[requirements::Requirement])
                        -> Result<Value>
 {
+    let artifacts =
+        elf_path.parent().ok_or_else(|| error("native ELF has no artifact directory"))?;
+    build_requiring_with_artifacts(manifest_path, elf_path, out, runtime, artifacts)
+}
+
+/// Package an application whose independently loaded definitions were built
+/// for the low-level target in a separate final artifact directory.
+pub fn build_requiring_with_artifacts(manifest_path: &Path, elf_path: &Path, out: &Path,
+                                      runtime: &[requirements::Requirement], artifacts: &Path)
+                                      -> Result<Value>
+{
     let mut manifest = Manifest::read(manifest_path)?;
     manifest.require_runtime(runtime)?;
     if manifest.archive
@@ -114,13 +125,7 @@ pub fn build_requiring(manifest_path: &Path, elf_path: &Path, out: &Path,
     strip_runtime(elf_path, &runtime)?;
     let elf_bytes = fs::read(&runtime)?;
     elf::decode(&elf_bytes, descriptor.load_base, descriptor.load_limit)?;
-    let mut compiled =
-        manifest.compile_resources(manifest_path,
-                                   &elf_bytes,
-                                   Some(elf_path.parent()
-                                                .ok_or_else(|| {
-                                                    error("native ELF has no artifact directory")
-                                                })?))?;
+    let mut compiled = manifest.compile_resources(manifest_path, &elf_bytes, Some(artifacts))?;
     if matches!(descriptor.role, Role::Application | Role::CodeResource)
     {
         let image = elf::decode(&debug_elf, descriptor.load_base, descriptor.load_limit)?;

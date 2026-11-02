@@ -1,6 +1,4 @@
 //! ResEdit read-only resource browser with lossless native JSON export.
-#![no_std]
-#![no_main]
 use core::fmt::{self, Write};
 
 use mac_toolbox::{files::{CatalogInfo, ROOT_ID},
@@ -783,8 +781,9 @@ fn document_event<'a>(system: &System<'a>, document: &mut documents::Document<'a
     }
     Ok(())
 }
-fn run(system: &System<'static>) -> ToolboxResult<()>
+fn main() -> ToolboxResult<()>
 {
+    let system = &System::new()?;
     system.menus().clear()?;
     system.menus().install_menu_resource(ResourceScope::Application, 128)?;
     let mut application = documents::Application::acquire()?;
@@ -800,4 +799,3 @@ fn run(system: &System<'static>) -> ToolboxResult<()>
         }
     }
 }
-mac_toolbox::application!(run);

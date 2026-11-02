@@ -1,6 +1,4 @@
 //! Finder is a separate resource-fork application using System Toolbox services.
-#![no_std]
-#![no_main]
 
 use mac_toolbox::{System, *};
 mac_toolbox::include_resource_ids!();
@@ -124,8 +122,9 @@ fn open_about(system: &System<'_>, id: &mut WindowId) -> Result<(), Error>
     system.select_window(*id)?;
     about(system, *id)
 }
-fn finder(system: &System<'_>) -> Result<(), Error>
+fn main() -> Result<(), Error>
 {
+    let system = &System::new()?;
     system.log("Finder: native application entry reached\n")?;
     if system.capabilities() & CAP_GRAPHICS == 0
     {
@@ -617,5 +616,3 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         }
     }
 }
-
-mac_toolbox::application!(finder);

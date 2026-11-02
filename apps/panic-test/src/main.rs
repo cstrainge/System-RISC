@@ -1,6 +1,4 @@
 //! Deliberate application panics exercise the shared, resident crash viewer.
-#![no_std]
-#![no_main]
 
 use mac_toolbox::{quickdraw::fonts::FontSelection, *};
 
@@ -98,8 +96,9 @@ fn command(system: &System<'_>, command: u32) -> Result<bool, Error>
     }
 }
 
-fn run(system: &System<'_>) -> Result<(), Error>
+fn main() -> Result<(), Error>
 {
+    let system = &System::new()?;
     system.menus().clear()?;
     system.menus().install_menu_resource(ResourceScope::Application, 128)?;
     let mut buffer = [0; 128];
@@ -172,5 +171,3 @@ fn run(system: &System<'_>) -> Result<(), Error>
         }
     }
 }
-
-mac_toolbox::application!(run);

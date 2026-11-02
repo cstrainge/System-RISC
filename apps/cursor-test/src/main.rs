@@ -1,6 +1,4 @@
 //! Interactive public Toolbox cursor and automatic TextEdit hover exerciser.
-#![no_std]
-#![no_main]
 
 
 use mac_toolbox::{quickdraw::{cursors::StandardCursor, fonts::FontSelection},
@@ -139,8 +137,9 @@ fn choose(system: &System<'_>, region: usize) -> Result<(), Error>
     system.log(REGION_LOGS[region])
 }
 
-fn run(system: &System<'_>) -> Result<(), Error>
+fn main() -> Result<(), Error>
 {
+    let system = &System::new()?;
     system.menus().clear()?;
     for id in [128, 129]
     {
@@ -358,5 +357,3 @@ fn run(system: &System<'_>) -> Result<(), Error>
     editor_owner.dispose()?;
     system.quickdraw().cursors().init()
 }
-
-mac_toolbox::application!(run);

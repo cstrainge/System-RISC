@@ -196,6 +196,8 @@ def build_std(args, sdk: dict) -> None:
                "-Zjson-target-spec"]
     # Explicit settings outrank user Cargo configuration and match the recorded
     # workspace release profile. No host environment changes SDK code generation.
+    if args.features:
+        command.extend(["--features", args.features])
     profile = tomllib.loads((SOURCE / "Cargo.toml").read_text())["profile"]["release"]
     for name in ("panic", "opt-level", "lto", "codegen-units", "debug", "strip"):
         command.extend(["--config", f"profile.release.{name}={json.dumps(profile[name])}"])
@@ -243,16 +245,22 @@ def built_sdk(sdk: dict) -> bool:
                for path, digest in result["libraries"].items())
 
 
-def build_app(args, sdk: dict) -> None:
+def application_input(args) -> tuple:
     if args.manifest_path is None:
         raise RuntimeError("sdk app requires --manifest-path Cargo.toml")
     manifest = args.manifest_path.resolve()
     cargo = tomllib.loads(manifest.read_text())
     resources = manifest.parent / "resources.json"
     resource_data = json.loads(resources.read_text())
-    if resource_data.get("role") != "application" or resource_data.get("file_type") != "APPL":
-        raise RuntimeError("sdk app requires an ordinary native APPL application manifest")
-    binary = resource_data.get("binary_name", cargo["package"]["name"])
+    if (resource_data.get("role") != "application" or
+            resource_data.get("file_type") not in ("APPL", "FNDR")):
+        raise RuntimeError("sdk app requires a native application role with APPL or FNDR file type")
+    return manifest, cargo, resources, resource_data
+
+
+def build_app(args, sdk: dict, application: tuple) -> None:
+    manifest, cargo, resources, resource_data = application
+    binary = resource_data.get("binary_name", resource_data["name"])
     identity = hashlib.sha256(str(manifest).encode()).hexdigest()
     output = args.build_dir.resolve() / "applications" / identity[:16]
     output.mkdir(parents=True, exist_ok=True)
@@ -266,9 +274,13 @@ def build_app(args, sdk: dict) -> None:
     env.update(RUSTC=str(args.compiler_proxy.resolve()),
                SYSTEM7_SDK_COMPILER=sdk["rustc"], SYSTEM7_SDK_SYSROOT=sdk["sysroot"],
                RUST_TARGET_PATH=sdk["root"], CARGO_ENCODED_RUSTFLAGS="-C\x1frelocation-model=pic")
+    if args.artifact_dir is not None:
+        env["SYSTEM7_CARGO_ARTIFACT_DIR"] = str(args.artifact_dir.resolve())
     command = [sdk["cargo"], "build", "--release", "--locked", "--manifest-path", str(manifest),
                "--bin", binary, "--target", sdk["target"], "--target-dir", str(target),
                "--message-format=json-render-diagnostics", "-Zjson-target-spec"]
+    if args.features:
+        command.extend(["--features", args.features])
     profile = tomllib.loads((SOURCE / "Cargo.toml").read_text())["profile"]["release"]
     for name in ("panic", "opt-level", "lto", "codegen-units", "debug", "strip"):
         command.extend(["--config", f"profile.release.{name}={json.dumps(profile[name])}"])
@@ -285,6 +297,8 @@ def build_app(args, sdk: dict) -> None:
             binaries.append(message["executable"])
     report = {"sdk_key": sdk["key"], "command": command, "returncode": completed.returncode,
               "resource_manifest": str(resources), "output": str(output / "package"),
+              "features": args.features,
+              "definition_artifact_dir": env.get("SYSTEM7_CARGO_ARTIFACT_DIR"),
               "cargo_manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
               "resource_manifest_sha256": hashlib.sha256(resources.read_bytes()).hexdigest(),
               "state": "compile-failed", "native_execution_observed": False}
@@ -304,14 +318,17 @@ def main() -> None:
     parser.add_argument("--compiler-proxy", required=True, type=Path)
     parser.add_argument("--llvm-profile", required=True)
     parser.add_argument("--manifest-path", type=Path)
+    parser.add_argument("--features", help="Cargo application features (comma-separated)")
+    parser.add_argument("--artifact-dir", type=Path, help="Final low-level definition profile")
     args = parser.parse_args()
+    application = application_input(args) if args.action == "app" else None
     sdk = prepare(args)
     if args.action == "build":
         build_std(args, sdk)
     elif args.action == "app":
         if not built_sdk(sdk):
             build_std(args, sdk)
-        build_app(args, sdk)
+        build_app(args, sdk, application)
 
 
 if __name__ == "__main__":

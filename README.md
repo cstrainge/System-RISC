@@ -270,8 +270,9 @@ The checked-in extracted assets suffice to build these Rust packages. Reproducin
 the original captures and resource extraction needs the reference System 7.6.1
 installation, font suitcases, ROM and Retro68 toolchain described in the analysis
 documents. Cargo downloads the host tools' dependencies
-on the first build. Guest code uses no `std`. The ROM and System supply their
-own allocators; Finder and the definitions require no heap.
+on the first build. Installed application images use the pinned System RISC std
+SDK and ordinary Rust `main`. ROM, System, drivers, extensions and definitions
+remain `no_std`; runtime adoption gates are recorded in [RUST-STD](docs/RUST-STD.md).
 
 ## Layout
 

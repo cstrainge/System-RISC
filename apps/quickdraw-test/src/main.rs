@@ -1,6 +1,4 @@
 //! Standalone QuickDraw exerciser; all drawing is provided by System services.
-#![no_std]
-#![no_main]
 
 
 use mac_toolbox::*;
@@ -21,8 +19,9 @@ const PAGE_COMMANDS: [u32; 10] = [resources::commands::P000,
                                   resources::commands::P008,
                                   resources::commands::P009];
 
-fn run(system: &System<'_>) -> Result<(), Error>
+fn main() -> Result<(), Error>
 {
+    let system = &System::new()?;
     if system.capabilities() & CAP_GRAPHICS == 0
     {
         return Err(Error::NotSupported);
@@ -125,5 +124,3 @@ fn run(system: &System<'_>) -> Result<(), Error>
         }
     }
 }
-
-mac_toolbox::application!(run);
