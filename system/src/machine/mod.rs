@@ -1,5 +1,6 @@
 //! Machine-specific display, device and trap entry adapters.
 pub(crate) mod display;
+pub(crate) mod video;
 pub(crate) mod memory;
 pub(crate) mod pages;
 pub(crate) mod driver_devices;
