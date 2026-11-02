@@ -3,7 +3,13 @@ fn native_folder<D: WritableBlockDevice>(v: &mut mac_hfs_b::Volume<'_, D>, name:
                                          create: bool, when: u64)
                                          -> MutationResult<mac_hfs_b::Entry>
 {
-    match v.lookup(2, name)
+    native_folder_in(v, 2, name, flags, create, when)
+}
+fn native_folder_in<D: WritableBlockDevice>(v: &mut mac_hfs_b::Volume<'_, D>, parent: u32,
+                                             name: &str, flags: u16, create: bool, when: u64)
+                                             -> MutationResult<mac_hfs_b::Entry>
+{
+    match v.lookup(parent, name)
     {
         Ok(e) if e.directory => Ok(e),
         Ok(_) => Err(MutationError::Exists),
@@ -11,7 +17,7 @@ fn native_folder<D: WritableBlockDevice>(v: &mut mac_hfs_b::Volume<'_, D>, name:
         {
             let mut info = [0; 32];
             info[8..10].copy_from_slice(&flags.to_be_bytes());
-            v.create_with_finder_info(2, name, true, info, Timestamp(when)).map_err(mutation_error)
+            v.create_with_finder_info(parent, name, true, info, Timestamp(when)).map_err(mutation_error)
         }
         Err(e) => Err(mutation_error(e))
     }
@@ -67,12 +73,24 @@ impl<D: WritableBlockDevice> Volume<'_, D>
         {
             b"desk" => ("Desktop Folder", 0x5000),
             b"trsh" => ("Trash", 0x1000),
+            b"font" => ("Fonts", 0x1000),
             _ => return Err(MutationError::NotFound)
         };
         let e = match &mut self.backend
         {
             Backend::Hfs(v) => v.find_folder(folder_type, create, legacy_time(when)?)?.into(),
-            Backend::HfsB(v) => native_folder(v, name, flags, create, when)?.into()
+            Backend::HfsB(v) =>
+            {
+                let parent = if folder_type == *b"font"
+                {
+                    v.blessed_folder().map_err(mutation_error)?.id
+                }
+                else
+                {
+                    2
+                };
+                native_folder_in(v, parent, name, flags, create, when)?.into()
+            }
         };
         self.refresh();
         Ok(e)

@@ -76,6 +76,16 @@
       }
     },
     {
+      "type": "WIND",
+      "id": 2003,
+      "symbol": "FONT_SUITCASE_LAYOUT",
+      "name": "Font suitcase native Finder layout",
+      "payload": {
+        "format": "hex",
+        "hex": "00600064015001cc000801000100000000000000"
+      }
+    },
+    {
       "type": "MENU",
       "id": 1252,
       "symbol": "FILE_MENU",

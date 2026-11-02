@@ -466,7 +466,7 @@ impl super::Desktop
                                                          v: baseline },
                                        ..Default::default() },
                        text,
-                       crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)
+                       crate::kernel::fonts().ok_or(NOT_SUPPORTED)?.as_ref())
     }
 
     fn is_current_finder_report(&self) -> bool

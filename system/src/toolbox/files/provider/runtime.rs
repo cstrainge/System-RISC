@@ -756,7 +756,23 @@ fn folder_name(call: &FileCall) -> Result<&'static str, Status>
     {
         b"desk" => Ok("Desktop Folder"),
         b"trsh" => Ok("Trash"),
+        b"font" => Ok("Fonts"),
         _ => Err(NOT_FOUND)
+    }
+}
+fn folder_parent(call: &FileCall) -> Result<u32, Status>
+{
+    if call.operation == FIND_FOLDER && call.file_type == *b"font"
+    {
+        files(|manager| {
+            let parent = manager.volumes.get(call.volume).and_then(super::super::Mounted::info)
+                .ok_or(NOT_FOUND)?.blessed_folder;
+            if parent < ROOT_ID { Err(NOT_FOUND) } else { Ok(parent) }
+        })
+    }
+    else
+    {
+        Ok(ROOT_ID)
     }
 }
 fn reply(call: &mut FileCall, output: &mut [u8], result: Result<Reply, Status>) -> Status

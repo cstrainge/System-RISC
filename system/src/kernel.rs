@@ -24,7 +24,10 @@ impl Write for Serial
 static HEAP: crate::allocator::ResidentHeap = crate::allocator::ResidentHeap::empty();
 static BOOT_LOG: Once<Option<LogFn>> = Once::new();
 static RESOURCE_FILES: Once<crate::toolbox::resources::manager::Files> = Once::new();
-static FONTS: Once<crate::toolbox::quickdraw::fonts::FontManager> = Once::new();
+static FONTS: Once<alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>> = Once::new();
+static INSTALLED_FONTS: spinning_top::Spinlock<
+    Option<alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>>> =
+    spinning_top::Spinlock::new(None);
 static DESKTOP: TryState<crate::toolbox::runtime::Desktop> = TryState::new();
 static SCRAP: TryState<crate::toolbox::scrap::Manager> = TryState::new();
 static MEMORY: TryState<crate::toolbox::memory::Manager> = TryState::new();
@@ -390,9 +393,30 @@ pub(crate) fn with_scrap_owned<A, R>(argument: A,
 {
     SCRAP.with_owned(argument, call)
 }
-pub(crate) fn fonts() -> Option<&'static crate::toolbox::quickdraw::fonts::FontManager>
+pub(crate) fn fonts() -> Option<alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>>
 {
-    FONTS.get()
+    use mac_object_table::shared::InvocationGate;
+    crate::toolbox::handles::InvocationGate::run(|| {
+        INSTALLED_FONTS.lock().as_ref().or_else(|| FONTS.get()).cloned()
+    })
+}
+
+pub(crate) fn publish_fonts(
+    baseline: &alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>,
+    fonts: alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>) -> Result<(), Status>
+{
+    use mac_object_table::shared::InvocationGate;
+    let retired = crate::toolbox::handles::InvocationGate::run(|| {
+        let mut slot = INSTALLED_FONTS.lock();
+        let current = slot.as_ref().or_else(|| FONTS.get()).ok_or(NOT_SUPPORTED)?;
+        if !alloc::sync::Arc::ptr_eq(current, baseline)
+        {
+            return Err(SCAN_STALE);
+        }
+        Ok(slot.replace(fonts))
+    })?;
+    drop(retired);
+    Ok(())
 }
 /// Reclaimable rendering caches must leave room for application loading and
 /// thread stacks. Read under the allocator's own synchronization boundary.
@@ -614,7 +638,7 @@ pub(crate) fn with_resources_in<R>(scope: mac_abi::resources::Scope,
     let application = primary.as_ref().map_or(&[][..], |read| &read.source().resources[..]);
     let origin = primary.as_ref().map_or(0, |read| read.binding().id());
     Ok(call(crate::toolbox::resources::manager::Manager::new(&files.system, application,
-        fonts().ok_or(NOT_SUPPORTED)?.resources()).with_images(&catalog, origin, primary.as_ref())))
+        FONTS.get().ok_or(NOT_SUPPORTED)?.resources()).with_images(&catalog, origin, primary.as_ref())))
 }
 
 fn launch(info: &BootInfo) -> Result<(), crate::machine::scheduler::StartError>
@@ -741,6 +765,9 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
           })?;
     serial!("FONTS_READY: families={} resources loaded from System", fonts.catalog().len());
     // Progress uses the real loaded CDEF before any application loop exists.
+    let fonts = alloc::sync::Arc::try_new(fonts).map_err(|_| {
+        recovery_boot_error("System font snapshot admission failed", NO_MEMORY)
+    })?;
     let fonts = FONTS.call_once(|| fonts);
     let files = RESOURCE_FILES.call_once(|| crate::toolbox::resources::manager::Files { system });
     crate::toolbox::standard_file::prepare_templates().map_err(|status| {

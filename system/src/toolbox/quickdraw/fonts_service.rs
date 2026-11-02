@@ -15,6 +15,28 @@ pub fn query(manager: &FontManager, call: &mut FontCall, text: &str) -> Status
 {
     let name = match call.operation
     {
+        FONT_REVISION =>
+        {
+            call.index = manager.revision();
+            return OK;
+        }
+        FONT_KEY => match manager.family_key(call.selection.family)
+        {
+            Some(key) => key,
+            None => return NOT_FOUND
+        },
+        FONT_KEY_ID =>
+        {
+            match manager.family_id_for_key(text)
+            {
+                Some(id) =>
+                {
+                    call.selection.family = id;
+                    return OK;
+                }
+                None => return NOT_FOUND
+            }
+        }
         FONT_COUNT =>
         {
             call.index = manager.catalog().len() as u32;

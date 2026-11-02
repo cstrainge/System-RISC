@@ -72,6 +72,7 @@ pub struct Desktop
 {
     pub(in crate::toolbox) drag:      super::drag::Manager,
     standard_file:                    super::standard_file::Manager,
+    font_suitcases:                   super::font_suitcases::Manager,
     scroll_boxes:                     super::controls::scrollbox::Manager,
     controls:                         super::controls::objects::Manager,
     crash:                            super::crashes::Manager,
@@ -149,6 +150,13 @@ impl super::standard_file::FileDialogHost for Desktop
     fn file_dialogs(&mut self) -> &mut super::standard_file::Manager
     {
         &mut self.standard_file
+    }
+}
+impl super::font_suitcases::Host for Desktop
+{
+    fn font_suitcases(&mut self) -> &mut super::font_suitcases::Manager
+    {
+        &mut self.font_suitcases
     }
 }
 
@@ -506,6 +514,7 @@ impl Desktop
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
                   standard_file: super::standard_file::Manager::new(super::handles::file_dialog_kinds()?)?,
+                  font_suitcases: super::font_suitcases::Manager::new(super::handles::font_suitcase_kinds()?)?,
                   scroll_boxes: super::controls::scrollbox::Manager::new(super::handles::scroll_box_kinds()?)?,
                   controls,
                   dialogs: super::dialogs::Alerts::new(super::handles::alert_kinds()?, processes.ledger(finder)?)?,
@@ -1137,7 +1146,8 @@ impl Desktop
         let drawing = self.scroll_boxes.request(&recipient,
                                                  &storage,
                                                  call,
-                                                 crate::kernel::fonts().ok_or(NOT_SUPPORTED)?,
+                                                 crate::kernel::fonts().ok_or(NOT_SUPPORTED)?
+                                                                       .as_ref(),
                                                  entry,
                                                  crate::machine::traps::gateway)?;
         if !call.surface.is_null()
@@ -3097,7 +3107,7 @@ impl super::classic::Services for Desktop
         let mut call = mac_abi::quickdraw::FontCall { operation,
                                                       selection,
                                                       ..Default::default() };
-        let status = fonts_service::query(fonts, &mut call, text);
+        let status = fonts_service::query(&fonts, &mut call, text);
         if status != OK
         {
             return Err(status);
@@ -3118,7 +3128,7 @@ impl super::classic::Services for Desktop
                                            baseline: content.port.state.pen_location,
                                            color: content.port.state.foreground,
                                            ..Default::default() };
-        self.font_draw(&mut call, text, crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)?;
+        self.font_draw(&mut call, text, crate::kernel::fonts().ok_or(NOT_SUPPORTED)?.as_ref())?;
         let content = self.content_mut(id.0)?;
         content.port.state.pen_location.h =
             content.port.state.pen_location.h.wrapping_add(call.width);

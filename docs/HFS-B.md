@@ -16,7 +16,8 @@ loading has a4MiB selected-payload budget on the current8MiB heap, independent o
 total fork length. See [the implemented storage architecture](../ARCHITECTURE.md#native-hfs-b-storage).
 
 User-state preservation across regenerated images includes
-`System Folder/Preferences`, `Documents` and the startup volume's `Desktop Folder`.
+`System Folder/Preferences`, `System Folder/Fonts`, `Documents` and the startup
+volume's `Desktop Folder`.
 Desktop Folders on other mounted volumes remain on those volumes; rebuilding the
 startup image does not rewrite them. The Linux tool provides recursive,
 path-based copy-in/copy-out, independent of catalog IDs. Exported bundles preserve

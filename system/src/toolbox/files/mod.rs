@@ -105,6 +105,8 @@ use crate::toolbox::handles::{Kind, KindLease, OwnerRef, Table};
 pub(crate) mod write;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod module_preferences;
+#[cfg(target_arch = "riscv64")]
+pub(crate) mod installed_fonts;
 mod moves;
 const MAX_PATH: usize = 4096;
 
@@ -425,7 +427,7 @@ impl Manager
             {
                 return Err(BAD_ARGUMENT);
             }
-            if !matches!(&call.file_type, b"desk" | b"trsh")
+            if !matches!(&call.file_type, b"desk" | b"trsh" | b"font")
             {
                 return Err(NOT_FOUND);
             }
@@ -1137,6 +1139,11 @@ impl Manager
             match call.operation
             {
                 NEW_FOLDER => Some(if call.cnid == 0 { ROOT_ID } else { call.cnid }),
+                FIND_FOLDER if call.file_type == *b"font" =>
+                {
+                    Some(self.volumes.get(call.volume).and_then(Mounted::info)
+                        .ok_or(NOT_FOUND)?.blessed_folder)
+                }
                 TRASH_DIRECTORY | FIND_FOLDER => Some(ROOT_ID),
                 EMPTY_TRASH | SET_ICON_LOCATION | SET_FOLDER_STATE => None,
                 _ => Some(self.entry(call.volume, call.cnid)?.parent)
@@ -1342,7 +1349,11 @@ impl Manager
             {
                 return Err(BAD_ARGUMENT);
             }
-            let name = if call.operation == FIND_FOLDER && call.file_type == *b"desk"
+            let name = if call.operation == FIND_FOLDER && call.file_type == *b"font"
+            {
+                "Fonts"
+            }
+            else if call.operation == FIND_FOLDER && call.file_type == *b"desk"
             {
                 "Desktop Folder"
             }
@@ -1350,7 +1361,20 @@ impl Manager
             {
                 "Trash"
             };
-            match self.lookup(call.volume, ROOT_ID, name)
+            let parent = if call.file_type == *b"font"
+            {
+                self.volumes.get(call.volume).and_then(Mounted::info)
+                    .ok_or(NOT_FOUND)?.blessed_folder
+            }
+            else
+            {
+                ROOT_ID
+            };
+            if parent < ROOT_ID
+            {
+                return Err(NOT_FOUND);
+            }
+            match self.lookup(call.volume, parent, name)
             {
                 Ok(entry) =>
                 {

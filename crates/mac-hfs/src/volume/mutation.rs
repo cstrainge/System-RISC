@@ -941,9 +941,18 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         {
             b"desk" => (b"Desktop Folder", 0x5000),
             b"trsh" => (b"Trash", 0x1000),
+            b"font" => (b"Fonts", 0x1000),
             _ => return Err(MutationError::NotFound)
         };
-        if let Some(e) = self.lookup(2, name).map_err(|_| MutationError::Io)?
+        let parent = if folder_type == *b"font"
+        {
+            self.blessed_folder().map_err(|_| MutationError::NotFound)?.id
+        }
+        else
+        {
+            2
+        };
+        if let Some(e) = self.lookup(parent, name).map_err(|_| MutationError::Io)?
         {
             return if e.directory { Ok(e) } else { Err(MutationError::Exists) };
         }
@@ -953,9 +962,9 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         }
         self.writable()?;
         let mut cat = self.mutation_catalog()?;
-        let id = cat.add_folder(2, name, when, flags)?;
+        let id = cat.add_folder(parent, name, when, flags)?;
         let entry = cat.entries[cat.index(id)?].clone();
-        self.finish_mutation(cat, when, &[2], &[], None)?;
+        self.finish_mutation(cat, when, &[parent], &[], None)?;
         Ok(entry)
     }
 

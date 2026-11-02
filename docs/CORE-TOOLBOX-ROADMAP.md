@@ -352,16 +352,19 @@ for current evidence, service requirements, Finder migration and guest tests.
 
 ### P9 — System Fonts folder
 
-Status: backlog. Build a Fonts folder inside the blessed System Folder and load
-installed font suitcases/files through the resident Font Manager. Resolve the
-active installation by identity; provide native folder lookup and legacy
-FindFolder behavior. Keep System-bundled UI/emoji fonts as dependable fallbacks.
+Status: partial implementation; bounded single-hart native folder-watch and
+suitcase-viewer workflows have been observed, not broad OS qualification. The builder
+creates Fonts inside the blessed System Folder. System watches that startup
+location, validates classic suitcases and supported static TrueType files, and
+publishes immutable catalogs while retaining old selections. Native FindFolder
+accepts `'font'`; System-bundled UI fonts remain available.
 
-Preserve source-local resource/family associations, handle duplicates explicitly,
-and share validated payloads across apps. Start with boot-time catalog discovery
-and restart-required installation; live refresh/removal needs snapshot lifetime
-and generation/cache gates. Include resource-based Finder icons, original install
-behavior, public SDK enumeration/rendering and private boot tests. See
+Source-local associations remain independent. Public SDK clients can enumerate
+families, observe revisions and persist content keys; Text Edit has a live picker.
+Finder has read-only suitcase family-list windows, and installed fonts join
+lossless user-file preservation. Original installation/drop routing, legacy
+resource-chain views, broader format coverage and lifecycle/pressure acceptance
+remain separate gates. See
 [the font installation plan](FONTS.md#fonts-folder-and-discovery).
 
 ### P10 — OpenType and color fonts

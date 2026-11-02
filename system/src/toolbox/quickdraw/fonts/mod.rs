@@ -6,7 +6,7 @@
 //! shaping are separate from this classic glyph-at-a-time service.
 #![forbid(unsafe_code)]
 
-use alloc::{string::String, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
 
 use mac_abi::{BAD_ARGUMENT, NO_MEMORY, NOT_FOUND, NOT_SUPPORTED, Status};
 use mac_formats::resource::Resource;
@@ -18,6 +18,10 @@ mod outline;
 mod hinted;
 mod monochrome;
 mod scratch;
+mod installed;
+pub use installed::{FontInstallError, FontInstallFailure, FontOrigin, FontSourceKey,
+                    InspectedFontFamily, InstalledFontData, InstalledFontSnapshot,
+                    InstalledFontSource, MAX_INSTALLED_SOURCE_BYTES, MAX_INSTALLED_SOURCES};
 #[cfg(test)]
 mod tests;
 
@@ -83,9 +87,13 @@ pub enum FontSource
 #[derive(Clone, Debug)]
 pub struct FontFamily
 {
-    pub id:   i16,
-    pub name: String,
-    faces:    Vec<Association>
+    pub id:             i16,
+    pub name:           String,
+    pub origin:         FontOrigin,
+    pub style_name:     Option<String>,
+    pub classic_family: Option<i16>,
+    key:                String,
+    faces:              Vec<Association>
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -94,6 +102,7 @@ struct Association
     size:     i16,
     face:     u16,
     resource: usize,
+    storage:  usize,
     validity: FaceValidity
 }
 
@@ -152,8 +161,12 @@ impl FaceValidity
 #[derive(Default)]
 pub struct FontManager
 {
-    resources: Vec<Resource>,
-    families:  Vec<FontFamily>
+    resources:   Vec<Arc<Vec<Resource>>>,
+    families:    Vec<Arc<FontFamily>>,
+    available:   Vec<Arc<FontFamily>>,
+    installed:   Vec<Arc<installed::RetainedSource>>,
+    next_family: u32,
+    revision:    u32
 }
 
 struct Resolved<'a>
@@ -199,7 +212,10 @@ impl FontManager
             |resource: &Resource| matches!(&resource.kind, b"FOND" | b"FONT" | b"NFNT" | b"sfnt");
         let font_count = resources.iter().filter(|resource| is_font(resource)).count();
         let mut manager = Self::default();
-        manager.resources.try_reserve_exact(font_count).map_err(|_| NO_MEMORY)?;
+        manager.resources.try_reserve_exact(1).map_err(|_| NO_MEMORY)?;
+        let mut payloads = Vec::new();
+        payloads.try_reserve_exact(font_count).map_err(|_| NO_MEMORY)?;
+        let mut payloads = Arc::try_new(payloads).map_err(|_| NO_MEMORY)?;
         // Catalog indexes refer to the same stable filtered order that the
         // final extraction uses, without cloning or moving any payload early.
         for resource in resources.iter().filter(|resource| is_font(resource))
@@ -260,6 +276,7 @@ impl FontManager
                     faces.push(Association { size,
                                              face,
                                              resource: index,
+                                             storage: 0,
                                              validity });
                 }
             }
@@ -281,40 +298,96 @@ impl FontManager
                 }
             };
             manager.families.try_reserve(1).map_err(|_| NO_MEMORY)?;
-            manager.families.push(FontFamily { id,
-                                               name,
-                                               faces });
+            let mut key = String::new();
+            key.try_reserve_exact(20).map_err(|_| NO_MEMORY)?;
+            use core::fmt::Write;
+            write!(&mut key, "bundled:{id}").map_err(|_| BAD_ARGUMENT)?;
+            manager.families.push(Arc::try_new(FontFamily { id,
+                                                            name,
+                                                            key,
+                                                            origin: FontOrigin::Bundled,
+                                                            style_name: None,
+                                                            classic_family: Some(id),
+                                                            faces }).map_err(|_| NO_MEMORY)?);
         }
         // Family IDs are unique, so the in-place unstable order is identical.
         manager.families.sort_unstable_by_key(|family| family.id);
+        manager.available.try_reserve_exact(manager.families.len()).map_err(|_| NO_MEMORY)?;
+        manager.available.extend(manager.families.iter().cloned());
+        manager.next_family = 256;
+        manager.revision = 1;
         // All fallible work is complete. Extraction moves fonts exactly once,
         // preserving the ordinary resources' order and their original capacity.
+        let output = Arc::get_mut(&mut payloads).ok_or(BAD_ARGUMENT)?;
         for resource in resources.extract_if(.., |resource| is_font(resource))
         {
-            manager.resources.push(resource);
+            output.push(resource);
         }
+        manager.resources.push(payloads);
         Ok(manager)
     }
 
+    /// The legacy Resource Manager chain contains bundled resources only.
     pub fn resources(&self) -> &[Resource]
     {
-        &self.resources
+        self.bundled_resources()
     }
 
-    pub fn catalog(&self) -> &[FontFamily]
+    pub fn bundled_resources(&self) -> &[Resource]
     {
-        &self.families
+        if self.installed.iter().any(|source| source.storage == 0)
+        {
+            return &[];
+        }
+        self.resources.first().map_or(&[], |resources| resources.as_slice())
+    }
+
+    /// Immutable renderer backing, including sources hidden from enumeration.
+    pub fn retained_resources(&self) -> impl Iterator<Item = &Resource>
+    {
+        self.resources.iter().flat_map(|resources| resources.iter())
+    }
+
+    pub fn catalog(&self) -> &[Arc<FontFamily>]
+    {
+        &self.available
+    }
+
+    pub fn revision(&self) -> u32
+    {
+        self.revision
+    }
+
+    /// Numeric IDs are valid only within one manager lineage, not across boots.
+    /// Retained identity remains queryable after removal from the current list.
+    pub fn family(&self, id: i16) -> Option<&FontFamily>
+    {
+        let id = if id == 1 { 3 } else { id };
+        self.families.iter().find(|family| family.id == id).map(Arc::as_ref)
+    }
+
+    /// ASCII persistence identity, at most 128 bytes. Installed identities bind
+    /// the exact source-local font resource content and local face/family.
+    pub fn family_key(&self, id: i16) -> Option<&str>
+    {
+        self.family(id).map(|family| family.key.as_str())
+    }
+
+    /// Only available families can be selected afresh by persistence identity.
+    pub fn family_id_for_key(&self, key: &str) -> Option<i16>
+    {
+        self.available.iter().find(|family| family.key == key).map(|family| family.id)
     }
 
     pub fn family_id(&self, name: &str) -> Option<i16>
     {
-        self.families.iter().find(|family| family.name.eq_ignore_ascii_case(name)).map(|f| f.id)
+        self.available.iter().find(|family| family.name.eq_ignore_ascii_case(name)).map(|f| f.id)
     }
 
     pub fn family_name(&self, id: i16) -> Option<&str>
     {
         let id = if id == 1 { 3 } else { id };
-        self.families.iter().find(|family| family.id == id).map(|family| family.name.as_str())
+        self.family(id).map(|family| family.name.as_str())
     }
 
     fn resolve(&self, mut selection: FontSelection, preference: FontPreference)
@@ -354,7 +427,7 @@ impl FontManager
             (different, format, if face.size == 0 { 0 } else { wrong_size })
         };
         let association = family.faces.iter().min_by_key(|face| score(face)).ok_or(NOT_FOUND)?;
-        let resource = &self.resources[association.resource];
+        let resource = &self.resources[association.storage][association.resource];
         // Immutable source validation is cached at catalog admission, not
         // repeated for every text-width request or drawing snapshot.
         match association.validity

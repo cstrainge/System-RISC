@@ -4,8 +4,9 @@ The resident System owns the font catalog and payloads. Applications submit a
 family, point size, face and UTF-8 text through System services; font files are
 not application dependencies. `FontManager::take_resources` moves the font
 resources out of the decoded System fork, avoiding another copy of their data.
-The manager is immutable after initialization and reparses borrowed font tables
-on demand without storing self-referential pointers.
+Each published manager is immutable. Replacement snapshots share immutable
+payloads through fallibly allocated `Arc` storage and reparse borrowed rendering
+tables without self-referential pointers.
 
 The original System 7.6.1 font bundle contains nine families, 17 scalable faces
 and the installed bitmap strikes: Chicago, Geneva, Monaco, New York, Palatino,
@@ -38,13 +39,122 @@ The implementation uses the safe, `no_std` configurations of
 for the current RV64 LP64 calling convention (RVA23 instruction profile). Macintosh cmap interpretation follows Apple's
 [TrueType reference](https://developer.apple.com/fonts/TrueType-Reference-Manual/RM06/Chap6cmap.html).
 
-## Planned installed and modern fonts
+## Installed-source snapshots
 
-Planned installation and modern-font work is detailed in
-[Fonts folder, OpenType and color glyphs](../../../../../docs/FONTS.md): boot-time
-Fonts discovery (P9), modern outlines/shaping/variations and color tables (P10),
-then live catalog refresh. The current immutable System-only catalog remains the
-implemented baseline. The built-in emoji fallback below is the related P4 track.
+The manager admits classic/native suitcase resource forks and individual static
+TrueType data-fork faces. Filesystem discovery, watches and publication belong
+to the caller, not to the renderer. The caller pins the prior immutable manager:
+
+1. `begin_installed_snapshot() -> Result<InstalledFontSnapshot, FontInstallError>`.
+2. Once per maintenance turn, call `reuse_source(key, revision) -> Result<bool, _>`
+   for an identity whose revision is known unchanged. If it returns false, load
+   bytes and call `add_source(InstalledFontSource { key, revision, data })`.
+3. Use `InstalledFontData::SuitcaseFork(&bytes)` for raw resource forks,
+   `Suitcase(&resources)` for an already decoded fork, or `TrueType(&bytes)` for
+   one standalone face. All bytes needed for later rendering are copied/moved
+   into immutable storage during admission; borrowed inputs need not outlive it.
+4. Report each `add_source` error. If `error.failure.is_source_rejection()` is
+   true, that source is omitted and the builder remains usable. Its old numeric
+   selections remain retained. Other errors poison the transaction.
+   `finish() -> Result<FontManager, FontInstallError>` produces the full proposed
+   snapshot only if no terminal error occurred. `reject()` also poisons it after
+   caller-side I/O failures.
+5. Recheck filesystem revisions and atomically replace the published manager
+   only if its baseline is still the pinned prior manager. Otherwise discard the
+   proposal and retry. Never parse or allocate under the publication gate.
+
+`with_installed_snapshot(&[InstalledFontSource])` is a strict, all-at-once
+convenience form returning the first rejection, not the scheduler-maintenance
+integration. The incremental caller reports source errors and continues only
+when the classification allows it; no diagnostics are silently swallowed.
+One admission can still decode and hash up to 8 MiB: bounded work does not
+establish a target latency guarantee.
+
+Nonterminal source rejections are `SourceLimit`, `DuplicateResource`,
+`Malformed`, `Unsupported`, `MissingName`, `MissingAssociation` and `NoFamilies`.
+Terminal failures are `Allocation`, aggregate `Limit`, `DuplicateSource`,
+`FamilyIdsExhausted`, `RevisionExhausted` and
+`RejectedSnapshot`. A source limit is per-file/table/name/face capacity; aggregate
+limits cover the transaction's source/work counts and retained storage/families.
+Rejected attempts still consume source/work budget and their keys cannot be
+retried within the same transaction. Their payloads/families are not installed.
+Status projection reports `Malformed`, `DuplicateResource`, `MissingName` and
+`MissingAssociation` as `CORRUPT_DATA`, not a caller argument/filename error.
+`Unsupported` remains `NOT_SUPPORTED`; allocation and capacity failures remain
+`NO_MEMORY`. The typed failure reason remains available independently.
+
+Keys contain a `u64` volume identity and `u32` CNID. The volume identity and
+revision must distinguish mounted-volume/file incarnations; a filename, mtime
+with known collisions, or reused mount slot is insufficient for `reuse_source`.
+Supplied bytes are authoritative: a changed payload at an already retained
+key/revision receives new numeric selections while old selections retain their
+old immutable bytes. Multiple retained payloads at one key/revision make
+`reuse_source` return false rather than choose one arbitrarily.
+
+`catalog()` and name-to-ID lookup show bundled and currently installed families.
+Omitted or revised installed sources disappear from that list. Numeric family
+IDs start at 256, skip every bundled/retained ID and are never recycled within a
+manager lineage. Old selections, `family(id)`, `family_name(id)` and
+`family_key(id)` continue using their original immutable payloads. No removed
+font is silently rebound or replaced with another source.
+
+Persist `family_key`, not the numeric ID. Bundled keys are `bundled:<family>`;
+installed keys bind the canonical SHA-256 digest of the source-local font
+resources, format and local FOND resource ID (or standalone face zero).
+Keys are ASCII and shorter than 128 bytes. `family_id_for_key` searches only the
+current catalog. Identical installed copies share a persistence key; lookup
+chooses the first available source in volume/CNID order. Bundled names have
+precedence, followed by installed volume/CNID/FOND-resource ordering.
+`revision() -> u32` changes only when the available catalog changes and refuses
+overflow rather than wrapping. FOND resource IDs, original classic family
+numbers, source/revision, and standalone style names remain available on
+`FontFamily`. Standalone files remain separate catalog families, even when their
+family names match; styles are not silently combined across unrelated sources.
+
+`resources()` and `bundled_resources()` expose only the bundled resource slice
+for the legacy Resource Manager chain. `available_resources()` yields current
+`(Option<FontSourceKey>, &Resource)` entries, preserving each source's original
+resource namespace; `None` denotes bundled resources. `retained_resources()` is
+renderer backing, including removed sources, not an enumeration/Resource Manager
+namespace. No installed resource IDs or FOND bytes are rewritten.
+Only FOND-associated payloads are interpreted as faces, once per source-local
+resource. Unreferenced records remain inert; classic suitcases can contain short
+legacy `FONT` family records that are not bitmap strikes. Every linked face
+still undergoes the same bitmap/TrueType validation before enumeration.
+
+Admission limits are 128 current sources, 256 retained source revisions, 8 MiB
+per source, 64 MiB retained font payload/name bytes including bundled data,
+1,024 resources per suitcase, 4,096 retained families, 4,096 newly parsed FOND
+associations and 262,144 newly examined glyph-location entries per transaction.
+Metadata counts, table count (128), glyph count (16,384 per face), names and maxp
+capacities are also bounded. Allocations are fallible. Retention exhaustion
+refuses refresh; it does not reclaim payloads beneath live selections.
+
+Only static `glyf`/`loca` TrueType outlines are admitted for installed sfnt data.
+Names support Unicode/Windows UTF-16BE and Macintosh Roman, with bounded English/
+neutral preference and typographic-family/style fallback to legacy name IDs.
+Collections, CFF/CFF2, VARC, variable fonts and color glyph profiles are explicitly
+unsupported. Table ranges, duplicate tags, glyph-location ordering and declared
+capacities are checked; safe renderer/interpreter bounds remain in force when
+glyphs are used. Admission is not exhaustive proof of all glyph programs.
+Ordinary malformed/unsupported/limit/allocation failures carry source identity
+and a typed cause, leave the published manager intact, and do not modify files.
+
+`FontManager::inspect_source(InstalledFontData) ->
+Result<Vec<InspectedFontFamily>, FontInstallError>` uses the same bounded source
+parser without installing anything, allocating selection IDs, or constructing
+another manager. The returned owned metadata has public `name: String`,
+`style_name: Option<String>`, `classic_family: Option<i16>` and
+`fond_id: Option<i16>` fields. Inputs can be released when it returns. Inspection
+errors have `source: None`; callers supply file identity in their own error
+context. An inspection session's owner-bound lifetime, file I/O and UI belong to
+the caller, not this parser.
+
+Modern layout and additional outline/color formats remain separate work in
+[Fonts folder, OpenType and color glyphs](../../../../../docs/FONTS.md).
+Native loading, refresh, removal, retained rendering, allocation failures,
+responsiveness and persistence round trips remain target-runtime qualification
+gates. Compilation does not establish those properties.
 
 ## Original-system verification
 
@@ -54,7 +164,7 @@ the actual generated `System.rsrc`, checks all 83 bundled payload hashes, then
 writes image, difference, metric and source records to
 `results/system7/font-comparison-checks.json` and `results/system7/fonts/`.
 
-Current observations:
+Historical observations (not current shipping-OS acceptance):
 
 | Comparison | Result |
 |---|---|
@@ -75,10 +185,9 @@ outline/shadow effects. Skrifa's public path API does not expose the executed
 glyph's SCANCTRL/SCANTYPE dropout state. Automatic pair kerning, complex-script
 shaping, and exact fractional-width mode are not implemented here.
 
-Resident unit tests additionally execute the hint programs and render text from
-all 17 original sfnt faces, test compound/accented glyphs and clipping, reject
-malformed families and unbounded point sizes, and check original runtime metric
-goldens. Host and RV64 builds use the same engine.
+The historical host Rust suite is not evidence for native loading, allocation,
+interrupt, scheduler or rendering behavior. No new Rust tests accompany the
+installed-source implementation.
 
 ## Planned built-in emoji fallback
 

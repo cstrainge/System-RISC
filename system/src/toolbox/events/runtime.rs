@@ -1,6 +1,7 @@
 //! Desktop integration for the pointer-free resident Event Manager service.
 #![forbid(unsafe_code)]
-use mac_abi::{Status, events::{Event, EventCall, EventKind}};
+use mac_abi::{Status,
+              events::{Event, EventCall, EventKind}};
 
 impl super::Desktop
 {
@@ -38,12 +39,10 @@ impl super::Desktop
     pub(super) fn event_position(&self, event: Event, owner: u64)
                                  -> mac_abi::events::EventPosition
     {
-        let needs_front = matches!(event.kind,
-                                   EventKind::Null
-                                   | EventKind::KeyDown
-                                   | EventKind::KeyUp
-                                   | EventKind::AutoKey)
-                          || event.kind == EventKind::MouseUp && event.window == 0;
+        let needs_front =
+            matches!(event.kind,
+                     EventKind::Null | EventKind::KeyDown | EventKind::KeyUp | EventKind::AutoKey)
+            || event.kind == EventKind::MouseUp && event.window == 0;
         let window =
             if needs_front
             {

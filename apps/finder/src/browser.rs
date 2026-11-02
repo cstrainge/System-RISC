@@ -854,7 +854,8 @@ impl Browser
         {
             system.processes().launch(entry.volume, entry.id)?;
         }
-        else if let Some(mounted) = system.files().open_item(entry.volume, entry.id)?
+        else if !crate::font_suitcase::candidate(entry)
+                && let Some(mounted) = system.files().open_item(entry.volume, entry.id)?
         {
             desktop::invalidate();
             self.open(system,

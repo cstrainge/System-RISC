@@ -62,7 +62,7 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>) -> Pr
                         if special_folder(flight.key.operation)
                            && flight.key.index == 1
                            && node.is_none()
-                           && parent == Some(ROOT_ID)
+                           && (parent == Some(ROOT_ID) || flight.input == "Fonts")
                            && at == flight.input.len() =>
                     {
                         // Find before reserving a mutation: an existing folder
@@ -78,6 +78,10 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>) -> Pr
                                               file_type: if flight.input == "Desktop Folder"
                                               {
                                                   *b"desk"
+                                              }
+                                              else if flight.input == "Fonts"
+                                              {
+                                                  *b"font"
                                               }
                                               else
                                               {
@@ -231,18 +235,22 @@ pub(super) fn begin<'a>(owner: impl Into<crate::toolbox::files::subject::Access<
     }
     input.push_str(name);
     let volume = call.volume;
-    let provider = match files(|manager| manager.begin_provider_read(volume))
+    let node = if special_folder(call.operation)
     {
-        Ok(provider) => provider,
-        Err(error) => return Err(error)
-    };
-    let node = if call.cnid == 0 || call.operation == LOOKUP && name.starts_with('/')
+        folder_parent(call)?
+    }
+    else if call.cnid == 0 || call.operation == LOOKUP && name.starts_with('/')
     {
         ROOT_ID
     }
     else
     {
         call.cnid
+    };
+    let provider = match files(|manager| manager.begin_provider_read(volume))
+    {
+        Ok(provider) => provider,
+        Err(error) => return Err(error)
     };
     let (step, path) = if matches!(call.operation, LOOKUP | TRASH_DIRECTORY | FIND_FOLDER)
     {

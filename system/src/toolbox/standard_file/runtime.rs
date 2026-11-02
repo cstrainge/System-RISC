@@ -293,13 +293,13 @@ impl super::Desktop
         let dialog = self.standard_file.get_mut(self.owner, call.handle)?;
         dialog.window = WindowId(window.id);
         let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
-        dialog.editor.set_font(FontSelection::default(), fonts)?;
+        dialog.editor.set_font(FontSelection::default(), &fonts)?;
         let mut characters = Text::default();
         for byte in 32..=255
         {
             characters.push(mac_formats::text::character(byte).encode_utf8(&mut [0; 4]))?;
         }
-        dialog.editor.prepare_font_input(characters.text()?, fonts)?;
+        dialog.editor.prepare_font_input(characters.text()?, &fonts)?;
         checked(self.window(SET_GROW_ICON_CLIP, &mut request(WindowId(window.id))))?;
         checked(self.window(SELECT_WINDOW, &mut window))?;
         self.sf_create_widgets(call.handle, Sheet::Main)?;
@@ -389,7 +389,7 @@ impl super::Desktop
                                                          v: y },
                                        ..Default::default() },
                        text,
-                       crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)
+                       crate::kernel::fonts().ok_or(NOT_SUPPORTED)?.as_ref())
     }
 
     fn sf_button(&mut self, id: u64, index: usize, enabled: bool) -> Result<(), Status>

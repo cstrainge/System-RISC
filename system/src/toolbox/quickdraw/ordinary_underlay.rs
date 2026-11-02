@@ -200,7 +200,8 @@ impl Desktop
     {
         let mut canvas = Canvas::new(pixels, crate::display::WIDTH, crate::display::HEIGHT);
         background(&mut canvas);
-        let fonts = crate::kernel::fonts();
+        let font_snapshot = crate::kernel::fonts();
+        let fonts = font_snapshot.as_deref();
         let cdef = self.cdef;
         let desktop_visible =
             self.processes.get(crate::context::finder_app().0).is_ok_and(|p| p.info.hidden == 0);
@@ -278,7 +279,8 @@ impl Desktop
                              -> Result<(), Status>
     {
         let scopes = self.windows.resource_scopes();
-        let fonts = crate::kernel::fonts();
+        let font_snapshot = crate::kernel::fonts();
+        let fonts = font_snapshot.as_deref();
         let cdef = self.cdef;
         let cache = &mut self.content_cache;
         let mut canvas = Canvas::new(pixels, crate::display::WIDTH, crate::display::HEIGHT);
@@ -532,7 +534,8 @@ impl Desktop
             super::accumulate_presentation_damage(damage, copy_full, window.structure());
             copy_rect(&self.ordinary_underlay.committed, back, window.structure());
         }
-        let fonts = crate::kernel::fonts();
+        let font_snapshot = crate::kernel::fonts();
+        let fonts = font_snapshot.as_deref();
         let content = &self.content;
         let cdef = self.system_cdef;
         let mut canvas = Canvas::new(back, crate::display::WIDTH, crate::display::HEIGHT);
@@ -567,7 +570,8 @@ impl Desktop
                                       -> Result<(), Status>
     {
         let scopes = self.windows.resource_scopes();
-        let fonts = crate::kernel::fonts();
+        let font_snapshot = crate::kernel::fonts();
+        let fonts = font_snapshot.as_deref();
         let cdef = self.system_cdef;
         let mut canvas = Canvas::new(crate::platform::back_buffer(),
                                      crate::display::WIDTH,

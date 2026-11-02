@@ -489,7 +489,7 @@ impl<'a> Files<'a>
         self.trash_directory_at(volume, create, when)
     }
 
-    /// Find a volume's Desktop Folder (`desk`) or Trash (`trsh`).
+    /// Find Desktop (`desk`), Trash (`trsh`), or the blessed System Folder's Fonts (`font`).
     /// Volume zero selects the startup volume. Lookup without creation never
     /// mutates the volume; children use ordinary directory enumeration.
     pub fn find_folder(self, volume: VolumeId, folder_type: TypeCode, create: bool)

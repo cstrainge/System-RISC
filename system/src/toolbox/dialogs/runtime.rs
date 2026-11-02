@@ -1,6 +1,10 @@
 //! Desktop adapter; no application callbacks or recursive ECALLs under its guard.
-use mac_abi::{controls::*, dialogs::*, events::{ACTIVE_FLAG, Event, EventKind},
-              quickdraw::*, *, geometry::{Point, Rect}};
+use mac_abi::{controls::*,
+              dialogs::*,
+              events::{ACTIVE_FLAG, Event, EventKind},
+              geometry::{Point, Rect},
+              quickdraw::*,
+              *};
 
 use crate::toolbox::{dialogs,
                      quickdraw::{fonts_service, icons_service, service}};
@@ -599,7 +603,7 @@ impl super::Desktop
                                                                        baseline: Point { h: item.bounds.left.saturating_add(1), v: y },
                                                                        ..Default::default() },
                                                        line,
-                                                       fonts)?;
+                                                       &fonts)?;
                                    }
                                    y = y.saturating_add(advance);
                                    Ok(())

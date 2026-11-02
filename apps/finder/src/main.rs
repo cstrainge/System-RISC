@@ -15,6 +15,7 @@ mod selection;
 mod watches;
 mod icon_view;
 mod get_info;
+mod font_suitcase;
 
 fn update_menus(system: &System<'_>, browser: &browser::Browser, info: &get_info::Controller)
                 -> Result<(), Error>
@@ -26,26 +27,42 @@ fn update_menus(system: &System<'_>, browser: &browser::Browser, info: &get_info
 fn try_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, result: Result<T, Error>)
                      -> Result<Option<T>, Error>
 {
-    use core::fmt::Write;
     match result
     {
         Ok(value) => Ok(Some(value)),
         Err(status) =>
         {
-            let mut message = browser::Text::<80>::default();
-            let _ = writeln!(&mut message,
-                             "FINDER_ACTION_FAILED status={} error={status:?}",
-                             status.status());
-            system.log(message.as_str())?;
-            if let Err(error) = alerts.error(system, status)
-            {
-                let mut message = browser::Text::<80>::default();
-                let _ = writeln!(&mut message, "FINDER_ALERT_FAILED status={}", error.status());
-                system.log(message.as_str())?;
-            }
+            action_error(system, alerts, status, None)?;
             Ok(None)
         }
     }
+}
+
+fn action_error<'a>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, status: Error,
+                    document: Option<&str>)
+                    -> Result<(), Error>
+{
+    use core::fmt::Write;
+    let mut message = browser::Text::<80>::default();
+    let _ = writeln!(&mut message,
+                     "FINDER_ACTION_FAILED status={} error={status:?}",
+                     status.status());
+    system.log(message.as_str())?;
+    let shown = if let Some(subject) = document
+    {
+        alerts.open_error(system, status, subject)
+    }
+    else
+    {
+        alerts.error(system, status)
+    };
+    if let Err(error) = shown
+    {
+        let mut message = browser::Text::<80>::default();
+        let _ = writeln!(&mut message, "FINDER_ALERT_FAILED status={}", error.status());
+        system.log(message.as_str())?;
+    }
+    Ok(())
 }
 
 fn finder(system: &System<'_>) -> Result<(), Error>
@@ -55,6 +72,7 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     let mut watches = watches::Controller::default();
     let mut associations = associations::Controller::default();
     let mut info = get_info::Controller::default();
+    let mut font_suitcases = font_suitcase::Controller::default();
     let _menus = menus::install(system)?;
     let mut alerts = ui::Alerts::default();
     let _ = try_action(system, &mut alerts, browser.initialize(system))?;
@@ -104,9 +122,18 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         {
             if let Some(document) = browser.take_document_open()
             {
-                let _ = try_action(system,
-                                   &mut alerts,
-                                   associations.begin(system, browser.startup, document))?;
+                let result = if font_suitcase::candidate(&document)
+                {
+                    font_suitcases.open(system, &document)
+                }
+                else
+                {
+                    associations.begin(system, browser.startup, document)
+                };
+                if let Err(status) = result
+                {
+                    action_error(system, &mut alerts, status, Some(document.name()))?;
+                }
             }
             let _ = try_action(system, &mut alerts, associations.advance(system))?;
         }
@@ -180,7 +207,11 @@ fn finder(system: &System<'_>) -> Result<(), Error>
         if let Event::WindowGeometryChanged { window,
                                               .. } = event
         {
-            let _ = try_action(system, &mut alerts, browser.geometry_changed(system, window))?;
+            if !try_action(system, &mut alerts, font_suitcases.geometry_changed(system, window))?
+                .unwrap_or(true)
+            {
+                let _ = try_action(system, &mut alerts, browser.geometry_changed(system, window))?;
+            }
             continue;
         }
         if matches!(event, Event::Activate { .. }) && alerts.window() == WindowId(0)
@@ -279,6 +310,27 @@ fn finder(system: &System<'_>) -> Result<(), Error>
             }
         }
         let _ = try_action(system, &mut alerts, clipboard.refresh(system))?;
+        if alerts.window() != WindowId(0)
+        {
+            continue;
+        }
+        if try_action(system, &mut alerts, font_suitcases.event(system, &event, position))?
+            .unwrap_or(false)
+        {
+            if matches!(
+                event,
+                Event::Activate { .. }
+                    | Event::CloseRequested { .. }
+                    | Event::MenuCommand { .. }
+                    | Event::Other { .. }
+            ) || matches!(event, Event::KeyDown { .. })
+                && event.input().modifiers.contains(events::Modifiers::COMMAND)
+                && event.key().is_some_and(|key| key.character().eq_ignore_ascii_case(&'w'))
+            {
+                update_menus(system, &browser, &info)?;
+            }
+            continue;
+        }
         if alerts.window() != WindowId(0)
         {
             continue;

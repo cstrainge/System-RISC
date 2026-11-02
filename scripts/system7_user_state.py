@@ -21,6 +21,7 @@ from system7_paths import ROOT, build_dir
 from system7_host import exclusive_lock, process_exists, sync_directory, sync_file, windows_process_name
 
 TREES = {'Preferences': ('/System Folder/Preferences', '/System Folder'),
+         'Fonts': ('/System Folder/Fonts', '/System Folder'),
          'Documents': ('/Documents', '/'),
          'Desktop Folder': ('/Desktop Folder', '/')}
 
@@ -129,7 +130,7 @@ def snapshot_raw(root, raw, source):
         system_children = children(raw, system['id'])
         present = []
         for label, (guest, _) in TREES.items():
-            entries = system_children if label == 'Preferences' else top
+            entries = system_children if guest.startswith('/System Folder/') else top
             entry = next((entry for entry in entries if entry['name'].casefold() == label.casefold()), None)
             if entry is None:
                 continue
@@ -191,7 +192,7 @@ def prepare(build, state):
         if disk.exists():
             if running(state):
                 current(root)  # Invalid saved state must still fail honestly.
-                print('Writable VM is running; latest Preferences, Documents and Desktop Folder will be preserved before replacement on restart.')
+                print('Writable VM is running; latest Preferences, Fonts, Documents and Desktop Folder will be preserved before replacement on restart.')
                 return
             snapshot_disk(root, disk)
         elif current(root) is None:
