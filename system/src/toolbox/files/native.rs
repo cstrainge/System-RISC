@@ -184,6 +184,205 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
         return None;
     }
     let call = unsafe { &mut *pointer.cast::<FileCall>() };
+    if call.file_type != [0; 4] && call.operation != files::FIND_FOLDER
+       || !matches!(call.operation, files::OPEN_OPTIONS | files::OPEN_PATH) && call.open_flags != 0
+       || call.operation != files::WRITE && call.input_length != 0
+    {
+        return Some(BAD_ARGUMENT as i64);
+    }
+    if matches!(call.operation,
+                files::CURRENT_DIRECTORY
+                | files::CHANGE_DIRECTORY
+                | files::RESOLVE_PATH
+                | files::OPEN_PATH
+                | files::CURRENT_EXECUTABLE_PATH)
+    {
+        let current =
+            matches!(call.operation, files::CURRENT_DIRECTORY | files::CURRENT_EXECUTABLE_PATH);
+        let opening = call.operation == files::OPEN_PATH;
+        if call.volume != 0
+           || call.cnid != 0
+           || call.index != 0
+           || call.handle != 0
+           || !opening && call.fork != 0
+           || call.whence != 0
+           || call.reserved != 0
+           || !opening && call.open_flags != 0
+           || call.offset != 0
+           || call.position != 0
+           || call.length != 0
+           || call.input_length != 0
+           || call.name_length > 4096
+           || current && call.name_length != 0
+           || call.name_length != 0 && call.name.is_null()
+           || call.capacity > 4096
+           || !current && call.capacity != 0
+           || call.capacity != 0 && call.output.is_null()
+        {
+            return Some(BAD_ARGUMENT as i64);
+        }
+        let name = if call.name_length == 0
+        {
+            ""
+        }
+        else
+        {
+            match core::str::from_utf8(unsafe {
+                      core::slice::from_raw_parts(call.name, call.name_length)
+                  })
+            {
+                Ok(name) => name,
+                Err(_) => return Some(BAD_ARGUMENT as i64)
+            }
+        };
+        let Some(caller) = caller
+        else
+        {
+            return Some(ACCESS_DENIED as i64);
+        };
+        let output = if call.capacity == 0
+        {
+            &mut [][..]
+        }
+        else
+        {
+            unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity) }
+        };
+        call.transferred = 0;
+        return Some(super::local::pending::request_path(owner, &caller.owner, call, name, output)
+                    as i64);
+    }
+    if matches!(call.operation, files::READ | files::SEEK | files::TELL)
+    {
+        if call.handle == 0
+           || call.volume != 0
+           || call.cnid != 0
+           || call.index != 0
+              && !(call.operation == files::READ && call.index == files::READ_UNINITIALIZED)
+           || call.fork != 0
+           || call.reserved != 0
+           || call.open_flags != 0
+           || call.position != 0
+           || call.length != 0
+           || call.name_length != 0
+           || call.input_length != 0
+           || call.operation != files::SEEK && (call.whence != 0 || call.offset != 0)
+           || call.operation != files::READ && call.capacity != 0
+           || call.capacity > 1024 * 1024
+           || call.capacity != 0 && call.output.is_null()
+        {
+            return Some(BAD_ARGUMENT as i64);
+        }
+        let thread = crate::context::current_thread();
+        let block = crate::kernel::with_files(|manager| {
+                        // Replay uses its original owned description even if
+                        // another thread has since closed the public handle.
+                        if super::local::pending::has_waiter(manager, thread)
+                        {
+                            return Ok(true);
+                        }
+                        manager.slot(owner, call.handle).map(|file| {
+                                                            matches!(&*file.description.fork.lock(),
+                                                                     super::FileFork::Block(_))
+                                                        })
+                    }).map_err(|error| error.status())
+                      .and_then(core::convert::identity);
+        match block
+        {
+            Ok(true) =>
+            {
+                let Some(caller) = caller
+                else
+                {
+                    return Some(ACCESS_DENIED as i64);
+                };
+                let output = if call.capacity == 0
+                {
+                    &mut [][..]
+                }
+                else
+                {
+                    unsafe {
+                        core::slice::from_raw_parts_mut(call.output
+                                                            .cast::<core::mem::MaybeUninit<u8>>(),
+                                                        call.capacity)
+                    }
+                };
+                call.transferred = 0;
+                return Some(super::local::pending::request(owner, &caller.owner, call, &[], output)
+                            as i64);
+            }
+            Ok(false) =>
+            {
+                if call.index == files::READ_UNINITIALIZED
+                {
+                    return Some(NOT_SUPPORTED as i64);
+                }
+            }
+            Err(error) =>
+            {
+                serial!("FILE_READ_ADMISSION_REFUSED operation={} handle={} status={error}",
+                        call.operation, call.handle);
+                return Some(error as i64);
+            }
+        }
+    }
+    if matches!(call.operation,
+                files::OPEN_OPTIONS | files::WRITE | files::SET_LENGTH | files::SYNC)
+    {
+        let opening = call.operation == files::OPEN_OPTIONS;
+        if call.reserved != 0
+           || call.whence != 0
+           || call.offset != 0
+           || call.position != 0
+           || opening && (call.volume == 0 || call.handle != 0 || call.index != 0)
+           || !opening
+              && (call.volume != 0
+                  || call.cnid != 0
+                  || call.handle == 0
+                  || call.fork != 0
+                  || call.name_length != 0)
+           || call.operation != files::SET_LENGTH && call.length != 0
+           || call.operation != files::SYNC && call.index != 0
+           || call.operation == files::SYNC && call.index & !files::SYNC_DATA != 0
+           || call.capacity != 0
+           || call.name_length > 4096
+           || call.name_length != 0 && call.name.is_null()
+           || call.input_length > files::MAX_FILE_TRANSFER
+           || call.input_length != 0 && call.input.is_null()
+        {
+            return Some(BAD_ARGUMENT as i64);
+        }
+        let name = if call.name_length == 0
+        {
+            ""
+        }
+        else
+        {
+            match core::str::from_utf8(unsafe {
+                      core::slice::from_raw_parts(call.name, call.name_length)
+                  })
+            {
+                Ok(name) => name,
+                Err(_) => return Some(BAD_ARGUMENT as i64)
+            }
+        };
+        let bytes = if call.input_length == 0
+        {
+            &[][..]
+        }
+        else
+        {
+            unsafe { core::slice::from_raw_parts(call.input, call.input_length) }
+        };
+        let Some(caller) = caller
+        else
+        {
+            return Some(ACCESS_DENIED as i64);
+        };
+        call.transferred = 0;
+        return Some(super::local::request(owner, &caller.owner, call, name, bytes) as i64);
+    }
     if matches!(call.operation,
                 files::MOVE_TO_TRASH | files::PUT_AWAY | files::EMPTY_TRASH | files::TRASH_USAGE)
     {
@@ -244,9 +443,10 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
                            | files::PATH);
     let trash_query = matches!(call.operation, files::TRASH_DIRECTORY | files::FIND_FOLDER);
     let opening = call.operation == files::OPEN;
+    let duplicating = call.operation == files::DUPLICATE;
     let making_folder = call.operation == files::NEW_FOLDER;
     let mounting_file = matches!(call.operation, files::MOUNT_FILE | files::OPEN_ITEM);
-    let fork_io = matches!(call.operation, files::READ | files::CLOSE);
+    let fork_io = matches!(call.operation, files::READ | files::CLOSE | files::DUPLICATE);
     if !matches!(call.operation,
                  files::HOST_EXPORT_COUNT | files::MOUNT_HOST_EXPORT | files::UNMOUNT_VOLUME)
        && !catalog
@@ -269,6 +469,8 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
        || (opening && !matches!(call.fork, files::DATA_FORK | files::RESOURCE_FORK))
        || call.whence != 0
        || call.reserved != 0
+       || call.open_flags != 0
+       || call.input_length != 0
        || call.offset != 0
        || (!(trash_query || making_folder) && call.position != 0)
        || call.length != 0
@@ -323,7 +525,7 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
     {
         // Complete local reads in the same handoff used for routing. Introducing
         // providers must not add a second Files guard/stack switch to disk reads.
-        let authority = if opening
+        let authority = if opening || duplicating
         {
             match crate::context::current_owner()
             {
@@ -336,6 +538,34 @@ pub(crate) unsafe fn dispatch_async(owner: u64, caller: Option<&super::Caller>, 
             None
         };
         let routed = crate::kernel::with_files(|manager| {
+            if duplicating
+            {
+                let Some(authority) = authority.as_ref()
+                else
+                {
+                    return Some(ACCESS_DENIED);
+                };
+                return Some(manager.duplicate_for(owner, authority, call.handle)
+                                   .map(|(handle, position, length)| {
+                                       call.handle = handle;
+                                       call.position = position;
+                                       call.length = length;
+                                   })
+                                   .err()
+                                   .unwrap_or(OK));
+            }
+            if call.operation == files::CLOSE
+            {
+                match manager.slot(owner, call.handle)
+                {
+                    Ok(file) if !file.final_handle() =>
+                    {
+                        return Some(manager.handles.abandon(call.handle).err().unwrap_or(OK));
+                    }
+                    Err(status) => return Some(status),
+                    _ => ()
+                }
+            }
             let provider = if fork_io
             {
                 manager.file_provider(owner, call.handle)
@@ -597,6 +827,12 @@ pub(crate) unsafe fn dispatch_owned(manager: &mut super::Manager, owner: u64, po
         return BAD_ARGUMENT as i64;
     }
     let call = unsafe { &mut *pointer.cast::<FileCall>() };
+    if call.file_type != [0; 4] && call.operation != files::FIND_FOLDER
+       || !matches!(call.operation, files::OPEN_OPTIONS | files::OPEN_PATH) && call.open_flags != 0
+       || call.operation != files::WRITE && call.input_length != 0
+    {
+        return BAD_ARGUMENT as i64;
+    }
     if call.name_length > 4096
        || call.capacity > 1024 * 1024
        || (call.name_length != 0 && call.name.is_null())

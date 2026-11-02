@@ -17,6 +17,7 @@ const BOMB: &[u8; 128] = include_bytes!("../assets/crashes/classic-bomb.icon");
 pub(crate) enum Kind
 {
     SystemPanic,
+    StartupRefused,
     OutOfMemory,
     PrivilegedFault
 }
@@ -27,6 +28,7 @@ impl Kind
         match self
         {
             Self::SystemPanic => "System Panic",
+            Self::StartupRefused => "System Startup Failed",
             Self::OutOfMemory => "System Out of Memory",
             Self::PrivilegedFault => "System Privileged Fault"
         }

@@ -131,6 +131,7 @@ pub fn image(workspace: &Workspace) -> Result<Value>
                                       (applications, "Applications", "Control Suite"),
                                       (drivers, "System Folder/Drivers", "Host Transport"),
                                       (drivers, "System Folder/Drivers", "VDAgent Channel"),
+                                      (drivers, "System Folder/Drivers", "VirtIO RNG"),
                                       (extensions, "System Folder/Extensions", "Host Clipboard"),
                                       (extensions, "System Folder/Extensions", "Multi-Scheduler"),
                                       (drivers, "System Folder/Drivers", "Host Filesystem"),

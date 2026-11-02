@@ -1,5 +1,7 @@
 //! Shared resident capture transitions. CDEFs retain all hit/thumb geometry.
-use mac_abi::{DefinitionEntry, geometry::{Point}, Status, TrapGate, controls::*};
+use mac_abi::{Status, TrapGate, controls::*, geometry::Point};
+
+use crate::toolbox::resources::definitions::DefinitionRef;
 
 #[derive(Clone, Copy)]
 pub(super) struct Tracking
@@ -39,7 +41,7 @@ impl Tracking
     /// Compute a candidate transition. The caller applies any fallible scroll
     /// or drawing admission before publishing it, so refusal preserves capture.
     pub fn poll(mut self, point: Point, down: bool, ticks: u64, scrollbar: Option<ScrollbarState>,
-                reflow: u32, entry: DefinitionEntry, gate: TrapGate,
+                reflow: u32, entry: DefinitionRef, gate: TrapGate,
                 hit: impl FnOnce(Point) -> Result<i16, Status>)
                 -> Result<Transition, Status>
     {

@@ -21,12 +21,12 @@ pub(crate) struct SystemBar
     rows:             [Option<Action>; MAX_ITEMS],
     pub(super) owner: u64,
     source:           Option<(u64, u64)>,
-    entry:            DefinitionEntry,
+    entry:            DefinitionRef,
     gate:             TrapGate
 }
 impl SystemBar
 {
-    pub(crate) fn new(entry: DefinitionEntry, gate: TrapGate, resources: Resources<'_>)
+    pub(crate) fn new(entry: DefinitionRef, gate: TrapGate, resources: Resources<'_>)
                       -> Result<Self, Status>
     {
         use mac_object_table::shared::InvocationGate as _;

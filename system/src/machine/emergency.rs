@@ -244,6 +244,7 @@ unsafe extern "C" fn run(pointer: *const ()) -> !
     let marker = match invocation.kind
     {
         Kind::SystemPanic => "SYSTEM_PANIC:",
+        Kind::StartupRefused => "SYSTEM_STARTUP_REFUSED:",
         Kind::OutOfMemory => "SYSTEM_ALLOCATION_FAILED:",
         Kind::PrivilegedFault => "SYSTEM_TRAP:"
     };

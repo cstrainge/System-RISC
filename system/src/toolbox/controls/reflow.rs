@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn invoke(state: &mut ControlCall, payload: &mut mac_abi::controls::reflow::Payload,
-                     entry: DefinitionEntry, gate: TrapGate)
+                     entry: DefinitionRef, gate: TrapGate)
                      -> Result<(), Status>
 {
     let id = definition_id(state)?;
@@ -43,7 +43,7 @@ pub(super) fn invoke(state: &mut ControlCall, payload: &mut mac_abi::controls::r
 
 /// System lends disjoint scratch arrays, never caller pointers or object-store
 /// borrows. The loaded image remains owned by the definition cache throughout.
-pub(super) fn grid_axis(entry: DefinitionEntry, gate: TrapGate,
+pub(super) fn grid_axis(entry: DefinitionRef, gate: TrapGate,
                         constraint: mac_abi::controls::reflow::AxisConstraint,
                         percent_basis: Option<i64>,
                         tracks: &mut [mac_abi::controls::reflow::GridTrack],

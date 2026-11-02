@@ -1,4 +1,4 @@
-//! Read-only native File Manager. Volume IDs and open handles are opaque.
+//! Native File Manager. Volume IDs and open handles are opaque.
 //! Directory enumeration is zero-based; catalog identities are persistent HFS CNIDs.
 pub const VOLUME_COUNT: u32 = 0;
 pub const VOLUME_INDEX: u32 = 1;
@@ -60,6 +60,35 @@ pub const REMOVE: u32 = 38;
 /// Properties are in entry; name/name_length carry only the comment text.
 /// Every non-property input field of entry must be zero.
 pub const SET_PROPERTIES: u32 = 39;
+/// Ordinary open descriptions, separate from atomic Save/replace transactions.
+pub const OPEN_OPTIONS: u32 = 40;
+pub const WRITE: u32 = 41;
+/// Development stepping request: length is target on input and actual on
+/// output; growth is currently limited to MAX_FILE_TRANSFER per call.
+pub const SET_LENGTH: u32 = 42;
+pub const SYNC: u32 = 43;
+pub const DUPLICATE: u32 = 44;
+/// Process path operations use UTF-8 /Volumes/<unique mounted name>/... paths.
+/// CURRENT_DIRECTORY returns bytes, without a terminator, in output/transferred.
+pub const CURRENT_DIRECTORY: u32 = 46;
+pub const CHANGE_DIRECTORY: u32 = 47;
+pub const RESOLVE_PATH: u32 = 48;
+pub const OPEN_PATH: u32 = 49;
+/// Query the actual executable alias; output/transferred contain UTF-8 bytes.
+pub const CURRENT_EXECUTABLE_PATH: u32 = 50;
+pub const OPEN_READ: u32 = 1;
+pub const OPEN_WRITE: u32 = 2;
+pub const OPEN_APPEND: u32 = 4;
+pub const OPEN_CREATE: u32 = 8;
+pub const OPEN_CREATE_NEW: u32 = 16;
+pub const OPEN_TRUNCATE: u32 = 32;
+pub const OPEN_FLAGS: u32 =
+    OPEN_READ | OPEN_WRITE | OPEN_APPEND | OPEN_CREATE | OPEN_CREATE_NEW | OPEN_TRUNCATE;
+pub const SYNC_DATA: u32 = 1;
+pub const MAX_FILE_TRANSFER: usize = 64 * 1024;
+/// READ index flag: output may be uninitialized. Native HFS-B copies only the
+/// returned prefix; providers without this boundary must return Unsupported.
+pub const READ_UNINITIALIZED: u32 = 1;
 /// Locate a per-volume special directory. volume=0 selects the startup volume;
 /// file_type='desk' or 'trsh', index=create (0/1), position=creation timestamp
 /// (zero for lookup only). Returns entry and its actual volume.
@@ -387,26 +416,31 @@ impl CatalogInfo
 #[derive(Default, Clone, Copy)]
 pub struct FileCall
 {
-    pub operation:   u32,
-    /// FIND_FOLDER's requested special-folder type; zero for other operations.
-    pub file_type:   [u8; 4],
-    pub volume:      u32,
-    pub cnid:        u32,
-    pub index:       u32,
-    pub handle:      u32,
-    pub fork:        u32,
-    pub whence:      u32,
-    pub reserved:    u32,
-    pub offset:      i64,
-    pub position:    u64,
-    pub length:      u64,
-    pub name:        *const u8,
-    pub name_length: usize,
-    pub output:      *mut u8,
-    pub capacity:    usize,
-    pub transferred: usize,
-    pub volume_info: VolumeInfo,
-    pub entry:       CatalogInfo
+    pub operation:    u32,
+    /// FIND_FOLDER special-directory type; zero for other operations.
+    pub file_type:    [u8; 4],
+    pub volume:       u32,
+    pub cnid:         u32,
+    pub index:        u32,
+    pub handle:       u32,
+    pub fork:         u32,
+    pub whence:       u32,
+    pub reserved:     u32,
+    /// Input only for OPEN_OPTIONS/OPEN_PATH; unknown bits refuse before mutation.
+    pub open_flags:   u32,
+    pub offset:       i64,
+    pub position:     u64,
+    pub length:       u64,
+    pub name:         *const u8,
+    pub name_length:  usize,
+    /// Immutable borrowed bytes for WRITE. System owns its staging before waits.
+    pub input:        *const u8,
+    pub input_length: usize,
+    pub output:       *mut u8,
+    pub capacity:     usize,
+    pub transferred:  usize,
+    pub volume_info:  VolumeInfo,
+    pub entry:        CatalogInfo
 }
 
 #[cfg(test)]
@@ -604,3 +638,7 @@ const _: () = {
         left += 1;
     }
 };
+
+// Native FILE routing distinguishes these wire request families by size;
+// SCAN_DESKTOP and CURRENT_DIRECTORY have separate typed opcode namespaces.
+const _: () = assert!(core::mem::size_of::<FileCall>() != core::mem::size_of::<FileScanCall>());

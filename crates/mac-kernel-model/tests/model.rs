@@ -132,8 +132,8 @@ fn process_zone_and_saved_state_cannot_mix_domain_incarnations()
     let mut heads = [None; 1];
     let pool=BuddyPool::new(PhysicalAddress(65536),WidePages::geometry(),&mut meta,&mut heads).unwrap();
     pool.add_free_range(AddressRange::new(65536, 131072).unwrap()).unwrap();
-    let root = PageBox::<[u8; 65536], Gate>::reserve(pool.allocate(0).unwrap()).unwrap();
-    let space=AddressSpace::<WidePages>::reserve(owner.owner(),root,AsidTag::Leased{hardware_value:1,generation:core::num::NonZeroU64::new(1).unwrap()}).unwrap();
+    let root = PageBox::<[u8; 65536], _>::reserve(pool.allocate(0).unwrap(), WidePages::geometry()).unwrap();
+    let space=AddressSpace::<WidePages, _>::reserve(owner.owner(),root,AsidTag::Leased{hardware_value:1,generation:core::num::NonZeroU64::new(1).unwrap()}).unwrap();
     assert_eq!(space.root_physical(), PhysicalAddress(65536));
     assert_eq!(space.planned_mappings(), 0);
     let mut process = ProcessRecord::new(owner.owner(), image, memory, legacy, space).unwrap();
@@ -157,15 +157,15 @@ fn process_zone_and_saved_state_cannot_mix_domain_incarnations()
                      Err(ModelError::WrongDomain)));
     drop(process);
     assert_eq!(pool.free_pages(), 1);
-    let root = PageBox::<[u8; 65536], Gate>::reserve(pool.allocate(0).unwrap()).unwrap();
-    assert!(matches!(AddressSpace::<WidePages>::reserve(owner.owner(),
+    let root = PageBox::<[u8; 65536], _>::reserve(pool.allocate(0).unwrap(), WidePages::geometry()).unwrap();
+    assert!(matches!(AddressSpace::<WidePages, _>::reserve(owner.owner(),
                                                         root,
                                                         AsidTag::Permanent { hardware_value: 0 }),
                      Err(ModelError::WrongDomain)));
     assert_eq!(pool.free_pages(), 1, "refused permanent app tag leaked its root lease");
-    let root = PageBox::<[u8; 65536], Gate>::reserve(pool.allocate(0).unwrap()).unwrap();
+    let root = PageBox::<[u8; 65536], _>::reserve(pool.allocate(0).unwrap(), WidePages::geometry()).unwrap();
     let system =
-        AddressSpace::<WidePages>::reserve(mac_kernel_model::DomainId::SYSTEM,
+        AddressSpace::<WidePages, _>::reserve(mac_kernel_model::DomainId::SYSTEM,
                                            root,
                                            AsidTag::Permanent { hardware_value: 0 }).unwrap();
     drop(system);

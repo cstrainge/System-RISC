@@ -93,6 +93,8 @@ impl Operations
                                  #[cfg(target_arch = "riscv64")]
                                  recovery_activity: None,
                                  #[cfg(target_arch = "riscv64")]
+                                 runtime_activity: None,
+                                 #[cfg(target_arch = "riscv64")]
                                  protected_publication: false,
                                  allocation })
                 }
@@ -120,6 +122,8 @@ impl Operations
                                  #[cfg(target_arch = "riscv64")]
                                  recovery_activity: None,
                                  #[cfg(target_arch = "riscv64")]
+                                 runtime_activity: None,
+                                 #[cfg(target_arch = "riscv64")]
                                  protected_publication: false,
                                  allocation })
                 }
@@ -142,6 +146,7 @@ impl Operations
                && parent.scope.same_scope(&subject.scope)
             {
                 subject.recovery_activity = parent.recovery_activity.clone();
+                subject.runtime_activity = parent.runtime_activity.clone();
                 subject.protected_publication = parent.protected_publication;
             }
             Ok(subject)
@@ -200,6 +205,8 @@ pub(crate) struct Subject
     #[cfg(target_arch = "riscv64")]
     recovery_activity:     Option<crate::recovery::Activity>,
     #[cfg(target_arch = "riscv64")]
+    runtime_activity:      Option<crate::toolbox::native_threads::RuntimeActivity>,
+    #[cfg(target_arch = "riscv64")]
     protected_publication: bool,
     // Last: the account-use pin outlives scope/Retention destruction and the
     // operation's actual cleanup acknowledgement, including delayed callbacks.
@@ -207,6 +214,20 @@ pub(crate) struct Subject
 }
 impl Subject
 {
+    /// Own a genuine I/O root for this prospective Process, independently of
+    /// its launcher's delivery thread. No caller-selected subject/account pair
+    /// is accepted. Queue and DREQ copies retain the runtime through real ACK.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn for_runtime(runtime: &crate::toolbox::native_threads::RuntimeAdmission)
+                              -> Result<Self, Status>
+    {
+        let activity = runtime.activity().map_err(|cause| cause.status())?;
+        let mut subject = resident()?.admit(&Authority::Client(activity.owner().clone()),
+                                            activity.allocation_target())?;
+        subject.runtime_activity = Some(activity);
+        Ok(subject)
+    }
+
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn recovery_activity(&self) -> Option<&crate::recovery::Activity>
     {

@@ -213,6 +213,15 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
                       when: Timestamp)
                       -> Result<Entry>
     {
+        self.replace_fork_bytes(id, kind, offset, Some(data), data.len() as u64, when)
+    }
+
+    // A zero extension streams one initialized page at a time through the same
+    // COW transaction as bytes. It needs no heap buffer proportional to growth.
+    fn replace_fork_bytes(&mut self, id: u32, kind: ForkKind, offset: u64, data: Option<&[u8]>,
+                          length: u64, when: Timestamp)
+                          -> Result<Entry>
+    {
         let mut e = self.entry(id)?;
         if e.directory
         {
@@ -222,13 +231,13 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
         {
             return Err(Error::Protected);
         }
-        if data.is_empty()
+        if length == 0
         {
             return Ok(e);
         }
         let old_length = e.fork(kind).length;
         let old_blocks = e.fork(kind).blocks;
-        let end = offset.checked_add(data.len() as u64).ok_or(Error::Invalid)?;
+        let end = offset.checked_add(length).ok_or(Error::Invalid)?;
         let first = offset.min(old_length) / 4096;
         let last = end.div_ceil(4096);
         if last > u64::from(self.header.blocks)
@@ -261,10 +270,15 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
             let b = (base + 4096).min(end);
             if a < b
             {
-                page[(a - base) as usize..(b - base) as usize].copy_from_slice(&data[(a - offset)
-                                                                                     as usize
-                                                                                     ..(b - offset)
-                                                                                       as usize]);
+                let output = &mut page[(a - base) as usize..(b - base) as usize];
+                if let Some(data) = data
+                {
+                    output.copy_from_slice(&data[(a - offset) as usize..(b - offset) as usize]);
+                }
+                else
+                {
+                    output.fill(0);
+                }
             }
             let block = tx.allocate()?;
             write_page(tx.volume.disk, tx.volume.partition, block, &page)?;
@@ -310,10 +324,7 @@ impl<'a, D: WritableBlockDevice> Volume<'a, D>
             {
                 return Err(Error::Budget);
             }
-            let mut zeros = Vec::new();
-            zeros.try_reserve_exact(n).map_err(|_| Error::NoMemory)?;
-            zeros.resize(n, 0);
-            return self.write_fork(id, kind, old_length, &zeros, when);
+            return self.replace_fork_bytes(id, kind, old_length, None, length - old_length, when);
         }
         let old = self.extent_list(id, kind, e.fork(kind))?;
         let old_blocks = e.fork(kind).blocks;

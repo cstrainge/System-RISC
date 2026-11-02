@@ -10,9 +10,11 @@ pub(super) fn ordinary_retained_bytes(windows: &WindowManager, content: &[Conten
     content.iter()
            .chain(pending)
            .filter(|c| {
-               !c.id.window().ok().and_then(|id| windows.window(id)).is_some_and(|w| {
-                                                                         w.uses_system_resources()
-                                                                     })
+               !c.id
+                 .window()
+                 .ok()
+                 .and_then(|id| windows.window(id))
+                 .is_some_and(|w| w.uses_system_resources())
            })
            .fold(0usize, |bytes, c| bytes.saturating_add(c.storage()))
 }
@@ -32,27 +34,19 @@ pub(super) fn scene_admission(windows: &WindowManager, content: &[Content], pend
                       .chain(pending)
                       .filter(|c| system_scene(c.id) == system)
                       .fold(0usize, |bytes, c| bytes.saturating_add(c.storage()));
-    if system
-    {
-        (used, usize::MAX)
-    }
-    else
-    {
-        (used, MAX_RETAINED_BYTES)
-    }
+    if system { (used, usize::MAX) } else { (used, MAX_RETAINED_BYTES) }
 }
 
 fn relayout(windows: &WindowManager, content: &mut [Content], pending: &[Content],
-            controls: &mut Manager, definitions: &mut Definitions, id: WindowId, viewport: Rect)
+            controls: &mut Manager, id: WindowId, viewport: Rect)
             -> Result<Vec<Rect>, Status>
 {
-    let prepared =
-        controls.prepare_window(id.0,
-                                viewport,
-                                pending.iter().any(|c| c.id == SceneTarget::from(id)),
-                                None,
-                                crate::machine::traps::gateway,
-                                |id| definitions.resolve(*b"CDEF", id).map_err(crate::loader::status))?;
+    let prepared = controls.prepare_window(id.0,
+                                   viewport,
+                                   pending.iter().any(|c| c.id == SceneTarget::from(id)),
+                                   None,
+                                   crate::machine::traps::gateway,
+                                   |id| crate::toolbox::runtime::Toolbox::control_definition(id))?;
     let (used, limit) = scene_admission(windows, content, pending, SceneTarget::from(id));
     publish(content, controls, id.0, prepared, used, limit)
 }
@@ -153,7 +147,8 @@ impl Toolbox
                                          -> Result<(), Status>
     {
         let feedback = prepared.feedback;
-        let damage = publish(&mut self.presentation.content, &mut self.controls, window, prepared, used, limit)?;
+        let damage = publish(&mut self.presentation.content, &mut self.controls, window,
+                             prepared, used, limit)?;
         let changed = !damage.is_empty() || feedback.is_some();
         if let Some(feedback) = feedback
         {
@@ -191,22 +186,21 @@ impl Toolbox
         let mut changed = false;
         for root in roots
         {
-            let result =
-                (|| -> Result<Vec<Rect>, Status> {
-                    let window = self.windows.window(WindowId(root.window)).ok_or(NOT_FOUND)?;
-                    if !self.owns(WindowId(root.window))
-                    {
-                        return Err(ACCESS_DENIED);
-                    }
-                    let prepared = self.controls.prepare_automatic(
+            let result = (|| -> Result<Vec<Rect>, Status> {
+                let window = self.windows.window(WindowId(root.window)).ok_or(NOT_FOUND)?;
+                if !self.owns(WindowId(root.window))
+                {
+                    return Err(ACCESS_DENIED);
+                }
+                let prepared = self.controls.prepare_automatic(
                     root, owner, window.local_bounds(),
                     self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(root.window)),
                     crate::machine::traps::gateway,
-                    |id| self.definitions.resolve(*b"CDEF", id).map_err(crate::loader::status))?;
-                    let (used, limit) = self.retained_admission(SceneTarget::from(root.window));
-                    publish(&mut self.presentation.content, &mut self.controls, root.window, prepared, used,
-                            limit)
-                })();
+                    |id| crate::toolbox::runtime::Toolbox::control_definition(id))?;
+                let (used, limit) = self.retained_admission(SceneTarget::from(root.window));
+                publish(&mut self.presentation.content, &mut self.controls, root.window, prepared,
+                        used, limit)
+            })();
             match result
             {
                 Ok(damage) =>
@@ -265,18 +259,27 @@ impl Toolbox
         let content = &mut self.presentation.content;
         let pending = &self.presentation.pending_content;
         let controls = &mut self.controls;
-        let definitions = &mut self.definitions;
         let mut damage = None;
         let result =
             self.windows.track(point, released, &mut self.events, when, |windows, id, viewport| {
-                            damage = Some((id,
-                                           relayout(windows,
-                                                    content,
-                                                    pending,
-                                                    controls,
-                                                    definitions,
-                                                    id,
-                                                    viewport)?));
+                            let prepared =
+                                controls.prepare_window(id.0,
+                                                        viewport,
+                                                        pending.iter()
+                                                               .any(|c| {
+                                                                   c.id == SceneTarget::from(id)
+                                                               }),
+                                                        None,
+                                                        crate::machine::traps::gateway,
+                                                        |id| {
+                                                            crate::toolbox::runtime::Toolbox::control_definition(id)
+                                                        })?;
+                            let (used, limit) = scene_admission(windows,
+                                                                content,
+                                                                pending,
+                                                                SceneTarget::from(id));
+                            let changed = publish(content, controls, id.0, prepared, used, limit)?;
+                            damage = Some((id, changed));
                             Ok(())
                         });
         self.finish_relayout(result, damage)
@@ -289,19 +292,13 @@ impl Toolbox
         let content = &mut self.presentation.content;
         let pending = &self.presentation.pending_content;
         let controls = &mut self.controls;
-        let definitions = &mut self.definitions;
         let mut damage = None;
         let result = self.windows.set_bounds(id, bounds, |windows, id, viewport| {
-                                    damage = Some((id,
-                                                   relayout(windows,
-                                                            content,
-                                                            pending,
-                                                            controls,
-                                                            definitions,
-                                                            id,
-                                                            viewport)?));
-                                    Ok(())
-                                });
+                                     damage = Some((id,
+                                                    relayout(windows, content, pending,
+                                                             controls, id, viewport)?));
+                                     Ok(())
+                                 });
         self.finish_relayout(result, damage)
     }
 

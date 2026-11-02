@@ -2,16 +2,6 @@
 include!(concat!(env!("OUT_DIR"), "/platform-memory.rs"));
 include!(concat!(env!("OUT_DIR"), "/platform-virtual.rs"));
 
-pub(crate) fn module_arena(ram_end: u64) -> Result<core::ops::Range<u64>, mac_abi::Status>
-{
-    let usable_end = ram_end.checked_sub(FDT_TAIL_BYTES).ok_or(mac_abi::NO_MEMORY)?;
-    if MODULE_LIMIT > usable_end
-    {
-        return Err(mac_abi::NO_MEMORY);
-    }
-    Ok(MODULE_BASE..MODULE_LIMIT)
-}
-
 /// # Safety
 /// The trusted bootstrap lends valid arrays for the whole System lifetime.
 /// This boundary checks lengths before creating slices; all extent validation

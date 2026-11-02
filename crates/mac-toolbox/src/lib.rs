@@ -1,23 +1,37 @@
 //! Rust Toolbox facade over the resident System trap gate.
 #![no_std]
+#![cfg_attr(all(feature = "application", target_arch = "riscv64"), feature(alloc_error_handler))]
+#[cfg(all(feature = "application", target_os = "systemrisc"))]
+compile_error!("the System RISC std target supplies startup; remove the no_std application \
+                feature");
 /// Explicit wire/entry-point escape hatch. Ordinary applications use decoded
 /// native services, typed identities and Error rather than numeric statuses.
 pub use mac_abi as abi;
 pub use mac_abi::{ApplicationEntry, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_CLOCK,
-                  geometry::{Point, Rect}, SystemServices, WindowId, dates::Timestamp};
+                  SystemServices, WindowId,
+                  dates::Timestamp,
+                  geometry::{Point, Rect}};
+/// Core-only native thread/TLS transport consumed by the platform CRT.
+pub use mac_traps::address_wait;
 /// Owned, bounded UTF-8 text returned by Toolbox snapshots.
 pub use mac_traps::types::InlineText;
-pub use mac_traps::{Client, Cnid, Error, MenuId, ProcessId, Result as ToolboxResult, ThreadId,
-                    TypeCode, VolumeId,
+pub use mac_traps::{Client, Cnid, Error, MenuId, ProcessId, Result as ToolboxResult,
+                    ServiceRequirementCause, ServiceRequirementFailure, ThreadId, TypeCode,
+                    VolumeId,
                     coordinates::{PointerPosition, ScreenPoint, WindowPoint},
+                    native_threads,
                     types::{ResourceKey, ResourceScope}};
 pub use toolbox_drag as drag;
 pub use toolbox_events::{Event, EventMask, Modifiers};
 pub use toolbox_inspection as inspection;
 pub mod panic;
+/// Native application entry, allocator and failure scaffold.
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
+pub mod application;
 pub use toolbox_controls as controls;
 pub use toolbox_crashes as crashes;
 pub use toolbox_dialogs as dialogs;
+pub use toolbox_entropy as entropy;
 pub use toolbox_events as events;
 pub use toolbox_files as files;
 pub use toolbox_memory as memory;
@@ -53,8 +67,26 @@ pub struct System<'a>
 {
     client: Client<'a>
 }
+impl System<'static>
+{
+    /// Acquire the services installed by this application's platform startup.
+    ///
+    /// This is a cheap, repeatable routing view, not a new System owner. It
+    /// allocates nothing and does not change application or thread authority.
+    /// Calls made before valid application startup return `Error::BadAbi`.
+    /// Each service still enforces its documented ownership/thread restrictions.
+    pub fn new() -> ToolboxResult<Self>
+    {
+        crate::panic::installed_client().map(|client| Self { client }).ok_or(Error::BadAbi)
+    }
+}
 impl<'a> System<'a>
 {
+    pub fn entropy(&self) -> entropy::Entropy<'a>
+    {
+        entropy::Entropy::new(self.client)
+    }
+
     pub fn power(&self) -> power::Power<'a>
     {
         power::Power::new(self.client)
@@ -231,7 +263,9 @@ impl<'a> System<'a>
 #[cfg(test)]
 mod tests
 {
-    use mac_abi::{events::{Event, EventKind}, Header, NEW_WINDOW, NOT_SUPPORTED, OK, traps};
+    use mac_abi::{Header, NEW_WINDOW, NOT_SUPPORTED, OK,
+                  events::{Event, EventKind},
+                  traps};
 
     use super::*;
     unsafe extern "C" fn gate(number: u32, request: *mut (), size: usize) -> i64
@@ -259,8 +293,8 @@ mod tests
                 assert_eq!(size, core::mem::size_of::<traps::NextEventCall>());
                 let r = unsafe { &mut *request.cast::<traps::NextEventCall>() };
                 r.event = Event { kind: EventKind::KeyDown,
-                                           message: 65,
-                                           ..Default::default() };
+                                  message: 65,
+                                  ..Default::default() };
                 OK as i64
             }
             _ => NOT_SUPPORTED as i64
@@ -291,4 +325,28 @@ mod tests
         assert!(matches!(unsafe { System::from_raw((&short as *const Header).cast()) },
                          Err(Error::BadAbi)));
     }
+}
+
+/// Supply the platform entry for a safe native `run(&System) -> ToolboxResult<()>`.
+///
+/// Enable the `application` feature. Current native applications are no_std and
+/// may use `alloc`; this does not provide a Rust std platform implementation.
+/// The SDK owns service installation, GlobalAlloc, panic and allocation failure.
+#[cfg(feature = "application")]
+#[macro_export]
+macro_rules! application {
+    ($run:path) => {
+        #[cfg(not(target_arch = "riscv64"))]
+        compile_error!("System RISC application runtime currently requires its native RV64 target");
+        #[cfg(target_arch = "riscv64")]
+        #[unsafe(no_mangle)]
+        #[unsafe(link_section = ".text.entry")]
+        pub unsafe extern "C" fn _start(services: *const $crate::SystemServices)
+                                        -> $crate::abi::Status
+        {
+            // SAFETY: the real native loader owns this entry's live table,
+            // initialized image and permanent service callbacks.
+            unsafe { $crate::application::enter(services, $run) }
+        }
+    };
 }

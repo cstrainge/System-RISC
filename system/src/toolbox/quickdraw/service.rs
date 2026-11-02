@@ -2,7 +2,8 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 
-use mac_abi::{quickdraw as abi, *, geometry::{Point, Rect}};
+use mac_abi::{geometry::{Point, Rect},
+              quickdraw as abi, *};
 
 use super::{Canvas,
             port::{self, Shape, Verb},
@@ -264,6 +265,8 @@ fn decode_graphics(port: &mut Port, call: &mut abi::GraphicsCall, points: &[Poin
                 VERB_FILL => Verb::Fill(call.state.pattern),
                 _ => return Err(NOT_SUPPORTED)
             };
+            // Reject invalid/oversized shape data before retaining a command.
+            port::validate_drawing(geometry.shape()).map_err(super::regions_service::graphics_status)?;
             Some(Drawing { port: port.clone(),
                            geometry: Some(geometry),
                            verb,

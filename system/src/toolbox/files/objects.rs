@@ -6,6 +6,8 @@ use mac_object_table::domain::{CompletionError, ReleasedResource};
 use super::*;
 use crate::toolbox::handles::{InvocationGate, KindLease, OwnerRef};
 pub(super) mod storage;
+#[cfg(target_arch = "riscv64")]
+pub(in crate::toolbox::files) mod prepared;
 use storage::{Backend, Guard, Id, Key};
 pub(super) trait Payload: Sized
 {
@@ -139,12 +141,17 @@ impl<T: Payload> Objects<T>
     {
         // Completion entries include live, pending and retired payloads. Their
         // count bounds all later removals without a full object-value scan.
-        let needed = self.completions.len().saturating_add(1);
+        let credits = self.objects.as_ref().map_or(0, Backend::publication_credits);
+        let needed = self.completions
+                         .len()
+                         .checked_add(credits)
+                         .and_then(|n| n.checked_add(1))
+                         .ok_or(NO_MEMORY)?;
         // Shared completion/retirement indices outlive any individual owner.
         // The create callback below still allocates its real owner payload.
         InvocationGate::with_system_allocation(|| {
             self.retiring.try_reserve(needed.saturating_sub(self.retiring.len()))?;
-            self.completions.try_reserve(1)
+            self.completions.try_reserve(needed.saturating_sub(self.completions.len()))
         }).map_err(|_| NO_MEMORY)?;
         let objects = self.objects.as_mut().ok_or(NOT_SUPPORTED)?;
         let (wire, key) = create(objects)?;
@@ -236,10 +243,15 @@ impl<T: Payload> Objects<T>
 
     pub(super) fn reserve(&mut self) -> Result<(), Status>
     {
-        let needed = self.len() + 1;
+        let credits = self.objects.as_ref().map_or(0, Backend::publication_credits);
+        let needed = self.completions
+                         .len()
+                         .checked_add(credits)
+                         .and_then(|n| n.checked_add(1))
+                         .ok_or(NO_MEMORY)?;
         InvocationGate::with_system_allocation(|| {
-            self.completions.try_reserve(1)?;
-            self.retiring.try_reserve(needed)
+            self.completions.try_reserve(needed.saturating_sub(self.completions.len()))?;
+            self.retiring.try_reserve(needed.saturating_sub(self.retiring.len()))
         }).map_err(|_| NO_MEMORY)
     }
 
@@ -350,6 +362,11 @@ impl<T: Payload> Objects<T>
         };
         if storage
         {
+            let preparing = objects.publication_preparations(ticket.key().owner());
+            if preparing != 0
+            {
+                return Err(crate::toolbox::handles::cleanup::Failure::publication_preparations(ticket,preparing));
+            }
             return objects.release_storage(ticket).map_err(Into::into);
         }
         let provider =

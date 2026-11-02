@@ -78,6 +78,16 @@ impl<'a> Processes<'a>
             .try_into()
     }
 
+    /// Confirm successful initial desktop presentation from the genuine Finder
+    /// main thread. Existing allocations keep their original storage and charge.
+    /// Repeating a successful confirmation is harmless while that Finder lives.
+    pub fn finder_desktop_ready(self) -> Result<()>
+    {
+        self.call(ProcessCall { operation: FINDER_DESKTOP_READY,
+                                ..Default::default() })
+            .map(|_| ())
+    }
+
     pub fn count(self) -> Result<u32>
     {
         Ok(self.call(ProcessCall { operation: COUNT,

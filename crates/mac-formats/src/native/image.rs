@@ -65,22 +65,19 @@ pub fn decode(bytes: &[u8], descriptor: &Descriptor) -> Result<Image>
 }
 /// BSS and all other uninitialized reservation bytes are implicit zeros.
 pub fn encode<'a>(descriptor: &Descriptor,
-                  segments: impl IntoIterator<Item = (u64, u32, &'a [u8])>)
+                  segments: impl IntoIterator<Item = (u64, u64, u32, &'a [u8])>)
                   -> Result<Vec<u8>>
 {
     let mut result = b"RV64".to_vec();
     result.extend_from_slice(&FORMAT_VERSION.to_be_bytes());
     result.extend_from_slice(&0u16.to_be_bytes());
     let mut count = 0u16;
-    for (offset, flags, bytes) in segments
+    for (offset, memory_length, flags, bytes) in segments
     {
-        if bytes.is_empty()
-        {
-            continue;
-        }
         count = count.checked_add(1).ok_or(Error::Malformed("too many RV64 segments"))?;
         result.extend_from_slice(&offset.to_be_bytes());
         result.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        result.extend_from_slice(&memory_length.to_be_bytes());
         result.extend_from_slice(&flags.to_be_bytes());
         result.extend_from_slice(bytes);
     }
@@ -98,6 +95,11 @@ impl Image
                           .iter()
                           .find(|s| address >= s.offset && end <= s.offset + s.length as u64)
                           .ok_or(Error::Malformed("relocation outside initialized image"))?;
+        if segment.flags & EXECUTE != 0
+        {
+            return Err(Error::Malformed("native PIC contract forbids relocation slots in \
+                                         executable segments; rebuild the package"));
+        }
         Ok(segment.data_offset + (address - segment.offset) as usize)
     }
 }
@@ -116,6 +118,13 @@ impl<'a> LoadPlan<'a>
     pub fn entry(&self) -> u64
     {
         self.entry
+    }
+
+    /// Validated memory extents used by real segmented native destinations.
+    /// Metadata grants neither mapping ownership nor permission to execute.
+    pub fn segments(&self) -> &[Segment]
+    {
+        &self.image.segments
     }
 
     pub fn length(&self) -> usize
@@ -140,6 +149,17 @@ impl<'a> LoadPlan<'a>
                                        extent,
                                        destination,
                                        |offset, width| {
+                                           if descriptor.role == super::Role::CodeResource
+                                              && width == 4
+                                           {
+                                               return Err(Error::Malformed("RV64 module/\
+                                                                            definition \
+                                                                            pointers require \
+                                                                            64-bit relocation \
+                                                                            slots; rebuild the \
+                                                                            package for \
+                                                                            arbitrary placement"));
+                                           }
                                            let at = image.source(offset, usize::from(width))?;
                                            let data = crate::slice(bytes, at, usize::from(width))?;
                                            Ok(if width == 4
@@ -208,6 +228,10 @@ impl<'a> LoadPlan<'a>
         output.clear().map_err(WriteError::Destination)?;
         for segment in &self.image.segments
         {
+            if segment.length == 0
+            {
+                continue; // BSS-only memory is already zeroed in its owned backing.
+            }
             output.write(segment.offset as usize,
                          &self.bytes[segment.data_offset..segment.data_offset + segment.length])
                   .map_err(WriteError::Destination)?;
@@ -242,7 +266,7 @@ mod tests
         let d = descriptor();
         let pointer = (d.load_base + 0x800).to_le_bytes();
         let code =
-            encode(&d, [(0, 5, [0x82, 0x80].as_slice()), (0x100, 6, pointer.as_slice())]).unwrap();
+            encode(&d, [(0, 2, 5, [0x82, 0x80].as_slice()), (0x100, 8, 6, pointer.as_slice())]).unwrap();
         let table = [b"RLC1".as_slice(), &1u32.to_le_bytes(), &[0, 1, 0, 0, 8, 0, 0, 0]].concat();
         (d, code, table)
     }
@@ -250,7 +274,7 @@ mod tests
     fn compact_segments_relocate_and_zero_every_uninitialized_byte()
     {
         let (d, code, table) = fixture();
-        assert_eq!(code.len(), 8 + 20 + 2 + 20 + 8);
+        assert_eq!(code.len(), 8 + 28 + 2 + 28 + 8);
         assert_eq!(&code[..8], b"RV64\0\x01\0\x02");
         for destination in [0x82000000, 0x82f00000, 0x81000000, 0x1000]
         {
@@ -374,8 +398,9 @@ mod tests
         descriptor.load_limit = descriptor.load_base + 16384;
         let code = vec![0x82; 6000];
         let pointer = (descriptor.load_base + 0x800).to_le_bytes();
-        let image =
-            encode(&descriptor, [(0, 5, code.as_slice()), (8192, 6, pointer.as_slice())]).unwrap();
+        let image = encode(&descriptor,
+                           [(0, code.len() as u64, 5, code.as_slice()),
+                            (8192, 8, 6, pointer.as_slice())]).unwrap();
         let mut relocations = b"RLC1".to_vec();
         relocations.extend_from_slice(&1u32.to_le_bytes());
         relocations.extend_from_slice(&8192u32.to_le_bytes());

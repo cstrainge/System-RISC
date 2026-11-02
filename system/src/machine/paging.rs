@@ -1,9 +1,11 @@
 //! RV64 supervisor bootstrap and permanently owned translation roots. No
 //! existing reference changes its address; every RAM view starts in physmap.
 pub(crate) mod inspection;
+pub(crate) mod modules;
+pub(crate) mod process;
 mod alias;
 mod heap_partition;
-use core::{arch::asm, fmt, marker::PhantomData, ptr};
+use core::{alloc::Layout, arch::asm, fmt, marker::PhantomData, ptr};
 
 use heap_partition::HeapPartition;
 pub(crate) use heap_partition::{ProtectedHeapStatistics, ProtectedRange};
@@ -12,7 +14,7 @@ use mac_abi::{BootInfo, BootMemoryRange,
                      execution::{self, EXECUTE, FIRMWARE_ONLY, READ, Region, WRITE},
                      topology}};
 use mac_kernel_model::{DomainId,
-                       pages::{Access, AddressSpace, Architecture, AsidTag, PageBox,
+                       pages::{Access, AddressSpace, Architecture, AsidTag, PageBacking, PageBox,
                                PageGeometry, PageLayout, PageOwnership, Permissions,
                                PhysicalAddress, VirtualAddress,
                                physical::{DirectMap, Error as PhysicalError}},
@@ -26,7 +28,129 @@ use super::{interrupts::{self, NativeInvocationGate},
 use crate::allocator::foundation::{self, Foundation};
 const MODE: usize = 8usize << 60;
 const PPN: usize = (1usize << 44) - 1;
-type RootPage = PageBox<'static, 'static, [u64; 512], NativeInvocationGate>;
+/// Closed native physical ownership; no variant can be made from a PPN.
+/// Recovery backing is an exclusive sublease of the real protected heap parent.
+enum PagingBacking
+{
+    Foundation(Foundation<Backing>),
+    Ordinary(Backing),
+    Protected(crate::allocator::recovery::Backing)
+}
+impl PagingBacking
+{
+    fn cpu_base(&self) -> usize
+    {
+        match self
+        {
+            Self::Foundation(b) => b.cpu_base(),
+            Self::Ordinary(b) => b.cpu_base(),
+            Self::Protected(b) => b.cpu_base()
+        }
+    }
+}
+impl PageBacking for PagingBacking
+{
+    fn physical(&self) -> PhysicalAddress
+    {
+        match self
+        {
+            Self::Foundation(b) => b.physical(),
+            Self::Ordinary(b) => b.physical(),
+            Self::Protected(b) => b.physical()
+        }
+    }
+
+    fn bytes(&self) -> u64
+    {
+        match self
+        {
+            Self::Foundation(b) => b.bytes(),
+            Self::Ordinary(b) => b.bytes(),
+            Self::Protected(b) => b.bytes()
+        }
+    }
+}
+#[derive(Clone)]
+enum BackingSource
+{
+    // Only initial System root/table/Node preparation selects this source.
+    Foundation,
+    Ordinary,
+    Protected(crate::allocator::recovery::Permit)
+}
+impl BackingSource
+{
+    fn planned_bytes(&self, layout: Layout) -> Result<u64, FrameError>
+    {
+        match self
+        {
+            Self::Foundation | Self::Ordinary =>
+            {
+                Backing::planned_bytes(layout.size()).map_err(FrameError::Pages)
+            }
+            Self::Protected(_) => crate::allocator::recovery::Permit::backing_layout(layout)
+                .map(|layout| layout.size() as u64).map_err(FrameError::Recovery)
+        }
+    }
+
+    fn allocate_zeroed(&self, layout: Layout) -> Result<PagingBacking, FrameError>
+    {
+        match self
+        {
+            Self::Foundation =>
+            {
+                Foundation::<Backing>::allocate(layout.size()).map(PagingBacking::Foundation)
+                                                              .map_err(FrameError::Foundation)
+            }
+            Self::Ordinary =>
+            {
+                Backing::allocate(layout.size()).map(PagingBacking::Ordinary)
+                                                .map_err(FrameError::Pages)
+            }
+            Self::Protected(permit) =>
+            {
+                permit.allocate_backing(layout)
+                      .map(PagingBacking::Protected)
+                      .map_err(FrameError::Recovery)
+            }
+        }
+    }
+
+    /// Origin follows the retained root, not a module publisher's ambient scope.
+    /// Attribution is separately selected from the genuine root account.
+    fn with_metadata<R>(&self, operation: impl FnOnce() -> R) -> R
+    {
+        match self
+        {
+            Self::Foundation =>
+            {
+                crate::context::without_recovery(|| {
+                    crate::allocator::with_system(crate::allocator::SystemClass::Foundation,
+                                                  operation)
+                })
+            }
+            Self::Ordinary => crate::context::without_recovery(operation),
+            Self::Protected(permit) =>
+            {
+                crate::context::with_recovery_allocation(permit.clone(), operation)
+            }
+        }
+    }
+
+    fn accepts_existing(&self, existing: &Self) -> bool
+    {
+        match (self, existing)
+        {
+            (Self::Foundation, Self::Foundation) => true,
+            (Self::Foundation, _) | (_, Self::Foundation) => false,
+            // Ordinary reuse retains an already admitted root's actual policy.
+            (Self::Ordinary, _) => true,
+            (Self::Protected(a), Self::Protected(b)) => a.same_storage(b),
+            (Self::Protected(_), Self::Ordinary) => false
+        }
+    }
+}
+type RootPage = PageBox<[u64; 512], PagingBacking>;
 static BOOT: spin::Once<Bootstrap> = spin::Once::new();
 static SPACES: spin::Once<Spaces> = spin::Once::new();
 struct Bootstrap
@@ -280,7 +404,10 @@ pub(crate) fn report_refusal(error: &impl fmt::Display)
 #[derive(Debug)]
 pub(crate) enum FrameError
 {
+    Foundation(foundation::Error),
     Pages(super::pages::Error),
+    Account(mac_kernel_model::account::Error),
+    Recovery(crate::allocator::recovery::Error),
     Foreign
     {
         physical: u64
@@ -290,13 +417,35 @@ pub(crate) enum FrameError
         index: usize
     }
 }
+impl FrameError
+{
+    fn status(&self) -> mac_abi::Status
+    {
+        match self
+        {
+            Self::Foundation(e) => e.status(),
+            Self::Pages(e) => e.status(),
+            Self::Account(e) => crate::allocation::account_status(e),
+            Self::Recovery(crate::allocator::recovery::Error::Exhausted { .. }
+                           | crate::allocator::recovery::Error::BackingRefused { .. }) =>
+            {
+                mac_abi::NO_MEMORY
+            }
+            Self::Recovery(crate::allocator::recovery::Error::Layout) => mac_abi::BAD_ARGUMENT,
+            _ => mac_abi::BAD_ABI
+        }
+    }
+}
 impl fmt::Display for FrameError
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result
     {
         match self
         {
+            Self::Foundation(e) => e.fmt(f),
             Self::Pages(e) => e.fmt(f),
+            Self::Account(e) => e.fmt(f),
+            Self::Recovery(e) => e.fmt(f),
             Self::Foreign { physical } =>
             {
                 write!(f, "page table {physical:#x} is not retained by this root")
@@ -307,11 +456,13 @@ impl fmt::Display for FrameError
 }
 struct Node
 {
-    table:    Option<RootPage>,
-    physical: PhysicalAddress,
-    cpu:      usize,
-    next:     usize,
-    _storage: Backing
+    table:           Option<RootPage>,
+    physical:        PhysicalAddress,
+    cpu:             usize,
+    next:            usize,
+    _storage:        PagingBacking,
+    charge:          Option<mac_kernel_model::account::Committed<NativeInvocationGate>>,
+    _storage_charge: Option<mac_kernel_model::account::Committed<NativeInvocationGate>>
 }
 /// Nodes and tables own separate page leases, so root preparation cannot recurse
 /// into the not-yet-initialized heap. Raw node walks are confined to this binding.
@@ -319,8 +470,10 @@ struct Node
 /// in both roots. No unsafe Send/Sync implementation or pointer-mode flag exists.
 struct Frames
 {
-    head:  usize,
-    count: usize
+    head:    usize,
+    count:   usize,
+    account: Option<super::scheduler::accounting::AllocationAuthority>,
+    source:  BackingSource
 }
 impl Frames
 {
@@ -339,7 +492,10 @@ impl Frames
         Err(FrameError::Foreign { physical: physical.0 })
     }
 
-    fn take_root(&mut self, physical: PhysicalAddress) -> Result<RootPage, Error>
+    fn take_root(
+        &mut self, physical: PhysicalAddress)
+        -> Result<(RootPage, Option<mac_kernel_model::account::Committed<NativeInvocationGate>>),
+                  Error>
     {
         let mut next = self.head;
         while next != 0
@@ -347,7 +503,10 @@ impl Frames
             let node = unsafe { &mut *(next as *mut Node) };
             if node.physical == physical
             {
-                return node.table.take().ok_or(Error::ForeignRoot { physical: physical.0 });
+                return node.table
+                           .take()
+                           .map(|table| (table, node.charge.take()))
+                           .ok_or(Error::ForeignRoot { physical: physical.0 });
             }
             next = node.next;
         }
@@ -360,11 +519,31 @@ impl Tables for Frames
 
     fn allocate_zeroed(&mut self) -> Result<PhysicalAddress, FrameError>
     {
-        let backing = Backing::allocate(4096).map_err(FrameError::Pages)?;
+        let table_layout = Layout::new::<[u64; 512]>().align_to(PAGE_BYTES as usize)
+            .map_err(|_| FrameError::Pages(super::pages::Error::Geometry))?;
+        let charge = self.account
+                         .as_ref()
+                         .map(|a| {
+                             self.source
+                        .planned_bytes(table_layout)
+                        .and_then(|bytes| a.reserve_kernel(bytes).map_err(FrameError::Account))
+                         })
+                         .transpose()?;
+        let backing = self.source.allocate_zeroed(table_layout)?;
         let cpu = backing.cpu_base();
         let physical = backing.physical();
-        let table = backing.into_table().map_err(FrameError::Pages)?;
-        let storage = Backing::allocate(size_of::<Node>()).map_err(FrameError::Pages)?;
+        let table = RootPage::reserve(backing, Sv39::geometry())
+            .map_err(|cause| FrameError::Pages(super::pages::Error::Model(cause)))?;
+        let storage_layout = Layout::new::<Node>();
+        let storage_charge = self.account
+                                 .as_ref()
+                                 .map(|a| {
+                                     self.source
+                        .planned_bytes(storage_layout)
+                        .and_then(|bytes| a.reserve_kernel(bytes).map_err(FrameError::Account))
+                                 })
+                                 .transpose()?;
+        let storage = self.source.allocate_zeroed(storage_layout)?;
         let pointer = storage.cpu_base();
         // SAFETY: exclusive aligned zeroed node storage is disjoint from table RAM;
         // moving its unique leases here precedes publishing the private chain link.
@@ -373,7 +552,11 @@ impl Tables for Frames
                                                 physical,
                                                 cpu,
                                                 next: self.head,
-                                                _storage: storage });
+                                                _storage: storage,
+                                                charge: charge.map(|c| c.commit()),
+                                                _storage_charge: storage_charge.map(|c| {
+                                                                                   c.commit()
+                                                                               }) });
         }
         self.head = pointer;
         self.count += 1;
@@ -387,7 +570,7 @@ impl Tables for Frames
             return Err(FrameError::Slot { index });
         }
         let node = self.node(table)?;
-        Ok(unsafe { ptr::read_volatile((node.cpu as *const u64).add(index)) })
+        Ok(unsafe { core::sync::atomic::AtomicU64::from_ptr((node.cpu as *mut u64).add(index)) }.load(core::sync::atomic::Ordering::Acquire))
     }
 
     fn store(&mut self, table: PhysicalAddress, index: usize, entry: Entry)
@@ -399,7 +582,7 @@ impl Tables for Frames
         }
         let node = self.node(table)?;
         unsafe {
-            ptr::write_volatile((node.cpu as *mut u64).add(index), entry.bits());
+            core::sync::atomic::AtomicU64::from_ptr((node.cpu as *mut u64).add(index)).store(entry.bits(), core::sync::atomic::Ordering::Release);
         }
         Ok(())
     }
@@ -442,10 +625,11 @@ impl Architecture for Rva
 }
 struct Space
 {
-    owner:    AddressSpace<'static, 'static, Rva>,
-    tables:   Frames,
-    register: usize,
-    leaves:   u64
+    owner:        AddressSpace<Rva, PagingBacking>,
+    tables:       Frames,
+    register:     usize,
+    leaves:       u64,
+    _root_charge: Option<mac_kernel_model::account::Committed<NativeInvocationGate>>
 }
 struct Spaces
 {
@@ -582,8 +766,11 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
                  heap: PhysicalAddress, tag: usize)
                  -> Result<Space, Error>
 {
-    let mut mapper = Mapper::new(Frames { head:  0,
-                                          count: 0 }).map_err(Error::Tables)?;
+    let mut mapper =
+        Mapper::new(Frames { head:    0,
+                             count:   0,
+                             account: None,
+                             source:  BackingSource::Foundation }).map_err(Error::Tables)?;
     let mut leaves = 0;
     for bank in boot.ram.banks()
     {
@@ -621,19 +808,8 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
                   VM_SYSTEM_HEAP_LIMIT - VM_SYSTEM_HEAP_BASE,
                   READ | WRITE,
                   true)?;
-    // Trusted flat application/module arenas remain an explicit temporary gate.
-    leaves += map(&mut mapper,
-                  APPLICATION_PRIMARY_BASE,
-                  APPLICATION_PRIMARY_BASE,
-                  IMAGE_LIMIT - APPLICATION_PRIMARY_BASE,
-                  READ | WRITE | EXECUTE,
-                  false)?;
-    leaves += map(&mut mapper,
-                  MODULE_BASE,
-                  MODULE_BASE,
-                  MODULE_LIMIT - MODULE_BASE,
-                  READ | WRITE | EXECUTE,
-                  false)?;
+    // Definition payloads are independently owned sparse physical mappings,
+    // published through their canonical DDEF record after bootstrap.
     for &(base, end) in BOOT_MMIO_REGIONS
     {
         leaves += map(&mut mapper, base, base, end - base, READ | WRITE, true)?;
@@ -643,13 +819,14 @@ fn prepare_space(boot: &Bootstrap, firmware: bool, stacks: &[Foundation<Stack>],
         leaves += map(&mut mapper, base, base, bytes, READ | WRITE, true)?;
     }
     let (physical, mut tables) = mapper.into_tables();
-    let root = tables.take_root(physical)?;
-    let owner=AddressSpace::<Rva>::reserve(DomainId::SYSTEM,root,AsidTag::Permanent{hardware_value:tag as u64}).map_err(Error::Policy)?;
+    let (root, root_charge) = tables.take_root(physical)?;
+    let owner=AddressSpace::<Rva, PagingBacking>::reserve(DomainId::SYSTEM,root,AsidTag::Permanent{hardware_value:tag as u64}).map_err(Error::Policy)?;
     let register = MODE | (tag << 44) | (owner.root_physical().0 as usize >> 12);
     Ok(Space { owner,
                tables,
                register,
-               leaves })
+               leaves,
+               _root_charge: root_charge })
 }
 /// # Safety
 /// Firmware's physmap is active before pool construction. Both prepared roots
@@ -782,11 +959,6 @@ struct RootScope
 }
 impl RootScope
 {
-    fn enter(register: usize, fence: bool) -> Self
-    {
-        Self::from_previous(register, fence, root_register())
-    }
-
     fn from_previous(register: usize, fence: bool, previous: usize) -> Self
     {
         let changed = previous != register;
@@ -830,10 +1002,18 @@ pub(crate) fn with_firmware<R>(call: impl FnOnce() -> R) -> Result<R, Error>
         {
             return Err(Error::ForeignHart);
         }
-        let (register, fence) = SPACES.get().map_or((boot.root, true), |spaces| {
-                                                (spaces.firmware.register, !spaces.distinct_tags)
-                                            });
-        let _scope = RootScope::enter(register, fence);
+        let current = root_register();
+        let (register, fence) =
+            SPACES.get().map_or((boot.root, true), |spaces| {
+                            // Process roots share hardware ASID0 with firmware. A direct
+                            // trusted supervisor caller must flush both entry and restoration,
+                            // even when permanent Kernel/FW tags are otherwise distinct.
+                            (spaces.firmware.register,
+                             !spaces.distinct_tags
+                             || (current != spaces.kernel.register
+                                 && current != spaces.firmware.register))
+                        });
+        let _scope = RootScope::from_previous(register, fence, current);
         Ok(call())
     })
 }
@@ -841,18 +1021,71 @@ pub(crate) fn with_firmware<R>(call: impl FnOnce() -> R) -> Result<R, Error>
 /// Called only by the saved native trap-entry boundary, with SIE already clear
 /// and common System stack/CPU backing active in either admitted root. No
 /// ordinary callback may enter here without that architecture admission.
-pub(crate) unsafe fn with_kernel<R>(call: impl FnOnce() -> R) -> Result<R, Error>
+pub(crate) unsafe fn with_kernel<R>(outer: bool, call: impl FnOnce() -> R) -> Result<R, Error>
 {
     let spaces = SPACES.get().ok_or(Error::Missing)?;
     let current = root_register();
-    // Ordinary application/interrupt entry already uses this root. Do not
-    // rewrite sstatus/satp or construct a restoration for a no-change call.
-    if current == spaces.kernel.register
+    let firmware_call = if outer && current == spaces.firmware.register
     {
-        return Ok(call());
+        Some(super::traps::execution::current())
     }
-    let _scope = RootScope::from_previous(spaces.kernel.register, !spaces.distinct_tags, current);
-    Ok(call())
+    else
+    {
+        None
+    };
+    // Every Process root uses ASID0 without retained translation identity.
+    // Firmware's fixed-owner scope remains independently restoring.
+    let fence = !spaces.distinct_tags
+                || (current != spaces.kernel.register && current != spaces.firmware.register);
+    let mut scope = RootScope::from_previous(spaces.kernel.register, fence, current);
+    if outer
+    {
+        // Before any scheduler handoff, discard the interrupted root's restore
+        // intent. Its actual claim may subsequently be released/reaped on a
+        // peer. No return path may resurrect that copied SATP afterwards.
+        scope.previous = spaces.kernel.register;
+        scope.changed = false;
+    }
+    let result = call();
+    if outer
+    {
+        let selected = super::traps::execution::return_root(spaces.kernel.register);
+        // Preserve a still-affine firmware/cold callback, including bootstrap
+        // calls outside I/O. A real outgoing claim change discards its old
+        // root intent; the abandoned stack must never restore that root.
+        let selected =
+            if firmware_call.is_some_and(|before| before == super::traps::execution::current())
+            {
+                current
+            }
+            else
+            {
+                selected
+            };
+        scope.previous = selected;
+        scope.changed = selected != spaces.kernel.register;
+        scope.fence = true;
+    }
+    // Every callback/guard/borrow from call has ended. Only the copied result
+    // and the actual selected claim survive the final SATP/flush turn.
+    drop(scope);
+    Ok(result)
+}
+/// # Safety
+/// Only initial scheduler commitment, with SIE clear and the genuine selected
+/// THRD claim already published, may enter this non-restoring root transition.
+pub(crate) unsafe fn activate_scheduled_root()
+{
+    let Some(spaces) = SPACES.get()
+    else
+    {
+        super::traps::entry_lost("scheduler root directory missing")
+    };
+    let selected = super::traps::execution::return_root(spaces.kernel.register);
+    if root_register() != selected
+    {
+        unsafe { asm!("csrw satp,{}","sfence.vma zero,zero",in(reg)selected,options(nostack)) }
+    }
 }
 
 pub(crate) fn bus_address(cpu: u64, bytes: u64) -> Option<u64>
@@ -880,8 +1113,7 @@ pub(crate) fn bus_address(cpu: u64, bytes: u64) -> Option<u64>
     {
         return Some(physical.0);
     }
-    if (cpu >= MODULE_BASE && end <= MODULE_LIMIT)
-       || (cpu >= APPLICATION_PRIMARY_BASE && end <= IMAGE_LIMIT)
+    if cpu >= DEFINITION_BASE && end <= DEFINITION_LIMIT
     {
         boot.ram.virtual_address(PhysicalAddress(cpu), bytes).ok()?;
         return Some(cpu);

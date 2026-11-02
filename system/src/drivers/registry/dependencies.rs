@@ -1,4 +1,4 @@
-//! Admitted dependencies bind exact provider incarnations in the module ledger.
+//! Admitted dependencies bind exact provider incarnations in the genuine dependent domain ledger.
 //! A declaration cannot silently switch to a different provider after startup.
 #![forbid(unsafe_code)]
 use mac_object_table::{domain::{ReleasedResource, ResourceKey},
@@ -25,17 +25,17 @@ pub(crate) fn specification(storage: bool) -> Specification<'static>
     Specification { kind:     KindCode(if storage { *b"DDST" } else { *b"DDEP" }),
                     label:    if storage
                     {
-                        "Module dependency storage"
+                        "Domain dependency storage"
                     }
                     else
                     {
-                        "Module dependency claims"
+                        "Domain dependency claims"
                     },
                     provider: "System Module Manager",
                     capacity: if storage
                     {
                         CapacityPolicy::HardBound { slots:  1,
-                                                    reason: "One dependency backing per module \
+                                                    reason: "One dependency backing per dependent \
                                                              domain" }
                     }
                     else
@@ -51,18 +51,33 @@ impl<C: Context + ?Sized> Release<C, Failure> for ReleaseDependencies
     fn release(&self, context: &mut C, ticket: ReleasedResource)
                -> core::result::Result<(), Failure>
     {
-        let Some(registry) = context.driver_registry()
-        else
+        if let Some(registry) = context.driver_registry()
         {
-            return Err(Failure::context_unavailable(ticket, "driver registry"));
-        };
-        if self.0
+            return registry.release_dependency(ticket, self.0);
+        }
+        #[cfg(target_arch = "riscv64")]
         {
-            registry.dependencies.release_storage(ticket).map_err(Failure::from)
+            crate::drivers::release_dependency(ticket, self.0)
+        }
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            Err(Failure::context_unavailable(ticket, "driver dependency registry"))
+        }
+    }
+}
+
+impl Registry
+{
+    pub(crate) fn release_dependency(&mut self, ticket: ReleasedResource, storage: bool)
+                                     -> core::result::Result<(), Failure>
+    {
+        if storage
+        {
+            self.dependencies.release_storage(ticket).map_err(Failure::from)
         }
         else
         {
-            if let Some(binding) = registry.dependencies.releasing(&ticket)
+            if let Some(binding) = self.dependencies.releasing(&ticket)
             {
                 if binding.scope.as_ref().is_some_and(|scope| !scope.closed())
                 {
@@ -70,14 +85,89 @@ impl<C: Context + ?Sized> Release<C, Failure> for ReleaseDependencies
                                                                        binding.dependent));
                 }
             }
-            drop(registry.dependencies.release(ticket).map_err(Failure::from)?);
+            drop(self.dependencies.release(ticket).map_err(Failure::from)?);
+            #[cfg(target_arch = "riscv64")]
+            crate::drivers::recovery_changed();
             Ok(())
         }
     }
-}
 
-impl Registry
-{
+    /// Repeated admission must retain the first selected incarnation. A
+    /// retiring provider is a refusal, never silent rebinding to another one.
+    pub(crate) fn process_provider(&self,
+                                   scope: &mac_object_table::scope::Lease<crate::toolbox::handles::InvocationGate>,
+                                   class: mac_module::ClassId, version: u32)
+                                   -> Result<Option<u64>>
+    {
+        let existing =
+            self.dependencies.retained_values().find(|binding| {
+                                                   binding.class == class
+                && binding.scope.as_ref().is_some_and(|old| old.same_scope(scope))
+                                               });
+        let Some(binding) = existing
+        else
+        {
+            return Ok(None);
+        };
+        if binding.version != version
+        {
+            return Err(Error::Contract(mac_module::Error::Version));
+        }
+        let interface = self.interface(binding.interface)?;
+        if self.interfaces.key(binding.interface) != Some(binding.interface_key)
+           || interface.offer.class != class
+           || interface.offer.version != version
+        {
+            return Err(Error::Stale);
+        }
+        Ok(Some(binding.interface))
+    }
+
+    /// Bind an exact live provider to a genuine Process runtime scope. The
+    /// scope closes only after actual thread/root use drains, not owner stop.
+    pub(crate) fn pin_process_provider(&mut self, owner: &crate::toolbox::handles::OwnerRef,
+                                       allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+                                       scope: &mac_object_table::scope::Lease<crate::toolbox::handles::InvocationGate>,
+                                       interface: u64, class: mac_module::ClassId, version: u32)
+                                       -> Result<()>
+    {
+        use mac_object_table::domain::DomainKind;
+        if owner.owner().kind() != DomainKind::Process
+           || allocation.owner() != owner.owner()
+           || scope.subject() != owner.owner()
+           || scope.kind()
+              != crate::toolbox::native_threads::lifetime::Kind::Root.specification().kind
+           || !owner.accepting()
+           || scope.admitting().is_err()
+        {
+            return Err(Error::Access);
+        }
+        let provider = self.interface(interface)?;
+        if provider.offer.class != class || provider.offer.version != version
+        {
+            return Err(Error::Contract(mac_module::Error::Version));
+        }
+        let key = self.interfaces.key(interface).ok_or(Error::Stale)?;
+        if self.dependencies.retained_values().any(|binding| {
+                                                  binding.interface_key == key
+                && binding.scope.as_ref().is_some_and(|old| old.same_scope(scope))
+                                              })
+        {
+            return Ok(());
+        }
+        let binding = Binding { dependent: owner.owner().incarnation(),
+                                provider: provider.module,
+                                interface,
+                                interface_key: key,
+                                class,
+                                version,
+                                scope: Some(scope.clone()) };
+        crate::allocation::with_kernel_allocation(allocation, || {
+            self.dependencies.insert_in_scope(scope, binding).map_err(Error::Owner)
+        }).map_err(Error::AllocationScope)??;
+        Ok(())
+    }
+
     /// A private backing lease pins the exact lower provider incarnation. This
     /// grants lifetime only; declared service/resolve policy stays unchanged.
     pub(crate) fn pin_backing_provider(&mut self, dependent: u64, interface: u64,
@@ -116,12 +206,21 @@ impl Registry
         Ok(())
     }
 
-    /// Only the module-scope-close notification drives this per-change walk.
-    /// Source roots stay open through every real read/close and result guard.
-    pub(crate) fn reap_closed_dependencies(&mut self)
+    /// Real scope closure drives this per-change walk. Report actual removal
+    /// so a provider whose cleanup awaited this claim is woken after disposal.
+    pub(crate) fn reap_closed_dependencies(&mut self) -> bool
     {
-        self.dependencies
-            .remove_where(|_, binding| binding.scope.as_ref().is_some_and(|scope| scope.closed()));
+        let mut changed = false;
+        self.dependencies.remove_where_with(|_, binding| {
+                                                binding.scope
+                                                       .as_ref()
+                                                       .is_some_and(|scope| scope.closed())
+                                            },
+                                            |removed| {
+                                                drop(removed);
+                                                changed = true;
+                                            });
+        changed
     }
 
     pub(super) fn bind_dependencies(&mut self, dependent: u64) -> Result<()>

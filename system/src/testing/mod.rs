@@ -91,7 +91,7 @@ impl Default for Session
                                .unwrap();
         let storage = registry.register(&registrar,
                                         crate::toolbox::controls::objects::storage_specification(),
-                                        crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::objects::ReleaseStorage))
+                                        crate::toolbox::controls::objects::ReleaseStorage)
                               .unwrap();
         let scroll_boxes =
             registry.register(&registrar,

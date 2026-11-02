@@ -5,7 +5,12 @@ use mac_toolbox::{Error, WindowId, *};
 pub fn error_text(system: &System<'_>, status: Error, operation: u32, subject: &str)
                   -> Result<crate::browser::Text<768>, Error>
 {
-    let index = match status
+    let requirement = match status
+    {
+        Error::ServiceRequirement(failure) => Some(failure),
+        _ => None
+    };
+    let index = match requirement.map_or(status, |failure| failure.cause.error())
     {
         Error::BadAbi => 0,
         Error::BadArgument => 1,
@@ -58,6 +63,15 @@ pub fn error_text(system: &System<'_>, status: Error, operation: u32, subject: &
     let cause = system.resources().application().indexed_string(20021, index, &mut b)?;
     let mut out = crate::browser::Text::default();
     write!(&mut out, "{operation}: {subject}\r").map_err(|_| Error::BadArgument)?;
+    if let Some(failure) = requirement
+    {
+        let mut template = [0; 256];
+        let template = system.resources().application().indexed_string(20021, 38, &mut template)?;
+        let (before, after) = template.split_once("^0").ok_or(Error::BadAbi)?;
+        let (middle, after) = after.split_once("^1").ok_or(Error::BadAbi)?;
+        write!(&mut out, "{before}{}{middle}{}{after}\r", failure.class, failure.version)
+            .map_err(|_| Error::BadArgument)?;
+    }
     if let Error::Archive(files::ArchiveError::Version(number)
                           | files::ArchiveError::Method(number)
                           | files::ArchiveError::EntryVersion(number)) = status
@@ -69,7 +83,6 @@ pub fn error_text(system: &System<'_>, status: Error, operation: u32, subject: &
     {
         out.write_str(cause).map_err(|_| Error::BadArgument)?;
     }
-    write!(&mut out, "\r{status:?} ({})", status.status()).map_err(|_| Error::BadArgument)?;
     Ok(out)
 }
 pub fn text<'b>(system: &System<'_>, index: u32, output: &'b mut [u8]) -> Result<&'b str, Error>
@@ -151,20 +164,50 @@ impl<'a> Alerts<'a>
                 let _ = subject.write_str("Finder");
             }
         }
-        self.show_error(system, status, op, subject.as_str())
+        self.error_for(system, status, op, subject.as_str())
+    }
+
+    pub fn item_open_error(&mut self, system: &System<'a>, item: files::CatalogInfo, cause: Error)
+                           -> Result<(), Error>
+    {
+        let mut log = crate::browser::Text::<384>::default();
+        let _ = writeln!(&mut log,
+                         "FINDER_ITEM_OPEN_FAILED volume={} cnid={} status={} error={cause:?}",
+                         item.volume,
+                         item.id,
+                         cause.status());
+        system.log(log.as_str())?;
+        self.error_for(system, cause, 2, item.name())
+    }
+
+    pub fn document_open_error(&mut self, system: &System<'a>,
+                               failure: crate::associations::OpenFailure)
+                               -> Result<(), Error>
+    {
+        let mut log = crate::browser::Text::<384>::default();
+        let _ = writeln!(&mut log,
+                         "FINDER_DOCUMENT_OPEN_FAILED volume={} cnid={} status={} error={:?}",
+                         failure.document.volume,
+                         failure.document.id,
+                         failure.cause.status(),
+                         failure.cause);
+        system.log(log.as_str())?;
+        self.error_for(system, failure.cause, 2, failure.document.name())
     }
 
     pub fn open_error(&mut self, system: &System<'a>, status: Error, subject: &str)
                       -> Result<(), Error>
     {
-        self.show_error(system, status, 2, subject)
+        self.error_for(system, status, 2, subject)
     }
 
-    fn show_error(&mut self, system: &System<'a>, status: Error, operation: u32, subject: &str)
-                  -> Result<(), Error>
+    fn error_for(&mut self, system: &System<'a>, status: Error, operation: u32, subject: &str)
+                 -> Result<(), Error>
     {
         let body = error_text(system, status, operation, subject)?;
         let mut log = crate::browser::Text::<1024>::default();
+        let _ =
+            writeln!(&mut log, "FINDER_ALERT_ERROR status={} error={status:?}", status.status());
         let _ = writeln!(&mut log, "FINDER_ALERT_TEXT {:?}", body.as_str());
         system.log(log.as_str())?;
         self.alert =
@@ -178,7 +221,14 @@ impl<'a> Alerts<'a>
                           -> Result<(), Error>
     {
         let mut body = crate::browser::Text::<1024>::default();
-        write!(&mut body,"{failure}\r{:?} ({})",failure.cause,failure.cause.status()).map_err(|_|Error::BadArgument)?;
+        write!(&mut body, "{failure}").map_err(|_| Error::BadArgument)?;
+        let mut log = crate::browser::Text::<512>::default();
+        let _ = writeln!(&mut log,
+                         "FINDER_TRANSFER_ERROR status={} cause={:?} cleanup={:?}",
+                         failure.cause.status(),
+                         failure.cause,
+                         failure.cleanup);
+        system.log(log.as_str())?;
         system.log(body.as_str())?;
         self.alert =
             Some(system.dialogs().alert_owned(resources::APPLICATION, 2001, body.as_str())?);

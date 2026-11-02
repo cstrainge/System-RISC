@@ -1,4 +1,6 @@
 # Integer-only, no calls, no nesting, no FP/vector/GP-relative instructions.
+# All label addresses use lla: this entry runs before the cold CPU copies the
+# RAM GOT and must remain independent of the compiler's PIC assembly mode.
 # M frame offsets come from the shared Control representation. The checked page
 # covers header + full integer frame; interrupted S stacks are never used.
 .section .text.monitor,"ax"
@@ -12,7 +14,7 @@
 __monitor_park:
     csrci mstatus,8
     csrw mie,zero
-    la t0,__monitor_fatal
+    lla t0,__monitor_fatal
     csrw mtvec,t0
     # Only integer/CSR state is touched before per-CPU profile admission.
     csrr t0,misa
@@ -29,7 +31,7 @@ __monitor_park:
     j 1b
 2:  fence iorw,iorw
     # No mutable RAM read precedes the fresh post-reset hardware signal.
-    la t0,__monitor_directory
+    lla t0,__monitor_directory
     ld t1,{anchor_entries}(t0)
     ld t2,{anchor_count}(t0)
     beqz t2,__monitor_fatal
@@ -77,7 +79,7 @@ __monitor_park:
     csrw mscratch,t0
     csrr t2,mscratch
     bne t2,t0,__monitor_fatal
-    la t1,__monitor_vector
+    lla t1,__monitor_vector
     csrw mtvec,t1
     csrr t2,mtvec
     bne t2,t1,__monitor_fatal
@@ -99,7 +101,7 @@ __monitor_vector:
     sd t1,M_FRAME+48(t0)
     # A further M exception abandons this frame via the no-call finisher path.
     # Only the first physical scratch store precedes the fatal-vector switch.
-    la t1,__monitor_fatal
+    lla t1,__monitor_fatal
     csrw mtvec,t1
     csrr t1,mscratch
     sd t1,M_FRAME+40(t0)
@@ -161,10 +163,19 @@ __monitor_vector:
     beq t2,t3,.Lmonitor_fence
     li t3,{start_command}
     beq t2,t3,.Lmonitor_start
+    li t3,{sfence_vma_all}
+    beq t2,t3,.Lmonitor_translation_fence
     li t4,{unsupported}
     j 7f
 .Lmonitor_fence:
     fence.i
+    li t4,0
+    j 7f
+.Lmonitor_translation_fence:
+    # The actual interrupted CPU drops all virtual-address/ASID translations,
+    # including global leaves. No S handler, caller root or synthetic wake ACK.
+    # STOP retains priority again at the common completion tail below.
+    sfence.vma zero,zero
     li t4,0
 7:  ld t2,{stop}(t0)
     fence r,rw
@@ -235,7 +246,7 @@ __monitor_vector:
     ld t4,M_FRAME+232(t0)
     ld t5,M_FRAME+240(t0)
     ld t6,M_FRAME+248(t0)
-    la t1,__monitor_vector
+    lla t1,__monitor_vector
     csrw mtvec,t1
     ld t1,M_FRAME+48(t0)
     csrw mscratch,t0
@@ -263,7 +274,7 @@ __monitor_vector:
     bne t1,t2,.Lmonitor_start_state
     ld t1,{start_sequence}(s2)
     bne t1,s1,.Lmonitor_start_state
-    la t1,__monitor_directory
+    lla t1,__monitor_directory
     ld s3,{anchor_image}(t1)
     fence r,rw
     li t1,{firmware_base}
@@ -335,7 +346,7 @@ __monitor_vector:
     fence rw,w
     sd s1,{acknowledged}(s0)
     sd zero,{entered}(s0)
-    la t0,__monitor_vector
+    lla t0,__monitor_vector
     csrw mtvec,t0
     csrw mscratch,s0
     ld ra,{image_returned}(s3)
@@ -392,7 +403,7 @@ __monitor_fatal:
     csrw mie,zero
     csrci mstatus,8
     li t0,{uart_base}
-    la t1,__monitor_fatal_message
+    lla t1,__monitor_fatal_message
 12: lbu t2,0(t1)
     beqz t2,15f
     li t3,256
@@ -423,7 +434,7 @@ __monitor_fatal:
 19: sb t2,0(t0)
     addi t6,t6,-4
     bgez t6,16b
-    la t1,__monitor_fatal_pc
+    lla t1,__monitor_fatal_pc
 20: lbu t2,0(t1)
     beqz t2,23f
     li t3,256

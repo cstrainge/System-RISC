@@ -206,6 +206,8 @@ impl Manager
                             output: &mut [u8])
                             -> Result<(), Status>
     {
+        #[cfg(target_arch = "riscv64")]
+        self.local_ready()?;
         if call.padding != 0
            || call.reserved != 0
            || call.backup_present > 1

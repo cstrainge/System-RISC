@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use mac_object_table::shared::OwnerLedger;
 
 use crate::{DomainId, DomainKind, ResourceKey,
-            pages::{AddressSpace, Architecture},
+            pages::{AddressSpace, Architecture, PageBacking},
             policy::{AddressRange, ConfiguredRange, ModelError},
             zone::AllocationContext};
 
@@ -290,21 +290,21 @@ impl<A: Architecture> ThreadRecord<A>
 }
 /// Accounts and the authoritative owner ledger live in DomainRegistry. These
 /// references do not create another independent account or ID issuer.
-pub struct ProcessRecord<'pool, 'storage, A: Architecture>
+pub struct ProcessRecord<A: Architecture, B: PageBacking>
 {
     domain:        DomainId,
     image:         ResourceKey,
     memory:        ResourceKey,
     legacy:        ResourceKey,
-    address_space: AddressSpace<'pool, 'storage, A>,
+    address_space: AddressSpace<A, B>,
     threads:       Vec<ThreadRecord<A>>,
     managers:      SavedManagerState,
     scopes:        ResourceScopeStack
 }
-impl<'pool, 'storage, A: Architecture> ProcessRecord<'pool, 'storage, A>
+impl<A: Architecture, B: PageBacking> ProcessRecord<A, B>
 {
     pub fn new(domain: DomainId, image: ResourceKey, memory: ResourceKey, legacy: ResourceKey,
-               address_space: AddressSpace<'pool, 'storage, A>)
+               address_space: AddressSpace<A, B>)
                -> Result<Self, ModelError>
     {
         if domain.kind() != DomainKind::Process
@@ -370,7 +370,7 @@ impl<'pool, 'storage, A: Architecture> ProcessRecord<'pool, 'storage, A>
         Ok(())
     }
 
-    pub fn address_space(&self) -> &AddressSpace<'pool, 'storage, A>
+    pub fn address_space(&self) -> &AddressSpace<A, B>
     {
         &self.address_space
     }

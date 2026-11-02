@@ -9,8 +9,25 @@ pub const HIDE: u32 = 5;
 pub const HIDE_OTHERS: u32 = 6;
 pub const SHOW_ALL: u32 = 7;
 pub const EXIT: u32 = 8;
+/// Size-distinct native termination. The result is a program's signed main/exit
+/// code, never a native entry service Status. Accepted calls do not resume the
+/// invoking author continuation; malformed or unauthenticated calls may refuse.
+pub const NATIVE_EXIT_NORMAL: u32 = 0;
+pub const NATIVE_EXIT_ABORT: u32 = 1;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NativeExitCall
+{
+    pub code:     i32,
+    pub flags:    u32,
+    pub reserved: u64
+}
 /// Exact mounted-volume/catalog identity, independent of path or creator code.
 pub const IS_RUNNING: u32 = 9;
+/// The genuine Finder main has committed its initial desktop. Release only its
+/// future recovery allocation default; existing backing retains its origins.
+/// All ProcessCall identity/input fields are zero; execution authenticates it.
+pub const FINDER_DESKTOP_READY: u32 = 10;
 /// Native lifecycle notification: payload packs volume low/CNID high; message
 /// low bit reports whether this exact file still has a running instance.
 pub const FILE_STATE_EVENT: u32 = 0x0c00_0000;
@@ -57,12 +74,15 @@ impl ProcessInfo
 #[derive(Default, Clone, Copy)]
 pub struct ProcessCall
 {
-    pub operation: u32,
-    pub index:     u32,
-    pub id:        u64,
-    pub volume:    u32,
-    pub cnid:      u32,
-    pub info:      ProcessInfo
+    pub operation:           u32,
+    pub index:               u32,
+    pub id:                  u64,
+    pub volume:              u32,
+    pub cnid:                u32,
+    pub info:                ProcessInfo,
+    /// Failure-only identity of a declared provider requirement. Zero otherwise.
+    pub requirement_class:   [u8; 4],
+    pub requirement_version: u32
 }
 
 /// Size-distinct native document delivery. Sender owns a preparing batch;
@@ -82,20 +102,23 @@ pub const MAX_DOCUMENTS: usize = 1024;
 #[derive(Clone, Copy, Default)]
 pub struct DocumentCall
 {
-    pub drag:               u32,
-    pub operation:          u32,
-    pub handle:             u64,
-    pub application_volume: u32,
-    pub application_cnid:   u32,
-    pub volume:             u32,
-    pub cnid:               u32,
-    pub file_type:          [u8; 4],
-    pub index:              u32,
-    pub count:              u32,
-    pub present:            u32,
-    pub reserved:           [u32; 2],
-    pub entry:              crate::files::CatalogInfo,
-    pub process:            ProcessInfo
+    pub drag:                u32,
+    pub operation:           u32,
+    pub handle:              u64,
+    pub application_volume:  u32,
+    pub application_cnid:    u32,
+    pub volume:              u32,
+    pub cnid:                u32,
+    pub file_type:           [u8; 4],
+    pub index:               u32,
+    pub count:               u32,
+    pub present:             u32,
+    pub reserved:            [u32; 2],
+    pub entry:               crate::files::CatalogInfo,
+    pub process:             ProcessInfo,
+    /// Failure-only declared provider identity from document launch. Zero otherwise.
+    pub requirement_class:   [u8; 4],
+    pub requirement_version: u32
 }
 
 #[cfg(test)]

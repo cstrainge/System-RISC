@@ -82,7 +82,7 @@ impl<'a> Application<'a>
         write!(body, "{name}\r{error}").map_err(|_| Error::NoMemory)?;
         system.log(body.as_str())?;
         self.alert =
-            Some(system.dialogs().alert_owned(resources::APPLICATION, 2001, body.as_str())?);
+            Some(system.dialogs().alert_owned(ResourceScope::Application, 2001, body.as_str())?);
         system.menus().set_item_enabled(MenuId(128), 0, false)
     }
 
@@ -170,9 +170,8 @@ impl<'a> Application<'a>
                 return Ok(true);
             }
         }
-        let command =
-            system.menus().selection(event)?.map(|selection| selection.command.to_be_bytes());
-        if command == Some(*b"quit")
+        let command = system.menus().selection(event)?.map(|selection| selection.command);
+        if command == Some(resources::commands::QUIT)
         {
             return Ok(false);
         }
@@ -182,7 +181,8 @@ impl<'a> Application<'a>
             self.documents
                 .iter()
                 .position(|doc| doc.as_ref().is_some_and(|doc| Some(doc.owner.id()) == front));
-        if command == Some(*b"clos") || matches!(event, Event::CloseRequested { .. })
+        if command == Some(resources::commands::CLOSE)
+           || matches!(event, Event::CloseRequested { .. })
         {
             if let Some(slot) = slot
             {
@@ -190,7 +190,7 @@ impl<'a> Application<'a>
             }
             return Ok(true);
         }
-        if command == Some(*b"open") && slot.is_none()
+        if command == Some(resources::commands::OPEN) && slot.is_none()
         {
             let free = self.documents.iter().position(Option::is_none).ok_or(Error::NoMemory)?;
             self.documents[free] = Some(Document::new(system, None)?);

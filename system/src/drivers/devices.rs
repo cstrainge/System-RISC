@@ -101,8 +101,10 @@ impl<B: Bus> Devices<B>
                          ..expected })
     }
 
-    /// The caller checked this range against its pinned module reservation.
-    /// Physical page pinning is a later page/heap gate, not claimed by this map.
+    /// The caller checked the original module's execution reservation. The
+    /// native bus resolves its actual owned segment/PTEs and physical span.
+    /// This DMA/claim ledger remains outside the image root kinds, preventing
+    /// image retirement until device maps and positive stop/reset complete.
     pub(crate) fn map(&mut self, owner: &OwnerRef, device: u64, address: u64, length: u64)
                       -> Result<Mapping, Status>
     {

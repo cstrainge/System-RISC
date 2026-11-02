@@ -4,8 +4,6 @@
   "creator": "MACS",
   "role": "system",
   "abi_version": 1,
-  "load_base": "@system_image_base",
-  "load_limit": "@system_image_limit",
   "description": "System RISC native operating system",
   "resources": [
     {
@@ -170,7 +168,17 @@
           "Finder restart failed. Try again.",
           "Not enough memory to restart Finder. Close another application and try again.",
           "Close Report",
-          "Retry Finder"
+          "Retry Finder",
+          "Earlier diagnostic retained; the latest capture failed.",
+          "Restart System",
+          "Finder cannot safely restart. Copy the report, then restart System.",
+          "Restart unavailable: the power device could not be selected.",
+          "Close other applications, then try Restart System again.",
+          "Storage is not ready. Finish file operations, then retry.",
+          "The power device refused System restart. The report is retained.",
+          "System restart failed. The report is retained.",
+          "Application error",
+          "The application returned an error. You can inspect or copy the report."
         ]
       }
     },
@@ -227,9 +235,7 @@
       "name": "Standard WDEF",
       "payload": {
         "format": "native_code",
-        "artifact": "WDEF",
-        "load_base": "0x82000000",
-        "load_limit": "0x82100000"
+        "artifact": "WDEF"
       }
     },
     {
@@ -239,9 +245,7 @@
       "name": "Buttons, Checkboxes and Radio Buttons",
       "payload": {
         "format": "native_code",
-        "artifact": "CDEF_BUTTONS",
-        "load_base": "0x82100000",
-        "load_limit": "0x82200000"
+        "artifact": "CDEF_BUTTONS"
       }
     },
     {
@@ -251,9 +255,7 @@
       "name": "Scroll Bar",
       "payload": {
         "format": "native_code",
-        "artifact": "CDEF_SCROLL_BAR",
-        "load_base": "0x82200000",
-        "load_limit": "0x82300000"
+        "artifact": "CDEF_SCROLL_BAR"
       }
     },
     {
@@ -263,9 +265,7 @@
       "name": "Standard MDEF",
       "payload": {
         "format": "native_code",
-        "artifact": "MDEF",
-        "load_base": "0x82300000",
-        "load_limit": "0x82400000"
+        "artifact": "MDEF"
       }
     },
     {
@@ -275,9 +275,7 @@
       "name": "Progress Bar",
       "payload": {
         "format": "native_code",
-        "artifact": "CDEF_PROGRESS_BAR",
-        "load_base": "0x82400000",
-        "load_limit": "0x82500000"
+        "artifact": "CDEF_PROGRESS_BAR"
       }
     },
     {
@@ -287,9 +285,7 @@
       "name": "Static Text",
       "payload": {
         "format": "native_code",
-        "artifact": "CDEF_STATIC_TEXT",
-        "load_base": "0x82500000",
-        "load_limit": "0x82600000"
+        "artifact": "CDEF_STATIC_TEXT"
       }
     },
     {
@@ -299,9 +295,7 @@
       "name": "Table",
       "payload": {
         "format": "native_code",
-        "artifact": "CDEF_TABLE",
-        "load_base": "0x82600000",
-        "load_limit": "0x82700000"
+        "artifact": "CDEF_TABLE"
       }
     },
     {
@@ -311,9 +305,7 @@
       "name": "Splitter",
       "payload": {
         "format": "native_code",
-        "artifact": "CDEF_SPLITTER",
-        "load_base": "0x82700000",
-        "load_limit": "0x82800000"
+        "artifact": "CDEF_SPLITTER"
       }
     },
     {

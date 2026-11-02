@@ -15,7 +15,7 @@ disjoint desktop/offscreen target ranges. Exhausted slots are retired, never
 wrapped; the current 32-slot table has a bounded lifetime allocation budget.
 
 `new_window` uses a source-reused standard definition only in host tests.
-`new_window_with_definition` instead records the loaded resource's `DefinitionEntry`
+`new_window_with_definition` instead records the loaded resource's private registered `DefinitionRef`
 and procedure ID. The manager sends geometry, hit, initialization, disposal and
 decoration calls through that entry. Procedure ID division by 16 selects the
 resource; its low four bits select the variation. Custom resources never silently

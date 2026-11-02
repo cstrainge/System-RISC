@@ -3,8 +3,10 @@
 #![forbid(unsafe_code)]
 use alloc::sync::Arc;
 
-use mac_abi::{BAD_ABI, BAD_ARGUMENT, NO_MEMORY, geometry::Rect, Status, controls::ProgressRange,
-              definitions::ControlDefinitionState, quickdraw::FontSelection};
+use mac_abi::{BAD_ABI, BAD_ARGUMENT, NO_MEMORY, Status, controls::ProgressRange,
+              definitions::ControlDefinitionState, geometry::Rect, quickdraw::FontSelection};
+
+use crate::toolbox::resources::definitions::BoundDefinition;
 
 pub(super) struct Title
 {
@@ -110,9 +112,9 @@ pub(super) struct Grid
 
 pub(super) struct Bars
 {
-    pub bars:     [Option<mac_abi::controls::ScrollbarState>; 2],
-    pub entry:    mac_abi::DefinitionEntry,
-    pub viewport: Rect
+    pub bars:       [Option<mac_abi::controls::ScrollbarState>; 2],
+    pub definition: Arc<BoundDefinition>,
+    pub viewport:   Rect
 }
 
 /// Immutable Splitter instances owned by one Table's boundary configuration.
@@ -146,10 +148,10 @@ impl Divider
 }
 pub(super) struct Dividers
 {
-    pub entry:    mac_abi::DefinitionEntry,
-    pub viewport: Rect,
-    pub segments: alloc::vec::Vec<Divider>,
-    pub tracks:   [Arc<alloc::vec::Vec<mac_abi::controls::reflow::GridTrack>>; 2]
+    pub definition: Arc<BoundDefinition>,
+    pub viewport:   Rect,
+    pub segments:   alloc::vec::Vec<Divider>,
+    pub tracks:     [Arc<alloc::vec::Vec<mac_abi::controls::reflow::GridTrack>>; 2]
 }
 impl Dividers
 {

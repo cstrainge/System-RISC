@@ -83,7 +83,8 @@ pub fn worker_toolbox_refusals()
     for number in [mac_abi::traps::THEME,
                    mac_abi::traps::FONT,
                    mac_abi::traps::SURFACE,
-                   mac_abi::traps::WAIT_EVENT]
+                   mac_abi::traps::WAIT_EVENT,
+                   mac_abi::traps::APPLICATION_HEAP]
     {
         let mut result = 0usize;
         // SAFETY: the ordinary worker gate must reject before borrowing any
@@ -96,7 +97,7 @@ pub fn worker_toolbox_refusals()
                    mac_abi::WRONG_THREAD,
                    "direct worker Toolbox admission changed for trap {number:#x}");
     }
-    log(format_args!("MODULE_WORKER_TOOLBOX_REFUSALS_PASS requests=4 status=wrong-thread \
+    log(format_args!("MODULE_WORKER_TOOLBOX_REFUSALS_PASS requests=5 status=wrong-thread \
                       before-borrow=yes\n"));
 }
 #[cfg(not(feature = "pressure"))]

@@ -29,6 +29,8 @@ pub(in crate::toolbox::files) trait Backend<T: Payload>: Sized
     fn release(&mut self, ticket: ReleasedResource) -> Result<Self::Guard, CompletionError>;
     fn release_storage(&mut self, ticket: ReleasedResource) -> Result<(), CompletionError>;
     fn id(guard: &Self::Guard) -> Self::Id;
+    fn publication_credits(&self) -> usize;
+    fn publication_preparations(&self, owner: mac_object_table::domain::DomainId) -> usize;
 }
 pub(in crate::toolbox::files) type Id<T> = <<T as Payload>::Storage as Backend<T>>::Id;
 pub(in crate::toolbox::files) type Key<T> = <<T as Payload>::Storage as Backend<T>>::Key;
@@ -39,8 +41,23 @@ fn status(error: projected::Error) -> Status
     serial!("FILE_OBJECT_ADMISSION_REFUSED: {error}");
     crate::toolbox::handles::projection_status(error)
 }
+pub(in crate::toolbox::files) fn prepared_status(cause: projected::PreparedError) -> Status
+{
+    use mac_object_table::{CapacityError as C, store::PreparedError as N};
+    use projected::PreparedError as P;
+    match cause
+    {
+        P::Native(N::Pool(cause)) =>
+        {
+            crate::toolbox::handles::projection_status(projected::Error::Pool(cause))
+        }
+        P::Native(N::CapacityChanged) | P::Projection(C::CapacityChanged) => mac_abi::SERVICE_BUSY,
+        P::Projection(C::Exhausted | C::AllocationFailed) => mac_abi::NO_MEMORY,
+        P::Native(N::WrongStore | N::RetiredStore) | P::Projection(C::WrongKind) => mac_abi::BAD_ABI
+    }
+}
 pub(in crate::toolbox::files) struct Native<T>(store::Store<T, InvocationGate>);
-pub(in crate::toolbox::files) struct Treaty<T>(projected::Store<T, InvocationGate>);
+pub(in crate::toolbox::files) struct Treaty<T>(pub(super) projected::Store<T, InvocationGate>);
 impl<T: Payload> Backend<T> for Native<T>
 {
     type Guard = store::Removed<T, InvocationGate>;
@@ -115,6 +132,16 @@ impl<T: Payload> Backend<T> for Native<T>
         self.0.release_storage(ticket)
     }
 
+    fn publication_credits(&self) -> usize
+    {
+        self.0.publication_credits()
+    }
+
+    fn publication_preparations(&self, owner: mac_object_table::domain::DomainId) -> usize
+    {
+        self.0.publication_preparations(owner)
+    }
+
     fn id(guard: &Self::Guard) -> u64
     {
         guard.id()
@@ -128,8 +155,8 @@ impl<T: Payload> Backend<T> for Treaty<T>
 
     fn new(kinds: (KindLease, KindLease)) -> Result<Self, Status>
     {
-        projected::Store::new(T::WIRE.ok_or(mac_abi::BAD_ABI)?, kinds.0, kinds.1).map(Self)
-                                                                                 .map_err(status)
+        projected::Store::new_prepared(T::WIRE.ok_or(mac_abi::BAD_ABI)?, kinds.0, kinds.1).map(Self)
+                                                                                 .map_err(prepared_status)
     }
 
     fn insert(&mut self, owner: &OwnerRef, value: T) -> Result<(u32, Self::Key), Status>
@@ -192,6 +219,16 @@ impl<T: Payload> Backend<T> for Treaty<T>
     fn release_storage(&mut self, ticket: ReleasedResource) -> Result<(), CompletionError>
     {
         self.0.release_storage(ticket)
+    }
+
+    fn publication_credits(&self) -> usize
+    {
+        self.0.publication_credits()
+    }
+
+    fn publication_preparations(&self, owner: mac_object_table::domain::DomainId) -> usize
+    {
+        self.0.publication_preparations(owner)
     }
 
     fn id(guard: &Self::Guard) -> u32

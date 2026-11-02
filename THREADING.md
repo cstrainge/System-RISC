@@ -13,6 +13,14 @@ state attached to the application/context, not global scheduler state. Native
 module workers use the separate contract below. General native application-thread
 creation remains open.
 
+The staged std runtime now consumes canonical CURRENT, OS-key TLS, address waits
+and signed process termination. Its optimized native probe has bounded
+main-thread observations for TLS destruction, Condvar timeout, normal return,
+explicit exit and System-owned panic/OOM termination. These do not qualify
+`std::thread` creation/join/detach, concurrent wakes or cross-CPU std migration.
+Normal return performs the shared TLS drain before Normal exit; explicit exit
+and Abort run no user TLS callbacks. See [the std status](docs/RUST-STD.md).
+
 The RV64 implementation schedules Finder, separately loaded APPLs and native
 module workers on the core-admitted eligible CPUs. The normal QemuRISC-V image
 has four physical CPUs and installs Multi-Scheduler; without an active policy,
@@ -173,8 +181,11 @@ module, with zero Application-class allowance. Page-rounded stack backing,
 complete saved CPU backing, Context/Core metadata and forwarded captured closure
 storage consume that original module Kernel account. Shared scheduler capacity
 belongs to System. These are shared per-module limits, not a separate 16 MiB
-allowance for each worker. The module's flat code arena remains reserved until
-reset; execution pins do not establish physical code-page reclamation.
+allowance for each worker. Private module payload pages also consume that
+original Kernel account in the current mapping stage. Actual invocation/worker
+execution pins delay owned PTE removal; real translation ACKs precede payload
+refund. Dynamic module mapping/reclamation qualification remains separate from
+previous worker observations.
 
 Preparation preflights fallible backing before publication. Failed CREATE leaves
 the SDK owning its original body; successful THRD publication is the single
@@ -480,8 +491,10 @@ The bounded SMP scenarios in [SCHEDULING.md](SCHEDULING.md) add body migration,
 register/service and target-drain observations. Sustained preservation stress,
 competing failures and arbitrary privileged recovery remain unqualified. Mapping
 mutation, ASID reuse and frame reclamation
-also require their remote TLB/lifetime contract. The current immutable boot roots
-do not imply that such a dynamic protocol exists. No SBI service is assumed.
+also require their remote TLB/lifetime contract. The module mapping path now
+owns atomic PTE transitions and genuine monitor SFENCE completions, with bounded native observations recorded in
+[the memory model](docs/MEMORY-APP-RESOURCE-MODEL.md#module-mapping-observations--2026-11-01); broader qualification remains open. Earlier immutable-root observations do not qualify that
+new dynamic path. No SBI service is assumed.
 Multi-Scheduler supplies placement and activation policy through those core
 admission and claim gates; it cannot bypass them.
 
@@ -524,7 +537,7 @@ privileged-fault containment is **unproven** and a **required future gate**.
 
 | Current state | Present assumption and required boundary |
 | --- | --- |
-| `kernel.rs` guarded managers and immutable images | One-shot startup and bounded guards remain. Shared IMAG sources/aliases distinguish application and module roles; execution instances retain actual source/code pins. Checked RV64 RLOC metadata permits independent copies with separate code/data/BSS spans. Module arena backing remains reserved until reset. General dynamic linking, hot replacement and physical code-page unloading remain unsupported. |
+| `kernel.rs` guarded managers and immutable images | One-shot startup and bounded guards remain. Shared IMAG sources/aliases distinguish application and module roles; execution instances retain actual source/code pins. Checked RV64 RLOC metadata permits independent copies with separate code/data/BSS spans. Module payloads now have actual buddy/PTE ownership with original-ticket retirement and real translation ACKs; bounded native observations are recorded in the memory model; broader qualification remains open. Application/definition physical migration, immutable frame sharing, general dynamic linking and hot replacement remain separate gates. |
 | `ThreadContext::traps` | The RV64 scheduler selects the running thread context; nested accounting belongs to that OS thread. A separate bootstrap context is used for synchronous firmware service execution. |
 | `Desktop` | The global compositor, physical input and window registry remain shared. Trusted app context selects saved events, menus, dialogs, cursors, worlds, font/legacy state and TextEdit managers at the masked service boundary. Windows carry an owner; background retained scenes are composed centrally. |
 | Application resources | Read-only application-to-System/font search selects the caller's immutable image. Retained content replay selects the owning image, so a background window does not resolve against whichever application invoked the compositor. General mutable Resource Manager chains remain open. |
@@ -595,7 +608,7 @@ address-space/object translation rather than access to resident Rust addresses.
 | --- | --- |
 | Boundary hardening | One-shot publication, bounded guards, owner-tagged file marks and trusted context routing exist. Host-linked fixtures do not establish native exclusion/cleanup contracts; scenario-specific target-runtime evidence is required. |
 | Scheduler foundation | Supervisor timer preemption, growable registered thread records, independent full frames/stacks, trusted identities and claim-aware reclamation exist. Per-hart policy loans and joint active-generation/THRD commitment support eligible peers; primary service routing and target-owned draining preserve their real lifetimes. Bounded native app/worker migration and policy lifecycle observations are recorded in SCHEDULING.md. General application blocking/thread APIs, sustained stress and timing qualification remain open. |
-| Application launch | Finder and disk-loaded native APPLs have independent application threads, app-local UI/resource/memory state and exit cleanup. Host SDK ownership tests cover file denial/cleanup and memory generation retention; the real RV64 launch/quit/relaunch, partition/ownership, Pascal and private synthetic-event gates pass. |
+| Application launch | Finder and disk-loaded native APPLs have independent application threads, app-local UI/resource/memory state and exit cleanup. The shared runtime binds page-backed heaps to the original process before entry. Exact native growth/refusal/reuse, account settlement, normal exit and System-owned cleanup observations are recorded in [Application runtime](docs/APPLICATION-RUNTIME.md). Host SDK outcomes do not qualify native ownership, allocator, trap or scheduling paths. Private process roots and privilege separation remain open. |
 | Application switching | Resident right-hand menu and Process Manager activation/hide/restore paths exist. Private SDK and actual Finder/two-app activation/hide/input/exit tests pass, including first-click activation and background dragging. The original popup comparison passes with explicit icon/cursor masks; this establishes the captured profile, not all application behavior. |
 | Interactive latency | Window/file drag and selection feedback use bounded frontbuffer-only XOR without scene replays or a tracking-mask scan. Canonical captures retain every decoded move, including the first; strict all-samples sub-millisecond qualification remains open on fresh Windows and Linux guests. Shared instruction paths and perimeter-intersection early-outs reduce work but do not establish a hard latency guarantee. Interrupt-masked resident calls and cold execution still need their own bounds. |
 | Reentrant service work | Existing definition-to-Surface/font/resource nesting remains supported. Stateful recursive manager calls still return Busy. General app callbacks require snapshot/callback/commit and cancellation tests. |
@@ -950,3 +963,223 @@ be revived by reset continuations. Losing the manager quarantines its live uses
 without acknowledging DMA completion. This is a lifetime/ACK policy, not a proof
 of physical page pinning, reclaimable module images, IRQ-driven reset progress
 or multi-hart device synchronization.
+
+Native Process TLS is separate from module-worker execution and CPU identity.
+Each admitted application thread receives a fully prepaid slot array, authentic
+Process account and shared TLS-root binding before entry; the root never owns
+ThreadContexts. Keys and their storage are registered Process resources and
+callback-bearing keys retain the actual initialized executable image. GET/SET
+need no allocation and accept std's opaque sentinel values. User destructor code
+runs through the application CRT on that actual thread, outside resident locks,
+using BEGIN/NEXT/ACK/FINISH and a retained original-key receipt. Eight-round
+exhaustion and forced process retirement do not claim callbacks completed.
+Initial no_std applications use the shared application scaffold for teardown;
+a std CRT owns the same protocol in its own startup/exit path. This surface does
+not by itself establish child-thread, address-wait or general std readiness.
+Native validation must distinguish main-thread TLS from those separate gates.
+
+Native children use the same genuine Process image/heap/TLS root and account,
+with independent THRD registrations, full CPU frames, stacks and prepaid slots.
+Creation prepares backing and canonical publication credits before protected
+scheduler turns; only the final checked live transition transfers entry/data.
+A unique registered join right owns completion metadata, with no reference back
+to ThreadCore. Normal completion requires actual TLS FINISH and release of the
+last execution claim before JOIN can return. DETACH drops that right without
+cancelling work. Process stop cancels owned pending joins and address pins before
+stack-reader/reap barriers; forced stop does not fabricate user TLS execution.
+The core-only transport preserves CREATE ownership uncertainty: only a valid
+resident refusal proves that the caller retains its opaque data. A malformed
+reply may follow acceptance and must not cause the CRT to free a child's input.
+The current affine `NativeJoinRight` is deliberately !Send/!Sync and restricted
+to ordinary execution on its creating application thread. It is not std's
+transferable JoinHandle. The raw CRT transport preserves the underlying typed
+refusal and transfer state for a runtime with its own ownership implementation.
+
+Finite native child observations used optimized release/LTO, debug information
+level 1, tracing disabled and 8 GiB RAM on one- and four-CPU private QEMU guests.
+System resource SHA-256: `ed75851dcbb39aeb0291cf1adb3a5908ec9eb4f599b8b798c401add4411f33d9`.
+Boot ROM SHA-256: `66a2d84e44896ec0648dc4b48a3eae1a2f1bbdb7d4c143b39b50ecbb87fb8e54`.
+The real packaged no_std Thread Probe created 14 children before typed budget
+refusal, exercised independent identities/stacks/TLS, shared heap operations,
+stack/heap/data/BSS waits, reverse-order joins, stale-right refusal and actual
+TLS callback completion. Each original THRD and the final Process were reclaimed.
+The admitted parallelism reply was one and four respectively; these observations
+do not establish simultaneous execution or the absence of multi-hart races.
+
+A subsequent workload on that same System image also exercised malformed flags,
+invalid UTF-8 names, invalid stack sizing, invalid/overflowing sleep durations,
+main-thread child EXIT refusal, child self-join refusal, explicit detach, stale
+detach/query refusal and actual affine-owner Drop. Refusals retained bounded
+typed diagnostics; legitimate parent joins remained usable; detached children
+continued, and their original THRDs were reclaimed. Creating further children
+after the initial budget refusal and joins exercised eventual reuse, rather than
+assuming an unsuccessful CREATE synchronously refunds all inert backing.
+No host acknowledgment serialized the operations within either native workload.
+These finite runs do not qualify foreign-process rights, stop during preparation
+or pending join, general std execution, transferable std JoinHandle behavior,
+private application mappings, full OOM recovery or latency bounds.
+
+Bounded native TLS observations (2026-10-29) used optimized QEMU virt/RVA23,
+8 GiB RAM, 800×600, with tracing disabled. The same System resource fork
+`7321a8ffa9965ec5a8220b3f22f70098ccd65786da0cbad8e3e29fb648afa619`
+and ROM `d9c5207d287c832f586365e0da570225d7b69f11d0858b32f34d8fad78c63d3b`
+ran the normal packaged TLS Probe on one and four configured CPUs. It exercised
+CURRENT, opaque sentinel values, deleted-key refusal/reuse, the configured
+256-key capacity refusal with diagnostics, malformed flags, and four raw native
+requests for non-executable callback addresses. Its normal application runtime
+ran three destructor rounds, preserved the real receipt after a wrong ACK, and
+handled key deletion during its callback. Actual THRD reclamation and process
+account closure followed, with subsequent input observed. Separate matching
+runs exercised all bundled entries, six application-owned quits, and a long SDK
+panic report with scrolling, dismissal and process retirement.
+
+This does not establish child-thread TLS independence, concurrent key deletion,
+all eight-round exhaustion paths, foreign ACK handling, timing, complete Finder
+OOM recovery, or std execution. Deferred deletion now receives coalesced actual
+reader-release notifications; its serialized pump disposes code/root owners
+outside TLS context and manager guards. Those synchronization rules still need
+multi-thread native qualification when child-thread support lands.
+
+Image-backed atomic wait admission retains a sealed same-Process initialized
+execution pin and an immutable key made from the genuine image binding plus
+image-relative offset. The entire aligned word must fit one actual writable
+segment memory extent; writable BSS is included, while readonly bytes,
+executable bytes, holes and reservation padding are refused. Executable callback
+ranges remain limited to initialized bytes. Both sets of ranges are derived
+together at load and rebased once with the actual execution destination.
+
+Successful byte initialization and instruction publication precede the image's
+initialized marker. An unpublished or refused load returns `SERVICE_BUSY` from
+application/module execution admission even after its loading gate is released.
+Image retirement publishes invalidity before the common coalesced address-wait
+notification. The wait service also checks its own root closing state; its
+scheduler turn rechecks the retained image's admission before accessing or
+parking, and releases heavy pins outside scheduler guards. This lifetime and
+range contract does not establish private page-table isolation, native WAIT32
+behavior, or runtime qualification of the new segment format.
+# Native atomic-address waits
+
+The native wait service compares an aligned `AtomicU32` and queues the actual
+application thread under the same scheduler admission lock used by wake. Its
+result distinguishes a changed value, a wake (which may be spurious), and a
+deadline. Only the deadline outcome means timeout. Invalid storage, malformed
+requests, unsupported invocation contexts and cancellation remain typed errors
+with bounded diagnostic text. A relative timeout is checked against the admitted
+clock and rounded up; overflow is refused rather than wrapped.
+
+An outstanding wait retains its actual process heap extent, an independently
+owned same-process stack, or the initialized image's writable segment. Writable
+image ranges include explicit BSS and exclude holes and reservation padding.
+Wait identity includes the genuine backing incarnation and atomic's offset.
+Retirement closes admission and notifies the scheduler; pending owners leave
+scheduler guards before physical retirement runs. Individual thread retirement
+also detaches pending waits before checking stack-reader barriers.
+
+Backing retention does **not** establish Rust object lifetime. Native runtime
+callers must keep an initialized atomic alive, with no non-atomic conflicting
+access, for the complete wait/wake operation. Reallocation at the same address
+within one retained heap extent is not distinguished as a new object. These
+checks are not private address-space or U-mode isolation. Callers must recheck
+their own synchronization predicate after every return and use their protocol's
+required atomic memory ordering.
+
+A release/LTO QEMU build has exercised one-thread application waits on stack,
+heap, initialized-data and BSS storage with one and four configured CPUs. The
+native probe observed changed-value, zero-time and finite-deadline outcomes,
+malformed request refusals with diagnostics, subsequent reuse, TLS callback
+teardown, actual thread reclamation and process/account closure. Bundled native
+application launch/quit and long panic-report checks also ran on that image.
+This finite scenario does not qualify concurrent wake/deadline races, child-thread
+stack independence, cancellation under overlapping workloads or timing bounds.
+Subsequent integration changes require their own artifact-bound observations.
+
+The publication-candidate four-CPU finite-wait run used optimized release/LTO,
+debug information level 1, 8 GiB RAM, 800×600 display, and event tracing disabled.
+System resource SHA-256: `2e3dae1bf00db54db1d2d685aab32d794c60076378a92ece8eeea35074954cb8`.
+Boot ROM SHA-256: `693f6f1358d141028947222f5587053f7b0d47818f2c3161d3a4799fc0a78479`.
+That run also observed original TLS/process cleanup. On that same image, Res Edit
+opened QuickDraw Test's new segment records, displayed separate file/memory sizes
+and RV64 disassembly, scrolled to the final instructions and quit. The earlier
+one/four-CPU and bundled-app observations above used the preceding integration
+build, before removal of unused continuation variants and wake-count preflight.
+Neither image establishes concurrent child-thread or full recovery correctness.
+
+Native process termination records the first signed program result independently
+of native entry service Status. Ordinary NORMAL exit uses the same canonical
+owner walk, real thread/image/stack barriers and retained cleanup tickets.
+ABORT and Finder termination use an inline Process failure slot admitted with
+that row. A sealed runtime-root gate closes author/child birth independently of
+Finder's still-accepting owner ledger; actual Host continuations drain their
+leases before a failure capture is frozen. No failed author resumes to retry.
+
+The guard-free System controller retains the genuine resource binding, claims
+or joins the preadmitted report Activity and keeps typed refusal state. It joins
+Finder's actual replacement flight by the original owner/image identity. The
+Activity recipient moves to the real successor before the old owner stops.
+Ordinary aborted processes remain parked until System report disposal completes,
+then enter their normal walk. Heavy Activity/capability releases occur outside
+scheduler and controller guards. Progress is signalled by actual safe-point,
+stock, modal and cleanup changes; there is no per-input retry scan.
+
+Report retention distinguishes submitted bytes, a truncated captured prefix and
+a System-generated diagnostic. A later failure during Finder replacement may
+retain the prior report; its original app/thread remain explicit in the report
+and actual exit record. These contracts do not qualify arbitrary privileged
+fault containment, full Finder exhaustion recovery or native std execution.
+
+The native termination transport is `Client::native_exit(i32, ExitKind)`, using
+the 16-byte `NativeExitCall` on PROCESS. Accepted termination consumes the
+author continuation. Any return is `ExitReturned`: a typed resident refusal,
+unexpected success, or invalid wire status. NORMAL does not execute TLS callbacks;
+a CRT performs normal-return TLS teardown before this call, while explicit exit
+skips it. Panic and allocator-failure producers submit ABORT immediately after
+attempting capture; failed authors do not poll the report viewer.
+
+Fresh report admission carries a sealed proof from the actual reusable modal
+Opening. Only that proof permits clearing saved stale window metadata, after
+the previous session's real acknowledgment barriers. A joined session retains
+its close obligations. Stopped unpublished reporters release their queued
+snapshot outside the queue guard; published windows retain their actual cleanup
+tickets. These are implemented ownership rules, not a claim that every possible
+close/refusal interleaving has been exercised.
+
+Finite native termination observations used release/LTO with debug information
+level 1, tracing disabled, 8 GiB RAM and four configured CPUs in private QEMU.
+System resource SHA-256: `fcaa968d6a634932bfe7a7dddd4080096c14a7144da59e71930d91217cc323e3`.
+Boot ROM SHA-256: `333aef570ac05592631513b5d030e5cd2646603b2ef0ddd31e9f959201197dc7`.
+The actual packaged native applications exercised malformed-exit refusal and
+subsequent reuse, explicit signed result -23 without TLS callbacks, six normal
+application quits, a 27,246-byte panic report with scrolling and dismissal,
+and report dismissal before a later ABORT without reopening it. Real thread and
+process reclamation followed. A separate Finder-role native fixture exercised
+two replacements, stale window/handle rejection, and input in the replacement
+and surviving application; this was not the production Finder under exhaustion.
+
+On the same resident code, an existing native paint-refusal fixture used one
+deliberately oversized System warning resource. It observed typed NO_MEMORY,
+preserved report data/live-window ownership, cancelled painting, and reset/retry
+with exact text readback. This modified-resource, host-checkpointed scenario
+does not qualify pristine-resource timing, first-paint ABORT, concurrent failure,
+delayed-close acknowledgment races or queued publication interrupted by owner
+stop. Those paths, full Save/Save As exhaustion, production Finder OOM recovery,
+native std execution and concurrent child-thread behavior remain unverified.
+
+
+### Runtime ownership during entropy READY
+
+The ENTR1 launch continuation owns the same prospective Process and exact
+provider job through canonical park/replay. Its genuine RuntimeActivity travels
+in the broker subject/DREQ through completion or cancellation ACK; retaining an
+ID or directory selector is insufficient. Public entropy uses the same runtime
+service scope and exact DDEP instead of selecting another provider per request.
+Provider work executes outside Desktop/image/registry/flight guards. Completion
+notices wake only the matching startup or Finder recovery job. Initial pending
+Finder uses the sealed startup token and genuine System idle/maintenance path;
+no temporary worker, polling callback loop or runnable Finder is fabricated.
+
+Finite optimized four-CPU QEMU observations and their artifact/configuration
+limits are in [application runtime](docs/APPLICATION-RUNTIME.md#bounded-ready-observations--2026-11-01).
+They include cold initial READY, ordinary caller cancellation/reset/retry and
+asynchronous document failure/retry. Already-ready Finder-role replacements do
+not qualify pending replacement cancellation, production Finder OOM, provider
+withdrawal races, SMP safety or general race absence.

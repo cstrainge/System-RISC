@@ -4,8 +4,137 @@ use mac_abi::{drag::*,
               geometry::{Point, Rect},
               *};
 
-use crate::toolbox::{events::input::Input,
+use crate::toolbox::{drag::{PreparedReceiver, ReceiverError, ReceiverPlan, ReceiverRetired,
+                            ReceiverTarget},
+                     events::input::Input,
                      windows::{WindowId, WindowPart}};
+
+pub(super) fn admit_receiver_plan(plan: ReceiverPlan) -> Result<PreparedReceiver, ReceiverError>
+{
+    use mac_object_table::{CapacityError, projected::PreparedError,
+                           store::PreparedError as NativeError};
+    let mut input = Some(plan.prepare()?);
+    let mut receiver = loop
+    {
+        let admitted = crate::kernel::with_toolbox(|toolbox| {
+                           toolbox.drag.admit_receiver(&mut input)
+                       }).map_err(ReceiverError::Toolbox)?;
+        match admitted
+        {
+            Ok(receiver) => break receiver,
+            Err(ReceiverError::Publication(PreparedError::Projection(CapacityError::CapacityChanged))) =>
+            {
+                let value = input.as_mut().ok_or(ReceiverError::Binding(BAD_ABI))?;
+                let mut capacity = value.prepare_capacity()?;
+                value.replace_capacity(&mut capacity)?;
+                drop(capacity);
+            }
+            Err(ReceiverError::Publication(PreparedError::Native(NativeError::CapacityChanged))) =>
+            {
+                // No canonical permit has been admitted yet. Refresh only the
+                // metadata plan from the same original owner/thread/account.
+                let plan = crate::kernel::with_toolbox(|toolbox| {
+                    let value = input.as_ref().ok_or(ReceiverError::Binding(BAD_ABI))?;
+                    toolbox.drag.replan_receiver(value)
+                }).map_err(ReceiverError::Toolbox)??;
+                let next = plan.prepare()?;
+                drop(input.replace(next));
+            }
+            Err(cause) => return Err(cause)
+        }
+    };
+    loop
+    {
+        let result = crate::kernel::with_toolbox(|toolbox| {
+                         toolbox.drag.admit_receiver_projection(&mut receiver)
+                     }).map_err(ReceiverError::Toolbox)?;
+        match result
+        {
+            Ok(()) => return Ok(receiver),
+            Err(ReceiverError::Publication(PreparedError::Projection(CapacityError::CapacityChanged))) =>
+            {
+                let mut capacity = receiver.prepare_capacity()?;
+                match crate::kernel::with_toolbox(|toolbox| toolbox.drag.admit_receiver_capacity(&receiver, &mut capacity))
+                    .map_err(ReceiverError::Toolbox)?
+                {
+                    Ok(()) | Err(ReceiverError::Publication(PreparedError::Projection(CapacityError::CapacityChanged))) => (),
+                    Err(cause) => return Err(cause)
+                }
+                // Both a displaced array and a refused fresh array leave the
+                // Desktop turn before destruction. Keep the actual permit.
+                drop(capacity);
+            }
+            Err(cause) => return Err(cause)
+        }
+    }
+}
+
+enum DesktopReceiver<'a>
+{
+    Existing,
+    Prepared
+    {
+        input:   &'a mut Option<PreparedReceiver>,
+        retired: &'a mut Option<ReceiverRetired>
+    }
+}
+
+/// Native drag requests retain their normal borrowed transport lifetime. Only
+/// Finder's missing desktop receiver needs detached preadmission; requests are
+/// never replayed after the session itself has taken effect.
+pub(crate) fn native_drag(call: &mut Call, input: &[u8], output: &mut [u8]) -> Result<(), Status>
+{
+    let caller = crate::context::current_thread_context().identity();
+    if call.operation != CREATE || caller.app != crate::context::finder_app()
+    {
+        return crate::kernel::with_toolbox(|toolbox| toolbox.drag_request(call, input, output))
+            .map_err(|cause| cause.status())?;
+    }
+    let result = create_native_drag(call, input, output);
+    result.map_err(|cause| {
+              serial!("DRAG_RECEIVER_ADMISSION_REFUSED: {cause}");
+              cause.status()
+          })
+}
+fn create_native_drag(call: &mut Call, input: &[u8], output: &mut [u8])
+                      -> Result<(), ReceiverError>
+{
+    let plan =
+        crate::kernel::with_toolbox(|toolbox| {
+            toolbox.preflight_drag_source(call).map_err(ReceiverError::Binding)?;
+            let caller = crate::context::current_thread_context().identity();
+            let owner = toolbox.processes.ledger(caller.app.0).map_err(ReceiverError::Binding)?;
+            if toolbox.drag.receiver_binding(&owner, caller.thread, ReceiverTarget::Toolbox)?
+            {
+                return Ok(None);
+            }
+            let allocation =
+                toolbox.processes.allocation(caller.app.0).map_err(ReceiverError::Binding)?;
+            toolbox.drag.plan_receiver(&owner, caller.thread, &allocation).map(Some)
+        }).map_err(ReceiverError::Toolbox)??;
+    let mut prepared = plan.map(admit_receiver_plan).transpose()?;
+    let mut retired = None;
+    let publication = if prepared.is_some()
+    {
+        DesktopReceiver::Prepared { input:   &mut prepared,
+                                    retired: &mut retired }
+    }
+    else
+    {
+        DesktopReceiver::Existing
+    };
+    let result = crate::kernel::with_toolbox(|toolbox| {
+                     toolbox.request_drag(call, input, output, Some(publication))
+                            .map_err(ReceiverError::Binding)
+                 }).map_err(ReceiverError::Toolbox)?;
+    if let Some(retired) = retired
+    {
+        retired.dispose();
+    }
+    drop(prepared);
+    result
+}
+
 impl super::super::runtime::Toolbox
 {
     pub(super) fn drag_hot(&self, point: Point) -> Option<u32>
@@ -72,31 +201,60 @@ impl super::super::runtime::Toolbox
     pub fn drag_request(&mut self, call: &mut Call, input: &[u8], output: &mut [u8])
                         -> Result<(), Status>
     {
-        let caller = crate::context::current_thread_context().identity().app.0;
-        let owner = self.processes.ledger(caller)?;
-        if call.operation == CREATE
+        self.request_drag(call, input, output, None)
+    }
+
+    fn preflight_drag_source(&self, call: &Call) -> Result<(), Status>
+    {
+        // NewDrag permits a real untied draft (zero). A named source must be
+        // the live window owned by the caller, for native and classic requests.
+        if call.operation == CREATE && call.window != 0 && !self.owns(WindowId(call.window))
         {
-            // Original NewDrag creates an untied draft. A named source must
-            // still be a live window owned by the creating application.
-            if call.window != 0 && !self.owns(WindowId(call.window))
-            {
-                return Err(if self.windows.window(WindowId(call.window)).is_some()
-                           {
-                               ACCESS_DENIED
-                           }
-                           else
-                           {
-                               NOT_FOUND
-                           });
-            }
+            return Err(if self.windows.window(WindowId(call.window)).is_some()
+                       {
+                           ACCESS_DENIED
+                       }
+                       else
+                       {
+                           NOT_FOUND
+                       });
         }
-        if call.operation == CREATE && caller == crate::context::finder_app().0
+        Ok(())
+    }
+
+    fn request_drag(&mut self, call: &mut Call, input: &[u8], output: &mut [u8],
+                    publication: Option<DesktopReceiver<'_>>)
+                    -> Result<(), Status>
+    {
+        let caller = crate::context::current_thread_context().identity();
+        let owner = self.processes.ledger(caller.app.0)?;
+        self.preflight_drag_source(call)?;
+        if call.operation == CREATE && caller.app == crate::context::finder_app()
         {
-            self.drag.ensure_receiver(&owner,
-                                       crate::context::current_thread_context().identity()
-                                                                               .thread
-                                                                               .0,
-                                       0)?;
+            match publication
+            {
+                Some(DesktopReceiver::Existing) =>
+                {
+                    if !self.drag
+                            .receiver_binding(&owner, caller.thread, ReceiverTarget::Toolbox)
+                            .map_err(ReceiverError::status)?
+                    {
+                        return Err(SERVICE_BUSY);
+                    }
+                }
+                Some(DesktopReceiver::Prepared { input,
+                                                 retired }) =>
+                {
+                    if retired.is_some()
+                    {
+                        return Err(BAD_ABI);
+                    }
+                    *retired = self.drag
+                                   .commit_receiver(input, ReceiverTarget::Toolbox)
+                                   .map_err(ReceiverError::status)?;
+                }
+                None => self.drag.ensure_receiver(&owner, caller.thread, 0)?
+            }
         }
         if matches!(call.operation, ACCEPT | READ | ACKNOWLEDGE | ABANDON | CANCEL_RECEIVE)
            && call.receiver == 0
@@ -120,17 +278,11 @@ impl super::super::runtime::Toolbox
         }
         let before = self.drag.feedback();
         let result =
-            self.drag.request(&owner,
-                              crate::context::current_thread_context().identity().thread.0,
-                              call,
-                              input,
-                              output,
-                              Self::when(),
-                              |call| {
-                                  crate::kernel::with_files(|files| {
-                                      crate::toolbox::drag::validate_target(files, call)
-                                  }).map_err(|error| error.status())?
-                              });
+            self.drag.request(&owner, caller.thread, call, input, output, Self::when(), |call| {
+                         crate::kernel::with_files(|files| {
+                             crate::toolbox::drag::validate_target(files, call)
+                         }).map_err(|error| error.status())?
+                     });
         if result.is_ok() && source_read_only
         {
             self.drag.source_read_only(call.id);

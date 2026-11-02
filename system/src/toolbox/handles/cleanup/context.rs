@@ -63,11 +63,11 @@ impl Context for crate::toolbox::runtime::Toolbox
 /// Retain the unique ticket if a callback requires a context that is not
 /// available at this point in boot/recovery. Never fabricate a desktop or ACK.
 #[cfg(target_arch = "riscv64")]
-pub(crate) struct Desktop<R>(pub R);
+pub(crate) struct Toolbox<R>(pub R);
 
 #[cfg(target_arch = "riscv64")]
 impl<R: Release<crate::toolbox::runtime::Toolbox, Failure>> Release<dyn Context, Failure>
-    for Desktop<R>
+    for Toolbox<R>
 {
     fn release(&self, context: &mut (dyn Context + 'static), ticket: ReleasedResource)
                -> Result<(), Failure>

@@ -60,6 +60,16 @@ pub(crate) fn active_harts() -> usize
                    })
 }
 
+pub(crate) fn eligible_harts() -> usize
+{
+    1 + READY.get().map_or(0, |set| {
+                       set.harts
+                          .iter()
+                          .filter(|row| traps::execution::dispatch::eligible(&row.ready))
+                          .count()
+                   })
+}
+
 /// Called under SCHEDULER and the same Active registration exclusion as the
 /// actual frame claim. Every target is preflighted before any eligibility edit.
 pub(crate) fn apply_harts(generation: u64, count: u32) -> Result<(), mac_abi::Status>

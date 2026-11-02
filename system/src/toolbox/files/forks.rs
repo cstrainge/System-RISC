@@ -21,12 +21,16 @@ impl super::objects::Payload for OpenFile
 
     fn cleanup_pending(&self) -> bool
     {
-        matches!(&*self.fork.lock(),FileFork::Provider(fork) if !fork.closed())
+        self.operations.load(core::sync::atomic::Ordering::Acquire) != 0
+        || (self.final_handle()
+            && matches!(&*self.description.fork.lock(),FileFork::Provider(fork) if !fork.closed()))
     }
 
     fn begin_cleanup(&self)
     {
-        if let FileFork::Provider(fork) = &*self.fork.lock()
+        self.relinquish();
+        if self.last_close.load(core::sync::atomic::Ordering::Acquire)
+           && let FileFork::Provider(fork) = &*self.description.fork.lock()
         {
             fork.abandon();
         }
@@ -45,6 +49,30 @@ impl super::objects::Payload for OpenFile
     fn scope(&self) -> Option<&super::subject::Lease>
     {
         self.authority.scope()
+    }
+}
+#[cfg(target_arch = "riscv64")]
+#[must_use = "dispose open-fork backing after the Files guard ends"]
+pub(crate) struct ForkRelease(Option<objects::prepared::Backing>);
+#[cfg(target_arch = "riscv64")]
+impl ForkRelease
+{
+    pub(crate) fn dispose(self)
+    {
+        if let Some(backing) = self.0
+        {
+            backing.dispose();
+        }
+    }
+}
+#[cfg(target_arch = "riscv64")]
+impl Manager
+{
+    pub(crate) fn release_fork_owned(
+        &mut self, ticket: ReleasedResource, storage: bool)
+        -> Result<ForkRelease, crate::toolbox::handles::cleanup::Failure>
+    {
+        self.handles.release_fork_owned(ticket, storage).map(ForkRelease)
     }
 }
 impl lifetime::ForkHost for Manager

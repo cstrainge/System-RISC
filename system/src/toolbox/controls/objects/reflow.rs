@@ -4,7 +4,7 @@ use super::*;
 
 impl State
 {
-    pub(super) fn reflow(&mut self, payload: &mut wire::Payload, entry: DefinitionEntry,
+    pub(super) fn reflow(&mut self, payload: &mut wire::Payload, entry: DefinitionRef,
                          gate: TrapGate)
                          -> Result<bool, Status>
     {

@@ -24,6 +24,7 @@ members = [
     "crates/mac-driver-alloc",
     "crates/mac-device-interface",
     "crates/mac-power-interface",
+    "crates/mac-entropy-interface",
     "crates/mac-filesystem-interface",
     "crates/mac-file-source-interface",
     "crates/mac-sit",
@@ -74,6 +75,7 @@ mac-scheduler-interface = { path = "crates/mac-scheduler-interface" }
 mac-scheduler-policy = { path = "crates/mac-scheduler-policy" }
 mac-device-interface = { path = "crates/mac-device-interface" }
 mac-power-interface = { path = "crates/mac-power-interface" }
+mac-entropy-interface = { path = "crates/mac-entropy-interface" }
 mac-filesystem-interface = { path = "crates/mac-filesystem-interface" }
 mac-file-source-interface = { path = "crates/mac-file-source-interface" }
 mac-sit = { path = "crates/mac-sit" }

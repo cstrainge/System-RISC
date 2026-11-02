@@ -3,14 +3,14 @@
 #![forbid(unsafe_code)]
 use super::*;
 #[derive(Default)]
-pub(super) struct Builder
+pub(in crate::toolbox::files) struct Builder
 {
     parts: Vec<(u32, usize)>,
     names: Vec<u8>
 }
 impl Builder
 {
-    pub(super) fn push(&mut self, entry: &CatalogInfo) -> Result<(), Status>
+    pub(in crate::toolbox::files) fn push(&mut self, entry: &CatalogInfo) -> Result<(), Status>
     {
         if self.parts.len() == 255 || self.parts.iter().any(|(id, _)| *id == entry.id)
         {
@@ -37,7 +37,7 @@ impl Builder
         Ok(())
     }
 
-    pub(super) fn finish(self) -> Result<Vec<u8>, Status>
+    pub(in crate::toolbox::files) fn finish(self) -> Result<Vec<u8>, Status>
     {
         let length = (self.names.len() + self.parts.len()).max(1);
         let mut path = Vec::new();
@@ -55,7 +55,7 @@ impl Builder
         Ok(path)
     }
 }
-pub(super) fn component(path: &str, mut at: usize) -> Option<(usize, &str)>
+pub(in crate::toolbox::files) fn component(path: &str, mut at: usize) -> Option<(usize, &str)>
 {
     while path.as_bytes().get(at) == Some(&b'/')
     {

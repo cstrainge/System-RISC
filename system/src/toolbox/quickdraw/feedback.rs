@@ -132,47 +132,56 @@ impl VisibilityCache
         {
             return self.clip.clone();
         }
-        let mut rects = Vec::new();
-        let mut exhausted = false;
-        let mut collect = |rect: Rect| {
-            if exhausted || rect.is_empty()
-            {
-                return;
-            }
-            if rects.try_reserve(1).is_err()
-            {
-                exhausted = true;
-                return;
-            }
-            rects.push(rect);
-        };
-        if let Some(id) = target
-        {
-            windows.for_each_visible_rect(id, &mut collect);
-        }
-        else
-        {
-            windows.for_each_desktop_rect(Rect::new(0,
-                                                    21,
-                                                    crate::display::WIDTH as i16,
-                                                    crate::display::HEIGHT as i16),
-                                          &mut collect);
-        }
-        if exhausted
-        {
-            allocation_refused(target);
-        }
-        self.clip = if exhausted || rects.is_empty()
-        {
-            Clip::Empty
-        }
-        else
-        {
-            Arc::try_new(rects).map(Clip::Visible).unwrap_or_else(|_| {
-                                                      allocation_refused(target);
-                                                      Clip::Empty
-                                                  })
-        };
+        // This cache and its immutable snapshots belong to the shared scene,
+        // and can outlive the app whose drag first needed them. Admit their
+        // original backing as ordinary System storage, never an app receipt
+        // or a recovery dialog's protected allocation.
+        use mac_object_table::shared::InvocationGate as _;
+        self.clip = crate::context::without_recovery(|| {
+            crate::toolbox::handles::InvocationGate::with_system_allocation(|| {
+                let mut rects = Vec::new();
+                let mut exhausted = false;
+                let mut collect = |rect: Rect| {
+                    if exhausted || rect.is_empty()
+                    {
+                        return;
+                    }
+                    if rects.try_reserve(1).is_err()
+                    {
+                        exhausted = true;
+                        return;
+                    }
+                    rects.push(rect);
+                };
+                if let Some(id) = target
+                {
+                    windows.for_each_visible_rect(id, &mut collect);
+                }
+                else
+                {
+                    windows.for_each_desktop_rect(Rect::new(0,
+                                                            21,
+                                                            crate::display::WIDTH as i16,
+                                                            crate::display::HEIGHT as i16),
+                                                  &mut collect);
+                }
+                if exhausted
+                {
+                    allocation_refused(target);
+                }
+                if exhausted || rects.is_empty()
+                {
+                    Clip::Empty
+                }
+                else
+                {
+                    Arc::try_new(rects).map(Clip::Visible).unwrap_or_else(|_| {
+                                                              allocation_refused(target);
+                                                              Clip::Empty
+                                                          })
+                }
+            })
+        });
         // Negative results are cached too. Allocation refusal suppresses this
         // feedback until a real scene/target change, never a per-input retry loop.
         self.target = Some(target);

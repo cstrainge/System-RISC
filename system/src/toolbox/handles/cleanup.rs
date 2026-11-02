@@ -6,6 +6,37 @@ use mac_object_table::{domain::{CompletionError, PoolError, ReleasedResource},
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cause
 {
+    PublicationPreparations
+    {
+        owner:     mac_object_table::domain::DomainId,
+        kind:      mac_object_table::domain::KindCode,
+        preparing: usize
+    },
+    #[cfg(target_arch = "riscv64")]
+    ThreadPreparations
+    {
+        preparing: usize
+    },
+    #[cfg(target_arch = "riscv64")]
+    NativeJoin
+    {
+        readers:      usize,
+        preparations: usize
+    },
+    #[cfg(target_arch = "riscv64")]
+    ApplicationHeap(crate::toolbox::application_heap::CleanupCause),
+    #[cfg(target_arch = "riscv64")]
+    NativeTls(crate::toolbox::native_threads::CleanupCause),
+    #[cfg(target_arch = "riscv64")]
+    ProcessSpace(crate::machine::paging::process::CleanupCause),
+    #[cfg(target_arch = "riscv64")]
+    DefinitionPending
+    {
+        owner: u64,
+        drain: crate::toolbox::resources::definitions::Drain
+    },
+    #[cfg(target_arch = "riscv64")]
+    ModuleMapping(crate::machine::paging::modules::CleanupCause),
     #[cfg(target_arch = "riscv64")]
     RequestRegistryUnavailable(crate::state::AccessError),
     #[cfg(target_arch = "riscv64")]
@@ -95,6 +126,45 @@ impl core::fmt::Display for Cause
     {
         match self
         {
+            Self::PublicationPreparations { owner,
+                                            kind,
+                                            preparing } =>
+            {
+                write!(f,
+                       "owner {owner:?} backing {kind:?} retains {preparing} actual prepared \
+                        publications; original cleanup ticket retained")
+            }
+            #[cfg(target_arch = "riscv64")]
+            Self::ThreadPreparations { preparing } =>
+            {
+                write!(f,
+                       "native thread backing retains {preparing} actual prepared publications; \
+                        original THST ticket retained")
+            }
+            #[cfg(target_arch = "riscv64")]
+            Self::NativeJoin { readers,
+                               preparations } =>
+            {
+                write!(f,
+                       "native join right retains {readers} actual readers and {preparations} \
+                        prepared publications; original ticket retained")
+            }
+            #[cfg(target_arch = "riscv64")]
+            Self::ApplicationHeap(cause) => cause.fmt(f),
+            #[cfg(target_arch = "riscv64")]
+            Self::NativeTls(cause) => cause.fmt(f),
+            #[cfg(target_arch = "riscv64")]
+            Self::ProcessSpace(cause) => cause.fmt(f),
+            #[cfg(target_arch = "riscv64")]
+            Self::DefinitionPending { owner,
+                                      drain } =>
+            {
+                write!(f,
+                       "definition owner {owner} awaits {drain:?}; original callable and cleanup \
+                        ticket retained")
+            }
+            #[cfg(target_arch = "riscv64")]
+            Self::ModuleMapping(cause) => cause.fmt(f),
             #[cfg(target_arch = "riscv64")]
             Self::RequestRegistryUnavailable(cause) =>
             {
@@ -120,7 +190,7 @@ impl core::fmt::Display for Cause
             {
                 write!(f,
                        "scheduler registration {generation} awaits actual callback and \
-                        primary-only quiescence; original payload and cleanup ticket retained")
+                        target-owned quiescence; original payload and cleanup ticket retained")
             }
             #[cfg(target_arch = "riscv64")]
             Self::SchedulerUnavailable(cause) =>
@@ -166,8 +236,8 @@ impl core::fmt::Display for Cause
                                                 dependent } =>
             {
                 write!(f,
-                       "module {dependent} still has an admitted backing operation using provider \
-                        {provider}; wait for actual close or cancellation acknowledgement; \
+                       "dependent domain {dependent} still has an active resource scope using \
+                        provider {provider}; wait for actual runtime or resource closure; \
                         dependency and original cleanup ticket remain retained")
             }
             Self::Facility(error) => error.fmt(f),
@@ -256,6 +326,68 @@ pub(crate) struct Failure
 }
 impl Failure
 {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn definition_pending(ticket: ReleasedResource, owner: u64,
+                                     drain: crate::toolbox::resources::definitions::Drain)
+                                     -> Self
+    {
+        Self { ticket,
+               cause: Cause::DefinitionPending { owner,
+                                                 drain } }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn module_mapping(ticket: ReleasedResource,
+                                 cause: crate::machine::paging::modules::CleanupCause)
+                                 -> Self
+    {
+        Self { ticket,
+               cause: Cause::ModuleMapping(cause) }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn thread_preparations(ticket: ReleasedResource, preparing: usize) -> Self
+    {
+        Self { ticket,
+               cause: Cause::ThreadPreparations { preparing } }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn native_join(ticket: ReleasedResource, readers: usize, preparations: usize)
+                              -> Self
+    {
+        Self { ticket,
+               cause: Cause::NativeJoin { readers,
+                                          preparations } }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn process_space(ticket: ReleasedResource,
+                                cause: crate::machine::paging::process::Error)
+                                -> Self
+    {
+        Self { ticket,
+               cause: Cause::ProcessSpace(cause.into()) }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn native_tls(ticket: ReleasedResource,
+                             cause: crate::toolbox::native_threads::CleanupCause)
+                             -> Self
+    {
+        Self { ticket,
+               cause: Cause::NativeTls(cause) }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn application_heap(ticket: ReleasedResource,
+                                   cause: crate::toolbox::application_heap::CleanupCause)
+                                   -> Self
+    {
+        Self { ticket,
+               cause: Cause::ApplicationHeap(cause) }
+    }
+
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn scheduler_pending(ticket: ReleasedResource, generation: u64) -> Self
     {
@@ -436,6 +568,18 @@ impl Failure
                cause: Cause::WindowDefinitionDisposal { window,
                                                         procedure,
                                                         reply } }
+    }
+}
+
+impl Failure
+{
+    pub(crate) fn publication_preparations(ticket: ReleasedResource, preparing: usize) -> Self
+    {
+        let key = ticket.key();
+        Self { ticket,
+               cause: Cause::PublicationPreparations { owner: key.owner(),
+                                                       kind: key.kind(),
+                                                       preparing } }
     }
 }
 

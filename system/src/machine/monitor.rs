@@ -302,10 +302,7 @@ impl fmt::Display for Error
             {
                 f.write_str("machine monitor issuer is not the admitted primary executor")
             }
-            Self::Busy =>
-            {
-                f.write_str("another executable publication owns the monitor command slot")
-            }
+            Self::Busy => f.write_str("another monitor publication owns the command slot"),
             Self::Stopping => f.write_str("terminal stop has closed machine monitor publication"),
             Self::TransportRetired =>
             {
@@ -531,6 +528,18 @@ pub(crate) fn event_ticks_to_ticks(ticks: u32) -> Result<u64, Error>
     u64::try_from(duration).map_err(|_| Error::ClockOverflow)
 }
 
+/// Whole seconds plus a checked fractional nanosecond interval. Rounding up
+/// cannot shorten a requested native thread/address-wait deadline.
+pub(crate) fn seconds_nanos_to_ticks_ceil(seconds: u64, nanoseconds: u32) -> Result<u64, Error>
+{
+    let transport = MONITOR.get().ok_or(Error::Missing)?;
+    let whole = u128::from(seconds) * u128::from(transport.timebase_hz);
+    let fraction =
+        (u128::from(nanoseconds) * u128::from(transport.timebase_hz)).div_ceil(1_000_000_000);
+    let ticks = whole.checked_add(fraction).ok_or(Error::ClockOverflow)?;
+    u64::try_from(ticks).map_err(|_| Error::ClockOverflow)
+}
+
 /// A measured callback duration rounds upward for its strict time budget; a
 /// fractional microsecond beyond that budget cannot disappear by flooring.
 pub(crate) fn ticks_to_microseconds_ceil(ticks: u64) -> Result<u64, Error>
@@ -601,6 +610,7 @@ impl Drop for Issuer
             BROKEN.store(true, Ordering::Release);
         }
         ISSUING.store(false, Ordering::Release);
+        super::paging::modules::monitor_released();
     }
 }
 /// Called after image writes and before any executable binding is published.
@@ -609,72 +619,173 @@ impl Drop for Issuer
 /// preserves that same frozen hardware membership and uses the shared transport.
 pub(crate) fn publish_instructions() -> Result<(), Error>
 {
-    let monitor = selected()?;
-    if TERMINAL.load(Ordering::Acquire)
+    publish_all(Publication::Instructions).map(|_| ())
+}
+
+/// Completion evidence for one real full translation invalidation. It is not
+/// mapping ownership, a reader-quiescence proof or permission to mutate a PTE.
+/// Only the corresponding mapping owner may retain/consume this after its PTE
+/// effects; a future PTE change needs a new operation. No scalar epoch, public
+/// constructor or Clone/Copy implementation can fabricate another completion.
+#[must_use = "retain this completion with its corresponding mapping transition"]
+pub(crate) struct TranslationsInvalidated
+{
+    _sequence: u64
+}
+
+/// Reserved real command slot, obtained before the corresponding PTE effect.
+/// An unissued lease refunds normally; a post-issue refusal retires the channel.
+/// No manager/PTE guard belongs across finish's real target ACK wait.
+#[must_use = "retain the command lease through its corresponding PTE transition"]
+pub(crate) struct TranslationLease(PublicationLease);
+impl TranslationLease
+{
+    pub(crate) fn finish(self) -> Result<TranslationsInvalidated, Error>
     {
-        return Err(Error::Stopping);
+        self.0
+            .finish(Publication::Translations)
+            .map(|sequence| TranslationsInvalidated { _sequence: sequence })
     }
-    if BROKEN.load(Ordering::Acquire)
+}
+pub(crate) fn prepare_translation_invalidation() -> Result<TranslationLease, Error>
+{
+    PublicationLease::prepare().map(TranslationLease)
+}
+
+#[derive(Clone, Copy)]
+enum Publication
+{
+    Instructions,
+    Translations
+}
+impl Publication
+{
+    fn command(self) -> u64
     {
-        return Err(Error::TransportRetired);
+        match self
+        {
+            Self::Instructions => monitor::FENCE_I,
+            Self::Translations => monitor::SFENCE_VMA_ALL
+        }
     }
-    ISSUING.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-           .map_err(|_| Error::Busy)?;
-    let mut issuer = Issuer { complete: true };
-    if BROKEN.load(Ordering::Acquire)
+
+    fn local(self)
     {
-        return Err(Error::TransportRetired);
+        // SAFETY: the issue tail reauthenticates the actual primary with local
+        // preemption masked. PTE/code stores precede both local execution and
+        // the subsequent release/MMIO publication to the real remote rows.
+        unsafe {
+            match self
+            {
+                Self::Instructions => asm!("fence rw,rw", "fence.i", options(nostack)),
+                Self::Translations =>
+                {
+                    asm!("fence rw,rw", "sfence.vma zero,zero", options(nostack));
+                }
+            }
+        }
     }
-    if TERMINAL.load(Ordering::Acquire)
+}
+struct PublicationLease
+{
+    monitor:  &'static Admitted,
+    sequence: u64,
+    issuer:   Issuer
+}
+impl PublicationLease
+{
+    fn prepare() -> Result<Self, Error>
     {
-        return Err(Error::Stopping);
-    }
-    let sequence =
-        SEQUENCE.load(Ordering::Relaxed).checked_add(1).ok_or(Error::SequenceExhausted)?;
-    let deadline = now().checked_add(monitor.timebase_hz).ok_or(Error::ClockOverflow)?;
-    SEQUENCE.store(sequence, Ordering::Relaxed);
-    // The writer orders prior stores and its own instruction fetches. Remote
-    // monitor ACKs follow each remote hart's actual fence.i.
-    unsafe {
-        asm!("fence rw,rw", "fence.i", options(nostack));
-    }
-    issuer.complete = false;
-    for entry in monitor.entries.iter().filter(|entry| entry.hart != monitor.primary as u64)
-    {
+        let monitor = selected()?;
         if TERMINAL.load(Ordering::Acquire)
         {
             return Err(Error::Stopping);
         }
-        field(entry, core::mem::offset_of!(Control, command)).store(monitor::FENCE_I,
-                                                                    Ordering::Relaxed);
-        field(entry, core::mem::offset_of!(Control, requested)).store(sequence, Ordering::Release);
-        notify(entry);
-    }
-    for entry in monitor.entries.iter().filter(|entry| entry.hart != monitor.primary as u64)
-    {
-        while field(entry, core::mem::offset_of!(Control, acknowledged)).load(Ordering::Acquire)
-              != sequence
+        if BROKEN.load(Ordering::Acquire)
         {
+            return Err(Error::TransportRetired);
+        }
+        ISSUING.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+               .map_err(|_| Error::Busy)?;
+        let issuer = Issuer { complete: true };
+        if BROKEN.load(Ordering::Acquire)
+        {
+            return Err(Error::TransportRetired);
+        }
+        if TERMINAL.load(Ordering::Acquire)
+        {
+            return Err(Error::Stopping);
+        }
+        let sequence =
+            SEQUENCE.load(Ordering::Relaxed).checked_add(1).ok_or(Error::SequenceExhausted)?;
+        SEQUENCE.store(sequence, Ordering::Relaxed);
+        Ok(Self { monitor,
+                  sequence,
+                  issuer })
+    }
+
+    fn finish(mut self, publication: Publication) -> Result<u64, Error>
+    {
+        let monitor = self.monitor;
+        let sequence = self.sequence;
+        let issuer = &mut self.issuer;
+        let deadline = now().checked_add(monitor.timebase_hz).ok_or(Error::ClockOverflow)?;
+        // Keep only this bounded issue tail local. Waiting owns the command lease,
+        // not a manager guard or a newly imposed long interrupts-off interval.
+        super::interrupts::with_masked(|| {
+            selected()?;
             if TERMINAL.load(Ordering::Acquire)
             {
                 return Err(Error::Stopping);
             }
-            if now() >= deadline
+            SEQUENCE.store(sequence, Ordering::Relaxed);
+            publication.local();
+            issuer.complete = false;
+            for entry in monitor.entries.iter().filter(|entry| entry.hart != monitor.primary as u64)
             {
-                return Err(Error::Uncertain { hart: entry.hart,
-                                              sequence });
+                if TERMINAL.load(Ordering::Acquire)
+                {
+                    return Err(Error::Stopping);
+                }
+                field(entry, core::mem::offset_of!(Control, command)).store(publication.command(),
+                                                                            Ordering::Relaxed);
+                field(entry, core::mem::offset_of!(Control, requested)).store(sequence,
+                                                                              Ordering::Release);
+                notify(entry);
             }
-            core::hint::spin_loop();
-        }
-        let result = unsafe { &*ptr::addr_of!((*control(entry)).result) }.load(Ordering::Acquire);
-        if result != 0
+            Ok(())
+        })?;
+        for entry in monitor.entries.iter().filter(|entry| entry.hart != monitor.primary as u64)
         {
-            return Err(Error::Refused { hart:   entry.hart,
-                                        status: result });
+            while field(entry, core::mem::offset_of!(Control, acknowledged)).load(Ordering::Acquire)
+                  != sequence
+            {
+                if TERMINAL.load(Ordering::Acquire)
+                {
+                    return Err(Error::Stopping);
+                }
+                if now() >= deadline
+                {
+                    return Err(Error::Uncertain { hart: entry.hart,
+                                                  sequence });
+                }
+                core::hint::spin_loop();
+            }
+            let result =
+                unsafe { &*ptr::addr_of!((*control(entry)).result) }.load(Ordering::Acquire);
+            if result != 0
+            {
+                return Err(Error::Refused { hart:   entry.hart,
+                                            status: result });
+            }
         }
+        issuer.complete = true;
+        Ok(sequence)
     }
-    issuer.complete = true;
-    Ok(())
+}
+fn publish_all(publication: Publication) -> Result<u64, Error>
+{
+    PublicationLease::prepare()?.finish(publication)
 }
 /// Irreversible terminal operation. Bypasses every normal command/owner lock;
 /// peers may be interrupted while holding those locks. The caller must abandon

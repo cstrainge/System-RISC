@@ -21,6 +21,7 @@ pub(crate) enum Error
     Account(mac_kernel_model::account::Error),
     Pages(pages::Error),
     Foreign,
+    Stack(mac_kernel_model::stack::Error),
     BackingMismatch
     {
         stack_expected: u64,
@@ -38,6 +39,7 @@ impl Error
             Self::Account(error) => account_status(error),
             Self::Pages(error) => error.status(),
             Self::Foreign => mac_abi::ACCESS_DENIED,
+            Self::Stack(_) => mac_abi::BAD_ARGUMENT,
             Self::BackingMismatch { .. } => mac_abi::BAD_ABI
         }
     }
@@ -49,6 +51,7 @@ impl fmt::Display for Error
         match self
         {
             Self::Account(error) => error.fmt(f),
+            Self::Stack(cause) => cause.fmt(f),
             Self::Pages(error) => error.fmt(f),
             Self::Foreign => f.write_str("thread backing admission belongs to another process"),
             Self::BackingMismatch { stack_expected,
@@ -99,6 +102,48 @@ impl ThreadCharges
                   stack,
                   cpu,
                   allocation })
+    }
+
+    pub(crate) fn admit_application(owner: &OwnerRef, allocation: &AllocationAuthority,
+                                    requested: u64)
+                                    -> Result<Self, Error>
+    {
+        use mac_kernel_model::{pages::PageGeometry, stack::Policy};
+
+        use crate::machine::memory;
+        if owner.owner() != allocation.owner()
+           || owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+        {
+            return Err(Error::Foreign);
+        }
+        let page = memory::PAGE_BYTES;
+        let rounded = if requested == 0
+        {
+            None
+        }
+        else
+        {
+            let rounded=requested.checked_add(page-1).map(|n|n/page*page).ok_or(Error::Stack(mac_kernel_model::stack::Error::Selection{
+                requested,minimum:memory::APPLICATION_STACK_MIN_BYTES,maximum:memory::APPLICATION_STACK_MAX_BYTES,page_bytes:page}))?;
+            Some(rounded)
+        };
+        let geometry = PageGeometry::new(page).map_err(|_| Error::Pages(pages::Error::Geometry))?;
+        let cpu_bytes = SavedState::frame_bytes().map_err(Error::Pages)?;
+        let selected = Policy::new(memory::APPLICATION_STACK_MIN_BYTES,
+                                   memory::APPLICATION_STACK_BYTES,
+                                   memory::APPLICATION_STACK_MAX_BYTES,
+                                   geometry).and_then(|policy| policy.select(rounded, cpu_bytes))
+                                            .map_err(Error::Stack)?;
+        let stack_bytes =
+            usize::try_from(selected).map_err(|_| Error::Pages(pages::Error::Geometry))?;
+        let stack=allocation.reserve_application(pages::Backing::planned_bytes(stack_bytes).map_err(Error::Pages)?).map_err(Error::Account)?;
+        let cpu =
+            allocation.reserve_kernel(SavedState::planned_backing_bytes().map_err(Error::Pages)?)
+                      .map_err(Error::Account)?;
+        Ok(Self { stack_bytes,
+                  stack,
+                  cpu,
+                  allocation: allocation.clone() })
     }
 
     pub(crate) fn admit_module(owner: &OwnerRef, allocation: &AllocationAuthority)

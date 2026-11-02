@@ -1,25 +1,56 @@
 //! Shared native application panic handler. System owns the report window and
 //! its input handling; the failed application only streams text and sleeps.
-use core::{fmt::{self, Write},
-           panic::PanicInfo,
-           sync::atomic::{AtomicBool, AtomicPtr, Ordering}};
+use core::fmt::{self, Write};
+#[cfg(not(target_os = "systemrisc"))]
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::{Client, SystemServices,
             crashes::{self, Crashes}};
 
+#[cfg(not(target_os = "systemrisc"))]
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
-static PANICKING: AtomicBool = AtomicBool::new(false);
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
+static PANICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Install the loader's service table before executing application code.
 ///
 /// # Safety
 /// The table and callbacks must remain valid until every application thread has
 /// terminated, including while its panic handler is running.
+#[cfg(not(target_os = "systemrisc"))]
 pub unsafe fn install(services: *const SystemServices) -> Result<(), crate::abi::Status>
 {
+    if !services.addr().is_multiple_of(core::mem::align_of::<SystemServices>())
+    {
+        return Err(crate::abi::BAD_ARGUMENT);
+    }
     unsafe { Client::from_raw(services) }.map_err(|error| error.status())?;
-    SERVICES.store(services.cast_mut(), Ordering::Release);
+    SERVICES.compare_exchange(core::ptr::null_mut(),
+                              services.cast_mut(),
+                              Ordering::AcqRel,
+                              Ordering::Acquire)
+            .map_err(|_| crate::abi::BAD_ABI)?;
     Ok(())
+}
+
+/// Read only the table installed by the genuine entry contract. A nonnull
+/// pointer is published only after validation; no separate allocator selection
+/// or synthetic current application exists in the SDK.
+pub(crate) fn installed_client() -> Option<Client<'static>>
+{
+    #[cfg(not(target_os = "systemrisc"))]
+    let pointer = SERVICES.load(Ordering::Acquire);
+    #[cfg(target_os = "systemrisc")]
+    let pointer = unsafe {
+        // std's platform entry owns the one installation for a std process.
+        // Only the C-layout service table crosses the sysroot/Cargo boundary.
+        unsafe extern "C" {
+            fn __system_risc_services_v1() -> *const SystemServices;
+        }
+        __system_risc_services_v1()
+    };
+    // SAFETY: install requires permanent immutable table/callback lifetime.
+    unsafe { Client::from_raw(pointer) }.ok()
 }
 
 struct Writer<'a>
@@ -73,6 +104,21 @@ impl Write for Writer<'_>
     }
 }
 
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
+pub(crate) fn diagnostic(client: Client<'_>, arguments: fmt::Arguments<'_>)
+{
+    let mut writer = Writer { client,
+                              buffer: [0; crashes::MAX_APPEND_BYTES],
+                              used: 0,
+                              resident: false,
+                              flags: crashes::ReportFlags::NONE };
+    if writer.write_fmt(arguments).is_err()
+    {
+        let _ = writer.write_str("\n[Formatting the application diagnostic failed.]\n");
+    }
+    writer.flush();
+}
+
 /// Stream complete diagnostics without allocating in the application. All text
 /// also goes to the serial log. System retains up to1MiB and explicitly marks a
 /// retention/formatting failure instead of silently presenting a shortened report.
@@ -108,46 +154,47 @@ pub fn report(client: Client<'_>, arguments: fmt::Arguments<'_>)
 
 /// Called by the application's single panic handler. No application events or
 /// drawing callbacks run after a panic; native event waits park the OS thread.
-pub fn handle(info: &PanicInfo<'_>) -> !
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
+pub fn handle(info: &core::panic::PanicInfo<'_>) -> !
 {
-    let pointer = SERVICES.load(Ordering::Acquire);
-    // install's lifetime contract is stronger than this entire handler.
-    let Ok(client) = (unsafe { Client::from_raw(pointer) })
+    fail(format_args!("{info}"))
+}
+
+/// Nonallocating common path for panic, OOM and allocator protocol failures.
+/// One caller attempts resident capture; secondary failures request the System
+/// termination protocol. Unsubmitted text can only be reported as a captured
+/// prefix or unavailable diagnostic, never as arbitrary fault recovery.
+#[cfg(all(target_arch = "riscv64", not(target_os = "systemrisc")))]
+pub(crate) fn fail(arguments: fmt::Arguments<'_>) -> !
+{
+    let Some(client) = installed_client()
     else
     {
-        loop
-        {
-            core::hint::spin_loop();
-        }
+        crate::application::abort(format_args!("APPLICATION_FAILURE_BEFORE_SERVICES: {arguments}"));
     };
     if PANICKING.swap(true, Ordering::AcqRel)
     {
-        let _ = client.log("APPLICATION_PANIC_RECURSIVE\n");
-        park(client, false);
+        crate::application::abort(format_args!("APPLICATION_FAILURE_ALREADY_REPORTING; \
+                                                requesting System-owned abort; unsubmitted \
+                                                diagnostic text may be unavailable"));
     }
     let _ = client.log("APPLICATION_PANIC_BEGIN\n");
-    let shown = report(client, format_args!("{info}")).is_ok();
-    if !shown
+    if let Err(cause) = report(client, arguments)
     {
-        let _ = client.log("APPLICATION_PANIC_VIEWER_UNAVAILABLE; see serial diagnostics\n");
+        diagnostic(client,
+                   format_args!("APPLICATION_PANIC_VIEWER_UNAVAILABLE status={} cause={cause}; \
+                                 see serial diagnostics\n",
+                                cause.status()));
     }
-    park(client, shown)
-}
-
-fn park(client: Client<'_>, shown: bool) -> !
-{
-    loop
+    // The System owns report retention, dismissal and recovery from here.
+    // No failed author continuation remains to poll or service events.
+    match client.native_exit(101, mac_traps::native_exit::ExitKind::Abort)
     {
-        let dismissed = !shown || Crashes::new(client).info().is_ok_and(|info| info.dismissed);
-        if dismissed
+        Ok(never) => match never {},
+        Err(cause) =>
         {
-            let mut call = mac_abi::processes::ProcessCall { operation: mac_abi::processes::EXIT,
-                                                             ..Default::default() };
-            let _ = client.process(&mut call);
+            crate::application::abort(format_args!("APPLICATION_EXIT_CONTRACT_FAILURE: {cause}"))
         }
-        // A zero mask runs no app handlers. System services physical input and
-        // paints the report; waiting yields to other applications and the kernel.
-        let _ = client.wait_event(0, 60);
     }
 }
 

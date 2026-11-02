@@ -1,0 +1,22 @@
+{
+  "name": "TLS Probe",
+  "binary_name": "ProcessSpinner",
+  "file_type": "APPL",
+  "creator": "TLSP",
+  "role": "application",
+  "abi_version": 1,
+  "load_base": "0x86000000",
+  "load_limit": "0x86a81000",
+  "description": "Private native current-thread, TLS key/slot and actual CRT destructor workload",
+  "resources": [
+    {
+      "type": "STR ",
+      "id": 2000,
+      "symbol": "APPLICATION_SCOPE",
+      "payload": {
+        "format": "pstring",
+        "text": "tls-probe"
+      }
+    }
+  ]
+}

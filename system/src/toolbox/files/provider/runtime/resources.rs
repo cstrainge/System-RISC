@@ -32,6 +32,7 @@ enum Stage
 }
 pub(super) struct State
 {
+    token:        u64,
     handle:       u32,
     volume:       u32,
     fork:         u32,
@@ -155,7 +156,7 @@ fn read(provider: u64, state: &mut State, offset: u64, count: usize) -> Result<O
                   provider,
                   Operation::Read,
                   Arguments { volume: state.volume,
-                              token: u64::from(state.handle),
+                              token: state.token,
                               flags: state.fork,
                               offset,
                               length: count as u64,
@@ -266,7 +267,8 @@ pub(crate) fn request(owner: u64, call: &mut FileResourceCall, name: &str, outpu
                                                info:     ResourceInfo::default(),
                                                has_name: 0,
                                                chunks:   Vec::new() }).map_err(|_| NO_MEMORY)?;
-        let mut state = Box::try_new(State { handle: call.handle,
+        let mut state = Box::try_new(State { token: 0,
+                                             handle: call.handle,
                                              volume: 0,
                                              fork: 0,
                                              saved_offset: 0,
@@ -281,6 +283,7 @@ pub(crate) fn request(owner: u64, call: &mut FileResourceCall, name: &str, outpu
                                              expected: 0,
                                              response }).map_err(|_| NO_MEMORY)?;
         let inspection = files(|manager| manager.begin_resource_inspection(owner, call.handle))?;
+        state.token = inspection.token;
         state.volume = inspection.volume;
         state.fork = inspection.fork;
         state.saved_offset = inspection.offset;

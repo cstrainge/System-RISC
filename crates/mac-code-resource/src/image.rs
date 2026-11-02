@@ -1,7 +1,7 @@
 //! Minimal segment-stream inspection without allocation or operating-system services.
 use crate::{Descriptor, Error, FORMAT_VERSION, Result, be16, be32};
 pub const HEADER_SIZE: usize = 8;
-pub const RECORD_SIZE: usize = 20;
+pub const RECORD_SIZE: usize = mac_abi::NATIVE_SEGMENT_RECORD_BYTES;
 pub const MAX_SEGMENTS: usize = 256;
 pub const EXECUTE: u32 = 1;
 pub const WRITE: u32 = 2;
@@ -9,10 +9,13 @@ pub const READ: u32 = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Segment
 {
-    pub offset:      u64,
-    pub length:      usize,
-    pub flags:       u32,
-    pub data_offset: usize
+    pub offset:        u64,
+    /// Initialized bytes present in the resource stream.
+    pub length:        usize,
+    /// Full memory extent, including implicit zero-filled trailing bytes.
+    pub memory_length: u64,
+    pub flags:         u32,
+    pub data_offset:   usize
 }
 
 /// Allocation-free inspection. Returns the exact end of the segment stream so
@@ -49,22 +52,43 @@ pub fn inspect(length: usize, descriptor: &Descriptor,
         at = at.checked_add(RECORD_SIZE).ok_or(Error("RV64 record overflow"))?;
         let offset = u64::from_be_bytes(record[..8].try_into().unwrap());
         let bytes = u64::from_be_bytes(record[8..16].try_into().unwrap());
-        let flags = be32(&record, 16)?;
-        let end = offset.checked_add(bytes).ok_or(Error("RV64 segment range overflow"))?;
+        let memory_length = u64::from_be_bytes(record[16..24].try_into().unwrap());
+        let flags = be32(&record, 24)?;
+        let end =
+            offset.checked_add(memory_length).ok_or(Error("RV64 segment memory range overflow"))?;
+        let initialized_end =
+            offset.checked_add(bytes).ok_or(Error("RV64 initialized range overflow"))?;
         let size = usize::try_from(bytes).map_err(|_| Error("RV64 segment length overflow"))?;
         let data_end = at.checked_add(size).ok_or(Error("RV64 data offset overflow"))?;
-        if bytes == 0 || offset < previous_end || end > reservation || data_end > length
+        if memory_length == 0
         {
-            return Err(Error("RV64 segments overlap, are truncated or exceed reservation"));
+            return Err(Error("RV64 segment memory length must be nonzero"));
+        }
+        if bytes > memory_length
+        {
+            return Err(Error("RV64 initialized segment length exceeds its memory length"));
+        }
+        if offset < previous_end
+        {
+            return Err(Error("RV64 segment memory extents overlap or are out of order"));
+        }
+        if end > reservation
+        {
+            return Err(Error("RV64 segment memory extent exceeds the native reservation"));
+        }
+        if data_end > length
+        {
+            return Err(Error("RV64 initialized segment data is truncated"));
         }
         if flags & !7 != 0 || flags & (WRITE | EXECUTE) == (WRITE | EXECUTE)
         {
             return Err(Error("invalid or writable executable RV64 segment"));
         }
         let entry = descriptor.entry - descriptor.load_base;
-        entry_valid |= flags & EXECUTE != 0 && entry >= offset && entry < end;
+        entry_valid |= flags & EXECUTE != 0 && entry >= offset && entry < initialized_end;
         emit(Segment { offset,
                        length: size,
+                       memory_length,
                        flags,
                        data_offset: at });
         previous_end = end;

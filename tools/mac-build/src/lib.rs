@@ -44,10 +44,23 @@ pub fn build_guest() -> Result<()>
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../platforms")
                                              .join(format!("{}.json", platform::current().name));
     println!("cargo:rerun-if-changed={}", definition.display());
-    platform::validate_guest(&env::var("TARGET")?, &env::var("CARGO_CFG_TARGET_FEATURE")?)?;
     let root = env::var("CARGO_MANIFEST_DIR")?;
     let path = Path::new(&root).join("resources.json");
     let manifest = Manifest::read(&path)?;
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("systemrisc")
+    {
+        if manifest.role != "application"
+        {
+            return Err(error("the std target is only valid for native application images"));
+        }
+        platform::validate_std_application(&env::var("TARGET")?,
+                                           &env::var("CARGO_CFG_TARGET_FEATURE")?)?;
+    }
+    else
+    {
+        platform::validate_guest(&env::var("TARGET")?, &env::var("CARGO_CFG_TARGET_FEATURE")?)?;
+    }
+    platform::validate_pic_flags()?;
     println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION");
     for parent in Path::new(&root).ancestors()
     {
@@ -83,7 +96,7 @@ pub fn build_guest() -> Result<()>
     {
         println!("cargo:rerun-if-changed={}", source.display());
     }
-    write_if_changed(out.join("resource_ids.rs"), manifest.rust_ids())?;
+    write_if_changed(out.join("resource_ids.rs"), manifest.rust_ids()?)?;
     if module::kind(&manifest).is_some()
     {
         println!("cargo:rerun-if-changed={}", Path::new(&root).join("module.json").display());
@@ -100,6 +113,10 @@ pub fn build_guest() -> Result<()>
                      platform::current().virtual_memory()?
                                         .rust_constants_for(&["VM_SYSTEM_IMAGE_BASE",
                                                               "VM_SYSTEM_IMAGE_LIMIT",
+                                                              "VM_MODULE_START",
+                                                              "VM_MODULE_END",
+                                                              "VM_APPLICATION_START",
+                                                              "VM_APPLICATION_END",
                                                               "VM_PHYSMAP_START",
                                                               "VM_PHYSMAP_END",
                                                               "VM_PHYSMAP_PHYSICAL_BASE",
@@ -117,6 +134,12 @@ pub fn build_guest() -> Result<()>
     let script_path = out.join("native.ld");
     write_if_changed(&script_path, script)?;
     println!("cargo:rustc-link-arg-bin={}=-T{}", manifest.binary_name(), script_path.display());
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("systemrisc")
+    {
+        // Pull the platform entry from std's archive even when no app source
+        // names it. The ordinary Rust main wrapper remains compiler-owned.
+        println!("cargo:rustc-link-arg-bin={}=--undefined=_start", manifest.binary_name());
+    }
     // Module calls use PC-relative addressing, avoiding per-image gp state.
     println!("cargo:rustc-link-arg-bin={}=--no-relax", manifest.binary_name());
     // Packaging retains a compact relocation table for independent app copies.

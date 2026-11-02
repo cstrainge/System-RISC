@@ -12,6 +12,8 @@ impl Manager
         mounted.info().ok_or(NOT_FOUND)?;
         Ok(match mounted
         {
+            #[cfg(target_arch = "riscv64")]
+            Mounted::Operating(_) => false,
             Mounted::Block(block) => block.info.read_only == 0 && !block.poisoned,
             Mounted::Provider(provider) =>
             {

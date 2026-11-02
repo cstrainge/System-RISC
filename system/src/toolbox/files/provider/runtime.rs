@@ -1202,6 +1202,14 @@ pub(crate) fn abandon_thread(thread: u64)
 }
 pub(crate) fn pump()
 {
+    if super::super::local::needs_cleanup()
+    {
+        // Refusal preserves the canonical operation and its original device/
+        // terminal result. A subsequent legitimate maintenance pass retries.
+        let _ = files(|manager| manager.local_ready());
+    }
+    super::super::local::pending::pump();
+    super::super::pins::pump_directory_cleanup();
     resident::pump_cleanup();
     crate::drivers::file_sources::runtime::pump();
     transfer::pump();

@@ -446,6 +446,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-entropy-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
+]
+
+[[package]]
 name = "mac-file-source-interface"
 version = "0.1.0"
 dependencies = [
@@ -601,6 +608,7 @@ name = "mac-system"
 version = "0.1.0"
 dependencies = [
  "ab_glyph_rasterizer",
+ "hashbrown",
  "libm",
  "linked_list_allocator",
  "mac-abi",
@@ -609,6 +617,7 @@ dependencies = [
  "mac-definition",
  "mac-device-interface",
  "mac-driver",
+ "mac-entropy-interface",
  "mac-file-source-interface",
  "mac-file-types",
  "mac-filesystem",
@@ -675,6 +684,7 @@ dependencies = [
  "toolbox-crashes",
  "toolbox-dialogs",
  "toolbox-drag",
+ "toolbox-entropy",
  "toolbox-events",
  "toolbox-files",
  "toolbox-inspection",
@@ -1182,6 +1192,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "toolbox-entropy"
+version = "0.1.0"
+dependencies = [
+ "mac-traps",
+]
+
+[[package]]
 name = "toolbox-events"
 version = "0.1.0"
 dependencies = [
@@ -1368,6 +1385,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtio-rng"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-driver",
+ "mac-entropy-interface",
+ "spinning_top",
+]
+
+[[package]]
 name = "wasip2"
 version = "1.0.4+wasi-0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1488,6 +1516,7 @@ dependencies = [
  "hfs-b",
  "mac-abi",
  "mac-build",
+ "mac-entropy-interface",
  "mac-file-types",
  "mac-formats",
  "mac-hfs-b",

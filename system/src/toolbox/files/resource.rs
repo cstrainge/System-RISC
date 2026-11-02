@@ -227,6 +227,7 @@ pub(super) fn application_format_status(error: mac_formats::Error) -> Status
 #[cfg(target_arch = "riscv64")]
 pub(crate) struct ProviderInspection
 {
+    pub token:    u64,
     pub provider: u64,
     pub volume:   u32,
     pub fork:     u32,
@@ -276,18 +277,20 @@ impl Manager
                                         name: &str, capacity: usize)
                                         -> Result<bool, Status>
     {
+        self.local_ready()?;
         let file = self.slot(owner, call.handle)?;
-        let length = match file.fork.lock().length()
+        let length = match file.description.fork.lock().length()
         {
             Ok(length) => length,
             Err(SERVICE_BUSY) => return Ok(false),
             Err(error) => return Err(error)
         };
-        if file.resource_index.is_none() && length == 0
+        if file.resource_index.lock().is_none() && length == 0
         {
-            file.resource_index = Some(mac_formats::resource::index::Index::empty());
+            *file.resource_index.lock() = Some(mac_formats::resource::index::Index::empty());
         }
-        let Some(index) = &file.resource_index
+        let resource_index = file.resource_index.lock();
+        let Some(index) = resource_index.as_ref()
         else
         {
             return Ok(false);
@@ -307,12 +310,13 @@ impl Manager
     pub(crate) fn begin_resource_inspection(&mut self, owner: u64, handle: u32)
                                             -> Result<ProviderInspection, Status>
     {
-        let length = self.slot(owner, handle)?.fork.lock().length()?;
+        let length = self.slot(owner, handle)?.description.fork.lock().length()?;
         // A composite positioned read holds the normal read lease but leaves
         // the public mark's position untouched. No provider callback runs here.
         let (provider, args) = self.begin_provider_file_read(owner, handle, 0)?;
-        let index = self.slot(owner, handle)?.resource_index.take();
-        Ok(ProviderInspection { provider,
+        let index = self.slot(owner, handle)?.resource_index.lock().take();
+        Ok(ProviderInspection { token: args.token,
+                                provider,
                                 volume: args.volume,
                                 fork: args.flags,
                                 offset: args.offset,
@@ -324,11 +328,19 @@ impl Manager
                                           index: Option<mac_formats::resource::index::Index>)
                                           -> Result<(), Status>
     {
+        let retired =
+            self.handles
+                .completing(handle)
+                .is_some_and(|file| file.retired.load(core::sync::atomic::Ordering::Acquire));
         self.finish_provider_file_read(handle, offset, 0, None)?;
-        let file = self.slot(owner, handle)?;
-        if !file.fork.lock().orphaned()
+        if retired
         {
-            file.resource_index = index;
+            return Ok(());
+        }
+        let file = self.slot(owner, handle)?;
+        if !file.description.fork.lock().orphaned()
+        {
+            *file.resource_index.lock() = index;
         }
         Ok(())
     }
@@ -379,8 +391,8 @@ impl Manager
         -> Result<Option<mac_formats::resource::index::Index>, Status>
     {
         let file = self.slot(owner, handle)?;
-        file.fork.lock().length()?;
-        Ok(file.resource_index.take())
+        file.description.fork.lock().length()?;
+        Ok(file.resource_index.lock().take())
     }
 
     pub(crate) fn restore_resource_index(&mut self, owner: u64, handle: u32,
@@ -388,33 +400,32 @@ impl Manager
                                          -> Result<(), Status>
     {
         let file = self.slot(owner, handle)?;
-        file.fork.lock().length()?;
-        file.resource_index = Some(index);
+        file.description.fork.lock().length()?;
+        *file.resource_index.lock() = Some(index);
         Ok(())
     }
 
     /// Startup reads use the same mounted filesystem service as later launches.
     /// ROM supplies block I/O, never an opaque whole-fork copying callback.
-    pub(crate) fn startup_resources(&mut self, name: &str, payload_bytes: usize)
-                                    -> Result<Vec<mac_formats::resource::Resource>, Status>
+    /// Capture original catalog identity at the same read as package resources.
+    /// Startup/replacement cwd must not be recovered by a later filename lookup.
+    pub(crate) fn startup_application(&mut self, name: &str, payload_bytes: usize)
+                                      -> Result<application::Loaded, Status>
     {
         let id = self.volumes
                      .iter()
-                     .find(|(_, v)| v.info().is_some_and(|info| info.startup != 0))
+                     .find(|(_, volume)| volume.info().is_some_and(|info| info.startup != 0))
                      .map(|(id, _)| id)
                      .ok_or(NOT_FOUND)?;
-        self.with_volume(id, |volume| {
-                let folder = io(volume.blessed_folder())?;
-                let file = io(volume.find_file(folder.id, name.as_bytes()))?;
-                // Trusted boot bundles grow with the System. Bound payload admission
-                // by current backing availability, not the ordinary application cap.
-                // Parser metadata stays bounded and every allocation remains fallible.
-                Self::load_selected_resources(volume,
-                                              file.resources,
-                                              |_, _| true,
-                                              mac_formats::resource::stream::Budget { payload_bytes,
-                                                                                      ..Default::default() })
-            })
+        self.with_volume(id,|volume| {
+            let folder=io(volume.blessed_folder())?;
+            let mut entry=required(io(volume.lookup(folder.id,name.as_bytes()))?)?;
+            if entry.directory {return Err(BAD_ARGUMENT);}
+            if entry.data.is_none() {return Err(NOT_FOUND);}
+            let catalog=metadata(id,&entry);
+            let resources=Self::load_selected_resources(volume,entry.resources.take().ok_or(NOT_FOUND)?,|_,_|true,mac_formats::resource::stream::Budget {payload_bytes,..Default::default()})?;
+            Ok(application::Loaded {catalog,resources})
+        })
     }
 
     fn load_selected_resources(volume: &mut Volume<'_, Device>, mut fork: Fork,

@@ -37,17 +37,160 @@ fn symbol<'a>(bytes: &'a [u8], table: &[u8], index: usize) -> Result<&'a [u8]>
           index.checked_mul(24).ok_or(Error::Malformed("symbol offset overflow"))?,
           24)
 }
-fn file_offset(image: &Image, address: u64, width: u64) -> Result<usize>
+fn initialized_segment(image: &Image, address: u64, width: u64) -> Result<&Segment>
 {
     let end = address.checked_add(width).ok_or(Error::Malformed("relocation address overflow"))?;
-    let segment = image.segments
-                       .iter()
-                       .find(|s| address >= s.address && end <= s.address + s.file_size)
-                       .ok_or(Error::Malformed("relocation outside initialized image"))?;
-    usize::try_from(segment.offset + address - segment.address).map_err(|_| {
-                                                                   Error::Malformed("relocation offset \
-                                                                          overflow")
-                                                               })
+    image.segments
+         .iter()
+         .find(|s| address >= s.address && end <= s.address + s.file_size)
+         .ok_or(Error::Malformed("relocation outside initialized image"))
+}
+fn segment_offset(segment: &Segment, address: u64) -> Result<usize>
+{
+    usize::try_from(segment.offset + address - segment.address)
+        .map_err(|_| Error::Malformed("relocation offset overflow"))
+}
+fn file_offset(image: &Image, address: u64, width: u64) -> Result<usize>
+{
+    segment_offset(initialized_segment(image, address, width)?, address)
+}
+fn instruction(bytes: &[u8], image: &Image, address: u64) -> Result<u32>
+{
+    let segment = initialized_segment(image, address, 4)?;
+    if address & 1 != 0 || segment.flags & 1 == 0
+    {
+        return Err(Error::Malformed("GOT relocation instruction is not aligned initialized \
+                                     executable code"));
+    }
+    u32le(bytes, segment_offset(segment, address)?)
+}
+struct GotHigh
+{
+    address: u64,
+    target:  u64,
+    paired:  bool
+}
+struct GotLow
+{
+    address: u64,
+    high:    u64,
+    kind:    u32
+}
+fn relocated_symbol(symbol: &[u8], record: &[u8]) -> Result<u64>
+{
+    u64le(symbol, 8)?.checked_add_signed(u64le(record, 16)? as i64)
+                     .ok_or(Error::Malformed("GOT relocation symbol/addend overflows"))
+}
+fn got_cells(bytes: &[u8], image: &Image, base: u64, highs: &mut [GotHigh], mut lows: Vec<GotLow>,
+             pc_highs: &mut [u64], entries: &mut BTreeMap<u32, u8>)
+             -> Result<()>
+{
+    use core::ops::Bound::{Excluded, Unbounded};
+    highs.sort_unstable_by_key(|high| high.address);
+    if highs.windows(2).any(|pair| pair[0].address == pair[1].address)
+    {
+        return Err(Error::Malformed("duplicate GOT_HI20 relocation site"));
+    }
+    pc_highs.sort_unstable();
+    if pc_highs.windows(2).any(|pair| pair[0] == pair[1])
+       || highs.iter().any(|high| pc_highs.binary_search(&high.address).is_ok())
+    {
+        return Err(Error::Malformed("duplicate PC-relative high relocation site"));
+    }
+    lows.sort_unstable_by_key(|low| low.address);
+    if lows.windows(2).any(|pair| {
+                          pair[0].address == pair[1].address
+                          && pair.iter().any(|low| {
+                                            highs.binary_search_by_key(&low.high, |high| {
+                                                     high.address
+                                                 })
+                                                 .is_ok()
+                                        })
+                      })
+    {
+        return Err(Error::Malformed("duplicate GOT low relocation site"));
+    }
+    let image_end =
+        base.checked_add(span(image, base)?).ok_or(Error::Malformed("GOT image span overflows"))?;
+    for low in lows
+    {
+        let Ok(at) = highs.binary_search_by_key(&low.high, |high| high.address)
+        else
+        {
+            if pc_highs.binary_search(&low.high).is_err()
+            {
+                return Err(Error::Malformed("PCREL_LO12 relocation has no matching high \
+                                             relocation"));
+            }
+            continue; // An ordinary matched PCREL_HI20/LO12 is not a GOT reference.
+        };
+        let high = &mut highs[at];
+        if low.kind != 24
+        {
+            return Err(Error::Malformed("GOT_HI20 requires a PCREL_LO12_I load, not an S-form \
+                                         relocation"));
+        }
+        let upper = instruction(bytes, image, high.address)?;
+        let load = instruction(bytes, image, low.address)?;
+        let register = (upper >> 7) & 31;
+        if upper & 0x7f != 0x17
+           || register == 0
+           || load & 0x707f != 0x3003
+           || (load >> 15) & 31 != register
+           || low.address == high.address
+        {
+            return Err(Error::Malformed("GOT relocation does not identify a matching AUIPC/LD \
+                                         register pair"));
+        }
+        let upper_offset = i64::from((upper & 0xfffff000) as i32);
+        let lower_offset = i64::from((load as i32) >> 20);
+        let cell = high.address
+                       .checked_add_signed(upper_offset)
+                       .and_then(|address| address.checked_add_signed(lower_offset))
+                       .ok_or(Error::Malformed("resolved GOT cell address overflows"))?;
+        let segment = initialized_segment(image, cell, 8)?;
+        if cell & 7 != 0 || segment.flags & 1 != 0
+        {
+            return Err(Error::Malformed("resolved GOT cell is not aligned initialized \
+                                         nonexecutable data"));
+        }
+        let pointer = u64le(bytes, segment_offset(segment, cell)?)?;
+        if high.target < base || high.target > image_end || pointer != high.target
+        {
+            return Err(Error::Malformed("resolved GOT cell does not contain its exact internal \
+                                         symbol target"));
+        }
+        let offset = u32::try_from(cell.checked_sub(base).ok_or(Error::Malformed("GOT cell precedes image"))?)
+            .map_err(|_| Error::Malformed("GOT cell offset exceeds native relocation range"))?;
+        if let Some((&other, &width)) = entries.range(..offset).next_back()
+           && u64::from(other) + u64::from(width) > u64::from(offset)
+        {
+            return Err(Error::Malformed("GOT cell overlaps another absolute relocation"));
+        }
+        if let Some((&other, _)) = entries.range((Excluded(offset), Unbounded)).next()
+           && u64::from(other) < u64::from(offset) + 8
+        {
+            return Err(Error::Malformed("GOT cell overlaps another absolute relocation"));
+        }
+        match entries.get(&offset)
+        {
+            Some(8) => (), // Existing absolute64 record or another GOT use of this cell.
+            Some(_) =>
+            {
+                return Err(Error::Malformed("GOT cell overlaps a non-64-bit absolute relocation"));
+            }
+            None =>
+            {
+                entries.insert(offset, 8);
+            }
+        }
+        high.paired = true;
+    }
+    if highs.iter().any(|high| !high.paired)
+    {
+        return Err(Error::Malformed("GOT_HI20 relocation has no matching PCREL_LO12_I load"));
+    }
+    Ok(())
 }
 pub fn span(image: &Image, base: u64) -> Result<u64>
 {
@@ -63,7 +206,8 @@ pub fn span(image: &Image, base: u64) -> Result<u64>
 }
 /// Build tools call this before stripping symbols. Old fixed images without the
 /// linker marker deliberately receive no relocation capability.
-pub fn extract(bytes: &[u8], image: &Image, base: u64) -> Result<Option<Vec<u8>>>
+pub fn extract(bytes: &[u8], image: &Image, base: u64, role: crate::native::Role)
+               -> Result<Option<Vec<u8>>>
 {
     if u64le(bytes, 40)? == 0 || u16le(bytes, 60)? == 0
     {
@@ -101,6 +245,12 @@ pub fn extract(bytes: &[u8], image: &Image, base: u64) -> Result<Option<Vec<u8>>
         return Ok(None);
     }
     let mut entries = BTreeMap::new();
+    // PIC jump tables contain ADD32/SUB32 pairs. Both internal endpoints move
+    // together, so their linked difference is invariant and needs no patch.
+    let mut differences = BTreeMap::<u64, u8>::new();
+    let mut got_high = Vec::new();
+    let mut got_low = Vec::new();
+    let mut pc_high = Vec::new();
     for i in 0..count
     {
         let header = section(bytes, i)?;
@@ -150,17 +300,98 @@ pub fn extract(bytes: &[u8], image: &Image, base: u64) -> Result<Option<Vec<u8>>
                     {
                         return Err(Error::Malformed("external absolute relocation"));
                     }
+                    if kind == 1 && role == crate::native::Role::CodeResource
+                    {
+                        return Err(Error::Malformed("RV64 module/definition pointers require \
+                                                     64-bit storage to support System-selected \
+                                                     virtual addresses; rebuild without \
+                                                     internal 32-bit absolute pointers"));
+                    }
                     let width = if kind == 1 { 4 } else { 8 };
                     file_offset(image, address, width)?;
+                    if image.segments.iter().any(|segment| {
+                                                segment.flags & 1 != 0
+                                                && address >= segment.address
+                                                && address < segment.address + segment.file_size
+                                            })
+                    {
+                        return Err(Error::Malformed("native PIC contract forbids absolute \
+                                                     relocation slots in executable segments; \
+                                                     rebuild every target dependency with \
+                                                     relocation-model=pic"));
+                    }
                     let offset=u32::try_from(address.checked_sub(base).ok_or(Error::Malformed("relocation before image"))?).map_err(|_|Error::Malformed("relocation too far"))?;
                     if entries.insert(offset, width as u8).is_some()
                     {
                         return Err(Error::Malformed("duplicate relocation"));
                     }
                 }
+                35 | 39 =>
+                {
+                    if !internal
+                    {
+                        return Err(Error::Malformed("PIC difference relocation has an external \
+                                                     endpoint"));
+                    }
+                    file_offset(image, address, 4)?;
+                    let bit = if kind == 35 { 1 } else { 2 };
+                    let state = differences.entry(address).or_insert(0);
+                    if *state & bit != 0
+                    {
+                        return Err(Error::Malformed("PIC difference relocation repeats an \
+                                                     endpoint"));
+                    }
+                    *state |= bit;
+                }
                 // PC-relative calls/address materialization and branches are
                 // unchanged when both ends move together. Relaxation is disabled.
-                16 | 17 | 18 | 19 | 23 | 24 | 25 | 44 | 45 | 57 =>
+                20 =>
+                {
+                    if !internal
+                    {
+                        return Err(Error::Malformed("GOT_HI20 relocation has an external or \
+                                                     absolute symbol"));
+                    }
+                    file_offset(image, address, 4)?;
+                    got_high.try_reserve(1).map_err(|_| {
+                                                Error::AllocationFailed("GOT high relocation \
+                                                                         metadata allocation \
+                                                                         failed")
+                                            })?;
+                    got_high.push(GotHigh { address,
+                                            target: relocated_symbol(symbol, record)?,
+                                            paired: false });
+                }
+                23 =>
+                {
+                    if !internal
+                    {
+                        return Err(Error::Malformed("external PC-relative relocation"));
+                    }
+                    file_offset(image, address, 2)?;
+                    pc_high.try_reserve(1).map_err(|_| {
+                                               Error::AllocationFailed("PC-relative high \
+                                                                        relocation metadata \
+                                                                        allocation failed")
+                                           })?;
+                    pc_high.push(address);
+                }
+                24 | 25 =>
+                {
+                    if !internal
+                    {
+                        return Err(Error::Malformed("external PC-relative relocation"));
+                    }
+                    file_offset(image, address, 2)?;
+                    got_low.try_reserve(1).map_err(|_| {
+                                               Error::AllocationFailed("GOT low relocation \
+                                                                        metadata allocation failed")
+                                           })?;
+                    got_low.push(GotLow { address,
+                                          high: relocated_symbol(symbol, record)?,
+                                          kind });
+                }
+                16 | 17 | 18 | 19 | 44 | 45 | 57 =>
                 {
                     if !internal
                     {
@@ -170,6 +401,27 @@ pub fn extract(bytes: &[u8], image: &Image, base: u64) -> Result<Option<Vec<u8>>
                 }
                 _ => return Err(Error::Malformed("unsupported application relocation"))
             }
+        }
+    }
+    got_cells(bytes, image, base, &mut got_high, got_low, &mut pc_high, &mut entries)?;
+    for (address, endpoints) in differences
+    {
+        if endpoints != 3
+        {
+            return Err(Error::Malformed("PIC difference relocation is missing its paired \
+                                         endpoint"));
+        }
+        let offset =
+            address.checked_sub(base).ok_or(Error::Malformed("PIC difference before image"))?;
+        // Difference words and rebased pointer words may never overlap.
+        if let Some((&at, &width)) = entries.range(..=u32::try_from(offset + 3).map_err(|_| {
+                                                          Error::Malformed("PIC difference offset \
+                                                                            overflow")
+                                                      })?)
+                                            .next_back()
+           && u64::from(at) + u64::from(width) > offset
+        {
+            return Err(Error::Malformed("PIC difference overlaps an absolute relocation"));
         }
     }
     let mut result = b"RLC1".to_vec();

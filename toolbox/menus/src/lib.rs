@@ -26,6 +26,10 @@ impl<'a> Menus<'a>
         Self { client }
     }
 
+    /// Install a menu in this application's resident menu bar. The menu stays
+    /// installed after this temporary client or any `MenuRef` is dropped.
+    /// Use `find` for a view; explicit disposal, `clear` or application teardown
+    /// ends the resident lifetime. Failed installation leaves existing menus intact.
     pub fn install_menu_resource(self, scope: mac_traps::types::ResourceScope, id: i16)
                                  -> Result<()>
     {
@@ -50,6 +54,7 @@ impl<'a> Menus<'a>
                                          ..Default::default() })
     }
 
+    /// Remove this application's installed menus and cancel its menu tracking.
     pub fn clear(self) -> Result<()>
     {
         self.client.menu(&mut MenuCall { operation: CLEAR,
@@ -159,33 +164,18 @@ pub struct Layout
     pub popup: mac_abi::geometry::Rect
 }
 
+/// A generation-checked view of an application-owned resident menu.
+///
+/// Copying or dropping a view does not change the menu's lifetime. Operations
+/// after explicit removal, clear or application teardown return `NotFound`.
 #[derive(Clone, Copy)]
 pub struct MenuRef<'a>
 {
     client: Client<'a>,
     handle: MenuHandle
 }
-#[must_use = "dropping a menu owner removes its menu"]
-pub struct Menu<'a>
-{
-    menu: MenuRef<'a>,
-    live: bool
-}
 impl<'a> Menus<'a>
 {
-    /// Install an owned resource menu. Resource numbers are properties; the
-    /// returned generation-checked object identity controls its lifetime.
-    pub fn install_owned(self, scope: ResourceScope, resource: i16) -> Result<Menu<'a>>
-    {
-        let mut call = MenuCall { operation: INSTALL,
-                                  scope: scope.raw(),
-                                  menu_id: resource,
-                                  ..Default::default() };
-        self.client.menu(&mut call)?;
-        Ok(Menu { menu: self.menu(MenuHandle(call.handle)),
-                  live: true })
-    }
-
     pub fn menu(self, handle: MenuHandle) -> MenuRef<'a>
     {
         MenuRef { client: self.client,
@@ -294,56 +284,10 @@ impl MenuRef<'_>
         self.call(TRUNCATE, 0, u32::from(count)).map(|_| ())
     }
 
+    /// Explicitly remove this resident menu. Failure leaves it installed and
+    /// this view can retry; a successful removal invalidates every old view.
     pub fn dispose(self) -> Result<()>
     {
         self.call(DISPOSE, 0, 0).map(|_| ())
-    }
-}
-impl<'a> Menu<'a>
-{
-    pub fn menu(&self) -> MenuRef<'a>
-    {
-        self.menu
-    }
-
-    pub fn handle(&self) -> MenuHandle
-    {
-        self.menu.handle
-    }
-
-    pub fn into_handle(self) -> MenuHandle
-    {
-        let handle = self.handle();
-        core::mem::forget(self);
-        handle
-    }
-
-    pub fn dispose(&mut self) -> Result<()>
-    {
-        if self.live
-        {
-            match self.menu.dispose()
-            {
-                Ok(()) | Err(Error::NotFound) => self.live = false,
-                Err(error) => return Err(error)
-            }
-        }
-        Ok(())
-    }
-}
-impl<'a> core::ops::Deref for Menu<'a>
-{
-    type Target = MenuRef<'a>;
-
-    fn deref(&self) -> &Self::Target
-    {
-        &self.menu
-    }
-}
-impl Drop for Menu<'_>
-{
-    fn drop(&mut self)
-    {
-        let _ = self.dispose();
     }
 }

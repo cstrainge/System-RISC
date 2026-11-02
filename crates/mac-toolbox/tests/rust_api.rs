@@ -68,7 +68,7 @@ fn native_client_mobility_is_an_explicit_threading_contract()
     mobile::<mac_toolbox::files::OpenFile<'static>>();
     mobile::<mac_toolbox::controls::ScrollBox<'static>>();
     mobile::<mac_toolbox::textedit::Editor<'static>>();
-    mobile::<mac_toolbox::menus::Menu<'static>>();
+    mobile::<mac_toolbox::menus::MenuRef<'static>>();
     mobile::<mac_toolbox::dialogs::Alert<'static>>();
 }
 

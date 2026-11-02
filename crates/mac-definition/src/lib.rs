@@ -8,6 +8,8 @@ pub use reflow::Reflow;
 pub use sr_control_reflow_handling as reflow;
 mod binding;
 mod families;
+#[doc(hidden)]
+pub mod validation;
 pub use families::{Button, ButtonKind, CaptionMode, Highlight, Progress, ProgressRange,
                    ProgressStyle, Reply, Scrollbar, Splitter, Table};
 /// Generate the CDEF entry and panic scaffold for the family named by `Message`.

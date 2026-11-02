@@ -1,6 +1,4 @@
 //! ResEdit read-only resource browser with lossless native JSON export.
-#![no_std]
-#![no_main]
 use core::fmt::{self, Write};
 
 use mac_toolbox::{files::{CatalogInfo, ROOT_ID},
@@ -16,6 +14,8 @@ mod viewers;
 use controls::scrollbox::View;
 use document::Text;
 use view::{Layout, Pane};
+mac_toolbox::include_resource_ids!();
+
 const FONT: FontSelection = FontSelection { family: 3,
                                             size:   9,
                                             face:   0 };
@@ -628,7 +628,7 @@ fn save(system: &System<'_>, browser: &mut Browser<'_>, save_as: bool) -> Toolbo
     Ok(())
 }
 fn document_event<'a>(system: &System<'a>, document: &mut documents::Document<'a>,
-                      event: &Event<'a>, position: PointerPosition, command: Option<[u8; 4]>)
+                      event: &Event<'a>, position: PointerPosition, command: Option<u32>)
                       -> ToolboxResult<()>
 {
     let window = document.owner.id();
@@ -653,16 +653,18 @@ fn document_event<'a>(system: &System<'a>, document: &mut documents::Document<'a
     {
         system.windows().validate(window)?;
     }
-    if command == Some(*b"open")
+    if command == Some(resources::commands::OPEN)
     {
         let previous = browser.catalog.map(|item| (item.volume, item.id));
         open_dialog(system, browser, window)?;
         redraw = browser.catalog.map(|item| (item.volume, item.id)) != previous;
     }
-    if command == Some(*b"save") || command == Some(*b"svas") || command == Some(*b"expr")
+    if command == Some(resources::commands::SAVE)
+       || command == Some(resources::commands::SAVE_AS)
+       || command == Some(resources::commands::EXPORT_JSON)
     {
         let previous_status = browser.status;
-        if let Err(error) = save(system, browser, command == Some(*b"svas"))
+        if let Err(error) = save(system, browser, command == Some(resources::commands::SAVE_AS))
         {
             let mut log = Text::<128>::new();
             let _ = writeln!(log, "RESEDIT_SAVE_ERROR status={}", error.status());
@@ -676,7 +678,7 @@ fn document_event<'a>(system: &System<'a>, document: &mut documents::Document<'a
             browser.draw_status(system, window)?;
         }
     }
-    if command == Some(*b"host")
+    if command == Some(resources::commands::EXPORT_TO_HOST)
     {
         let previous_status = browser.status;
         if let Err(error) = export(system, browser, window)
@@ -779,10 +781,11 @@ fn document_event<'a>(system: &System<'a>, document: &mut documents::Document<'a
     }
     Ok(())
 }
-fn run(system: &System<'static>) -> ToolboxResult<()>
+fn main() -> ToolboxResult<()>
 {
+    let system = &System::new()?;
     system.menus().clear()?;
-    let _menu = system.menus().install_owned(resources::APPLICATION, 128)?;
+    system.menus().install_menu_resource(ResourceScope::Application, 128)?;
     let mut application = documents::Application::acquire()?;
     application.initialize(system)?;
     system.log("RESEDIT_READY\n")?;
@@ -796,32 +799,3 @@ fn run(system: &System<'static>) -> ToolboxResult<()>
         }
     }
 }
-/// # Safety
-/// The loader supplies initialized segments and a live service table.
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
-{
-    if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
-    {
-        return status;
-    }
-    let system: System<'static> = match unsafe { System::from_raw(services) }
-    {
-        Ok(system) => system,
-        Err(status) => return status.status()
-    };
-    match run(&system)
-    {
-        Ok(()) => mac_toolbox::abi::OK,
-        Err(error) =>
-        {
-            let mut message = Text::<128>::new();
-            let _ = writeln!(message, "RESEDIT_ERROR status={}", error.status());
-            let _ = system.log(message.as_str());
-            error.status()
-        }
-    }
-}
-
-mac_toolbox::panic_handler!();

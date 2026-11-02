@@ -9,6 +9,8 @@ fn main()
     println!("cargo:rerun-if-changed={}", definition.display());
     if env::var("TARGET") != env::var("HOST")
     {
+        mac_build::platform::validate_pic_flags().expect("native PIC dependency contract; use \
+                                                          cargo xtask");
         mac_build::platform::validate_guest(&env::var("TARGET").unwrap(), &env::var("CARGO_CFG_TARGET_FEATURE").unwrap()).expect("native platform ISA floor; use cargo xtask");
     }
     let template = Path::new(env!("CARGO_MANIFEST_DIR")).join("link.ld");

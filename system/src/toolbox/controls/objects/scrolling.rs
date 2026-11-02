@@ -4,15 +4,15 @@ use mac_abi::{controls::reflow as wire, geometry::Rect};
 
 use super::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct Scroll
 {
-    pub data:  wire::Scroll,
-    pub entry: DefinitionEntry
+    pub data:       wire::Scroll,
+    pub definition: Arc<BoundDefinition>
 }
 impl Scroll
 {
-    pub fn new(axes: u32, entry: DefinitionEntry) -> Result<Self, Status>
+    pub fn new(axes: u32, entry: DefinitionRef) -> Result<Self, Status>
     {
         if axes == 0 || axes & !3 != 0
         {
@@ -20,7 +20,8 @@ impl Scroll
         }
         Ok(Self { data: wire::Scroll { axes,
                                        ..Default::default() },
-                  entry })
+                  definition: Arc::try_new(crate::toolbox::resources::definitions::bind(entry)?)
+                      .map_err(|_| NO_MEMORY)? })
     }
 
     pub fn arrange(&mut self, bounds: Rect, width: i64, height: i64) -> Result<(), Status>
@@ -65,7 +66,7 @@ impl Scroll
         Err(CORRUPT_DATA)
     }
 
-    pub fn maximum(self, axis: usize) -> i64
+    pub fn maximum(&self, axis: usize) -> i64
     {
         let d = self.data;
         if d.axes & (1 << axis) == 0
@@ -93,7 +94,7 @@ impl Scroll
         Ok(())
     }
 
-    pub fn bar(self, bounds: Rect, axis: usize, highlight: i16, enabled: bool)
+    pub fn bar(&self, bounds: Rect, axis: usize, highlight: i16, enabled: bool)
                -> Option<ScrollbarState>
     {
         if self.data.bars & (1 << axis) == 0
@@ -262,7 +263,7 @@ impl Manager
                        enabled)
         });
         drawing.bars = Some(alloc::boxed::Box::try_new(super::super::snapshot::Bars {
-            bars, entry: scroll.entry, viewport: scroll.data.viewport
+            bars, definition: scroll.definition.clone(), viewport: scroll.data.viewport
         }).map_err(|_| NO_MEMORY)?);
         Ok(())
     }
@@ -324,7 +325,7 @@ impl State
                                              scrollbar,
                                              point,
                                              ..Default::default() };
-                super::super::prepare(&mut call, scroll.entry, gate)?;
+                super::super::prepare(&mut call, scroll.definition.reference(), gate)?;
                 if call.result != 0
                 {
                     return Ok(Some((axis, call.result as i16)));
@@ -371,27 +372,29 @@ impl State
             let axis = self.scroll_axis.ok_or(CORRUPT_DATA)?;
             let bar = scroll.bar(self.spec.bounds(), axis, self.scroll_highlight, true)
                             .ok_or(CORRUPT_DATA)?;
-            let transition = tracking.poll(call.point,
-                                           call.flags & BUTTON_DOWN != 0,
-                                           call.ticks,
-                                           Some(bar),
-                                           1,
-                                           scroll.entry,
-                                           gate,
-                                           |point| {
-                                               if clip.is_some_and(|c| !c.contains(point))
-                                               {
-                                                   return Ok(0);
-                                               }
-                                               let mut hit = ControlCall { operation:
-                                                                               HIT_SCROLLBAR,
-                                                                           reflow: 1,
-                                                                           scrollbar: bar,
-                                                                           point,
-                                                                           ..Default::default() };
-                                               super::super::prepare(&mut hit, scroll.entry, gate)?;
-                                               Ok(hit.result as i16)
-                                           })?;
+            let transition =
+                tracking.poll(call.point,
+                              call.flags & BUTTON_DOWN != 0,
+                              call.ticks,
+                              Some(bar),
+                              1,
+                              scroll.definition.reference(),
+                              gate,
+                              |point| {
+                                  if clip.is_some_and(|c| !c.contains(point))
+                                  {
+                                      return Ok(0);
+                                  }
+                                  let mut hit = ControlCall { operation: HIT_SCROLLBAR,
+                                                              reflow: 1,
+                                                              scrollbar: bar,
+                                                              point,
+                                                              ..Default::default() };
+                                  super::super::prepare(&mut hit,
+                                                        scroll.definition.reference(),
+                                                        gate)?;
+                                  Ok(hit.result as i16)
+                              })?;
             action = transition.action;
             self.tracking = transition.tracking;
             self.scroll_highlight = transition.highlight;

@@ -45,7 +45,7 @@ fn part(kind: PackageKind, id: i16) -> Vec<Resource>
                                   entry:       0x82000000 };
     let initialized = vec![0x13; 12_345];
     let mut code = descriptor.encode().unwrap().to_vec();
-    code.extend(native::image::encode(&descriptor, [(0, 5, initialized.as_slice())]).unwrap());
+    code.extend(native::image::encode(&descriptor, [(0, initialized.len() as u64, 5, initialized.as_slice())]).unwrap());
     code.extend_from_slice(b"RLC1\0\0\0\0");
     let hex = mac_build::package::sha256(&code);
     let mut digest = [0; 32];

@@ -1,4 +1,4 @@
-//! Architecture-neutral shapes for memory/app/resource spec §13.1.
+//! Architecture-neutral memory, process and resource ownership metadata.
 //!
 //! Resident consumers adopt these primitives as their migrations land. Linking
 //! this crate alone does not activate its allocator or page-table model.
@@ -20,3 +20,6 @@ pub mod image;
 pub mod text;
 pub mod zone;
 pub mod emergency;
+
+/// Buddy-backed Application heap spans with external owned metadata.
+pub mod heap;

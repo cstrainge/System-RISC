@@ -1,5 +1,5 @@
 //! Lifetime-domain identity, the resident process owner directory, and ledger
-//! metadata. Other managers migrate under memory/app/resource spec §13.
+//! metadata. Directory capacity can be prepared without publishing an owner.
 //! Native/legacy wire projections remain the responsibility of the facility.
 use alloc::{sync::Arc, vec::Vec};
 use core::{fmt,
@@ -8,6 +8,10 @@ use core::{fmt,
 
 use crate::shared::{InvocationGate, OwnerRef};
 
+mod capacity;
+pub use capacity::{DirectoryCapacityError, DirectoryCapacityPlan, DirectoryInsertFailure,
+                   PreparedDirectoryCapacity};
+
 static SYSTEM_INDEX_ISSUED: AtomicBool = AtomicBool::new(false);
 // Native identities and domain incarnations share one boot-wide issuer. The
 // lower 32-bit space belongs exclusively to the remaining classic projections.
@@ -15,6 +19,13 @@ static NEXT_INCARNATION: AtomicU64 = AtomicU64::new(1 << 32);
 pub(crate) fn issue_native_identity() -> Result<NonZeroU64, IncarnationsExhausted>
 {
     issue(&NEXT_INCARNATION)
+}
+/// Issue a non-reused correlation for an owner-held protocol receipt. This
+/// number grants no authority: the service must retain and authenticate the
+/// actual receipt and its owner. Shares the canonical boot-wide ID issuer.
+pub fn issue_correlation_identity() -> Result<NonZeroU64, IncarnationsExhausted>
+{
+    issue_native_identity()
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DomainKind
@@ -425,6 +436,8 @@ pub struct DomainSlots
     value_storage:         bool,
     registration:          Option<u64>
 }
+mod prepared;
+pub(crate) use prepared::{LedgerCapacityPlan, PoolRequest, PreparedLedgerCapacity};
 impl DomainSlots
 {
     fn new(owner: DomainId, kind: KindCode, policy: CapacityPolicy) -> Result<Self, PoolError>
@@ -1167,11 +1180,19 @@ impl<T, G: InvocationGate> Directory<T, G>
             };
         G::with_system_allocation(|| self.entries.try_reserve(1))
             .map_err(|_| DirectoryError::Storage { owner })?;
+        Ok(self.insert_at(at, ledger, value))
+    }
+
+    // Both ordinary and detached publication use this single membership change.
+    // Their callers have checked ordering and capacity in the same manager turn.
+    fn insert_at(&mut self, at: usize, ledger: OwnerRef<G>, value: T) -> DomainId
+    {
+        let owner = ledger.owner();
         self.entries.insert(at,
                             DomainEntry { ledger,
                                           value });
         self.revision = self.revision.saturating_add(1);
-        Ok(owner)
+        owner
     }
 
     fn index(&self, incarnation: u64) -> Option<usize>

@@ -2,17 +2,17 @@
 use mac_toolbox::{Error, *};
 
 use crate::browser::Browser;
-pub const NEW_FOLDER: u32 = u32::from_be_bytes(*b"new ");
-pub const OPEN: u32 = u32::from_be_bytes(*b"sope");
-pub const SELECT_ALL: u32 = u32::from_be_bytes(*b"sela");
-pub const GET_INFO: u32 = u32::from_be_bytes(*b"sinf");
-pub const CLOSE: u32 = u32::from_be_bytes(*b"clos");
-pub const PUT_AWAY: u32 = u32::from_be_bytes(*b"sput");
-pub const CLEAR: u32 = u32::from_be_bytes(*b"cler");
-pub const SHOW_CLIPBOARD: u32 = u32::from_be_bytes(*b"shcl");
-pub const EMPTY: u32 = u32::from_be_bytes(*b"empt");
-pub const RESTART: u32 = u32::from_be_bytes(*b"rest");
-pub const SHUTDOWN: u32 = u32::from_be_bytes(*b"shut");
+pub const NEW_FOLDER: u32 = crate::resources::commands::NEW_FOLDER;
+pub const OPEN: u32 = crate::resources::commands::OPEN;
+pub const SELECT_ALL: u32 = crate::resources::commands::SELECT_ALL;
+pub const GET_INFO: u32 = crate::resources::commands::GET_INFO;
+pub const CLOSE: u32 = crate::resources::commands::CLOSE;
+pub const PUT_AWAY: u32 = crate::resources::commands::PUT_AWAY;
+pub const CLEAR: u32 = crate::resources::commands::CLEAR;
+pub const SHOW_CLIPBOARD: u32 = crate::resources::commands::SHOW_CLIPBOARD;
+pub const EMPTY: u32 = crate::resources::commands::EMPTY;
+pub const RESTART: u32 = crate::resources::commands::RESTART;
+pub const SHUTDOWN: u32 = crate::resources::commands::SHUTDOWN;
 fn apple_menu_icon_flag(system: &System<'_>) -> Result<bool, Error>
 {
     let files = system.files();
@@ -51,7 +51,7 @@ fn report_icon_flag_error(system: &System<'_>, operation: &str, error: Error) ->
     system.log(line.as_str())
 }
 
-pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 5], Error>
+pub fn install<'a>(system: &System<'a>) -> Result<[mac_toolbox::menus::MenuRef<'a>; 5], Error>
 {
     let flag = match apple_menu_icon_flag(system)
     {
@@ -68,11 +68,10 @@ pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 5], Error>
     }
     let menus = system.menus();
     menus.clear()?;
-    let installed = [menus.install_owned(resources::APPLICATION, 1252)?,
-                     menus.install_owned(resources::APPLICATION, 1253)?,
-                     menus.install_owned(resources::APPLICATION, 1254)?,
-                     menus.install_owned(resources::APPLICATION, 1256)?,
-                     menus.install_owned(resources::APPLICATION, 1255)?];
+    for id in [1252, 1253, 1254, 1256, 1255]
+    {
+        menus.install_menu_resource(resources::APPLICATION, id)?;
+    }
     match system.power().capabilities()
     {
         Ok(capabilities) =>
@@ -96,7 +95,13 @@ pub fn install<'a>(system: &System<'a>) -> Result<[menus::Menu<'a>; 5], Error>
             system.log(line.as_str())?;
         }
     }
-    Ok(installed)
+    // The resident application menu bar owns installation and disposal.
+    // Retain generation-checked views for startup menu restoration.
+    Ok([menus.find(MenuId(1252))?,
+        menus.find(MenuId(1253))?,
+        menus.find(MenuId(1254))?,
+        menus.find(MenuId(1256))?,
+        menus.find(MenuId(1255))?])
 }
 /// Idle scrollbar tracking changes neither selection nor file command policy.
 /// Consumed clipboard events still pass through this shared policy guard.

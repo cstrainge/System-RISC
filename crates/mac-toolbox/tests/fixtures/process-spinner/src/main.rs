@@ -1,15 +1,49 @@
-//! Only the loader boundary is unsafe; canonical assertions use the public SDK.
+//! Native process fixture variants; heap mode uses the platform application scaffold.
 #![no_std]
 #![no_main]
 #![allow(dead_code)]
-use core::{fmt::{self, Write},
-           sync::atomic::{AtomicPtr, Ordering}};
+#![cfg_attr(feature = "heap", feature(allocator_ext, vec_fallible_shrink))]
+#[cfg(all(feature = "heap", feature = "smp"))]
+compile_error!("heap and smp are distinct native workloads; choose only one");
+#[cfg(any(feature = "heap", feature = "tls", feature = "exit", feature = "threads"))]
+extern crate alloc;
+use core::fmt::{self, Write};
+#[cfg(not(any(feature = "heap", feature = "tls", feature = "exit", feature = "threads")))]
+use core::sync::atomic::{AtomicPtr, Ordering};
 
+#[cfg(not(any(feature = "heap", feature = "tls", feature = "exit", feature = "threads")))]
 use mac_toolbox::{System, SystemServices};
+#[cfg(not(any(feature = "heap", feature = "tls", feature = "exit", feature = "threads")))]
 #[path = "../../../process_cases.rs"]
 mod process_cases;
 #[cfg(feature = "smp")]
 mod smp;
+#[cfg(feature = "heap")]
+mod heap;
+#[cfg(feature = "threads")]
+mod threads;
+#[cfg(feature = "threads")]
+mac_toolbox::application!(threads::run);
+#[cfg(all(feature = "threads",
+          any(feature = "heap", feature = "tls", feature = "smp", feature = "exit")))]
+compile_error!("threads selects a distinct native workload");
+#[cfg(feature = "exit")]
+mod exit;
+#[cfg(feature = "exit")]
+mac_toolbox::application!(exit::run);
+#[cfg(all(feature = "exit", any(feature = "tls", feature = "heap", feature = "smp")))]
+compile_error!("exit selects a distinct native workload");
+#[cfg(feature = "tls")]
+mod tls;
+#[cfg(feature = "tls")]
+mod address_wait;
+#[cfg(feature = "tls")]
+mac_toolbox::application!(tls::run);
+#[cfg(any(all(feature = "tls", feature = "heap"), all(feature = "tls", feature = "smp")))]
+compile_error!("tls, heap and smp are distinct native workloads; choose one");
+#[cfg(feature = "heap")]
+mac_toolbox::application!(heap::run);
+#[cfg(not(any(feature = "heap", feature = "tls", feature = "exit", feature = "threads")))]
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 pub struct LogBuffer
 {
@@ -50,6 +84,7 @@ impl Write for LogBuffer
         Ok(())
     }
 }
+#[cfg(not(any(feature = "heap", feature = "tls", feature = "exit", feature = "threads")))]
 fn clock() -> u64
 {
     let ticks;
@@ -62,6 +97,7 @@ fn clock() -> u64
 
 /// # Safety
 /// The loader supplies a valid service table for this application's lifetime.
+#[cfg(not(any(feature = "heap", feature = "tls", feature = "exit", feature = "threads")))]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
@@ -88,6 +124,7 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox:
         }
     }
 }
+#[cfg(not(any(feature = "heap", feature = "tls", feature = "exit", feature = "threads")))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> !
 {

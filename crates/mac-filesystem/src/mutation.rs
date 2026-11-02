@@ -68,6 +68,80 @@ pub(super) fn native_protection<D: BlockDevice>(v: &mut mac_hfs_b::Volume<'_, D>
 }
 impl<D: WritableBlockDevice> Volume<'_, D>
 {
+    /// Create a native empty file without a replacement/staging transaction.
+    pub fn create_file(&mut self, parent: u32, name: &str, when: u64)
+                       -> MutationResult<CatalogEntry>
+    {
+        let entry = match &mut self.backend
+        {
+            Backend::Hfs(_) => return Err(MutationError::Unsupported),
+            Backend::HfsB(v) =>
+            {
+                native_destination(v, parent, Some(name))?;
+                v.create(parent, name, false, Timestamp(when)).map_err(mutation_error)?
+            }
+        };
+        self.refresh();
+        Ok(entry.into())
+    }
+
+    /// Write one bounded prefix directly to an existing native fork. This is
+    /// ordinary file I/O, separate from staged Save/replace transactions.
+    pub fn write_fork(&mut self, id: u32, resource: bool, offset: u64, bytes: &[u8], when: u64,
+                      protected: &[u32])
+                      -> MutationResult<CatalogEntry>
+    {
+        let entry = match &mut self.backend
+        {
+            Backend::Hfs(_) => return Err(MutationError::Unsupported),
+            Backend::HfsB(v) =>
+            {
+                native_protection(v, id, protected)?;
+                v.write_fork(id,
+                             if resource { ForkKind::Resource } else { ForkKind::Data },
+                             offset,
+                             bytes,
+                             Timestamp(when))
+                 .map_err(mutation_error)?
+            }
+        };
+        self.refresh();
+        Ok(entry.into())
+    }
+
+    /// Change length by one bounded native operation. New bytes are zero-filled.
+    pub fn set_fork_len(&mut self, id: u32, resource: bool, length: u64, when: u64,
+                        protected: &[u32])
+                        -> MutationResult<CatalogEntry>
+    {
+        let entry = match &mut self.backend
+        {
+            Backend::Hfs(_) => return Err(MutationError::Unsupported),
+            Backend::HfsB(v) =>
+            {
+                native_protection(v, id, protected)?;
+                v.set_fork_len(id,
+                               if resource { ForkKind::Resource } else { ForkKind::Data },
+                               length,
+                               Timestamp(when))
+                 .map_err(mutation_error)?
+            }
+        };
+        self.refresh();
+        Ok(entry.into())
+    }
+
+    /// Request durability from the backing provider; unsupported formats are
+    /// explicit rather than reporting success without a device flush.
+    pub fn sync(&mut self) -> MutationResult<()>
+    {
+        match &mut self.backend
+        {
+            Backend::Hfs(_) => Err(MutationError::Unsupported),
+            Backend::HfsB(v) => v.sync().map_err(mutation_error)
+        }
+    }
+
     pub fn move_entries(&mut self, entries: &[(u32, u32, [u8; 32], bool)], when: u64,
                         protected: &[u32])
                         -> MutationResult<bool>

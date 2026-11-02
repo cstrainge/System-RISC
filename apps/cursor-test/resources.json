@@ -20,6 +20,7 @@
           {
             "text": "Close Window",
             "command": "clos",
+            "command_symbol": "CLOSE",
             "enabled": true,
             "key": "W"
           },
@@ -27,6 +28,7 @@
           {
             "text": "Quit",
             "command": "quit",
+            "command_symbol": "QUIT",
             "enabled": true,
             "key": "Q"
           }
@@ -44,36 +46,42 @@
           {
             "text": "Hide",
             "command": "hide",
+            "command_symbol": "HIDE",
             "enabled": true,
             "key": "H"
           },
           {
             "text": "Show",
             "command": "show",
+            "command_symbol": "SHOW",
             "enabled": true,
             "key": "S"
           },
           {
             "text": "Obscure",
             "command": "obsc",
+            "command_symbol": "OBSCURE",
             "enabled": true,
             "key": "O"
           },
           {
             "text": "Reset",
             "command": "rset",
+            "command_symbol": "RESET",
             "enabled": true,
             "key": "R"
           },
           {
             "text": "Next Frame",
             "command": "next",
+            "command_symbol": "NEXT_FRAME",
             "enabled": true,
             "key": "N"
           },
           {
             "text": "Toggle Read Only",
             "command": "edit",
+            "command_symbol": "TOGGLE_EDITABLE",
             "enabled": true,
             "key": "L"
           }

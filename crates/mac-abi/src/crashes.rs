@@ -1,4 +1,4 @@
-//! System-owned native panic reports. No classic Macintosh trap number is used.
+//! System-owned native failure reports. No classic Macintosh trap number is used.
 use crate::WindowId;
 pub const BEGIN: u32 = 0;
 pub const APPEND: u32 = 1;
@@ -13,6 +13,9 @@ pub const MAX_REPORT_BYTES: usize = 1024 * 1024;
 pub const MAX_APPEND_BYTES: usize = 512;
 pub const TRUNCATED: u32 = 1;
 pub const FORMAT_FAILED: u32 = 2;
+/// An ordinary std main returned Err, rather than panicking. Normal cleanup and
+/// failed exit status are preserved; System retains the diagnostic for dismissal.
+pub const MAIN_ERROR: u32 = 4;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct CrashInfo

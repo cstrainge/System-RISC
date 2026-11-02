@@ -33,6 +33,47 @@ pub enum ClickOutcome
     Deferred
 }
 
+/// Open errors retain the catalog snapshot used by the actual operation.
+/// Later window activation or selection cannot change the failed subject.
+pub enum ActionFailure
+{
+    Other(Error),
+    Open
+    {
+        item:  CatalogInfo,
+        cause: Error
+    }
+}
+impl From<Error> for ActionFailure
+{
+    fn from(cause: Error) -> Self
+    {
+        Self::Other(cause)
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+enum Initialization
+{
+    #[default]
+    Volumes,
+    Trash,
+    Desktop,
+    Root,
+    Complete
+}
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Opening
+{
+    #[default]
+    Vertical,
+    Horizontal,
+    Draw,
+    State,
+    Desktop,
+    Location,
+    Complete
+}
 #[derive(Clone, Copy, Default)]
 struct FolderWindow
 {
@@ -48,7 +89,8 @@ struct FolderWindow
     state_due:      Option<u32>,
     state_writable: bool,
     state_view:     u16,
-    pending_clicks: [Option<(mac_toolbox::events::classic::Event, PointerPosition)>; 8]
+    pending_clicks: [Option<(mac_toolbox::events::classic::Event, PointerPosition)>; 8],
+    opening:        Opening
 }
 #[derive(Clone, Copy)]
 struct IconPress
@@ -72,6 +114,13 @@ struct FolderSave
     state:    FolderState,
     due:      u32
 }
+struct StartupPatch
+{
+    window:   WindowId,
+    location: Location,
+    frame:    Rect,
+    origin:   Point
+}
 #[derive(Default)]
 pub struct Browser
 {
@@ -90,7 +139,13 @@ pub struct Browser
     trash_cached:      Cell<u32>,
     failures:          [Cell<Option<Error>>; 8],
     closed_states:     [Option<FolderSave>; 8],
-    position_requests: Cell<u8>
+    position_requests: Cell<u8>,
+    startup_step:      Initialization,
+    startup_paint:     Cell<Option<u8>>,
+    startup_retained:  Cell<u8>,
+    startup_desktop:   Cell<bool>,
+    startup_watches:   Cell<bool>,
+    startup_prune:     Cell<bool>
 }
 
 pub struct Text<const N: usize = 160>
@@ -381,6 +436,228 @@ impl Browser
                                           })
     }
 
+    pub fn begin_startup_confirmation(&self)
+    {
+        self.startup_paint.set(Some(0));
+        self.startup_retained.set(0);
+        self.startup_desktop.set(false);
+        self.startup_watches.set(false);
+        self.startup_prune.set(false);
+    }
+
+    pub fn finish_startup_confirmation(&self)
+    {
+        self.startup_paint.set(None);
+        self.startup_retained.set(0);
+        self.startup_desktop.set(false);
+        self.startup_watches.set(false);
+        self.startup_prune.set(false);
+    }
+
+    fn require_startup_prune(&self)
+    {
+        if self.startup_paint.get().is_some()
+        {
+            self.startup_prune.set(true);
+        }
+    }
+
+    fn retry_pending_startup_prune(&mut self, system: &System<'_>) -> Result<(), Error>
+    {
+        if self.startup_prune.get()
+        {
+            self.prune(system)?;
+        }
+        Ok(())
+    }
+
+    pub fn startup_watches_polled(&self, success: bool)
+    {
+        if self.startup_paint.get().is_some()
+        {
+            self.startup_watches.set(success);
+        }
+    }
+
+    fn startup_painted(&self, slot: usize, painted: bool)
+    {
+        if let Some(mask) = self.startup_paint.get()
+        {
+            let bit = 1 << slot;
+            self.startup_paint.set(Some(if painted { mask | bit } else { mask & !bit }));
+            if !painted
+            {
+                self.startup_retained.set(self.startup_retained.get() & !bit);
+            }
+        }
+    }
+
+    fn begin_startup_patch(&self, slot: usize) -> Option<StartupPatch>
+    {
+        let receipt = self.startup_paint.get().and_then(|mask| {
+            let window = self.windows[slot]?;
+            if mask & (1 << slot) == 0 || self.failures[slot].get().is_some()
+                || window.opening != Opening::Complete { return None; }
+            cache::with(slot, |folder| {
+                (folder.ready && !folder.refresh_pending && !folder.refreshing
+                    && folder.window == window.window && folder.location == window.location)
+                    .then_some(StartupPatch { window: window.window, location: window.location,
+                        frame: folder.frame,
+                        origin: Point { h: window.scroll_h, v: window.scroll } })
+            })
+        });
+        self.startup_painted(slot, false);
+        receipt
+    }
+
+    fn finish_startup_patch(&self, slot: usize, receipt: Option<StartupPatch>,
+                            result: Result<(), Error>)
+                            -> Result<(), Error>
+    {
+        if self.startup_paint.get().is_none()
+        {
+            return result;
+        }
+        if let Err(error) = result
+        {
+            self.startup_painted(slot, false);
+            self.failures[slot].set(Some(error));
+            return Err(error);
+        }
+        if let Some(receipt) = receipt
+           && self.failures[slot].get().is_none()
+           && self.windows[slot].is_some_and(|window| {
+                                    window.window == receipt.window
+                                    && window.location == receipt.location
+                                    && window.opening == Opening::Complete
+                                    && window.scroll_h == receipt.origin.h
+                                    && window.scroll == receipt.origin.v
+                                })
+           && cache::with(slot, |folder| {
+               folder.window == receipt.window
+               && folder.location == receipt.location
+               && folder.frame == receipt.frame
+               && folder.ready
+               && !folder.refresh_pending
+               && !folder.refreshing
+           })
+        {
+            // The same ready baseline survived this operation, and its actual
+            // changed-region, layout and chrome commits all returned success.
+            self.startup_painted(slot, true);
+        }
+        result
+    }
+
+    /// This is a receipt for current committed content, not the absence of work.
+    /// Only the pending startup handoff pays for these bounded live-ID checks.
+    pub fn startup_ready(&self, system: &System<'_>) -> Result<bool, Error>
+    {
+        let Some(mask) = self.startup_paint.get()
+        else
+        {
+            return Ok(false);
+        };
+        if !matches!(self.startup_step, Initialization::Complete)
+           || !self.startup_desktop.get()
+           || !self.startup_watches.get()
+           || self.startup_prune.get()
+        {
+            return Ok(false);
+        }
+        for (slot, window) in self.windows.iter().enumerate()
+        {
+            let Some(window) = window
+            else
+            {
+                continue;
+            };
+            if mask & (1 << slot) == 0
+               || self.failures[slot].get().is_some()
+               || !matches!(window.opening, Opening::Complete)
+            {
+                return Ok(false);
+            }
+            let Some(frame) = cache::with(slot, |folder| {
+                (folder.ready
+                 && !folder.refresh_pending
+                 && !folder.refreshing
+                 && folder.window == window.window
+                 && folder.location == window.location)
+                                                       .then_some(folder.frame)
+            })
+            else
+            {
+                return Ok(false);
+            };
+            match system.window(window.window)
+            {
+                Ok(live) if live.bounds == frame => (),
+                Ok(_) => return Ok(false),
+                Err(Error::NotFound) =>
+                {
+                    self.require_startup_prune();
+                    return Ok(false);
+                }
+                Err(error) => return Err(error)
+            }
+        }
+        Ok(true)
+    }
+
+    /// Resume one failed real content operation after its error has been handled.
+    /// A scan's unpublished cursor is retained at the failed entry; a failed
+    /// ready paint retries that paint, without rescanning the folder.
+    pub fn retry_startup_content(&mut self, system: &System<'_>) -> Result<(), Error>
+    {
+        if self.startup_prune.get()
+        {
+            return self.retry_pending_startup_prune(system);
+        }
+        if let Some(slot) = self.windows.iter().position(|window| {
+                                                   window.is_some_and(|window| {
+                                                             !matches!(window.opening,
+                                                                       Opening::Complete)
+                                                         })
+                                               })
+        {
+            return self.finish_open(system, slot);
+        }
+        if matches!(self.startup_step, Initialization::Root | Initialization::Complete)
+           && !self.startup_desktop.get()
+        {
+            return self.draw_startup_desktop(system);
+        }
+        let Some(slot) = self.windows.iter().enumerate().find_map(|(slot, window)| {
+            (window.is_some() && self.failures[slot].get().is_some()).then_some(slot)
+        }) else { return Ok(()) };
+        self.failures[slot].set(None);
+        if cache::with(slot, |folder| folder.ready)
+        {
+            self.draw(system, self.windows[slot].unwrap().window)
+        }
+        else
+        {
+            self.cache_job = Some(slot);
+            self.advance_cache(system)
+        }
+    }
+
+    fn draw_startup_desktop(&self, system: &System<'_>) -> Result<(), Error>
+    {
+        let tracking = self.startup_paint.get().is_some();
+        if tracking
+        {
+            self.startup_desktop.set(false);
+        }
+        self.draw_desktop(system)?;
+        if tracking
+        {
+            self.startup_desktop.set(true);
+        }
+        Ok(())
+    }
+
     /// Return queued pointer events to the application's normal dispatcher.
     /// Browser-only replay bypasses Drag Toolbox setup and loses the gesture.
     pub fn next_deferred_pointer(&mut self) -> Option<(Event<'static>, PointerPosition)>
@@ -397,6 +674,15 @@ impl Browser
 
     fn invalidate_cache(&mut self, slot: usize)
     {
+        let retained =
+            self.startup_paint
+                .get()
+                .is_some_and(|mask| (mask | self.startup_retained.get()) & (1 << slot) != 0);
+        self.startup_painted(slot, false);
+        if retained
+        {
+            self.startup_retained.set(self.startup_retained.get() | (1 << slot));
+        }
         let window = self.windows[slot].unwrap();
         cache::edit(slot, |folder| {
             if folder.ready
@@ -435,17 +721,23 @@ impl Browser
     {
         self.advance_desktop(system)?;
         let active = self.cache_job.filter(|&slot| {
-                                       self.windows[slot].is_some()
+                                       self.windows[slot].is_some_and(|window| {
+                                                             window.opening == Opening::Complete
+                                                         })
                                        && self.failures[slot].get().is_none()
                                        && !cache::with(slot, |f| f.ready)
                                    });
         let Some(slot) = active.or_else(|| {
                                    self.windows.iter().enumerate().find_map(|(slot, window)| {
-                                                                      (window.is_some()
-                                                             && self.failures[slot].get().is_none()
-                                                             && !cache::with(slot, |folder| {
-                                                                 folder.ready
-                                                             })).then_some(slot)
+                                                                      (window.is_some_and(|window| {
+                                                                           window.opening
+                                                                           == Opening::Complete
+                                                                       })
+                                                                 && self.failures[slot].get()
+                                                                                       .is_none()
+                                                                 && !cache::with(slot, |folder| {
+                                                                     folder.ready
+                                                                 })).then_some(slot)
                                                                   })
                                })
         else
@@ -456,6 +748,10 @@ impl Browser
         self.cache_job = Some(slot);
         let window = self.windows[slot].unwrap();
         cache::start_refresh(slot);
+        let retry_cursor =
+            self.startup_paint
+                .get()
+                .map(|_| cache::with(slot, |folder| (folder.cursor, folder.next)));
         let result = (|| {
             if cache::with(slot, |folder| folder.volume.is_none())
             {
@@ -699,6 +995,16 @@ impl Browser
             {
                 return Ok(());
             }
+            if let Some(retry_cursor) = retry_cursor
+            {
+                cache::edit(slot, |folder| {
+                    if !folder.ready
+                    {
+                        (folder.cursor, folder.next) = retry_cursor;
+                    }
+                });
+            }
+            self.startup_painted(slot, false);
             self.failures[slot].set(Some(error));
             self.draw_failed(system, window.window, error)?;
             return Err(error);
@@ -710,6 +1016,14 @@ impl Browser
     fn repaint_snapshot(&mut self, system: &System<'_>, slot: usize) -> Result<(), Error>
     {
         let window = self.windows[slot].unwrap();
+        // A failed/obsolete prior paint cannot be the retained baseline for a
+        // partial snapshot update. Retry the actual content paint in that case.
+        if self.startup_paint.get().is_some() && self.startup_retained.get() & (1 << slot) == 0
+        {
+            self.draw(system, window.window)?;
+            cache::edit(slot, |folder| folder.refreshing = false);
+            return Ok(());
+        }
         let mut damage = [Rect::ZERO; CAPACITY * 2];
         let mut count = 0;
         let mut append = |mut bounds: Rect| {
@@ -764,6 +1078,7 @@ impl Browser
         self.change_selection(system, slot, window.selected, &damage[..count])?;
         self.refresh_chrome(system, slot, header, bars, false)?;
         cache::edit(slot, |folder| folder.refreshing = false);
+        self.startup_painted(slot, true);
         system.log("FINDER_FOLDER_PATCHED\n")
     }
 
@@ -842,35 +1157,46 @@ impl Browser
         Ok(())
     }
 
-    fn open_entry(&mut self, system: &System<'_>, entry: &CatalogInfo) -> Result<(), Error>
+    fn open_entry(&mut self, system: &System<'_>, entry: &CatalogInfo)
+                  -> Result<(), ActionFailure>
     {
-        if entry.is_directory()
-        {
-            self.open(system,
-                      Location { volume: entry.volume,
-                                 folder: entry.id })?;
-        }
-        else if entry.file_type == TypeCode::new(*b"APPL")
-        {
-            system.processes().launch(entry.volume, entry.id)?;
-        }
-        else if !crate::font_suitcase::candidate(entry)
-                && let Some(mounted) = system.files().open_item(entry.volume, entry.id)?
-        {
-            desktop::invalidate();
-            self.open(system,
-                      Location { volume: mounted.id,
-                                 folder: ROOT_ID })?;
-        }
-        else
-        {
-            if self.document_open.is_some()
+        let result = (|| -> Result<(), Error> {
+            if entry.is_directory()
             {
-                return Err(Error::ServiceBusy);
+                self.open(system,
+                          Location { volume: entry.volume,
+                                     folder: entry.id })?;
             }
-            self.document_open = Some(*entry);
-        }
-        Ok(())
+            else if entry.file_type == TypeCode::new(*b"APPL")
+            {
+                system.processes().launch(entry.volume, entry.id)?;
+            }
+            else if !crate::font_suitcase::candidate(entry)
+                      && let Some(mounted) = system.files().open_item(entry.volume, entry.id)?
+            {
+                if self.startup_paint.get().is_some()
+                {
+                    self.startup_desktop.set(false);
+                }
+                desktop::invalidate();
+                self.open(system,
+                          Location { volume: mounted.id,
+                                     folder: ROOT_ID })?;
+            }
+            else
+            {
+                if self.document_open.is_some()
+                {
+                    return Err(Error::ServiceBusy);
+                }
+                self.document_open = Some(*entry);
+            }
+            Ok(())
+        })();
+        result.map_err(|cause| {
+                  ActionFailure::Open { item: *entry,
+                                        cause }
+              })
     }
 
     pub fn take_document_open(&mut self) -> Option<CatalogInfo>
@@ -880,41 +1206,61 @@ impl Browser
 
     pub fn initialize(&mut self, system: &System<'_>) -> Result<(), Error>
     {
-        let files = system.files();
-        let count = files.volume_count()?;
-        for index in 0..count
+        self.retry_pending_startup_prune(system)?;
+        if matches!(self.startup_step, Initialization::Volumes)
         {
-            let volume = files.volume_at(index)?;
-            if volume.startup
+            let files = system.files();
+            let count = files.volume_count()?;
+            let mut startup = VolumeId::NONE;
+            let mut writable = false;
+            let mut first = None;
+            for index in 0..count
             {
-                self.startup = volume.id;
-                self.startup_writable = !volume.read_only;
+                let volume = files.volume_at(index)?;
+                if index == 0
+                {
+                    first = Some((volume.id, !volume.read_only));
+                }
+                if volume.startup
+                {
+                    startup = volume.id;
+                    writable = !volume.read_only;
+                }
+                let mut line = Text::<256>::default();
+                let _ =
+                    writeln!(&mut line, "FINDER_VOLUME id={} name={}", volume.id, volume.name());
+                system.log(line.as_str())?;
             }
-            let mut line = Text::<256>::default();
-            let _ = writeln!(&mut line, "FINDER_VOLUME id={} name={}", volume.id, volume.name());
-            system.log(line.as_str())?;
+            if startup == VolumeId::NONE
+               && let Some((id, first_writable)) = first
+            {
+                startup = id;
+                writable = first_writable;
+            }
+            self.startup = startup;
+            self.startup_writable = writable;
+            self.startup_step = Initialization::Trash;
         }
-        if self.startup == VolumeId::NONE && count > 0
+        if matches!(self.startup_step, Initialization::Trash)
         {
-            let volume = files.volume_at(0)?;
-            self.startup = volume.id;
-            self.startup_writable = !volume.read_only;
+            self.refresh_trash(system)?;
+            self.startup_step = Initialization::Desktop;
         }
-        if let Err(error) = self.refresh_trash(system)
+        if matches!(self.startup_step, Initialization::Desktop)
         {
-            let mut line = Text::<160>::default();
-            let _ = writeln!(&mut line,
-                             "FINDER_TRASH_REFRESH_FAILED status={} error={error:?}",
-                             error.status());
-            system.log(line.as_str())?;
+            self.create_desktop_window(system)?;
+            self.draw_startup_desktop(system)?;
+            self.startup_step = Initialization::Root;
         }
-        self.create_desktop_window(system)?;
-        self.draw_desktop(system)?;
-        if self.startup != VolumeId::NONE
+        if matches!(self.startup_step, Initialization::Root)
         {
-            self.open(system,
-                      Location { volume: self.startup,
-                                 folder: ROOT_ID })?;
+            if self.startup != VolumeId::NONE
+            {
+                self.open(system,
+                          Location { volume: self.startup,
+                                     folder: ROOT_ID })?;
+            }
+            self.startup_step = Initialization::Complete;
         }
         Ok(())
     }
@@ -933,11 +1279,14 @@ impl Browser
     {
         self.desktop_active = false;
         self.sync_desktop_activation(system)?;
-        if let Some(existing) = self.windows.iter().flatten().find(|w| w.location == location)
+        if let Some(slot) =
+            self.windows.iter().position(|w| w.is_some_and(|w| w.location == location))
         {
-            system.select_window(existing.window)?;
-            self.front = existing.window;
-            return Ok(existing.window);
+            let existing = self.windows[slot].unwrap().window;
+            system.select_window(existing)?;
+            self.front = existing;
+            self.finish_open(system, slot)?;
+            return Ok(existing);
         }
         self.desktop_active = false;
         let Some(slot) = self.windows.iter().position(Option::is_none)
@@ -946,6 +1295,7 @@ impl Browser
             return Err(Error::NoMemory);
         };
         self.failures[slot].set(None);
+        self.startup_painted(slot, false);
         let trash = location == Location::default();
         let folder = if trash
         {
@@ -999,33 +1349,9 @@ impl Browser
                                    },
                                    (180, 100),
                                    8)?;
-        let create = |bounds| {
-            system.controls().create_scrollbar(id,
-                                               controls::ScrollbarState { bounds,
-                                                                          ..Default::default() },
-                                               1,
-                                               1,
-                                               mac_toolbox::controls::Reflow::No)
-        };
-        let bars = (|| {
-            Ok::<_, Error>([create(vertical_scrollbar(bounds.right - bounds.left,
-                                                      bounds.bottom - bounds.top))?,
-                            create(horizontal_scrollbar(bounds.right - bounds.left,
-                                                        bounds.bottom - bounds.top))?])
-        })();
-        let bars = match bars
-        {
-            Ok(bars) => bars,
-            Err(e) =>
-            {
-                let _ = system.close_window(id);
-                return Err(e);
-            }
-        };
         self.front = id;
         self.windows[slot] = Some(FolderWindow { location,
                                                  window: id,
-                                                 scrollbars: bars.map(|bar| bar.into_id()),
                                                  scroll: saved.map_or(0, |s| s.scroll.v),
                                                  scroll_h: saved.map_or(0, |s| s.scroll.h),
                                                  saved_state: persisted,
@@ -1035,20 +1361,19 @@ impl Browser
                                                  state_writable: !trash && !volume.read_only,
                                                  state_due: None,
                                                  ..Default::default() });
+        self.startup_watches_polled(false);
         cache::edit(slot, |folder| {
             folder.previous_count = 0;
             folder.reset(id, location);
+            folder.frame = bounds;
         });
-        self.draw(system, id)?;
-        self.schedule_folder_state(system, slot)?;
         // The reopened window now owns the latest desired state. A delayed old
         // close save must not overwrite a newer geometry change afterward.
         if let Some(at) = queued
         {
             self.closed_states[at] = None;
         }
-        self.draw_desktop(system)?;
-        self.repaint_location(system, location)?;
+        self.finish_open(system, slot)?;
         let mut line = Text::<256>::default();
         let _ = writeln!(&mut line,
                          "FINDER_FOLDER_OPEN volume={} cnid={} window={} name={}",
@@ -1058,6 +1383,62 @@ impl Browser
                          folder.name());
         system.log(line.as_str())?;
         Ok(id)
+    }
+
+    fn finish_open(&mut self, system: &System<'_>, slot: usize) -> Result<(), Error>
+    {
+        let window = self.windows[slot].ok_or(Error::NotFound)?;
+        for (stage, index) in [(Opening::Vertical, 0), (Opening::Horizontal, 1)]
+        {
+            if self.windows[slot].unwrap().opening != stage
+            {
+                continue;
+            }
+            let frame = cache::with(slot, |folder| folder.frame);
+            let width = frame.right - frame.left;
+            let height = frame.bottom - frame.top;
+            let bounds = if index == 0
+            {
+                vertical_scrollbar(width, height)
+            }
+            else
+            {
+                horizontal_scrollbar(width, height)
+            };
+            let bar = system.controls()
+                            .create_scrollbar(window.window,
+                                              controls::ScrollbarState { bounds,
+                                                                         ..Default::default() },
+                                              1,
+                                              1,
+                                              controls::Reflow::No)?;
+            self.windows[slot].as_mut().unwrap().scrollbars[index] = bar.into_id();
+            self.windows[slot].as_mut().unwrap().opening =
+                if index == 0 { Opening::Horizontal } else { Opening::Draw };
+        }
+        if matches!(self.windows[slot].unwrap().opening, Opening::Draw)
+        {
+            // A previous failed initial draw is debt, not an error-frame success.
+            self.failures[slot].set(None);
+            self.draw(system, window.window)?;
+            self.windows[slot].as_mut().unwrap().opening = Opening::State;
+        }
+        if matches!(self.windows[slot].unwrap().opening, Opening::State)
+        {
+            self.schedule_folder_state(system, slot)?;
+            self.windows[slot].as_mut().unwrap().opening = Opening::Desktop;
+        }
+        if matches!(self.windows[slot].unwrap().opening, Opening::Desktop)
+        {
+            self.draw_startup_desktop(system)?;
+            self.windows[slot].as_mut().unwrap().opening = Opening::Location;
+        }
+        if matches!(self.windows[slot].unwrap().opening, Opening::Location)
+        {
+            self.repaint_location(system, window.location)?;
+            self.windows[slot].as_mut().unwrap().opening = Opening::Complete;
+        }
+        Ok(())
     }
 
     fn folder_state(&self, slot: usize) -> Option<FolderState>
@@ -1220,6 +1601,10 @@ impl Browser
                 *saved = None;
             }
         }
+        if self.startup_paint.get().is_some()
+        {
+            self.startup_desktop.set(false);
+        }
         desktop::invalidate();
         for window in self.windows.iter_mut().flatten().filter(|w| w.location.volume == volume)
         {
@@ -1229,7 +1614,7 @@ impl Browser
             system.close_window(window.window)?;
         }
         self.prune(system)?;
-        self.draw_desktop(system)?;
+        self.draw_startup_desktop(system)?;
         let mut line = Text::<96>::default();
         writeln!(&mut line, "FINDER_VOLUME_UNMOUNTED volume={volume}").map_err(|_| {
                                                                           Error::NoMemory
@@ -1239,22 +1624,64 @@ impl Browser
 
     pub fn prune(&mut self, system: &System<'_>) -> Result<(), Error>
     {
+        // Only a genuine absent Window may retire an owned slot. Preflight the
+        // whole bounded set before flushing state or dropping any identity.
+        let mut closed_mask = 0u8;
+        for (slot, window) in self.windows.iter().enumerate()
+        {
+            let Some(window) = window
+            else
+            {
+                continue;
+            };
+            match system.window(window.window)
+            {
+                Ok(_) => (),
+                Err(Error::NotFound) => closed_mask |= 1 << slot,
+                Err(error) =>
+                {
+                    self.require_startup_prune();
+                    return Err(error);
+                }
+            }
+        }
+        let front = if closed_mask != 0
+        {
+            match system.window(WindowId(0))
+            {
+                Ok(window) => Some(window.id),
+                Err(Error::NotFound) => None,
+                Err(error) =>
+                {
+                    self.require_startup_prune();
+                    return Err(error);
+                }
+            }
+        }
+        else
+        {
+            None
+        };
+        if self.startup_paint.get().is_some()
+        {
+            self.startup_prune.set(closed_mask != 0);
+        }
         let mut state_error = None;
         let mut changed = false;
         let mut closed = [None; 8];
         let mut count = 0;
         for slot in 0..self.windows.len()
         {
-            if self.windows[slot].is_some_and(|w| system.window(w.window).is_err())
+            if closed_mask & (1 << slot) == 0
             {
-                if let Err(error) = self.flush_folder_state(system, slot, true)
-                {
-                    state_error.get_or_insert(error);
-                }
+                continue;
+            }
+            if let Err(error) = self.flush_folder_state(system, slot, true)
+            {
+                state_error.get_or_insert(error);
             }
             let window = &mut self.windows[slot];
             if let Some(w) = window
-               && system.window(w.window).is_err()
             {
                 let mut line = Text::<256>::default();
                 let _ = writeln!(&mut line,
@@ -1264,8 +1691,14 @@ impl Browser
                 closed[count] = Some(w.location);
                 count += 1;
                 *window = None;
+                self.startup_painted(slot, false);
+                self.startup_watches_polled(false);
                 changed = true;
             }
+        }
+        if closed_mask != 0 && self.startup_paint.get().is_some()
+        {
+            self.startup_prune.set(false);
         }
         if changed
         {
@@ -1275,7 +1708,7 @@ impl Browser
                 self.desktop_active = true;
             }
             self.front = front.unwrap_or(WindowId(0));
-            self.draw_desktop(system)?;
+            self.draw_startup_desktop(system)?;
             for location in closed.into_iter().flatten()
             {
                 self.repaint_location(system, location)?;
@@ -1327,6 +1760,13 @@ impl Browser
         {
             return Ok(());
         }
+        if let Err(error) = result
+           && self.startup_paint.get().is_some()
+           && let Some(slot) = self.windows.iter().position(|w| w.is_some_and(|w| w.window == id))
+        {
+            self.startup_painted(slot, false);
+            self.failures[slot].set(Some(error));
+        }
         result
     }
 
@@ -1349,6 +1789,13 @@ impl Browser
         {
             return Err(Error::NotFound);
         };
+        // The normal event pump may see this real Window after a control/tail
+        // refusal. Only the opening draw stage (with both real bars) or the
+        // completed Window can paint; incomplete updates cannot claim content.
+        if !matches!(window.opening, Opening::Draw | Opening::Complete)
+        {
+            return system.windows().validate(id);
+        }
         let bounds = match system.window(id)
         {
             Ok(window) => window.bounds,
@@ -1408,6 +1855,11 @@ impl Browser
             self.draw_failed(system, id, error)?;
             return Err(error);
         }
+        if self.startup_paint.get().is_some()
+        {
+            cache::edit(slot, |folder| folder.refreshing = false);
+        }
+        self.startup_painted(slot, true);
         let mut line = Text::<256>::default();
         let _ = writeln!(&mut line, "FINDER_FOLDER_READY window={}", id);
         system.log(line.as_str())
@@ -1480,6 +1932,20 @@ impl Browser
     fn change_selection(&mut self, system: &System<'_>, slot: usize, next: Selection,
                         extra: &[Rect])
                         -> Result<bool, Error>
+    {
+        let result = self.change_selection_inner(system, slot, next, extra);
+        if let Err(error) = result
+           && self.startup_paint.get().is_some()
+        {
+            self.startup_painted(slot, false);
+            self.failures[slot].set(Some(error));
+        }
+        result
+    }
+
+    fn change_selection_inner(&mut self, system: &System<'_>, slot: usize, next: Selection,
+                              extra: &[Rect])
+                              -> Result<bool, Error>
     {
         let window = self.windows[slot].unwrap();
         let changed = window.selected.difference(next);
@@ -1584,7 +2050,7 @@ impl Browser
     }
 
     pub fn click(&mut self, system: &System<'_>, event: &Event, position: PointerPosition)
-                 -> Result<ClickOutcome, Error>
+                 -> Result<ClickOutcome, ActionFailure>
     {
         self.press = None;
         self.marquee = None;
@@ -1805,6 +2271,7 @@ impl Browser
         };
         let (old_frame, extent) = cache::with(slot, |folder| (folder.frame, folder.extent));
         let window = self.windows[slot].as_mut().unwrap();
+        let old_origin = (window.scroll_h, window.scroll);
         if info.zoomed && window.zoom_restore.is_none()
         {
             window.zoom_restore = Some((old_frame,
@@ -1826,6 +2293,14 @@ impl Browser
             }
         }
         cache::edit(slot, |folder| folder.frame = info.bounds);
+        let content_changed =
+            old_frame.right - old_frame.left != info.bounds.right - info.bounds.left
+            || old_frame.bottom - old_frame.top != info.bounds.bottom - info.bounds.top
+            || old_origin != (window.scroll_h, window.scroll);
+        if content_changed
+        {
+            self.startup_painted(slot, false);
+        }
         self.schedule_folder_state(system, slot)?;
         Ok(())
     }
@@ -2000,7 +2475,7 @@ impl Browser
         self.change_selection(system, slot, next, &[]).map(|_| ())
     }
 
-    pub fn open_selection(&mut self, system: &System<'_>) -> Result<(), Error>
+    pub fn open_selection(&mut self, system: &System<'_>) -> Result<(), ActionFailure>
     {
         if self.desktop_active
         {
@@ -2411,7 +2886,12 @@ impl Browser
                 self.invalidate_cache(slot);
             }
         }
-        self.redraw_trash_icon(system)
+        let result = self.redraw_trash_icon(system);
+        if result.is_err() && self.startup_paint.get().is_some()
+        {
+            self.startup_desktop.set(false);
+        }
+        result
     }
 
     pub fn new_folder(&mut self, system: &System<'_>) -> Result<(), Error>

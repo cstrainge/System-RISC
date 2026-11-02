@@ -1,21 +1,36 @@
 //! Standalone QuickDraw exerciser; all drawing is provided by System services.
-#![no_std]
-#![no_main]
 
 
 use mac_toolbox::*;
 
 mod demo;
-include_resource_ids!();
+mac_toolbox::include_resource_ids!();
 
-const CLOSE: u32 = u32::from_be_bytes(*b"clos");
-const QUIT: u32 = u32::from_be_bytes(*b"quit");
+use crate::resources::commands::{CLOSE, QUIT};
 
-fn run(system: &System<'_>) -> Result<(), Error>
+const PAGE_COMMANDS: [u32; 10] = [resources::commands::P000,
+                                  resources::commands::P001,
+                                  resources::commands::P002,
+                                  resources::commands::P003,
+                                  resources::commands::P004,
+                                  resources::commands::P005,
+                                  resources::commands::P006,
+                                  resources::commands::P007,
+                                  resources::commands::P008,
+                                  resources::commands::P009];
+
+fn main() -> Result<(), Error>
 {
+    let system = &System::new()?;
+    if system.capabilities() & CAP_GRAPHICS == 0
+    {
+        return Err(Error::NotSupported);
+    }
     system.menus().clear()?;
-    let _menus = [system.menus().install_owned(mac_toolbox::resources::APPLICATION, 128)?,
-                  system.menus().install_owned(mac_toolbox::resources::APPLICATION, 129)?];
+    for id in [128, 129]
+    {
+        system.menus().install_menu_resource(mac_toolbox::ResourceScope::Application, id)?;
+    }
     let window = demo::open(system)?;
     let mut selectors = [controls::ControlId(0); 10];
     for (index, id) in selectors.iter_mut().enumerate()
@@ -42,9 +57,10 @@ fn run(system: &System<'_>) -> Result<(), Error>
                 system.close_window(window)?;
                 return Ok(());
             }
-            if selection.menu_id == MenuId(129) && (1..=10).contains(&selection.item)
+            if let Some(index) =
+                PAGE_COMMANDS.iter().position(|command| *command == selection.command)
             {
-                page = (selection.item - 1) as u8;
+                page = index as u8;
                 demo::draw(system, window, page, icon_offset, &selectors)?;
             }
             continue;
@@ -109,35 +125,3 @@ fn run(system: &System<'_>) -> Result<(), Error>
         }
     }
 }
-
-/// # Safety
-/// The native loader supplies initialized segments and a live service table.
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
-{
-    if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
-    {
-        return status;
-    }
-    let system = match unsafe { System::from_raw(services) }
-    {
-        Ok(system) => system,
-        Err(status) => return status.status()
-    };
-    if system.capabilities() & CAP_GRAPHICS == 0
-    {
-        return mac_toolbox::abi::NOT_SUPPORTED;
-    }
-    match run(&system)
-    {
-        Ok(()) => mac_toolbox::abi::OK,
-        Err(status) =>
-        {
-            let _ = system.log("QUICKDRAW_TEST_ERROR\n");
-            status.status()
-        }
-    }
-}
-
-mac_toolbox::panic_handler!();
