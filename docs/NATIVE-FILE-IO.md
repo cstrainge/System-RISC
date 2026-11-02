@@ -261,8 +261,9 @@ diagnostic variants ran two boots; actual `-m 2G` and guest `BOOT_RAM` bytes
 - System resources: `cf51b82a09001661b662c7b9a9d4868250f3e3af8bdc4baa133d5c11f002047b`
 - ROM: `19cc55b172094ec7505d461be6dca90f48f6d87e47cd078c150db2e8771a50e2`
 - SDK: `c4dc6d927c65b736d46281d8f3022fcb9960e58fe42b931798703bf4516cb023`
-- Default diagnostic ELF: `e29017ad6370a02d90bbdb78e2389375cc6b5fecb319a1fcda747a8e9fa4bc6f`
-- Result-error diagnostic ELF: `0f366b95a9ac7cebe577cad3bfbdfb1564c0ca9c7fc626e6b6053f1eb884d0fb`
+- Default diagnostic runtime ELF: `6ec7ad1f09e7e48f0b0c83441252a5055a481f405937fe150e94d9de2f4daceb`
+- Default diagnostic compiler/debug ELF: `e29017ad6370a02d90bbdb78e2389375cc6b5fecb319a1fcda747a8e9fa4bc6f`
+- Result-error diagnostic runtime ELF: `0f366b95a9ac7cebe577cad3bfbdfb1564c0ca9c7fc626e6b6053f1eb884d0fb`
 
 Actual std observations included File/OpenOptions create/truncate, shared clone
 cursor and nonfinal close, independent append, metadata/timestamps, read/write,
@@ -300,3 +301,72 @@ std backend. Provider-path support, current_exe/environment/child-process work,
 late failure, power loss, sustained concurrency, exhaustion, cancellation,
 rollback failure, SMP and other hardware remain separate qualification gates.
 This is not completion of all std APIs or final application/main-tree integration.
+
+## Executable paths and GUI launch environment
+
+CURRENT_EXECUTABLE_PATH (FileCall 50) returns a bounded UTF-8 path. It shares the
+owner's actual executable FPIN into the query's genuine DIOP scope, then walks
+catalog ancestry through the existing native continuation. Original copied
+CatalogInfo or filename lookup cannot substitute for that alias. `current_exe()`
+therefore remains independent of current_dir/chdir. Provider paths remain
+Unsupported. The same scoped PathRead cleanup handles directory and executable
+queries after their real operation scope closes.
+
+System RISC uses slash-rooted paths without platform prefixes. The pinned std
+parser must include this target in its root-only absolute-path classification;
+this does not set a Unix target family or add libc. GUI arguments remain the
+actual argc0/empty vector. GUI environment storage starts empty before author
+execution, owns UTF-8 keys/values and supports synchronized process-local
+get/set/remove and immutable iterator snapshots. Allocation/copying and retired
+snapshot destruction occur outside its mutex. There is no imported host or
+Terminal environment, child inheritance, CLAP session or Command contract.
+
+Finite normal-return and Result-error APPL variants each ran two actual
+optimized release/LTO RV64/RVA23 QEMU boots, four configured CPUs, 800x600 and
+exactly 2 GiB RAM (command and actual guest report checked), using:
+
+- System runtime ELF: `eb03355422e9605a1b22342794e67ea038de32875e69461864ded41958b15720`
+- System resources: `5978eefaae95fcb9b3af8cead9d9d92f08ec84314c7e7b1e86c91876400dcf41`
+- ROM: `19cc55b172094ec7505d461be6dca90f48f6d87e47cd078c150db2e8771a50e2`
+- SDK: `8c17c8d96b2b363c13e2d512d031ca8597b2e9b5b6b5b42f6e0c3ed129abb20c`
+- Default diagnostic runtime ELF: `da37db15d42ceec12c2d7e8708e36d40821a9df292edae3bc4b935f5d1072caf`
+- Result-error runtime ELF: `c5cae40f98877a6a3e72455e00cf2eeb7cfb7f50ec73ecf975b24c2547593d72`
+
+Before launching, the collector required the same SDK in all seven installed
+std application receipts, exact MacBinary/resource/compiler-ELF hashes and an
+independently reproduced strip of the compiler ELF matching the runtime ELF.
+The runtime ELF and compiler/debug ELF are distinct artifacts.
+
+The diagnostic observed absolute executable paths from main and a real std
+child thread, stable executable identity across chdir, root/relative path
+classification, absolute-path join and std::path::absolute. It read actual
+executable metadata and observed native REMOVE refusal with the existing
+ServiceBusy contract, preserving the file. Busy alone is not an exclusive pin
+proof; the executable query itself requires sharing the genuine executable
+alias. Empty GUI args/environment, immutable snapshots surviving mutation,
+Unicode values, 32 child updates with main snapshots, actual join, removal and
+subsequent reuse were observed. This finite workload does not establish
+contention timing, fairness or race freedom.
+
+Earlier std File/buffering/cwd/null-stream/refusal/reuse cases repeated, including
+saved std/native bytes read before clean-second-boot rewrite. Both default
+boots exited normally with code 0; both Result-error boots exited normally with
+code 1, without a panic/report. Actual Process/account removals and subsequent
+Finder refresh/close/input were observed. Sources/base remained fixed, final
+frames were reviewed, owned guests exited zero and private media was removed.
+
+The first attempt was interrupted after a mistaken outside-collector comparison
+of raw compiler and stripped-runtime hashes; its SDKs actually matched. It is
+excluded. A later actual run found the missing absolute-path classifier target;
+the failing assertion was retained and the std condition corrected. Another
+failed diagnostic incorrectly expected AccessDenied for removing a running
+executable; source established the existing ServiceBusy contract. Its assertion
+was corrected to that exact status with file-preservation checks, without a
+production mutation change. All original failure reports remain separate from
+the successful runs.
+
+Initial/replacement Finder Documents/executable consumers, final main-tree app
+integration, provider paths, non-UTF-8 environment support, CLAP/Command/session
+inheritance and pipes, full filesystem/concurrency/pressure/cancel/rollback/SMP
+qualification remain separate gates. These observations qualify only the finite
+native paths and exact artifacts above.

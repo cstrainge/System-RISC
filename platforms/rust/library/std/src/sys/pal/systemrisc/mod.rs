@@ -22,6 +22,7 @@ pub fn unsupported_err() -> io::Error
 pub unsafe fn init(_argc: isize, _argv: *const *const u8, _sigpipe: u8)
 {
     runtime::client();
+    crate::sys::env::init();
 }
 
 pub unsafe fn cleanup()

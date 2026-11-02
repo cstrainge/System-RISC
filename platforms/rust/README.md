@@ -106,8 +106,15 @@ their upstream semantics. Native OOM reporting remains a separate runtime gate.
 Instant and SystemTime now bind the published native clocks, with checked signed
 Unix-epoch arithmetic and nanosecond calculations. Their std execution remains
 subject to matching-artifact observations. Basic native std File/cwd adapters
-are under target qualification; launch environment support remains a separate
-gate. GUI stdin deliberately returns EOF, while stdout/stderr discard bytes and
+have bounded matching-artifact observations recorded in docs/NATIVE-FILE-IO.md;
+that does not qualify the complete filesystem. GUI default cwd is the user's
+Documents directory. The current_exe adapter traverses a scoped share of genuine
+executable protection, independently of cwd. The GUI environment starts empty
+and supports synchronized process-local UTF-8 snapshots/mutations; no host or
+Terminal environment is imported. GUI arguments remain the actual empty argc0
+contract. These new executable/environment adapters require separate matching
+native qualification; CLAP/Command inheritance remains deferred.
+GUI stdin deliberately returns EOF, while stdout/stderr discard bytes and
 flush successfully; all are non-terminal. These graphical semantics do not
 implement real CLAP session streams. Full pipes belong to the planned pipes
 extension replacing kernel stubs through the production service boundary.

@@ -115,7 +115,7 @@ impl Pins
             return Err(ACCESS_DENIED);
         }
         let store = self.aliases.as_mut().ok_or(NOT_SUPPORTED)?;
-        let role = Role::DirectoryRead { scope };
+        let role = Role::PathRead { scope };
         let file = if let Some(file) = root
         {
             store.insert(owner, file, role).map_err(status)?;
@@ -131,6 +131,27 @@ impl Pins
             store.share(owner, id, owner, role).map_err(status)?;
             file
         };
+        directory_changed();
+        Ok(file)
+    }
+
+    /// Retain a real share of executable protection throughout path traversal.
+    /// Copied original CatalogInfo fields alone do not grant this authority.
+    pub(super) fn snapshot_executable(&mut self, owner: &OwnerRef, scope: super::subject::Lease)
+                                      -> Result<File, Status>
+    {
+        if scope.subject() != owner.owner() || scope.closed()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let store = self.aliases.as_mut().ok_or(NOT_SUPPORTED)?;
+        let (id, file) = store.iter()
+                              .find_map(|(id, actual, file, role)| {
+                                  (actual == owner.owner() && matches!(role, Role::Executable))
+                .then_some((id, *file))
+                              })
+                              .ok_or(NOT_FOUND)?;
+        store.share(owner, id, owner, Role::PathRead { scope }).map_err(status)?;
         directory_changed();
         Ok(file)
     }
@@ -174,12 +195,12 @@ impl Pins
                          {
                              state.cancelled.load(Ordering::Acquire) && scope.closed()
                          }
-                         Role::DirectoryRead { scope } => scope.closed(),
+                         Role::PathRead { scope } => scope.closed(),
                          _ => false
                      }
                  });
             store.finish_deferred(Role::cleanup_ready);
-            return store.iter().any(|(_,_,_,role)|matches!(role,Role::Directory {state,..} if state.cancelled.load(Ordering::Acquire)) || matches!(role,Role::DirectoryRead {..})) || store.deferred_tags().any(|role|matches!(role,Role::Directory {..} | Role::DirectoryRead {..}));
+            return store.iter().any(|(_,_,_,role)|matches!(role,Role::Directory {state,..} if state.cancelled.load(Ordering::Acquire)) || matches!(role,Role::PathRead {..})) || store.deferred_tags().any(|role|matches!(role,Role::Directory {..} | Role::PathRead {..}));
         }
         false
     }
@@ -222,7 +243,7 @@ impl Pins
                          Role::Executable => true,
                          Role::Directory { scope,
                                            .. }
-                         | Role::DirectoryRead { scope } => scope.closed(),
+                         | Role::PathRead { scope } => scope.closed(),
                          Role::Document { scope,
                                           .. } => scope.closed()
                      }
@@ -462,7 +483,7 @@ enum Role
         scope: super::subject::Lease,
         state: Arc<DirectoryState>
     },
-    DirectoryRead
+    PathRead
     {
         scope: super::subject::Lease
     },
@@ -483,7 +504,7 @@ impl Role
                              .. } => scope.closed(),
             Self::Directory { scope,
                               .. }
-            | Self::DirectoryRead { scope } => scope.closed()
+            | Self::PathRead { scope } => scope.closed()
         }
     }
 
@@ -491,7 +512,7 @@ impl Role
     {
         match self
         {
-            Self::Executable | Self::Directory { .. } | Self::DirectoryRead { .. } => None,
+            Self::Executable | Self::Directory { .. } | Self::PathRead { .. } => None,
             Self::Document { batch,
                              .. } => Some(*batch)
         }
