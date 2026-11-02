@@ -1264,15 +1264,10 @@ impl Desktop
         });
     }
 
-    pub(crate) fn evict_image_origin(&mut self, origin: u64)
-    {
-        self.definitions.evict_origin(origin);
-    }
-
     pub(crate) fn reap_processes(&mut self)
     {
         crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-            crate::kernel::finish_image_origins(self);
+            crate::kernel::finish_image_origins();
             let mut previous = 0;
             while let Some(owner) = self.processes.stopping_after(previous)
             {

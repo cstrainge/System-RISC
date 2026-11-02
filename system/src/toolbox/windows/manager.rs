@@ -1,7 +1,6 @@
 //! Rectangular document windows with stable IDs, z order, damage and tracking.
 //! Rust APIs implement a documented subset; no WindowRecord guest ABI is implied.
 #![cfg_attr(not(test), forbid(unsafe_code))]
-use crate::toolbox::resources::definitions::DefinitionRef;
 #[cfg(test)]
 use alloc::vec;
 use alloc::{collections::VecDeque, vec::Vec};
@@ -17,7 +16,8 @@ use crate::toolbox::{events::*,
                      quickdraw::{Canvas, Point, Rect, SurfaceExt,
                                  geometry::{sect_rect, union_rect},
                                  presentation::{Outline, indexed_tracking_xor},
-                                 region::{BooleanOp, Region, RegionError}}};
+                                 region::{BooleanOp, Region, RegionError}},
+                     resources::definitions::{BoundDefinition, DefinitionRef}};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i16)]
 pub enum WindowPart
@@ -82,6 +82,46 @@ impl WindowSource
                 crate::context::without_recovery(|| resources.with(operation))
             }
         }
+    }
+}
+
+/// Only the manager's original-ticket lookup creates this authority. A wire
+/// DISPOSE message, copied WindowId or stopped source cannot construct it.
+pub(crate) struct DefinitionDisposal<'a>
+{
+    binding: &'a BoundDefinition,
+    _ticket: &'a mac_object_table::domain::ReleasedResource
+}
+impl DefinitionDisposal<'_>
+{
+    pub(crate) fn entry(&self) -> DefinitionRef
+    {
+        self.binding.reference()
+    }
+}
+
+/// The canonical WIND payload owns this dependency; temporary Copy views do
+/// not. Failed Dispose keeps only its ABI-mutated state for the same ticket.
+struct OwnedWindow
+{
+    window:         Window,
+    disposal_state: Cell<Option<WindowDefinitionState>>,
+    binding:        BoundDefinition
+}
+impl core::ops::Deref for OwnedWindow
+{
+    type Target = Window;
+
+    fn deref(&self) -> &Window
+    {
+        &self.window
+    }
+}
+impl core::ops::DerefMut for OwnedWindow
+{
+    fn deref_mut(&mut self) -> &mut Window
+    {
+        &mut self.window
     }
 }
 
@@ -209,13 +249,15 @@ impl Window
         canvas.set_clip(clip);
         let mut copy = *self;
         let mut surface = Surface::from_canvas(canvas);
-        let reply = copy.call(definition::DRAW_GROW_ICON, 0, &mut surface);
+        let reply = copy.call(definition::DRAW_GROW_ICON, 0, &mut surface, None);
         canvas.set_clip(previous);
         canvas.set_origin(origin.h, origin.v);
         if reply < 0 { Err(i32::try_from(reply).unwrap_or(mac_abi::BAD_ABI)) } else { Ok(()) }
     }
 
-    fn call(&mut self, message: i16, param: i64, surface: *mut Surface) -> i64
+    fn call(&mut self, message: i16, param: i64, surface: *mut Surface,
+            disposal: Option<DefinitionDisposal<'_>>)
+            -> i64
     {
         let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
                                         kind: definition::WDEF,
@@ -228,6 +270,17 @@ impl Window
                                             (&mut self.state as *mut WindowDefinitionState).cast(),
                                         surface,
                                         gate: self.gate };
+        let entry = self.entry;
+        let invoke = || {
+            match disposal
+            {
+                Some(permit) =>
+                {
+                    crate::toolbox::resources::definitions::invoke_disposal(permit, &mut call)
+                }
+                None => crate::toolbox::resources::definitions::invoke(entry, &mut call)
+            }
+        };
         // The manager owns state, and a supplied entry must implement this native ABI.
         #[cfg(target_arch = "riscv64")]
         {
@@ -235,20 +288,18 @@ impl Window
             // across a call which mutates its definition state would alias it.
             let source = self.source;
             let owner = self.owner;
-            let entry = self.entry;
-            source.with(owner, || crate::toolbox::resources::definitions::invoke(entry, &mut call))
-                  .unwrap_or_else(i64::from)
+            source.with(owner, invoke).unwrap_or_else(i64::from)
         }
         #[cfg(not(target_arch = "riscv64"))]
         {
-            crate::toolbox::resources::definitions::invoke(self.entry, &mut call)
+            invoke()
         }
     }
 
     fn calculate(&mut self) -> bool
     {
         self.state.content = self.bounds;
-        self.call(definition::CALCULATE, 0, core::ptr::null_mut()) >= 0
+        self.call(definition::CALCULATE, 0, core::ptr::null_mut(), None) >= 0
     }
 
     pub fn global_to_local(&self, point: Point) -> Point
@@ -299,6 +350,7 @@ pub(crate) enum CreationError
     RecoveryBusy,
     RecoveryAuthority,
     Facility(mac_object_table::domain::PoolError),
+    Binding(Status),
     Stopping,
     Definition
     {
@@ -333,6 +385,10 @@ impl core::fmt::Display for CreationError
                              recipient and admitted I/O root")
             }
             Self::Facility(error) => error.fmt(f),
+            Self::Binding(status) =>
+            {
+                write!(f, "WDEF original-source binding refused: status {status}")
+            }
             Self::Stopping =>
             {
                 f.write_str("the window owner is stopping; no window was published to its UI")
@@ -367,7 +423,11 @@ impl InitializingWindow<'_>
 {
     fn value(&mut self) -> Result<&mut Window, CreationError>
     {
-        self.manager.windows.get_mut(self.id.0).ok_or(CreationError::Stopping)
+        self.manager
+            .windows
+            .get_mut(self.id.0)
+            .map(|owned| &mut owned.window)
+            .ok_or(CreationError::Stopping)
     }
 
     fn commit(mut self) -> WindowId
@@ -481,7 +541,7 @@ pub struct WindowManager
     // A single bounded memo, never an authority or a payload pin. Successful
     // window-list changes invalidate it; cached IDs still validate on lookup.
     front_cache:           Cell<Option<(u64, Option<WindowId>)>>,
-    windows:               Store<Window>,
+    windows:               Store<OwnedWindow>,
     retained_failures:     VecDeque<mac_object_table::domain::CompletionError>,
     // One guaranteed modal service has one main window and one auxiliary
     // sheet. Keep their guards outside the Copy geometry payload, keyed by
@@ -848,7 +908,7 @@ impl WindowManager
                           -> Result<WindowId, Failure>
     {
         use mac_object_table::registry::CleanupFailure;
-        let Some(window) = self.windows.releasing(&ticket).copied()
+        let Some(window) = self.windows.releasing(&ticket).map(|owned| owned.window)
         else
         {
             return Err(Failure::registration_mismatch(ticket));
@@ -872,13 +932,30 @@ impl WindowManager
         {
             self.tracking = None;
         }
-        let Some(reply) = self.windows.with_releasing(&ticket, |window| {
-                                          window.call(definition::DISPOSE, 0, core::ptr::null_mut())
-                                      })
+        let Some(owned) = self.windows.releasing(&ticket)
         else
         {
             return Err(Failure::registration_mismatch(ticket));
         };
+        if !owned.binding.matches(owned.window.entry)
+        {
+            return Err(Failure::window_definition(ticket,
+                                                  id.0,
+                                                  window.procedure,
+                                                  mac_abi::BAD_ABI as i64));
+        }
+        let mut disposal = owned.window;
+        if let Some(state) = owned.disposal_state.get()
+        {
+            disposal.state = state;
+        }
+        let permit = DefinitionDisposal { binding: &owned.binding,
+                                          _ticket: &ticket };
+        let reply = disposal.call(definition::DISPOSE, 0, core::ptr::null_mut(), Some(permit));
+        // The ABI only mutates WindowDefinitionState. Retain those actual
+        // effects before returning a refusal; retry uses the same original
+        // canonical object/binding/ticket, with no mutable non-Copy extraction.
+        owned.disposal_state.set(Some(disposal.state));
         if reply < 0
         {
             return Err(Failure::window_definition(ticket, id.0, window.procedure, reply));
@@ -904,7 +981,7 @@ impl WindowManager
     pub(crate) fn window_for_owner(&self, id: WindowId, owner: u64) -> Option<&Window>
     {
         let window = self.windows.get(id.0)?;
-        (window.initialized && self.owned_by(id, owner)).then_some(window)
+        (window.initialized && self.owned_by(id, owner)).then_some(&window.window)
     }
 
     pub(crate) fn front_record_for_owner(&self, owner: u64) -> Option<&Window>
@@ -953,12 +1030,12 @@ impl WindowManager
 
     pub fn window(&self, id: WindowId) -> Option<&Window>
     {
-        self.windows.get(id.0).filter(|window| window.initialized)
+        self.windows.get(id.0).filter(|window| window.initialized).map(|owned| &owned.window)
     }
 
     fn window_mut(&mut self, id: WindowId) -> Option<&mut Window>
     {
-        self.windows.get_mut(id.0)
+        self.windows.get_mut(id.0).map(|owned| &mut owned.window)
     }
 
     pub fn back_to_front(&self) -> impl Iterator<Item = &Window>
@@ -995,14 +1072,16 @@ impl WindowManager
             .ok()
     }
 
-    /// Background application windows enter the z order without transient focus.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_window_with_activation(&mut self, bounds: Rect, title: &str,
-                                             owner: &OwnerRef, minimum: (i16, i16),
-                                             procedure: i16, entry: DefinitionRef,
-                                             events: &mut EventManager, when: u32, activate: bool)
-                                             -> Result<WindowId, CreationError>
+    /// Pure creation checks before cold executable admission. A returned slot
+    /// is only a current availability observation, never publication authority;
+    /// the real creation turn repeats these checks after any guard-free work.
+    pub(crate) fn preflight_creation(&self, bounds: Rect, owner: &OwnerRef, minimum: (i16, i16))
+                                     -> Result<Option<usize>, CreationError>
     {
+        if !owner.accepting()
+        {
+            return Err(CreationError::Stopping);
+        }
         let (min_width, min_height) = minimum;
         #[cfg(target_arch = "riscv64")]
         let recovery = crate::context::recovery_activity();
@@ -1049,6 +1128,28 @@ impl WindowManager
         {
             return Err(CreationError::InvalidRequest);
         }
+        #[cfg(not(target_arch = "riscv64"))]
+        let recovery_slot = None;
+        Ok(recovery_slot)
+    }
+
+    /// Background application windows enter the z order without transient focus.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_window_with_activation(&mut self, bounds: Rect, title: &str,
+                                             owner: &OwnerRef, minimum: (i16, i16),
+                                             procedure: i16, entry: DefinitionRef,
+                                             events: &mut EventManager, when: u32, activate: bool)
+                                             -> Result<WindowId, CreationError>
+    {
+        let (min_width, min_height) = minimum;
+        #[cfg(target_arch = "riscv64")]
+        let recovery = crate::context::recovery_activity();
+        #[cfg(target_arch = "riscv64")]
+        let recovery_slot = self.preflight_creation(bounds, owner, minimum)?;
+        #[cfg(not(target_arch = "riscv64"))]
+        self.preflight_creation(bounds, owner, minimum)?;
+        let binding =
+            crate::toolbox::resources::definitions::bind(entry).map_err(CreationError::Binding)?;
         // These arrays index all owners. Only their capacity is System-owned;
         // the subsequent Window and owner Store backing retain caller charges.
         InvocationGate::with_system_allocation(|| {
@@ -1088,29 +1189,32 @@ impl WindowManager
         {
             logical_owner = activity.owner();
         }
-        let mut window = Window { id: WindowId(0),
-                                  initialized: false,
-                                  bounds,
-                                  owner: logical_owner,
-                                  #[cfg(target_arch = "riscv64")]
-                                  source,
-                                  min_width,
-                                  min_height,
-                                  state: WindowDefinitionState::new(bounds, title),
-                                  procedure,
-                                  entry,
-                                  gate: self.gate,
-                                  user_bounds: None,
-                                  standard_bounds: None,
-                                  grow_icon_clip: None,
-                                  content_outline: None,
-                                  close_deferred: false,
-                                  damage: Some(Rect::new(0,
-                                                         0,
-                                                         bounds.right - bounds.left,
-                                                         bounds.bottom - bounds.top)),
-                                  hidden: false,
-                                  updating: false };
+        let window = Window { id: WindowId(0),
+                              initialized: false,
+                              bounds,
+                              owner: logical_owner,
+                              #[cfg(target_arch = "riscv64")]
+                              source,
+                              min_width,
+                              min_height,
+                              state: WindowDefinitionState::new(bounds, title),
+                              procedure,
+                              entry,
+                              gate: self.gate,
+                              user_bounds: None,
+                              standard_bounds: None,
+                              grow_icon_clip: None,
+                              content_outline: None,
+                              close_deferred: false,
+                              damage: Some(Rect::new(0,
+                                                     0,
+                                                     bounds.right - bounds.left,
+                                                     bounds.bottom - bounds.top)),
+                              hidden: false,
+                              updating: false };
+        let mut window = Some(OwnedWindow { window,
+                                            disposal_state: Cell::new(None),
+                                            binding });
         self.retry_retained_quarantines();
         InvocationGate::with_system_allocation(|| {
             let padding = self.recovery_spare();
@@ -1123,9 +1227,10 @@ impl WindowManager
         {
             let subject = activity.root_subject();
             let tokens = self.recovery_publications.as_mut().ok_or(CreationError::RecoveryBusy)?;
+            let mut payload = window.take().ok_or(CreationError::Binding(mac_abi::BAD_ABI))?;
             Some(WindowId(self.windows.insert_reserved_in_scope_with_acknowledgement(
                 &mut tokens[slot], subject.scope(), Some(activity.acknowledgement_pin()), |id| {
-                    window.id = WindowId(id); window
+                    payload.window.id = WindowId(id); payload
                 }).map_err(|error| match error {
                     mac_object_table::store::PublicationError::Busy => CreationError::RecoveryBusy,
                     mac_object_table::store::PublicationError::Pool(error) => CreationError::Facility(error)
@@ -1142,10 +1247,11 @@ impl WindowManager
             Some(id) => id,
             None =>
             {
+                let mut payload = window.take().ok_or(CreationError::Binding(mac_abi::BAD_ABI))?;
                 WindowId(self.windows
                              .insert_with(owner, |id| {
-                                 window.id = WindowId(id);
-                                 window
+                                 payload.window.id = WindowId(id);
+                                 payload
                              })
                              .map_err(CreationError::Facility)?)
             }
@@ -1164,7 +1270,7 @@ impl WindowManager
         }
         for operation in [definition::NEW, definition::CALCULATE]
         {
-            let reply = guard.value()?.call(operation, 0, core::ptr::null_mut());
+            let reply = guard.value()?.call(operation, 0, core::ptr::null_mut(), None);
             if reply < 0
             {
                 return Err(CreationError::Definition { procedure,
@@ -1725,7 +1831,7 @@ impl WindowManager
             }
             let mut probe = *window;
             let param = ((point.v as u16 as u32) << 16) | point.h as u16 as u32;
-            let part = match probe.call(definition::HIT, param as i64, core::ptr::null_mut())
+            let part = match probe.call(definition::HIT, param as i64, core::ptr::null_mut(), None)
             {
                 1 => WindowPart::Content,
                 2 => WindowPart::Drag,
@@ -2371,7 +2477,7 @@ impl WindowManager
             c.reset_port();
             c.set_clip(clip);
             let mut surface = Surface::from_canvas(c);
-            let reply = window.call(message, 0, &mut surface);
+            let reply = window.call(message, 0, &mut surface, None);
             if reply < 0
             {
                 result = Err(i32::try_from(reply).unwrap_or(mac_abi::BAD_ABI));
@@ -2438,7 +2544,7 @@ impl WindowManager
         let mut target = Canvas::new(mask, canvas.width, mask_height);
         target.set_origin(0, -(mask_top as i16));
         let mut surface = Surface::from_canvas(&mut target);
-        if window.call(definition::GROW, (&preview as *const Rect) as i64, &mut surface) < 0
+        if window.call(definition::GROW, (&preview as *const Rect) as i64, &mut surface, None) < 0
         {
             return;
         }

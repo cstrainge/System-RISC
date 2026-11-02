@@ -19,12 +19,23 @@ static MANAGER: spin::Once<Spinlock<Store>> = spin::Once::new();
 static ROOTS: Spinlock<Option<Arc<Root>>> = Spinlock::new(None);
 static WAITING_PINS: AtomicBool = AtomicBool::new(false);
 static WAITING_MONITOR: AtomicBool = AtomicBool::new(false);
+static RETIREMENT_PENDING: AtomicBool = AtomicBool::new(false);
 pub(super) fn monitor_released()
 {
     if WAITING_MONITOR.swap(false, Ordering::AcqRel)
     {
+        retirement_changed();
         crate::toolbox::processes::retirement::resources_released();
     }
+}
+fn retirement_changed()
+{
+    RETIREMENT_PENDING.store(true, Ordering::Release);
+    crate::machine::scheduler::wake::request();
+}
+pub(crate) fn take_retirement_pending() -> bool
+{
+    RETIREMENT_PENDING.swap(false, Ordering::AcqRel)
 }
 
 #[derive(Debug)]
@@ -37,8 +48,14 @@ pub(crate) enum Error
     {
         physical: u64
     },
+    DefinitionVisibility
+    {
+        status: mac_abi::Status
+    },
     Threads,
     Readers(usize),
+    Pending,
+    Busy,
     Closed,
     Tables(super::Error),
     Encoding(mac_riscv_pages::Error),
@@ -54,8 +71,9 @@ impl Error
         match self
         {
             Self::Metadata => mac_abi::NO_MEMORY,
+            Self::DefinitionVisibility { status } => *status,
             Self::Authority => mac_abi::ACCESS_DENIED,
-            Self::Threads | Self::Readers(_) => mac_abi::SERVICE_BUSY,
+            Self::Threads | Self::Readers(_) | Self::Pending | Self::Busy => mac_abi::SERVICE_BUSY,
             Self::Closed => mac_abi::OPERATION_CANCELLED,
             Self::Monitor(e) => e.status(),
             Self::Retirement(cause)=>cause.status(),
@@ -78,6 +96,12 @@ impl fmt::Display for Error
                 f.write_str("Process space does not match genuine Process/image/account")
             }
             Self::Metadata => f.write_str("Process page-table metadata admission refused"),
+            Self::DefinitionVisibility { status } =>
+            {
+                write!(f,
+                       "definition range visibility unavailable: status {status}; no Process root \
+                        published")
+            }
             Self::Template { physical } =>
             {
                 write!(f,
@@ -86,6 +110,16 @@ impl fmt::Display for Error
             }
             Self::Threads => f.write_str("Process space awaits actual THRD/claim quiescence"),
             Self::Readers(n) => write!(f, "Process space retains {n} execution/publication pins"),
+            Self::Pending =>
+            {
+                f.write_str("Process space awaits guard-free quiescence, translation ACK and \
+                             physical disposal; original ticket retained")
+            }
+            Self::Busy =>
+            {
+                f.write_str("Process space is exclusively claimed for retirement; retry after \
+                             actual progress")
+            }
             Self::Closed => f.write_str("Process space admission is closed"),
             Self::Tables(e) => e.fmt(f),
             Self::Encoding(e) => e.fmt(f),
@@ -105,6 +139,7 @@ pub(crate) enum CleanupCause
     Contract,
     Threads,
     Readers(usize),
+    Pending,
     Monitor
     {
         status:   mac_abi::Status,
@@ -122,6 +157,7 @@ impl From<Error> for CleanupCause
             Error::Missing => Self::Unavailable,
             Error::Threads => Self::Threads,
             Error::Readers(n) => Self::Readers(n),
+            Error::Pending | Error::Busy => Self::Pending,
             Error::Monitor(cause) =>
             {
                 let (hart, sequence) = match &cause
@@ -151,7 +187,7 @@ impl CleanupCause
         {
             Self::Unavailable => mac_abi::NOT_SUPPORTED,
             Self::Contract => mac_abi::BAD_ABI,
-            Self::Threads | Self::Readers(_) => mac_abi::SERVICE_BUSY,
+            Self::Threads | Self::Readers(_) | Self::Pending => mac_abi::SERVICE_BUSY,
             Self::Monitor { status,
                             .. } => status
         }
@@ -177,6 +213,11 @@ impl fmt::Display for CleanupCause
             {
                 write!(f, "Process space retains {n} actual execution/publication pins")
             }
+            Self::Pending =>
+            {
+                f.write_str("Process space awaits guard-free quiescence, translation ACK and \
+                             physical disposal; original ticket retained")
+            }
             Self::Monitor { status,
                             hart,
                             sequence } =>
@@ -192,7 +233,8 @@ impl fmt::Display for CleanupCause
 /// are detached before disposal; neither Process nor IMAG holds this Arc.
 pub(crate) struct Root
 {
-    pub(super) space:      Space,
+    backing:               Spinlock<Option<Arc<Space>>>,
+    register:              usize,
     pub(super) owner:      OwnerRef,
     pub(super) allocation: AllocationAuthority,
     image:                 crate::images::Binding,
@@ -200,6 +242,8 @@ pub(crate) struct Root
     closing:               AtomicBool,
     registered:            AtomicBool,
     retired:               AtomicBool,
+    retirement_requested:  AtomicBool,
+    retirement_claimed:    AtomicBool,
     retirement_failure:    Spinlock<Option<CleanupCause>>
 }
 impl Root
@@ -211,7 +255,7 @@ impl Root
 
     pub(crate) fn register(&self) -> usize
     {
-        self.space.register
+        self.register
     }
 
     pub(crate) fn matches(&self, owner: &OwnerRef, image: crate::images::Binding) -> bool
@@ -224,6 +268,8 @@ impl Root
 /// the generic one-backing-owner retained::Read checkpoint does not apply.
 pub(crate) struct Pin
 {
+    // Must release Space first, then Root, then the actual progress marker.
+    space:     Arc<Space>,
     root:      Arc<Root>,
     _released: PinReleased
 }
@@ -234,23 +280,58 @@ impl Drop for PinReleased
     {
         if WAITING_PINS.swap(false, Ordering::AcqRel)
         {
+            retirement_changed();
             crate::toolbox::processes::retirement::resources_released();
         }
     }
 }
 impl Pin
 {
-    fn new(root: Arc<Root>) -> Self
+    fn try_new(root: Arc<Root>, retirement_snapshot: bool) -> Result<Self, Error>
     {
-        Self { root,
-               _released: PinReleased }
+        let space = interrupts::with_masked(|| {
+            let backing = root.backing.lock();
+            if root.retirement_claimed.load(Ordering::Acquire)
+            {
+                return Err(Error::Busy);
+            }
+            if !retirement_snapshot && root.closing.load(Ordering::Acquire)
+            {
+                return Err(Error::Closed);
+            }
+            backing.as_ref().cloned().ok_or(Error::Closed)
+        });
+        match space
+        {
+            Ok(space) =>
+            {
+                Ok(Self { space,
+                          root,
+                          _released: PinReleased })
+            }
+            Err(cause) =>
+            {
+                // This actual temporary Arc may have blocked a concurrent
+                // claim. Notify only after it is really released.
+                drop(root);
+                drop(PinReleased);
+                Err(cause)
+            }
+        }
+    }
+
+    pub(super) fn space(&self) -> &Space
+    {
+        &self.space
     }
 }
 impl Clone for Pin
 {
     fn clone(&self) -> Self
     {
-        Self::new(self.root.clone())
+        Self { space:     self.space.clone(),
+               root:      self.root.clone(),
+               _released: PinReleased }
     }
 }
 impl core::ops::Deref for Pin
@@ -291,13 +372,13 @@ pub(super) fn snapshot(publication: bool) -> Result<Vec<Pin>, Error>
                 {
                     if rows.len() == rows.capacity()
                     {
-                        return false;
+                        return Ok(false);
                     }
-                    rows.push(Pin::new(r));
+                    rows.push(Pin::try_new(r, !publication)?);
                 }
             }
-            true
-        });
+            Ok::<_, Error>(true)
+        })?;
         if complete
         {
             return Ok(rows);
@@ -406,11 +487,22 @@ pub(crate) fn admit(owner: &OwnerRef, allocation: &AllocationAuthority,
     }
     let manager = MANAGER.get().ok_or(Error::Missing)?;
     let existing = interrupts::with_masked(|| {
-        manager.lock().retained_values().find(|r| r.owner.owner() == owner.owner()).cloned()
-    });
+        let store = manager.lock();
+        store.retained_values()
+             .find(|root| root.owner.owner() == owner.owner())
+             .map(|root| {
+                 if root.closing.load(Ordering::Acquire)
+                    || root.retirement_claimed.load(Ordering::Acquire)
+                 {
+                     return Err(Error::Closed);
+                 }
+                 Ok(root.clone())
+             })
+             .transpose()
+    })?;
     if let Some(root) = existing
     {
-        let root = Pin::new(root);
+        let root = Pin::try_new(root, false)?;
         if !root.matches(owner, image.binding())
         {
             return Err(Error::Authority);
@@ -428,9 +520,13 @@ pub(crate) fn admit(owner: &OwnerRef, allocation: &AllocationAuthority,
         let permit=permit(owner)?;
         let lease=crate::machine::monitor::prepare_translation_invalidation().map_err(Error::Monitor)?;
         let space=clone_space(owner,allocation,image.range())?;
-        let root=Arc::try_new(Root{space,owner:owner.clone(),allocation:allocation.clone(),image:image.binding(),next:Spinlock::new(None),closing:AtomicBool::new(false),registered:AtomicBool::new(false),retired:AtomicBool::new(false),retirement_failure:Spinlock::new(None)}).map_err(|_|Error::Metadata)?;
+        let register = space.register;
+        // Move the sole backing Arc into canonical Root. No unobserved local
+        // Space clone survives publication or a failed execution-pin admission.
+        let space = Arc::try_new(space).map_err(|_| Error::Metadata)?;
+        let root=Arc::try_new(Root{backing:Spinlock::new(Some(space)),register,owner:owner.clone(),allocation:allocation.clone(),image:image.binding(),next:Spinlock::new(None),closing:AtomicBool::new(false),registered:AtomicBool::new(false),retired:AtomicBool::new(false),retirement_requested:AtomicBool::new(false),retirement_claimed:AtomicBool::new(false),retirement_failure:Spinlock::new(None)}).map_err(|_|Error::Metadata)?;
         match interrupts::with_masked(||manager.lock().publish_prepared(permit,root.clone())) {
-            Ok((publication,old))=>{old.dispose();let _=publication.into_parts();link(&root);drop(lease);Ok(Pin::new(root))},
+            Ok((publication,old))=>{old.dispose();let _=publication.into_parts();link(&root);drop(lease);Pin::try_new(root, false)},
             Err(failure)=>{let cause=failure.cause; drop(failure);Err(Error::Publication(cause))}
         }
     })
@@ -444,9 +540,12 @@ fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, image: core::
                               count:   0,
                               account: Some(allocation.clone()) };
     let source = spaces.kernel.owner.root_physical();
-    let physical = copy_table(&mut tables, source, 2, 0, &image)?;
+    let mut definitions = crate::toolbox::resources::definitions::visibility_snapshot()
+        .map_err(|cause| Error::DefinitionVisibility { status: cause.status() })?;
+    definitions.sort_unstable_by_key(|range| range.base);
+    let physical = copy_table(&mut tables, source, 2, 0, &image, owner.owner(), &definitions)?;
     let (root, charge) = tables.take_root(physical).map_err(Error::Tables)?;
-    let owner=AddressSpace::<Rva>::reserve(owner.owner(),root,AsidTag::Untagged).map_err(|e|Error::Tables(super::Error::Policy(e)))?;
+    let owner=AddressSpace::<Rva, TableBacking>::reserve(owner.owner(),root,AsidTag::Untagged).map_err(|e|Error::Tables(super::Error::Policy(e)))?;
     let register = MODE | (physical.0 as usize >> 12);
     Ok(Space { owner,
                tables,
@@ -475,7 +574,8 @@ fn keep_low(base: u64, end: u64, image: &core::ops::Range<u64>, overlap: bool) -
 }
 
 fn copy_table(tables: &mut Frames, source: PhysicalAddress, level: u8, prefix: u64,
-              image: &core::ops::Range<u64>)
+              image: &core::ops::Range<u64>, owner: DomainId,
+              definitions: &[crate::toolbox::resources::definitions::Range])
               -> Result<PhysicalAddress, Error>
 {
     let target=tables.allocate_zeroed().map_err(|e|Error::Tables(super::Error::Tables(mac_riscv_pages::mapping::MapError::Storage(e))))?;
@@ -508,7 +608,8 @@ fn copy_table(tables: &mut Frames, source: PhysicalAddress, level: u8, prefix: u
                 {
                     continue;
                 }
-                let child = copy_table(tables, physical, level - 1, address, image)?;
+                let child =
+                    copy_table(tables, physical, level - 1, address, image, owner, definitions)?;
                 Entry::table(child,global,mac_kernel_model::pages::PageOwnership::Automatic).map_err(Error::Encoding)?
             }
             Decoded::Leaf { physical,
@@ -522,6 +623,18 @@ fn copy_table(tables: &mut Frames, source: PhysicalAddress, level: u8, prefix: u
                 {
                     continue;
                 }
+                if address < DEFINITION_LIMIT && end > DEFINITION_BASE
+                {
+                    let at = definitions.partition_point(|range| range.base <= address);
+                    let range = at.checked_sub(1)
+                                  .and_then(|i| definitions.get(i))
+                                  .filter(|range| end <= range.limit)
+                                  .ok_or(Error::DefinitionVisibility { status: mac_abi::BAD_ABI })?;
+                    if range.owner.kind() == DomainKind::Process && range.owner != owner
+                    {
+                        continue;
+                    }
+                }
                 if permissions.access != mac_kernel_model::pages::Access::Supervisor
                 {
                     return Err(Error::Authority);
@@ -534,46 +647,189 @@ fn copy_table(tables: &mut Frames, source: PhysicalAddress, level: u8, prefix: u
     Ok(target)
 }
 
-/// Reclamation is a command transaction: no root can join/publicize module
-/// aliases until this private hierarchy has left the registry and real peers ACK.
-fn retire(root: &Arc<Root>) -> Result<(), Error>
+/// A canonical claim contains no cleanup ticket. The original ticket remains
+/// in the owner walk until this real physical operation is settled.
+pub(crate) struct Retirement
 {
-    if root.retired.load(Ordering::Acquire)
+    root:      Option<Arc<Root>>,
+    owner:     u64,
+    not_run:   bool,
+    completed: bool
+}
+impl Retirement
+{
+    pub(crate) fn owner(&self) -> u64
     {
-        return Ok(());
+        self.owner
     }
-    if let Some(cause) = interrupts::with_masked(|| *root.retirement_failure.lock())
+
+    pub(crate) fn run(mut self) -> Result<(), Error>
     {
-        return Err(Error::Retirement(cause));
-    }
-    WAITING_MONITOR.store(true, Ordering::Release);
-    let lease = match crate::machine::monitor::prepare_translation_invalidation()
-    {
-        Ok(lease) => lease,
-        Err(cause) =>
+        self.not_run = false;
+        let root = self.root.as_ref().ok_or(Error::Authority)?;
+        if !root.closing.load(Ordering::Acquire)
+           || !root.retirement_requested.load(Ordering::Acquire)
+           || !root.retirement_claimed.load(Ordering::Acquire)
         {
-            if matches!(cause, crate::machine::monitor::Error::Busy)
+            return Err(Error::Authority);
+        }
+        if let Some(cause) = interrupts::with_masked(|| *root.retirement_failure.lock())
+        {
+            return Err(Error::Retirement(cause));
+        }
+        WAITING_PINS.store(true, Ordering::Release);
+        if interrupts::with_masked(|| crate::machine::scheduler::has_threads(self.owner))
+        {
+            return Err(Error::Threads);
+        }
+        // Preflight before taking a monitor lease. A retained reader must
+        // wait for its real release, not repeatedly wake itself by dropping a
+        // freshly acquired lease on an unchanged Readers refusal.
+        let space = interrupts::with_masked(|| {
+            let _registry = ROOTS.lock();
+            let backing = root.backing.lock();
+            let expected = if root.registered.load(Ordering::Acquire) { 3 } else { 2 };
+            let count = Arc::strong_count(root);
+            if count != expected
             {
-                return Err(Error::Monitor(cause));
+                return Err(Error::Readers(count.saturating_sub(expected)));
             }
-            return Err(quarantine(root, cause));
-        }
-    };
-    if let Err(cause) = unlink(root)
-    {
-        return Err(retain_failure(root, cause.into()));
-    }
-    match lease.finish()
-    {
-        Ok(receipt) =>
+            let space = backing.as_ref().ok_or(Error::Authority)?;
+            if Arc::strong_count(space) != 1
+            {
+                return Err(Error::Readers(Arc::strong_count(space).saturating_sub(1)));
+            }
+            Ok(space.clone())
+        })?;
+        WAITING_MONITOR.store(true, Ordering::Release);
+        let lease = match crate::machine::monitor::prepare_translation_invalidation()
         {
-            drop(receipt);
-            modules::retire_process_branches(root.space.owner.root_physical());
-            root.retired.store(true, Ordering::Release);
+            Ok(lease) => lease,
+            Err(cause) =>
+            {
+                if matches!(cause, crate::machine::monitor::Error::Busy)
+                {
+                    return Err(Error::Monitor(cause));
+                }
+                return Err(quarantine(root, cause));
+            }
+        };
+        // The actual lease excludes PTE publishers. Claimed state and the
+        // same registry/backing gates used by pin admission forbid new clones
+        // after the preflight, so validate both real owner counts/identity
+        // again before registry effects rather than treating an observation
+        // as a grant. Unexpected sealed-reference changes retain the root.
+        interrupts::with_masked(|| {
+            let _registry = ROOTS.lock();
+            let backing = root.backing.lock();
+            let expected = if root.registered.load(Ordering::Acquire) { 3 } else { 2 };
+            let held = backing.as_ref().ok_or(Error::Authority)?;
+            if Arc::strong_count(root) != expected
+               || !Arc::ptr_eq(held, &space)
+               || Arc::strong_count(held) != 2
+            {
+                return Err(Error::Authority);
+            }
             Ok(())
+        }).map_err(|cause| retain_failure(root, cause.into()))?;
+        if let Err(cause) = unlink(root)
+        {
+            return Err(retain_failure(root, cause.into()));
         }
-        Err(cause) => Err(quarantine(root, cause))
+        match lease.finish()
+        {
+            Ok(receipt) => drop(receipt),
+            Err(cause) => return Err(quarantine(root, cause))
+        }
+        modules::retire_process_branches(space.owner.root_physical());
+        let backing = interrupts::with_masked(|| {
+                          let mut backing = root.backing.lock();
+                          let held = backing.as_ref().ok_or(Error::Authority)?;
+                          if !Arc::ptr_eq(held, &space) || Arc::strong_count(held) != 2
+                          {
+                              return Err(Error::Authority);
+                          }
+                          backing.take().ok_or(Error::Authority)
+                      }).map_err(|cause| retain_failure(root, cause.into()))?;
+        // No external Arc/Weak escape exists. New pins are gated out; these
+        // are the two verified actual owning references. Synchronous Drop of
+        // BOTH physical owners must finish before reporting retired.
+        drop(space);
+        drop(backing);
+        root.retired.store(true, Ordering::Release);
+        self.completed = true;
+        Ok(())
     }
+}
+impl Drop for Retirement
+{
+    fn drop(&mut self)
+    {
+        if let Some(root) = self.root.take()
+        {
+            root.retirement_claimed.store(false, Ordering::Release);
+            drop(root);
+        }
+        if self.not_run
+        {
+            retirement_changed();
+        }
+        if self.completed
+        {
+            // One physical root is the maintenance unit. Its real completion
+            // admits a later checkpoint for another ready root (or one empty
+            // followup), rather than extending this input-service interval.
+            retirement_changed();
+            modules::changed();
+        }
+        // A consumed Busy waits for actual Pin/monitor release. Its own
+        // temporary Arc is not a new root-pending event.
+        crate::toolbox::processes::retirement::resources_released();
+    }
+}
+pub(crate) fn retirement() -> Option<Retirement>
+{
+    let manager = MANAGER.get()?;
+    interrupts::with_masked(|| {
+        let store = manager.lock();
+        let _registry = ROOTS.lock();
+        let root =
+            store.retained_values()
+                 .filter(|root| {
+                     if !root.closing.load(Ordering::Acquire)
+                        || !root.retirement_requested.load(Ordering::Acquire)
+                        || root.retired.load(Ordering::Acquire)
+                        || root.retirement_claimed.load(Ordering::Acquire)
+                        || root.retirement_failure.lock().is_some()
+                     {
+                         return false;
+                     }
+                     // Readiness is observed before taking any command lease. Arm
+                     // genuine pin releases before checking; skip each blocked row so
+                     // one old owner cannot starve another ready canonical root.
+                     WAITING_PINS.store(true, Ordering::Release);
+                     if crate::machine::scheduler::has_threads(root.owner.owner().incarnation())
+                     {
+                         return false;
+                     }
+                     let expected = if root.registered.load(Ordering::Acquire) { 2 } else { 1 };
+                     if Arc::strong_count(root) != expected
+                     {
+                         return false;
+                     }
+                     let backing = root.backing.lock();
+                     backing.as_ref().is_some_and(|space| Arc::strong_count(space) == 1)
+                 })
+                 .min_by_key(|root| root.owner.owner().incarnation())?;
+        let _backing = root.backing.lock();
+        root.retirement_claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        Some(Retirement { root:      Some(root.clone()),
+                          owner:     root.owner.owner().incarnation(),
+                          not_run:   true,
+                          completed: false })
+    })
 }
 fn quarantine(root: &Root, cause: crate::machine::monitor::Error) -> Error
 {

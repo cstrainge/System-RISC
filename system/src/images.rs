@@ -689,27 +689,6 @@ impl Manager
                     })
     }
 
-    pub(crate) fn next_retiring(&self, after: u64) -> Option<(u64, u64)>
-    {
-        // An original alias can be quarantined pending PTE retirement before
-        // defer_alias. Its cached definition pins must still be evicted, or
-        // reader drain and retirement would wait on each other indefinitely.
-        self.sources
-            .retained()
-            .filter_map(|(_, instance)| {
-                let owner = instance.owner.owner().incarnation();
-                if instance.module
-                   || owner <= after
-                   || instance.owner.accepting()
-                   || !Self::root_only(&instance.owner)
-                {
-                    return None;
-                }
-                instance.binding.get().map(|binding| (owner, binding.id()))
-            })
-            .min_by_key(|(owner, _)| *owner)
-    }
-
     pub(crate) fn finish_retiring(&mut self) -> usize
     {
         self.sources.finish_deferred(|instance| {

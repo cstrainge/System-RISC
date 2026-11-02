@@ -3576,7 +3576,12 @@ failed-publication pressure, lost-ACK/foreign-PTE injection, full-range stale
 translation reuse and race absence remain unverified or unimplemented as stated
 above. QMP reads and guest diagnostics perturb execution; no latency claim follows.
 
-## Registered definition callables — implementation
+## Registered definition callables — earlier stage
+
+This section records the callable-registration stage. Its fixed-arena/cache
+publication statements are historical; the subsequent
+[native definition resource contract](DEFINITION-RESOURCES.md) describes the
+physical-backing stage and its explicitly limited native observations.
 
 Window, control, menu, process-menu and boot-panel state retain opaque definition
 completion references rather than bare executable addresses. DDEF/DSTA use the
@@ -3771,3 +3776,136 @@ Exact artifacts, configuration, observer effects and scope are recorded in
 [application runtime observations](APPLICATION-RUNTIME.md#ready-with-owned-process-page-roots--2026-11-01).
 These are finite trusted-supervisor observations, not full std adoption, private
 user mappings, timing/race proof or protected Finder OOM recovery.
+
+
+## Physically owned native definition resources — 2026-11-01
+
+Canonical DDEF/DSTA now retain actual segment pages and the original source's
+account (or a sealed ordinary-System physical receipt). Native cold admission
+and real mapping publication leave Desktop before physical work. The teardown
+walk retains its unique ticket while guard-free maintenance performs unmap/ACK
+and physical disposal; ordinary stopped-source calls are refused, with only
+the real Window ticket's private Dispose permit admitting teardown.
+
+The [definition resource contract](DEFINITION-RESOURCES.md) documents source
+selection, caller staging, partial physical attribution, wakeups, exact native
+artifacts and remaining gates. It supersedes earlier fixed identity-arena and
+Desktop-cache descriptions in this historical implementation record. The actual
+own-Process load/dispose/relaunch and failure observations do not qualify foreign
+Module bindings, pressure, arbitrary faults, timing/races, user-mode isolation
+or the broader failed conformance scenario.
+
+## Owning page-backing abstraction
+
+The shared `PageBox<T, B>` consumes an owning backing type and checks one selected
+page's extent, physical alignment, address overflow and type fit. The same
+`AddressSpace<A, B>` and `ProcessRecord<A, B>` retain that ownership. `PageBacking`
+is a stable-metadata contract; it does not authenticate physical RAM, initialize
+a page table or authorize CPU activation. The public buddy constructor likewise
+models caller-admitted ranges. Actual native authority remains in the private
+pool, backing and checked activation constructors.
+
+Every current native root uses one private `TableBacking` that consumes a genuine
+ordinary native RAM lease. The old buddy-specific `into_table` conversion is
+removed. Root extraction still transfers the real table and its original charge
+together; Nodes keep separate owned storage. There is no second root/mapper
+implementation, native scalar-backed constructor, compatibility path or unused
+protected variant. This prepares the ownership seam for real recovery loans; it
+does not implement protected table admission or guarantee Finder restart.
+
+The optimized release/LTO RV64 whole-world image ran privately with four QEMU
+CPUs, 8 GiB, 800x600 and event/TextEdit tracing disabled. System ELF SHA-256 was
+`37c50874ba2620023defcb6363a2f997143ac3c5bb9742e335270965fcd50392`;
+System resource was
+`1d1eef3d57d60a24380c491bfaabac98b226710221e9a750c1dca4c460fe02f2`;
+ROM remained
+`cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+Actual content fingerprints and the fixed-source build were recorded. Existing
+no_std native actors rebuilt and used normal package/loading/traps.
+
+Two real application bodies used distinct private hierarchies with their own
+image and shared module backing, while the other live application's low image
+was absent. All four application/worker bodies were sampled migrating with the
+same stacks and overlapping on different CPUs. Native register/service checks,
+worker cancellation, actual worker/process/account closure and following input
+were observed. The 138 paused read-only snapshots cost approximately36–85 ms of
+host time each; those observations and logs perturb timing/order. This is
+trusted supervisor execution, not U-mode protection, latency or race-absence
+qualification. Source/base stayed fixed; the owned guest was reaped and cloned
+media removed. Public shared/SDK documentation also generated successfully; no
+host Rust test suite supplied runtime evidence.
+
+The existing SPCE disposal still performed translation retirement through the
+Desktop owner walk on this artifact. Moving that work and actual table
+destruction to guard-free maintenance is a separate required follow-up. Genuine
+protected root/Node/publication stock, fresh Finder image backing, pressure and
+uncertain-acknowledgment scenarios remain unimplemented or unverified.
+
+## Guard-free Process-space retirement and authenticated clock integration
+
+The SPCE owner walk now closes admission and requests retirement through its
+original canonical ticket. It does not unlink page tables, wait for translation
+acknowledgment or destroy their physical backing under Desktop. Independent
+maintenance claims one ready root per checkpoint. It skips genuine live threads,
+readers and sticky failures before taking a translation command, then revalidates
+actual ownership and quiescence with the real command lease. Busy work waits for
+real pin/monitor release; successful completion coalesces the next-work hint.
+
+Canonical Root metadata holds the actual Space backing separately. Genuine Pins
+own Space and Root, dropping them in that order before their release marker.
+Publication and retirement snapshots borrow the same real backing; a claimed
+still-linked root refuses a late snapshot typed rather than disappearing from
+the registry view. After unlink, actual remote acknowledgment and attached-branch
+retirement, both canonical/work Space owners are destroyed outside guards before
+retired is published. Only then can the original SPCE ticket finish. Uncertain
+acknowledgments retain the original root, backing, account and typed cause. This
+adds one real Process-Kernel-attributed Space control allocation, with no new
+identity issuer, synthetic owner, duplicate mapper or public backing extraction.
+
+This source also integrates the authenticated 104-byte module Host clock and
+real-source deadline described in [Rust standard-library support](RUST-STD.md).
+Worker-token clocks retain their separate authority. A deadline never authorizes
+DMA reclamation: actual reset/unmap/release acknowledgment remains required.
+
+A private optimized release/LTO four-CPU, 8 GiB, 800x600 QEMU image ran with
+event/TextEdit tracing disabled. System ELF SHA-256 was
+`d1a6ca383d3d4cd10ce29504ee593ee29c40d1080071af910357ae843c213430`;
+System resource was
+`80fbc02fb53d294b4446e6c7ca497bd103249f34c62bfb17d93ad3b630ae5d3b`;
+ROM remained
+`cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+System explicitly rebuilt with actual content fingerprint records; matched native
+actor packages rebuilt against Host104. Older unrelated cache records were not
+claimed to have the same freshness mode.
+
+Two real app bodies used distinct private hierarchies with own images and shared
+modules, omitting the other app's low image. Four app/worker bodies migrated with
+their same stacks and overlapped on CPUs, followed by native register/service/
+cancellation checks, worker reclamation, actual process/account closure and input.
+The 136 paused read-only samples cost approximately33–77 ms of host time each;
+logs and observation perturb execution and establish no latency or race bound.
+
+Delayed initial Finder readiness again sampled all CPUs in System idle before
+author entry; source release led to desktop/input. A genuine withheld RNG reply
+during document launch reached the native deadline without debugger, clock or
+guest-memory writes. Actual reset, unstarted-account closure, typed refusal,
+dismissal, fresh retry, Text Edit document/quit/account closure and input followed.
+Six installed graphical applications entered/quit; sampled app leaves were absent
+after closure. System panic reporting/scroll/dismissal and an unchanged Panic Test
+with its own WDEF/CDEF overrides also completed actual closure, definition-page
+unmapping and fresh launch. Sources/base stayed fixed per capture; all owned
+guests/helpers were reaped and cloned media removed. No host Rust suite supplied
+OS acceptance.
+
+Visual review retained a separate Finder presentation defect: the asynchronous
+document refusal was headed as a Finder update and exposed Rust Debug detail.
+Typed identity, readable dismissal and successful retry do not qualify that error
+UX; retained original operation/subject presentation remains work. The earlier
+broader conformance ownership-fixture refusal is likewise not repaired here.
+
+These observations do not qualify arbitrary snapshot/retirement races, uncertain
+acknowledgments, pressure, complete SMP safety or U-mode isolation. Protected
+SPCE/Node/publication stock and fresh replacement-image backing still gate Finder
+restart under exhaustion. Existing module-binding unload and author/port callback
+work retain their limits; installed apps remain no_std pending the separate file/
+stream/runtime adoption gates.
