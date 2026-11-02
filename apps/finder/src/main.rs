@@ -398,9 +398,9 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                 menus::GET_INFO => info.open_selection(system, browser.selected_locations()),
                 menus::CLOSE =>
                 {
-                    if let Ok(front) = system.window(WindowId(0))
+                    if let Some(front) = browser.closable_front(system)
                     {
-                        system.close_window(front.id)?;
+                        system.close_window(front)?;
                     }
                     browser.prune(system)
                 }
@@ -491,9 +491,9 @@ fn finder(system: &System<'_>) -> Result<(), Error>
                                   .modifiers
                                   .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
-                    if let Ok(front) = system.window(WindowId(0))
+                    if let Some(front) = browser.closable_front(system)
                     {
-                        system.close_window(front.id)?;
+                        system.close_window(front)?;
                         let _ = try_action(system, &mut alerts, browser.prune(system))?;
                     }
                 }
