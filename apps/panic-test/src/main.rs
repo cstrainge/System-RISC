@@ -5,9 +5,9 @@
 use mac_toolbox::{quickdraw::fonts::FontSelection, *};
 
 
-const PANIC_NOW: u32 = u32::from_be_bytes(*b"pnow");
-const LONG_PANIC: u32 = u32::from_be_bytes(*b"plng");
-const QUIT: u32 = u32::from_be_bytes(*b"quit");
+mac_toolbox::include_resource_ids!();
+
+use crate::resources::commands::{LONG_PANIC, PANIC_NOW, QUIT};
 const BUTTONS: [Rect; 3] =
     [Rect::new(20, 155, 145, 185), Rect::new(167, 155, 292, 185), Rect::new(314, 155, 439, 185)];
 const FONT: FontSelection = FontSelection { family: 0,
@@ -23,8 +23,8 @@ fn layout(system: &System<'_>) -> Result<(Rect, i16), Error>
 {
     let resource = system.resources()
                          .application()
-                         .get(resources::ResourceKey { kind: mac_toolbox::TypeCode::new(*b"WIND"),
-                                                       id:   2003 })?;
+                         .get(ResourceKey { kind: mac_toolbox::TypeCode::new(*b"WIND"),
+                                            id:   2003 })?;
     let mut bytes = [0; 20];
     let read = if resource.size() == bytes.len()
     {
@@ -101,7 +101,7 @@ fn command(system: &System<'_>, command: u32) -> Result<bool, Error>
 fn run(system: &System<'_>) -> Result<(), Error>
 {
     system.menus().clear()?;
-    let _menu = system.menus().install_owned(resources::APPLICATION, 128)?;
+    system.menus().install_menu_resource(ResourceScope::Application, 128)?;
     let mut buffer = [0; 128];
     let title = system.resources().application().string(128, &mut buffer)?;
     let (bounds, procedure) = layout(system)?;

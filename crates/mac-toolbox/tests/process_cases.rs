@@ -978,8 +978,7 @@ pub fn worker(system: &System<'_>) -> Result<()>
         system.textedit().create_owned(Rect::new(0, 0, 100, 40), Rect::new(0, 0, 100, 40))?;
     leaked_editor.editor().set_text("Registered worker editor")?;
     let leaked_world = system.quickdraw().new_gworld(8, 8)?;
-    let leaked_menu =
-        system.menus().install_owned(mac_toolbox::ResourceScope::Application, 2001)?;
+    system.menus().install_menu_resource(mac_toolbox::ResourceScope::Application, 2001)?;
     let parent_window = parse_window(system.scrap().text(&mut announcement)?, "process-observer-window:")
         .ok_or(Failure::Contract("observer window publication"))?;
     synthetic_private(system, parent_window, WORKER_SYNTHETIC)?;
@@ -1134,7 +1133,6 @@ pub fn worker(system: &System<'_>) -> Result<()>
             core::mem::forget(leaked_group);
             core::mem::forget(leaked_editor);
             core::mem::forget(leaked_alert);
-            core::mem::forget(leaked_menu);
             return Ok(());
         }
     }

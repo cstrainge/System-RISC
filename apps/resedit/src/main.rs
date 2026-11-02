@@ -16,6 +16,8 @@ mod viewers;
 use controls::scrollbox::View;
 use document::Text;
 use view::{Layout, Pane};
+mac_toolbox::include_resource_ids!();
+
 const FONT: FontSelection = FontSelection { family: 3,
                                             size:   9,
                                             face:   0 };
@@ -628,7 +630,7 @@ fn save(system: &System<'_>, browser: &mut Browser<'_>, save_as: bool) -> Toolbo
     Ok(())
 }
 fn document_event<'a>(system: &System<'a>, document: &mut documents::Document<'a>,
-                      event: &Event<'a>, position: PointerPosition, command: Option<[u8; 4]>)
+                      event: &Event<'a>, position: PointerPosition, command: Option<u32>)
                       -> ToolboxResult<()>
 {
     let window = document.owner.id();
@@ -653,16 +655,18 @@ fn document_event<'a>(system: &System<'a>, document: &mut documents::Document<'a
     {
         system.windows().validate(window)?;
     }
-    if command == Some(*b"open")
+    if command == Some(resources::commands::OPEN)
     {
         let previous = browser.catalog.map(|item| (item.volume, item.id));
         open_dialog(system, browser, window)?;
         redraw = browser.catalog.map(|item| (item.volume, item.id)) != previous;
     }
-    if command == Some(*b"save") || command == Some(*b"svas") || command == Some(*b"expr")
+    if command == Some(resources::commands::SAVE)
+       || command == Some(resources::commands::SAVE_AS)
+       || command == Some(resources::commands::EXPORT_JSON)
     {
         let previous_status = browser.status;
-        if let Err(error) = save(system, browser, command == Some(*b"svas"))
+        if let Err(error) = save(system, browser, command == Some(resources::commands::SAVE_AS))
         {
             let mut log = Text::<128>::new();
             let _ = writeln!(log, "RESEDIT_SAVE_ERROR status={}", error.status());
@@ -676,7 +680,7 @@ fn document_event<'a>(system: &System<'a>, document: &mut documents::Document<'a
             browser.draw_status(system, window)?;
         }
     }
-    if command == Some(*b"host")
+    if command == Some(resources::commands::EXPORT_TO_HOST)
     {
         let previous_status = browser.status;
         if let Err(error) = export(system, browser, window)
@@ -782,7 +786,7 @@ fn document_event<'a>(system: &System<'a>, document: &mut documents::Document<'a
 fn run(system: &System<'static>) -> ToolboxResult<()>
 {
     system.menus().clear()?;
-    let _menu = system.menus().install_owned(resources::APPLICATION, 128)?;
+    system.menus().install_menu_resource(ResourceScope::Application, 128)?;
     let mut application = documents::Application::acquire()?;
     application.initialize(system)?;
     system.log("RESEDIT_READY\n")?;

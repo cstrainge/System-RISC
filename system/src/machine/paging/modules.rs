@@ -19,7 +19,8 @@ use crate::{machine::{interrupts::NativeInvocationGate, memory::*},
             toolbox::handles::OwnerRef};
 
 static REVISION: AtomicU64 = AtomicU64::new(2);
-static TABLES: Mutex<Tables> = Mutex::new(Tables { branches: None });
+static TABLES: Mutex<Tables> = Mutex::new(Tables { branches:        None,
+                                                   kernel_branches: 0 });
 static PENDING: AtomicBool = AtomicBool::new(false);
 static RETIRING: AtomicUsize = AtomicUsize::new(0);
 
@@ -55,6 +56,7 @@ pub(crate) enum Error
         observed: u64
     },
     Revision,
+    CloneInventory(CloneInventoryError),
     Monitor(crate::machine::monitor::Error)
 }
 impl Error
@@ -135,6 +137,7 @@ impl fmt::Display for Error
                        "executable PTE {address:#x} changed: expected {expected:#x}, observed \
                         {observed:#x}; original mapping/backing retained")
             }
+            Self::CloneInventory(cause) => cause.fmt(out),
             Self::Revision =>
             {
                 out.write_str("System mapping revision exhausted before PTE effects; restart \
@@ -981,7 +984,87 @@ impl Branch
 }
 struct Tables
 {
-    branches: Option<Box<Branch>>
+    branches:        Option<Box<Branch>>,
+    // Committed branches belonging only to the permanent kernel root. Empty
+    // branches remain owned after unmap; private-root retirement cannot remove
+    // them. Updated in the same lock/revision transaction as their PTEs.
+    kernel_branches: usize
+}
+/// Inventory of actual owned tables, not a reservation or application quota.
+/// The existing translation lease must span this snapshot and template copying.
+pub(super) struct CloneFootprint
+{
+    pub(super) tables:   usize,
+    pub(super) revision: u64
+}
+#[derive(Debug)]
+pub(crate) enum CloneInventoryError
+{
+    Unavailable,
+    Changing
+    {
+        revision: u64
+    },
+    Overflow
+    {
+        permanent:  usize,
+        dynamic:    usize,
+        additional: usize
+    }
+}
+impl fmt::Display for CloneInventoryError
+{
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        match self
+        {
+            Self::Unavailable =>
+            {
+                out.write_str("System clone table inventory has no permanent kernel root")
+            }
+            Self::Changing { revision } =>
+            {
+                write!(out,
+                       "System clone table inventory observed unfinished mapping revision \
+                        {revision}; no Process root published")
+            }
+            Self::Overflow { permanent,
+                             dynamic,
+                             additional } =>
+            {
+                write!(out,
+                       "System clone table inventory overflow: {permanent} permanent, {dynamic} \
+                        committed dynamic, {additional} additional tables; no new mappings \
+                        published")
+            }
+        }
+    }
+}
+/// Bootstrap Frames.count includes the extracted root. Each later kernel
+/// branch is retained by Tables exactly once. The clone keeps a subset of this
+/// hierarchy and copies leaves without splitting them, so their sum is an upper
+/// bound without walking page tables or counting other processes' roots.
+pub(super) fn clone_footprint() -> Result<CloneFootprint, CloneInventoryError>
+{
+    let spaces = SPACES.get().ok_or(CloneInventoryError::Unavailable)?;
+    interrupts::with_masked(|| {
+        let inventory = TABLES.lock();
+        let revision = REVISION.load(Ordering::Acquire);
+        if revision & 1 != 0
+        {
+            return Err(CloneInventoryError::Changing { revision });
+        }
+        let tables =
+            spaces.kernel
+                  .tables
+                  .count
+                  .checked_add(inventory.kernel_branches)
+                  .ok_or(CloneInventoryError::Overflow { permanent:  spaces.kernel.tables.count,
+                                                         dynamic:    inventory.kernel_branches,
+                                                         additional: 0 })?;
+        Ok(CloneFootprint { tables,
+                            revision })
+    })
 }
 impl Tables
 {
@@ -1234,6 +1317,10 @@ impl Plan
 
     fn commit(mut self) -> Result<Self, Error>
     {
+        let kernel = &SPACES.get().ok_or(Error::Missing)?.kernel;
+        let kernel_root = kernel.owner.root_physical().0;
+        let additional =
+            self.branches.iter().filter(|branch| branch.key.root == kernel_root).count();
         interrupts::with_masked(|| {
             let mut tables = TABLES.lock();
             for check in &self.checks
@@ -1256,15 +1343,25 @@ impl Plan
                                                  observed });
                 }
             }
+            // All inventory arithmetic must succeed before linking owners or
+            // exposing PTEs. The true bootstrap count includes its root table.
+            let overflow = || Error::CloneInventory(CloneInventoryError::Overflow {
+                permanent: kernel.tables.count,
+                dynamic: tables.kernel_branches,
+                additional
+            });
+            let kernel_branches = tables.kernel_branches.checked_add(additional).ok_or_else(overflow)?;
+            kernel.tables.count.checked_add(kernel_branches).ok_or_else(overflow)?;
             let revision = REVISION.load(Ordering::Acquire);
             let next =
                 revision.checked_add(2).filter(|_| revision & 1 == 0).ok_or(Error::Revision)?;
+            REVISION.store(revision + 1, Ordering::Release);
             while let Some(mut branch) = self.branches.pop()
             {
                 branch.next = tables.branches.take();
                 tables.branches = Some(branch);
             }
-            REVISION.store(revision + 1, Ordering::Release);
+            tables.kernel_branches = kernel_branches;
             for edit in &self.edits
             {
                 edit.store(edit.bits);

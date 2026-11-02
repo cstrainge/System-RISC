@@ -20,12 +20,14 @@
           {
             "text": "New",
             "command": "new ",
+            "command_symbol": "NEW_DOCUMENT",
             "enabled": true,
             "key": "N"
           },
           {
             "text": "Open...",
             "command": "open",
+            "command_symbol": "OPEN",
             "enabled": true,
             "key": "O"
           },
@@ -33,24 +35,28 @@
           {
             "text": "Close",
             "command": "clos",
+            "command_symbol": "CLOSE",
             "enabled": true,
             "key": "W"
           },
           {
             "text": "Save",
             "command": "save",
+            "command_symbol": "SAVE",
             "enabled": true,
             "key": "S"
           },
           {
             "text": "Save As...",
             "command": "svas",
+            "command_symbol": "SAVE_AS",
             "enabled": true
           },
           "-",
           {
             "text": "Quit",
             "command": "quit",
+            "command_symbol": "QUIT",
             "enabled": true,
             "key": "Q"
           }
@@ -203,17 +209,20 @@
           {
             "text": "Wrap Lines",
             "command": "wrap",
+            "command_symbol": "WRAP",
             "enabled": true
           },
           {
             "text": "Line Numbers",
             "command": "lnum",
+            "command_symbol": "LINE_NUMBERS",
             "enabled": true
           },
           "-",
           {
             "text": "Options...",
             "command": "opts",
+            "command_symbol": "OPTIONS",
             "enabled": true
           }
         ]

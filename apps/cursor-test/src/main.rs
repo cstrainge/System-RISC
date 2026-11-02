@@ -7,6 +7,8 @@ use mac_toolbox::{quickdraw::{cursors::StandardCursor, fonts::FontSelection},
                   textedit::{CursorMovement, EditorId},
                   *};
 
+mac_toolbox::include_resource_ids!();
+
 const REGION_LOGS: [&str; 9] =
     ["CURSOR_TEST_REGION kind=arrow\n", "CURSOR_TEST_REGION kind=ibeam\n",
      "CURSOR_TEST_REGION kind=crosshair\n", "CURSOR_TEST_REGION kind=plus\n",
@@ -39,8 +41,8 @@ fn window_layout(system: &System<'_>) -> Result<(Rect, i16), Error>
 {
     let resource = system.resources()
                          .application()
-                         .get(resources::ResourceKey { kind: mac_toolbox::TypeCode::new(*b"WIND"),
-                                                       id:   2003 })?;
+                         .get(ResourceKey { kind: mac_toolbox::TypeCode::new(*b"WIND"),
+                                            id:   2003 })?;
     let mut bytes = [0; 20];
     let read = if resource.size() == bytes.len()
     {
@@ -140,8 +142,10 @@ fn choose(system: &System<'_>, region: usize) -> Result<(), Error>
 fn run(system: &System<'_>) -> Result<(), Error>
 {
     system.menus().clear()?;
-    let _menus = [system.menus().install_owned(mac_toolbox::resources::APPLICATION, 128)?,
-                  system.menus().install_owned(mac_toolbox::resources::APPLICATION, 129)?];
+    for id in [128, 129]
+    {
+        system.menus().install_menu_resource(mac_toolbox::ResourceScope::Application, id)?;
+    }
     let mut buffer = [0; 128];
     let title = system.resources().application().string(128, &mut buffer)?;
     let (bounds, procedure) = window_layout(system)?;
@@ -168,36 +172,35 @@ fn run(system: &System<'_>) -> Result<(), Error>
             system.wait_positioned(mac_toolbox::events::EventMask::ALL, 6)?.into_parts();
         if let Some(selection) = system.menus().selection(&event)?
         {
-            if [u32::from_be_bytes(*b"clos"), u32::from_be_bytes(*b"quit")]
-               .contains(&selection.command)
+            if [resources::commands::CLOSE, resources::commands::QUIT].contains(&selection.command)
             {
                 window_owner.close()?;
                 break;
             }
             let cursor = system.quickdraw().cursors();
-            let action = match selection.command.to_be_bytes()
+            let action = match selection.command
             {
-                [b'h', b'i', b'd', b'e'] =>
+                resources::commands::HIDE =>
                 {
                     cursor.hide()?;
                     "CURSOR_TEST_ACTION kind=hide\n"
                 }
-                [b's', b'h', b'o', b'w'] =>
+                resources::commands::SHOW =>
                 {
                     cursor.show()?;
                     "CURSOR_TEST_ACTION kind=show\n"
                 }
-                [b'o', b'b', b's', b'c'] =>
+                resources::commands::OBSCURE =>
                 {
                     cursor.obscure()?;
                     "CURSOR_TEST_ACTION kind=obscure\n"
                 }
-                [b'r', b's', b'e', b't'] =>
+                resources::commands::RESET =>
                 {
                     cursor.init()?;
                     "CURSOR_TEST_ACTION kind=reset\n"
                 }
-                [b'n', b'e', b'x', b't'] =>
+                resources::commands::NEXT_FRAME =>
                 {
                     if cursor.info()?.flags & quickdraw::cursors::CURSOR_ANIMATED != 0
                     {
@@ -205,7 +208,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
                     }
                     "CURSOR_TEST_ACTION kind=next-frame\n"
                 }
-                [b'e', b'd', b'i', b't'] =>
+                resources::commands::TOGGLE_EDITABLE =>
                 {
                     editable = !editable;
                     system.textedit().set_cursor_enabled(editor, editable)?;

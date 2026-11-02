@@ -35,7 +35,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
     {
         return Err(Error::NotSupported);
     }
-    let _menus = menus::install(system).map_err(|error| diagnostic(system, "menus", error))?;
+    menus::install(system).map_err(|error| diagnostic(system, "menus", error))?;
     let mut application = documents::Application::new(system).map_err(|error| {
                                                                  diagnostic(system, "documents",
                                                                             error)

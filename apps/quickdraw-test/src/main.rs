@@ -6,14 +6,20 @@
 use mac_toolbox::*;
 
 mod demo;
-mod resources
-{
-    use mac_toolbox as mac_abi;
-    include!(concat!(env!("OUT_DIR"), "/resource_ids.rs"));
-}
+mac_toolbox::include_resource_ids!();
 
-const CLOSE: u32 = u32::from_be_bytes(*b"clos");
-const QUIT: u32 = u32::from_be_bytes(*b"quit");
+use crate::resources::commands::{CLOSE, QUIT};
+
+const PAGE_COMMANDS: [u32; 10] = [resources::commands::P000,
+                                  resources::commands::P001,
+                                  resources::commands::P002,
+                                  resources::commands::P003,
+                                  resources::commands::P004,
+                                  resources::commands::P005,
+                                  resources::commands::P006,
+                                  resources::commands::P007,
+                                  resources::commands::P008,
+                                  resources::commands::P009];
 
 fn run(system: &System<'_>) -> Result<(), Error>
 {
@@ -22,8 +28,10 @@ fn run(system: &System<'_>) -> Result<(), Error>
         return Err(Error::NotSupported);
     }
     system.menus().clear()?;
-    let _menus = [system.menus().install_owned(mac_toolbox::resources::APPLICATION, 128)?,
-                  system.menus().install_owned(mac_toolbox::resources::APPLICATION, 129)?];
+    for id in [128, 129]
+    {
+        system.menus().install_menu_resource(mac_toolbox::ResourceScope::Application, id)?;
+    }
     let window = demo::open(system)?;
     let mut selectors = [controls::ControlId(0); 10];
     for (index, id) in selectors.iter_mut().enumerate()
@@ -49,9 +57,10 @@ fn run(system: &System<'_>) -> Result<(), Error>
                 system.close_window(window)?;
                 return Ok(());
             }
-            if selection.menu_id == MenuId(129) && (1..=10).contains(&selection.item)
+            if let Some(index) =
+                PAGE_COMMANDS.iter().position(|command| *command == selection.command)
             {
-                page = (selection.item - 1) as u8;
+                page = index as u8;
                 demo::draw(system, window, page, icon_offset, &selectors)?;
             }
             continue;

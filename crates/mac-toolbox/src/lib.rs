@@ -7,8 +7,10 @@ compile_error!("the System RISC std target supplies startup; remove the no_std a
 /// Explicit wire/entry-point escape hatch. Ordinary applications use decoded
 /// native services, typed identities and Error rather than numeric statuses.
 pub use mac_abi as abi;
-pub use mac_abi::{ApplicationEntry, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_CLOCK, Point,
-                  Rect, SystemServices, WindowId, dates::Timestamp};
+pub use mac_abi::{ApplicationEntry, CAP_EVENT_WAIT, CAP_GRAPHICS, CAP_MONOTONIC_CLOCK,
+                  SystemServices, WindowId,
+                  dates::Timestamp,
+                  geometry::{Point, Rect}};
 /// Core-only native thread/TLS transport consumed by the platform CRT.
 pub use mac_traps::address_wait;
 /// Owned, bounded UTF-8 text returned by Toolbox snapshots.

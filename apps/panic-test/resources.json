@@ -20,12 +20,14 @@
           {
             "text": "Panic Now",
             "command": "pnow",
+            "command_symbol": "PANIC_NOW",
             "enabled": true,
             "key": "P"
           },
           {
             "text": "Long Panic",
             "command": "plng",
+            "command_symbol": "LONG_PANIC",
             "enabled": true,
             "key": "L"
           },
@@ -33,6 +35,7 @@
           {
             "text": "Quit",
             "command": "quit",
+            "command_symbol": "QUIT",
             "enabled": true,
             "key": "Q"
           }

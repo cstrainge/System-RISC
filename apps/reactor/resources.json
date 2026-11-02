@@ -20,6 +20,7 @@
           {
             "text": "Quit",
             "command": "quit",
+            "command_symbol": "QUIT",
             "key": "Q",
             "enabled": true
           }
@@ -37,18 +38,21 @@
           {
             "text": "Refresh",
             "command": "rfrs",
+            "command_symbol": "REFRESH",
             "key": "R",
             "enabled": true
           },
           {
             "text": "System Memory",
             "command": "memr",
+            "command_symbol": "MEMORY",
             "key": "M",
             "enabled": true
           },
           {
             "text": "Domains",
             "command": "domr",
+            "command_symbol": "DOMAINS",
             "key": "D",
             "enabled": true
           }
