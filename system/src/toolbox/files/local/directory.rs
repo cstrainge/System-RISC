@@ -128,9 +128,14 @@ impl LaunchDirectory
     /// no permanent current-directory entry retains a live DIOP root.
     pub(crate) fn advance(binding: &mut Option<Self>) -> Result<bool, Status>
     {
-        let result = binding.as_mut().ok_or(BAD_ABI)?.turn();
+        let directory = binding.as_mut().ok_or(BAD_ABI)?;
+        let allocation = directory.subject.allocation().clone();
+        // Final directory state and alias backing belong to the prospective
+        // process, including after device I/O restores the launching caller.
+        let result = crate::context::with_allocation(allocation, || directory.turn());
         if result != Ok(false)
         {
+            // Dispose the admission after restoring the caller's selection.
             drop(binding.take());
         }
         result
