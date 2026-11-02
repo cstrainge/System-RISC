@@ -713,6 +713,13 @@ name = "mac-vdagent-protocol"
 version = "0.1.0"
 
 [[package]]
+name = "mac-video-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
+]
+
+[[package]]
 name = "mac-virtio-console"
 version = "0.1.0"
 dependencies = [
@@ -1381,6 +1388,17 @@ dependencies = [
  "mac-driver",
  "mac-host-protocol",
  "mac-virtio-console",
+ "spinning_top",
+]
+
+[[package]]
+name = "virtio-gpu"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-driver",
+ "mac-video-interface",
  "spinning_top",
 ]
 
