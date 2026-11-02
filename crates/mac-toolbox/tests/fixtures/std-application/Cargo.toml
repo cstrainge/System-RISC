@@ -24,6 +24,8 @@ launch-ready = []
 launch-cancel = ["launch-ready"]
 std-random = []
 std-random-unavailable = ["std-random"]
+main-error = []
+main-error-cleanup-panic = ["main-error"]
 
 [[bin]]
 name = "StdProbe"

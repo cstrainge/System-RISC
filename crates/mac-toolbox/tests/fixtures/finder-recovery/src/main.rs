@@ -1,32 +1,33 @@
-//! Loader boundary; behavioral assertions live in canonical public SDK cases.
-#![no_std]
-#![no_main]
-use mac_toolbox::{System, SystemServices};
+//! Ordinary std application; behavioral assertions use the public SDK.
+use mac_toolbox::System;
 #[path = "../../../finder_recovery_cases.rs"]
 pub mod cases;
-mac_toolbox::panic_handler!();
-/// # Safety
-/// The loader supplies a validated service table for the application's lifetime.
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.entry")]
-pub unsafe extern "C" fn _start(services: *const SystemServices) -> mac_toolbox::abi::Status
+fn main() -> Result<(), Box<dyn std::error::Error>>
 {
-    if let Err(status) = unsafe { mac_toolbox::panic::install(services) }
+    let system = System::new()?;
+    let files = system.files();
+    let mut documents = None;
+    for index in 0..files.volume_count()?
     {
-        return status;
+        let volume = files.volume_at(index)?;
+        if volume.startup
+        {
+            assert!(documents.is_none(), "multiple startup volumes reached Finder author code");
+            documents = Some(std::path::PathBuf::from(format!("/Volumes/{}/Documents",
+                                                              volume.name.as_str())));
+        }
     }
-    let system = match unsafe { System::from_raw(services) }
-    {
-        Ok(system) => system,
-        Err(error) => return error.status()
-    };
+    assert_eq!(Some(std::env::current_dir()?),
+               documents,
+               "Finder author started without the startup user's Documents directory");
+    system.log("FINDER_RECOVERY_DOCUMENTS_OBSERVED\n")?;
     match cases::finder(&system)
     {
-        Ok(()) => 0,
+        Ok(()) => Ok(()),
         Err(error) =>
         {
             let _ = system.log("FINDER_RECOVERY_FAIL service\n");
-            error.status()
+            Err(error.into())
         }
     }
 }

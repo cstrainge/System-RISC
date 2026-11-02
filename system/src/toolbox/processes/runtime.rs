@@ -214,17 +214,23 @@ impl Saved
 /// process. Lost preparations stop admission and enter the ordinary reaper.
 pub(crate) struct FinderAdmission
 {
-    old:           u64,
-    owner:         crate::toolbox::handles::OwnerRef,
-    original:      crate::images::Binding,
-    allocation:    crate::machine::scheduler::accounting::AllocationAuthority,
-    permit:        crate::allocator::recovery::Permit,
-    activity:      crate::recovery::Activity,
-    active:        bool,
-    system_report: Option<crate::recovery::SystemReportLease>
+    old:              u64,
+    owner:            crate::toolbox::handles::OwnerRef,
+    original:         crate::images::Binding,
+    original_catalog: mac_abi::files::CatalogInfo,
+    allocation:       crate::machine::scheduler::accounting::AllocationAuthority,
+    permit:           crate::allocator::recovery::Permit,
+    activity:         crate::recovery::Activity,
+    active:           bool,
+    system_report:    Option<crate::recovery::SystemReportLease>
 }
 impl FinderAdmission
 {
+    pub(crate) fn original_catalog(&self) -> mac_abi::files::CatalogInfo
+    {
+        self.original_catalog
+    }
+
     pub(crate) fn old(&self) -> u64
     {
         self.old
@@ -383,6 +389,7 @@ impl Desktop
         }
         let binding = self.processes.resource_binding(old)?;
         let original = binding.image().ok_or(BAD_ABI)?;
+        let original_catalog = self.processes.original_catalog(old)?;
         // Check both capacities before moving either buffer. These observations
         // reserve no identity; final provision remains in this Desktop turn.
         let required = self.locals.len().checked_add(1).ok_or(BAD_ARGUMENT)?;
@@ -423,6 +430,7 @@ impl Desktop
             class: mac_kernel_model::policy::MemoryClass::Kernel
         }, || self.crash.snapshot())?;
         recipient.local.crash = crate::toolbox::crashes::Manager::from_snapshot(snapshot);
+        recipient.process.bind_launch_catalog(original_catalog)?;
         let FinderPreparation { local,
                                 allocation,
                                 owner,
@@ -446,6 +454,7 @@ impl Desktop
         Ok(FinderAdmission { old,
                              owner,
                              original,
+                             original_catalog,
                              allocation,
                              permit,
                              activity,
@@ -1233,15 +1242,21 @@ impl Desktop
     /// Only provisional directory/account/checkpoint publication is performed
     /// here. The caller prepares its heap after releasing Desktop.
     pub(crate) fn reserve_application(
-        &mut self, call: &mut ProcessCall, name: &str)
+        &mut self, call: &mut ProcessCall, catalog: mac_abi::files::CatalogInfo)
         -> Result<Option<crate::toolbox::processes::LaunchAdmission>, Status>
     {
+        if catalog.volume != call.volume || catalog.id != call.cnid
+        {
+            return Err(BAD_ABI);
+        }
         if self.activate_existing_application(call)?
         {
             return Ok(None);
         }
-        let id = self.processes.provision(name, call.volume, call.cnid)?;
-        let capture = self.processes.launch_admission(id);
+        let id = self.processes.provision(catalog.name(), catalog.volume, catalog.id)?;
+        let capture = self.processes
+                          .bind_launch_catalog(id, catalog)
+                          .and_then(|()| self.processes.launch_admission(id));
         match capture
         {
             Ok(admission) => Ok(Some(admission)),

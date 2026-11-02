@@ -4,9 +4,10 @@
 use mac_abi::{Status, SystemServices};
 use mac_traps::Client;
 
-use crate::sync::atomic::{AtomicPtr, Ordering};
+use crate::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(crate::ptr::null_mut());
+static MAIN_THREAD: AtomicU64 = AtomicU64::new(0);
 
 /// The Toolbox Cargo instance and this private sysroot instance share one
 /// installation through this C-layout boundary. Null means startup is absent.
@@ -41,10 +42,12 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     }
     // Main-thread storage is a loader/Thread Manager admission prerequisite,
     // not something std can create after current-thread initialization starts.
-    if unsafe { __system_risc_thread_id_v1() } == 0
+    let main_thread = unsafe { __system_risc_thread_id_v1() };
+    if main_thread == 0
     {
         failure(mac_abi::BAD_ABI, b"std startup has no canonical native thread");
     }
+    MAIN_THREAD.store(main_thread, Ordering::Release);
     unsafe extern "C" {
         // Measured pinned compiler wrapper ABI; not lang_start's isize ABI.
         fn main(argc: i32, argv: *const *const u8) -> i32;
@@ -58,8 +61,15 @@ pub unsafe extern "C" fn _start(services: *const SystemServices) -> Status
     // process with a real i32 result, never interpreting it as a service Status.
     unsafe {
         __system_risc_tls_teardown_v1();
+        super::failure::show_main_error(result);
         __system_risc_exit_v1(result)
     }
+}
+
+pub(super) fn is_main_thread() -> bool
+{
+    let main = MAIN_THREAD.load(Ordering::Acquire);
+    main != 0 && main == unsafe { __system_risc_thread_id_v1() }
 }
 
 /// Explicit process exit skips user TLS destructors. The startup return path

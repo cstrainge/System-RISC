@@ -27,8 +27,9 @@ mod entropy;
 #[cfg(feature = "std-random")]
 mod random;
 
+#[cfg(not(feature = "main-error"))]
 use std::error::Error;
-#[cfg(not(feature = "launch-ready"))]
+#[cfg(all(not(feature = "launch-ready"), not(feature = "main-error")))]
 use std::{cell::RefCell,
           hint::black_box,
           io::{IsTerminal, Read, Write},
@@ -36,12 +37,12 @@ use std::{cell::RefCell,
           time::{Duration, Instant, SystemTime}};
 
 use mac_toolbox::System;
-#[cfg(not(feature = "launch-ready"))]
+#[cfg(all(not(feature = "launch-ready"), not(feature = "main-error")))]
 use mac_toolbox::{Rect, windows::WindowSpec};
 
-#[cfg(not(feature = "launch-ready"))]
+#[cfg(all(not(feature = "launch-ready"), not(feature = "main-error")))]
 struct Witness(String);
-#[cfg(not(feature = "launch-ready"))]
+#[cfg(all(not(feature = "launch-ready"), not(feature = "main-error")))]
 impl Drop for Witness
 {
     fn drop(&mut self)
@@ -54,21 +55,65 @@ impl Drop for Witness
         }
     }
 }
-#[cfg(not(feature = "launch-ready"))]
+#[cfg(all(not(feature = "launch-ready"), not(feature = "main-error")))]
 thread_local! {
     static VALUE: RefCell<Option<Witness>> = const { RefCell::new(None) };
 }
 
+#[cfg(not(feature = "main-error"))]
 fn main() -> Result<(), Box<dyn Error>>
 {
     let system = System::new()?;
     #[cfg(feature = "launch-ready")]
     return launch_ready::run(&system);
-    #[cfg(not(feature = "launch-ready"))]
+    #[cfg(all(not(feature = "launch-ready"), not(feature = "main-error")))]
     run_standard(system)
 }
 
-#[cfg(not(feature = "launch-ready"))]
+#[cfg(feature = "main-error")]
+fn main() -> mac_toolbox::ToolboxResult<()>
+{
+    use std::{cell::RefCell, rc::Rc};
+    struct Cleanup(&'static str);
+    impl Drop for Cleanup
+    {
+        fn drop(&mut self)
+        {
+            if let Ok(system) = System::new()
+            {
+                let _ = system.log(self.0);
+            }
+            if cfg!(feature = "main-error-cleanup-panic") && self.0 == "STD_MAIN_ERROR_TLS_DROP\n"
+            {
+                panic!("main-error TLS cleanup panic supersedes the original Err");
+            }
+        }
+    }
+    thread_local! {
+        static CLEANUP: RefCell<Option<Cleanup>> = const { RefCell::new(None) };
+    }
+    let system = System::new()?;
+    let identity = system.processes().current()?;
+    system.log(&format!("STD_MAIN_ERROR_BEGIN app={} thread={}\n",
+                        identity.id.0, identity.thread.0))?;
+    let _local = Cleanup("STD_MAIN_ERROR_LOCAL_DROP\n");
+    CLEANUP.with(|slot| *slot.borrow_mut() = Some(Cleanup("STD_MAIN_ERROR_TLS_DROP\n")));
+    let values = Rc::new(RefCell::new(vec![String::from("zebra"), String::from("apple")]));
+    let weak = Rc::downgrade(&values);
+    let shared = values.clone();
+    shared.borrow_mut().sort();
+    assert_eq!(&values.borrow()[0], "apple");
+    assert_eq!(Rc::strong_count(&values), 2);
+    let boxed = Box::new(values.borrow().join("/"));
+    assert_eq!(*boxed, "apple/zebra");
+    drop(shared);
+    drop(values);
+    assert!(weak.upgrade().is_none(), "Rc payload remained alive after the last strong reference");
+    system.log("STD_MAIN_ERROR_COLLECTIONS_OBSERVED\n")?;
+    Err(mac_toolbox::Error::NotFound)
+}
+
+#[cfg(all(not(feature = "launch-ready"), not(feature = "main-error")))]
 fn run_standard(system: System) -> Result<(), Box<dyn Error>>
 {
     let repeated = System::new()?;

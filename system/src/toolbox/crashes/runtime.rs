@@ -3,7 +3,11 @@
 use alloc::string::String;
 use core::fmt;
 
-use mac_abi::{crashes::*, events::CMD_KEY, quickdraw::*, *, geometry::{Point, Rect}};
+use mac_abi::{crashes::*,
+              events::CMD_KEY,
+              geometry::{Point, Rect},
+              quickdraw::*,
+              *};
 
 use crate::toolbox::{crashes::{RESOURCE_ID, ReportLayout},
                      events::input::Input,
@@ -163,6 +167,11 @@ fn window_request(id: WindowId) -> WindowRequest
 
 impl super::Desktop
 {
+    pub(crate) fn main_error_report(&self, owner: u64, thread: u64) -> bool
+    {
+        self.owner == owner && self.crash.main_error_capture(owner, thread)
+    }
+
     pub(crate) fn note_crash_capture_attempt(&mut self)
     {
         self.crash.capture_attempt();
@@ -434,6 +443,54 @@ impl super::Desktop
         Ok(())
     }
 
+    /// Position the whole WDEF structure, including its title and frame, in the
+    /// usable desktop. The free vertical space is split one part above and two
+    /// below, so the report sits in the upper middle rather than at a fixed pixel.
+    fn position_main_error(&self, request: &mut WindowRequest, title: &str) -> Result<(), Status>
+    {
+        use mac_abi::definitions;
+        let id = request.procedure >> 4;
+        let entry = crate::loader::cached_definition(*b"WDEF", id).map_err(crate::loader::status)?
+                                                                  .ok_or(NOT_FOUND)?;
+        let mut state = definitions::WindowDefinitionState::new(request.bounds, title);
+        let mut call = DefinitionCall { reflow: 0,
+                                        header: Header::for_type::<DefinitionCall>(),
+                                        kind: definitions::WDEF,
+                                        id,
+                                        variation: request.procedure & 15,
+                                        message: definitions::CALCULATE,
+                                        reserved: 0,
+                                        param: 0,
+                                        object: core::ptr::from_mut(&mut state).cast(),
+                                        surface: core::ptr::null_mut(),
+                                        gate: crate::machine::traps::gateway };
+        let status = crate::toolbox::resources::definitions::invoke(entry, &mut call);
+        if status < 0
+        {
+            return Err(status as Status);
+        }
+        let usable = self.desktop.bounds();
+        let frame = state.structure;
+        let width = i32::from(frame.right) - i32::from(frame.left);
+        let height = i32::from(frame.bottom) - i32::from(frame.top);
+        let spare_width = i32::from(usable.right) - i32::from(usable.left) - width;
+        let spare_height = i32::from(usable.bottom) - i32::from(usable.top) - height;
+        if width <= 0 || height <= 0 || spare_width < 0 || spare_height < 0
+        {
+            return Err(NOT_SUPPORTED);
+        }
+        let dx = i32::from(usable.left) + spare_width / 2 - i32::from(frame.left);
+        let dy = i32::from(usable.top) + spare_height / 3 - i32::from(frame.top);
+        let shifted = |value: i16, delta: i32| {
+            i16::try_from(i32::from(value) + delta).map_err(|_| BAD_ARGUMENT)
+        };
+        request.bounds = Rect::new(shifted(request.bounds.left, dx)?,
+                                   shifted(request.bounds.top, dy)?,
+                                   shifted(request.bounds.right, dx)?,
+                                   shifted(request.bounds.bottom, dy)?);
+        Ok(())
+    }
+
     pub(crate) fn queue_crash_report(&mut self, flags: u32) -> Result<CrashInfo, Status>
     {
         if self.crash.info().app == 0
@@ -609,9 +666,14 @@ impl super::Desktop
                               request.procedure = word(8)?;
                               Ok::<_, Status>(request)
                           }).ok_or(NOT_SUPPORTED)??;
-        let title = label(0)?;
+        let main_error = self.crash.info().flags & MAIN_ERROR != 0;
+        let title = label(if main_error { 30 } else { 0 })?;
         request.title[..title.len()].copy_from_slice(title.as_bytes());
         request.title_length = title.len() as u32;
+        if main_error
+        {
+            self.position_main_error(&mut request, title.text()?)?;
+        }
         checked(self.window(NEW_WINDOW, &mut request))?;
         self.crash.set_window(WindowId(request.id));
         activity.set_object(request.id);
@@ -624,6 +686,17 @@ impl super::Desktop
         serial!("CRASH_REPORT_READY app={} window={} bytes={} lines={} page_lines={} flags={}",
                 self.owner, info.window.0, info.report_bytes, info.line_count, info.page_lines,
                 info.flags);
+        if main_error
+        {
+            if let Some(window) = self.windows.window(info.window)
+            {
+                serial!("MAIN_ERROR_REPORT_BOUNDS app={} content={:?} structure={:?} usable={:?}",
+                        self.owner,
+                        window.bounds,
+                        window.structure(),
+                        self.desktop.bounds());
+            }
+        }
         Ok(())
     }
 
@@ -743,7 +816,8 @@ impl super::Desktop
                         icons_service::Drawing::new(resources, &call, service::Port::default())
                     }).ok_or(NOT_SUPPORTED)??;
                 self.icon(&call, drawing)?;
-                self.crash_text(window, FontSelection::default(), 64, 29, label(0)?.text()?)?;
+                let title = label(if info.flags & MAIN_ERROR != 0 { 30 } else { 0 })?;
+                self.crash_text(window, FontSelection::default(), 64, 29, title.text()?)?;
                 self.crash_text(window,
                                 MONACO,
                                 64,
@@ -766,8 +840,18 @@ impl super::Desktop
                 }
                 else
                 {
-                    let description =
-                        if self.is_current_finder_report() { label(8)? } else { label(11)? };
+                    let description = label(if self.is_current_finder_report()
+                                            {
+                                                8
+                                            }
+                                            else if info.flags & MAIN_ERROR != 0
+                                            {
+                                                31
+                                            }
+                                            else
+                                            {
+                                                11
+                                            })?;
                     self.crash_text(window, MONACO, 14, 72, description.text()?)?;
                     let mut warnings = String::new();
                     for (enabled, index) in [(info.flags & TRUNCATED != 0, 9),

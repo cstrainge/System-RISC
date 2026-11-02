@@ -174,15 +174,20 @@ pub(crate) fn request(call: &mut NativeExitCall, suspension: Result<(), Status>)
                 {
                     Outcome::Abort(call.code)
                 };
-                let joined = crate::kernel::with_desktop(|desktop| {
-                                 Ok::<_, Status>(desktop.processes
-                                                        .get(owner.owner().incarnation())?
-                                                        .termination
-                                                        .record
-                                                        .is_some())
-                             }).map_err(|error| error.status())??;
+                let (joined, main_error) =
+                    crate::kernel::with_desktop(|desktop| {
+                        let joined = desktop.processes
+                                            .get(owner.owner().incarnation())?
+                                            .termination
+                                            .record
+                                            .is_some();
+                        let main_error = desktop.main_error_report(owner.owner().incarnation(),
+                                                                   executor.thread());
+                        Ok::<_, Status>((joined, main_error))
+                    }).map_err(|error| error.status())??;
                 let failure = joined
                               || call.flags == NATIVE_EXIT_ABORT
+                              || (call.code != 0 && main_error)
                               || owner.owner().incarnation() == crate::context::finder_app().0;
                 if !failure
                 {

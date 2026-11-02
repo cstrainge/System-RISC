@@ -89,8 +89,18 @@ CatalogInfo and executable protection remain independent. Provider admission
 retains the genuine job across scheduler defer; cancellation retains protection
 until its actual subject scope closes. Successful admission releases the operation
 root while the owner retains its directory alias. Explicit later chdir replaces
-that directory normally. Initial/replacement Finder consumers and provider,
-cancellation and owner-stop qualification remain separate gates.
+that directory normally.
+
+Initial and replacement Finder call the same Documents admission outside Desktop,
+then publish real executable protection under that prospective owner's account
+before author execution. The original executable catalog selects that executable
+pin and is never reported as the admitted CWD. Each successful alias remains
+owned through canonical process cleanup. Initial publication failure retains the
+original boot owner until actual Restart; replacement follows its original
+rollback. Directory and executable refusals keep their distinct cause rather than
+being reported as entropy failures. Provider/cancellation/owner-stop behavior and
+new initial/replacement Documents execution need their own target qualification;
+source changes alone do not establish those paths.
 
 Ordinary writable operations currently support native HFS-B. Classic HFS and
 provider operations without the required implementation return explicit errors.

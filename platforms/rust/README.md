@@ -97,6 +97,17 @@ transport. Native std reporting and concurrent process-failure ownership require
 their own matching-artifact evidence; compiling
 this hook does not establish a functioning bomb dialog.
 
+Ordinary main may return `mac_toolbox::ToolboxResult<()>` or another Rust
+`Termination` result. For `Result::Err`, the platform streams the error's `Debug`
+details to a System-owned draft while the value is alive. After normal std cleanup
+and main-thread TLS destruction, the CRT publishes the error report and exits
+normally with failure status 1. This is separate from panic/Abort101. A cleanup
+panic supersedes the draft through the default panic path. The error window uses
+the actual WDEF structure and usable desktop bounds to center horizontally and
+place one third of the spare vertical space above it. Reporting refusal retains
+its typed diagnostic and never changes an ordinary Err into a panic.
+These new main-error paths still require matching-artifact native qualification.
+
 The actual default allocation-error hook also uses a dedicated CRT report bridge,
 preserving the refused size/alignment and `NO_MEMORY` cause. It does not invoke
 a user panic hook or format through allocating stdio/backtrace code. Fallible

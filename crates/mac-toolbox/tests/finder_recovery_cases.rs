@@ -174,9 +174,10 @@ pub fn finder(system: &System<'_>) -> ToolboxResult<()>
     if phase == 0
     {
         system.log("DESKTOP_READY: public Finder recovery fixture\n")?;
-        // A background launch must not own the failed shell's report input.
+        // The physical panic action belongs to Finder after the worker's
+        // launch. A pressure transport can prepare its real workload first;
+        // std will queue System recovery as soon as the panic aborts.
         system.processes().activate(current.id)?;
-        panic!("Finder recovery fixture: retained report café λ phase={phase}");
     }
     loop
     {
@@ -185,6 +186,10 @@ pub fn finder(system: &System<'_>) -> ToolboxResult<()>
             Event::KeyDown { key,
                              .. } if key.character() == 'p' =>
             {
+                if phase == 0
+                {
+                    panic!("Finder recovery fixture: retained report café λ phase={phase}");
+                }
                 panic!("Finder recovery fixture: second failure phase={phase}")
             }
             Event::KeyDown { key,
