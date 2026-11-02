@@ -117,7 +117,7 @@ stack, invocation identity, allocation account and cancellation/wakeup authority
 The worker must be eligible for bounded asynchronous channel and Scrap work
 outside the globally interrupt-masked application trap path. A boolean worker
 flag, borrowed application identity or manually constructed account token does
-not satisfy this gate. The current 96-byte module `Host` descriptor provides
+not satisfy this gate. The current 104-byte module `Host` descriptor provides
 the checked worker callbacks used by `mac-driver-alloc::Workers`. Native worker
 execution, cancellation, original-Subject I/O and actual reclamation have the
 bounded observations recorded in [THREADING.md](../THREADING.md). Obtain genuine

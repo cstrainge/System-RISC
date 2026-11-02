@@ -351,3 +351,61 @@ allocation/startup, files, clocks, OS threads/TLS/synchronization, event wakeups
 System-owned panic reporting. Compile the standard library's surface while
 reporting unavailable facilities honestly; do not invent working sockets or
 require a generic IPC subsystem merely to deliver resident completions.
+
+
+### Entropy source deadline observations — 2026-11-01
+
+A private optimized RV64 QEMU image with System resource
+`f7fef2e643ddb3af4b47cd1beff66ef2d92c451e07749ee6620bdfbf519683f7`
+and ROM `73954623bc3ed093a15ddce337473768263e14dfc748cf5cfda39be07fbf1a09`
+exercised the actual 104-byte Host clock descriptor and external RNG deadline.
+With SDK `f2d785d5e70a1d71eae401220614a13a19fe3409ff33d0e05179124d242eacc0`,
+normal delayed READY led to std collection work in main/four children and real
+reclamation. With the source withheld, ordinary and document launch reached the
+native deadline, refused with ENTR1/I/O identity, reset the device, reclaimed the
+unstarted owner and allowed alert dismissal and genuine retry. Initial Finder
+reached its terminal startup screen, retained unique original boot ownership
+until actual Restart, then booted a fresh desktop.
+
+A real no_std diagnostic using only the public facade measured 30.0585137 seconds
+on the guest clock before refusal, observed zero initialized bytes and an unchanged
+64-byte caller buffer, received the provider's explicit 30-second explanation,
+then completed actual reset and source-backed retry, THRD/account closure and
+input. A single diagnostic guest timer interval permitted reset metadata sampling;
+this is not latency or concurrency acceptance. The first public message still
+called the generic I/O cause disk I/O; that wording failed presentation review and
+the shared Display text was corrected. This historical capture does not establish
+the corrected text's native presentation.
+
+Those five captures kept source/base fixed, reaped owned guests and removed cloned
+media. Logs include transient pending cleanup/quarantine messages; actual later
+PROCESS_EXIT is emitted only after successful canonical removal, settled cleanup
+and original account closure. Pending messages alone do not establish either final
+failure or completed cleanup. Clock-policy/foreign-context refusal, regression,
+overflow, malformed DMA, unacknowledged reset, pending replacement cancellation,
+provider withdrawal, Windows and other hardware remain unqualified.
+
+
+The corrected final assembly used the same System executable
+`5caa5a12d7a503ae29a2cf1f254cd2817a59470507bbb79c2578b1e9c21e40b7`,
+System resource `eb2e53170ffec45d8ce555b6eaa1ac30b0ac61c89ee84ff346e0e953baa993ea`,
+Finder resource `1c31d265d01b21f257d1d98157129f13ed250074425a33dd6e4c76c9a319865a`,
+the ROM above, and matching SDK
+`55265da35c763f56a6311d1e69b43a2d76f558bd0c11480681b6c35d5506614c`.
+The real public diagnostic then observed 30.0429125 guest-clock seconds, unchanged
+output, the corrected general I/O cause and explicit source deadline, actual reset,
+successful retry and original thread/account closure. The assembled resource set
+changed even though the System executable stayed identical; the final image was
+rebuilt and the ordinary/document/boot deadline scenarios were repeated on it.
+
+A further final-assembly std case supplied the genuine automatic launch READY
+reply, allowed ordinary main to enter, then withheld the actual std seed reply.
+The native deadline produced the precise retained System report and Abort101;
+the seed reply stayed withheld, no collection workload completed, the device reset,
+and report dismissal allowed actual THRD and original account closure and input.
+The actual report was inspected visually. This exercises unexpected source loss
+after admission, not merely absent-device rejection before author entry. All six
+final captures kept source/base fixed, reaped owned guests and removed cloned
+media without host cleanup errors. These observations do not enlarge the
+unqualified clock/cleanup/provider/platform cases listed above or complete std
+adoption.

@@ -13,6 +13,11 @@ use mac_driver::{Client, Completion, Error, Phase, Request, Result,
                  devices::{DeviceService, interface}};
 use mac_entropy_interface as entropy;
 
+// A source that never completes must enter the real reset/ACK path instead of
+// keeping application admission pending forever. Cleanup itself still requires
+// positive device acknowledgement; this deadline never grants reclamation.
+const SOURCE_TIMEOUT_MICROSECONDS: u64 = 30_000_000;
+
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct Descriptor
@@ -85,6 +90,8 @@ enum Diagnostic
     Configuring,
     Waiting,
     Ready,
+    Clock,
+    Timeout,
     Queue,
     Cleanup
 }
@@ -113,6 +120,12 @@ impl Diagnostic
             Self::Ready =>
             {
                 "The entropy device has supplied bytes; future source failures remain possible"
+            }
+            Self::Clock => "System monotonic clock refused or regressed; entropy work was stopped",
+            Self::Timeout =>
+            {
+                "The entropy source did not complete within 30 seconds; check the host RNG source \
+                 and retry after acknowledged device reset"
             }
             Self::Queue =>
             {
@@ -391,11 +404,14 @@ struct Work
     operation: u32,
     capacity:  usize,
     cancelled: bool,
-    failure:   Option<Error>
+    failure:   Option<Error>,
+    clock:     u64,
+    deadline:  u64
 }
 
 pub(super) struct Device
 {
+    host:            Client,
     service:         DeviceService,
     slots:           u32,
     ordinal:         u32,
@@ -411,7 +427,8 @@ impl Device
     pub(super) fn new(host: Client) -> Result<Self>
     {
         let service = DeviceService::new(host)?;
-        Ok(Self { service,
+        Ok(Self { host,
+                  service,
                   slots: service.count()?,
                   ordinal: 0,
                   hardware: None,
@@ -607,6 +624,7 @@ impl Device
         {
             return Err(Error(BAD_ARGUMENT));
         }
+        let mut observed_clock = None;
         if let Some(work) = self.work
         {
             if work.ticket != request.ticket
@@ -624,11 +642,36 @@ impl Device
             {
                 return Ok(Completion::Complete(0));
             }
-            self.work = Some(Work { ticket:    request.ticket,
+            // Refusal or overflow before a new operation retains no new work
+            // and never posts DMA. This is the genuine callback's Host service,
+            // not a worker token or a guessed machine-counter frequency.
+            let clock = match self.host.monotonic_microseconds()
+            {
+                Ok(clock) => clock,
+                Err(error) =>
+                {
+                    self.diagnostic = Diagnostic::Clock;
+                    self.failure = Some(error);
+                    self.cleanup_failure = None;
+                    return Err(error);
+                }
+            };
+            let Some(deadline) = clock.checked_add(SOURCE_TIMEOUT_MICROSECONDS)
+            else
+            {
+                self.diagnostic = Diagnostic::Clock;
+                self.failure = Some(Error(BAD_ARGUMENT));
+                self.cleanup_failure = None;
+                return Err(Error(BAD_ARGUMENT));
+            };
+            observed_clock = Some(clock);
+            self.work = Some(Work { ticket: request.ticket,
                                     operation: request.operation,
-                                    capacity:  output.len(),
+                                    capacity: output.len(),
                                     cancelled: false,
-                                    failure:   None });
+                                    failure: None,
+                                    clock,
+                                    deadline });
             self.failure = None;
             self.cleanup_failure = None;
         }
@@ -646,6 +689,29 @@ impl Device
             }
             else
             {
+                let clock = observed_clock.map_or_else(|| self.host.monotonic_microseconds(), Ok);
+                match clock
+                {
+                    Ok(clock) if clock < work.clock =>
+                    {
+                        self.diagnostic = Diagnostic::Clock;
+                        work.failure = Some(Error(BAD_ABI));
+                    }
+                    Ok(clock) if clock >= work.deadline =>
+                    {
+                        self.diagnostic = Diagnostic::Timeout;
+                        work.failure = Some(Error(IO_ERROR));
+                    }
+                    Ok(clock) => work.clock = clock,
+                    Err(error) =>
+                    {
+                        self.diagnostic = Diagnostic::Clock;
+                        work.failure = Some(error);
+                    }
+                }
+            }
+            if work.failure.is_none()
+            {
                 match self.progress(work, output)
                 {
                     Ok(Some(count)) =>
@@ -653,7 +719,11 @@ impl Device
                         self.work = None;
                         return Ok(Completion::Complete(count));
                     }
-                    Ok(None) => return Ok(Completion::Pending),
+                    Ok(None) =>
+                    {
+                        self.work = Some(work);
+                        return Ok(Completion::Pending);
+                    }
                     Err(error) => work.failure = Some(error)
                 }
             }
@@ -686,7 +756,10 @@ impl Device
             {
                 // No forged terminal cancellation ACK. ERROR_TEXT and module
                 // quiescence expose the retained cleanup failure; storage lives.
-                self.diagnostic = Diagnostic::Cleanup;
+                if work.failure.is_none()
+                {
+                    self.diagnostic = Diagnostic::Cleanup;
+                }
                 Ok(Completion::Pending)
             }
         }

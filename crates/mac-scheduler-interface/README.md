@@ -11,7 +11,7 @@ clock/configuration and exact qualification limits.
 SCHD is an exclusive, kernel-only policy offer. The module has only irreducible
 resident services, including SCTL and MLIF, and no module dependency. Its pure
 policy callback uses private `Instance.dispatch` phase 6, operation CHOOSE=1,
-with existing Host96/Instance24/Call64 and native ABI1. General broker entry to
+with existing Host104/Instance24/Call64 and native ABI1. General broker entry to
 SCHD/phase6 must refuse before dispatch. `Call.ticket` carries the per-hart
 round sequence in this phase; it is not a DREQ or an ownership capability.
 

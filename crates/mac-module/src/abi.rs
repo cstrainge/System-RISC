@@ -40,6 +40,10 @@ pub type AllocationOperation = unsafe extern "C" fn(*mut core::ffi::c_void) -> i
 pub type CriticalSection =
     unsafe extern "C" fn(u64, AllocationOperation, *mut core::ffi::c_void) -> i32;
 pub type Workers = unsafe extern "C" fn(u64, *mut WorkerCall) -> i32;
+/// Bounded monotonic microseconds from the admitted machine timebase. The
+/// installed module invocation authenticates context; the output is borrowed
+/// exclusively until return. This grants no worker or scheduling authority.
+pub type Monotonic = unsafe extern "C" fn(u64, *mut u64) -> i32;
 /// Entry consumes the captured allocation exactly once, including its destructor.
 pub type WorkerEntry = unsafe extern "C" fn(*mut core::ffi::c_void) -> i32;
 /// Only used if entry never began; consumes the captured allocation exactly once.
@@ -125,7 +129,8 @@ pub struct Host
     pub reallocate:             Option<Reallocate>,
     pub with_module_allocation: Option<WithModuleAllocation>,
     pub workers:                Option<Workers>,
-    pub critical_section:       Option<CriticalSection>
+    pub critical_section:       Option<CriticalSection>,
+    pub monotonic:              Option<Monotonic>
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -199,7 +204,9 @@ pub const LAYOUT_ID: u64 = 64
                            | (1 << 63);
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(core::mem::size_of::<Host>() == 96);
+    assert!(core::mem::size_of::<Host>() == 104);
+    assert!(core::mem::align_of::<Host>() == 8);
+    assert!(core::mem::offset_of!(Host, monotonic) == 96);
     assert!(core::mem::size_of::<WorkerSpecification>() == 72);
     assert!(core::mem::align_of::<WorkerSpecification>() == 8);
     assert!(core::mem::offset_of!(WorkerSpecification, state) == 24);
