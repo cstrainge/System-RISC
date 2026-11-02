@@ -219,6 +219,16 @@ impl<'a> Windows<'a>
         r.reserved = i16::from(bounds.is_none());
         self.client.window(SET_STANDARD_BOUNDS, r).map(|_| ())
     }
+
+    /// Classic `SizeWindow` plus `MoveWindow`: place the content rectangle at
+    /// `bounds` in global coordinates. Controls are re-laid-out, stacking order
+    /// and activation are unchanged, and the owner gets a geometry notification.
+    pub fn set_bounds(self, id: WindowId, bounds: Rect) -> Result<()>
+    {
+        let mut r = request(id);
+        r.bounds = bounds;
+        self.client.window(SET_WINDOW_BOUNDS, r).map(|_| ())
+    }
 }
 
 /// Owns one resident window. Copying its event identity does not copy ownership.
@@ -310,6 +320,11 @@ impl Window<'_>
     pub fn set_standard_bounds(&self, bounds: Option<Rect>) -> Result<()>
     {
         self.windows().set_standard_bounds(self.id, bounds)
+    }
+
+    pub fn set_bounds(&self, bounds: Rect) -> Result<()>
+    {
+        self.windows().set_bounds(self.id, bounds)
     }
 
     /// Close immediately, retaining ownership on failure. An already closed

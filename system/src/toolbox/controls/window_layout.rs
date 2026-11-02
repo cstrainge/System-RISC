@@ -42,6 +42,21 @@ pub(super) fn scene_admission(windows: &WindowManager, content: &[Content], pend
     }
 }
 
+fn relayout(windows: &WindowManager, content: &mut [Content], pending: &[Content],
+            controls: &mut Manager, definitions: &mut Definitions, id: WindowId, viewport: Rect)
+            -> Result<Vec<Rect>, Status>
+{
+    let prepared =
+        controls.prepare_window(id.0,
+                                viewport,
+                                pending.iter().any(|c| c.id == SceneTarget::from(id)),
+                                None,
+                                crate::machine::traps::gateway,
+                                |id| definitions.resolve(*b"CDEF", id).map_err(crate::loader::status))?;
+    let (used, limit) = scene_admission(windows, content, pending, SceneTarget::from(id));
+    publish(content, controls, id.0, prepared, used, limit)
+}
+
 fn publish(content: &mut [Content], controls: &mut Manager, window: u64, mut prepared: Prepared,
            used: usize, limit: usize)
            -> Result<Vec<Rect>, Status>
@@ -254,27 +269,46 @@ impl Toolbox
         let mut damage = None;
         let result =
             self.windows.track(point, released, &mut self.events, when, |windows, id, viewport| {
-                            let prepared =
-                                controls.prepare_window(id.0,
-                                                        viewport,
-                                                        pending.iter()
-                                                               .any(|c| {
-                                                                   c.id == SceneTarget::from(id)
-                                                               }),
-                                                        None,
-                                                        crate::machine::traps::gateway,
-                                                        |id| {
-                                                            definitions.resolve(*b"CDEF", id)
-                                                               .map_err(crate::loader::status)
-                                                        })?;
-                            let (used, limit) = scene_admission(windows,
-                                                                content,
-                                                                pending,
-                                                                SceneTarget::from(id));
-                            let changed = publish(content, controls, id.0, prepared, used, limit)?;
-                            damage = Some((id, changed));
+                            damage = Some((id,
+                                           relayout(windows,
+                                                    content,
+                                                    pending,
+                                                    controls,
+                                                    definitions,
+                                                    id,
+                                                    viewport)?));
                             Ok(())
                         });
+        self.finish_relayout(result, damage)
+    }
+
+    /// Programmatic SizeWindow/MoveWindow: the same staged layout as a user
+    /// grow, so a refused layout leaves the window and controls unchanged.
+    pub(super) fn set_window_bounds(&mut self, id: WindowId, bounds: Rect) -> Option<Action>
+    {
+        let content = &mut self.presentation.content;
+        let pending = &self.presentation.pending_content;
+        let controls = &mut self.controls;
+        let definitions = &mut self.definitions;
+        let mut damage = None;
+        let result = self.windows.set_bounds(id, bounds, |windows, id, viewport| {
+                                    damage = Some((id,
+                                                   relayout(windows,
+                                                            content,
+                                                            pending,
+                                                            controls,
+                                                            definitions,
+                                                            id,
+                                                            viewport)?));
+                                    Ok(())
+                                });
+        self.finish_relayout(result, damage)
+    }
+
+    fn finish_relayout(&mut self, result: Result<Option<Action>, Status>,
+                       damage: Option<(WindowId, Vec<Rect>)>)
+                       -> Option<Action>
+    {
         match result
         {
             Ok(action) =>

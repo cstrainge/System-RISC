@@ -693,6 +693,17 @@ impl Browser
         Ok(())
     }
 
+    /// The desktop is an ordinary window: a new screen size is an ordinary
+    /// resize followed by an icon re-layout and a repaint of that window.
+    pub fn display_changed(&mut self, system: &System<'_>) -> Result<(), Error>
+    {
+        let bounds = desktop_bounds(system)?;
+        system.windows().set_bounds(self.desktop.window, bounds)?;
+        self.desktop.origin = (bounds.left, bounds.top);
+        invalidate();
+        system.windows().invalidate(self.desktop.window, self.desktop_local(bounds))
+    }
+
     pub fn is_desktop_window(&self, id: WindowId) -> bool
     {
         id != WindowId(0) && id == self.desktop.window

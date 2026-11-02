@@ -60,6 +60,21 @@ impl EventManager
         self.post(event);
     }
 
+    /// Level-triggered notification: only the latest of its kind is retained,
+    /// so a burst of changes cannot crowd out a receiver's bounded queue.
+    #[cfg(all(target_arch = "riscv64", feature = "display-event-debug"))]
+    pub(crate) fn post_level(&mut self, event: Event)
+    {
+        if let Some(queued) = self.queue[..self.len]
+            .iter_mut()
+            .find(|queued| queued.kind == event.kind && queued.message == event.message)
+        {
+            *queued = event;
+            return;
+        }
+        self.post(event);
+    }
+
     pub fn post(&mut self, event: Event)
     {
         self.push(event, false);

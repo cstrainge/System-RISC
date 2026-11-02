@@ -14,6 +14,10 @@ pub const CONTROL_KEY: u16 = 4096;
 pub const WINDOW_GEOMETRY_CHANGED: u32 = 0x0d00_0000;
 /// Coalesced native transfer progress; payload is a generation-tagged owner ID.
 pub const FILE_TRANSFER_CHANGED: u32 = 0x0f00_0000;
+/// Native-only, coalesced main-screen change. Payload is `width << 32 | height`
+/// of the new `qd.screenBits.bounds`. It travels only in the native queue, so
+/// the classic event queue and legacy applications never observe it.
+pub const DISPLAY_CHANGED: u32 = 0x1000_0000;
 
 /// Native event transport with a separate full-width window identity.
 pub const POSITION_NEXT: u32 = 0;

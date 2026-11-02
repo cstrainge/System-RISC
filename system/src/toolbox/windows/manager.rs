@@ -2310,6 +2310,30 @@ impl WindowManager
         true
     }
 
+    /// Stage new bounds, let the caller prepare content for them, then commit.
+    /// Nothing changes if preparation or geometry is refused.
+    pub fn set_bounds(&mut self, id: WindowId, bounds: Rect,
+                      mut prepare: impl FnMut(&Self, WindowId, Rect) -> Result<(), Status>)
+                      -> Result<Option<Action>, Status>
+    {
+        let current = self.window(id).ok_or(NOT_FOUND)?;
+        if current.bounds == bounds
+        {
+            return Ok(None);
+        }
+        let mut staged = *current;
+        staged.bounds = bounds;
+        staged.user_bounds = None;
+        staged.state.zoomed = 0;
+        if !staged.calculate()
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        prepare(self, id, staged.local_bounds())?;
+        *self.window_mut(id).ok_or(NOT_FOUND)? = staged;
+        Ok(Some(Action::Resize(id)))
+    }
+
     pub fn set_standard_bounds(&mut self, id: WindowId, bounds: Option<Rect>)
                                -> Result<(), Status>
     {
