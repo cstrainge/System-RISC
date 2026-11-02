@@ -773,7 +773,31 @@ impl super::Desktop
                         append(&mut warnings, label(index)?.text()?)?;
                     }
                 }
-                if self.crash.capture_superseded()
+                if self.crash.restart_terminal
+                {
+                    warnings.clear();
+                    if let Some((status, stage)) = self.crash.power_failure
+                    {
+                        let message = match stage
+                        {
+                            mac_abi::power::SELECTION_FAILURE => 25,
+                            mac_abi::power::APPLICATION_FAILURE => 26,
+                            mac_abi::power::STORAGE_FAILURE => 27,
+                            mac_abi::power::DEVICE_FAILURE => 28,
+                            _ => 29
+                        };
+                        write_text(&mut warnings, format_args!("{} ({status})", label(message)?))?;
+                    }
+                    else
+                    {
+                        append(&mut warnings, label(24)?.text()?)?;
+                        if let Some(status) = self.crash.restart_error
+                        {
+                            write_text(&mut warnings, format_args!(" ({status})"))?;
+                        }
+                    }
+                }
+                else if self.crash.capture_superseded()
                 {
                     warnings.clear();
                     append(&mut warnings, label(22)?.text()?)?;
@@ -937,7 +961,11 @@ impl super::Desktop
             let enabled = u32::from(self.crash_button_enabled(index));
             // This chooses presentation only. Retry execution independently
             // validates the retained Work admission and genuine binding.
-            let label_index = if index == 5 && self.is_current_finder_report()
+            let label_index = if index == 5 && self.crash.restart_terminal
+            {
+                23
+            }
+            else if index == 5 && self.is_current_finder_report()
             {
                 7
             }
@@ -1102,6 +1130,22 @@ impl super::Desktop
         self.crash_controls(false)
     }
 
+    pub(crate) fn finder_restart_terminal(&mut self, status: Status,
+                                          power_failure: Option<(Status, u32)>)
+                                          -> Result<(), Status>
+    {
+        self.crash.restart_pending = false;
+        self.crash.restart_error = Some(status);
+        self.crash.restart_terminal = true;
+        self.crash.power_failure = power_failure;
+        if self.crash.info().window.0 == 0
+        {
+            return self.show_crash_report();
+        }
+        self.draw_crash_warnings()?;
+        self.crash_controls(false)
+    }
+
     pub(crate) fn finder_restart_failed(&mut self, status: Status) -> Result<(), Status>
     {
         let changed = self.crash.restart_pending || self.crash.restart_error != Some(status);
@@ -1167,6 +1211,13 @@ impl super::Desktop
             }
             5 =>
             {
+                if self.crash.restart_terminal
+                {
+                    let binding = self.processes.resource_binding(self.owner)?;
+                    crate::toolbox::processes::finder::restart_system(&binding)?;
+                    self.crash.restart_pending = true;
+                    return self.crash_controls(false);
+                }
                 if self.is_current_finder_report()
                 {
                     return self.request_finder_restart();

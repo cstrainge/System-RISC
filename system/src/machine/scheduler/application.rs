@@ -141,6 +141,7 @@ pub(super) struct PendingJoin
 pub(crate) enum Error
 {
     Invalid(&'static str),
+    ThreadAdmission(super::admission::Error),
     Context(crate::context::ApplicationExecutorError),
     Tls(crate::toolbox::native_threads::Error),
     Accounting(accounting::Error),
@@ -167,7 +168,7 @@ impl Error
     pub(crate) fn status(&self) -> Status
     {
         match self {
-            Self::Context(cause)=>cause.status(),Self::Tls(cause)=>cause.status(),Self::Accounting(cause)=>cause.status(),Self::Deadline(cause)=>cause.status(),
+            Self::ThreadAdmission(cause)=>cause.status(),Self::Context(cause)=>cause.status(),Self::Tls(cause)=>cause.status(),Self::Accounting(cause)=>cause.status(),Self::Deadline(cause)=>cause.status(),
             Self::Pool(cause)=>crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(*cause)),
             Self::Publication(PreparedError::Pool(cause))=>crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(*cause)),
             Self::Publication(_)=>mac_abi::BAD_ABI,Self::Admission{status,..}=>*status,
@@ -183,6 +184,7 @@ impl fmt::Display for Error
     {
         match self
         {
+            Self::ThreadAdmission(cause) => cause.fmt(out),
             Self::Invalid(reason) => write!(out, "native thread request refused: {reason}"),
             Self::Context(cause) => cause.fmt(out),
             Self::Tls(cause) => cause.fmt(out),

@@ -68,7 +68,11 @@ pub struct Manager
     #[cfg(target_arch = "riscv64")]
     pub(super) restart_pending: bool,
     #[cfg(target_arch = "riscv64")]
-    pub(super) restart_error:   Option<Status>
+    pub(super) restart_error:   Option<Status>,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) restart_terminal: bool,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) power_failure: Option<(Status, u32)>
 }
 
 /// Diagnostic data is independent of the dying application's window/control
@@ -153,7 +157,11 @@ impl Default for Manager
                #[cfg(target_arch = "riscv64")]
                restart_pending:                                 false,
                #[cfg(target_arch = "riscv64")]
-               restart_error:                                   None }
+               restart_error:                                   None,
+               #[cfg(target_arch = "riscv64")]
+               restart_terminal: false,
+               #[cfg(target_arch = "riscv64")]
+               power_failure: None }
     }
 }
 #[cfg(target_arch = "riscv64")]
@@ -326,6 +334,8 @@ impl Manager
     {
         self.restart_error = None;
         self.restart_pending = false;
+        self.restart_terminal = false;
+        self.power_failure = None;
     }
 
     #[cfg(target_arch = "riscv64")]

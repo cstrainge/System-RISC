@@ -1,4 +1,4 @@
-//! Architecture-neutral shapes for memory/app/resource spec §13.1.
+//! Architecture-neutral memory, process and resource ownership metadata.
 //!
 //! Resident consumers adopt these primitives as their migrations land. Linking
 //! this crate alone does not activate its allocator or page-table model.

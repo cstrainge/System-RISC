@@ -6,6 +6,12 @@ use mac_object_table::{domain::{CompletionError, PoolError, ReleasedResource},
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cause
 {
+    PublicationPreparations
+    {
+        owner:     mac_object_table::domain::DomainId,
+        kind:      mac_object_table::domain::KindCode,
+        preparing: usize
+    },
     #[cfg(target_arch = "riscv64")]
     ThreadPreparations
     {
@@ -120,6 +126,14 @@ impl core::fmt::Display for Cause
     {
         match self
         {
+            Self::PublicationPreparations { owner,
+                                            kind,
+                                            preparing } =>
+            {
+                write!(f,
+                       "owner {owner:?} backing {kind:?} retains {preparing} actual prepared \
+                        publications; original cleanup ticket retained")
+            }
             #[cfg(target_arch = "riscv64")]
             Self::ThreadPreparations { preparing } =>
             {
@@ -554,6 +568,18 @@ impl Failure
                cause: Cause::WindowDefinitionDisposal { window,
                                                         procedure,
                                                         reply } }
+    }
+}
+
+impl Failure
+{
+    pub(crate) fn publication_preparations(ticket: ReleasedResource, preparing: usize) -> Self
+    {
+        let key = ticket.key();
+        Self { ticket,
+               cause: Cause::PublicationPreparations { owner: key.owner(),
+                                                       kind: key.kind(),
+                                                       preparing } }
     }
 }
 

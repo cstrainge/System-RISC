@@ -1,100 +1,6 @@
 //! Child creation prepares all metadata/backing before making an author runnable.
 //! Inert publications remain owned by the original Process checkpoint on refusal.
-use mac_object_table::store::PublicationPermit;
-
 use super::*;
-use crate::toolbox::handles::InvocationGate;
-struct Buffers
-{
-    threads: Vec<Option<CompletionKey>>,
-    waiters: Vec<EventWaiter>
-}
-impl Buffers
-{
-    fn prepare() -> Result<Self, Error>
-    {
-        let required = SCHEDULER.lock()
-                                .threads
-                                .len()
-                                .checked_add(1)
-                                .ok_or(Error::Invalid("thread directory length overflows"))?;
-        crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-            let mut threads = Vec::new();
-            threads.try_reserve_exact(required).map_err(|_| Error::Metadata("shared run queue"))?;
-            let mut waiters = Vec::new();
-            waiters.try_reserve_exact(required)
-                   .map_err(|_| Error::Metadata("shared event snapshot"))?;
-            Ok(Self { threads,
-                      waiters })
-        })
-    }
-
-    fn install(&mut self, scheduler: &mut Scheduler) -> Result<usize, Error>
-    {
-        let slot =
-            scheduler.threads.iter().position(Option::is_none).unwrap_or(scheduler.threads.len());
-        let required = scheduler.threads
-                                .len()
-                                .checked_add(usize::from(slot == scheduler.threads.len()))
-                                .ok_or(Error::Invalid("thread directory length overflows"))?;
-        if scheduler.threads.capacity() < required && self.threads.capacity() < required
-           || scheduler.waiters.capacity() < required && self.waiters.capacity() < required
-        {
-            return Err(Error::Publication(PreparedError::CapacityChanged));
-        }
-        if scheduler.threads.capacity() < required
-        {
-            self.threads.extend(scheduler.threads.drain(..));
-            core::mem::swap(&mut scheduler.threads, &mut self.threads);
-        }
-        if scheduler.waiters.capacity() < required
-        {
-            self.waiters.extend(scheduler.waiters.drain(..));
-            core::mem::swap(&mut scheduler.waiters, &mut self.waiters);
-        }
-        Ok(slot)
-    }
-}
-fn thread_permit(owner: &OwnerRef) -> Result<PublicationPermit<InvocationGate>, Error>
-{
-    loop
-    {
-        let plan = {
-            let scheduler = SCHEDULER.lock();
-            scheduler.records
-                     .as_ref()
-                     .ok_or(Error::Admission { status: mac_abi::BAD_ABI,
-                                               stage:  "canonical THRD Store" })?
-                     .plan_publication(owner)?
-        };
-        let preparation = plan.prepare()?;
-        let result = {
-            let mut scheduler = SCHEDULER.lock();
-            scheduler.records
-                     .as_mut()
-                     .ok_or(Error::Admission { status: mac_abi::BAD_ABI,
-                                               stage:  "canonical THRD Store" })?
-                     .admit_prepared(preparation)
-        };
-        match result
-        {
-            Ok((permit, old)) =>
-            {
-                old.dispose();
-                return Ok(permit);
-            }
-            Err(failure) =>
-            {
-                let cause = failure.cause;
-                drop(failure.preparation);
-                if cause != PreparedError::CapacityChanged
-                {
-                    return Err(Error::Publication(cause));
-                }
-            }
-        }
-    }
-}
 struct InertChild
 {
     id:     u64,
@@ -193,99 +99,21 @@ fn prepare_child(executor: &crate::context::ApplicationExecutor<'_>,
                         recovery: None,
                         heap: executor.heap().clone() })
 }
-fn publish_inert(prepared: PreparedThread, mut permit: PublicationPermit<InvocationGate>)
-                 -> Result<InertChild, Error>
+fn publish_inert(prepared: PreparedThread) -> Result<InertChild, Error>
 {
-    let id = permit.id();
-    let mut record = Record::Scheduled(Thread { id,
-                                                core: prepared.core.share(),
-                                                state: Cell::new(RunState::new()),
-                                                worker: None,
-                                                scope: None });
-    loop
+    let published =
+        super::super::admission::publish(&prepared, false).map_err(Error::ThreadAdmission)?;
+    let guard = InertChild { id:     published.id,
+                             right:  0,
+                             owner:  prepared.owner.clone(),
+                             active: true };
+    if let Err(status) = published.assigned
     {
-        let mut buffers = Buffers::prepare()?;
-        let result = {
-            let mut scheduler = SCHEDULER.lock();
-            match buffers.install(&mut scheduler)
-            {
-                Err(cause) => Err((cause, permit, record)),
-                Ok(slot) =>
-                {
-                    let store =
-                        scheduler.records.as_mut().ok_or(Error::Admission { status:
-                                                                                 mac_abi::BAD_ABI,
-                                                                             stage:
-                                                                                 "canonical THRD \
-                                                                                  Store" })?;
-                    match store.publish_prepared(permit, record)
-                    {
-                        Err(failure) =>
-                        {
-                            Err((Error::Publication(failure.cause), failure.permit, failure.value))
-                        }
-                        Ok((publication, old)) =>
-                        {
-                            let (_, receipt) = publication.into_parts();
-                            if slot == scheduler.threads.len()
-                            {
-                                scheduler.threads.push(Some(receipt));
-                            }
-                            else
-                            {
-                                scheduler.threads[slot] = Some(receipt);
-                            }
-                            let assigned =
-                                prepared.core
-                                        .backing
-                                        .lock()
-                                        .as_ref()
-                                        .map_or(Err(mac_abi::BAD_ABI), |backing| {
-                                            backing.stack.bind(receipt)
-                                        })
-                                        .and_then(|()| {
-                                            prepared.core.context.assign(prepared.owner.clone(),
-                                                                         id,
-                                                                         prepared.core.binding,
-                                                                         &prepared.allocation,
-                                                                         &prepared.heap)
-                                        });
-                            Ok((assigned, old))
-                        }
-                    }
-                }
-            }
-        };
-        // Obsolete buffers/permits/readers never drop under SCHEDULER.
-        drop(buffers);
-        match result
-        {
-            Ok((assigned, old)) =>
-            {
-                old.dispose();
-                let guard = InertChild { id,
-                                         right: 0,
-                                         owner: prepared.owner.clone(),
-                                         active: true };
-                if let Err(status) = assigned
-                {
-                    drop(guard);
-                    return Err(Error::Admission { status,
-                                                  stage: "actual child context/stack binding" });
-                }
-                return Ok(guard);
-            }
-            Err((cause, returned_permit, returned_record)) =>
-            {
-                permit = returned_permit;
-                record = returned_record;
-                if !matches!(cause, Error::Publication(PreparedError::CapacityChanged))
-                {
-                    return Err(cause);
-                }
-            }
-        }
+        drop(guard);
+        return Err(Error::Admission { status,
+                                      stage: "actual child context/stack binding" });
     }
+    Ok(guard)
 }
 struct CreateProgress(OwnerRef);
 impl Drop for CreateProgress
@@ -315,8 +143,7 @@ pub(crate) fn create(executor: &crate::context::ApplicationExecutor<'_>, call: &
         let completion=Arc::try_new(Completion::new(executor.owner())).map_err(|_|Error::Metadata("child completion"))?;
         let (right,right_permit)=manager::prepare(executor.owner(),completion.clone())?;
         let prepared=prepare_child(executor,&gate,call.entry,call.data,call.stack_bytes,completion.clone())?;
-        let thread_permit=thread_permit(executor.owner())?;
-        let mut guard=publish_inert(prepared,thread_permit)?;
+        let mut guard=publish_inert(prepared)?;
         completion.thread.store(guard.id,Ordering::Release);
         guard.right=manager::publish(right_permit,right.clone())?;
         {

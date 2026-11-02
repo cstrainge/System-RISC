@@ -198,7 +198,7 @@ impl core::fmt::Display for Error
             Self::TranslationRequired => f.write_str("68k translation required"),
             Self::ServiceBusy => f.write_str("System service is busy"),
             Self::WrongThread => f.write_str("operation requires its owning OS thread"),
-            Self::Io => f.write_str("disk I/O failed"),
+            Self::Io => f.write_str("input or output operation failed"),
             Self::ReadOnly => f.write_str("volume is read-only"),
             Self::AlreadyExists => f.write_str("an item with that name already exists"),
             Self::AccessDenied => f.write_str("item is protected or locked"),

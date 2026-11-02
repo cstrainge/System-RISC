@@ -95,17 +95,79 @@ fn admit_image(owner: &crate::toolbox::handles::OwnerRef,
     let source = crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
                      alloc::sync::Arc::try_new(source)
                  }).map_err(|_| NO_MEMORY)?;
-    admit_shared_image(owner, account, source)
+    prepare_shared_image(owner, account, source)?.write_application(account)
 }
 
-pub(crate) fn copy_application(owner: &crate::toolbox::handles::OwnerRef,
-                               account: &crate::machine::scheduler::accounting::AllocationAuthority,
-                               original: crate::images::Binding)
-                               -> Result<LoadedImage, Status>
+/// Replacement Finder selects genuine protected payload storage explicitly;
+/// ordinary application loads never infer it from an ambient allocation scope.
+pub(crate) fn copy_recovery_application(owner: &crate::toolbox::handles::OwnerRef,
+                                        account: &crate::machine::scheduler::accounting::AllocationAuthority,
+                                        original: crate::images::Binding,
+                                        permit: crate::allocator::recovery::Permit)
+                                        -> Result<LoadedImage, Status>
 {
-    let source = IMAGES.with(|images| images.read(original).map(|read| read.shared_source()))
-                       .map_err(AccessError::status)??;
-    admit_shared_image(owner, account, source).map_err(application_image_status)
+    crate::context::with_recovery_allocation(permit.clone(), || {
+        crate::allocator::with_target(crate::allocator::Target::Owner {
+            account: account.clone(), class: mac_kernel_model::policy::MemoryClass::Kernel
+        }, || {
+            // Keep this genuine canonical Read through the new alias birth.
+            // A copied Source Arc alone cannot authorize prepared sharing.
+            let original = IMAGES.with(|images| images.read(original))
+                                 .map_err(AccessError::status)??;
+            let layout = crate::loader::application_layout(&original.source().resources)
+                .map_err(crate::loader::status)?;
+            let plan = IMAGES.with(|images| images.plan_recovery_share(&original, owner, account, &layout))
+                             .map_err(AccessError::status)??;
+            let prepared = plan.prepare()?;
+            let (sharing, retired) = match IMAGES.with_owned(prepared, |prepared, images| {
+                images.admit_recovery_share(prepared)
+            })
+            {
+                Ok(Ok(admitted)) => admitted,
+                Ok(Err(failure)) =>
+                {
+                    let status = failure.cause;
+                    drop(failure.preparation);
+                    return Err(status);
+                }
+                Err((cause, prepared)) =>
+                {
+                    drop(prepared);
+                    return Err(cause.status());
+                }
+            };
+            retired.dispose();
+            let prepared = match sharing.prepare(&original, layout)
+            {
+                Ok(prepared) => prepared,
+                Err((cause, sharing)) =>
+                {
+                    drop(sharing);
+                    return Err(cause);
+                }
+            };
+            let (prepared, retired) = match IMAGES.with_owned(prepared, |prepared, images| {
+                images.publish_recovery_copy(&original, prepared)
+            })
+            {
+                Ok(Ok(published)) => published,
+                Ok(Err(failure)) =>
+                {
+                    let status = failure.cause;
+                    drop(failure.preparation);
+                    return Err(status);
+                }
+                Err((cause, prepared)) =>
+                {
+                    drop(prepared);
+                    return Err(cause.status());
+                }
+            };
+            retired.dispose();
+            drop(original); // new canonical alias now retains the same target
+            prepared.write_recovery_application(account, permit).map_err(application_image_status)
+        })
+    })
 }
 
 /// Clone immutable package ownership under IMAGES, then admit dependencies
@@ -122,10 +184,10 @@ pub(crate) fn select_application_services(owner: &crate::toolbox::handles::Owner
         .map_err(|cause| cause.status())
 }
 
-fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
-                      account: &crate::machine::scheduler::accounting::AllocationAuthority,
-                      source: alloc::sync::Arc<AppImage>)
-                      -> Result<LoadedImage, ApplicationImageError>
+fn prepare_shared_image(owner: &crate::toolbox::handles::OwnerRef,
+                        account: &crate::machine::scheduler::accounting::AllocationAuthority,
+                        source: alloc::sync::Arc<AppImage>)
+                        -> Result<crate::images::PreparedLoad, ApplicationImageError>
 {
     if !matches!(source.role, crate::images::Role::Application { .. })
     {
@@ -133,23 +195,92 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
     }
     let layout = crate::loader::application_layout(&source.resources)
         .map_err(|cause| crate::images::LoadError::Write(cause.into()))?;
-    let prepared = IMAGES.with(|images| {
-                             images.prepare_load(owner,
-                                           account,
-                                           source,
-                                           layout.preferred,
-                                           layout.preferred,
-                                           layout.extent,
-                                           crate::machine::memory::APPLICATION_RELOCATION_BASE,
-                                           crate::machine::memory::IMAGE_LIMIT,
-                                           layout.executable,
-                                           layout.writable)
-                         })
-                         .map_err(|cause| crate::images::LoadError::Admission(cause.status()))??;
+    let prepared = prepare_image_source(owner,
+                                        account,
+                                        source,
+                                        layout.preferred,
+                                        layout.preferred,
+                                        layout.extent,
+                                        crate::machine::memory::APPLICATION_RELOCATION_BASE,
+                                        crate::machine::memory::IMAGE_LIMIT,
+                                        layout.executable,
+                                        layout.writable)?;
     // The original alias already reserves its destination and retains its
     // source/loading ownership. Long byte writes and monitor waits borrow no
     // IMAGES guard. Callers must also leave Desktop before this boundary.
-    prepared.write_application(account)
+    Ok(prepared)
+}
+/// Real ordinary image factories and all refused owners leave IMAGES before Drop.
+fn prepare_image_source(owner: &crate::toolbox::handles::OwnerRef,
+                        account: &crate::machine::scheduler::accounting::AllocationAuthority,
+                        source: alloc::sync::Arc<AppImage>, linked: u64, preferred: u64,
+                        extent: u64, relocation: u64, limit: u64,
+                        executable: alloc::vec::Vec<core::ops::Range<u64>>,
+                        writable: alloc::vec::Vec<core::ops::Range<u64>>)
+                        -> Result<crate::images::PreparedLoad, Status>
+{
+    crate::context::without_recovery(|| {
+        let target =
+            crate::allocator::Target::Owner { account: account.clone(),
+                                              class:
+                                                  mac_kernel_model::policy::MemoryClass::Kernel };
+        crate::allocator::with_target(target, || {
+            let plan = match IMAGES.with_owned(source, |source, images| {
+                                       images.plan_load(owner, account, source, linked, preferred,
+                                                        extent, relocation, limit)
+                                   })
+            {
+                Ok(Ok(plan)) => plan,
+                Ok(Err(failure)) =>
+                {
+                    serial!("IMAGE_INTERN_PLAN_REFUSED {}", failure.cause);
+                    let status = failure.cause.status();
+                    drop(failure.preparation);
+                    return Err(status);
+                }
+                Err((cause, source)) =>
+                {
+                    drop(source);
+                    return Err(cause.status());
+                }
+            };
+            let preparation = plan.prepare(executable, writable)?;
+            let (permit, retired) = match IMAGES.with_owned(preparation, |preparation, images| {
+                                                    images.admit_load(preparation)
+                                                })
+            {
+                Ok(Ok(result)) => result,
+                Ok(Err(failure)) =>
+                {
+                    drop(failure.preparation);
+                    return Err(failure.cause);
+                }
+                Err((cause, preparation)) =>
+                {
+                    drop(preparation);
+                    return Err(cause.status());
+                }
+            };
+            retired.dispose();
+            let (prepared, retired) =
+                match IMAGES.with_owned(permit, |permit, images| images.publish_load(permit))
+                {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(failure)) =>
+                    {
+                        failure.preparation.dispose();
+                        return Err(failure.cause);
+                    }
+                    Err((cause, permit)) =>
+                    {
+                        drop(permit);
+                        return Err(cause.status());
+                    }
+                };
+            retired.dispose();
+            Ok(prepared)
+        })
+    })
 }
 /// All resident DRVR/INIT code uses real page-backed supervisor mappings.
 pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,
@@ -184,19 +315,16 @@ pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,
                                  code.descriptor.load_base + s.offset
                                  ..code.descriptor.load_base + s.offset + s.length as u64
                              }));
-    let prepared = IMAGES.with(|images| {
-                             images.prepare_load(owner,
-                                                 account,
-                                                 source,
-                                                 code.descriptor.load_base,
-                                                 crate::machine::memory::VM_MODULE_START,
-                                                 extent,
-                                                 crate::machine::memory::VM_MODULE_START,
-                                                 crate::machine::memory::VM_MODULE_END,
-                                                 executable,
-                                                 alloc::vec::Vec::new())
-                         })
-                         .map_err(AccessError::status)??;
+    let prepared = prepare_image_source(owner,
+                                        account,
+                                        source,
+                                        code.descriptor.load_base,
+                                        crate::machine::memory::VM_MODULE_START,
+                                        extent,
+                                        crate::machine::memory::VM_MODULE_START,
+                                        crate::machine::memory::VM_MODULE_END,
+                                        executable,
+                                        alloc::vec::Vec::new())?;
     prepared.write_module(account, code).map_err(|cause| {
                                             serial!("MODULE_MAPPING_REFUSED: {cause}");
                                             cause.status()
@@ -220,9 +348,58 @@ pub(crate) fn module_dma_address(cpu: u64, bytes: u64) -> Result<u64, Status>
 /// owner walk through PTE removal, genuine target ACK and physical refund.
 pub(crate) fn pump_module_images()
 {
-    if !crate::machine::paging::modules::take_pending()
+    // Consume independent real notices without short-circuiting either one.
+    let mappings = crate::machine::paging::modules::take_pending();
+    let spaces = crate::machine::paging::process::take_retirement_pending();
+    if spaces
+    {
+        if let Some(claim) = crate::machine::paging::process::retirement()
+        {
+            let owner = claim.owner();
+            if let Err(cause) = claim.run()
+            {
+                if !matches!(cause, crate::machine::paging::process::Error::Threads
+                    | crate::machine::paging::process::Error::Readers(_)
+                    | crate::machine::paging::process::Error::Busy
+                    | crate::machine::paging::process::Error::Monitor(crate::machine::monitor::Error::Busy))
+                {
+                    serial!("PROCESS_SPACE_RETIREMENT_RETAINED owner={owner} cause={cause}");
+                }
+            }
+        }
+    }
+    if !mappings
     {
         return;
+    }
+    // DDEF and IMAG consume the same real mapping-change notice, independently.
+    // An empty/blocked definition scan must not stop image maintenance (or vice
+    // versa); neither scan holds Desktop while executing its physical claim.
+    let mut definition_after = 0;
+    loop
+    {
+        let claim =
+            match crate::toolbox::resources::definitions::mapping_retirement(definition_after)
+            {
+                Ok(Some(claim)) => claim,
+                Ok(None) => break,
+                Err(cause) =>
+                {
+                    serial!("DEFINITION_MAPPING_RETIREMENT_RETAINED: {cause}; original ticket \
+                             retained");
+                    break;
+                }
+            };
+        definition_after = claim.base();
+        if let Err(cause) = claim.run()
+        {
+            if !matches!(cause, crate::machine::paging::modules::Error::Monitor(
+                crate::machine::monitor::Error::Busy))
+            {
+                serial!("DEFINITION_MAPPING_RETIREMENT_RETAINED base={definition_after:#x} \
+                         cause={cause}");
+            }
+        }
     }
     let mut after = 0;
     loop
@@ -330,17 +507,8 @@ pub(crate) fn release_image(ticket: mac_object_table::domain::ReleasedResource,
         }
     }
 }
-pub(crate) fn finish_image_origins(desktop: &mut crate::toolbox::runtime::Desktop)
+pub(crate) fn finish_image_origins()
 {
-    let mut previous = 0;
-    while let Ok(Some((owner, origin))) = IMAGES.with(|images| images.next_retiring(previous))
-    {
-        previous = owner;
-        if !crate::machine::scheduler::has_threads(owner)
-        {
-            desktop.evict_image_origin(origin);
-        }
-    }
     let _ = IMAGES.with(|images| images.finish_retiring());
 }
 
@@ -566,6 +734,11 @@ pub(crate) fn system_resources(owner: &crate::toolbox::handles::OwnerRef)
 }
 impl SystemResources
 {
+    pub(crate) fn owner(&self) -> &crate::toolbox::handles::OwnerRef
+    {
+        &self.0.owner
+    }
+
     pub(crate) fn same_source(&self, other: Self) -> bool
     {
         core::ptr::eq(self.0, other.0)
@@ -956,12 +1129,19 @@ fn initialize_desktop(
                                         recovery_boot_error("System modal service admission failed",
                                                             status)
                                     })?;
-    let mut definitions = crate::loader::Definitions::new(files)?;
+    crate::loader::initialize_definitions()?;
+    let system_source =
+        system_resources(&crate::toolbox::handles::system_owner().map_err(|status| {
+                              recovery_boot_error("System definition source unavailable", status)
+                          })?).map_err(|status| {
+                                  recovery_boot_error("System definition source unavailable",
+                                                      status)
+                              })?;
     let mut controls = crate::toolbox::controls::objects::Manager::new(
         crate::toolbox::handles::controls_kinds().map_err(|status| recovery_boot_error("Control Manager kind admission failed", status))?)
         .map_err(|status| recovery_boot_error("Control Manager admission failed", status))?;
-    let mut boot_screen = crate::boot_screen::BootScreen::begin(&files.system, fonts,
-                                                                &mut definitions, &mut controls)?;
+    let mut boot_screen =
+        crate::boot_screen::BootScreen::begin(&files.system, fonts, system_source, &mut controls)?;
     if !crate::platform::setup_framebuffer()
     {
         return Err(mac_formats::Error::Malformed("RAM framebuffer is unavailable").into());
@@ -981,8 +1161,7 @@ fn initialize_desktop(
     // stock before any installed module initializer can consume that heap.
     // BootScreen retains its Control identity without borrowing the manager;
     // move that manager once and keep the welcome panel until publication.
-    let mut runtime = crate::toolbox::runtime::Desktop::new(definitions,
-                                                            processes,
+    let mut runtime = crate::toolbox::runtime::Desktop::new(processes,
                                                             finder_owner.clone(),
                                                             controls).map_err(|cause| {
                                                                          match cause

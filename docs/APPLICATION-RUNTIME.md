@@ -90,8 +90,12 @@ dropping a launch continuation does not release that activity early. Public
 entropy requests reuse the runtime's exact scoped dependency, admitting it lazily
 for a caller without NREQ; they cannot reselect another provider after withdrawal.
 Readiness is an admission observation, not a promise of future device health.
-Installed applications still use no_std and do not yet declare NREQ by default;
-private packages below exercise these paths.
+Installed applications still use no_std. The std SDK application packager adds
+ENTR1 to the same NREQ manifest compilation automatically, reusing an identical
+declaration and refusing an incompatible version. This does not add a requirement
+to no_std applications or modules. Generic low-level native packaging does not
+infer a runtime from arbitrary ELF input. Private packages below exercise the
+launch paths before installed-app migration.
 Direct Process launch and document-commit refusals carry the required class/version through their respective call records and the public typed ServiceRequirement error. Finder obtains its explanatory template from resources. Existing numeric status values and development ABI version1 remain; the changed record fingerprint requires rebuilding every client. The DocumentCall adapter clears failure-only outputs before entry and accepts them only on a failed DOCUMENT_COMMIT. Both transports share the same checked payload decoder. Finder document associations and application drops use DocumentOpen::commit and retain the typed error through the existing resource-based alert. Other Open wrappers do not automatically gain this payload.
 
 ### Bounded native observations — 2026-11-01

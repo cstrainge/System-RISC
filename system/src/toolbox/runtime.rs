@@ -10,8 +10,7 @@ use super::quickdraw::{SurfaceExt,
                        fonts_service,
                        retained::{Content, DesktopLayer, RenderCommand, SceneTarget},
                        service};
-use crate::{loader::Definitions,
-            platform,
+use crate::{platform,
             toolbox::{events::{BTN_STATE, EventManager,
                                input::{Decoder, Input}},
                       handles::InvocationGate,
@@ -53,6 +52,7 @@ mod dialog_runtime;
 mod event_runtime;
 #[path = "drag/runtime.rs"]
 mod drag_runtime;
+pub(crate) use drag_runtime::native_drag;
 #[path = "textedit/runtime.rs"]
 mod textedit_runtime;
 #[path = "quickdraw/ordinary_underlay.rs"]
@@ -60,7 +60,13 @@ mod ordinary_underlay;
 use ordinary_underlay::OrdinaryUnderlay;
 #[path = "processes/runtime.rs"]
 mod local;
-pub(crate) use local::FinderAdmission;
+pub(crate) use local::{FinderAdmission, FinderCapacityError, FinderPreparation};
+#[path = "windows/runtime.rs"]
+mod window_runtime;
+pub(crate) use window_runtime::native_window;
+#[path = "controls/runtime.rs"]
+mod control_runtime;
+pub(crate) use control_runtime::native_control;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
@@ -84,7 +90,6 @@ pub struct Desktop
     first_window:                     WindowId,
     events:                           Box<EventManager>,
     textedit:                         super::textedit::Manager,
-    definitions:                      Definitions,
     content:                          Vec<Content>,
     pending_content:                  Vec<Content>,
     content_cache:                    super::quickdraw::content_cache::ContentCache,
@@ -142,6 +147,37 @@ impl super::standard_file::FileDialogHost for Desktop
     }
 }
 
+fn window_creation_status(error: super::windows::manager::CreationError) -> Status
+{
+    use super::windows::manager::CreationError;
+    match error
+    {
+        CreationError::NoMemory => NO_MEMORY,
+        CreationError::Binding(status) => status,
+        CreationError::Facility(mac_object_table::domain::PoolError::ForeignOwner { .. }) =>
+            ACCESS_DENIED,
+        CreationError::Facility(error) =>
+        {
+            super::handles::registry_status(&mac_object_table::registry::Error::Pool(error))
+        }
+        CreationError::Stopping | CreationError::RecoveryBusy => SERVICE_BUSY,
+        CreationError::CapacityChanged => SERVICE_BUSY,
+        CreationError::Publication(cause) => match cause {
+            mac_object_table::store::PreparedError::CapacityChanged => SERVICE_BUSY,
+            mac_object_table::store::PreparedError::Pool(
+                mac_object_table::domain::PoolError::ForeignOwner { .. }) => ACCESS_DENIED,
+            mac_object_table::store::PreparedError::Pool(cause) =>
+                super::handles::registry_status(&mac_object_table::registry::Error::Pool(cause)),
+            mac_object_table::store::PreparedError::WrongStore
+            | mac_object_table::store::PreparedError::RetiredStore => BAD_ABI
+        },
+        CreationError::RecoveryAuthority => ACCESS_DENIED,
+        CreationError::Definition { reply,
+                                    .. } => i32::try_from(reply).unwrap_or(BAD_ABI),
+        CreationError::InvalidRequest | CreationError::Geometry { .. } => BAD_ARGUMENT
+    }
+}
+
 impl Desktop
 {
     /// Separate the actual System storage owner from the app receiving a modal
@@ -192,14 +228,14 @@ impl Desktop
                 // code now: later protected heap backing cannot admit missing
                 // definition images or page metadata on their behalf.
                 let source = crate::kernel::system_resources(&storage)?;
-                self.definitions.resolve_system(source, *b"WDEF", 0)?;
+                crate::loader::prepare_system_definition(source, *b"WDEF", 0)?;
                 for operation in
                     [mac_abi::controls::DRAW_STANDARD, mac_abi::controls::DRAW_SCROLLBAR]
                 {
                     let id = super::controls::definition_id(&mac_abi::controls::ControlCall {
                         operation, ..Default::default()
                     })?;
-                    self.definitions.resolve_system(source, *b"CDEF", id)?;
+                    crate::loader::prepare_system_definition(source, *b"CDEF", id)?;
                 }
                 self.windows.prepare_recovery(&storage).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Window Manager status={status}"); status })?;
                 self.controls.prepare_recovery(&storage, controls).map_err(|status| { serial!("RECOVERY_SERVICE_ADMISSION_REFUSED service=Control Manager status={status}"); status })?;
@@ -419,7 +455,7 @@ impl Desktop
         Ok(())
     }
 
-    pub(crate) fn new(mut definitions: Definitions, processes: super::processes::Manager,
+    pub(crate) fn new(processes: super::processes::Manager,
                       finder_owner: super::handles::OwnerRef,
                       controls: super::controls::objects::Manager)
                       -> Result<Self, AdmissionError>
@@ -433,10 +469,10 @@ impl Desktop
         let system_source = crate::kernel::system_resources(&super::handles::system_owner()?)?;
         // Resident defaults outlive Finder: never anchor them to its private
         // resource override merely because it is the bootstrap caller.
-        definitions.resolve_system(system_source, *b"WDEF", 0)?;
-        let cdef = definitions.resolve_system(system_source, *b"CDEF", 0)?;
+        crate::loader::prepare_system_definition(system_source, *b"WDEF", 0)?;
+        let cdef = crate::loader::prepare_system_definition(system_source, *b"CDEF", 0)?;
         let system_cdef = cdef;
-        let mdef = definitions.resolve_system(system_source, *b"MDEF", 0)?;
+        let mdef = crate::loader::prepare_system_definition(system_source, *b"MDEF", 0)?;
         let text_cursor =
             crate::kernel::with_resources(|resources| {
                 super::quickdraw::cursors::decode_mono(&resources.get(mac_abi::resources::SYSTEM,
@@ -495,7 +531,6 @@ impl Desktop
                   drag: { let (sessions, receivers) = super::handles::drag_kinds()?;
                           super::drag::Manager::new(sessions, receivers)? },
                   textedit: super::textedit::Manager::new(super::handles::editor_kinds()?, processes.ledger(finder)?)?,
-                  definitions,
                   content: Vec::new(),
                   pending_content: Vec::new(),
                   content_cache: Default::default(),
@@ -572,8 +607,43 @@ impl Desktop
         self.last_action = "MENU";
     }
 
+    /// Validate the creation intent before a cold WDEF can be admitted. This
+    /// observes current recovery availability; creation repeats the same checks.
+    pub(crate) fn preflight_window(&self, operation: u32, request: &WindowRequest)
+                                   -> Result<Option<i16>, Status>
+    {
+        if operation != NEW_WINDOW
+        {
+            return Ok(None);
+        }
+        if request.title_length as usize > request.title.len()
+           || request.procedure < 0
+           || request.reserved != 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        core::str::from_utf8(&request.title[..request.title_length as usize]).map_err(|_| {
+                                                                                 BAD_ARGUMENT
+                                                                             })?;
+        let (recipient, storage) = self.service_owners()?;
+        if !recipient.accepting()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        self.windows
+            .preflight_creation(request.bounds,
+                                &storage,
+                                (request.minimum_width, request.minimum_height))
+            .map_err(window_creation_status)?;
+        Ok(Some(request.procedure >> 4))
+    }
+
     pub fn window(&mut self, operation: u32, request: &mut WindowRequest) -> Status
     {
+        if operation == NEW_WINDOW
+        {
+            return self.create_window(request, None);
+        }
         if operation != GET_WINDOW
         {
             crate::trace::record(crate::trace::WINDOW,
@@ -619,108 +689,6 @@ impl Desktop
         let mut patch_damage = None;
         match operation
         {
-            NEW_WINDOW =>
-            {
-                if request.title_length as usize > request.title.len() || request.procedure < 0
-                {
-                    return BAD_ARGUMENT;
-                }
-                let title = match core::str::from_utf8(&request.title
-                                                           [..request.title_length as usize])
-                {
-                    Ok(title) => title,
-                    Err(_) => return BAD_ARGUMENT
-                };
-                let entry = match self.definitions.resolve(*b"WDEF", request.procedure >> 4)
-                {
-                    Ok(entry) => entry,
-                    Err(error) => return crate::loader::status(error)
-                };
-                // Capture logical reservation use before the shared allocator
-                // suppresses recovery authority. The real modal may consume its
-                // admitted slots; ordinary publishers must preserve that spare.
-                let spare = self.scene_spare();
-                if shared_scene_allocation(|| {
-                       self.content.try_reserve(1 + spare).map_err(|_| NO_MEMORY)?;
-                       self.ordinary_underlay
-                           .prepare_scenes(self.content.capacity().saturating_add(1))?;
-                       self.content_damage
-                           .try_reserve(self.content
-                                            .len()
-                                            .saturating_add(2 + spare)
-                                            .saturating_sub(self.content_damage.len()))
-                           .map_err(|_| NO_MEMORY)
-                   }).is_err()
-                {
-                    return NO_MEMORY;
-                }
-                let (recipient, storage) = match self.service_owners()
-                {
-                    Ok(owners) => owners,
-                    Err(status) => return status
-                };
-                let id = match self.windows.new_window_with_activation(request.bounds,
-                                                                       title,
-                                                                       &storage,
-                                                                       (request.minimum_width,
-                                                                        request.minimum_height),
-                                                                       request.procedure,
-                                                                       entry,
-                                                                       &mut self.events,
-                                                                       when,
-                                                                       false)
-                {
-                    Ok(id) => id,
-                    Err(error) =>
-                    {
-                        serial!("WINDOW_INITIALIZATION_REFUSED: owner={} {error}", self.owner);
-                        use super::windows::manager::CreationError;
-                        return match error {
-                            CreationError::NoMemory => NO_MEMORY,
-                            CreationError::Facility(error) => super::handles::registry_status(&mac_object_table::registry::Error::Pool(error)),
-                            CreationError::Stopping | CreationError::RecoveryBusy => SERVICE_BUSY,
-                            CreationError::RecoveryAuthority => ACCESS_DENIED,
-                            CreationError::Definition { reply, .. } => i32::try_from(reply).unwrap_or(BAD_ABI),
-                            CreationError::InvalidRequest | CreationError::Geometry { .. } => BAD_ARGUMENT
-                        };
-                    }
-                };
-                if crate::context::recovery_activity().is_none()
-                   && let Err(status) =
-                       self.drag
-                           .ensure_receiver(&recipient,
-                                            crate::context::current_thread_context().identity()
-                                                                                    .thread
-                                                                                    .0,
-                                            id.0)
-                {
-                    if let Err(error) = self.windows.dispose_window(id, &mut self.events, when)
-                    {
-                        serial!("WINDOW_INITIALIZATION_ROLLBACK_REFUSED: owner={} {error}",
-                                self.owner);
-                    }
-                    return status;
-                }
-                request.id = id.0;
-                if self.first_window.0 == 0
-                {
-                    self.first_window = id;
-                }
-                if self.owner == self.foreground
-                {
-                    self.windows.select_window(id, &mut self.events, when);
-                }
-                if self.owner != self.foreground
-                {
-                    if self.processes.get(self.owner).is_ok_and(|p| p.info.hidden != 0)
-                    {
-                        self.windows.set_hidden(id, true);
-                    }
-                    self.windows.restore_owner_group(self.foreground, &mut self.events, when);
-                }
-                self.content.push(Content::new(id));
-                self.last_action = "NEW";
-            }
             CLOSE_WINDOW =>
             {
                 if let Err(status) = self.drag.prepare_window_close(id.0)
@@ -777,7 +745,8 @@ impl Desktop
                             super::handles::cleanup::Cause::ThreadPreparations { .. }
                             | super::handles::cleanup::Cause::DefinitionPending { .. }
                             | super::handles::cleanup::Cause::NativeJoin { .. } => SERVICE_BUSY,
-                            super::handles::cleanup::Cause::Alias(_)
+                            super::handles::cleanup::Cause::PublicationPreparations { .. }
+                            | super::handles::cleanup::Cause::Alias(_)
                             | super::handles::cleanup::Cause::ContextUnavailable { .. }
                             | super::handles::cleanup::Cause::DriverInterfaceBusy { .. }
                             | super::handles::cleanup::Cause::DriverDependencyBusy { .. }
@@ -1049,7 +1018,60 @@ impl Desktop
 
     pub fn control_definition(&mut self, id: i16) -> Result<DefinitionRef, Status>
     {
-        self.definitions.resolve(*b"CDEF", id).map_err(crate::loader::status)
+        crate::loader::cached_definition(*b"CDEF", id).and_then(|entry| {
+                                                          entry.ok_or_else(|| {
+                     mac_formats::Error::Missing("control definition was not prepared before \
+                                                  object mutation").into()
+                 })
+                                                      })
+                                                      .map_err(crate::loader::status)
+    }
+
+    pub(crate) fn preflight_scroll_box(&self, call: &mac_abi::scrollbox::Call)
+                                       -> Result<bool, Status>
+    {
+        use mac_abi::scrollbox::*;
+        let (recipient, storage) = self.service_owners()?;
+        let owner = recipient.owner().incarnation();
+        if self.scroll_boxes.bound_definition(call, owner)?.is_some()
+        {
+            return Ok(false);
+        }
+        let window = call.window;
+        if window != 0 && !self.owns(WindowId(window))
+        {
+            return Err(if self.windows.window(WindowId(window)).is_some()
+                       {
+                           ACCESS_DENIED
+                       }
+                       else
+                       {
+                           NOT_FOUND
+                       });
+        }
+        if matches!(call.operation, CREATE | CONFIGURE)
+           && window != 0
+           && !self.windows.window(WindowId(window)).is_some_and(|w| {
+                                                        let bounds = w.bounds;
+                                                        let r = call.spec.viewport;
+                                                        let b = call.spec.scrollbar;
+                                                        r.left >= 0
+                                                        && r.top >= 0
+                                                        && r.right <= bounds.right - bounds.left
+                                                        && r.bottom <= bounds.bottom - bounds.top
+                                                        && b.left >= 0
+                                                        && b.top >= 0
+                                                        && b.right <= bounds.right - bounds.left
+                                                        && b.bottom <= bounds.bottom - bounds.top
+                                                    })
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        self.scroll_boxes.preflight_definition(&recipient,
+                                                &storage,
+                                                call,
+                                                crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)?;
+        Ok(crate::loader::cached_definition(*b"CDEF", 1).map_err(crate::loader::status)?.is_none())
     }
 
     pub fn scroll_box(&mut self, call: &mut mac_abi::scrollbox::Call)
@@ -1099,7 +1121,11 @@ impl Desktop
         {
             return Err(BAD_ARGUMENT);
         }
-        let entry = self.definitions.resolve(*b"CDEF", 1).map_err(crate::loader::status)?;
+        let entry = match self.scroll_boxes.bound_definition(call, owner)?
+        {
+            Some(entry) => entry,
+            None => self.control_definition(1)?
+        };
         let drawing = self.scroll_boxes.request(&recipient,
                                                  &storage,
                                                  call,
@@ -1204,8 +1230,16 @@ impl Desktop
                            NOT_FOUND
                        });
         }
-        let definition = self.controls.definition(call, owner)?;
-        let entry = self.control_definition(definition)?;
+        let entry = match self.controls.bound_definition(call, owner)?
+        {
+            Some(entry) => entry,
+            None =>
+            {
+                let (definition, _) =
+                    self.controls.preflight_definition(&recipient, &storage, call)?;
+                self.control_definition(definition)?
+            }
+        };
         // A deactivated/hidden owner cannot continue a capture after app switching.
         if matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
            && window != 0
@@ -1219,6 +1253,16 @@ impl Desktop
                                              call,
                                              entry,
                                              crate::machine::traps::gateway)?;
+        self.finish_managed_control(call, window, drawing)
+    }
+
+    /// Retain the original drawing and damage path for every real publisher.
+    /// A prepared control changes only admission, never its paint contract.
+    fn finish_managed_control(&mut self, call: &mac_abi::controls::ControlCall, window: u64,
+                              drawing: Option<super::controls::Drawing>)
+                              -> Result<(), Status>
+    {
+        use mac_abi::controls::*;
         if call.operation == DISPOSE_OBJECT
         {
             let mut removed = Vec::new();
@@ -1302,6 +1346,71 @@ impl Desktop
         Ok(())
     }
 
+    /// A retained object is already bound. Only a validated cache miss may
+    /// ask the native coordinator to admit executable pages outside Desktop.
+    pub(crate) fn preflight_control(&self, call: &mac_abi::controls::ControlCall)
+                                    -> Result<Option<i16>, Status>
+    {
+        use mac_abi::controls::*;
+        let id = if call.operation >= CREATE_STANDARD
+        {
+            let (recipient, storage) = self.service_owners()?;
+            let owner = recipient.owner().incarnation();
+            if self.controls.bound_definition(call, owner)?.is_some()
+            {
+                return Ok(None);
+            }
+            let window = if matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
+            {
+                call.window
+            }
+            else
+            {
+                self.controls.window(call.id, owner)?
+            };
+            if window != 0 && !self.owns(WindowId(window))
+            {
+                return Err(if self.windows.window(WindowId(window)).is_some()
+                           {
+                               ACCESS_DENIED
+                           }
+                           else
+                           {
+                               NOT_FOUND
+                           });
+            }
+            self.controls.preflight_definition(&recipient, &storage, call)?.0
+        }
+        else
+        {
+            if !call.surface.is_null()
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            if call.window != 0 && !self.owns(WindowId(call.window))
+            {
+                return Err(if self.windows.window(WindowId(call.window)).is_some()
+                           {
+                               ACCESS_DENIED
+                           }
+                           else
+                           {
+                               NOT_FOUND
+                           });
+            }
+            if call.window == 0 && matches!(call.operation, DRAW_STANDARD | DRAW_SCROLLBAR)
+            {
+                return Err(NOT_FOUND);
+            }
+            super::controls::preflight(call)?
+        };
+        match crate::loader::cached_definition(*b"CDEF", id).map_err(crate::loader::status)?
+        {
+            Some(_) => Ok(None),
+            None => Ok(Some(id))
+        }
+    }
+
     pub fn control(&mut self, call: &mut mac_abi::controls::ControlCall) -> Status
     {
         if call.operation >= mac_abi::controls::CREATE_STANDARD
@@ -1316,12 +1425,18 @@ impl Desktop
         {
             return NOT_FOUND;
         }
-        let id = match super::controls::definition_id(call)
+        let id = match super::controls::preflight(call)
         {
             Ok(id) => id,
             Err(e) => return e
         };
-        let entry = match self.definitions.resolve(*b"CDEF", id)
+        let entry = match crate::loader::cached_definition(*b"CDEF", id).and_then(|entry| {
+                                                                            entry.ok_or_else(|| {
+                                       mac_formats::Error::Missing("control definition was not \
+                                                                    prepared before object \
+                                                                    mutation").into()
+                                   })
+                                                                        })
         {
             Ok(entry) => entry,
             Err(e) => return crate::loader::status(e)
@@ -1848,23 +1963,6 @@ impl Desktop
         content.record(RenderCommand::Icon(drawing))?;
         self.content_changed(SceneTarget::decode(call.target)?);
         Ok(())
-    }
-
-    pub fn definition(&mut self, call: &mut DefinitionCall) -> i64
-    {
-        if !call.header.supports::<DefinitionCall>()
-        {
-            return BAD_ABI as i64;
-        }
-        match self.definitions.resolve(call.kind.to_be_bytes(), call.id)
-        {
-            Ok(entry) => super::resources::definitions::invoke(entry, call),
-            Err(error) =>
-            {
-                serial!("DEFINITION_UNAVAILABLE: {}", error);
-                crate::loader::status(error) as i64
-            }
-        }
     }
 
     fn action(&mut self, action: Action, when: u32)

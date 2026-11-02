@@ -3,23 +3,25 @@
 //! module payloads are charged to their original Kernel account; no user-mode
 //! mapping or private application address space is implied.
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::{fmt,
+use core::{alloc::Layout,
+           fmt,
            sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}};
 
 use mac_abi::{BAD_ABI, BAD_ARGUMENT, NO_MEMORY, Status};
 use mac_formats::native::{Descriptor, Role,
                           image::{self, Destination}};
 use mac_kernel_model::{account::{AccountUse, Committed},
-                       pages::{Access, PageOwnership, Permissions, PhysicalAddress}};
+                       pages::{Access, PageBacking, PageOwnership, Permissions, PhysicalAddress}};
 use mac_riscv_pages::{Decoded, Entry, LeafSize, Sv39};
 use spinning_top::Spinlock as Mutex;
 
-use super::{BOOT, Backing, Foundation, SPACES, interrupts};
+use super::{BOOT, Backing, BackingSource, Foundation, PagingBacking, SPACES, interrupts};
 use crate::{machine::{interrupts::NativeInvocationGate, memory::*},
             toolbox::handles::OwnerRef};
 
 static REVISION: AtomicU64 = AtomicU64::new(2);
-static TABLES: Mutex<Tables> = Mutex::new(Tables { branches: None });
+static TABLES: Mutex<Tables> = Mutex::new(Tables { branches:        None,
+                                                   kernel_branches: 0 });
 static PENDING: AtomicBool = AtomicBool::new(false);
 static RETIRING: AtomicUsize = AtomicUsize::new(0);
 
@@ -45,7 +47,10 @@ pub(crate) enum Error
     Format(mac_formats::Error),
     Account(mac_kernel_model::account::Error),
     Pages(crate::machine::pages::Error),
+    Recovery(crate::allocator::recovery::Error),
+    Frames(super::FrameError),
     Foundation(crate::allocator::foundation::Error),
+    OrdinaryPhysical(crate::allocator::ordinary_physical::Error),
     Encoding(mac_riscv_pages::Error),
     Conflict
     {
@@ -54,6 +59,7 @@ pub(crate) enum Error
         observed: u64
     },
     Revision,
+    CloneInventory(CloneInventoryError),
     Monitor(crate::machine::monitor::Error)
 }
 impl Error
@@ -66,7 +72,13 @@ impl Error
             Self::Metadata => NO_MEMORY,
             Self::Account(cause) => crate::allocation::account_status(cause),
             Self::Pages(cause) => cause.status(),
+            Self::Recovery(crate::allocator::recovery::Error::Exhausted { .. }
+                           | crate::allocator::recovery::Error::BackingRefused { .. }) => NO_MEMORY,
+            Self::Recovery(crate::allocator::recovery::Error::Layout) => BAD_ARGUMENT,
+            Self::Recovery(crate::allocator::recovery::Error::AlreadyInitialized) => BAD_ABI,
+            Self::Frames(cause) => cause.status(),
             Self::Foundation(cause) => cause.status(),
+            Self::OrdinaryPhysical(cause) => cause.status(),
             Self::Monitor(cause) => cause.status(),
             Self::Closed => mac_abi::OPERATION_CANCELLED,
             Self::Owner => mac_abi::ACCESS_DENIED,
@@ -122,7 +134,10 @@ impl fmt::Display for Error
             Self::Format(cause) => cause.fmt(out),
             Self::Account(cause) => cause.fmt(out),
             Self::Pages(cause) => cause.fmt(out),
+            Self::Recovery(cause) => cause.fmt(out),
+            Self::Frames(cause) => cause.fmt(out),
             Self::Foundation(cause) => cause.fmt(out),
+            Self::OrdinaryPhysical(cause) => cause.fmt(out),
             Self::Encoding(cause) => cause.fmt(out),
             Self::Conflict { address,
                              expected,
@@ -132,6 +147,7 @@ impl fmt::Display for Error
                        "executable PTE {address:#x} changed: expected {expected:#x}, observed \
                         {observed:#x}; original mapping/backing retained")
             }
+            Self::CloneInventory(cause) => cause.fmt(out),
             Self::Revision =>
             {
                 out.write_str("System mapping revision exhausted before PTE effects; restart \
@@ -235,8 +251,15 @@ impl fmt::Display for CleanupCause
                 write!(out, "executable image {base:#x} {stage:?} failed: {cause:?}")
             }
         }?;
-        out.write_str("; original backing/account/cleanup ticket retained; restart required for \
-                       quarantined transitions")
+        out.write_str("; original backing/account/cleanup ticket retained")?;
+        match self
+        {
+            Self::Pending { .. } =>
+            {
+                out.write_str("; waiting for actual quiescence and translation acknowledgment")
+            }
+            _ => out.write_str("; transition quarantined; restart required")
+        }
     }
 }
 
@@ -244,8 +267,68 @@ struct Segment
 {
     offset:  u64,
     memory:  u64,
-    backing: Backing,
-    _charge: Committed<NativeInvocationGate>
+    backing: PayloadBacking
+}
+enum PayloadBacking
+{
+    Owner
+    {
+        // Actual physical ownership precedes its original domain charge.
+        backing: PagingBacking,
+        _charge: Committed<NativeInvocationGate>
+    },
+    System(crate::allocator::ordinary_physical::SystemBacking)
+}
+impl PayloadBacking
+{
+    fn cpu_base(&self) -> usize
+    {
+        match self
+        {
+            Self::Owner { backing,
+                          .. } => backing.cpu_base(),
+            Self::System(b) => b.cpu_base()
+        }
+    }
+
+    fn physical(&self) -> PhysicalAddress
+    {
+        match self
+        {
+            Self::Owner { backing,
+                          .. } => backing.physical(),
+            Self::System(b) => b.physical()
+        }
+    }
+
+    fn bytes(&self) -> u64
+    {
+        match self
+        {
+            Self::Owner { backing,
+                          .. } => backing.bytes(),
+            Self::System(b) => b.bytes()
+        }
+    }
+}
+/// Only genuine source authority can choose the corresponding physical receipt.
+pub(crate) enum DefinitionTarget
+{
+    System(crate::kernel::SystemResources),
+    Owner(AccountUse<NativeInvocationGate>)
+}
+#[derive(Clone, Copy)]
+enum TargetKind
+{
+    Application,
+    Module,
+    Definition
+}
+#[derive(Clone, Copy)]
+enum PayloadAuthority<'a>
+{
+    Owner(&'a AccountUse<NativeInvocationGate>),
+    System(crate::kernel::SystemResources)
 }
 struct Payload
 {
@@ -358,13 +441,16 @@ struct State
     phase:     Phase,
     requested: bool
 }
-/// The original IMAG instance owns this anchor before the first PTE effect.
+/// The original canonical IMAG or DDEF record owns this anchor before the first PTE effect.
 /// Payload removal happens only after the actual translation receipt. Drop
 /// itself performs no unmap, monitor wait or fallible teardown.
 pub(crate) struct Mapping
 {
     owner:    OwnerRef,
     base:     u64,
+    target:   TargetKind,
+    source:   BackingSource,
+    entry:    u64,
     segments: Vec<SegmentMap>,
     leaves:   spin::Once<Entries>,
     payload:  Mutex<Option<Payload>>,
@@ -403,14 +489,97 @@ impl Mapping
                           descriptor: &Descriptor, bytes: &[u8], relocations: &[u8], base: u64)
                           -> Result<Arc<Self>, Error>
     {
-        let module = owner.owner().kind() == mac_object_table::domain::DomainKind::Module;
-        let application = owner.owner().kind() == mac_object_table::domain::DomainKind::Process;
+        let target = match (owner.owner().kind(), descriptor.role)
+        {
+            (mac_object_table::domain::DomainKind::Module, Role::CodeResource) =>
+            {
+                TargetKind::Module
+            }
+            (mac_object_table::domain::DomainKind::Process, Role::Application) =>
+            {
+                TargetKind::Application
+            }
+            _ => return Err(Error::Owner)
+        };
         if owner.owner() != account.owner()
-           || !(module && descriptor.role == Role::CodeResource
-                || application && descriptor.role == Role::Application)
         {
             return Err(Error::Owner);
         }
+        Self::prepare_payload(owner,
+                              PayloadAuthority::Owner(account),
+                              target,
+                              BackingSource::Ordinary,
+                              descriptor,
+                              bytes,
+                              relocations,
+                              base)
+    }
+
+    /// The only protected executable customer is the genuine replacement
+    /// Application. Its canonical image/account and Mapping lifecycle are unchanged.
+    pub(crate) fn prepare_recovery_application(owner: &OwnerRef,
+                                               account: &AccountUse<NativeInvocationGate>,
+                                               permit: &crate::allocator::recovery::Permit,
+                                               descriptor: &Descriptor, bytes: &[u8],
+                                               relocations: &[u8], base: u64)
+                                               -> Result<Arc<Self>, Error>
+    {
+        if owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+           || descriptor.role != Role::Application
+           || owner.owner() != account.owner()
+        {
+            return Err(Error::Owner);
+        }
+        Self::prepare_payload(owner,
+                              PayloadAuthority::Owner(account),
+                              TargetKind::Application,
+                              BackingSource::Protected(permit.clone()),
+                              descriptor,
+                              bytes,
+                              relocations,
+                              base)
+    }
+
+    pub(crate) fn prepare_definition(owner: &OwnerRef, authority: &DefinitionTarget,
+                                     descriptor: &Descriptor, bytes: &[u8], relocations: &[u8],
+                                     base: u64)
+                                     -> Result<Arc<Self>, Error>
+    {
+        if descriptor.role != Role::CodeResource
+        {
+            return Err(Error::Owner);
+        }
+        let authority = match authority
+        {
+            DefinitionTarget::System(source) if owner.owner() == source.owner().owner() =>
+            {
+                PayloadAuthority::System(*source)
+            }
+            DefinitionTarget::Owner(account)
+                if matches!(owner.owner().kind(),
+                            mac_object_table::domain::DomainKind::Process
+                            | mac_object_table::domain::DomainKind::Module)
+                   && owner.owner() == account.owner() =>
+            {
+                PayloadAuthority::Owner(account)
+            }
+            _ => return Err(Error::Owner)
+        };
+        Self::prepare_payload(owner,
+                              authority,
+                              TargetKind::Definition,
+                              BackingSource::Ordinary,
+                              descriptor,
+                              bytes,
+                              relocations,
+                              base)
+    }
+
+    fn prepare_payload(owner: &OwnerRef, authority: PayloadAuthority<'_>, target: TargetKind,
+                       source: BackingSource, descriptor: &Descriptor, bytes: &[u8],
+                       relocations: &[u8], base: u64)
+                       -> Result<Arc<Self>, Error>
+    {
         if !owner.accepting()
         {
             return Err(Error::Closed);
@@ -423,13 +592,11 @@ impl Mapping
                                                                           reservation")))?;
         let end = base.checked_add(extent).ok_or(Error::Extent { offset: base,
                                                                   bytes:  extent })?;
-        let region = if module
+        let region = match target
         {
-            base >= VM_MODULE_START && end <= VM_MODULE_END
-        }
-        else
-        {
-            super::super::memory::application_region(base, end)
+            TargetKind::Module => base >= VM_MODULE_START && end <= VM_MODULE_END,
+            TargetKind::Application => super::super::memory::application_region(base, end),
+            TargetKind::Definition => base >= DEFINITION_BASE && end <= DEFINITION_LIMIT
         };
         if !region || !base.is_multiple_of(PAGE_BYTES) || !extent.is_multiple_of(PAGE_BYTES)
         {
@@ -460,13 +627,57 @@ impl Mapping
                 return Err(Error::Extent { offset: segment.offset,
                                            bytes:  segment.memory_length });
             }
-            let planned = Backing::planned_bytes(mapped as usize).map_err(Error::Pages)?;
-            let charge = account.reserve_kernel(planned).map_err(Error::Account)?;
-            let backing = Backing::reserve_uninitialized(mapped as usize).map_err(Error::Pages)?;
-            if backing.bytes() != planned
+            let backing = match authority
             {
-                return Err(Error::State);
-            }
+                PayloadAuthority::Owner(account) =>
+                {
+                    match &source
+                    {
+                        BackingSource::Ordinary =>
+                        {
+                            let planned =
+                                Backing::planned_bytes(mapped as usize).map_err(Error::Pages)?;
+                            let charge = account.reserve_kernel(planned).map_err(Error::Account)?;
+                            let backing = Backing::reserve_uninitialized(mapped as usize).map_err(Error::Pages)?;
+                            if backing.bytes() != planned
+                            {
+                                return Err(Error::State);
+                            }
+                            PayloadBacking::Owner { backing: PagingBacking::Ordinary(backing),
+                                                    _charge: charge.commit() }
+                        }
+                        BackingSource::Protected(permit) =>
+                        {
+                            let layout = Layout::from_size_align(mapped as usize, PAGE_BYTES as usize)
+                            .map_err(|_| Error::Recovery(crate::allocator::recovery::Error::Layout))?;
+                            let planned = crate::allocator::recovery::Permit::backing_layout(layout)
+                            .map_err(Error::Recovery)?.size() as u64;
+                            // Preflight the original account before consuming raw storage.
+                            // Commit only after its real normalized extent is owned;
+                            // LoadPlan clears it before any PTE publication.
+                            let charge = account.reserve_kernel(planned).map_err(Error::Account)?;
+                            let backing = permit.reserve_uninitialized_backing(layout)
+                                                .map_err(Error::Recovery)?;
+                            if backing.bytes() != planned
+                            {
+                                return Err(Error::State);
+                            }
+                            PayloadBacking::Owner { backing: PagingBacking::Protected(backing),
+                                                    _charge: charge.commit() }
+                        }
+                    }
+                }
+                PayloadAuthority::System(source) =>
+                {
+                    let planned = Backing::planned_bytes(mapped as usize).map_err(Error::Pages)?;
+                    let backing = crate::allocator::ordinary_physical::SystemBacking::reserve_uninitialized(source, mapped as usize).map_err(Error::OrdinaryPhysical)?;
+                    if backing.bytes() != planned
+                    {
+                        return Err(Error::State);
+                    }
+                    PayloadBacking::System(backing)
+                }
+            };
             segments.push(SegmentMap { virtual_base: base + segment.offset,
                                        physical:     backing.physical().0,
                                        bytes:        mapped,
@@ -474,8 +685,7 @@ impl Mapping
                                        flags:        segment.flags });
             payload.segments.push(Segment { offset: segment.offset,
                                             memory: segment.memory_length,
-                                            backing,
-                                            _charge: charge.commit() });
+                                            backing });
         }
         plan.write_to(&mut payload).map_err(|cause| {
                                         match cause
@@ -489,6 +699,9 @@ impl Mapping
                                     })?;
         Arc::try_new(Self { owner: owner.clone(),
                             base,
+                            target,
+                            source,
+                            entry: plan.entry(),
                             segments,
                             leaves: spin::Once::new(),
                             payload: Mutex::new(Some(payload)),
@@ -498,11 +711,43 @@ impl Mapping
                                                                             })
     }
 
+    pub(crate) fn entry(&self) -> Option<u64>
+    {
+        (self.phase() == Phase::Live).then_some(self.entry)
+    }
+
+    pub(crate) fn quarantined(&self) -> bool
+    {
+        matches!(self.phase(), Phase::Quarantined(_) | Phase::Cleared)
+    }
+
+    pub(crate) fn unpublished(&self) -> bool
+    {
+        matches!(self.phase(), Phase::Prepared | Phase::Preparing)
+    }
+
     pub(crate) fn publish(&self) -> Result<(), Error>
     {
         if !self.owner.accepting()
         {
             return Err(Error::Closed);
+        }
+        if self.phase() == Phase::Live
+        {
+            return Ok(());
+        }
+        if self.phase() == Phase::Mapped
+        {
+            if let Err(cause) = crate::machine::monitor::publish_instructions()
+            {
+                if !matches!(cause, crate::machine::monitor::Error::Busy)
+                {
+                    self.quarantine(Stage::PublishInstructions, &cause)
+                }
+                return Err(Error::Monitor(cause));
+            }
+            self.set_phase(Phase::Live);
+            return Ok(());
         }
         self.with_state(|state| {
                 if state.phase != Phase::Prepared
@@ -518,34 +763,46 @@ impl Mapping
         // treating a legitimate concurrently installed branch as corruption.
         let lease =
             crate::machine::monitor::prepare_translation_invalidation().map_err(Error::Monitor)?;
-        let plan = Plan::prepare(&self.segments, self.owner.owner())?;
-        let mut leaves = Vec::new();
-        leaves.try_reserve_exact(plan.leaves.iter().filter(|s| is_permanent_root(s.root)).count())
-              .map_err(|_| Error::Metadata)?;
-        for slot in &plan.leaves
-        {
-            if is_permanent_root(slot.root)
-            {
-                leaves.push(*slot)
-            }
-        } // exact fallible capacity precedes effects
-        let mut ancestors = Vec::new();
-        ancestors.try_reserve_exact(plan.ancestors
-                                        .iter()
-                                        .filter(|s| is_permanent_root(s.root))
-                                        .count())
-                 .map_err(|_| Error::Metadata)?;
-        for slot in &plan.ancestors
-        {
-            if is_permanent_root(slot.root)
-            {
-                ancestors.push(*slot)
-            }
-        }
-        self.leaves.call_once(|| {
-                       Entries { leaves,
-                                 ancestors }
-                   });
+        // The Mapping retains its genuine origin across deferred publication;
+        // scratch and retained Entries do not borrow the executor's heap source.
+        let plan =
+            self.source.with_metadata(|| {
+                            let plan = Plan::prepare(&self.segments,
+                                                     self.owner.owner(),
+                                                     self.target,
+                                                     &self.source)?;
+                            let mut leaves = Vec::new();
+                            leaves.try_reserve_exact(plan.leaves
+                                                         .iter()
+                                                         .filter(|s| is_permanent_root(s.root))
+                                                         .count())
+                                  .map_err(|_| Error::Metadata)?;
+                            for slot in &plan.leaves
+                            {
+                                if is_permanent_root(slot.root)
+                                {
+                                    leaves.push(*slot)
+                                }
+                            } // exact fallible capacity precedes effects
+                            let mut ancestors = Vec::new();
+                            ancestors.try_reserve_exact(plan.ancestors
+                                                            .iter()
+                                                            .filter(|s| is_permanent_root(s.root))
+                                                            .count())
+                                     .map_err(|_| Error::Metadata)?;
+                            for slot in &plan.ancestors
+                            {
+                                if is_permanent_root(slot.root)
+                                {
+                                    ancestors.push(*slot)
+                                }
+                            }
+                            self.leaves.call_once(|| {
+                                           Entries { leaves,
+                                                     ancestors }
+                                       });
+                            Ok::<_, Error>(plan)
+                        })?;
         if !self.owner.accepting()
         {
             return Err(Error::Closed);
@@ -632,29 +889,36 @@ impl Mapping
                     }
                 };
                 let leaves = self.leaves.get().ok_or(Error::State)?;
-                let roots = if self.owner.owner().kind()
-                               == mac_object_table::domain::DomainKind::Module
+                // These owners stay in the ACK scope, not the preparation
+                // branch: dynamic Process pins cannot drop before lease.finish.
+                let roots;
+                let mut all;
+                let entries = if matches!(self.target, TargetKind::Application)
                 {
-                    super::process::snapshot(false).map_err(Error::Process)?
+                    // Applications publish only permanent-root mappings. These
+                    // already owned Entries are the complete unmap set; no
+                    // snapshot, fresh vectors or stopped-owner charge is needed.
+                    leaves
                 }
                 else
                 {
-                    Vec::new()
+                    roots = participating_roots(self.target, self.owner.owner(), false)?;
+                    let dynamic = process_entries(&self.segments, &roots)?;
+                    all = Entries { leaves:    Vec::new(),
+                                    ancestors: Vec::new() };
+                    all.leaves
+                       .try_reserve_exact(leaves.leaves.len() + dynamic.leaves.len())
+                       .map_err(|_| Error::Metadata)?;
+                    all.ancestors
+                       .try_reserve_exact(leaves.ancestors.len() + dynamic.ancestors.len())
+                       .map_err(|_| Error::Metadata)?;
+                    all.leaves.extend_from_slice(&leaves.leaves);
+                    all.leaves.extend_from_slice(&dynamic.leaves);
+                    all.ancestors.extend_from_slice(&leaves.ancestors);
+                    all.ancestors.extend_from_slice(&dynamic.ancestors);
+                    &all
                 };
-                let dynamic = process_entries(&self.segments, &roots)?;
-                let mut all = Entries { leaves:    Vec::new(),
-                                        ancestors: Vec::new() };
-                all.leaves
-                   .try_reserve_exact(leaves.leaves.len() + dynamic.leaves.len())
-                   .map_err(|_| Error::Metadata)?;
-                all.ancestors
-                   .try_reserve_exact(leaves.ancestors.len() + dynamic.ancestors.len())
-                   .map_err(|_| Error::Metadata)?;
-                all.leaves.extend_from_slice(&leaves.leaves);
-                all.leaves.extend_from_slice(&dynamic.leaves);
-                all.ancestors.extend_from_slice(&leaves.ancestors);
-                all.ancestors.extend_from_slice(&dynamic.ancestors);
-                if let Err(cause) = unmap(&all)
+                if let Err(cause) = unmap(entries)
                 {
                     let refusal = match &cause
                     {
@@ -839,7 +1103,87 @@ impl Branch
 }
 struct Tables
 {
-    branches: Option<Box<Branch>>
+    branches:        Option<Box<Branch>>,
+    // Committed branches belonging only to the permanent kernel root. Empty
+    // branches remain owned after unmap; private-root retirement cannot remove
+    // them. Updated in the same lock/revision transaction as their PTEs.
+    kernel_branches: usize
+}
+/// Inventory of actual owned tables, not a reservation or application quota.
+/// The existing translation lease must span this snapshot and template copying.
+pub(super) struct CloneFootprint
+{
+    pub(super) tables:   usize,
+    pub(super) revision: u64
+}
+#[derive(Debug)]
+pub(crate) enum CloneInventoryError
+{
+    Unavailable,
+    Changing
+    {
+        revision: u64
+    },
+    Overflow
+    {
+        permanent:  usize,
+        dynamic:    usize,
+        additional: usize
+    }
+}
+impl fmt::Display for CloneInventoryError
+{
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result
+    {
+        match self
+        {
+            Self::Unavailable =>
+            {
+                out.write_str("System clone table inventory has no permanent kernel root")
+            }
+            Self::Changing { revision } =>
+            {
+                write!(out,
+                       "System clone table inventory observed unfinished mapping revision \
+                        {revision}; no Process root published")
+            }
+            Self::Overflow { permanent,
+                             dynamic,
+                             additional } =>
+            {
+                write!(out,
+                       "System clone table inventory overflow: {permanent} permanent, {dynamic} \
+                        committed dynamic, {additional} additional tables; no new mappings \
+                        published")
+            }
+        }
+    }
+}
+/// Bootstrap Frames.count includes the extracted root. Each later kernel
+/// branch is retained by Tables exactly once. The clone keeps a subset of this
+/// hierarchy and copies leaves without splitting them, so their sum is an upper
+/// bound without walking page tables or counting other processes' roots.
+pub(super) fn clone_footprint() -> Result<CloneFootprint, CloneInventoryError>
+{
+    let spaces = SPACES.get().ok_or(CloneInventoryError::Unavailable)?;
+    interrupts::with_masked(|| {
+        let inventory = TABLES.lock();
+        let revision = REVISION.load(Ordering::Acquire);
+        if revision & 1 != 0
+        {
+            return Err(CloneInventoryError::Changing { revision });
+        }
+        let tables =
+            spaces.kernel
+                  .tables
+                  .count
+                  .checked_add(inventory.kernel_branches)
+                  .ok_or(CloneInventoryError::Overflow { permanent:  spaces.kernel.tables.count,
+                                                         dynamic:    inventory.kernel_branches,
+                                                         additional: 0 })?;
+        Ok(CloneFootprint { tables,
+                            revision })
+    })
 }
 impl Tables
 {
@@ -860,26 +1204,41 @@ impl Tables
 enum BranchBacking
 {
     Foundation(Foundation<Backing>),
+    // Suballocated from the already owned System heap, not a new page-pool
+    // lease. Its unique RawBacking receipt is the complete occupancy charge.
+    // Committed permanent branches remain retained after payload unmap.
+    ProtectedSystem(crate::allocator::recovery::Backing),
     Process
     {
-        backing: Backing,
+        backing: PagingBacking,
         _charge: Committed<NativeInvocationGate>
     }
 }
-impl core::ops::Deref for BranchBacking
+impl BranchBacking
 {
-    type Target = Backing;
-
-    fn deref(&self) -> &Backing
+    fn cpu_base(&self) -> usize
     {
         match self
         {
-            Self::Foundation(b) => b,
+            Self::Foundation(b) => b.cpu_base(),
+            Self::ProtectedSystem(b) => b.cpu_base(),
             Self::Process { backing,
-                            .. } => backing
+                            .. } => backing.cpu_base()
+        }
+    }
+
+    fn physical(&self) -> PhysicalAddress
+    {
+        match self
+        {
+            Self::Foundation(b) => b.physical(),
+            Self::ProtectedSystem(b) => b.physical(),
+            Self::Process { backing,
+                            .. } => mac_kernel_model::pages::PageBacking::physical(backing)
         }
     }
 }
+
 struct Plan
 {
     _processes: Vec<super::process::Pin>,
@@ -891,7 +1250,8 @@ struct Plan
 }
 impl Plan
 {
-    fn prepare(segments: &[SegmentMap], owner: mac_object_table::domain::DomainId)
+    fn prepare(segments: &[SegmentMap], owner: mac_object_table::domain::DomainId,
+               target: TargetKind, source: &BackingSource)
                -> Result<Self, Error>
     {
         let mut plan = Self { _processes: Vec::new(),
@@ -905,14 +1265,7 @@ impl Plan
         let pages = segments.iter()
                             .try_fold(0usize, |n, s| n.checked_add((s.bytes / PAGE_BYTES) as usize))
                             .ok_or(Error::Metadata)?;
-        let processes = if owner.kind() == mac_object_table::domain::DomainKind::Module
-        {
-            super::process::snapshot(true).map_err(Error::Process)?
-        }
-        else
-        {
-            Vec::new()
-        };
+        let processes = participating_roots(target, owner, true)?;
         let total = pages.checked_mul(processes.len().checked_add(2).ok_or(Error::Metadata)?)
                          .ok_or(Error::Metadata)?;
         plan.leaves.try_reserve_exact(total).map_err(|_| Error::Metadata)?;
@@ -922,7 +1275,7 @@ impl Plan
                                               .map(|s| (s, None))
                                               .chain(processes.iter()
                                                               .map(|r| {
-                                                                  (&r.space, Some(&r.allocation))
+                                                                  (r.space(), Some(&r.allocation))
                                                               }))
         {
             let root = space.owner.root_physical();
@@ -952,7 +1305,7 @@ impl Plan
                                                    root_table,
                                                    address,
                                                    space,
-                                                   account)?;
+                                                   account, source)?;
                             l1_cache = Some((l1_prefix, table));
                             table
                         }
@@ -969,7 +1322,7 @@ impl Plan
                                                    l1,
                                                    address,
                                                    space,
-                                                   account)?;
+                                                   account, source)?;
                             l0_cache = Some((l0_prefix, table));
                             table
                         }
@@ -1005,7 +1358,8 @@ impl Plan
     }
 
     fn table(&mut self, key: Key, parent: Table, address: u64, space: &super::Space,
-             account: Option<&crate::machine::scheduler::accounting::AllocationAuthority>)
+             account: Option<&crate::machine::scheduler::accounting::AllocationAuthority>,
+             source: &BackingSource)
              -> Result<Table, Error>
     {
         if let Some(table) =
@@ -1072,17 +1426,53 @@ impl Plan
                                          observed });
         }
         let prepare = || {
-            let table=match account {
-                Some(account)=>{let charge=account.reserve_kernel(PAGE_BYTES).map_err(Error::Account)?;let backing=Backing::allocate(PAGE_BYTES as usize).map_err(Error::Pages)?;BranchBacking::Process{backing,_charge:charge.commit()}},
-                None=>BranchBacking::Foundation(Foundation::<Backing>::allocate(PAGE_BYTES as usize).map_err(Error::Foundation)?)
+            let table = match account
+            {
+                Some(account) =>
+                {
+                    let layout = Layout::new::<[u64; 512]>()
+                        .align_to(PAGE_BYTES as usize).map_err(|_| Error::State)?;
+                    let bytes = space.tables.source.planned_bytes(layout).map_err(Error::Frames)?;
+                    let charge = account.reserve_kernel(bytes).map_err(Error::Account)?;
+                    let backing = space.tables.source.allocate_zeroed(layout).map_err(Error::Frames)?;
+                    BranchBacking::Process { backing, _charge: charge.commit() }
+                }
+                None => match source
+                {
+                    BackingSource::Ordinary => BranchBacking::Foundation(
+                        Foundation::<Backing>::allocate(PAGE_BYTES as usize).map_err(Error::Foundation)?
+                    ),
+                    BackingSource::Protected(permit) =>
+                    {
+                        let layout = Layout::new::<[u64; 512]>()
+                            .align_to(PAGE_BYTES as usize).map_err(|_| Error::State)?;
+                        let backing = permit.allocate_backing(layout)
+                            .map_err(|cause| Error::Frames(super::FrameError::Recovery(cause)))?;
+                        BranchBacking::ProtectedSystem(backing)
+                    }
+                }
             };
             Box::try_new(Branch { key,
                                   table,
                                   next: None }).map_err(|_| Error::Metadata)
         };
-        let branch=match account {
-            Some(account)=>crate::allocator::with_target(crate::allocator::Target::Owner{account:account.clone(),class:mac_kernel_model::policy::MemoryClass::Kernel},prepare),
-            None=>crate::allocator::with_system(crate::allocator::SystemClass::Foundation,prepare)
+        let branch = match account
+        {
+            Some(account) =>
+            {
+                let target = crate::allocator::Target::Owner {
+                    account: account.clone(),
+                    class: mac_kernel_model::policy::MemoryClass::Kernel
+                };
+                space.tables.source.with_metadata(|| crate::allocator::with_target(target, prepare))
+            }
+            None =>
+            {
+                source.with_metadata(|| {
+                          crate::allocator::with_system(crate::allocator::SystemClass::Foundation,
+                                                        prepare)
+                      })
+            }
         }?;
         self.branches.try_reserve(1).map_err(|_| Error::Metadata)?;
         self.edits.try_reserve(1).map_err(|_| Error::Metadata)?;
@@ -1098,6 +1488,10 @@ impl Plan
 
     fn commit(mut self) -> Result<Self, Error>
     {
+        let kernel = &SPACES.get().ok_or(Error::Missing)?.kernel;
+        let kernel_root = kernel.owner.root_physical().0;
+        let additional =
+            self.branches.iter().filter(|branch| branch.key.root == kernel_root).count();
         interrupts::with_masked(|| {
             let mut tables = TABLES.lock();
             for check in &self.checks
@@ -1120,15 +1514,25 @@ impl Plan
                                                  observed });
                 }
             }
+            // All inventory arithmetic must succeed before linking owners or
+            // exposing PTEs. The true bootstrap count includes its root table.
+            let overflow = || Error::CloneInventory(CloneInventoryError::Overflow {
+                permanent: kernel.tables.count,
+                dynamic: tables.kernel_branches,
+                additional
+            });
+            let kernel_branches = tables.kernel_branches.checked_add(additional).ok_or_else(overflow)?;
+            kernel.tables.count.checked_add(kernel_branches).ok_or_else(overflow)?;
             let revision = REVISION.load(Ordering::Acquire);
             let next =
                 revision.checked_add(2).filter(|_| revision & 1 == 0).ok_or(Error::Revision)?;
+            REVISION.store(revision + 1, Ordering::Release);
             while let Some(mut branch) = self.branches.pop()
             {
                 branch.next = tables.branches.take();
                 tables.branches = Some(branch);
             }
-            REVISION.store(revision + 1, Ordering::Release);
+            tables.kernel_branches = kernel_branches;
             for edit in &self.edits
             {
                 edit.store(edit.bits);
@@ -1188,6 +1592,7 @@ pub(crate) fn revision() -> Option<u64>
 }
 pub(crate) fn monitor_released()
 {
+    crate::toolbox::resources::definitions::monitor_released();
     super::process::monitor_released();
     if RETIRING.load(Ordering::Acquire) != 0
     {
@@ -1272,7 +1677,7 @@ fn process_entries(segments: &[SegmentMap], roots: &[super::process::Pin])
            .map_err(|_| Error::Metadata)?;
     for row in roots
     {
-        let space = &row.space;
+        let space = row.space();
         for segment in segments
         {
             'page: for offset in (0..segment.bytes).step_by(PAGE_BYTES as usize)
@@ -1357,4 +1762,21 @@ pub(super) fn retire_process_branches(root: PhysicalAddress)
         removed = branch.next.take();
         drop(branch)
     }
+}
+
+fn participating_roots(target: TargetKind, owner: mac_object_table::domain::DomainId,
+                       publication: bool)
+                       -> Result<Vec<super::process::Pin>, Error>
+{
+    if matches!(target, TargetKind::Application)
+    {
+        return Ok(Vec::new());
+    }
+    let mut roots = super::process::snapshot(publication).map_err(Error::Process)?;
+    if matches!(target, TargetKind::Definition)
+       && owner.kind() == mac_object_table::domain::DomainKind::Process
+    {
+        roots.retain(|r| r.owner() == owner)
+    }
+    Ok(roots)
 }

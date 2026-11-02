@@ -71,9 +71,13 @@ reports a source failure through System's failure service before Abort; it never
 substitutes a seed. ENTR1 launch readiness retains the genuine prospective
 Process and provider job before author entry. Bounded native observations cover
 initial/ordinary/document launch, cancellation and injected-device refusal/retry;
-pending replacement and provider-withdrawal cases remain unqualified. Automatic
-std requirement packaging, writable files, launch data and process streams remain
-adoption gates, as detailed in `docs/RUST-STD.md`.
+pending replacement and provider-withdrawal cases remain unqualified. The
+`sdk app` packager automatically merges ENTR1 into the actual NREQ through
+mac-build's normal manifest compilation; authors need no readiness call or
+manifest entry. Identical declarations are reused, conflicting versions refused.
+Low-level native packaging does not infer std from arbitrary ELF input. Writable
+files, launch data and process streams remain adoption gates, as detailed in
+`docs/RUST-STD.md`.
 There is no no_threads implementation, static TLS, zero-seed generator or host
 allocator substituted to get an executable to link.
 
@@ -133,3 +137,12 @@ Inspect actual generated Cargo fingerprint records for `content`; the feature
 flag alone does not change the default mtime mode. Build-script/resource inputs
 still require explicit rebuilds when changed. Record final packaged artifact
 hashes before native capture; compilation success is not runtime acceptance.
+
+
+Entropy device work has a 30-second deadline using the authenticated resident
+module clock and admitted machine timebase. Timeout or clock refusal enters the
+same real reset/unmap/release path; only positive cleanup acknowledgement permits
+a terminal reply or reuse. An unacknowledged reset retains the original work,
+DMA mapping and cleanup ticket. This is not forced recovery from arbitrary device
+faults. Public fallible fills preserve their actual initialized prefix and cause;
+std's infallible seeding reports genuine source loss through System then aborts.

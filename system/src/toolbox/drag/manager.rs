@@ -2,8 +2,14 @@
 #![forbid(unsafe_code)]
 #[path = "classic.rs"]
 mod classic;
+#[cfg(target_arch = "riscv64")]
+#[path = "admission.rs"]
+mod admission;
 use alloc::{collections::VecDeque, vec::Vec};
 
+#[cfg(target_arch = "riscv64")]
+pub(crate) use admission::{PreparedReceiver, ReceiverError, ReceiverPlan, ReceiverRetired,
+                           ReceiverTarget};
 use mac_abi::{drag::*, *};
 use mac_object_table::{domain::ReleasedResource, projected::Store};
 
@@ -31,7 +37,7 @@ struct Session
 {
     owner:               u64,
     source:              u64,
-    thread:              u64,
+    thread:              crate::context::ThreadId,
     detached:            bool,
     action:              u32,
     destination:         u32,
@@ -125,7 +131,7 @@ struct Receiver
 {
     owner:   u64,
     window:  u64,
-    thread:  u64,
+    thread:  crate::context::ThreadId,
     closing: bool
 }
 #[derive(Clone, Copy)]
@@ -175,9 +181,7 @@ impl Manager
                                                                                BAD_ARGUMENT
                                                                            })?,
                   receivers:
-                      Store::new(Kind::DragReceivers, receivers.0, receivers.1).map_err(|_| {
-                                                                                   BAD_ARGUMENT
-                                                                               })?,
+                      Store::new_prepared(Kind::DragReceivers, receivers.0, receivers.1).map_err(prepared_receiver_status)?,
                   active: None,
                   pointer: None,
                   notices,
@@ -194,6 +198,21 @@ fn admission(error: mac_object_table::projected::Error) -> Status
         mac_object_table::projected::Error::ProjectionExhausted => NO_MEMORY,
         mac_object_table::projected::Error::Pool(error) =>
             crate::toolbox::handles::registry_status(&mac_object_table::registry::Error::Pool(error))
+    }
+}
+fn prepared_receiver_status(cause: mac_object_table::projected::PreparedError) -> Status
+{
+    use mac_object_table::{CapacityError, domain::PoolError, projected::PreparedError,
+                           store::PreparedError as NativeError};
+    match cause
+    {
+        PreparedError::Projection(CapacityError::CapacityChanged)
+        | PreparedError::Native(NativeError::CapacityChanged) => SERVICE_BUSY,
+        PreparedError::Projection(CapacityError::AllocationFailed | CapacityError::Exhausted) => NO_MEMORY,
+        PreparedError::Projection(CapacityError::WrongKind)
+        | PreparedError::Native(NativeError::WrongStore | NativeError::RetiredStore) => BAD_ABI,
+        PreparedError::Native(NativeError::Pool(PoolError::ForeignOwner { .. })) => ACCESS_DENIED,
+        PreparedError::Native(NativeError::Pool(cause)) => crate::toolbox::handles::registry_status(&mac_object_table::registry::Error::Pool(cause))
     }
 }
 fn copied(bytes: &[u8]) -> Result<Vec<u8>, Status>
@@ -425,7 +444,8 @@ impl Manager
             .is_some_and(|s| matches!(s.phase, ARMED | TRACKING | RETURNING))
     }
 
-    pub(crate) fn ensure_receiver(&mut self, ledger: &OwnerRef, thread: u64, window: u64)
+    pub(crate) fn ensure_receiver(&mut self, ledger: &OwnerRef, thread: crate::context::ThreadId,
+                                  window: u64)
                                   -> Result<(), Status>
     {
         let owner = ledger.owner().incarnation();
@@ -784,8 +804,8 @@ impl Manager
     }
 
     /// Registration's window ownership is validated at the window service boundary.
-    pub(crate) fn request(&mut self, ledger: &OwnerRef, thread: u64, call: &mut Call,
-                          input: &[u8], output: &mut [u8], when: u32,
+    pub(crate) fn request(&mut self, ledger: &OwnerRef, thread: crate::context::ThreadId,
+                          call: &mut Call, input: &[u8], output: &mut [u8], when: u32,
                           admit_target: impl FnOnce(&mut Call) -> Result<(), Status>)
                           -> Result<(), Status>
     {
@@ -1560,7 +1580,15 @@ impl Manager
                 drop(receiver);
             }
             Registration::SessionStorage => self.sessions.release_storage(ticket)?,
-            Registration::ReceiverStorage => self.receivers.release_storage(ticket)?
+            Registration::ReceiverStorage =>
+            {
+                let preparing = self.receivers.publication_preparations(ticket.key().owner());
+                if preparing != 0
+                {
+                    return Err(crate::toolbox::handles::cleanup::Failure::publication_preparations(ticket, preparing));
+                }
+                self.receivers.release_storage(ticket)?;
+            }
         }
         Ok(before)
     }

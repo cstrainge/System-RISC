@@ -4,10 +4,16 @@
 pub(crate) mod cleanup;
 pub(crate) mod subject;
 #[cfg(target_arch = "riscv64")]
-pub(crate) use mac_object_table::domain::{DirectoryError, DomainKind};
+pub(crate) use mac_object_table::domain::{DirectoryCapacityError, DirectoryError, DomainKind};
 #[cfg(target_arch = "riscv64")]
 pub(crate) type Directory<T> =
     mac_object_table::domain::Directory<T, crate::machine::interrupts::NativeInvocationGate>;
+#[cfg(target_arch = "riscv64")]
+pub(crate) type DirectoryCapacityPlan<T> =
+    mac_object_table::domain::DirectoryCapacityPlan<T, crate::machine::interrupts::NativeInvocationGate>;
+#[cfg(target_arch = "riscv64")]
+pub(crate) type PreparedDirectoryCapacity<T> =
+    mac_object_table::domain::PreparedDirectoryCapacity<T, crate::machine::interrupts::NativeInvocationGate>;
 pub(crate) use mac_object_table::{Kind, Table};
 
 #[cfg(target_arch = "riscv64")]
@@ -112,7 +118,7 @@ pub(crate) fn registry<R>(run: impl FnOnce(&Registry<dyn cleanup::context::Conte
                                    KindAccessError::Registry(error)
                                })?;
                                registry.register(&owner,
-                                         crate::toolbox::controls::objects::storage_specification(), cleanup::context::Desktop(crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::objects::ReleaseStorage)))
+                                         crate::toolbox::controls::objects::storage_specification(), cleanup::context::Desktop(crate::toolbox::controls::objects::ReleaseStorage))
                                .map_err(KindAccessError::Registry)?;
                                registry.register(&owner,
                                          crate::toolbox::controls::scrollbox::specification(false), cleanup::context::Desktop(crate::toolbox::handles::cleanup::Complete(crate::toolbox::controls::scrollbox::ReleaseScrollBoxes)))

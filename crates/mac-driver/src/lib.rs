@@ -81,6 +81,25 @@ impl Client
         self.host.module
     }
 
+    /// Query the real monotonic clock from an authenticated module callback or
+    /// worker. No worker token is created, inferred or accepted by this service.
+    pub fn monotonic_microseconds(self) -> Result<u64>
+    {
+        let clock = self.host.monotonic.ok_or(Error(NOT_SUPPORTED))?;
+        let mut microseconds = 0;
+        // SAFETY: the installed immutable Host owns this checked callback. The
+        // genuine module context and exclusive stack output last through return.
+        let status = unsafe { clock(self.host.context, &mut microseconds) };
+        if status == OK
+        {
+            Ok(microseconds)
+        }
+        else
+        {
+            Err(Error(if status < OK { status } else { BAD_ABI }))
+        }
+    }
+
     /// Charge persistent module state to the module's genuine Kernel account.
     /// The closure runs synchronously and must not yield or retain the scope.
     /// Request futures and borrowed request buffers keep their admitted target.
@@ -478,7 +497,8 @@ mod entry_tests
                                    reallocate: None,
                                    with_module_allocation: None,
                                    workers: None,
-                                   critical_section: None };
+                                   critical_section: None,
+                                   monotonic: None };
         let mut instance = abi::Instance::default();
         assert_eq!(unsafe { entry(&probe, &host, &mut instance, dispatch) }, OK);
         assert_eq!(probe.module.load(Ordering::Relaxed), module);
@@ -519,7 +539,8 @@ mod entry_tests
                                                 reallocate:             None,
                                                 with_module_allocation: None,
                                                 workers:                None,
-                                                critical_section:       None } };
+                                                critical_section:       None,
+                                                monotonic:              None } };
         let provider = client.resolve(ClassId(*b"TEST"), 1).unwrap();
         assert_eq!(provider.handle, PROVIDER);
         assert_eq!(provider.invoke(&mut 0, Phase::Start, 1, &[], &mut []).unwrap(),
@@ -574,7 +595,8 @@ mod synchronous_tests
                                                                     reallocate:             None,
                                                                     with_module_allocation: None,
                                                                     workers:                None,
-                                                                    critical_section:       None } },
+                                                                    critical_section:       None,
+                                                                    monotonic:              None } },
                                  handle: 1 << 41,
                                  class:  wire::CLASS };
         let mut output = [0; 4];
@@ -639,7 +661,8 @@ mod source_information_tests
                                                 reallocate:             None,
                                                 with_module_allocation: None,
                                                 workers:                None,
-                                                critical_section:       None } };
+                                                critical_section:       None,
+                                                monotonic:              None } };
         let service = file_sources::FileSources::new(client).unwrap();
         assert_eq!(service.info(SOURCE), Err(Error(mac_abi::SERVICE_BUSY)));
         assert_eq!(service.info(SOURCE), Ok(Info { length: 1 << 40 }));

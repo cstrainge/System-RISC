@@ -41,9 +41,13 @@ pub(super) fn request(s: &mut Session, owner: &crate::toolbox::handles::OwnerRef
     {
         call.receiver = s.drag.receiver_at(call.window).ok_or(NOT_FOUND)?;
     }
-    let result = s.drag.request(owner, THREAD.get(), call, input, output, 0, |call| {
-                           crate::toolbox::drag::validate_target(&mut s.files, call)
-                       });
+    let result = s.drag.request(owner,
+                                crate::context::ThreadId(THREAD.get()),
+                                call,
+                                input,
+                                output,
+                                0,
+                                |call| crate::toolbox::drag::validate_target(&mut s.files, call));
     if result.is_ok() && source_read_only
     {
         s.drag.source_read_only(call.id);
@@ -111,7 +115,7 @@ pub fn receiver(owner: u64, thread: u64, window: WindowId)
                 .as_mut()
                 .unwrap()
                 .drag
-                .ensure_receiver(&owner, thread, window.0)
+                .ensure_receiver(&owner, crate::context::ThreadId(thread), window.0)
                 .unwrap()
            });
 }

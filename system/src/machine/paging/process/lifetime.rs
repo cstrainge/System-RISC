@@ -67,40 +67,71 @@ impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> fo
             }
             Self::Root =>
             {
-                let root = interrupts::with_masked(|| manager.lock().releasing(&ticket).cloned());
-                let Some(root) = root
-                else
-                {
-                    return Err(Failure::process_space(ticket, Error::Authority));
-                };
-                root.closing.store(true, Ordering::Release);
-                if interrupts::with_masked(|| {
-                    crate::machine::scheduler::has_threads(root.owner.owner().incarnation())
-                })
-                {
-                    return Err(Failure::process_space(ticket, Error::Threads));
-                }
-                let expected = if root.registered.load(Ordering::Acquire) { 3 } else { 2 };
-                WAITING_PINS.store(true, Ordering::Release);
-                let count = interrupts::with_masked(|| {
+                // Inspect through the exact original ticket without creating
+                // a temporary Root/Space reader which could wake its own Busy
+                // retirement on every owner-walk turn.
+                let observed = interrupts::with_masked(|| {
+                    let store = manager.lock();
+                    let root = store.releasing(&ticket).ok_or(Error::Authority)?;
+                    root.closing.store(true, Ordering::Release);
+                    if let Some(cause) = *root.retirement_failure.lock()
+                    {
+                        return Err(Error::Retirement(cause));
+                    }
+                    if !root.retired.load(Ordering::Acquire)
+                    {
+                        let notify = !root.retirement_requested.swap(true, Ordering::AcqRel);
+                        return Ok((false, notify));
+                    }
+                    if root.retirement_claimed.load(Ordering::Acquire)
+                    {
+                        return Err(Error::Pending);
+                    }
+                    if root.registered.load(Ordering::Acquire) || root.backing.lock().is_some()
+                    {
+                        return Err(Error::Authority);
+                    }
+                    WAITING_PINS.store(true, Ordering::Release);
                     let _registry = ROOTS.lock();
-                    Arc::strong_count(&root)
+                    let count = Arc::strong_count(root);
+                    if count != 1
+                    {
+                        return Err(Error::Readers(count.saturating_sub(1)));
+                    }
+                    Ok((true, false))
                 });
-                if count != expected
+                let (ready, notify) = match observed
                 {
-                    return Err(Failure::process_space(ticket,Error::Readers(count.saturating_sub(expected))));
+                    Ok(observed) => observed,
+                    Err(cause) => return Err(Failure::process_space(ticket, cause))
+                };
+                if notify
+                {
+                    retirement_changed();
                 }
-                if let Err(cause) = retire(&root)
+                if !ready
                 {
+                    let cause = if interrupts::with_masked(|| {
+                        crate::machine::scheduler::has_threads(ticket.key().owner().incarnation())
+                    })
+                    {
+                        Error::Threads
+                    }
+                    else
+                    {
+                        Error::Pending
+                    };
                     return Err(Failure::process_space(ticket, cause));
                 }
+                // Every actual table/Node/attached branch and original physical
+                // charge has already been destroyed after real ACK in primary
+                // maintenance. Only canonical metadata/completion remains here.
                 let old = interrupts::with_masked(|| {
-                    manager.lock().reap_publication_capacity(root.owner.owner())
+                    manager.lock().reap_publication_capacity(ticket.key().owner())
                 });
                 drop(old);
                 let removed =
                     interrupts::with_masked(|| manager.lock().release_with_backing(ticket));
-                drop(root);
                 match removed
                 {
                     Ok(removed) =>

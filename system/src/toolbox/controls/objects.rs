@@ -1,13 +1,17 @@
 //! Owned resident controls. CDEFs own geometry; this manager owns identity and
 //! tracking policy. No caller memory or callback survives a request.
 #![forbid(unsafe_code)]
-use crate::toolbox::resources::definitions::DefinitionRef;
-
 use alloc::{sync::Arc, vec::Vec};
 
 use mac_abi::{controls::*, *};
 
-use crate::toolbox::handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store};
+use crate::toolbox::{handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store},
+                     resources::definitions::{BoundDefinition, DefinitionRef}};
+#[cfg(target_arch = "riscv64")]
+#[path = "admission.rs"]
+mod admission;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use admission::{ControlCommit, ControlPlan, CreationError};
 
 pub(crate) fn specification() -> mac_object_table::registry::Specification<'static>
 {
@@ -32,12 +36,21 @@ pub(crate) trait ControlHost
 }
 pub(crate) struct ReleaseControls;
 pub(crate) struct ReleaseStorage;
-impl<C: ControlHost> mac_object_table::registry::Release<C> for ReleaseStorage
+impl<C: ControlHost>
+    mac_object_table::registry::Release<C, crate::toolbox::handles::cleanup::Failure>
+    for ReleaseStorage
 {
-    fn release(&self, context: &mut C, resource: mac_object_table::domain::ReleasedResource)
-               -> Result<(), mac_object_table::domain::CompletionError>
+    fn release(&self, context: &mut C, ticket: mac_object_table::domain::ReleasedResource)
+               -> Result<(), crate::toolbox::handles::cleanup::Failure>
     {
-        context.managed_controls().objects.release_storage(resource)
+        use crate::toolbox::handles::cleanup::Failure;
+        let objects = &mut context.managed_controls().objects;
+        let preparing = objects.publication_preparations(ticket.key().owner());
+        if preparing != 0
+        {
+            return Err(Failure::publication_preparations(ticket, preparing));
+        }
+        objects.release_storage(ticket).map_err(Failure::from)
     }
 }
 impl<C: ControlHost> mac_object_table::registry::Release<C> for ReleaseControls
@@ -58,6 +71,9 @@ struct Object
     scrollbar:          bool,
     title:              Option<Arc<super::snapshot::Title>>,
     tracking:           Option<Tracking>,
+    // Retain executable source through all control payload destruction; the
+    // recovery Activity below remains the final modal-session acknowledgment.
+    definition:         BoundDefinition,
     // Last: registered removal must finish payload destruction before the
     // protected modal service can become available to another recipient.
     #[cfg(target_arch = "riscv64")]
@@ -113,7 +129,7 @@ impl Manager
 {
     pub(crate) fn new((kind, storage): (KindLease, KindLease)) -> Result<Self, Status>
     {
-        Ok(Self { objects:      Store::owned(kind, storage).map_err(|_| BAD_ARGUMENT)?,
+        Ok(Self { objects:      Store::owned_prepared(kind, storage).map_err(pool_status)?,
                   publications: Vec::new() })
     }
 }
@@ -178,33 +194,35 @@ impl Manager
         self.objects.remove_owner(owner);
     }
 
-    pub fn definition(&self, call: &ControlCall, owner: u64) -> Result<i16, Status>
+    /// Select only the actual object's retained binding. Full request admission
+    /// remains in preflight_definition; warm calls need no source lookup.
+    pub(crate) fn bound_definition(&self, call: &ControlCall, owner: u64)
+                                   -> Result<Option<DefinitionRef>, Status>
     {
-        Ok(if call.operation == CREATE_SCROLLBAR
-           {
-               1
-           }
-           else if call.operation == CREATE_STANDARD
-           {
-               super::definition_id(&Spec::from_call(call).call(DRAW_STANDARD))?
-           }
-           else
-           {
-               let o = self.get(call.id, owner)?;
-               super::definition_id(&o.spec.call(if o.scrollbar
-                                                 {
-                                                     DRAW_SCROLLBAR
-                                                 }
-                                                 else
-                                                 {
-                                                     DRAW_STANDARD
-                                                 }))?
-           })
+        if matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
+        {
+            return Ok(None);
+        }
+        let object = self.get(call.id, owner)?;
+        if call.operation == CONFIGURE_OBJECT
+        {
+            let operation = if object.scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD };
+            let previous = super::definition_id(&object.spec.call(operation))?;
+            let mut proposed = *call;
+            proposed.operation = operation;
+            if super::definition_id(&proposed)? != previous
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(object.definition.reference()))
     }
 
-    pub(crate) fn request(&mut self, recipient: &OwnerRef, storage: &OwnerRef,
-                          call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate)
-                          -> Result<Option<super::Drawing>, Status>
+    /// Pure admission before a cold definition load. Existing objects retain
+    /// their canonical callable even if the resource source later stops.
+    pub(crate) fn preflight_definition(&self, recipient: &OwnerRef, storage: &OwnerRef,
+                                       call: &ControlCall)
+                                       -> Result<(i16, Option<DefinitionRef>), Status>
     {
         let owner = recipient.owner().incarnation();
         let recovery = storage.owner() != recipient.owner();
@@ -230,39 +248,116 @@ impl Manager
             return Err(ACCESS_DENIED);
         }
         let operation = call.operation;
+        if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR) && !storage.accepting()
+        {
+            return Err(pool_status(mac_object_table::domain::PoolError::Stopping {
+                owner: storage.owner()
+            }));
+        }
         if !call.surface.is_null() || call.reserved != 0
         {
             return Err(BAD_ARGUMENT);
         }
-        let mut admitted_title = None;
+        if !matches!(operation,
+                     CREATE_STANDARD
+                     | CREATE_SCROLLBAR
+                     | CONFIGURE_OBJECT
+                     | INFO_OBJECT
+                     | DRAW_OBJECT
+                     | DISPOSE_OBJECT
+                     | BEGIN_TRACKING
+                     | POLL_TRACKING
+                     | CANCEL_TRACKING)
+        {
+            return Err(NOT_SUPPORTED);
+        }
         if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR | CONFIGURE_OBJECT)
         {
-            let scrollbar = if operation == CONFIGURE_OBJECT
-            {
-                self.get(call.id, owner)?.scrollbar
-            }
-            else
-            {
-                operation == CREATE_SCROLLBAR
-            };
+            let old =
+                if operation == CONFIGURE_OBJECT { Some(self.get(call.id, owner)?) } else { None };
+            let scrollbar = old.map_or(operation == CREATE_SCROLLBAR, |object| object.scrollbar);
             if scrollbar && (call.step <= 0 || call.page <= 0)
             {
                 return Err(BAD_ARGUMENT);
             }
             let mut spec = *call;
             spec.operation = if scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD };
-            if operation == CONFIGURE_OBJECT
+            if let Some(old) = old
             {
-                let old = self.get(call.id, owner)?;
                 spec.standard.highlighted = old.spec.standard.highlighted;
                 spec.scrollbar.highlighted = old.spec.scrollbar.highlighted;
             }
-            if operation != CONFIGURE_OBJECT
-               || self.get(call.id, owner)?.spec != Spec::from_call(&spec)
+            let id = super::preflight(&spec)?;
+            let bound = match old
             {
-                // Validate through the real resource before publishing or mutating.
-                super::validate(&mut spec, entry, gate)?;
+                Some(old)
+                    if super::definition_id(&old.spec.call(if old.scrollbar
+                                                           {
+                                                               DRAW_SCROLLBAR
+                                                           }
+                                                           else
+                                                           {
+                                                               DRAW_STANDARD
+                                                           }))?
+                       == id =>
+                {
+                    Some(old.definition.reference())
+                }
+                _ => None
+            };
+            return Ok((id, bound));
+        }
+        let object = self.get(call.id, owner)?;
+        if operation == BEGIN_TRACKING
+        {
+            if call.window != 0 && call.window != object.window
+            {
+                return Err(BAD_ARGUMENT);
             }
+            if object.tracking.is_some()
+               || self.objects.iter().any(|(id, other)| {
+                                         id != call.id
+                                         && other.recipient == owner
+                                         && other.tracking.is_some()
+                                     })
+            {
+                return Err(SERVICE_BUSY);
+            }
+        }
+        let id = super::definition_id(&object.spec.call(if object.scrollbar
+                                                        {
+                                                            DRAW_SCROLLBAR
+                                                        }
+                                                        else
+                                                        {
+                                                            DRAW_STANDARD
+                                                        }))?;
+        Ok((id, Some(object.definition.reference())))
+    }
+
+    pub(crate) fn request(&mut self, recipient: &OwnerRef, storage: &OwnerRef,
+                          call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate)
+                          -> Result<Option<super::Drawing>, Status>
+    {
+        let (_, bound) = self.preflight_definition(recipient, storage, call)?;
+        let entry = bound.unwrap_or(entry);
+        let owner = recipient.owner().incarnation();
+        let recovery = storage.owner() != recipient.owner();
+        let operation = call.operation;
+        // A configure which changes family admits a replacement before any
+        // mutation; unchanged operations keep the original canonical binding.
+        let replacement = if operation == CONFIGURE_OBJECT && bound.is_none()
+        {
+            Some(crate::toolbox::resources::definitions::bind(entry)?)
+        }
+        else
+        {
+            None
+        };
+        let mut admitted_title = None;
+        if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR | CONFIGURE_OBJECT)
+        {
+            let (spec, scrollbar) = self.validate_spec(owner, call, entry, gate)?;
             if !scrollbar
                && !matches!(spec.procedure,
                             PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE)
@@ -279,21 +374,14 @@ impl Manager
             }
             if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
             {
-                let object = Object { window: call.window,
-                                      recipient: owner,
-                                      spec: Spec::from_call(&spec),
-                                      scrollbar,
-                                      title: admitted_title.clone(),
-                                      tracking: None,
-                                      #[cfg(target_arch = "riscv64")]
-                                      _recovery_activity: if recovery
-                                      {
-                                          crate::context::recovery_activity()
-                                      }
-                                      else
-                                      {
-                                          None
-                                      } };
+                let binding = crate::toolbox::resources::definitions::bind(entry)?;
+                let object = Object::new(call.window,
+                                         owner,
+                                         spec,
+                                         scrollbar,
+                                         admitted_title.clone(),
+                                         binding,
+                                         recovery);
                 call.id = if recovery
                 {
                     let reservation = self.publications
@@ -320,22 +408,52 @@ impl Manager
                 };
             }
         }
-        let object = self.get(call.id, owner)?;
-        if operation == BEGIN_TRACKING && call.window != 0 && call.window != object.window
+        self.finish_request(call, entry, gate, admitted_title, replacement)
+    }
+
+    /// Keep the existing callback turn and invocation scope. Detached ordinary
+    /// publication owns this exact validated snapshot; capacity retries do not
+    /// call foreign code again.
+    fn validate_spec(&self, owner: u64, call: &ControlCall, entry: DefinitionRef, gate: TrapGate)
+                     -> Result<(Spec, bool), Status>
+    {
+        let scrollbar = if call.operation == CONFIGURE_OBJECT
         {
-            return Err(BAD_ARGUMENT);
+            self.get(call.id, owner)?.scrollbar
         }
+        else
+        {
+            call.operation == CREATE_SCROLLBAR
+        };
+        let mut spec = *call;
+        spec.operation = if scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD };
+        if call.operation == CONFIGURE_OBJECT
+        {
+            let old = self.get(call.id, owner)?;
+            spec.standard.highlighted = old.spec.standard.highlighted;
+            spec.scrollbar.highlighted = old.spec.scrollbar.highlighted;
+        }
+        if call.operation != CONFIGURE_OBJECT
+           || self.get(call.id, owner)?.spec != Spec::from_call(&spec)
+        {
+            super::validate(&mut spec, entry, gate)?;
+        }
+        Ok((Spec::from_call(&spec), scrollbar))
+    }
+
+    /// One state/tracking/drawing tail for both existing internal publication
+    /// and detached native ordinary publication.
+    fn finish_request(&mut self, call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate,
+                      admitted_title: Option<Arc<super::snapshot::Title>>,
+                      mut replacement: Option<BoundDefinition>)
+                      -> Result<Option<super::Drawing>, Status>
+    {
+        let operation = call.operation;
+        let mut retired_binding = None;
         if operation == DISPOSE_OBJECT
         {
             self.objects.remove(call.id);
             return Ok(None);
-        }
-        if operation == BEGIN_TRACKING
-           && self.objects
-                  .iter()
-                  .any(|(id, o)| id != call.id && o.recipient == owner && o.tracking.is_some())
-        {
-            return Err(SERVICE_BUSY);
         }
         let o = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
         let previous = (o.spec.standard, o.spec.scrollbar, o.spec.procedure);
@@ -349,6 +467,10 @@ impl Manager
             {
                 // New title backing was admitted before any state/capture mutation.
                 o.title = admitted_title;
+                if let Some(binding) = replacement.take()
+                {
+                    retired_binding = Some(core::mem::replace(&mut o.definition, binding));
+                }
                 let cancel = o.spec.standard.bounds != call.standard.bounds
                              || o.spec.standard.enabled != call.standard.enabled
                              || o.spec.scrollbar.bounds != call.scrollbar.bounds
@@ -379,10 +501,6 @@ impl Manager
             }
             BEGIN_TRACKING =>
             {
-                if o.tracking.is_some()
-                {
-                    return Err(SERVICE_BUSY);
-                }
                 part = o.hit(call.point, entry, gate)?;
                 if matches!(part,
                             BUTTON_PART
@@ -480,7 +598,7 @@ impl Manager
                      | (u32::from(handled) * HANDLED)
                      | (u32::from(action) * ACTION)
                      | (u32::from(changed) * CHANGED);
-        if changed || operation == DRAW_OBJECT
+        let result = if changed || operation == DRAW_OBJECT
         {
             let mut state = o.spec.call(if o.scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD });
             let mut drawing = super::prepare_with_title(&mut state, entry, gate, o.title.as_ref())?.ok_or(BAD_ARGUMENT)?;
@@ -497,11 +615,37 @@ impl Manager
         else
         {
             Ok(None)
-        }
+        };
+        drop(retired_binding);
+        result
     }
 }
 impl Object
 {
+    fn new(window: u64, recipient: u64, spec: Spec, scrollbar: bool,
+           title: Option<Arc<super::snapshot::Title>>, definition: BoundDefinition, recovery: bool)
+           -> Self
+    {
+        #[cfg(not(target_arch = "riscv64"))]
+        let _ = recovery;
+        Self { window,
+               recipient,
+               spec,
+               scrollbar,
+               title,
+               definition,
+               tracking: None,
+               #[cfg(target_arch = "riscv64")]
+               _recovery_activity: if recovery
+               {
+                   crate::context::recovery_activity()
+               }
+               else
+               {
+                   None
+               } }
+    }
+
     fn highlight(&mut self, part: i16)
     {
         if self.scrollbar

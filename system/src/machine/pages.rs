@@ -7,7 +7,7 @@ use core::{alloc::Layout, fmt, marker::PhantomData, mem::MaybeUninit};
 use mac_abi::boot::CheckedMemory;
 use mac_kernel_model::{bootstrap::{BankPlan, Error as PlanError},
                        buddy::{BuddyError, BuddyPool, PageBlock, PageMetadata},
-                       pages::{PageBox, PageGeometry, PhysicalAddress,
+                       pages::{PageGeometry, PhysicalAddress,
                                physical::{DirectMap, Error as MapError}},
                        policy::AddressRange};
 
@@ -285,13 +285,6 @@ impl Backing
     pub(crate) fn physical(&self) -> PhysicalAddress
     {
         self.pages.address()
-    }
-
-    pub(crate) fn into_table(
-        self)
-        -> Result<PageBox<'static, 'static, [u64; 512], NativeInvocationGate>, Error>
-    {
-        PageBox::reserve(self.pages).map_err(Error::Model)
     }
 
     pub(crate) fn bytes(&self) -> u64

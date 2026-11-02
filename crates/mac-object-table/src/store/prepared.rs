@@ -295,6 +295,16 @@ impl<G: InvocationGate> Drop for PublicationReleased<G>
 }
 impl<G: InvocationGate> PublicationPermit<G>
 {
+    pub(crate) fn attach_projection(&mut self, projection: crate::projected::ProjectionRelease)
+                                    -> Result<(), crate::projected::ProjectionRelease>
+    {
+        match &mut self.reserve
+        {
+            Some(reserve) => reserve.attach_projection(projection),
+            None => Err(projection)
+        }
+    }
+
     /// Identity already issued by this exact canonical preparation. Observing
     /// it grants no publication or lookup authority; only consuming this permit
     /// can publish its associated object. Useful for an object's own immutable ID.
@@ -662,6 +672,56 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         })
     }
 
+    /// Pure validation shared by composite publication before its first birth.
+    /// Publication still revalidates under the actual owner-ledger turn.
+    pub(crate) fn validate_prepared(&self, permit: &PublicationPermit<G>)
+                                    -> Result<(usize, usize), PreparedError>
+    {
+        if !permit.claim.owner.accepting()
+        {
+            return Err(PoolError::Stopping { owner: permit.claim.owner.owner() }.into());
+        }
+        let incarnation = self.incarnation.as_ref().ok_or(PoolError::InvalidGrowth)?;
+        if !incarnation.live()
+        {
+            return Err(PreparedError::RetiredStore);
+        }
+        if !Arc::ptr_eq(incarnation, &permit.incarnation)
+        {
+            return Err(PreparedError::WrongStore);
+        }
+        if !permit.credited || permit.reserve.is_none() || self.ids.contains_key(&permit.id)
+        {
+            return Err(PoolError::InvalidGrowth.into());
+        }
+        if let Some(kind) = self.registration.as_ref().filter(|kind| !kind.live())
+        {
+            let descriptor = kind.registration();
+            return Err(PoolError::RegistrationUnavailable {
+                    kind:descriptor.code,registration:descriptor.release.registration
+                }.into());
+        }
+        let credits = incarnation.credits();
+        if credits == 0
+           || self.ids.capacity()
+              < self.ids.len().checked_add(credits).ok_or(PoolError::InvalidGrowth)?
+        {
+            return Err(PoolError::InvalidGrowth.into());
+        }
+        let at =
+            self.owner_index(permit.claim.owner.owner()).map_err(|_| PoolError::InvalidGrowth)?;
+        if !Arc::ptr_eq(&self.owners[at].claim, &permit.claim)
+        {
+            return Err(PoolError::InvalidGrowth.into());
+        }
+        let slot = permit.slot.ok_or(PoolError::InvalidGrowth)?;
+        if self.owners[at].slots.get(slot).is_none_or(Option::is_some)
+        {
+            return Err(PoolError::InvalidGrowth.into());
+        }
+        Ok((at, slot))
+    }
+
     fn publish_prepared_with_root<R: PublicationRoot<G>>(
         &mut self, mut permit: PublicationPermit<G>, root: R, value: T)
         -> Result<(Publication, RetiredPublication<G>),
@@ -669,48 +729,9 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
     {
         // Observe every Store-side refusal while the original payload remains
         // owned separately. Only canonical admission below can consume it.
-        let checked: Result<(usize, usize), PreparedError> = (|| {
-            root.validate(permit.claim.owner.owner(), self.kind)?;
-            let incarnation = self.incarnation.as_ref().ok_or(PoolError::InvalidGrowth)?;
-            if !incarnation.live()
-            {
-                return Err(PreparedError::RetiredStore);
-            }
-            if !Arc::ptr_eq(incarnation, &permit.incarnation)
-            {
-                return Err(PreparedError::WrongStore);
-            }
-            if !permit.credited || permit.reserve.is_none() || self.ids.contains_key(&permit.id)
-            {
-                return Err(PoolError::InvalidGrowth.into());
-            }
-            if let Some(kind) = self.registration.as_ref().filter(|kind| !kind.live())
-            {
-                let descriptor = kind.registration();
-                return Err(PoolError::RegistrationUnavailable {
-                    kind:descriptor.code,registration:descriptor.release.registration
-                }.into());
-            }
-            let credits = incarnation.credits();
-            if credits == 0
-               || self.ids.capacity()
-                  < self.ids.len().checked_add(credits).ok_or(PoolError::InvalidGrowth)?
-            {
-                return Err(PoolError::InvalidGrowth.into());
-            }
-            let at = self.owner_index(permit.claim.owner.owner())
-                         .map_err(|_| PoolError::InvalidGrowth)?;
-            if !Arc::ptr_eq(&self.owners[at].claim, &permit.claim)
-            {
-                return Err(PoolError::InvalidGrowth.into());
-            }
-            let slot = permit.slot.ok_or(PoolError::InvalidGrowth)?;
-            if self.owners[at].slots.get(slot).is_none_or(Option::is_some)
-            {
-                return Err(PoolError::InvalidGrowth.into());
-            }
-            Ok((at, slot))
-        })();
+        let checked = root.validate(permit.claim.owner.owner(), self.kind)
+                          .map_err(PreparedError::from)
+                          .and_then(|()| self.validate_prepared(&permit));
         let (at, slot) = match checked
         {
             Ok(checked) => checked,

@@ -263,3 +263,31 @@ I/O, cancellation during a callback, actual mutation results after cancellation,
 foreign and reused IDs, separate owners, fairness and memory limits. Scheduler
 parking, the runtime pump, filesystem provider and mount/read/write SDK acceptance
 remain the next integration work; this queue alone does not implement them.
+
+
+## Authenticated module monotonic clock
+
+The native Host descriptor is 104 bytes on RV64, with `monotonic` at offset96.
+Its exact header size remains validated and development ABI remains1; rebuild
+System and every independently loaded module together. There is no old-layout
+fallback. `mac_driver::Client::monotonic_microseconds()` queries System from the
+actual admitted module callback or worker. A copied Host context alone grants
+no authority, and this service neither creates nor accepts a worker token.
+The existing worker-token MONOTONIC contract is unchanged.
+
+The resident rejects scheduler-policy service access before routing or borrowing
+output, retains the same native invocation lease, authenticates its installed
+module frame, and writes only the checked exclusive output. It converts the real
+counter using the admitted device-tree timebase. The bounded leaf allocates
+nothing and holds no registry guard or foreign callback; it does not guess a
+counter frequency in device code.
+
+The external VirtIO RNG records a checked 30-second deadline when actual device
+work starts, reuses that initial observation, and queries once per existing
+bounded callback thereafter. New-work clock refusal or overflow posts no DMA.
+Timeout, clock refusal or regression after admission follows the original work's
+reset/unmap/release/ACK path. Cancellation does not depend on another clock query.
+Failure details survive cleanup attempts. A reset that does not acknowledge keeps
+the actual work, mapping and original cleanup ticket; elapsed time never permits
+forged completion or reclamation. This does not qualify arbitrary hardware fault
+recovery or source security.

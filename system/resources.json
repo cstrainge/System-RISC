@@ -132,7 +132,14 @@
           "Not enough memory to restart Finder. Close another application and try again.",
           "Close Report",
           "Retry Finder",
-          "Earlier diagnostic retained; the latest capture failed."
+          "Earlier diagnostic retained; the latest capture failed.",
+          "Restart System",
+          "Finder cannot safely restart. Copy the report, then restart System.",
+          "Restart unavailable: the power device could not be selected.",
+          "Close other applications, then try Restart System again.",
+          "Storage is not ready. Finish file operations, then retry.",
+          "The power device refused System restart. The report is retained.",
+          "System restart failed. The report is retained."
         ]
       }
     },

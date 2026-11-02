@@ -1,5 +1,5 @@
 //! Lifetime-domain identity, the resident process owner directory, and ledger
-//! metadata. Other managers migrate under memory/app/resource spec §13.
+//! metadata. Directory capacity can be prepared without publishing an owner.
 //! Native/legacy wire projections remain the responsibility of the facility.
 use alloc::{sync::Arc, vec::Vec};
 use core::{fmt,
@@ -7,6 +7,10 @@ use core::{fmt,
            sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 
 use crate::shared::{InvocationGate, OwnerRef};
+
+mod capacity;
+pub use capacity::{DirectoryCapacityError, DirectoryCapacityPlan, DirectoryInsertFailure,
+                   PreparedDirectoryCapacity};
 
 static SYSTEM_INDEX_ISSUED: AtomicBool = AtomicBool::new(false);
 // Native identities and domain incarnations share one boot-wide issuer. The
@@ -1176,11 +1180,19 @@ impl<T, G: InvocationGate> Directory<T, G>
             };
         G::with_system_allocation(|| self.entries.try_reserve(1))
             .map_err(|_| DirectoryError::Storage { owner })?;
+        Ok(self.insert_at(at, ledger, value))
+    }
+
+    // Both ordinary and detached publication use this single membership change.
+    // Their callers have checked ordering and capacity in the same manager turn.
+    fn insert_at(&mut self, at: usize, ledger: OwnerRef<G>, value: T) -> DomainId
+    {
+        let owner = ledger.owner();
         self.entries.insert(at,
                             DomainEntry { ledger,
                                           value });
         self.revision = self.revision.saturating_add(1);
-        Ok(owner)
+        owner
     }
 
     fn index(&self, incarnation: u64) -> Option<usize>
