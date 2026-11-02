@@ -78,6 +78,13 @@ impl EventMask
     pub const SYSTEM: Self = Self(1 << raw::EventKind::OsEvent as u16);
     pub const UPDATE: Self = Self(1 << raw::EventKind::Update as u16);
 }
+/// New main-screen dimensions in pixels. Origin is always (0, 0); re-read
+/// `QuickDraw::screen_bounds` for the authoritative rectangle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisplaySize
+{
+    pub width: u32, pub height: u32
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Input
 {
@@ -153,6 +160,12 @@ pub enum Event<'a>
     WindowGeometryChanged
     {
         window: WindowId, input: Input
+    },
+    /// The main screen's bounds changed (`qd.screenBits.bounds`). Native only:
+    /// the System never queues this for a classic application.
+    DisplayChanged
+    {
+        size: DisplaySize, input: Input
     },
     /// No queued event, including a pointer-motion wake. Retains physical input
     /// for drag/caret work without another trap. Poll and wait agree on this.
@@ -273,6 +286,12 @@ impl<'a> From<raw::Event> for Event<'a>
                 Self::FileTransferChanged { transfer: mac_traps::FileTransferId(event.payload),
                                             input }
             }
+            raw::EventKind::OsEvent if event.message == raw::DISPLAY_CHANGED =>
+            {
+                Self::DisplayChanged { size: DisplaySize { width:  (event.payload >> 32) as u32,
+                                                           height: event.payload as u32 },
+                                       input }
+            }
             raw::EventKind::OsEvent if event.message == raw::WINDOW_GEOMETRY_CHANGED =>
             {
                 Self::WindowGeometryChanged { window: WindowId(event.window),
@@ -316,6 +335,8 @@ impl Event<'_>
                          .. }
             | Self::ProcessFileChanged { input,
                                        .. }
+            | Self::DisplayChanged { input,
+                                     .. }
             | Self::WindowGeometryChanged { input,
                                           .. } => *input,
             Self::Idle { input,
@@ -384,6 +405,13 @@ impl Event<'_>
                 record.kind = raw::EventKind::OsEvent;
                 record.message = raw::FILE_TRANSFER_CHANGED;
                 record.payload = u64::from(transfer.0);
+            }
+            Self::DisplayChanged { size,
+                                   .. } =>
+            {
+                record.kind = raw::EventKind::OsEvent;
+                record.message = raw::DISPLAY_CHANGED;
+                record.payload = (u64::from(size.width) << 32) | u64::from(size.height);
             }
             Self::WindowGeometryChanged { window,
                                           .. } =>

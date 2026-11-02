@@ -89,7 +89,7 @@ pub(super) fn creation_authority(owner: u64) -> Result<crate::toolbox::handles::
     {
         return Ok(current);
     }
-    crate::kernel::with_desktop(|desktop| desktop.processes.ledger(owner)).map_err(|error| {
+    crate::kernel::with_toolbox(|toolbox| toolbox.processes.ledger(owner)).map_err(|error| {
                                                                               error.status()
                                                                           })?
 }

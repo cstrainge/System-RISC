@@ -216,11 +216,6 @@ impl<'a> System<'a>
         self.windows().select(id)
     }
 
-    pub fn select_desktop(&self) -> core::result::Result<(), Error>
-    {
-        self.windows().select_desktop()
-    }
-
     pub fn window(&self, id: WindowId) -> core::result::Result<windows::WindowInfo, Error>
     {
         self.windows().info(id)

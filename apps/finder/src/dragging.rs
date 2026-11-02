@@ -620,11 +620,12 @@ impl Browser
     {
         let at = offer.position();
         let root = offer.flavors().is_volume_root();
-        if root && offer.window().is_some()
+        let folder_window = offer.window().filter(|&w| !self.is_desktop_window(w));
+        if root && folder_window.is_some()
         {
             return None;
         }
-        if let Some(window) = offer.window()
+        if let Some(window) = folder_window
         {
             let slot = self.windows.iter().position(|w| w.is_some_and(|w| w.window == window))?;
             let window = self.windows[slot]?;

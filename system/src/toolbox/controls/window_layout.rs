@@ -3,8 +3,24 @@
 use super::*;
 use crate::toolbox::controls::objects::{Manager, Prepared};
 
+pub(super) fn ordinary_retained_bytes(windows: &WindowManager, content: &[Content],
+                                      pending: &[Content])
+                                      -> usize
+{
+    content.iter()
+           .chain(pending)
+           .filter(|c| {
+               !c.id
+                 .window()
+                 .ok()
+                 .and_then(|id| windows.window(id))
+                 .is_some_and(|w| w.uses_system_resources())
+           })
+           .fold(0usize, |bytes, c| bytes.saturating_add(c.storage()))
+}
+
 pub(super) fn scene_admission(windows: &WindowManager, content: &[Content], pending: &[Content],
-                              desktop_bytes: usize, id: SceneTarget)
+                              id: SceneTarget)
                               -> (usize, usize)
 {
     let system_scene = |id: SceneTarget| {
@@ -18,14 +34,21 @@ pub(super) fn scene_admission(windows: &WindowManager, content: &[Content], pend
                       .chain(pending)
                       .filter(|c| system_scene(c.id) == system)
                       .fold(0usize, |bytes, c| bytes.saturating_add(c.storage()));
-    if system
-    {
-        (used, usize::MAX)
-    }
-    else
-    {
-        (used.saturating_add(desktop_bytes), MAX_RETAINED_BYTES)
-    }
+    if system { (used, usize::MAX) } else { (used, MAX_RETAINED_BYTES) }
+}
+
+fn relayout(windows: &WindowManager, content: &mut [Content], pending: &[Content],
+            controls: &mut Manager, id: WindowId, viewport: Rect)
+            -> Result<Vec<Rect>, Status>
+{
+    let prepared = controls.prepare_window(id.0,
+                                   viewport,
+                                   pending.iter().any(|c| c.id == SceneTarget::from(id)),
+                                   None,
+                                   crate::machine::traps::gateway,
+                                   |id| crate::toolbox::runtime::Toolbox::control_definition(id))?;
+    let (used, limit) = scene_admission(windows, content, pending, SceneTarget::from(id));
+    publish(content, controls, id.0, prepared, used, limit)
 }
 
 fn publish(content: &mut [Content], controls: &mut Manager, window: u64, mut prepared: Prepared,
@@ -117,14 +140,15 @@ fn publish(content: &mut [Content], controls: &mut Manager, window: u64, mut pre
     }
     Ok(damage)
 }
-impl Desktop
+impl Toolbox
 {
     pub(super) fn publish_control_layout(&mut self, window: u64, prepared: Prepared, used: usize,
                                          limit: usize)
                                          -> Result<(), Status>
     {
         let feedback = prepared.feedback;
-        let damage = publish(&mut self.content, &mut self.controls, window, prepared, used, limit)?;
+        let damage = publish(&mut self.presentation.content, &mut self.controls, window,
+                             prepared, used, limit)?;
         let changed = !damage.is_empty() || feedback.is_some();
         if let Some(feedback) = feedback
         {
@@ -170,11 +194,12 @@ impl Desktop
                 }
                 let prepared = self.controls.prepare_automatic(
                     root, owner, window.local_bounds(),
-                    self.pending_content.iter().any(|c| c.id == SceneTarget::from(root.window)),
+                    self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(root.window)),
                     crate::machine::traps::gateway,
-                    |id| crate::toolbox::runtime::Desktop::control_definition(id))?;
+                    |id| crate::toolbox::runtime::Toolbox::control_definition(id))?;
                 let (used, limit) = self.retained_admission(SceneTarget::from(root.window));
-                publish(&mut self.content, &mut self.controls, root.window, prepared, used, limit)
+                publish(&mut self.presentation.content, &mut self.controls, root.window, prepared,
+                        used, limit)
             })();
             match result
             {
@@ -231,10 +256,9 @@ impl Desktop
     pub(super) fn track_window(&mut self, point: Point, released: bool, when: u32)
                                -> Option<Action>
     {
-        let content = &mut self.content;
-        let pending = &self.pending_content;
+        let content = &mut self.presentation.content;
+        let pending = &self.presentation.pending_content;
         let controls = &mut self.controls;
-        let desktop = &self.desktop;
         let mut damage = None;
         let result =
             self.windows.track(point, released, &mut self.events, when, |windows, id, viewport| {
@@ -248,17 +272,40 @@ impl Desktop
                                                         None,
                                                         crate::machine::traps::gateway,
                                                         |id| {
-                                                            crate::toolbox::runtime::Desktop::control_definition(id)
+                                                            crate::toolbox::runtime::Toolbox::control_definition(id)
                                                         })?;
                             let (used, limit) = scene_admission(windows,
                                                                 content,
                                                                 pending,
-                                                                desktop.storage(),
                                                                 SceneTarget::from(id));
                             let changed = publish(content, controls, id.0, prepared, used, limit)?;
                             damage = Some((id, changed));
                             Ok(())
                         });
+        self.finish_relayout(result, damage)
+    }
+
+    /// Programmatic SizeWindow/MoveWindow: the same staged layout as a user
+    /// grow, so a refused layout leaves the window and controls unchanged.
+    pub(super) fn set_window_bounds(&mut self, id: WindowId, bounds: Rect) -> Option<Action>
+    {
+        let content = &mut self.presentation.content;
+        let pending = &self.presentation.pending_content;
+        let controls = &mut self.controls;
+        let mut damage = None;
+        let result = self.windows.set_bounds(id, bounds, |windows, id, viewport| {
+                                     damage = Some((id,
+                                                    relayout(windows, content, pending,
+                                                             controls, id, viewport)?));
+                                     Ok(())
+                                 });
+        self.finish_relayout(result, damage)
+    }
+
+    fn finish_relayout(&mut self, result: Result<Option<Action>, Status>,
+                       damage: Option<(WindowId, Vec<Rect>)>)
+                       -> Option<Action>
+    {
         match result
         {
             Ok(action) =>

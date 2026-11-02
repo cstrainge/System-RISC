@@ -1251,6 +1251,7 @@ impl Browser
             self.draw_startup_desktop(system)?;
             self.startup_step = Initialization::Root;
         }
+        self.create_desktop_window(system)?;
         if matches!(self.startup_step, Initialization::Root)
         {
             if self.startup != VolumeId::NONE
@@ -1271,7 +1272,7 @@ impl Browser
 
     pub fn contains(&self, id: WindowId) -> bool
     {
-        self.windows.iter().flatten().any(|w| w.window == id)
+        self.is_desktop_window(id) || self.windows.iter().flatten().any(|w| w.window == id)
     }
 
     pub fn open(&mut self, system: &System<'_>, location: Location) -> Result<WindowId, Error>
@@ -1317,7 +1318,7 @@ impl Browser
                          .iter()
                          .position(|saved| saved.is_some_and(|s| s.location == location));
         let saved = queued.and_then(|at| self.closed_states[at].map(|s| s.state)).or(persisted);
-        let desktop = system.quickdraw().desktop().bounds()?;
+        let desktop = desktop::desktop_bounds(system)?;
         let bounds =
             saved.map(|state| {
                      let w =
@@ -1701,6 +1702,7 @@ impl Browser
         }
         if changed
         {
+            let front = self.closable_front(system);
             if front.is_none()
             {
                 self.desktop_active = true;
@@ -1770,6 +1772,10 @@ impl Browser
 
     fn draw_inner(&self, system: &System<'_>, id: WindowId) -> Result<(), Error>
     {
+        if self.is_desktop_window(id)
+        {
+            return self.draw_desktop(system);
+        }
         let slot = self.windows
                        .iter()
                        .position(|w| w.is_some_and(|w| w.window == id))
@@ -2049,7 +2055,7 @@ impl Browser
         self.press = None;
         self.marquee = None;
         let mut target: Option<(WindowId, VolumeId, Cnid)> = None;
-        if event.window().is_none()
+        if event.window().is_none_or(|w| self.is_desktop_window(w))
         {
             target = self.click_desktop(system, event)?;
         }
@@ -2200,12 +2206,27 @@ impl Browser
         Ok(ClickOutcome::Completed)
     }
 
+    /// The frontmost window that is not the desktop; what Close acts on.
+    pub fn closable_front(&self, system: &System<'_>) -> Option<WindowId>
+    {
+        system.window(WindowId(0)).ok().map(|w| w.id).filter(|&id| !self.is_desktop_window(id))
+    }
+
     pub fn activate(&mut self, event: &Event)
     {
         if let Event::Activate { window,
                                  active,
                                  .. } = *event
         {
+            if self.is_desktop_window(window)
+            {
+                if active
+                {
+                    self.desktop_active = true;
+                    self.front = WindowId(0);
+                }
+                return;
+            }
             // A desktop press deactivates the former folder asynchronously.
             // That unrelated edge must not erase the new desktop click pair.
             if active || self.last_click.is_some_and(|(target, _, _, _)| target == window)

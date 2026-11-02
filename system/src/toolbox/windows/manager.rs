@@ -23,6 +23,8 @@ use crate::toolbox::{events::*,
 mod admission;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use admission::{PreparedWindow, WindowCommit, WindowPlan};
+/// First content scan line below the menu bar.
+const MENU_BAR_BOTTOM: i16 = 21;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i16)]
 pub enum WindowPart
@@ -49,7 +51,7 @@ pub enum GroupFocus
 {
     Front,
     Window(WindowId),
-    Desktop,
+    Toolbox,
     Preserve
 }
 
@@ -117,7 +119,7 @@ impl OwnedWindow
 {
     #[allow(clippy::too_many_arguments)]
     fn new(bounds: Rect, title: &str, owner: u64, minimum: (i16, i16), procedure: i16,
-           gate: mac_abi::TrapGate, binding: BoundDefinition,
+           gate: mac_abi::TrapGate, binding: BoundDefinition, stay_in_back: bool,
            #[cfg(target_arch = "riscv64")] source: WindowSource)
            -> Self
     {
@@ -144,6 +146,7 @@ impl OwnedWindow
                                                        bounds.right - bounds.left,
                                                        bounds.bottom - bounds.top)),
                                 hidden: false,
+                                stay_in_back,
                                 updating: false },
                disposal_state: Cell::new(None),
                binding }
@@ -189,6 +192,7 @@ pub struct Window
     close_deferred:      bool,
     damage:              Option<Rect>,
     hidden:              bool,
+    stay_in_back:        bool,
     pub(crate) updating: bool
 }
 impl Window
@@ -217,6 +221,13 @@ impl Window
     pub fn zoomed(&self) -> bool
     {
         self.state.zoomed != 0
+    }
+
+    /// Fixed at creation. Such a window stays below every ordinary window and
+    /// is never promoted by activation or group reordering.
+    pub fn stays_in_back(&self) -> bool
+    {
+        self.stay_in_back
     }
 
     pub fn title(&self) -> &str
@@ -1132,14 +1143,15 @@ impl WindowManager
     {
         let owner = self.test_owner(owner);
         self.new_window_with_activation(bounds, title, &owner, minimum, procedure, entry, events,
-                                        when, true)
+                                        when, true, false)
             .ok()
     }
 
     /// Pure creation checks before cold executable admission. A returned slot
     /// is only a current availability observation, never publication authority;
     /// the real creation turn repeats these checks after any guard-free work.
-    pub(crate) fn preflight_creation(&self, bounds: Rect, owner: &OwnerRef, minimum: (i16, i16))
+    pub(crate) fn preflight_creation(&self, bounds: Rect, owner: &OwnerRef, minimum: (i16, i16),
+                                     stay_in_back: bool)
                                      -> Result<Option<usize>, CreationError>
     {
         if !owner.accepting()
@@ -1182,11 +1194,21 @@ impl WindowManager
         {
             return Err(CreationError::InvalidRequest);
         }
+        // A stay-in-back window may cover the whole area below the menu bar;
+        // ordinary windows keep room for chrome.
+        let (limit_left, limit_top, limit_right, limit_bottom) = if stay_in_back
+        {
+            (0, MENU_BAR_BOTTOM, crate::display::WIDTH as i16, crate::display::HEIGHT as i16)
+        }
+        else
+        {
+            (1, 25, crate::display::WIDTH as i16 - 2, crate::display::HEIGHT as i16 - 2)
+        };
         if bounds.is_empty()
-           || bounds.left < 1
-           || bounds.top < 25
-           || bounds.right > crate::display::WIDTH as i16 - 2
-           || bounds.bottom > crate::display::HEIGHT as i16 - 2
+           || bounds.left < limit_left
+           || bounds.top < limit_top
+           || bounds.right > limit_right
+           || bounds.bottom > limit_bottom
            || bounds.right - bounds.left < min_width
            || bounds.bottom - bounds.top < min_height
         {
@@ -1202,15 +1224,16 @@ impl WindowManager
     pub(crate) fn new_window_with_activation(&mut self, bounds: Rect, title: &str,
                                              owner: &OwnerRef, minimum: (i16, i16),
                                              procedure: i16, entry: DefinitionRef,
-                                             events: &mut EventManager, when: u32, activate: bool)
+                                             events: &mut EventManager, when: u32, activate: bool,
+                                             stay_in_back: bool)
                                              -> Result<WindowId, CreationError>
     {
         #[cfg(target_arch = "riscv64")]
         let recovery = crate::context::recovery_activity();
         #[cfg(target_arch = "riscv64")]
-        let recovery_slot = self.preflight_creation(bounds, owner, minimum)?;
+        let recovery_slot = self.preflight_creation(bounds, owner, minimum, stay_in_back)?;
         #[cfg(not(target_arch = "riscv64"))]
-        self.preflight_creation(bounds, owner, minimum)?;
+        self.preflight_creation(bounds, owner, minimum, stay_in_back)?;
         let binding =
             crate::toolbox::resources::definitions::bind(entry).map_err(CreationError::Binding)?;
         // These arrays index all owners. Only their capacity is System-owned;
@@ -1252,7 +1275,7 @@ impl WindowManager
             logical_owner = activity.owner();
         }
         let mut window = Some(OwnedWindow::new(bounds, title, logical_owner, minimum, procedure,
-                                               self.gate, binding,
+                                               self.gate, binding, stay_in_back,
                                                #[cfg(target_arch = "riscv64")]
                                                source));
         self.retry_retained_quarantines();
@@ -1313,6 +1336,7 @@ impl WindowManager
                          #[cfg(target_arch = "riscv64")] recovery_slot: Option<usize>)
                          -> Result<WindowId, CreationError>
     {
+        let stay_in_back = self.window(id).ok_or(CreationError::Binding(NOT_FOUND))?.stay_in_back;
         let previous = self.active;
         let mut guard = InitializingWindow { manager: self,
                                              id,
@@ -1339,7 +1363,7 @@ impl WindowManager
         let structure = guard.value()?.structure();
         if structure.is_empty()
            || structure.left < 0
-           || structure.top < 25
+           || structure.top < if stay_in_back { MENU_BAR_BOTTOM } else { 25 }
            || structure.right > crate::display::WIDTH as i16
            || structure.bottom > crate::display::HEIGHT as i16
         {
@@ -1347,7 +1371,10 @@ impl WindowManager
         }
         guard.value()?.initialized = true;
         let id = guard.commit();
-        self.order.push(id);
+        // Stay-in-back windows sit below every ordinary window, whatever the
+        // creation order; among themselves creation order applies.
+        let position = if stay_in_back { self.back_prefix() } else { self.len };
+        self.order.insert(position, id);
         self.len += 1;
         self.front_cache.set(None);
         if activate
@@ -1393,8 +1420,20 @@ impl WindowManager
         }
     }
 
+    fn back_prefix(&self) -> usize
+    {
+        self.order[..self.len].iter()
+                              .take_while(|id| self.window(**id).is_some_and(|w| w.stay_in_back))
+                              .count()
+    }
+
     pub fn select_window(&mut self, id: WindowId, events: &mut EventManager, when: u32)
     {
+        if self.window(id).is_some_and(|window| window.stay_in_back)
+        {
+            self.activate_in_place(id, events, when);
+            return;
+        }
         if self.front_window() == Some(id) && self.active == Some(id)
         {
             return;
@@ -1420,6 +1459,21 @@ impl WindowManager
         }
         self.invalidate_order_exposure(&old_order);
         self.order_scratch = old_order;
+    }
+
+    /// Activation without a z-order change, for stay-in-back windows. Windows
+    /// above it lose focus but keep their place and visibility.
+    fn activate_in_place(&mut self, id: WindowId, events: &mut EventManager, when: u32)
+    {
+        if self.active == Some(id) || self.window(id).is_none()
+        {
+            return;
+        }
+        let previous = self.active;
+        self.active = Some(id);
+        self.refresh_active(previous);
+        Self::activation(previous, false, events, when);
+        Self::activation(Some(id), true, events, when);
     }
 
     /// Raise an application's complete window plane in one transition. The
@@ -1469,11 +1523,13 @@ impl WindowManager
     {
         let mut order = core::mem::take(&mut self.order_scratch);
         order.clear();
-        for selected in [false, true]
+        for bucket in 0..3
         {
             for id in self.order[..self.len].iter().copied()
             {
-                if ids.contains(&id) == selected
+                let stays = self.window(id).is_some_and(|window| window.stay_in_back);
+                let rank = if stays { 0 } else { 1 + usize::from(ids.contains(&id)) };
+                if rank == bucket
                 {
                     order.push(id);
                 }
@@ -1481,6 +1537,7 @@ impl WindowManager
         }
         if let GroupFocus::Window(front) = focus
            && ids.contains(&front)
+           && !self.window(front).is_some_and(|window| window.stay_in_back)
            && let Some(index) = order[..self.len].iter().position(|id| *id == front)
         {
             order.copy_within(index + 1..self.len, index);
@@ -1498,7 +1555,7 @@ impl WindowManager
                                                                       })
                                                        })
             }
-            GroupFocus::Desktop => None,
+            GroupFocus::Toolbox => None,
             GroupFocus::Preserve => self.active
         };
         let reordered = self.order[..self.len] != order[..self.len];
@@ -2416,6 +2473,30 @@ impl WindowManager
         true
     }
 
+    /// Stage new bounds, let the caller prepare content for them, then commit.
+    /// Nothing changes if preparation or geometry is refused.
+    pub fn set_bounds(&mut self, id: WindowId, bounds: Rect,
+                      mut prepare: impl FnMut(&Self, WindowId, Rect) -> Result<(), Status>)
+                      -> Result<Option<Action>, Status>
+    {
+        let current = self.window(id).ok_or(NOT_FOUND)?;
+        if current.bounds == bounds
+        {
+            return Ok(None);
+        }
+        let mut staged = *current;
+        staged.bounds = bounds;
+        staged.user_bounds = None;
+        staged.state.zoomed = 0;
+        if !staged.calculate()
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        prepare(self, id, staged.local_bounds())?;
+        *self.window_mut(id).ok_or(NOT_FOUND)? = staged;
+        Ok(Some(Action::Resize(id)))
+    }
+
     pub fn set_standard_bounds(&mut self, id: WindowId, bounds: Option<Rect>)
                                -> Result<(), Status>
     {
@@ -2699,19 +2780,6 @@ impl WindowManager
                                                window.structure_pieces().iter().copied()
                                            });
         self.visibility.borrow_mut().visit(window.bounds, rectangles, visit);
-    }
-
-    /// Desktop gaps for a selected layer use the same prepared visibility sweep.
-    pub(crate) fn for_each_layer_desktop_rect(&self, bounds: Rect,
-                                              include: &impl Fn(&Window) -> bool,
-                                              visit: impl FnMut(Rect))
-    {
-        let rectangles =
-            self.order[..self.len].iter()
-                                  .filter_map(|id| self.window(*id))
-                                  .filter(|window| !window.hidden && include(window))
-                                  .flat_map(|window| window.structure_pieces().iter().copied());
-        self.visibility.borrow_mut().visit(bounds, rectangles, visit);
     }
 
     /// Copy committed ordinary pixels only where no genuine System source
@@ -3135,7 +3203,8 @@ mod tests
                                                        definition,
                                                        &mut events,
                                                        0,
-                                                       true)
+                                                       true,
+                                                       false)
                            .unwrap_err();
         assert!(matches!(error, CreationError::Definition { operation: definition::CALCULATE, reply, .. } if reply == BAD_ARGUMENT as i64));
         assert!(alloc::format!("{error}").contains("WDEF"));
@@ -3255,6 +3324,7 @@ mod tests
                                            crate::test_wdef::standard_window_definition,
                                            &mut events,
                                            0,
+                                           false,
                                            false)
                .unwrap();
         for id in manager.order.clone()

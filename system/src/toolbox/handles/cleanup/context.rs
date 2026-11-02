@@ -29,7 +29,7 @@ pub(crate) trait Context
     }
 
     #[cfg(target_arch = "riscv64")]
-    fn desktop(&mut self) -> Option<&mut crate::toolbox::runtime::Desktop>;
+    fn toolbox(&mut self) -> Option<&mut crate::toolbox::runtime::Toolbox>;
 }
 
 impl Context for crate::drivers::Registry
@@ -40,21 +40,21 @@ impl Context for crate::drivers::Registry
     }
 
     #[cfg(target_arch = "riscv64")]
-    fn desktop(&mut self) -> Option<&mut crate::toolbox::runtime::Desktop>
+    fn toolbox(&mut self) -> Option<&mut crate::toolbox::runtime::Toolbox>
     {
         None
     }
 }
 
 #[cfg(target_arch = "riscv64")]
-impl Context for crate::toolbox::runtime::Desktop
+impl Context for crate::toolbox::runtime::Toolbox
 {
     fn driver_registry(&mut self) -> Option<&mut crate::drivers::Registry>
     {
         None
     }
 
-    fn desktop(&mut self) -> Option<&mut crate::toolbox::runtime::Desktop>
+    fn toolbox(&mut self) -> Option<&mut crate::toolbox::runtime::Toolbox>
     {
         Some(self)
     }
@@ -63,20 +63,20 @@ impl Context for crate::toolbox::runtime::Desktop
 /// Retain the unique ticket if a callback requires a context that is not
 /// available at this point in boot/recovery. Never fabricate a desktop or ACK.
 #[cfg(target_arch = "riscv64")]
-pub(crate) struct Desktop<R>(pub R);
+pub(crate) struct Toolbox<R>(pub R);
 
 #[cfg(target_arch = "riscv64")]
-impl<R: Release<crate::toolbox::runtime::Desktop, Failure>> Release<dyn Context, Failure>
-    for Desktop<R>
+impl<R: Release<crate::toolbox::runtime::Toolbox, Failure>> Release<dyn Context, Failure>
+    for Toolbox<R>
 {
     fn release(&self, context: &mut (dyn Context + 'static), ticket: ReleasedResource)
                -> Result<(), Failure>
     {
-        let Some(desktop) = context.desktop()
+        let Some(toolbox) = context.toolbox()
         else
         {
             return Err(Failure::context_unavailable(ticket, "desktop"));
         };
-        self.0.release(desktop, ticket)
+        self.0.release(toolbox, ticket)
     }
 }

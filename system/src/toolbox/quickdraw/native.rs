@@ -72,8 +72,8 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     let source =
                         crate::toolbox::font_suitcases::Input::new(call.expected_data,
                                                                    call.expected_resource)?;
-                    return crate::kernel::with_desktop(|desktop| {
-                               desktop.font_suitcases().insert(&owner, source, call)
+                    return crate::kernel::with_toolbox(|toolbox| {
+                               toolbox.font_suitcases().insert(&owner, source, call)
                            }).map_err(crate::state::AccessError::status)?;
                 }
                 if call.resource_length != 0
@@ -88,13 +88,13 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     {
                         return Err(BAD_ARGUMENT);
                     }
-                    let source = crate::kernel::with_desktop(|desktop| {
-                                     desktop.font_suitcases()
+                    let source = crate::kernel::with_toolbox(|toolbox| {
+                                     toolbox.font_suitcases()
                                             .take_input(owner.owner().incarnation(), call.id)
                                  }).map_err(crate::state::AccessError::status)??;
                     let result = source.inspect();
-                    return crate::kernel::with_desktop(|desktop| {
-                               desktop.font_suitcases()
+                    return crate::kernel::with_toolbox(|toolbox| {
+                               toolbox.font_suitcases()
                                       .complete(owner.owner().incarnation(), call, result)
                            }).map_err(crate::state::AccessError::status)?;
                 }
@@ -105,8 +105,8 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 {
                     return Err(BAD_ARGUMENT);
                 }
-                crate::kernel::with_desktop(|desktop| {
-                    desktop.font_suitcases().request(owner.owner().incarnation(), call, bytes)
+                crate::kernel::with_toolbox(|toolbox| {
+                    toolbox.font_suitcases().request(owner.owner().incarnation(), call, bytes)
                 }).map_err(crate::state::AccessError::status)?
             })();
             if let Err(status) = result
@@ -158,7 +158,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     if call.surface.is_null()
                     {
                         #[cfg(target_arch = "riscv64")]
-                        return crate::kernel::with_desktop(|desktop| desktop.image(call, drawing))
+                        return crate::kernel::with_toolbox(|toolbox| toolbox.image(call, drawing))
                             .unwrap_or_else(|error|Err(error.status()))
                             .map_err(|status| ImageError { status, kind: SERVICE_ERROR });
                         #[cfg(not(target_arch = "riscv64"))]
@@ -196,7 +196,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 if call.surface.is_null()
                 {
                     #[cfg(target_arch="riscv64")]
-                    return crate::kernel::with_desktop(|d|d.graphics(call,points,region)).unwrap_or_else(|error|Err(error.status()));
+                    return crate::kernel::with_toolbox(|d|d.graphics(call,points,region)).unwrap_or_else(|error|Err(error.status()));
                     #[cfg(not(target_arch = "riscv64"))]
                     return Err(NOT_SUPPORTED);
                 }
@@ -222,7 +222,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     if call.surface.is_null()
                     {
                         #[cfg(target_arch="riscv64")]
-                        return crate::kernel::with_desktop(|d|d.font_draw(call,text,manager)).unwrap_or_else(|error|Err(error.status()));
+                        return crate::kernel::with_toolbox(|d|d.font_draw(call,text,manager)).unwrap_or_else(|error|Err(error.status()));
                         #[cfg(not(target_arch = "riscv64"))]
                         return Err(NOT_SUPPORTED);
                     }
@@ -274,7 +274,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 if call.surface.is_null()
                 {
                     #[cfg(target_arch="riscv64")]
-                    return crate::kernel::with_desktop(|d|d.copy_bits(call,data,palette,mask)).unwrap_or_else(|error|Err(error.status()));
+                    return crate::kernel::with_toolbox(|d|d.copy_bits(call,data,palette,mask)).unwrap_or_else(|error|Err(error.status()));
                     #[cfg(not(target_arch = "riscv64"))]
                     return Err(NOT_SUPPORTED);
                 }
@@ -304,7 +304,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     unsafe { core::slice::from_raw_parts_mut(call.pixels, call.pixel_length) }
                 };
                 #[cfg(target_arch="riscv64")]
-                return crate::kernel::with_desktop(|d|d.world(call,pixels)).unwrap_or_else(|error|Err(error.status()));
+                return crate::kernel::with_toolbox(|d|d.world(call,pixels)).unwrap_or_else(|error|Err(error.status()));
                 #[cfg(not(target_arch = "riscv64"))]
                 {
                     let _ = pixels;
@@ -317,7 +317,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 {
                     let call = unsafe { request::<CursorResourceCall>(pointer, size) }?;
                     #[cfg(target_arch = "riscv64")]
-                    return crate::kernel::with_desktop(|d| d.cursor_resource(call))
+                    return crate::kernel::with_toolbox(|d| d.cursor_resource(call))
                         .unwrap_or_else(|error| Err(error.status()));
                     #[cfg(not(target_arch = "riscv64"))]
                     {
@@ -328,7 +328,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 let call = unsafe { request::<CursorCall>(pointer, size) }?;
                 let colors = unsafe { input(call.colors, call.color_count, 256) }?;
                 #[cfg(target_arch="riscv64")]
-                return crate::kernel::with_desktop(|d|d.cursor(call,colors)).unwrap_or_else(|error|Err(error.status()));
+                return crate::kernel::with_toolbox(|d|d.cursor(call,colors)).unwrap_or_else(|error|Err(error.status()));
                 #[cfg(not(target_arch = "riscv64"))]
                 {
                     let _ = colors;
@@ -467,7 +467,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 if call.surface.is_null()
                 {
                     #[cfg(target_arch="riscv64")]
-                    return crate::kernel::with_desktop(|d|d.picture(call,drawing,fonts)).unwrap_or_else(|error|Err(error.status()));
+                    return crate::kernel::with_toolbox(|d|d.picture(call,drawing,fonts)).unwrap_or_else(|error|Err(error.status()));
                     #[cfg(not(target_arch = "riscv64"))]
                     return Err(NOT_SUPPORTED);
                 }
@@ -491,7 +491,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     if call.surface.is_null()
                     {
                         #[cfg(target_arch = "riscv64")]
-                        return crate::kernel::with_desktop(|d| {
+                        return crate::kernel::with_toolbox(|d| {
                                    d.icon(&IconCall { target: call.target,
                                                       ..Default::default() },
                                           drawing)
@@ -528,7 +528,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                                                                     call.destination, call.flags)?;
                     if call.surface.is_null()
                     {
-                        return crate::kernel::with_desktop(|d| {
+                        return crate::kernel::with_toolbox(|d| {
                                    d.icon(&IconCall { target: call.target,
                                                       ..Default::default() },
                                           drawing)
@@ -564,7 +564,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                     {
                         let target = IconCall { target: call.target,
                                                 ..Default::default() };
-                        return crate::kernel::with_desktop(|d| d.icon(&target, drawing))
+                        return crate::kernel::with_toolbox(|d| d.icon(&target, drawing))
                             .unwrap_or_else(|error| Err(error.status()));
                     }
                     let surface =
@@ -604,7 +604,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                                                                          service::Port::default())?;
                         if call.surface.is_null()
                         {
-                            return crate::kernel::with_desktop(|d|d.icon(call,drawing)).unwrap_or_else(|error|Err(error.status()));
+                            return crate::kernel::with_toolbox(|d|d.icon(call,drawing)).unwrap_or_else(|error|Err(error.status()));
                         }
                         let surface = unsafe {
                             request::<Surface>(call.surface.cast(), core::mem::size_of::<Surface>())

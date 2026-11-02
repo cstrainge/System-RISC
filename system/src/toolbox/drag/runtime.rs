@@ -16,9 +16,9 @@ pub(super) fn admit_receiver_plan(plan: ReceiverPlan) -> Result<PreparedReceiver
     let mut input = Some(plan.prepare()?);
     let mut receiver = loop
     {
-        let admitted = crate::kernel::with_desktop(|desktop| {
-                           desktop.drag.admit_receiver(&mut input)
-                       }).map_err(ReceiverError::Desktop)?;
+        let admitted = crate::kernel::with_toolbox(|toolbox| {
+                           toolbox.drag.admit_receiver(&mut input)
+                       }).map_err(ReceiverError::Toolbox)?;
         match admitted
         {
             Ok(receiver) => break receiver,
@@ -33,10 +33,10 @@ pub(super) fn admit_receiver_plan(plan: ReceiverPlan) -> Result<PreparedReceiver
             {
                 // No canonical permit has been admitted yet. Refresh only the
                 // metadata plan from the same original owner/thread/account.
-                let plan = crate::kernel::with_desktop(|desktop| {
+                let plan = crate::kernel::with_toolbox(|toolbox| {
                     let value = input.as_ref().ok_or(ReceiverError::Binding(BAD_ABI))?;
-                    desktop.drag.replan_receiver(value)
-                }).map_err(ReceiverError::Desktop)??;
+                    toolbox.drag.replan_receiver(value)
+                }).map_err(ReceiverError::Toolbox)??;
                 let next = plan.prepare()?;
                 drop(input.replace(next));
             }
@@ -45,17 +45,17 @@ pub(super) fn admit_receiver_plan(plan: ReceiverPlan) -> Result<PreparedReceiver
     };
     loop
     {
-        let result = crate::kernel::with_desktop(|desktop| {
-                         desktop.drag.admit_receiver_projection(&mut receiver)
-                     }).map_err(ReceiverError::Desktop)?;
+        let result = crate::kernel::with_toolbox(|toolbox| {
+                         toolbox.drag.admit_receiver_projection(&mut receiver)
+                     }).map_err(ReceiverError::Toolbox)?;
         match result
         {
             Ok(()) => return Ok(receiver),
             Err(ReceiverError::Publication(PreparedError::Projection(CapacityError::CapacityChanged))) =>
             {
                 let mut capacity = receiver.prepare_capacity()?;
-                match crate::kernel::with_desktop(|desktop| desktop.drag.admit_receiver_capacity(&receiver, &mut capacity))
-                    .map_err(ReceiverError::Desktop)?
+                match crate::kernel::with_toolbox(|toolbox| toolbox.drag.admit_receiver_capacity(&receiver, &mut capacity))
+                    .map_err(ReceiverError::Toolbox)?
                 {
                     Ok(()) | Err(ReceiverError::Publication(PreparedError::Projection(CapacityError::CapacityChanged))) => (),
                     Err(cause) => return Err(cause)
@@ -87,7 +87,7 @@ pub(crate) fn native_drag(call: &mut Call, input: &[u8], output: &mut [u8]) -> R
     let caller = crate::context::current_thread_context().identity();
     if call.operation != CREATE || caller.app != crate::context::finder_app()
     {
-        return crate::kernel::with_desktop(|desktop| desktop.drag_request(call, input, output))
+        return crate::kernel::with_toolbox(|toolbox| toolbox.drag_request(call, input, output))
             .map_err(|cause| cause.status())?;
     }
     let result = create_native_drag(call, input, output);
@@ -100,18 +100,18 @@ fn create_native_drag(call: &mut Call, input: &[u8], output: &mut [u8])
                       -> Result<(), ReceiverError>
 {
     let plan =
-        crate::kernel::with_desktop(|desktop| {
-            desktop.preflight_drag_source(call).map_err(ReceiverError::Binding)?;
+        crate::kernel::with_toolbox(|toolbox| {
+            toolbox.preflight_drag_source(call).map_err(ReceiverError::Binding)?;
             let caller = crate::context::current_thread_context().identity();
-            let owner = desktop.processes.ledger(caller.app.0).map_err(ReceiverError::Binding)?;
-            if desktop.drag.receiver_binding(&owner, caller.thread, ReceiverTarget::Desktop)?
+            let owner = toolbox.processes.ledger(caller.app.0).map_err(ReceiverError::Binding)?;
+            if toolbox.drag.receiver_binding(&owner, caller.thread, ReceiverTarget::Toolbox)?
             {
                 return Ok(None);
             }
             let allocation =
-                desktop.processes.allocation(caller.app.0).map_err(ReceiverError::Binding)?;
-            desktop.drag.plan_receiver(&owner, caller.thread, &allocation).map(Some)
-        }).map_err(ReceiverError::Desktop)??;
+                toolbox.processes.allocation(caller.app.0).map_err(ReceiverError::Binding)?;
+            toolbox.drag.plan_receiver(&owner, caller.thread, &allocation).map(Some)
+        }).map_err(ReceiverError::Toolbox)??;
     let mut prepared = plan.map(admit_receiver_plan).transpose()?;
     let mut retired = None;
     let publication = if prepared.is_some()
@@ -123,10 +123,10 @@ fn create_native_drag(call: &mut Call, input: &[u8], output: &mut [u8])
     {
         DesktopReceiver::Existing
     };
-    let result = crate::kernel::with_desktop(|desktop| {
-                     desktop.request_drag(call, input, output, Some(publication))
+    let result = crate::kernel::with_toolbox(|toolbox| {
+                     toolbox.request_drag(call, input, output, Some(publication))
                             .map_err(ReceiverError::Binding)
-                 }).map_err(ReceiverError::Desktop)?;
+                 }).map_err(ReceiverError::Toolbox)?;
     if let Some(retired) = retired
     {
         retired.dispose();
@@ -135,7 +135,7 @@ fn create_native_drag(call: &mut Call, input: &[u8], output: &mut [u8])
     result
 }
 
-impl super::super::runtime::Desktop
+impl super::super::runtime::Toolbox
 {
     pub(super) fn drag_hot(&self, point: Point) -> Option<u32>
     {
@@ -152,7 +152,7 @@ impl super::super::runtime::Desktop
     {
         let after = self.drag.feedback();
         let highlight_changed = self.drag.take_highlight_changed();
-        self.feedback_dirty |= before != after || highlight_changed;
+        self.presentation.feedback_dirty |= before != after || highlight_changed;
         while let Some(notice) = self.drag.next_notice()
         {
             self.post_drag_notice(notice);
@@ -236,7 +236,7 @@ impl super::super::runtime::Desktop
                 Some(DesktopReceiver::Existing) =>
                 {
                     if !self.drag
-                            .receiver_binding(&owner, caller.thread, ReceiverTarget::Desktop)
+                            .receiver_binding(&owner, caller.thread, ReceiverTarget::Toolbox)
                             .map_err(ReceiverError::status)?
                     {
                         return Err(SERVICE_BUSY);
@@ -250,7 +250,7 @@ impl super::super::runtime::Desktop
                         return Err(BAD_ABI);
                     }
                     *retired = self.drag
-                                   .commit_receiver(input, ReceiverTarget::Desktop)
+                                   .commit_receiver(input, ReceiverTarget::Toolbox)
                                    .map_err(ReceiverError::status)?;
                 }
                 None => self.drag.ensure_receiver(&owner, caller.thread, 0)?
@@ -309,7 +309,7 @@ impl super::super::runtime::Desktop
     }
 }
 
-impl crate::toolbox::drag::lifetime::Host for crate::toolbox::runtime::Desktop
+impl crate::toolbox::drag::lifetime::Host for crate::toolbox::runtime::Toolbox
 {
     fn release_drag(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                     kind: crate::toolbox::drag::lifetime::Registration)

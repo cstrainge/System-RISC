@@ -147,7 +147,7 @@ fn cleanup_focus_reuses_window_admission_scratch_and_retries_geometry_after_refu
     assert_eq!(windows.front_window(), Some(b));
     assert_eq!(windows.back_to_front().map(|w| w.id).collect::<Vec<_>>(), [other, a, b]);
     let observe = Observe::begin(true, None);
-    windows.select_owner_group_focus(owner, GroupFocus::Desktop, &mut events, 4);
+    windows.select_owner_group_focus(owner, GroupFocus::Toolbox, &mut events, 4);
     let allocations = observe.finish();
     assert_eq!(allocations, 0, "desktop focus changes no window order or content geometry");
     assert_eq!(windows.active_window(), None);

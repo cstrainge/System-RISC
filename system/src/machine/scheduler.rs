@@ -1771,7 +1771,7 @@ pub(super) fn schedule(capture: super::traps::OuterCapture) -> *mut TrapFrame
                 crate::toolbox::processes::startup::pump();
                 crate::toolbox::files::pump_provider_operations();
                 crate::toolbox::files::installed_fonts::pump();
-                crate::toolbox::runtime::Desktop::pump_standard_file();
+                crate::toolbox::runtime::Toolbox::pump_standard_file();
                 pump_recovery_backing();
                 crate::recovery::pump();
                 crate::toolbox::crashes::pump_dismissals();

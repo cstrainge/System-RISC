@@ -15,7 +15,7 @@ use crate::toolbox::{events::EventManager,
                                  menu::{Action, Entry},
                                  termination::{Outcome, Retention}},
                      resources::definitions::DefinitionRef,
-                     runtime::Desktop,
+                     runtime::Toolbox,
                      windows::{GroupFocus, WindowId}};
 
 #[path = "runtime/system_report.rs"]
@@ -268,10 +268,10 @@ impl FinderAdmission
 
     /// The closure is called only after Desktop entry. Failed transfer restores
     /// the same lease to this exclusively borrowed admission before returning.
-    pub(crate) fn handoff_system_report(&mut self, desktop: &mut Desktop) -> Result<(), Status>
+    pub(crate) fn handoff_system_report(&mut self, toolbox: &mut Toolbox) -> Result<(), Status>
     {
         let report = self.system_report.take().ok_or(BAD_ABI)?;
-        match desktop.retain_system_report(report)
+        match toolbox.retain_system_report(report)
         {
             Ok(()) => Ok(()),
             Err((status, report)) =>
@@ -307,7 +307,7 @@ impl Drop for FinderAdmission
         }
     }
 }
-impl Desktop
+impl Toolbox
 {
     /// A scheduling preference only. Capture authority remains the exact
     /// retained binding, not a saved report's original app/thread label.
@@ -521,11 +521,11 @@ impl Desktop
         self.activate_process(id)?;
         self.refresh_app_menu();
         let report = admission.system_report().ok_or(BAD_ABI)?;
-        self.with_system_report(report, |desktop| {
-                desktop.crash.restart_pending = true;
-                if desktop.crash.info().report_bytes != 0 && !report.activity().closing()
+        self.with_system_report(report, |toolbox| {
+                toolbox.crash.restart_pending = true;
+                if toolbox.crash.info().report_bytes != 0 && !report.activity().closing()
                 {
-                    let window = desktop.resume_crash_report()?;
+                    let window = toolbox.resume_crash_report()?;
                     report.activity().set_object(window.0);
                 }
                 Ok(())
@@ -706,6 +706,27 @@ impl Desktop
         Ok(())
     }
 
+    /// Source for every main-screen change. A display driver reporting a new
+    /// mode calls this; the System only records the bounds and tells native
+    /// applications, who own their own layout. Classic queues are untouched.
+    #[cfg(feature = "display-event-debug")]
+    pub(crate) fn display_changed(&mut self, bounds: mac_abi::geometry::Rect)
+    {
+        self.screen = bounds;
+        self.presentation.redraw = true;
+        let event = Event { kind: EventKind::OsEvent,
+                            message: mac_abi::events::DISPLAY_CHANGED,
+                            payload: (u64::from((bounds.right - bounds.left) as u32) << 32)
+                                     | u64::from((bounds.bottom - bounds.top) as u32),
+                            when: Self::when(),
+                            ..Default::default() };
+        self.events.post_level(event);
+        for local in &mut self.locals
+        {
+            local.events.post_level(event);
+        }
+    }
+
     pub(super) fn forget_cursor_window(&mut self, window: WindowId)
     {
         self.textedit.forget_cursor_window(window);
@@ -717,7 +738,7 @@ impl Desktop
 
     pub(super) fn observe_cursor_motion(&mut self, point: Point)
     {
-        self.cursor_dirty |= self.cursors.mouse_moved(point);
+        self.presentation.cursor_dirty |= self.pointer.cursors.mouse_moved(point);
         for local in &mut self.locals
         {
             local.cursors.mouse_moved(point);
@@ -732,7 +753,7 @@ impl Desktop
         let now = Self::when();
         let changed = if self.owner == self.foreground
         {
-            self.cursors.animation_tick(now)
+            self.pointer.cursors.animation_tick(now)
         }
         else
         {
@@ -741,7 +762,7 @@ impl Desktop
                 .find(|local| local.id == self.foreground)
                 .is_some_and(|local| local.cursors.animation_tick(now))
         };
-        self.cursor_dirty |= changed;
+        self.presentation.cursor_dirty |= changed;
         changed
     }
 
@@ -754,13 +775,13 @@ impl Desktop
         let fresh_input = previous_activity != self.activity;
         let cursor_activity = self.tick_menu_feedback() | self.tick_cursor();
         let now = Self::when();
-        self.cursor_dirty |=
-            self.responsiveness.tick(self.foreground,
+        self.presentation.cursor_dirty |=
+            self.pointer.responsiveness.tick(self.foreground,
                                      now,
                                      waiting.iter().any(|waiter| waiter.app == self.foreground));
-        if self.responsiveness.active()
+        if self.pointer.responsiveness.active()
         {
-            self.cursor_dirty |= self.busy_cursor.animation_tick(now);
+            self.presentation.cursor_dirty |= self.pointer.busy_cursor.animation_tick(now);
         }
         self.present_cursor_overlay();
         self.route_events();
@@ -879,7 +900,8 @@ impl Desktop
             swap!(dialogs);
         }
         swap!(menus);
-        swap!(cursors);
+        core::mem::swap(&mut self.pointer.cursors, &mut self.locals[old].cursors);
+        core::mem::swap(&mut self.pointer.cursors, &mut self.locals[next].cursors);
         swap!(classic_font);
         swap!(events);
         swap!(textedit);
@@ -1045,8 +1067,8 @@ impl Desktop
             serial!("APPLE_MENU_REFRESH_FAILED status={status}; app section removed, System \
                      commands retained");
         }
-        self.menu_cache.invalidate();
-        self.redraw = true;
+        self.presentation.menu_cache.invalidate();
+        self.presentation.redraw = true;
         self.enter(caller);
     }
 
@@ -1058,14 +1080,14 @@ impl Desktop
             self.menus.cancel_tracking();
             self.enter(caller);
             self.refresh_system_menu();
-            self.menu_cache.invalidate();
+            self.presentation.menu_cache.invalidate();
             if self.processes.get(self.foreground).is_ok_and(|process| process.info.thread == 0)
             {
                 // A real saved recovery context can park the dying shell before
                 // its replacement thread is published. No stale menu actions live
                 // during that short, explicitly suspended presentation.
                 self.app_menu.suspend();
-                self.redraw = true;
+                self.presentation.redraw = true;
                 return;
             }
             let refreshed = (|| {
@@ -1094,7 +1116,7 @@ impl Desktop
                 // membership refresh must cancel tracking of its prior selection.
                 serial!("APPLICATION_MENU_FAILED status={}", status);
             }
-            self.redraw = true;
+            self.presentation.redraw = true;
         });
     }
 
@@ -1106,7 +1128,7 @@ impl Desktop
     pub fn activate_process_window(&mut self, id: u64, front: Option<WindowId>)
                                    -> Result<(), Status>
     {
-        self.activate_process_focus(id, front.map_or(GroupFocus::Desktop, GroupFocus::Window))
+        self.activate_process_focus(id, front.map_or(GroupFocus::Toolbox, GroupFocus::Window))
     }
 
     fn activate_process_focus(&mut self, id: u64, focus: GroupFocus) -> Result<(), Status>
@@ -1131,7 +1153,7 @@ impl Desktop
         self.enter(caller);
         self.processes.activate(id)?;
         self.foreground = id;
-        self.cursor_dirty |= self.responsiveness.foreground(id, Self::when());
+        self.presentation.cursor_dirty |= self.pointer.responsiveness.foreground(id, Self::when());
         self.windows.set_owner_hidden(id, false);
         self.windows.select_owner_group_focus(id, focus, &mut self.events, Self::when());
         self.route_events();
@@ -1693,7 +1715,7 @@ impl Desktop
     }
 }
 
-impl crate::toolbox::files::watch::lifetime::WatchHost for Desktop
+impl crate::toolbox::files::watch::lifetime::WatchHost for Toolbox
 {
     fn release_file_watch(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                           storage: bool)
@@ -1714,7 +1736,7 @@ impl crate::toolbox::files::watch::lifetime::WatchHost for Desktop
     }
 }
 
-impl crate::toolbox::files::forks::lifetime::ForkHost for Desktop
+impl crate::toolbox::files::forks::lifetime::ForkHost for Toolbox
 {
     fn release_file_fork(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                          storage: bool)
@@ -1738,7 +1760,7 @@ impl crate::toolbox::files::forks::lifetime::ForkHost for Desktop
     }
 }
 
-impl crate::toolbox::files::write::lifetime::WriteHost for Desktop
+impl crate::toolbox::files::write::lifetime::WriteHost for Toolbox
 {
     fn release_file_write(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                           storage: bool)
@@ -1759,7 +1781,7 @@ impl crate::toolbox::files::write::lifetime::WriteHost for Desktop
     }
 }
 
-impl crate::toolbox::menus::lifetime::MenuHost for Desktop
+impl crate::toolbox::menus::lifetime::MenuHost for Toolbox
 {
     fn release_menu(&mut self, ticket: mac_object_table::domain::ReleasedResource)
                     -> Result<(), mac_object_table::domain::CompletionError>
@@ -1792,7 +1814,7 @@ impl crate::toolbox::menus::lifetime::MenuHost for Desktop
     }
 }
 
-impl crate::toolbox::memory::lifetime::MemoryHost for Desktop
+impl crate::toolbox::memory::lifetime::MemoryHost for Toolbox
 {
     fn release_memory(&mut self, ticket: mac_object_table::domain::ReleasedResource, storage: bool)
                       -> Result<(), crate::toolbox::handles::cleanup::Failure>
@@ -1810,7 +1832,7 @@ impl crate::toolbox::memory::lifetime::MemoryHost for Desktop
     }
 }
 
-impl crate::toolbox::textedit::lifetime::EditorHost for Desktop
+impl crate::toolbox::textedit::lifetime::EditorHost for Toolbox
 {
     fn release_editor(&mut self, ticket: mac_object_table::domain::ReleasedResource, storage: bool)
                       -> Result<(), mac_object_table::domain::CompletionError>
@@ -1830,13 +1852,13 @@ impl crate::toolbox::textedit::lifetime::EditorHost for Desktop
         };
         if result.is_ok() && !storage
         {
-            self.cursor_dirty = true;
+            self.presentation.cursor_dirty = true;
         }
         result
     }
 }
 
-impl crate::toolbox::files::streams::lifetime::StreamHost for Desktop
+impl crate::toolbox::files::streams::lifetime::StreamHost for Toolbox
 {
     fn release_file_stream(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                            storage: bool)
@@ -1857,7 +1879,7 @@ impl crate::toolbox::files::streams::lifetime::StreamHost for Desktop
     }
 }
 
-impl crate::toolbox::files::groups::lifetime::GroupHost for Desktop
+impl crate::toolbox::files::groups::lifetime::GroupHost for Toolbox
 {
     fn release_file_group(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                           storage: bool)
@@ -1878,7 +1900,7 @@ impl crate::toolbox::files::groups::lifetime::GroupHost for Desktop
     }
 }
 
-impl crate::toolbox::files::transfer_lifetime::TransferHost for Desktop
+impl crate::toolbox::files::transfer_lifetime::TransferHost for Toolbox
 {
     fn release_file_transfer(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                              storage: bool)
@@ -1899,7 +1921,7 @@ impl crate::toolbox::files::transfer_lifetime::TransferHost for Desktop
     }
 }
 
-impl crate::toolbox::files::pins::PinHost for Desktop
+impl crate::toolbox::files::pins::PinHost for Toolbox
 {
     fn release_file_pin(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                         kind: crate::toolbox::files::pins::Registration)
@@ -1918,7 +1940,7 @@ impl crate::toolbox::files::pins::PinHost for Desktop
     }
 }
 
-impl Desktop
+impl Toolbox
 {
     pub(crate) fn native_normal_exit(&mut self, owner: &OwnerRef, image: crate::images::Binding,
                                      thread: u64, outcome: Outcome)
@@ -1973,7 +1995,7 @@ impl Desktop
     }
 }
 
-impl crate::toolbox::files::local::lifetime::OperationHost for Desktop
+impl crate::toolbox::files::local::lifetime::OperationHost for Toolbox
 {
     fn release_file_operation(&mut self, ticket: mac_object_table::domain::ReleasedResource,
                               storage: bool)

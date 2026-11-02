@@ -175,13 +175,13 @@ pub(crate) fn request(call: &mut NativeExitCall, suspension: Result<(), Status>)
                     Outcome::Abort(call.code)
                 };
                 let (joined, main_error) =
-                    crate::kernel::with_desktop(|desktop| {
-                        let joined = desktop.processes
+                    crate::kernel::with_toolbox(|toolbox| {
+                        let joined = toolbox.processes
                                             .get(owner.owner().incarnation())?
                                             .termination
                                             .record
                                             .is_some();
-                        let main_error = desktop.main_error_report(owner.owner().incarnation(),
+                        let main_error = toolbox.main_error_report(owner.owner().incarnation(),
                                                                    executor.thread());
                         Ok::<_, Status>((joined, main_error))
                     }).map_err(|error| error.status())??;
@@ -191,8 +191,8 @@ pub(crate) fn request(call: &mut NativeExitCall, suspension: Result<(), Status>)
                               || owner.owner().incarnation() == crate::context::finder_app().0;
                 if !failure
                 {
-                    return crate::kernel::with_desktop(|desktop| {
-                               desktop.native_normal_exit(owner,
+                    return crate::kernel::with_toolbox(|toolbox| {
+                               toolbox.native_normal_exit(owner,
                                                           executor.image(),
                                                           executor.thread(),
                                                           outcome)
@@ -200,13 +200,13 @@ pub(crate) fn request(call: &mut NativeExitCall, suspension: Result<(), Status>)
                 }
                 // Resolve the real registered runtime root before any admission
                 // effect. A source/app number cannot construct RuntimeAdmission.
-                let tls = crate::kernel::with_desktop(|desktop| {
-                              desktop.processes.native_exit_preflight(owner, executor.image())
+                let tls = crate::kernel::with_toolbox(|toolbox| {
+                              toolbox.processes.native_exit_preflight(owner, executor.image())
                           }).map_err(|error| error.status())??;
                 let runtime = crate::toolbox::native_threads::runtime_admission(&tls, owner)
                 .map_err(|cause| cause.status())?;
-                let first = crate::kernel::with_desktop(|desktop| {
-                                desktop.processes.queue_native_failure(owner,
+                let first = crate::kernel::with_toolbox(|toolbox| {
+                                toolbox.processes.queue_native_failure(owner,
                                                                        executor.image(),
                                                                        executor.thread(),
                                                                        outcome)
@@ -222,8 +222,8 @@ pub(crate) fn request(call: &mut NativeExitCall, suspension: Result<(), Status>)
                     if first
                     {
                         let refused =
-                            crate::kernel::with_desktop(|desktop| {
-                                desktop.processes
+                            crate::kernel::with_toolbox(|toolbox| {
+                                toolbox.processes
                                        .rollback_native_failure(owner, executor.thread(), outcome)
                             }).map_err(|error| error.status())??;
                         drop(refused);
@@ -416,13 +416,13 @@ impl super::Manager
     }
 }
 
-fn desktop<T>(pending: &Pending,
-              action: impl FnOnce(&mut crate::toolbox::runtime::Desktop) -> Result<T, Status>)
+fn toolbox<T>(pending: &Pending,
+              action: impl FnOnce(&mut crate::toolbox::runtime::Toolbox) -> Result<T, Status>)
               -> Result<T, Status>
 {
-    crate::kernel::with_desktop(|desktop| {
-        desktop.native_failure_selection(&pending.binding)?;
-        action(desktop)
+    crate::kernel::with_toolbox(|toolbox| {
+        toolbox.native_failure_selection(&pending.binding)?;
+        action(toolbox)
     }).map_err(|error| error.status())?
 }
 fn step(pending: &mut Pending) -> Result<bool, Status>
@@ -433,11 +433,11 @@ fn step(pending: &mut Pending) -> Result<bool, Status>
     }
     if !matches!(pending.phase, Phase::Quiesce)
     {
-        let acknowledged = desktop(pending, |desktop| {
-            if let Some(retention) = desktop.acknowledged_native_failure(&pending.binding)?
+        let acknowledged = toolbox(pending, |toolbox| {
+            if let Some(retention) = toolbox.acknowledged_native_failure(&pending.binding)?
             {
-                let record = desktop.record_native_report(&pending.binding, retention)?;
-                desktop.stop_native_failure(&pending.binding)?;
+                let record = toolbox.record_native_report(&pending.binding, retention)?;
+                toolbox.stop_native_failure(&pending.binding)?;
                 Ok(Some(record))
             }
             else
@@ -477,8 +477,8 @@ fn step(pending: &mut Pending) -> Result<bool, Status>
                 pending.adopted = crate::toolbox::crashes::take_for_termination(&pending.binding)?;
             }
             let keeps = pending.adopted.is_some()
-                        || desktop(pending, |desktop| {
-                            desktop.native_failure_keeps_stock(&pending.binding)
+                        || toolbox(pending, |toolbox| {
+                            toolbox.native_failure_keeps_stock(&pending.binding)
                         })?;
             if !keeps && !crate::toolbox::crashes::protected_stock_available()
             {
@@ -504,8 +504,8 @@ fn step(pending: &mut Pending) -> Result<bool, Status>
                 return Ok(false);
             }
             let keeps = pending.adopted.is_some()
-                        || desktop(pending, |desktop| {
-                            desktop.native_failure_keeps_stock(&pending.binding)
+                        || toolbox(pending, |toolbox| {
+                            toolbox.native_failure_keeps_stock(&pending.binding)
                         })?;
             if !keeps && !crate::toolbox::crashes::protected_stock_available()
             {
@@ -523,8 +523,8 @@ fn step(pending: &mut Pending) -> Result<bool, Status>
             let mut fresh = pending.fresh.take();
             let mut reclaim = false;
             let result = activity.run(|| {
-                                     desktop(pending, |desktop| {
-                                         match desktop.adopt_native_failure_report(&pending.binding,
+                                     toolbox(pending, |toolbox| {
+                                         match toolbox.adopt_native_failure_report(&pending.binding,
                                                                              &mut adopted,
                                                                              &mut fresh, &activity)?
                                          {
@@ -535,9 +535,9 @@ fn step(pending: &mut Pending) -> Result<bool, Status>
                                              }
                                          }
                                          let retained =
-                                     desktop.prepare_native_failure_report(&pending.binding,
+                                     toolbox.prepare_native_failure_report(&pending.binding,
                                                                            pending.record)?;
-                                         desktop.record_native_report(&pending.binding, retained)
+                                         toolbox.record_native_report(&pending.binding, retained)
                                                 .map(Some)
                                      })
                                  });
@@ -561,8 +561,8 @@ fn step(pending: &mut Pending) -> Result<bool, Status>
             if pending.binding.owner() == crate::context::finder_app().0
             {
                 activity.run(|| {
-                            desktop(pending, |desktop| {
-                                desktop.queue_native_finder_restart(pending.binding.retain())
+                            toolbox(pending, |toolbox| {
+                                toolbox.queue_native_finder_restart(pending.binding.retain())
                             })
                         })??;
                 serial!("NATIVE_EXIT_RECOVERY_QUEUED app={} {} state=owned-finder-flight",
@@ -580,8 +580,8 @@ fn step(pending: &mut Pending) -> Result<bool, Status>
         {
             let activity = activity.clone();
             let dismissed = activity.run(|| {
-                                        desktop(pending, |desktop| {
-                                            Ok(desktop.native_failure_dismissed(&pending.binding)?)
+                                        toolbox(pending, |toolbox| {
+                                            Ok(toolbox.native_failure_dismissed(&pending.binding)?)
                                         })
                                     })??;
             if !dismissed
@@ -591,7 +591,7 @@ fn step(pending: &mut Pending) -> Result<bool, Status>
             // Drop/close the System report session before the canonical owner
             // walk; it owns no application callback or destructor completion.
             activity.close();
-            desktop(pending, |desktop| desktop.stop_native_failure(&pending.binding))?;
+            toolbox(pending, |toolbox| toolbox.stop_native_failure(&pending.binding))?;
             Ok(true)
         }
     }
@@ -600,10 +600,10 @@ fn retain_work(mut pending: Option<Pending>, rotate: bool)
 {
     if rotate
     {
-        let restored = crate::kernel::with_desktop(|desktop| {
+        let restored = crate::kernel::with_toolbox(|toolbox| {
             match pending.take()
             {
-                Some(work) => desktop.processes.restore_native_failure(work).err(),
+                Some(work) => toolbox.processes.restore_native_failure(work).err(),
                 None => None
             }
         });
@@ -643,11 +643,11 @@ pub(crate) fn pump()
             {
                 return;
             }
-            match crate::kernel::with_desktop(|desktop| {
-                      let stock = desktop.native_failure_stock_owner();
+            match crate::kernel::with_toolbox(|toolbox| {
+                      let stock = toolbox.native_failure_stock_owner();
                       let previous = PREFERRED_OWNER.swap(stock.unwrap_or(0), Ordering::Relaxed);
                       let preferred = stock.filter(|owner| *owner != previous);
-                      desktop.processes
+                      toolbox.processes
                              .take_native_failure(preferred, CURSOR.load(Ordering::Relaxed))
                   })
             {

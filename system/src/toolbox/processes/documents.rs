@@ -107,10 +107,10 @@ impl Batch
         Ok(result)
     }
 }
-fn desktop<T>(action: impl FnOnce(&mut crate::toolbox::runtime::Desktop) -> Result<T, Status>)
+fn toolbox<T>(action: impl FnOnce(&mut crate::toolbox::runtime::Toolbox) -> Result<T, Status>)
               -> Result<T, Status>
 {
-    crate::kernel::with_desktop(action).map_err(crate::state::AccessError::status)?
+    crate::kernel::with_toolbox(action).map_err(crate::state::AccessError::status)?
 }
 fn declarations(creator: [u8; 4], resources: &[mac_formats::resource::Resource])
                 -> Result<Vec<[u8; 4]>, Status>
@@ -195,7 +195,7 @@ fn prepare(manager: &mut super::Manager, owner: u64, call: &DocumentCall)
     batch.pending = Some(pending);
     Ok(batch.application)
 }
-fn activate_existing(d: &mut crate::toolbox::runtime::Desktop, owner: u64, handle: u64,
+fn activate_existing(d: &mut crate::toolbox::runtime::Toolbox, owner: u64, handle: u64,
                      launch: &mut ProcessCall)
                      -> Result<bool, Status>
 {
@@ -221,7 +221,7 @@ fn activate_existing(d: &mut crate::toolbox::runtime::Desktop, owner: u64, handl
 }
 fn clear_pending(owner: u64, handle: u64)
 {
-    let _ = desktop(|d| {
+    let _ = toolbox(|d| {
         if let Ok(batch) = owned(&mut d.processes, owner, handle)
         {
             batch.pending = None;
@@ -281,7 +281,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                                         cnid:      call.application_cnid };
                 if call.handle == 0
                 {
-                    call.handle = desktop(|d| {
+                    call.handle = toolbox(|d| {
                         if call.drag != 0
                         {
                             d.drag.offer_live(owner, call.drag)?;
@@ -298,7 +298,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                 }
                 else
                 {
-                    desktop(|d| {
+                    toolbox(|d| {
                         let batch = owned(&mut d.processes, owner, call.handle)?;
                         if batch.phase != Phase::Probing
                            || batch.pending != Some(pending)
@@ -310,7 +310,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                     })?;
                 }
                 let scope =
-                    desktop(|d| Ok(owned(&mut d.processes, owner, call.handle)?.scope.lease()))?;
+                    toolbox(|d| Ok(owned(&mut d.processes, owner, call.handle)?.scope.lease()))?;
                 crate::kernel::with_files(|files| {
                     files.pin_document(&authority, call.handle, scope, call.application_volume,
                                        call.application_cnid)
@@ -321,7 +321,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                 }
                 else
                 {
-                    desktop(|d| {
+                    toolbox(|d| {
                         Ok(d.processes
                             .iter()
                             .find(|process| {
@@ -351,7 +351,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                     })?;
                     declarations(loaded.catalog.creator, &loaded.resources)?
                 };
-                desktop(|d| {
+                toolbox(|d| {
                     let batch = owned(&mut d.processes, owner, call.handle)?;
                     call.count = types.len() as u32;
                     batch.types = types;
@@ -367,7 +367,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                 {
                     return Err(BAD_ARGUMENT);
                 }
-                desktop(|d| prepare(&mut d.processes, owner, call))?;
+                toolbox(|d| prepare(&mut d.processes, owner, call))?;
                 let catalog = match application::catalog(owner, call.volume, call.cnid)
                 {
                     Ok(catalog) => catalog,
@@ -380,7 +380,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                         return Err(error);
                     }
                 };
-                let accepted = desktop(|d| {
+                let accepted = toolbox(|d| {
                     let batch = owned(&mut d.processes, owner, call.handle)?;
                     if catalog.kind != FILE
                        || batch.types.binary_search(&catalog.file_type).is_err()
@@ -401,7 +401,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                     return Err(error);
                 }
                 let scope =
-                    desktop(|d| Ok(owned(&mut d.processes, owner, call.handle)?.scope.lease()))?;
+                    toolbox(|d| Ok(owned(&mut d.processes, owner, call.handle)?.scope.lease()))?;
                 let pinned = crate::kernel::with_files(|files| {
                                  files.pin_document(&authority, call.handle, scope, call.volume,
                                                     call.cnid)
@@ -411,7 +411,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                     clear_pending(owner, call.handle);
                     return Err(error);
                 }
-                desktop(|d| {
+                toolbox(|d| {
                     let batch = owned(&mut d.processes, owner, call.handle)?;
                     batch.documents.push(catalog);
                     batch.pending = None;
@@ -421,7 +421,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
             }
             DOCUMENT_ACCEPTS_DRAG =>
             {
-                call.present = desktop(|d| {
+                call.present = toolbox(|d| {
                     let batch = owned(&mut d.processes, owner, call.handle)?;
                     if batch.phase != Phase::Preparing
                     {
@@ -432,7 +432,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
             }
             DOCUMENT_ACCEPTS =>
             {
-                call.present = desktop(|d| {
+                call.present = toolbox(|d| {
                     let batch = owned(&mut d.processes, owner, call.handle)?;
                     if batch.phase != Phase::Preparing
                     {
@@ -443,7 +443,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
             }
             DOCUMENT_COMMIT =>
             {
-                let (volume, cnid) = desktop(|d| prepare(&mut d.processes, owner, call))?;
+                let (volume, cnid) = toolbox(|d| prepare(&mut d.processes, owner, call))?;
                 let mut launch = ProcessCall { operation: LAUNCH,
                                                volume,
                                                cnid,
@@ -456,7 +456,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                 }
                 else
                 {
-                    desktop(|d| activate_existing(d, owner, call.handle, &mut launch))?
+                    toolbox(|d| activate_existing(d, owner, call.handle, &mut launch))?
                 };
                 let resumed = if super::launch::pending()
                 {
@@ -495,7 +495,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                         }
                     };
                     let actual = declarations(loaded.catalog.creator, &loaded.resources)?;
-                    let launch_needed = desktop(|d| {
+                    let launch_needed = toolbox(|d| {
                         if activate_existing(d, owner, call.handle, &mut launch)?
                         {
                             return Ok(false);
@@ -526,7 +526,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                         }
                     }
                 }
-                desktop(|d| {
+                toolbox(|d| {
                     d.processes.get(launch.info.id)?;
                     let recipient = d.processes.ledger(launch.info.id)?;
                     let sequence = d.processes.document_sequence.checked_add(1).ok_or(NO_MEMORY)?;
@@ -567,14 +567,14 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                 })?;
             }
 
-            DOCUMENT_ABORT => desktop(|d| dispose(&mut d.processes, owner, call.handle, true))?,
+            DOCUMENT_ABORT => toolbox(|d| dispose(&mut d.processes, owner, call.handle, true))?,
             DOCUMENT_NEXT =>
             {
                 if call.handle != 0
                 {
                     return Err(BAD_ARGUMENT);
                 }
-                desktop(|d| {
+                toolbox(|d| {
                     let next = d.processes
                                 .documents
                                 .iter()
@@ -601,7 +601,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
             }
             DOCUMENT_AT =>
             {
-                desktop(|d| {
+                toolbox(|d| {
                     let batch = owned(&mut d.processes, owner, call.handle)?;
                     if batch.phase != Phase::Receiving
                     {
@@ -614,7 +614,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                     Ok(())
                 })?
             }
-            DOCUMENT_FINISH => desktop(|d| dispose(&mut d.processes, owner, call.handle, false))?,
+            DOCUMENT_FINISH => toolbox(|d| dispose(&mut d.processes, owner, call.handle, false))?,
             _ => return Err(BAD_ARGUMENT)
         }
         Ok(())
@@ -627,7 +627,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
     }
     if result.is_err() && call.operation == DOCUMENT_BEGIN && !pending_io() && call.handle != 0
     {
-        let _ = desktop(|d| dispose(&mut d.processes, owner, call.handle, true));
+        let _ = toolbox(|d| dispose(&mut d.processes, owner, call.handle, true));
     }
     result.err().unwrap_or(OK)
 }
@@ -639,7 +639,7 @@ pub(crate) fn pump()
     {
         return;
     }
-    let mark = desktop(|d| {
+    let mark = toolbox(|d| {
         let revision = CLEANUP_REVISION.load(Ordering::Acquire);
         let batches = &mut d.processes.documents;
         if batches.cleanup_revision != revision
@@ -692,7 +692,7 @@ pub(crate) fn pump()
             return;
         }
     }
-    let cleaned = desktop(|d| {
+    let cleaned = toolbox(|d| {
         let batch = d.processes.documents.completing(handle).ok_or(NOT_FOUND)?;
         if !batch.abandoned() || batch.owner() != owner
         {

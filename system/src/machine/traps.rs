@@ -122,12 +122,12 @@ enum DefinitionTurn<T>
         id:   i16
     }
 }
-fn definition_request<T>(mut run: impl FnMut(&mut crate::toolbox::runtime::Desktop)
+fn definition_request<T>(mut run: impl FnMut(&mut crate::toolbox::runtime::Toolbox)
                                -> Result<DefinitionTurn<T>, Status>)
                          -> Result<T, Status>
 {
     let first =
-        crate::kernel::with_desktop(|desktop| run(desktop)).map_err(|cause| cause.status())??;
+        crate::kernel::with_toolbox(|toolbox| run(toolbox)).map_err(|cause| cause.status())??;
     let (kind, id) = match first
     {
         DefinitionTurn::Complete(result) => return Ok(result),
@@ -142,7 +142,7 @@ fn definition_request<T>(mut run: impl FnMut(&mut crate::toolbox::runtime::Deskt
                                                            cause);
                                                    crate::loader::status(cause)
                                                })?;
-    match crate::kernel::with_desktop(|desktop| run(desktop)).map_err(|cause| cause.status())??
+    match crate::kernel::with_toolbox(|toolbox| run(toolbox)).map_err(|cause| cause.status())??
     {
         DefinitionTurn::Complete(result) => Ok(result),
         // Source/request admission changed while the same real cold work was
@@ -856,7 +856,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         }
         TEXTEDIT =>
         {
-            crate::kernel::with_desktop(|runtime| unsafe {
+            crate::kernel::with_toolbox(|runtime| unsafe {
                 toolbox::textedit::native::dispatch_with(number, pointer, size, |request| {
                     match request
                     {
@@ -889,7 +889,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         MENU =>
         {
             let call = read_request!(mac_abi::menus::MenuCall);
-            crate::kernel::with_desktop(|runtime| runtime.menu(call)).unwrap_or_else(|error| {
+            crate::kernel::with_toolbox(|runtime| runtime.menu(call)).unwrap_or_else(|error| {
                                                                          error.status()
                                                                      }) as i64
         }
@@ -1057,7 +1057,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         EVENTS =>
         {
             let call = read_request!(events::EventCall);
-            crate::kernel::with_desktop(|runtime| runtime.event_service(call))
+            crate::kernel::with_toolbox(|runtime| runtime.event_service(call))
                 .unwrap_or_else(|error| error.status()) as i64
         }
         DRAG =>
@@ -1086,13 +1086,13 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         SCROLL_BOX =>
         unsafe {
             toolbox::controls::scrollbox_native::dispatch(pointer, size, |call| {
-                definition_request(|desktop| {
-                    if desktop.preflight_scroll_box(call)?
+                definition_request(|toolbox| {
+                    if toolbox.preflight_scroll_box(call)?
                     {
                         return Ok(DefinitionTurn::Prepare { kind: *b"CDEF",
                                                             id:   1 });
                     }
-                    desktop.scroll_box(call).map(DefinitionTurn::Complete)
+                    toolbox.scroll_box(call).map(DefinitionTurn::Complete)
                 })
             })
         },
@@ -1141,12 +1141,12 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         DRAW =>
         {
             let call = read_request!(DrawCall);
-            crate::kernel::with_desktop(|runtime|runtime.draw(call.window,call.command)).unwrap_or_else(|error|error.status()) as i64
+            crate::kernel::with_toolbox(|runtime|runtime.draw(call.window,call.command)).unwrap_or_else(|error|error.status()) as i64
         }
         NEXT_EVENT =>
         {
             let call = read_request!(NextEventCall);
-            crate::kernel::with_desktop(|runtime| {
+            crate::kernel::with_toolbox(|runtime| {
                 call.event = runtime.next(call.mask);
                 OK
             }).unwrap_or_else(|error| error.status()) as i64
@@ -1154,7 +1154,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         POSITIONED_EVENT =>
         {
             let call = read_request!(events::PositionedEventCall);
-            crate::kernel::with_desktop(|runtime| {
+            crate::kernel::with_toolbox(|runtime| {
                 let status = runtime.positioned_event(call);
                 if status == OK
                    && call.operation == events::POSITION_WAIT
@@ -1180,7 +1180,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         WAIT_EVENT =>
         {
             let call = read_request!(WaitEventCall);
-            crate::kernel::with_desktop(|runtime| {
+            crate::kernel::with_toolbox(|runtime| {
                 let (event, available) = runtime.next_available(call.mask);
                 call.event = event;
                 call.waited = u32::from(!available && call.timeout_ticks != 0);
@@ -1230,7 +1230,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
             }
             let memory =
                 unsafe { core::slice::from_raw_parts_mut(call.memory, call.memory_length) };
-            crate::kernel::with_desktop(|runtime| {
+            crate::kernel::with_toolbox(|runtime| {
                 toolbox::classic::dispatch(call.instruction, &mut call.registers, call.guest_base,
                                            memory, runtime)
             }).unwrap_or_else(|error| {

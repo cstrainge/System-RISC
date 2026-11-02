@@ -392,6 +392,11 @@ fn main() -> Result<(), Error>
             }
             continue;
         }
+        if let Event::DisplayChanged { .. } = event
+        {
+            let _ = try_action(system, &mut alerts, browser.display_changed(system))?;
+            continue;
+        }
         if matches!(event, Event::Activate { .. }) && alerts.window() == WindowId(0)
         {
             browser.activate(&event);
@@ -599,9 +604,9 @@ fn main() -> Result<(), Error>
                 menus::GET_INFO => info.open_selection(system, browser.selected_locations()),
                 menus::CLOSE =>
                 {
-                    if let Ok(front) = system.window(WindowId(0))
+                    if let Some(front) = browser.closable_front(system)
                     {
-                        system.close_window(front.id)?;
+                        system.close_window(front)?;
                     }
                     browser.prune(system)
                 }
@@ -692,9 +697,9 @@ fn main() -> Result<(), Error>
                                   .modifiers
                                   .contains(mac_toolbox::events::Modifiers::COMMAND)
                 {
-                    if let Ok(front) = system.window(WindowId(0))
+                    if let Some(front) = browser.closable_front(system)
                     {
-                        system.close_window(front.id)?;
+                        system.close_window(front)?;
                         let _ = try_action(system, &mut alerts, browser.prune(system))?;
                     }
                 }

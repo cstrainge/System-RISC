@@ -182,7 +182,7 @@ pub(crate) fn initialize_protected_report(permit: crate::allocator::recovery::Pe
 {
     crate::context::with_recovery_allocation(permit, || {
         crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-            let layout = crate::toolbox::runtime::Desktop::measure_crash_report_layout()?;
+            let layout = crate::toolbox::runtime::Toolbox::measure_crash_report_layout()?;
             storage::prepare()?;
             LAYOUT.call_once(|| layout);
             Ok(())

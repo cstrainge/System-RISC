@@ -22,7 +22,7 @@ pub(super) struct NativeWindowPublication<'a>
 #[derive(Debug)]
 enum AdmissionError
 {
-    Desktop(crate::state::AccessError),
+    Toolbox(crate::state::AccessError),
     Service
     {
         stage:  &'static str,
@@ -39,7 +39,7 @@ impl AdmissionError
     {
         match self
         {
-            Self::Desktop(cause) => cause.status(),
+            Self::Toolbox(cause) => cause.status(),
             Self::Service { status,
                             .. } => status,
             Self::Scene(cause) => cause.status(),
@@ -55,7 +55,7 @@ impl fmt::Display for AdmissionError
     {
         match self
         {
-            Self::Desktop(cause) =>
+            Self::Toolbox(cause) =>
             {
                 match cause
                 {
@@ -82,10 +82,10 @@ impl fmt::Display for AdmissionError
         }
     }
 }
-fn desktop<T>(run: impl FnOnce(&mut Desktop) -> Result<T, AdmissionError>)
+fn toolbox<T>(run: impl FnOnce(&mut Toolbox) -> Result<T, AdmissionError>)
               -> Result<T, AdmissionError>
 {
-    crate::kernel::with_desktop(run).map_err(AdmissionError::Desktop)?
+    crate::kernel::with_toolbox(run).map_err(AdmissionError::Toolbox)?
 }
 fn capacity_changed(cause: CreationError) -> bool
 {
@@ -106,7 +106,7 @@ enum Turn
     Internal,
     Process(ProcessPlan)
 }
-impl Desktop
+impl Toolbox
 {
     fn plan_native_window(&self, request: &WindowRequest) -> Result<Turn, AdmissionError>
     {
@@ -165,7 +165,7 @@ pub(crate) fn native_window(operation: u32, request: &mut WindowRequest) -> Stat
         // Preserve the direct command path and its existing diagnostics. A
         // transient busy query is not a window-admission failure or a reason
         // to write UART on each poll/input event.
-        return crate::kernel::with_desktop(|desktop| desktop.window(operation, request))
+        return crate::kernel::with_toolbox(|toolbox| toolbox.window(operation, request))
             .unwrap_or_else(|cause| cause.status());
     }
     match create_native(request)
@@ -185,7 +185,7 @@ fn create_native(request: &mut WindowRequest) -> Result<Status, AdmissionError>
     // unadmitted preparation for disposal and a fresh snapshot outside Desktop.
     let (mut prepared, mut scene, mut receiver) = loop
     {
-        let plan = match desktop(|desktop| desktop.plan_native_window(request))?
+        let plan = match toolbox(|toolbox| toolbox.plan_native_window(request))?
         {
             Turn::Cold(id) if !cold_prepared =>
             {
@@ -200,24 +200,24 @@ fn create_native(request: &mut WindowRequest) -> Result<Status, AdmissionError>
                                                               preparation",
                                                      status: SERVICE_BUSY });
             }
-            Turn::Internal => return desktop(|desktop| Ok(desktop.window(NEW_WINDOW, request))),
+            Turn::Internal => return toolbox(|toolbox| Ok(toolbox.window(NEW_WINDOW, request))),
             Turn::Process(plan) => plan
         };
         let mut input =
             Some(plan.window.prepare(&plan.allocation).map_err(AdmissionError::Window)?);
         let scene = plan.scene.prepare().map_err(AdmissionError::Scene)?;
-        let admitted = desktop(|desktop| {
+        let admitted = toolbox(|toolbox| {
             let value = input.as_ref()
                              .ok_or(AdmissionError::Service { stage:  "unpublished window \
                                                                        preparation",
                                                               status: BAD_ABI })?;
-            if value.owner().owner().incarnation() != desktop.owner
+            if value.owner().owner().incarnation() != toolbox.owner
                || !value.matches_request(request)
             {
                 return Err(AdmissionError::Service { stage:  "original Process intent changed",
                                                      status: ACCESS_DENIED });
             }
-            desktop.windows.admit_process_window(&mut input).map_err(AdmissionError::Window)
+            toolbox.windows.admit_process_window(&mut input).map_err(AdmissionError::Window)
         });
         if let Some(input) = input
         {
@@ -240,18 +240,18 @@ fn create_native(request: &mut WindowRequest) -> Result<Status, AdmissionError>
         let mut retired = None;
         let mut receiver_retired = None;
         let mut refusal = None;
-        let result = desktop(|desktop| {
+        let result = toolbox(|toolbox| {
             let value = prepared.as_ref()
                                 .ok_or(AdmissionError::Service { stage:  "canonical window permit",
                                                                  status: BAD_ABI })?;
-            if value.owner().owner().incarnation() != desktop.owner
+            if value.owner().owner().incarnation() != toolbox.owner
                || !value.matches_request(request)
             {
                 return Err(AdmissionError::Service { stage:  "admitted Process intent changed",
                                                      status: ACCESS_DENIED });
             }
-            desktop.install_window_scene(&mut scene).map_err(AdmissionError::Scene)?;
-            Ok(desktop.create_window(request,
+            toolbox.install_window_scene(&mut scene).map_err(AdmissionError::Scene)?;
+            Ok(toolbox.create_window(request,
                                      Some(NativeWindowPublication { prepared:         &mut prepared,
                                                                     retired:          &mut retired,
                                                                     refusal:          &mut refusal,
@@ -277,19 +277,19 @@ fn create_native(request: &mut WindowRequest) -> Result<Status, AdmissionError>
         {
             // Preserve the exact genuine permit and payload. Reprepare only
             // fresh capacity; no second ID or fallback publisher is admitted.
-            let (window_plan, scene_plan) = desktop(|desktop| {
+            let (window_plan, scene_plan) = toolbox(|toolbox| {
                 let value = prepared.as_ref()
                                     .ok_or(AdmissionError::Service { stage:  "retained window \
                                                                               permit",
                                                                      status: BAD_ABI })?;
-                if value.owner().owner().incarnation() != desktop.owner
+                if value.owner().owner().incarnation() != toolbox.owner
                    || !value.matches_request(request)
                 {
                     return Err(AdmissionError::Service { stage:  "retained Process intent changed",
                                                          status: ACCESS_DENIED });
                 }
-                Ok((value.plan_capacity(&desktop.windows).map_err(AdmissionError::Window)?,
-                    desktop.plan_window_scene().map_err(AdmissionError::Scene)?))
+                Ok((value.plan_capacity(&toolbox.windows).map_err(AdmissionError::Window)?,
+                    toolbox.plan_window_scene().map_err(AdmissionError::Scene)?))
             })?;
             let capacity = window_plan.prepare().map_err(AdmissionError::Window)?;
             let next_scene = scene_plan.prepare().map_err(AdmissionError::Scene)?;
@@ -442,53 +442,62 @@ fn install_storage<T>(live: &mut Vec<T>, prepared: &mut Vec<T>, required: usize)
         core::mem::swap(live, prepared);
     }
 }
-impl Desktop
+impl Toolbox
 {
     fn scene_requirements(&self) -> Result<(usize, usize), SceneCapacityError>
     {
-        let content = self.content
+        let content = self.presentation
+                          .content
                           .len()
                           .checked_add(1)
                           .and_then(|n| n.checked_add(self.scene_spare()))
                           .ok_or(SceneCapacityError::Geometry)?;
         let damage = content.checked_add(1)
                             .ok_or(SceneCapacityError::Geometry)?
-                            .max(self.content_damage.len());
+                            .max(self.presentation.content_damage.len());
         Ok((content, damage))
     }
 
     fn plan_window_scene(&self) -> Result<SceneCapacityPlan, SceneCapacityError>
     {
         let (content, damage) = self.scene_requirements()?;
-        let deferred = self.content
+        let deferred = self.presentation
+                           .content
                            .capacity()
                            .max(content)
                            .checked_add(1)
                            .ok_or(SceneCapacityError::Geometry)?
-                           .max(self.ordinary_underlay.deferred.len());
-        Ok(SceneCapacityPlan { content: needs_storage(&self.content, content),
+                           .max(self.presentation.ordinary_underlay.deferred.len());
+        Ok(SceneCapacityPlan { content: needs_storage(&self.presentation.content, content),
                                // BEGIN_UPDATE admits at most one pending scene per live window.
                                // Reserve their directory at window birth, including modal spare,
                                // rather than asking its retained old header to grow during
                                // paint.
-                               pending: needs_storage(&self.pending_content,
-                                                      content.max(self.pending_content.len())),
-                               damage: needs_storage(&self.content_damage, damage),
+                               pending: needs_storage(&self.presentation.pending_content,
+                                                      content.max(self.presentation
+                                                                      .pending_content
+                                                                      .len())),
+                               damage: needs_storage(&self.presentation.content_damage, damage),
                                deferred,
-                               deferred_available: self.ordinary_underlay.deferred.capacity() })
+                               deferred_available: self.presentation
+                                                       .ordinary_underlay
+                                                       .deferred
+                                                       .capacity() })
     }
 
     fn install_window_scene(&mut self, prepared: &mut SceneCapacity)
                             -> Result<(), SceneCapacityError>
     {
         let (content, damage) = self.scene_requirements()?;
-        sufficient(&self.content, &prepared.content, content, "content directory")?;
-        let pending = content.max(self.pending_content.len());
-        sufficient(&self.pending_content, &prepared.pending, pending, "pending content directory")?;
-        sufficient(&self.content_damage, &prepared.damage, damage, "damage directory")?;
-        let content_capacity = if self.content.capacity() >= content
+        sufficient(&self.presentation.content, &prepared.content, content, "content directory")?;
+        let pending = content.max(self.presentation.pending_content.len());
+        sufficient(&self.presentation.pending_content, &prepared.pending, pending,
+                   "pending content directory")?;
+        sufficient(&self.presentation.content_damage, &prepared.damage, damage,
+                   "damage directory")?;
+        let content_capacity = if self.presentation.content.capacity() >= content
         {
-            self.content.capacity()
+            self.presentation.content.capacity()
         }
         else
         {
@@ -496,20 +505,21 @@ impl Desktop
         };
         let deferred = content_capacity.checked_add(1)
                                        .ok_or(SceneCapacityError::Geometry)?
-                                       .max(self.ordinary_underlay.deferred.len());
-        sufficient(&self.ordinary_underlay.deferred, &prepared.deferred, deferred,
+                                       .max(self.presentation.ordinary_underlay.deferred.len());
+        sufficient(&self.presentation.ordinary_underlay.deferred, &prepared.deferred, deferred,
                    "deferred damage directory")?;
         // No identity is published here. Validate all capacities first so a
         // competing publisher cannot make a partially installed scene visible.
-        install_storage(&mut self.content, &mut prepared.content, content);
-        install_storage(&mut self.pending_content, &mut prepared.pending, pending);
-        install_storage(&mut self.content_damage, &mut prepared.damage, damage);
-        install_storage(&mut self.ordinary_underlay.deferred, &mut prepared.deferred, deferred);
+        install_storage(&mut self.presentation.content, &mut prepared.content, content);
+        install_storage(&mut self.presentation.pending_content, &mut prepared.pending, pending);
+        install_storage(&mut self.presentation.content_damage, &mut prepared.damage, damage);
+        install_storage(&mut self.presentation.ordinary_underlay.deferred, &mut prepared.deferred,
+                        deferred);
         Ok(())
     }
 }
 
-impl Desktop
+impl Toolbox
 {
     /// One initialization path for prepared application windows and the real
     /// internal dialog callers. A preparation refusal never selects another
@@ -548,14 +558,17 @@ impl Desktop
         let spare = self.scene_spare();
         if publication.is_none()
            && shared_scene_allocation(|| {
-                  self.content.try_reserve(1 + spare).map_err(|_| NO_MEMORY)?;
-                  self.ordinary_underlay
-                      .prepare_scenes(self.content.capacity().saturating_add(1))?;
-                  self.content_damage
-                      .try_reserve(self.content
+                  self.presentation.content.try_reserve(1 + spare).map_err(|_| NO_MEMORY)?;
+                  self.presentation
+                      .ordinary_underlay
+                      .prepare_scenes(self.presentation.content.capacity().saturating_add(1))?;
+                  self.presentation
+                      .content_damage
+                      .try_reserve(self.presentation
+                                       .content
                                        .len()
                                        .saturating_add(2 + spare)
-                                       .saturating_sub(self.content_damage.len()))
+                                       .saturating_sub(self.presentation.content_damage.len()))
                       .map_err(|_| NO_MEMORY)
               }).is_err()
         {
@@ -598,7 +611,8 @@ impl Desktop
                                                     entry,
                                                     &mut self.events,
                                                     when,
-                                                    false)
+                                                    false,
+                                                    request.reserved == WINDOW_STAY_IN_BACK)
         };
         let id = match creation
         {
@@ -674,10 +688,10 @@ impl Desktop
             }
             self.windows.restore_owner_group(self.foreground, &mut self.events, when);
         }
-        self.content.push(Content::new(id));
+        self.presentation.content.push(Content::new(id));
         self.last_action = "NEW";
         self.route_events();
-        self.redraw = true;
+        self.presentation.redraw = true;
         OK
     }
 }
