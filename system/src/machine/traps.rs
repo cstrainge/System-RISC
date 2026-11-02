@@ -1115,16 +1115,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         WINDOW =>
         {
             let call = read_request!(WindowCall);
-            definition_request(|runtime| {
-                if let Some(id) = runtime.preflight_window(call.operation, &call.request)?
-                   && crate::loader::cached_definition(*b"WDEF", id).map_err(crate::loader::status)?
-                                                                    .is_none()
-                {
-                    return Ok(DefinitionTurn::Prepare { kind: *b"WDEF",
-                                                        id });
-                }
-                Ok(DefinitionTurn::Complete(runtime.window(call.operation, &mut call.request)))
-            }).unwrap_or_else(|status| status) as i64
+            toolbox::runtime::native_window(call.operation, &mut call.request) as i64
         }
         DRAW =>
         {

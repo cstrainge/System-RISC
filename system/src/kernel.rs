@@ -195,23 +195,92 @@ fn prepare_shared_image(owner: &crate::toolbox::handles::OwnerRef,
     }
     let layout = crate::loader::application_layout(&source.resources)
         .map_err(|cause| crate::images::LoadError::Write(cause.into()))?;
-    let prepared = IMAGES.with(|images| {
-                             images.prepare_load(owner,
-                                           account,
-                                           source,
-                                           layout.preferred,
-                                           layout.preferred,
-                                           layout.extent,
-                                           crate::machine::memory::APPLICATION_RELOCATION_BASE,
-                                           crate::machine::memory::IMAGE_LIMIT,
-                                           layout.executable,
-                                           layout.writable)
-                         })
-                         .map_err(|cause| crate::images::LoadError::Admission(cause.status()))??;
+    let prepared = prepare_image_source(owner,
+                                        account,
+                                        source,
+                                        layout.preferred,
+                                        layout.preferred,
+                                        layout.extent,
+                                        crate::machine::memory::APPLICATION_RELOCATION_BASE,
+                                        crate::machine::memory::IMAGE_LIMIT,
+                                        layout.executable,
+                                        layout.writable)?;
     // The original alias already reserves its destination and retains its
     // source/loading ownership. Long byte writes and monitor waits borrow no
     // IMAGES guard. Callers must also leave Desktop before this boundary.
     Ok(prepared)
+}
+/// Real ordinary image factories and all refused owners leave IMAGES before Drop.
+fn prepare_image_source(owner: &crate::toolbox::handles::OwnerRef,
+                        account: &crate::machine::scheduler::accounting::AllocationAuthority,
+                        source: alloc::sync::Arc<AppImage>, linked: u64, preferred: u64,
+                        extent: u64, relocation: u64, limit: u64,
+                        executable: alloc::vec::Vec<core::ops::Range<u64>>,
+                        writable: alloc::vec::Vec<core::ops::Range<u64>>)
+                        -> Result<crate::images::PreparedLoad, Status>
+{
+    crate::context::without_recovery(|| {
+        let target =
+            crate::allocator::Target::Owner { account: account.clone(),
+                                              class:
+                                                  mac_kernel_model::policy::MemoryClass::Kernel };
+        crate::allocator::with_target(target, || {
+            let plan = match IMAGES.with_owned(source, |source, images| {
+                                       images.plan_load(owner, account, source, linked, preferred,
+                                                        extent, relocation, limit)
+                                   })
+            {
+                Ok(Ok(plan)) => plan,
+                Ok(Err(failure)) =>
+                {
+                    serial!("IMAGE_INTERN_PLAN_REFUSED {}", failure.cause);
+                    let status = failure.cause.status();
+                    drop(failure.preparation);
+                    return Err(status);
+                }
+                Err((cause, source)) =>
+                {
+                    drop(source);
+                    return Err(cause.status());
+                }
+            };
+            let preparation = plan.prepare(executable, writable)?;
+            let (permit, retired) = match IMAGES.with_owned(preparation, |preparation, images| {
+                                                    images.admit_load(preparation)
+                                                })
+            {
+                Ok(Ok(result)) => result,
+                Ok(Err(failure)) =>
+                {
+                    drop(failure.preparation);
+                    return Err(failure.cause);
+                }
+                Err((cause, preparation)) =>
+                {
+                    drop(preparation);
+                    return Err(cause.status());
+                }
+            };
+            retired.dispose();
+            let (prepared, retired) =
+                match IMAGES.with_owned(permit, |permit, images| images.publish_load(permit))
+                {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(failure)) =>
+                    {
+                        failure.preparation.dispose();
+                        return Err(failure.cause);
+                    }
+                    Err((cause, permit)) =>
+                    {
+                        drop(permit);
+                        return Err(cause.status());
+                    }
+                };
+            retired.dispose();
+            Ok(prepared)
+        })
+    })
 }
 /// All resident DRVR/INIT code uses real page-backed supervisor mappings.
 pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,
@@ -246,19 +315,16 @@ pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,
                                  code.descriptor.load_base + s.offset
                                  ..code.descriptor.load_base + s.offset + s.length as u64
                              }));
-    let prepared = IMAGES.with(|images| {
-                             images.prepare_load(owner,
-                                                 account,
-                                                 source,
-                                                 code.descriptor.load_base,
-                                                 crate::machine::memory::VM_MODULE_START,
-                                                 extent,
-                                                 crate::machine::memory::VM_MODULE_START,
-                                                 crate::machine::memory::VM_MODULE_END,
-                                                 executable,
-                                                 alloc::vec::Vec::new())
-                         })
-                         .map_err(AccessError::status)??;
+    let prepared = prepare_image_source(owner,
+                                        account,
+                                        source,
+                                        code.descriptor.load_base,
+                                        crate::machine::memory::VM_MODULE_START,
+                                        extent,
+                                        crate::machine::memory::VM_MODULE_START,
+                                        crate::machine::memory::VM_MODULE_END,
+                                        executable,
+                                        alloc::vec::Vec::new())?;
     prepared.write_module(account, code).map_err(|cause| {
                                             serial!("MODULE_MAPPING_REFUSED: {cause}");
                                             cause.status()

@@ -3,10 +3,14 @@
 //! All operations borrow the store, so a resolved payload cannot outlive the
 //! alias validation without holding that borrow. Destructors run outside locks.
 mod prepared;
+mod intern;
 use alloc::vec::Vec;
 use core::{fmt,
            sync::atomic::{AtomicUsize, Ordering}};
 
+pub use intern::{InternError, InternFailure, InternPermit, InternPlan, InternPublishFailure,
+                 InternRejected, InternRollback, PreparedIntern, RetiredInternCapacity,
+                 RetiredInternPublication};
 pub use prepared::{PreparedShare, RetiredShareCapacity, RetiredSharePublication,
                    ShareAdmissionFailure, ShareError, SharePermit, SharePlan, SharePublishFailure};
 
@@ -15,7 +19,7 @@ use crate::{domain::{CompletionError, DomainId, DomainKind, PoolError, ReleasedR
             shared::{InvocationGate, OwnerRef},
             store};
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Error
 {
     Pool(PoolError),
@@ -187,11 +191,11 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         Self::construct(system, aliases, objects, false)
     }
 
-    /// The same canonical stores, with detached alias publication enabled.
+    /// The same canonical stores, with detached object/alias publication enabled.
     /// Ordinary new-source interning remains available on this instance.
-    pub fn new_prepared_sharing(system: OwnerRef<G>, aliases: (KindLease<G>, KindLease<G>),
-                                objects: (KindLease<G>, KindLease<G>))
-                                -> Result<Self, Error>
+    pub fn new_prepared(system: OwnerRef<G>, aliases: (KindLease<G>, KindLease<G>),
+                        objects: (KindLease<G>, KindLease<G>))
+                        -> Result<Self, Error>
     {
         Self::construct(system, aliases, objects, true)
     }
@@ -227,7 +231,7 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
                            {
                                store::Store::owned(aliases.0, aliases.1)
                            }.map_err(Error::Pool)?,
-                  objects: store::Store::owned(objects.0, objects.1).map_err(Error::Pool)?,
+                  objects: if prepared { store::Store::owned_prepared(objects.0, objects.1) } else { store::Store::owned(objects.0, objects.1) }.map_err(Error::Pool)?,
                   system })
     }
 

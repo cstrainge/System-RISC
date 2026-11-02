@@ -184,7 +184,7 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         Ok(())
     }
 
-    fn deferred_required(&self, additional: usize) -> Result<usize, ShareError>
+    pub(super) fn deferred_required(&self, additional: usize) -> Result<usize, ShareError>
     {
         self.deferred
             .len()
