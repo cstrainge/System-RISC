@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-pub use mac_abi::{Point, Rect};
+pub use mac_abi::geometry::{Point, Rect};
 
 /// Source values are copied before writing the destination, allowing guest aliasing.
 pub fn sect_rect(a: Rect, b: Rect, destination: &mut Rect) -> bool

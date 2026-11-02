@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 use alloc::vec::Vec;
 
-use mac_abi::*;
+use mac_abi::{geometry::{Point, Rect}, *};
 
 use super::{Canvas,
             fonts::FontManager,

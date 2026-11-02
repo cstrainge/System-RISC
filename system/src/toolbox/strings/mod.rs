@@ -231,7 +231,8 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
             {
                 let original = get!(FontCall);
                 let mut call = *original;
-                let text = if matches!(call.operation, FONT_ID | FONT_WIDTH | FONT_DRAW)
+                let text = if matches!(call.operation,
+                                       FONT_ID | FONT_WIDTH | FONT_WIDTH_CHECKED | FONT_DRAW)
                 {
                     unsafe { input(call.text, call.text_length) }?
                 }
@@ -527,6 +528,8 @@ pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
                             mac_abi::controls::DRAW_STANDARD
                             | mac_abi::controls::HIT_STANDARD
                             | mac_abi::controls::CREATE_STANDARD)
+                   || (call.operation == mac_abi::controls::SET_STATIC_TEXT_OBJECT
+                       && call.flags & mac_abi::controls::TEXT_CONTENT != 0)
                    || (call.operation == mac_abi::controls::CONFIGURE_OBJECT
                        && !call.standard.bounds.is_empty())
                 {

@@ -73,15 +73,12 @@ The resident interface is native trap `SCROLL_BOX` (`0x10021`), with a companion
 only UTF8. This adds no classic 68k adapter or claim of complete TrackControl
 compatibility.
 
-Canonical public-SDK tests are `crates/mac-toolbox/tests/scrollbox.rs` and the
-disk-booted `tests/conformance/ownership.rs` suite. They cover exact pixel
-equivalence after scroll/resize/jumps, exposed-row ranges, large endpoints,
-UTF8/Pascal parity, incomplete draws, stale IDs after forced slot reuse, owner
-checks, parent cleanup and Drop. An allocation-instrumented public test creates,
-reconfigures, fills and scrolls a 300-by-300 viewport while refusing allocations
-above 64 KiB, reproducing the contiguous-allocation pressure that previously
-failed ResEdit despite free heap space. The native retained-update test proves
-that changing one shared row stays invisible until EndUpdate and leaves other
-rows intact. ResEdit's real-app test checks independent
-navigation panes, Monaco pixels, radio CDEF animation, native JSON saving and
-one-row rendering timings. Python supplies input/captures; Rust owns acceptance.
+Canonical public-SDK lifecycle assertions live in the disk-booted
+`crates/mac-toolbox/tests/conformance/ownership.rs` suite. Host control and
+scroll-box tests are retired; their prior results are not guest acceptance.
+The native retained-update scenario checks that a shared-row change stays
+invisible until EndUpdate and leaves other rows intact. ResEdit's real-app
+scenario covers independent navigation panes, Monaco pixels, native JSON saving
+and one-row rendering timings. Python supplies input and captures; Rust owns
+acceptance. Original CDEF pixel and hit comparisons run in the native userspace
+conformance fixture, using the same runtime loading path as applications.

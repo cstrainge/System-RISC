@@ -103,7 +103,7 @@ impl Desktop
         let (definition, _) = self.controls
                                   .preflight_definition(&recipient, &storage, call)
                                   .map_err(|status| service("definition intent", status))?;
-        let entry = self.control_definition(definition)
+        let entry = crate::toolbox::runtime::Desktop::control_definition(definition)
                         .map_err(|status| service("prepared definition", status))?;
         let allocation =
             self.processes
@@ -233,7 +233,7 @@ fn create_native(call: &mut ControlCall) -> Result<Status, ControlAdmissionError
             runtime.controls
                    .preflight_definition(value.recipient(), value.storage(), call)
                    .map_err(|status| service("current definition intent", status))?;
-        let entry = runtime.control_definition(definition)
+        let entry = crate::toolbox::runtime::Desktop::control_definition(definition)
                            .map_err(|status| service("current definition source", status))?;
         let complete = runtime.controls
                               .commit_process_create(&mut prepared, call, entry)

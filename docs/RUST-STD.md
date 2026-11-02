@@ -418,9 +418,13 @@ adoption.
 The current graphical APPL/FNDR profile deliberately uses null standard streams:
 stdin immediately returns zero bytes/EOF without changing the caller's buffer;
 stdout and stderr discard arbitrary bytes, report successful writes and flush
-successfully. They are non-terminal. A GUI main Result error retains its real
-failure exit status while its stderr text may be intentionally discarded. Panic
-reporting remains independent through the System crash service.
+successfully. They are non-terminal. The required GUI `main` Result-error policy
+is a System-owned error-details dialog, horizontally centered in the upper-middle
+of the usable screen, followed by normal cleanup and failure exit status 1.
+A cleanup panic must supersede that draft through the separate panic path.
+Integration of that policy is pending here; earlier silent-Err observations only
+qualify the older policy. Null stderr does not satisfy the error-dialog contract.
+Panic reporting remains independent through the System crash service.
 
 These semantics are the graphical application contract, not a real output
 stream, interactive input, serial console or CLAP acceptance. A future CLAP
@@ -429,3 +433,33 @@ functionality is planned for an external pipes extension that replaces resident
 kernel placeholders through the production service/module boundary; do not grow
 a parallel full kernel pipe implementation or treat unsupported stubs as pipe
 support. Redirection, pipe readiness/backpressure and lifecycle remain deferred.
+
+
+### Combined Control Suite observation — 2026-11-02
+
+The combined image builds all eight installed applications with the std SDK,
+including Control Suite. A finite optimized RV64 QEMU capture with four configured
+CPUs, 800x600 display and exactly 2 GiB RAM used System executable
+`7a78ca81ca4b8fec659ea2b7eecb2d9e6c2550255f9f9b25e4f004f1fa1e0457`,
+System resource `63b073ca855e105ab2575b2154066136d89a0db405d94b67307632503b9b597e`,
+ROM `3e53daf4485f326a8662aacc581da565ba588316e56a4378ea07e86d053fc291`
+and SDK `f21d209834f9b38c17a9f195fe1102430465eb55822b46fe7c93f9355e35ce7d`.
+Offline installed data/resource forks matched each of the eight build packages.
+The actual launch admitted Documents for the Control Suite owner before entry.
+Physical input exercised its four labeled cells, both splitters' parent-sized
+outlines and accepted releases, window resize, normal return with status 0,
+actual thread and Process/account removal, and subsequent Finder input. Saved
+frames were inspected; source and base media stayed fixed, and the private guest
+was reaped with its cloned media removed.
+
+The preceding full sequence and a drag-only partition failed account closure:
+the global outline visibility cache retained 264 bytes and two allocation pins
+charged to the invoking application. A launch/close-only partition closed its
+account. Newly constructed shared visibility snapshots now select ordinary
+System backing while preserving actual allocation receipts and cached refusal
+behavior. The original full sequence then reached the outcome above. This is
+finite evidence for that cache lifetime and GUI sequence, not general pressure,
+allocation-failure, cancellation, race or SMP qualification. The kernel still
+keeps additional harts parked. Initial/replacement Finder Documents and recovery,
+the new Result-error dialog, and final integration with local changes remain
+separate adoption gates.

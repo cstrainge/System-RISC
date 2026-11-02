@@ -4,7 +4,7 @@
 use core::fmt::Write;
 
 use mac_toolbox::{System,
-                  abi::EventKind,
+                  abi::events::EventKind,
                   events::classic::{EVERY_EVENT, Event}};
 #[derive(Debug)]
 pub enum Failure

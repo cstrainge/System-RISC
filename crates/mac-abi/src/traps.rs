@@ -1,5 +1,5 @@
 //! Native transport numbers. Classic A-line numbers occupy their original u16 range.
-use crate::*;
+use crate::{events::Event, *};
 
 /// System-owned Standard File dialogs; native range beyond every classic 16-bit trap.
 pub const SCROLL_BOX: u32 = 0x10021;
@@ -89,9 +89,9 @@ pub struct WaitEventCall
 pub struct GeometryCall
 {
     pub operation: u32,
-    pub a:         Rect,
-    pub b:         Rect,
-    pub output:    Rect,
+    pub a:         geometry::Rect,
+    pub b:         geometry::Rect,
+    pub output:    geometry::Rect,
     pub result:    u32
 }
 
@@ -125,7 +125,7 @@ pub struct SurfaceCall
 {
     pub operation:   u32,
     pub surface:     *mut Surface,
-    pub bounds:      Rect,
+    pub bounds:      geometry::Rect,
     pub foreground:  u32,
     pub background:  u32,
     pub pattern:     [u8; 8],

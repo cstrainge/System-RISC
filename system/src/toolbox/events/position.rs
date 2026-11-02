@@ -1,6 +1,6 @@
 //! Shared native coordinate projection. No classic EventRecord layout changes.
 #![forbid(unsafe_code)]
-use mac_abi::{Event, EventKind, Rect, WindowId, events::EventPosition};
+use mac_abi::{events::{Event, EventKind, EventPosition}, geometry::Rect, WindowId};
 
 pub fn target(event: Event, front: Option<WindowId>) -> Option<WindowId>
 {

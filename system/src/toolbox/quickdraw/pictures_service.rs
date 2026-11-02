@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use mac_abi::*;
+use mac_abi::{geometry::Rect, *};
 
 use super::{Canvas,
             fonts::FontManager,

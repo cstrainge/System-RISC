@@ -1,15 +1,32 @@
 //! Finder desktop snapshots. Only explicit desktop/catalog refreshes call Files;
 //! pointer paths read this bounded, synchronized application-local cache.
 #![forbid(unsafe_code)]
-use mac_toolbox::{Cnid, Error, InlineText, Rect, System, VolumeId, files::ROOT_ID,
+use mac_toolbox::{Cnid, Error, InlineText, Rect, System, TypeCode, VolumeId,
+                  files::{DesktopCursor, ROOT_ID, ScanStep, VolumeInfo},
                   quickdraw::fonts::FontSelection};
 use spinning_top::Spinlock;
 
 use crate::{browser::Location,
             icon_view::{Caption, Icon},
             selection::Selection};
-// Resident volume namespace currently admits 128 mounts plus the virtual Trash.
-pub const CAPACITY: usize = 129;
+pub const CAPACITY: usize = 512;
+#[derive(Clone, Copy)]
+pub struct Entry
+{
+    pub volume:    VolumeId,
+    pub id:        Cnid,
+    pub parent:    Cnid,
+    pub file_type: TypeCode,
+    pub revision:  Option<u64>,
+    directory:     bool
+}
+impl Entry
+{
+    pub fn is_directory(self) -> bool
+    {
+        self.directory
+    }
+}
 #[derive(Clone, Copy)]
 pub struct Item
 {
@@ -18,7 +35,9 @@ pub struct Item
     pub icon:        Icon,
     pub caption:     Caption,
     pub icon_bounds: Rect,
-    pub bounds:      Rect
+    pub bounds:      Rect,
+    pub entry:       Option<Entry>,
+    pub read_only:   bool
 }
 impl Item
 {
@@ -27,32 +46,101 @@ impl Item
                                icon:        Icon::Resource(0),
                                caption:     Caption::EMPTY,
                                icon_bounds: Rect::ZERO,
-                               bounds:      Rect::ZERO };
+                               bounds:      Rect::ZERO,
+                               entry:       None,
+                               read_only:   false };
 
     pub fn location(self) -> Location
     {
         Location { volume: self.volume,
-                   folder: if self.is_trash() { Cnid::UNSAVED } else { ROOT_ID } }
+                   folder: self.entry.map_or(if self.is_trash() { Cnid::UNSAVED } else { ROOT_ID },
+                                             |entry| entry.id) }
     }
 
     pub fn is_trash(self) -> bool
     {
         self.volume == VolumeId::NONE
     }
+
+    pub fn is_volume(self) -> bool
+    {
+        !self.is_trash() && self.entry.is_none()
+    }
 }
 struct Cache
 {
-    items:  [Item; CAPACITY],
-    count:  usize,
-    ready:  bool,
-    bounds: Rect,
-    index:  crate::cache::BoundsIndex<256, 512>
+    items:       [Item; CAPACITY],
+    count:       usize,
+    ready:       bool,
+    mount_count: usize,
+    bounds:      Rect,
+    index:       crate::cache::BoundsIndex<CAPACITY, { CAPACITY * 2 }>,
+    folders:     [Option<Location>; 128]
 }
-static CACHE: Spinlock<Cache> = Spinlock::new(Cache { items:  [Item::EMPTY; CAPACITY],
-                                                      count:  0,
-                                                      ready:  false,
-                                                      bounds: Rect::ZERO,
-                                                      index:  crate::cache::BoundsIndex::EMPTY });
+static CACHE: Spinlock<Cache> = Spinlock::new(Cache { items:       [Item::EMPTY; CAPACITY],
+                                                      count:       0,
+                                                      ready:       false,
+                                                      mount_count: 0,
+                                                      bounds:      Rect::ZERO,
+                                                      index:       crate::cache::BoundsIndex::EMPTY,
+                                                      folders:     [None; 128] });
+struct Scan
+{
+    pending:        bool,
+    started:        bool,
+    volume_index:   u32,
+    volume:         Option<VolumeInfo>,
+    cursor:         Option<DesktopCursor>,
+    count:          usize,
+    items:          [Item; CAPACITY],
+    folders:        [Option<Location>; 128],
+    volumes:        [Option<VolumeInfo>; 128],
+    auto_cell:      usize,
+    restore:        [Option<Location>; CAPACITY],
+    reserved:       [Rect; CAPACITY],
+    reserved_index: crate::cache::BoundsIndex<CAPACITY, { CAPACITY * 2 }>
+}
+static SCAN: Spinlock<Scan> = Spinlock::new(Scan { pending:        false,
+                                                   started:        false,
+                                                   volume_index:   0,
+                                                   volume:         None,
+                                                   cursor:         None,
+                                                   count:          0,
+                                                   items:          [Item::EMPTY; CAPACITY],
+                                                   folders:        [None; 128],
+                                                   volumes:        [None; 128],
+                                                   auto_cell:      0,
+                                                   restore:        [None; CAPACITY],
+                                                   reserved:       [Rect::ZERO; CAPACITY],
+                                                   reserved_index: crate::cache::BoundsIndex::EMPTY });
+pub fn refresh()
+{
+    let mut scan = SCAN.lock();
+    scan.pending = true;
+    scan.started = false;
+}
+pub fn pending() -> bool
+{
+    SCAN.lock().pending
+}
+pub fn folders() -> [Option<Location>; 128]
+{
+    CACHE.lock().folders
+}
+pub fn folder(volume: VolumeId) -> Option<Location>
+{
+    CACHE.lock().folders.iter().flatten().find(|f| f.volume == volume).copied()
+}
+fn name(text: &str) -> Result<InlineText<256>, Error>
+{
+    let mut bytes = [0; 256];
+    if text.len() > bytes.len()
+    {
+        return Err(Error::BadArgument);
+    }
+    bytes[..text.len()].copy_from_slice(text.as_bytes());
+    InlineText::from_reply(bytes, text.len() as u32)
+}
 pub fn count() -> usize
 {
     let cache = CACHE.lock();
@@ -70,6 +158,7 @@ pub fn item(index: usize) -> Option<Item>
 pub fn invalidate()
 {
     CACHE.lock().ready = false;
+    refresh();
 }
 pub fn hit(point: mac_toolbox::Point) -> Option<usize>
 {
@@ -98,13 +187,13 @@ pub fn intersecting(rect: Rect, mut visit: impl FnMut(usize, Item))
 pub fn ensure(system: &System<'_>, selected: Selection) -> Result<Selection, Error>
 {
     let volumes = system.files().volume_count()? as usize;
-    if volumes + 1 > CAPACITY
+    if volumes > 128
     {
         return Err(Error::NoMemory);
     }
     let previous = {
         let mut cache = CACHE.lock();
-        if cache.ready && cache.count == volumes + 1
+        if cache.ready && cache.mount_count == volumes
         {
             return Ok(selected);
         }
@@ -113,7 +202,7 @@ pub fn ensure(system: &System<'_>, selected: Selection) -> Result<Selection, Err
         {
             if index < cache.count
             {
-                ids[index] = Some(cache.items[index].volume);
+                ids[index] = Some(cache.items[index].location());
             }
         }
         cache.ready = false;
@@ -127,12 +216,12 @@ pub fn ensure(system: &System<'_>, selected: Selection) -> Result<Selection, Err
     let mut row = 0;
     for index in 0..=volumes
     {
-        let (volume, name, icon, mut icon_bounds) = if index < volumes
+        let (volume, name, icon, mut icon_bounds, read_only) = if index < volumes
         {
             let info = system.files().volume_at(index as u32)?;
             mounted[index] = info.id;
             let icon = crate::browser::volume_icon(&info);
-            (info.id, info.name, icon, Rect::ZERO)
+            (info.id, info.name, icon, Rect::ZERO, info.read_only)
         }
         else
         {
@@ -147,7 +236,8 @@ pub fn ensure(system: &System<'_>, selected: Selection) -> Result<Selection, Err
             (VolumeId::NONE,
              InlineText::from_reply(name, text.len() as u32)?,
              mac_toolbox::quickdraw::icons::standard::TRASH,
-             crate::icon_view::trash_bounds(bounds))
+             crate::icon_view::trash_bounds(bounds),
+             false)
         };
         let caption = Caption::measure_with_limit(name.as_str(), 60, |text| {
             system.quickdraw().fonts().text_width(FontSelection { family: 3,
@@ -177,15 +267,17 @@ pub fn ensure(system: &System<'_>, selected: Selection) -> Result<Selection, Err
         }
         let label = caption.bounds(icon_bounds);
         let item = Item { volume,
-                          name,
+                          name: self::name(name.as_str())?,
                           icon: Icon::Resource(icon),
                           caption,
                           icon_bounds,
                           bounds: Rect::new(icon_bounds.left.min(label.left),
                                             icon_bounds.top,
                                             icon_bounds.right.max(label.right),
-                                            label.bottom) };
-        if previous.contains(&Some(volume))
+                                            label.bottom),
+                          entry: None,
+                          read_only };
+        if previous.contains(&Some(item.location()))
         {
             next.set(index, true);
         }
@@ -195,14 +287,312 @@ pub fn ensure(system: &System<'_>, selected: Selection) -> Result<Selection, Err
     super::session_positions::retain(&mounted[..volumes]);
     let mut cache = CACHE.lock();
     cache.count = volumes + 1;
+    cache.mount_count = volumes;
     cache.bounds = bounds;
+    cache.folders.fill(None);
     let Cache { index,
                 items,
                 count,
                 .. } = &mut *cache;
     index.rebuild(*count, |i| items[i].bounds);
     cache.ready = true;
+    drop(cache);
+    refresh();
+    SCAN.lock().restore = previous;
     Ok(next)
+}
+
+struct Publication
+{
+    selected: Selection,
+    damage:   [Rect; CAPACITY * 2],
+    count:    usize
+}
+fn advance(system: &System<'_>, selected: Selection) -> Result<Option<Publication>, Error>
+{
+    if !pending()
+    {
+        return Ok(None);
+    }
+    if !SCAN.lock().started
+    {
+        let cache = CACHE.lock();
+        let mut scan = SCAN.lock();
+        scan.count = 0;
+        scan.volume_index = 0;
+        scan.volume = None;
+        scan.cursor = None;
+        scan.auto_cell = 0;
+        scan.folders.fill(None);
+        scan.volumes.fill(None);
+        for (index, item) in cache.items[..cache.count].iter().enumerate()
+        {
+            scan.reserved[index] = item.bounds;
+        }
+        let Scan { reserved_index,
+                   reserved,
+                   .. } = &mut *scan;
+        reserved_index.rebuild(cache.count, |i| reserved[i]);
+        for item in &cache.items[..cache.count]
+        {
+            if item.is_volume()
+            {
+                let at = scan.count;
+                scan.items[at] = *item;
+                scan.count += 1;
+            }
+        }
+        scan.started = true;
+        return Ok(None);
+    }
+    let (volume_index, volume, cursor) = {
+        let scan = SCAN.lock();
+        (scan.volume_index, scan.volume, scan.cursor)
+    };
+    let volume_count = system.files().volume_count()?;
+    if volume_index < volume_count
+    {
+        if volume_index >= 128
+        {
+            SCAN.lock().pending = false;
+            return Err(Error::NoMemory);
+        }
+        let Some(volume) = volume
+        else
+        {
+            let volume = system.files().volume_at(volume_index)?;
+            SCAN.lock().volume = Some(volume);
+            return Ok(None);
+        };
+        match system.files().find_folder(volume.id, TypeCode::new(*b"desk"), !volume.read_only)
+        {
+            Ok(entry) =>
+            {
+                SCAN.lock().folders[volume_index as usize] = Some(Location { volume: entry.volume,
+                                                                             folder: entry.id });
+            }
+            Err(Error::NotFound | Error::NotSupported) if volume.read_only => (),
+            Err(error) =>
+            {
+                SCAN.lock().pending = false;
+                return Err(error);
+            }
+        }
+        let mut scan = SCAN.lock();
+        scan.volumes[volume_index as usize] = Some(volume);
+        scan.volume = None;
+        scan.volume_index += 1;
+        return Ok(None);
+    }
+    {
+        let mut cursor = cursor.unwrap_or_default();
+        let step = system.files().scan_desktop(&mut cursor);
+        match step
+        {
+            Err(Error::ScanStale) =>
+            {
+                refresh();
+                return Ok(None);
+            }
+            Err(error) =>
+            {
+                SCAN.lock().pending = false;
+                return Err(error);
+            }
+            Ok(ScanStep::Entry { catalog: entry,
+                                 .. }) =>
+            {
+                SCAN.lock().cursor = Some(cursor);
+                if !super::visible(&entry)
+                {
+                    return Ok(None);
+                }
+                let volume = SCAN.lock()
+                                 .volumes
+                                 .iter()
+                                 .flatten()
+                                 .find(|v| v.id == entry.volume)
+                                 .copied()
+                                 .ok_or(Error::ScanStale)?;
+                let caption = Caption::measure_with_limit(entry.name(), 60, |text| {
+                    system.quickdraw().fonts().text_width(FontSelection { family: 3,
+                                                                          size:   9,
+                                                                          face:   0 },
+                                                          text)
+                })?;
+                let icon = super::entry_icon(system, &volume, &entry);
+                if let Icon::Application { volume,
+                                           cnid,
+                                           .. } = icon
+                {
+                    match system.quickdraw().icons().load_file(volume, cnid)
+                    {
+                        Ok(())
+                        | Err(Error::NotFound | Error::BadArgument | Error::NotSupported) => (),
+                        Err(error) => return Err(error)
+                    }
+                }
+                let previous = {
+                    let cache = CACHE.lock();
+                    cache.items[..cache.count].iter()
+                                              .find(|i| {
+                                                  i.volume == entry.volume
+                                                  && i.entry.is_some_and(|e| e.id == entry.id)
+                                              })
+                                              .map(|i| i.icon_bounds)
+                };
+                let viewport = bounds();
+                let mut scan = SCAN.lock();
+                if scan.count + 1 >= CAPACITY
+                {
+                    scan.pending = false;
+                    return Err(Error::NoMemory);
+                }
+                let mut next_cell = scan.auto_cell;
+                let mut automatic = || -> Result<Rect, Error> {
+                    let columns = ((viewport.right - viewport.left - 100) / 80).max(1) as usize;
+                    let rows = ((viewport.bottom - 80) / 64).max(1) as usize;
+                    for cell in next_cell..columns * rows
+                    {
+                        let x = viewport.left
+                                        .saturating_add(24)
+                                        .saturating_add(((cell % columns) * 80) as i16);
+                        let y = 28i16.saturating_add(((cell / columns) % rows * 64) as i16);
+                        let icon = Rect::new(x, y, x + 32, y + 32);
+                        let label = caption.bounds(icon);
+                        let rect = Rect::new(icon.left.min(label.left),
+                                             icon.top,
+                                             icon.right.max(label.right),
+                                             label.bottom);
+                        let mut reserved = false;
+                        scan.reserved_index
+                            .intersecting(rect, |i| scan.reserved[i], |_| reserved = true);
+                        if !reserved && !scan.items[..scan.count].iter()
+                                                    .any(|i| crate::cache::overlaps(i.bounds, rect))
+                        {
+                            next_cell = cell + 1;
+                            return Ok(icon);
+                        }
+                    }
+                    Err(Error::NoMemory)
+                };
+                let icon_bounds = if let Some(point) =
+                    super::session_positions::get(entry.volume, entry.id, entry.parent)
+                {
+                    Rect::new(point.h + 16, point.v + 28, point.h + 48, point.v + 60)
+                }
+                else if let Some(saved) = icon_view::saved_icon_bounds(&entry)
+                {
+                    saved
+                }
+                else if let Some(previous) = previous
+                {
+                    previous
+                }
+                else
+                {
+                    automatic()?
+                };
+                scan.auto_cell = next_cell;
+                let label = caption.bounds(icon_bounds);
+                let item = Item { volume: entry.volume,
+                                  name: name(entry.name())?,
+                                  icon,
+                                  caption,
+                                  icon_bounds,
+                                  bounds: Rect::new(icon_bounds.left.min(label.left),
+                                                    icon_bounds.top,
+                                                    icon_bounds.right.max(label.right),
+                                                    label.bottom),
+                                  entry: Some(Entry { volume:    entry.volume,
+                                                      id:        entry.id,
+                                                      parent:    entry.parent,
+                                                      file_type: entry.file_type,
+                                                      revision:  entry.modified.mac_microseconds(),
+                                                      directory: entry.is_directory() }),
+                                  read_only: volume.read_only };
+                let index = scan.count;
+                scan.items[index] = item;
+                scan.count += 1;
+                return Ok(None);
+            }
+            Ok(ScanStep::Pending) =>
+            {
+                SCAN.lock().cursor = Some(cursor);
+                return Ok(None);
+            }
+            Ok(ScanStep::Done) =>
+            {}
+        }
+    }
+    let mut publication = Publication { selected: Selection::EMPTY,
+                                        damage:   [Rect::ZERO; CAPACITY * 2],
+                                        count:    0 };
+    let mut cache = CACHE.lock();
+    let mut scan = SCAN.lock();
+    let trash =
+        cache.items[..cache.count].iter().find(|i| i.is_trash()).copied().ok_or(Error::BadAbi)?;
+    let at = scan.count;
+    scan.items[at] = trash;
+    scan.count += 1;
+    let mut order = [0u16; CAPACITY];
+    for (i, slot) in order[..scan.count].iter_mut().enumerate()
+    {
+        *slot = i as u16;
+    }
+    order[..scan.count].sort_unstable_by_key(|i| {
+                           let loc = scan.items[*i as usize].location();
+                           (loc.volume.0, loc.folder.0)
+                       });
+    let mut matched = Selection::EMPTY;
+    for (old_index, old) in cache.items[..cache.count].iter().enumerate()
+    {
+        let loc = old.location();
+        let found = order[..scan.count].binary_search_by_key(&(loc.volume.0, loc.folder.0), |i| {
+                                           let loc = scan.items[*i as usize].location();
+                                           (loc.volume.0, loc.folder.0)
+                                       })
+                                       .ok()
+                                       .map(|at| order[at] as usize);
+        if let Some(index) = found
+        {
+            matched.set(index, true);
+            publication.selected.set(index, selected.contains(old_index));
+            let item = scan.items[index];
+            if old.bounds == item.bounds
+               && old.icon == item.icon
+               && old.name == item.name
+               && old.entry.map(|e| e.revision) == item.entry.map(|e| e.revision)
+            {
+                continue;
+            }
+            publication.damage[publication.count] = item.bounds;
+            publication.count += 1;
+        }
+        publication.damage[publication.count] = old.bounds;
+        publication.count += 1;
+    }
+    for index in 0..scan.count
+    {
+        if !matched.contains(index)
+        {
+            publication.damage[publication.count] = scan.items[index].bounds;
+            publication.count += 1;
+            publication.selected
+                       .set(index, scan.restore.contains(&Some(scan.items[index].location())));
+        }
+    }
+    cache.count = scan.count;
+    let count = scan.count;
+    cache.items[..count].copy_from_slice(&scan.items[..count]);
+    cache.folders = scan.folders;
+    let Cache { index,
+                items,
+                .. } = &mut *cache;
+    index.rebuild(count, |i| items[i].bounds);
+    scan.pending = false;
+    scan.restore.fill(None);
+    Ok(Some(publication))
 }
 
 use core::cell::Cell;
@@ -221,14 +611,67 @@ pub(super) struct Marquee
 #[derive(Default)]
 pub(super) struct State
 {
-    pub selected: Cell<Selection>,
-    pub marquee:  Option<Marquee>,
-    outline:      Option<Rect>,
-    drawn_active: Cell<bool>,
-    pub pressed:  Option<(usize, Point)>
+    pub selected:     Cell<Selection>,
+    pub marquee:      Option<Marquee>,
+    outline:          Option<Rect>,
+    drawn_active:     Cell<bool>,
+    pub pressed:      Option<(usize, Point)>,
+    pub select_after: Option<Location>
 }
 impl Browser
 {
+    pub(super) fn advance_desktop(&mut self, system: &System<'_>) -> Result<(), Error>
+    {
+        if !CACHE.lock().ready
+        {
+            self.draw_desktop(system)?;
+        }
+        let publication = match advance(system, self.desktop.selected.get())
+        {
+            Ok(publication) => publication,
+            Err(error) =>
+            {
+                SCAN.lock().pending = false;
+                return Err(error);
+            }
+        };
+        let Some(publication) = publication
+        else
+        {
+            return Ok(());
+        };
+        let select_after = self.desktop.select_after.and_then(|location| {
+                                                        (0..count()).find(|&i| {
+                                                                        item(i).is_some_and(|i| {
+                                                                                   i.location()
+                                                                                   == location
+                                                                               })
+                                                                    })
+                                                    });
+        self.desktop.pressed = None;
+        self.desktop.marquee = None;
+        self.last_click = None;
+        self.desktop.selected.set(publication.selected);
+        if publication.count != 0
+        {
+            let graphics = system.quickdraw().desktop().graphics();
+            let update = graphics.masked_rectangles(&publication.damage[..publication.count])?;
+            let mut candidates = Selection::EMPTY;
+            for &rect in &publication.damage[..publication.count]
+            {
+                intersecting(rect, |i, _| candidates.set(i, true));
+            }
+            self.draw_desktop_items(system, candidates)?;
+            update.commit()?;
+        }
+        if let Some(index) = select_after
+        {
+            self.change_desktop_selection(system, Selection::singleton(index), Selection::EMPTY)?;
+            self.desktop.select_after = None;
+        }
+        Ok(())
+    }
+
     pub fn draw_desktop(&self, system: &System<'_>) -> Result<(), Error>
     {
         self.desktop.selected.set(ensure(system, self.desktop.selected.get())?);
@@ -294,6 +737,10 @@ impl Browser
                                            -> Result<(), Error>
     {
         let previous = self.desktop.selected.get();
+        if previous != next
+        {
+            SCAN.lock().restore.fill(None);
+        }
         let mut dirty = previous.difference(next);
         for index in forced.iter()
         {
@@ -498,15 +945,6 @@ impl Browser
         };
         self.change_desktop_selection(system, next, Selection::EMPTY)?;
         Ok(true)
-    }
-
-    pub(super) fn desktop_volumes(&self) -> impl Iterator<Item = VolumeId>
-    {
-        self.desktop
-            .selected
-            .get()
-            .iter()
-            .filter_map(|i| item(i).filter(|i| !i.is_trash()).map(|i| i.volume))
     }
 
     pub(super) fn redraw_trash_icon(&mut self, system: &System<'_>) -> Result<(), Error>

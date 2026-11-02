@@ -2,7 +2,8 @@
 #![no_main]
 #![deny(unsafe_code)]
 use mac_definition::{Message, Reply, Result, Services, StaticText};
-fn handle<'a>(message: Message<'a, StaticText<'a>>, _: Services<'a>) -> Result<Reply>
+#[mac_definition::cdef_main]
+fn main<'a>(message: Message<'a, StaticText<'a>>, _: Services<'a>) -> Result<Reply>
 {
     match message
     {
@@ -20,4 +21,3 @@ fn handle<'a>(message: Message<'a, StaticText<'a>>, _: Services<'a>) -> Result<R
         | Message::Track { .. } => Ok(Reply::Done)
     }
 }
-mac_definition::define_static_text!(panic_definition, handle);

@@ -130,7 +130,8 @@ fn verify_positions(system: &System<'_>) -> Result<(), Error>
                                         controls::StandardKind::Button,
                                         controls::StandardState { bounds: Rect::new(10, 10, 80, 30),
                                                                   enabled: 1,
-                                                                  ..Default::default() })?;
+                                                                  ..Default::default() },
+                                        mac_toolbox::controls::Reflow::No)?;
     require(system,
             button.control().track_at(position.in_window(id)?, |_| Ok(()))
             == Err(Error::BadArgument),

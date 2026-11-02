@@ -2,7 +2,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 use mac_abi::*;
-pub use mac_abi::{Point, Rect, WindowId};
+pub use mac_abi::{geometry::{Point, Rect}, WindowId};
 use mac_traps::types::InlineText;
 pub use mac_traps::{Client, Error, Result};
 

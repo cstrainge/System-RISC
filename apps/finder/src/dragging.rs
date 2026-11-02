@@ -19,6 +19,7 @@ struct Destination
     application: bool,
     revision:    u64,
     trash:       bool,
+    desktop:     bool,
     eject:       bool,
     layout_only: bool,
     frame:       Rect,
@@ -103,14 +104,47 @@ impl<'a> Controller<'a>
             {
                 return Ok(());
             };
-            // Volume ejects operate on one mount. Mixed selections never fall
-            // through to the file-transfer path or partially unmount a batch.
-            if browser.desktop.selected.get().len() != 1
+            let item = desktop::item(index).ok_or(Error::NotFound)?;
+            if item.is_trash()
             {
                 return Ok(());
             }
-            let item = desktop::item(index).ok_or(Error::NotFound)?;
-            if item.is_trash()
+            if !item.is_volume()
+            {
+                let selected = browser.desktop.selected.get();
+                if selected.iter().any(|i| desktop::item(i).is_none_or(|i| i.entry.is_none()))
+                {
+                    return Ok(());
+                }
+                let mut outline = item.bounds;
+                for index in selected.iter()
+                {
+                    let item = desktop::item(index).ok_or(Error::ScanStale)?;
+                    outline = Rect::new(outline.left.min(item.bounds.left),
+                                        outline.top.min(item.bounds.top),
+                                        outline.right.max(item.bounds.right),
+                                        outline.bottom.max(item.bounds.bottom));
+                }
+                let mut builder = system.drags().builder(None, anchor, outline).map_err(status)?;
+                for index in selected.iter()
+                {
+                    let item = desktop::item(index).ok_or(Error::ScanStale)?;
+                    let entry = item.entry.ok_or(Error::ScanStale)?;
+                    builder.item(FileItem { volume:    entry.volume,
+                                            id:        entry.id,
+                                            parent:    entry.parent,
+                                            origin:    Point { h: item.icon_bounds.left - 16,
+                                                               v: item.icon_bounds.top - 28 },
+                                            bounds:    item.icon_bounds,
+                                            file_type: entry.file_type,
+                                            directory: entry.is_directory() })
+                           .map_err(status)?;
+                }
+                self.session = Some(builder.begin().map_err(status)?);
+                return Ok(());
+            }
+            // Eject is one mount, never a partial action on mixed selections.
+            if browser.desktop.selected.get().len() != 1
             {
                 return Ok(());
             }
@@ -651,6 +685,7 @@ impl Browser
                                    application,
                                    revision,
                                    trash: false,
+                                   desktop: false,
                                    eject: false,
                                    layout_only: read_only && !application,
                                    frame,
@@ -658,19 +693,41 @@ impl Browser
                                    highlight })
             });
         }
-        let index = desktop::hit(at)?;
+        let background = || {
+            if root
+            {
+                return None;
+            }
+            let volume = offer.file_metadata(0).ok()?.volume;
+            let location = desktop::folder(volume)?;
+            Some(Destination { location,
+                               desktop: true,
+                               application: false,
+                               revision: 0,
+                               trash: false,
+                               eject: false,
+                               layout_only: false,
+                               frame: Rect::ZERO,
+                               scroll: Point::default(),
+                               highlight: Rect::ZERO })
+        };
+        let Some(index) = desktop::hit(at)
+        else
+        {
+            return background();
+        };
         let item = desktop::item(index)?;
+        if self.desktop_active
+           && self.desktop.pressed.is_some()
+           && self.desktop.selected.get().contains(index)
+        {
+            return background();
+        }
         if item.is_trash()
         {
-            let volume = if root
-            {
-                offer.file_metadata(0).ok()?.volume
-            }
-            else
-            {
-                self.press.map_or(self.startup, |p| p.entry.volume)
-            };
+            let volume = offer.file_metadata(0).ok()?.volume;
             Some(Destination { application: false,
+                               desktop:     false,
                                eject:       root,
                                revision:    0,
                                location:    Location { volume,
@@ -687,15 +744,27 @@ impl Browser
             {
                 return None;
             }
-            Some(Destination { application: false,
-                               eject:       false,
-                               revision:    0,
-                               location:    item.location(),
-                               trash:       false,
+            let application =
+                item.entry
+                    .is_some_and(|e| !e.is_directory() && e.file_type == TypeCode::new(*b"APPL"));
+            if item.entry.is_some_and(|e| !e.is_directory()) && !application
+            {
+                return background();
+            }
+            if item.read_only && !application
+            {
+                return None;
+            }
+            Some(Destination { application,
+                               desktop: false,
+                               eject: false,
+                               revision: item.entry.and_then(|e| e.revision).unwrap_or(0),
+                               location: item.location(),
+                               trash: false,
                                layout_only: false,
-                               frame:       Rect::ZERO,
-                               scroll:      Point::default(),
-                               highlight:   item.bounds })
+                               frame: Rect::ZERO,
+                               scroll: Point::default(),
+                               highlight: item.bounds })
         }
     }
 

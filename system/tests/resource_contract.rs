@@ -17,7 +17,8 @@ fn resource_owns_geometry_and_propagates_primitive_service_failures()
     let mut pixels = [0xffffff; 160 * 160];
     let mut canvas = Canvas::new(&mut pixels, 160, 160);
     let mut surface = Surface::from_canvas(&mut canvas);
-    let mut call = DefinitionCall { header:    Header::for_type::<DefinitionCall>(),
+    let mut call = DefinitionCall { reflow:    0,
+                                    header:    Header::for_type::<DefinitionCall>(),
                                     kind:      WDEF,
                                     id:        0,
                                     variation: 8,

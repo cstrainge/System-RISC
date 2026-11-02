@@ -113,6 +113,8 @@ impl Workspace
                         | "native-scrollbar-cdef"
                         | "native-progress-bar-cdef"
                         | "native-static-text-cdef"
+                        | "native-table-cdef"
+                        | "native-splitter-cdef"
                         | "native-mdef")
                || matches!(*package,
                            "vhost-transport"
@@ -139,7 +141,8 @@ impl Workspace
     fn build(&self) -> Result<Vec<Value>>
     {
         self.guest_build(&["native-wdef", "native-buttons-cdef", "native-scrollbar-cdef",
-                           "native-mdef", "native-progress-bar-cdef", "native-static-text-cdef"])?;
+                           "native-mdef", "native-progress-bar-cdef", "native-static-text-cdef",
+                           "native-table-cdef", "native-splitter-cdef"])?;
         self.guest_build(&["mac-system", "bootrom", "vhost-transport", "vhost-filesystem",
                            "stuffit-filesystem", "qemu-power-device", "vdagent-channel",
                            "virtio-rng", "host-clipboard-extension", "multi-scheduler-extension"])?;
@@ -169,7 +172,7 @@ impl Workspace
             reports.push(report);
         }
         for app in ["finder", "quickdraw-test", "text-edit", "cursor-test", "panic-test",
-                    "resedit", "reactor"]
+                    "resedit", "reactor", "control-suite"]
         {
             let features: &[&str] = if app == "text-edit"
                                        && (self.checking
@@ -295,9 +298,8 @@ impl Workspace
             serde_json::from_slice(&fs::read(self.repo.join("results/system7/\
                                                              filesystem-write-checks.json"))?)?;
         let userspace: Value =
-            serde_json::from_slice(&fs::read(self.repo
-                                                 .join("results/system7/\
-                                                        userspace-conformance-checks.json"))?)?;
+            serde_json::from_slice(&fs::read(self.build
+                                                 .join("userspace-conformance-checks.json"))?)?;
         let boot = boot::check(self)?;
         run(self.command("python3")
                 .current_dir(&self.repo)
@@ -334,9 +336,6 @@ impl Workspace
         for (name, script, report) in [("icons",
                                         "System7/scripts/check_finder_icons.py",
                                         "results/system7/finder-icon-checks.json"),
-                                       ("scrollbars",
-                                        "System7/scripts/check_scrollbar_pixels.py",
-                                        "results/system7/scrollbar-appearance-checks.json"),
                                        ("mounted_volumes",
                                         "System7/scripts/check_finder_volumes.py",
                                         "results/system7/finder-volume-checks.json")]

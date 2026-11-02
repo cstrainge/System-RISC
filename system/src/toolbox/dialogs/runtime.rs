@@ -1,5 +1,10 @@
 //! Desktop adapter; no application callbacks or recursive ECALLs under its guard.
-use mac_abi::{controls::*, dialogs::*, quickdraw::*, *};
+use mac_abi::{controls::*,
+              dialogs::*,
+              events::{ACTIVE_FLAG, Event, EventKind},
+              geometry::{Point, Rect},
+              quickdraw::*,
+              *};
 
 use crate::toolbox::{dialogs,
                      quickdraw::{fonts_service, icons_service, service}};
@@ -127,7 +132,16 @@ impl super::Desktop
             Input::Move(point) =>
             {
                 self.events.mouse = point;
-                return;
+                if !self.dialogs.system_menu
+                {
+                    return;
+                }
+                Event { kind: EventKind::Null,
+                        window,
+                        when,
+                        where_: point,
+                        modifiers: self.events.modifiers,
+                        ..Default::default() }
             }
             Input::Button { point,
                             down } =>
@@ -184,11 +198,94 @@ impl super::Desktop
                         window: 0 }
             }
         };
-        self.events.post_system(event);
+        if self.dialogs.system_menu
+        {
+            let mut event = event;
+            // About has one dismissal button; Escape also dismisses it.
+            if matches!(event.kind, EventKind::KeyDown | EventKind::AutoKey)
+               && event.character() == 27
+            {
+                event.message = (event.message & !0xff) | u32::from(b'\r');
+            }
+            if let Err(status) = self.service_system_menu_dialog(event)
+            {
+                serial!("ABOUT_SYSTEM_INPUT_FAILED status={status}; protocol released or owned \
+                         cleanup retained");
+            }
+        }
+        else
+        {
+            self.events.post_system(event);
+        }
+    }
+
+    pub(super) fn show_about_system(&mut self) -> Result<(), Status>
+    {
+        if self.owner != self.foreground
+        {
+            return Err(ACCESS_DENIED);
+        }
+        if self.dialogs.active()
+           || self.core_dialogs.active()
+           || self.standard_file.active(self.owner).is_some()
+           || (self.crash.info().window.0 != 0
+               && self.crash.info().dismissed == 0
+               && self.windows.window(self.crash.info().window).is_some())
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let mut call = DialogCall { operation: OPEN_ALERT,
+                                    scope: resources::SYSTEM,
+                                    resource: -16463,
+                                    ..Default::default() };
+        let version = env!("CARGO_PKG_VERSION").as_bytes();
+        call.text[..version.len()].copy_from_slice(version);
+        call.text_length = version.len() as u32;
+        let account = self.processes.allocation(self.owner)?;
+        crate::allocator::with_target(crate::allocator::Target::Owner {
+            account, class: mac_kernel_model::policy::MemoryClass::Kernel
+        }, || {
+            self.dialog_result(&mut call)?;
+            self.dialogs.state_mut()?.system_menu = true;
+            Ok(())
+        })
+    }
+
+    /// Physical input and exposure may run on another application's polling
+    /// thread. Keep menu-dialog allocations charged to its recorded recipient.
+    pub(super) fn service_system_menu_dialog(&mut self, event: Event) -> Result<(), Status>
+    {
+        let account = self.processes.allocation(self.owner)?;
+        crate::allocator::with_target(crate::allocator::Target::Owner {
+            account, class: mac_kernel_model::policy::MemoryClass::Kernel
+        }, || {
+            let result = if event.kind == EventKind::Update
+            {
+                self.draw_dialog().map(|_| 0)
+            }
+            else { self.alert_event(event) };
+            match result
+            {
+                Ok(0) => Ok(()),
+                Ok(_) => self.close_dialog(),
+                Err(original) => {
+                    if let Err(cleanup) = self.close_dialog()
+                    {
+                        serial!("ABOUT_SYSTEM_CLOSE_FAILED original={original} cleanup={cleanup}; protocol released, Window Manager retains child cleanup");
+                    }
+                    Err(original)
+                }
+            }
+        })
     }
 
     pub fn dialog(&mut self, call: &mut DialogCall) -> Status
     {
+        // System handles its own menu dialog; app modal loops cannot consume it.
+        if self.dialogs.system_menu
+        {
+            return SERVICE_BUSY;
+        }
         self.dialog_result(call).map_or_else(|s| s, |()| OK)
     }
 
@@ -357,7 +454,8 @@ impl super::Desktop
                 crate::loader::cached_definition(*b"WDEF", 0).map_err(crate::loader::status)?
                                                              .ok_or(NOT_FOUND)?;
             let mut state = definitions::WindowDefinitionState::new(alert.bounds, "");
-            let mut definition = DefinitionCall { header:    Header::for_type::<DefinitionCall>(),
+            let mut definition = DefinitionCall { reflow:    0,
+                                                  header:    Header::for_type::<DefinitionCall>(),
                                                   kind:      definitions::WDEF,
                                                   id:        0,
                                                   variation: 1,
@@ -619,7 +717,7 @@ impl super::Desktop
                                                                        baseline: Point { h: item.bounds.left.saturating_add(1), v: y },
                                                                        ..Default::default() },
                                                        line,
-                                                       fonts)?;
+                                                       &fonts)?;
                                    }
                                    y = y.saturating_add(advance);
                                    Ok(())

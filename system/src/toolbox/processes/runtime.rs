@@ -3,7 +3,10 @@
 #![forbid(unsafe_code)]
 use alloc::{boxed::Box, vec::Vec};
 
-use mac_abi::{processes::*, *};
+use mac_abi::{events::{Event, EventKind},
+              geometry::Point,
+              processes::*,
+              *};
 
 use crate::toolbox::{events::EventManager,
                      handles::{DirectoryCapacityError, DirectoryCapacityPlan, OwnerRef,
@@ -740,7 +743,7 @@ impl Desktop
         let previous_activity = self.activity;
         let pointer_activity = self.poll_inputs();
         let fresh_input = previous_activity != self.activity;
-        let cursor_activity = self.tick_cursor();
+        let cursor_activity = self.tick_menu_feedback() | self.tick_cursor();
         let now = Self::when();
         self.cursor_dirty |=
             self.responsiveness.tick(self.foreground,
@@ -1022,9 +1025,30 @@ impl Desktop
         }
     }
 
+    pub(super) fn refresh_system_menu(&mut self)
+    {
+        let caller = self.owner;
+        self.enter(self.foreground);
+        if let Err(status) = self.menus.refresh_apple(&mut self.system_bar, self.foreground)
+        {
+            self.menus.cancel_tracking();
+            self.system_bar.reset(self.foreground);
+            serial!("APPLE_MENU_REFRESH_FAILED status={status}; app section removed, System \
+                     commands retained");
+        }
+        self.menu_cache.invalidate();
+        self.redraw = true;
+        self.enter(caller);
+    }
+
     fn refresh_app_menu(&mut self)
     {
         crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+            let caller = self.owner;
+            self.enter(self.foreground);
+            self.menus.cancel_tracking();
+            self.enter(caller);
+            self.refresh_system_menu();
             self.menu_cache.invalidate();
             if self.processes.get(self.foreground).is_ok_and(|process| process.info.thread == 0)
             {
@@ -1059,7 +1083,6 @@ impl Desktop
             {
                 // Retain the previous accepted pixels/actions. Even a refused
                 // membership refresh must cancel tracking of its prior selection.
-                self.app_menu.cancel();
                 serial!("APPLICATION_MENU_FAILED status={}", status);
             }
             self.redraw = true;
@@ -1092,6 +1115,11 @@ impl Desktop
         {
             return Ok(());
         }
+        self.cancel_menu_feedback();
+        let caller = self.owner;
+        self.enter(self.foreground);
+        self.menus.cancel_tracking();
+        self.enter(caller);
         self.processes.activate(id)?;
         self.foreground = id;
         self.cursor_dirty |= self.responsiveness.foreground(id, Self::when());

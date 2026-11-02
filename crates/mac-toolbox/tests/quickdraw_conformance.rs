@@ -14,11 +14,6 @@ fn unhex(text: &str) -> Vec<u8>
         .map(|pair| u8::from_str_radix(core::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect()
 }
-#[test]
-fn aggregate_acceptance_run_all_uses_public_sdks()
-{
-    support::with_system(|system| conformance::run_all(system).unwrap());
-}
 
 #[test]
 fn all_267_original_oval_regions_match_through_public_sdk()

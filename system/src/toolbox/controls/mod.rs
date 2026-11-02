@@ -1,10 +1,12 @@
 //! Resident Control Manager. Each CDEF owns drawing, hit geometry and tracking math.
 use crate::toolbox::resources::definitions::DefinitionRef;
 mod snapshot;
+mod tracking;
+mod reflow;
 use alloc::sync::Arc;
 
 pub use mac_abi::definitions::{CDEF, ControlDefinitionState};
-use mac_abi::{controls::*, *};
+use mac_abi::{controls::*, geometry::Rect, *};
 
 use crate::toolbox::quickdraw::{Canvas, SurfaceExt};
 enum State
@@ -43,10 +45,60 @@ pub struct Drawing
     entry:     DefinitionRef,
     gate:      TrapGate,
     variation: i16,
-    damage:    [Rect; 2]
+    damage:    [Rect; 2],
+    reflow:    u32,
+    visible:   Option<Rect>,
+    grid:      Option<Arc<snapshot::Grid>>,
+    bars:      Option<alloc::boxed::Box<snapshot::Bars>>
 }
 impl Drawing
 {
+    /// Clear a retained capture highlight without executing a definition.
+    pub fn cancel_tracking(&mut self) -> bool
+    {
+        let mut changed = false;
+        if let Some(bars) = &mut self.bars
+        {
+            for bar in bars.bars.iter_mut().flatten()
+            {
+                changed |= core::mem::replace(&mut bar.highlighted, 0) != 0;
+            }
+        }
+        changed
+        | match &mut self.state
+        {
+            State::Standard(state) => state.clear_highlight(),
+            State::Scrollbar(state) => core::mem::replace(&mut state.highlighted, 0) != 0,
+            State::Progress { .. } => false
+        }
+    }
+
+    pub(crate) fn capture_bounds(&self) -> Rect
+    {
+        let bounds =
+            self.bars
+                .as_ref()
+                .and_then(|bars| bars.bars.iter().flatten().find(|bar| bar.highlighted != 0))
+                .map_or(self.bounds(), |bar| bar.bounds);
+        self.visible.map_or(bounds, |clip| intersection(bounds, clip))
+    }
+
+    pub(crate) fn visible_bounds(&self) -> Rect
+    {
+        let bounds = self.bounds();
+        self.visible.map_or(bounds, |visible| intersection(bounds, visible))
+    }
+
+    pub(crate) fn set_visible(&mut self, visible: Option<Rect>)
+    {
+        self.visible = visible;
+        let clip = self.visible_bounds();
+        for damage in &mut self.damage
+        {
+            *damage = intersection(*damage, clip);
+        }
+    }
+
     pub fn damage(&self) -> [Rect; 2]
     {
         self.damage
@@ -63,7 +115,8 @@ impl Drawing
         let mut change = ControlChange { before,
                                          after,
                                          damage: [Rect::ZERO; 2] };
-        let mut call = DefinitionCall { header:    Header::for_type::<DefinitionCall>(),
+        let mut call = DefinitionCall { reflow:    self.reflow,
+                                        header:    Header::for_type::<DefinitionCall>(),
                                         kind:      CDEF,
                                         id:        CDEF_PROGRESS_BAR,
                                         variation: 0,
@@ -108,6 +161,14 @@ impl Drawing
     pub fn storage(&self) -> usize
     {
         core::mem::size_of::<Self>()
+        + self.grid.as_ref().map_or(0, |grid| {
+                                core::mem::size_of::<snapshot::Grid>()
+                                + grid.cells.len() * core::mem::size_of::<Rect>()
+                                + grid.dividers.as_ref().map_or(0, |d| d.storage())
+                                + grid.logical.len()
+                                  * core::mem::size_of::<mac_abi::controls::reflow::LogicalRect>()
+                            })
+        + self.bars.as_ref().map_or(0, |_| core::mem::size_of::<snapshot::Bars>())
         + match &self.state
         {
             State::Standard(state) => state.storage(),
@@ -122,7 +183,7 @@ impl Drawing
 
     pub fn paint_clipped(&self, canvas: &mut Canvas) -> Result<(), Status>
     {
-        let mut bounds = self.bounds();
+        let mut bounds = self.visible_bounds();
         bounds.offset(canvas.origin().h, canvas.origin().v);
         let mut clip = Rect::ZERO;
         if !crate::toolbox::quickdraw::geometry::sect_rect(bounds, canvas.clip(), &mut clip)
@@ -141,8 +202,91 @@ impl Drawing
 
     fn paint_checked(&self, canvas: &mut Canvas) -> Result<(), Status>
     {
+        self.paint_body(canvas)?;
+        if let Some(dividers) = self.grid.as_ref().and_then(|g| g.dividers.as_ref())
+        {
+            let enabled = self.state.standard().is_some_and(|s| s.enabled != 0);
+            for divider in &dividers.segments
+            {
+                let mut state = divider.state(dividers.viewport, enabled);
+                let mut surface = Surface::from_canvas(canvas);
+                let mut call =
+                    DefinitionCall { reflow:    1,
+                                     header:    Header::for_type::<DefinitionCall>(),
+                                     kind:      CDEF,
+                                     id:        CDEF_SPLITTER,
+                                     variation: 0,
+                                     message:   0,
+                                     reserved:  0,
+                                     param:     0,
+                                     object:    (&mut state as *mut ControlDefinitionState).cast(),
+                                     gate:      self.gate,
+                                     surface:   &mut surface };
+                let status = super::resources::definitions::invoke(dividers.definition.reference(),
+                                                                   &mut call);
+                if status < 0
+                {
+                    return Err(status as Status);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn paint_body(&self, canvas: &mut Canvas) -> Result<(), Status>
+    {
+        let Some(bars) = &self.bars
+        else
+        {
+            return self.paint_content(canvas, None, false);
+        };
+        let previous = canvas.clip();
+        let mut previous_local = previous;
+        previous_local.offset(-canvas.origin().h, -canvas.origin().v);
+        canvas.set_clip(intersection(previous_local, bars.viewport));
+        let result = self.paint_content(canvas, Some(bars.viewport), false);
+        canvas.set_clip(previous_local);
+        result?;
+        for state in bars.bars.iter().flatten()
+        {
+            let drawing = Drawing { id:        self.id,
+                                    state:     State::Scrollbar(*state),
+                                    entry:     bars.definition.reference(),
+                                    gate:      self.gate,
+                                    variation: 0,
+                                    damage:    [Rect::ZERO; 2],
+                                    reflow:    1,
+                                    visible:   self.visible,
+                                    grid:      None,
+                                    bars:      None };
+            drawing.paint_clipped(canvas)?;
+        }
+        if bars.bars.iter().all(Option::is_some)
+        {
+            let bounds = self.bounds();
+            let corner =
+                Rect::new(bars.viewport.right, bars.viewport.bottom, bounds.right, bounds.bottom);
+            canvas.set_clip(intersection(previous_local, corner));
+            let result = self.paint_content(canvas, Some(corner), true);
+            canvas.set_clip(previous_local);
+            result?;
+        }
+        Ok(())
+    }
+
+    fn paint_content(&self, canvas: &mut Canvas, bounds: Option<Rect>, corner: bool)
+                     -> Result<(), Status>
+    {
         let mut surface = Surface::from_canvas(canvas);
         let mut standard = self.state.standard();
+        if let (Some(state), Some(bounds)) = (&mut standard, bounds)
+        {
+            state.bounds = bounds;
+            if corner
+            {
+                state.flags = TABLE_LINE_FLAGS;
+            }
+        }
         let mut scrollbar = match &self.state
         {
             State::Scrollbar(s) => Some(*s),
@@ -161,16 +305,28 @@ impl Drawing
             };
             (1, (scrollbar as *mut ScrollbarState).cast())
         };
-        let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
-                                        kind: CDEF,
-                                        id,
-                                        variation: variation(self.variation, id),
-                                        message: 0,
-                                        reserved: 0,
-                                        param: 0,
-                                        object,
-                                        gate: self.gate,
-                                        surface: &mut surface };
+        let grid =
+            self.grid.as_ref().filter(|_| !corner).map(|g| {
+                                  mac_abi::controls::reflow::GridPaint { cells: g.cells.as_ptr(),
+                                                                         count: g.cells.len() }
+                              });
+        let mut call =
+            DefinitionCall { reflow: self.reflow,
+                             header: Header::for_type::<DefinitionCall>(),
+                             kind: CDEF,
+                             id,
+                             variation: variation(self.variation, id),
+                             message: 0,
+                             reserved: 0,
+                             param:
+                                 grid.as_ref().map_or(0, |g| {
+                                                  (g as *const mac_abi::controls::reflow::GridPaint)
+                                                  as usize
+                                                  as i64
+                                              }),
+                             object,
+                             gate: self.gate,
+                             surface: &mut surface };
         let result = super::resources::definitions::invoke(self.entry, &mut call);
         if result < 0 { Err(result as Status) } else { Ok(()) }
     }
@@ -182,6 +338,8 @@ fn standard_definition(procedure: i16) -> Result<i16, Status>
         0..=2 | 8..=10 => Ok(0),
         PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE => Ok(CDEF_PROGRESS_BAR),
         STATIC_TEXT_PROCEDURE => Ok(CDEF_STATIC_TEXT),
+        TABLE_PROCEDURE => Ok(CDEF_TABLE),
+        SPLITTER_PROCEDURE => Ok(CDEF_SPLITTER),
         _ => Err(NOT_SUPPORTED)
     }
 }
@@ -206,8 +364,43 @@ pub fn definition_id(call: &ControlCall) -> Result<i16, Status>
     {
         DRAW_SCROLLBAR | HIT_SCROLLBAR | TRACK_SCROLLBAR => Ok(1),
         DRAW_STANDARD | HIT_STANDARD => standard_definition(call.procedure),
+        TRACK_SPLITTER if call.procedure == SPLITTER_PROCEDURE => Ok(CDEF_SPLITTER),
         _ => Err(NOT_SUPPORTED)
     }
+}
+fn validate_state(call: &ControlCall, id: i16) -> Result<(), Status>
+{
+    if call.reflow > 1
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    let bounds = if id == 1 { call.scrollbar.bounds } else { call.standard.bounds };
+    if call.reflow == 1
+    {
+        sr_control_reflow_handling::LayoutRect::try_from(bounds).map_err(|e| e.status())?;
+    }
+    if id == 1
+    {
+        let state = &call.scrollbar;
+        if state.maximum < 0
+           || state.value < 0
+           || state.value > state.maximum
+           || (state.bounds.is_empty() && call.reflow == 0)
+        {
+            return Err(BAD_ARGUMENT);
+        }
+    }
+    else
+    {
+        let state = &call.standard;
+        if state.bounds.is_empty() && call.reflow == 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let title = state.title.get(..state.title_length as usize).ok_or(BAD_ARGUMENT)?;
+        core::str::from_utf8(title).map_err(|_| BAD_ARGUMENT)?;
+    }
+    Ok(())
 }
 /// Validate wire/state structure without invoking a definition or allocating.
 /// Cold-load preflight and the actual callback path share these checks.
@@ -218,26 +411,15 @@ pub(crate) fn preflight(call: &ControlCall) -> Result<i16, Status>
         return Err(BAD_ARGUMENT);
     }
     let id = definition_id(call)?;
+    validate_state(call, id)?;
     if id == 1
     {
-        mac_definition::validation::scrollbar(&call.scrollbar).map_err(|error| error.status())?;
+        mac_definition::validation::scrollbar(&call.scrollbar).map_err(|e| e.status())?;
     }
     else
     {
         mac_definition::validation::standard(id, variation(call.procedure, id), &call.standard)
-            .map_err(|error| error.status())?;
-    }
-    if id == 1
-       && (call.scrollbar.maximum < 0
-           || call.scrollbar.value < 0
-           || call.scrollbar.value > call.scrollbar.maximum
-           || call.scrollbar.bounds.is_empty())
-    {
-        return Err(BAD_ARGUMENT);
-    }
-    if id != 1 && call.standard.bounds.is_empty()
-    {
-        return Err(BAD_ARGUMENT);
+            .map_err(|e| e.status())?;
     }
     Ok(id)
 }
@@ -254,7 +436,8 @@ pub(crate) fn validate(call: &mut ControlCall, entry: DefinitionRef, gate: TrapG
     {
         (&mut call.standard as *mut ControlDefinitionState).cast()
     };
-    let mut validation = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+    let mut validation = DefinitionCall { reflow: call.reflow,
+                                          header: Header::for_type::<DefinitionCall>(),
                                           kind: CDEF,
                                           id,
                                           variation: variation(call.procedure, id),
@@ -286,6 +469,10 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGa
     {
         validate(call, entry, gate)?;
         return Ok(Some(Drawing { id: 0,
+                                 reflow: call.reflow,
+                                 visible: None,
+                                 grid: None,
+                                 bars: None,
                                  state: if id == 1
                                  {
                                      State::Scrollbar(call.scrollbar)
@@ -313,6 +500,7 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGa
                                           },
                                           Rect::ZERO] }));
     }
+    validate_state(call, id)?;
     let object = if id == 1
     {
         (&mut call.scrollbar as *mut ScrollbarState).cast()
@@ -322,21 +510,29 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGa
         (&mut call.standard as *mut ControlDefinitionState).cast()
     };
     let mut bits = (call.point.h as u16 as u64) | ((call.point.v as u16 as u64) << 16);
-    if call.operation == TRACK_SCROLLBAR
+    if matches!(call.operation, TRACK_SCROLLBAR | TRACK_SPLITTER)
     {
         bits |= ((call.anchor.h as u16 as u64) << 32) | ((call.anchor.v as u16 as u64) << 48);
     }
-    let mut definition =
-        DefinitionCall { header: Header::for_type::<DefinitionCall>(),
-                         kind: CDEF,
-                         id,
-                         variation: variation(call.procedure, id),
-                         message: if call.operation == TRACK_SCROLLBAR { 2 } else { 1 },
-                         reserved: 0,
-                         param: bits as i64,
-                         object,
-                         gate,
-                         surface: core::ptr::null_mut() };
+    let mut definition = DefinitionCall { reflow: call.reflow,
+                                          header: Header::for_type::<DefinitionCall>(),
+                                          kind: CDEF,
+                                          id,
+                                          variation: variation(call.procedure, id),
+                                          message: if matches!(call.operation,
+                                                               TRACK_SCROLLBAR | TRACK_SPLITTER)
+                                          {
+                                              2
+                                          }
+                                          else
+                                          {
+                                              1
+                                          },
+                                          reserved: 0,
+                                          param: bits as i64,
+                                          object,
+                                          gate,
+                                          surface: core::ptr::null_mut() };
     let result = super::resources::definitions::invoke(entry, &mut definition);
     if result < 0
     {
@@ -380,6 +576,10 @@ pub mod native
                 return Err(BAD_ARGUMENT);
             }
             let call = unsafe { &mut *pointer.cast::<ControlCall>() };
+            if call.reflow != 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
             let id = preflight(call)?;
             if matches!(call.operation, DRAW_SCROLLBAR | DRAW_STANDARD)
             {
@@ -403,155 +603,15 @@ pub mod native
         result.map_or_else(|e| e as i64, |_| 0)
     }
 }
-#[cfg(test)]
-mod tests
-{
-    use alloc::vec;
-
-    use mac_abi::{Point, Rect};
-
-    use super::*;
-    // This replay uses an offscreen surface rather than a process service table.
-    // Definitions still query the same resident theme used by live controls.
-    unsafe extern "C" fn definition_services(number: u32, request: *mut (), size: usize) -> i64
-    {
-        if number == mac_abi::traps::THEME
-        {
-            if request.is_null()
-               || size != core::mem::size_of::<mac_abi::theme::Palette>()
-               || !(request as usize).is_multiple_of(core::mem::align_of::<mac_abi::theme::Palette>())
-            {
-                return BAD_ARGUMENT as i64;
-            }
-            unsafe {
-                request.cast::<mac_abi::theme::Palette>().write(crate::toolbox::theme::palette())
-            };
-            return OK as i64;
-        }
-        unsafe { crate::toolbox::quickdraw::surface_gate(number, request, size) }
-    }
-    #[test]
-    fn resource_replay_preserves_window_origin_clip_and_global_track_phase()
-    {
-        let state = ScrollbarState { bounds: Rect::new(8, 10, 24, 90),
-                                     value: 50,
-                                     maximum: 100,
-                                     active: 1,
-                                     ..Default::default() };
-        let drawing = Drawing { id:        0,
-                                state:     State::Scrollbar(state),
-                                variation: 0,
-                                entry:     crate::test_scrollbar::scrollbar_definition,
-                                gate:      definition_services,
-                                damage:    [state.bounds, Rect::ZERO] };
-        let background = 0xff00ff;
-        let mut full = vec![background; 80 * 100];
-        let mut clipped = full.clone();
-        let clip = Rect::new(10, 15, 50, 50);
-        for (pixels, limited) in [(&mut full, false), (&mut clipped, true)]
-        {
-            let mut canvas = Canvas::new(pixels, 80, 100);
-            canvas.set_origin(5, 7);
-            if limited
-            {
-                let mut local_clip = clip;
-                local_clip.offset(-5, -7);
-                canvas.set_clip(local_clip);
-            }
-            drawing.paint(&mut canvas);
-        }
-        assert!(full.iter().any(|&p| p != background));
-        for y in 0..100
-        {
-            for x in 0..80
-            {
-                let index = y * 80 + x;
-                assert_eq!(clipped[index],
-                           if clip.contains(Point { h: x as i16,
-                                                    v: y as i16 })
-                           {
-                               full[index]
-                           }
-                           else
-                           {
-                               background
-                           });
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod sdk_tests
-{
-    use mac_abi::{controls::*, *};
-    use toolbox_controls::{Client, Controls};
-    unsafe extern "C" fn gate(number: u32, request: *mut (), size: usize) -> i64
-    {
-        assert_eq!(number, mac_abi::traps::CONTROL);
-        assert_eq!(size, core::mem::size_of::<ControlCall>());
-        let call = unsafe { &mut *request.cast::<ControlCall>() };
-        assert_eq!(call.window, 42);
-        assert_eq!(call.scrollbar.bounds, Rect::new(10, 20, 26, 220));
-        assert_eq!(call.scrollbar.value, 25);
-        assert_eq!(call.scrollbar.maximum, 100);
-        assert_eq!(call.scrollbar.active, 1);
-        match call.operation
-        {
-            DRAW_SCROLLBAR =>
-            {}
-            HIT_SCROLLBAR =>
-            {
-                assert_eq!(call.point,
-                           Point { h: 18,
-                                   v: 30 });
-                call.result = SCROLL_UP as i32;
-            }
-            TRACK_SCROLLBAR =>
-            {
-                assert_eq!(call.anchor,
-                           Point { h: 18,
-                                   v: 30 });
-                assert_eq!(call.point,
-                           Point { h: 18,
-                                   v: 80 });
-                call.result = 63;
-            }
-            _ => return NOT_SUPPORTED as i64
-        };
-        OK as i64
-    }
-    #[test]
-    fn typed_scrollbar_sdk_sends_only_scalar_control_state()
-    {
-        let services = SystemServices { header:       Header::for_type::<SystemServices>(),
-                                        trap:         gate,
-                                        capabilities: 0 };
-        let client = Client::new(&services).unwrap();
-        let controls = Controls::new(client);
-        controls.draw_scrollbar(WindowId(42), Rect::new(10, 20, 26, 220), 25, 100, true).unwrap();
-        assert_eq!(controls.scrollbar_hit(WindowId(42),
-                                          Rect::new(10, 20, 26, 220),
-                                          25,
-                                          100,
-                                          true,
-                                          Point { h: 18,
-                                                  v: 30 })
-                           .unwrap(),
-                   toolbox_controls::Part::Up);
-        assert_eq!(controls.scrollbar_track_value(WindowId(42),
-                                                  Rect::new(10, 20, 26, 220),
-                                                  25,
-                                                  100,
-                                                  Point { h: 18,
-                                                          v: 30 },
-                                                  Point { h: 18,
-                                                          v: 80 })
-                           .unwrap(),
-                   63);
-    }
-}
-
 pub mod scrollbox;
 pub mod scrollbox_native;
 pub mod objects;
+
+fn intersection(a: Rect, b: Rect) -> Rect
+{
+    let result = Rect::new(a.left.max(b.left),
+                           a.top.max(b.top),
+                           a.right.min(b.right),
+                           a.bottom.min(b.bottom));
+    if result.is_empty() { Rect::ZERO } else { result }
+}

@@ -479,7 +479,8 @@ impl Desktop
         Err(NOT_FOUND)
     }
 
-    pub(in crate::toolbox::runtime) fn route_system_report_event(&mut self, event: mac_abi::Event,
+    pub(in crate::toolbox::runtime) fn route_system_report_event(&mut self,
+                                                                 event: mac_abi::events::Event,
                                                                  target: u64,
                                                                  position: mac_abi::events::EventPosition)
                                                                  -> bool
@@ -533,7 +534,8 @@ impl Desktop
                                         })
     }
 
-    pub(in crate::toolbox::runtime) fn sync_system_report_input(&mut self, mouse: mac_abi::Point,
+    pub(in crate::toolbox::runtime) fn sync_system_report_input(&mut self,
+                                                                mouse: mac_abi::geometry::Point,
                                                                 modifiers: u16,
                                                                 keys: mac_abi::events::KeyMap)
     {
@@ -723,11 +725,11 @@ impl Desktop
                     {
                         continue;
                     }
-                    if event.kind == mac_abi::EventKind::Update
+                    if event.kind == mac_abi::events::EventKind::Update
                     {
                         redraw = true;
                     }
-                    else if event.kind == mac_abi::EventKind::Activate
+                    else if event.kind == mac_abi::events::EventKind::Activate
                               && event.modifiers & mac_abi::events::ACTIVE_FLAG == 0
                     {
                         desktop.cancel_crash_tracking();

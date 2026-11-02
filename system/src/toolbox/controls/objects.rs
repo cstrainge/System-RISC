@@ -1,10 +1,16 @@
 //! Owned resident controls. CDEFs own geometry; this manager owns identity and
 //! tracking policy. No caller memory or callback survives a request.
 #![forbid(unsafe_code)]
+
 use alloc::{sync::Arc, vec::Vec};
 
-use mac_abi::{controls::*, *};
+use mac_abi::{controls::*,
+              definitions::ControlDefinitionState,
+              geometry::{Point, Rect},
+              *};
+use sr_control_reflow_handling as layout;
 
+use super::tracking::{Action, Tracking};
 use crate::toolbox::{handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store},
                      resources::definitions::{BoundDefinition, DefinitionRef}};
 #[cfg(target_arch = "riscv64")]
@@ -38,6 +44,7 @@ fn recovery_mode(recipient: &OwnerRef, storage: &OwnerRef) -> Result<bool, Statu
     }
     Ok(false)
 }
+
 
 pub(crate) fn specification() -> mac_object_table::registry::Specification<'static>
 {
@@ -93,70 +100,292 @@ struct Object
 {
     window:             u64,
     recipient:          u64,
-    spec:               Spec,
-    scrollbar:          bool,
-    title:              Option<Arc<super::snapshot::Title>>,
-    tracking:           Option<Tracking>,
-    // Retain executable source through all control payload destruction; the
-    // recovery Activity below remains the final modal-session acknowledgment.
+    state:              State,
+    tree:               tree::Node,
+    automatic:          automatic::Automatic,
+    // Keep the genuine callable pinned through state/tree payload destruction.
     definition:         BoundDefinition,
     // Last: registered removal must finish payload destruction before the
     // protected modal service can become available to another recipient.
     #[cfg(target_arch = "riscv64")]
     _recovery_activity: Option<crate::recovery::Activity>
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Spec
+// Only mutable control state is staged; ownership and recovery pins stay live.
+#[derive(Clone)]
+struct State
 {
-    standard:  mac_abi::definitions::ControlDefinitionState,
-    scrollbar: ScrollbarState,
-    procedure: i16,
-    step:      i16,
-    page:      i16
+    spec:             Spec,
+    title:            Option<Arc<super::snapshot::Title>>,
+    tracking:         Option<Tracking>,
+    splitter:         Option<splitter::Capture>,
+    scroll_axis:      Option<usize>,
+    scroll_highlight: i16,
+    layout:           Option<Layout>
+}
+#[derive(Clone)]
+struct Layout
+{
+    sizing:              layout::SizingState,
+    anchors:             layout::Anchors,
+    window_border:       layout::BorderOffsets,
+    window_extent:       Option<(i16, i16)>,
+    visible:             Option<Rect>,
+    measured:            Option<(layout::Constraints, layout::Measurement)>,
+    intrinsic:           Option<layout::Measurement>,
+    grid:                Option<Arc<grid::Configuration>>,
+    outlines:            Option<Arc<super::snapshot::Grid>>,
+    scroll:              Option<Arc<scrolling::Scroll>>,
+    logical:             mac_abi::controls::reflow::LogicalRect,
+    hidden:              bool,
+    arrangement_pending: bool
+}
+impl Layout
+{
+    fn new(bounds: Rect) -> Result<Self, Status>
+    {
+        let bounds = layout::LayoutRect::try_from(bounds).map_err(|e| e.status())?;
+        Ok(Self { window_border:       layout::BorderOffsets::ZERO,
+                  window_extent:       None,
+                  anchors:             layout::Anchors::NONE,
+                  sizing:              layout::SizingState::new(bounds.size()),
+                  visible:             None,
+                  measured:            None,
+                  intrinsic:           None,
+                  grid:                None,
+                  outlines:            None,
+                  scroll:              None,
+                  logical:             Default::default(),
+                  hidden:              false,
+                  arrangement_pending: true })
+    }
+
+    fn pending(&self) -> u32
+    {
+        u32::from(self.measured.is_none()) * mac_abi::controls::reflow::INVALIDATE_MEASUREMENT
+        | u32::from(self.arrangement_pending) * mac_abi::controls::reflow::INVALIDATE_ARRANGEMENT
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Spec
+{
+    Standard
+    {
+        state: ControlDefinitionState, procedure: i16
+    },
+    Scrollbar
+    {
+        state: ScrollbarState, step: i16, page: i16
+    }
 }
 impl Spec
 {
-    fn from_call(c: &ControlCall) -> Self
+    fn from_call(call: &ControlCall, scrollbar: bool) -> Self
     {
-        Self { standard:  c.standard,
-               scrollbar: c.scrollbar,
-               procedure: c.procedure,
-               step:      c.step,
-               page:      c.page }
+        if scrollbar
+        {
+            Self::Scrollbar { state: call.scrollbar,
+                              step:  call.step,
+                              page:  call.page }
+        }
+        else
+        {
+            Self::Standard { state:     call.standard,
+                             procedure: call.procedure }
+        }
+    }
+
+    fn write(self, call: &mut ControlCall)
+    {
+        match self
+        {
+            Self::Standard { state,
+                             procedure } =>
+            {
+                call.standard = state;
+                call.procedure = procedure;
+                call.scrollbar = Default::default();
+                call.step = 0;
+                call.page = 0;
+            }
+            Self::Scrollbar { state,
+                              step,
+                              page } =>
+            {
+                call.scrollbar = state;
+                call.step = step;
+                call.page = page;
+                call.standard = Default::default();
+                call.procedure = 0;
+            }
+        }
     }
 
     fn call(self, operation: u32) -> ControlCall
     {
-        ControlCall { operation,
-                      standard: self.standard,
-                      scrollbar: self.scrollbar,
-                      procedure: self.procedure,
-                      step: self.step,
-                      page: self.page,
-                      ..Default::default() }
+        let mut call = ControlCall { operation,
+                                     ..Default::default() };
+        self.write(&mut call);
+        call
+    }
+
+    fn bounds(self) -> Rect
+    {
+        match self
+        {
+            Self::Standard { state,
+                             .. } => state.bounds,
+            Self::Scrollbar { state,
+                              .. } => state.bounds
+        }
+    }
+
+    fn set_bounds(&mut self, bounds: Rect)
+    {
+        match self
+        {
+            Self::Standard { state,
+                             .. } => state.bounds = bounds,
+            Self::Scrollbar { state,
+                              .. } => state.bounds = bounds
+        }
+    }
+
+    fn scrollbar(self) -> Option<ScrollbarState>
+    {
+        match self
+        {
+            Self::Scrollbar { state,
+                              .. } => Some(state),
+            _ => None
+        }
+    }
+
+    fn draw(self) -> ControlCall
+    {
+        self.call(if self.scrollbar().is_some() { DRAW_SCROLLBAR } else { DRAW_STANDARD })
+    }
+
+    fn highlight(self) -> u32
+    {
+        match self
+        {
+            Self::Standard { state,
+                             .. } => state.highlighted,
+            Self::Scrollbar { state,
+                              .. } => state.highlighted as u32
+        }
+    }
+
+    fn set_highlight(&mut self, highlight: u32)
+    {
+        match self
+        {
+            Self::Standard { state,
+                             .. } => state.highlighted = highlight,
+            Self::Scrollbar { state,
+                              .. } => state.highlighted = highlight as i16
+        }
+    }
+
+    fn appearance_matches(self, next: Self) -> bool
+    {
+        match (self, next)
+        {
+            (Self::Standard { state: a,
+                              procedure: p },
+             Self::Standard { state: b,
+                              procedure: q }) => a == b && p == q,
+            (Self::Scrollbar { state: a,
+                               .. },
+             Self::Scrollbar { state: b,
+                               .. }) => a == b,
+            _ => false
+        }
+    }
+
+    fn cancels_capture(self, next: Self, tracking: Option<Tracking>) -> bool
+    {
+        match (self, next)
+        {
+            (Self::Standard { state: a,
+                              procedure: p },
+             Self::Standard { state: b,
+                              procedure: q }) =>
+            {
+                a.bounds != b.bounds
+                || a.enabled != b.enabled
+                || p != q
+                || (p == SPLITTER_PROCEDURE
+                    && (a.flags != b.flags
+                        || a.minimum != b.minimum
+                        || a.maximum != b.maximum
+                        || a.value != b.value
+                        || a.splitter_parent != b.splitter_parent))
+            }
+            (Self::Scrollbar { state: a,
+                               .. },
+             Self::Scrollbar { state: b,
+                               .. }) =>
+            {
+                a.bounds != b.bounds
+                || a.active != b.active
+                || a.maximum != b.maximum
+                || (tracking.is_some_and(|t| t.part == SCROLL_THUMB) && a.value != b.value)
+            }
+            _ => true
+        }
+    }
+
+    fn set_value(&mut self, value: i16) -> bool
+    {
+        if let Self::Scrollbar { state,
+                                 .. } = self
+        {
+            core::mem::replace(&mut state.value, value) != value
+        }
+        else
+        {
+            false
+        }
+    }
+
+    fn step(&mut self, part: i16) -> bool
+    {
+        let Self::Scrollbar { state,
+                              step,
+                              page } = self
+        else
+        {
+            return false;
+        };
+        let amount = match part
+        {
+            SCROLL_UP => -i32::from(*step),
+            SCROLL_DOWN => i32::from(*step),
+            SCROLL_PAGE_UP => -i32::from(*page),
+            SCROLL_PAGE_DOWN => i32::from(*page),
+            _ => 0
+        };
+        let value = (i32::from(state.value) + amount).clamp(0, i32::from(state.maximum)) as i16;
+        core::mem::replace(&mut state.value, value) != value
     }
 }
-#[derive(Clone, Copy)]
-struct Tracking
-{
-    part:    i16,
-    anchor:  Point,
-    initial: i16,
-    next:    u64,
-    point:   Point,
-    hot:     bool
-}
+
 pub struct Manager
 {
-    objects: Store<Object>,
+    objects: Store<Object, automatic::Work>,
+    next_order: u64,
     publications: Vec<mac_object_table::store::PublicationReservation<crate::toolbox::handles::InvocationGate>>
 }
 impl Manager
 {
     pub(crate) fn new((kind, storage): (KindLease, KindLease)) -> Result<Self, Status>
     {
-        Ok(Self { objects:      Store::owned_prepared(kind, storage).map_err(pool_status)?,
-                  publications: Vec::new() })
+        Ok(Self { objects:      Store::owned_state_prepared(kind, storage, |_| {
+                                    Ok(automatic::Work::default())
+                                }).map_err(pool_status)?,
+                  publications: Vec::new(),
+                  next_order:   1 })
     }
 }
 impl Manager
@@ -210,6 +439,40 @@ impl Manager
         Ok(self.get(id, owner)?.window)
     }
 
+    /// Cancellation cannot depend on loading/validating or allocating a drawing.
+    pub(crate) fn cancel(&mut self, call: &mut ControlCall, owner: u64) -> Result<(), Status>
+    {
+        if !call.surface.is_null() || call.reserved != 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        self.get(call.id, owner)?;
+        let layout_status = self.layout_status(call.id);
+        let object = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
+        let state = &mut object.state;
+        let handled = state.tracking.take().is_some();
+        let old_scroll_highlight = state.scroll_highlight;
+        state.scroll_highlight = 0;
+        state.scroll_axis = None;
+        state.splitter = None;
+        let old = state.spec.highlight();
+        state.highlight(0);
+        call.window = object.window;
+        state.spec.write(call);
+        call.reflow = u32::from(state.layout.is_some());
+        call.layout.anchors = state.layout.as_ref().map_or(0, |l| l.anchors.into());
+        call.layout.window_border =
+            state.layout.as_ref().map_or(Default::default(), |l| l.window_border.into());
+        call.layout.invalidation = state.layout.as_ref().map_or(0, Layout::pending);
+        call.layout.status = layout_status;
+        call.result = 0;
+        call.flags = u32::from(handled) * HANDLED
+                     | u32::from(old != state.spec.highlight() || old_scroll_highlight != 0)
+                       * CHANGED;
+        self.wake_capture(call.id);
+        Ok(())
+    }
+
     pub fn remove_window(&mut self, window: u64)
     {
         self.objects.remove_where(|_, object| object.window == window);
@@ -220,8 +483,73 @@ impl Manager
         self.objects.remove_owner(owner);
     }
 
-    /// Select only the actual object's retained binding. Full request admission
-    /// remains in preflight_definition; warm calls need no source lookup.
+    pub fn definition(&self, call: &ControlCall, owner: u64) -> Result<i16, Status>
+    {
+        if call.operation == CREATE_SCROLLBAR
+        {
+            return Ok(1);
+        }
+        if call.operation == CREATE_STANDARD
+        {
+            return super::definition_id(&Spec::from_call(call, false).draw());
+        }
+        super::definition_id(&self.get(call.id, owner)?.state.spec.draw())
+    }
+
+    /// Validate the real retained object's auxiliary CDEF need before the
+    /// native coordinator releases Desktop to load a cold dependency.
+    pub(crate) fn auxiliary_definition(&self, call: &ControlCall, owner: u64)
+                                       -> Result<Option<i16>, Status>
+    {
+        use mac_abi::controls::reflow as wire;
+        if call.operation != REFLOW_OBJECT
+        {
+            return Ok(None);
+        }
+        let object = self.get(call.id, owner)?;
+        if !call.surface.is_null()
+           || call.reserved != 0
+           || call.reflow != 0
+           || (call.window != 0 && call.window != object.window)
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let layout = object.state.layout.as_ref().ok_or(NOT_SUPPORTED)?;
+        if call.layout.reserved != 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        match call.layout.message
+        {
+            wire::SET_SCROLLING =>
+            {
+                self.table(call.id, owner)?;
+                let axes = call.layout.scroll.axes;
+                if axes & !3 != 0
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                Ok((axes != 0 && layout.scroll.is_none()).then_some(1))
+            }
+            wire::SET_SPLITTER =>
+            {
+                self.table(call.id, owner)?;
+                let setting = call.layout.splitter;
+                if setting.axis > 1
+                   || setting.index >= u32::MAX - 1
+                   || setting.enabled > 1
+                   || setting.reserved != 0
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                Ok((setting.enabled != 0
+                    && layout.grid.as_ref().is_none_or(|grid| !grid.has_splitters()))
+                   .then_some(CDEF_SPLITTER))
+            }
+            _ => Ok(None)
+        }
+    }
+
     pub(crate) fn bound_definition(&self, call: &ControlCall, owner: u64)
                                    -> Result<Option<DefinitionRef>, Status>
     {
@@ -232,10 +560,16 @@ impl Manager
         let object = self.get(call.id, owner)?;
         if call.operation == CONFIGURE_OBJECT
         {
-            let operation = if object.scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD };
-            let previous = super::definition_id(&object.spec.call(operation))?;
+            let previous = super::definition_id(&object.state.spec.draw())?;
             let mut proposed = *call;
-            proposed.operation = operation;
+            proposed.operation = if object.state.spec.scrollbar().is_some()
+            {
+                DRAW_SCROLLBAR
+            }
+            else
+            {
+                DRAW_STANDARD
+            };
             if super::definition_id(&proposed)? != previous
             {
                 return Ok(None);
@@ -244,11 +578,91 @@ impl Manager
         Ok(Some(object.definition.reference()))
     }
 
-    /// Pure admission before a cold definition load. Existing objects retain
-    /// their canonical callable even if the resource source later stops.
+    /// Pure validation before loading a cold definition or detached creation.
     pub(crate) fn preflight_definition(&self, recipient: &OwnerRef, storage: &OwnerRef,
                                        call: &ControlCall)
                                        -> Result<(i16, Option<DefinitionRef>), Status>
+    {
+        let owner = recipient.owner().incarnation();
+        let recovery = recovery_mode(recipient, storage)?;
+        let creation = matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR);
+        if creation && (!recipient.accepting() || !storage.accepting())
+        {
+            return Err(ACCESS_DENIED);
+        }
+        if !call.surface.is_null()
+           || call.reserved != 0
+           || call.reflow > 1
+           || (!creation && call.reflow != 0)
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let _ = recovery;
+        if matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR | CONFIGURE_OBJECT)
+        {
+            let old = if call.operation == CONFIGURE_OBJECT
+            {
+                Some(self.get(call.id, owner)?)
+            }
+            else
+            {
+                None
+            };
+            let scrollbar = old.map_or(call.operation == CREATE_SCROLLBAR, |o| {
+                                   o.state.spec.scrollbar().is_some()
+                               });
+            if scrollbar && (call.step <= 0 || call.page <= 0)
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let mut spec = *call;
+            spec.operation = if scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD };
+            if let Some(old) = old
+            {
+                spec.reflow = u32::from(old.state.layout.is_some());
+                spec.standard.highlighted = old.state.spec.highlight();
+                spec.scrollbar.highlighted = old.state.spec.highlight() as i16;
+            }
+            let id = super::preflight(&spec)?;
+            let bound = match old
+            {
+                Some(old) if super::definition_id(&old.state.spec.draw())? == id =>
+                {
+                    Some(old.definition.reference())
+                }
+                _ => None
+            };
+            return Ok((id, bound));
+        }
+        self.preflight_tree_configuration(call, owner)?;
+        let object = self.get(call.id, owner)?;
+        if call.operation == BEGIN_TRACKING
+           && (call.window != 0 && call.window != object.window
+               || object.state.tracking.is_some()
+               || self.objects.iter().any(|(id, o)| {
+                                         id != call.id
+                                         && o.recipient == owner
+                                         && o.state.tracking.is_some()
+                                     }))
+        {
+            return Err(SERVICE_BUSY);
+        }
+        Ok((super::definition_id(&object.state.spec.draw())?, Some(object.definition.reference())))
+    }
+
+    pub(crate) fn request(&mut self, recipient: &OwnerRef, storage: &OwnerRef,
+                          call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate)
+                          -> Result<Option<super::Drawing>, Status>
+    {
+        self.request_with(recipient, storage, call, entry, gate, Ok)
+    }
+
+    /// The publisher admits and installs retained drawing before state commits.
+    /// It must return errors before replacing the old drawing and cannot call apps.
+    pub(crate) fn request_with<R>(&mut self, recipient: &OwnerRef, storage: &OwnerRef,
+                                  call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate,
+                                  publish: impl FnOnce(super::Drawing) -> Result<R, Status>)
+                                  -> Result<Option<R>, Status>
     {
         let owner = recipient.owner().incarnation();
         let recovery = recovery_mode(recipient, storage)?;
@@ -258,105 +672,60 @@ impl Manager
         {
             return Err(ACCESS_DENIED);
         }
-        let operation = call.operation;
-        if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR) && !storage.accepting()
+        if call.operation == SET_STATIC_TEXT_OBJECT
         {
-            return Err(pool_status(mac_object_table::domain::PoolError::Stopping {
-                owner: storage.owner()
-            }));
+            if call.flags == 0 || call.flags & !TEXT_PROPERTIES != 0 || call.reflow != 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let Spec::Standard { mut state,
+                                 procedure: STATIC_TEXT_PROCEDURE } =
+                self.get(call.id, owner)?.state.spec
+            else
+            {
+                return Err(NOT_SUPPORTED);
+            };
+            if call.flags & TEXT_CONTENT != 0
+            {
+                state.title = call.standard.title;
+                state.title_length = call.standard.title_length;
+            }
+            if call.flags & TEXT_FONT != 0
+            {
+                state.font = call.standard.font;
+            }
+            if call.flags & TEXT_ALIGNMENT != 0
+            {
+                state.value = call.standard.value;
+            }
+            if call.flags & TEXT_LAYOUT != 0
+            {
+                state.flags = call.standard.flags;
+            }
+            if call.flags & TEXT_BOUNDS != 0
+            {
+                state.bounds = call.standard.bounds;
+            }
+            call.standard = state;
+            call.procedure = STATIC_TEXT_PROCEDURE;
+            call.operation = CONFIGURE_OBJECT;
         }
+        let operation = call.operation;
         if !call.surface.is_null() || call.reserved != 0
         {
             return Err(BAD_ARGUMENT);
         }
-        if !matches!(operation,
-                     CREATE_STANDARD
-                     | CREATE_SCROLLBAR
-                     | CONFIGURE_OBJECT
-                     | INFO_OBJECT
-                     | DRAW_OBJECT
-                     | DISPOSE_OBJECT
-                     | BEGIN_TRACKING
-                     | POLL_TRACKING
-                     | CANCEL_TRACKING)
+        if call.reflow > 1
+           || (call.reflow != 0 && !matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR))
         {
-            return Err(NOT_SUPPORTED);
+            return Err(BAD_ARGUMENT);
         }
-        if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR | CONFIGURE_OBJECT)
+        if !matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
         {
-            let old =
-                if operation == CONFIGURE_OBJECT { Some(self.get(call.id, owner)?) } else { None };
-            let scrollbar = old.map_or(operation == CREATE_SCROLLBAR, |object| object.scrollbar);
-            if scrollbar && (call.step <= 0 || call.page <= 0)
-            {
-                return Err(BAD_ARGUMENT);
-            }
-            let mut spec = *call;
-            spec.operation = if scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD };
-            if let Some(old) = old
-            {
-                spec.standard.highlighted = old.spec.standard.highlighted;
-                spec.scrollbar.highlighted = old.spec.scrollbar.highlighted;
-            }
-            let id = super::preflight(&spec)?;
-            let bound = match old
-            {
-                Some(old)
-                    if super::definition_id(&old.spec.call(if old.scrollbar
-                                                           {
-                                                               DRAW_SCROLLBAR
-                                                           }
-                                                           else
-                                                           {
-                                                               DRAW_STANDARD
-                                                           }))?
-                       == id =>
-                {
-                    Some(old.definition.reference())
-                }
-                _ => None
-            };
-            return Ok((id, bound));
+            self.preflight_tree_configuration(call, owner)?;
         }
-        let object = self.get(call.id, owner)?;
-        if operation == BEGIN_TRACKING
-        {
-            if call.window != 0 && call.window != object.window
-            {
-                return Err(BAD_ARGUMENT);
-            }
-            if object.tracking.is_some()
-               || self.objects.iter().any(|(id, other)| {
-                                         id != call.id
-                                         && other.recipient == owner
-                                         && other.tracking.is_some()
-                                     })
-            {
-                return Err(SERVICE_BUSY);
-            }
-        }
-        let id = super::definition_id(&object.spec.call(if object.scrollbar
-                                                        {
-                                                            DRAW_SCROLLBAR
-                                                        }
-                                                        else
-                                                        {
-                                                            DRAW_STANDARD
-                                                        }))?;
-        Ok((id, Some(object.definition.reference())))
-    }
-
-    pub(crate) fn request(&mut self, recipient: &OwnerRef, storage: &OwnerRef,
-                          call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate)
-                          -> Result<Option<super::Drawing>, Status>
-    {
         let (_, bound) = self.preflight_definition(recipient, storage, call)?;
         let entry = bound.unwrap_or(entry);
-        let owner = recipient.owner().incarnation();
-        let recovery = recovery_mode(recipient, storage)?;
-        let operation = call.operation;
-        // A configure which changes family admits a replacement before any
-        // mutation; unchanged operations keep the original canonical binding.
         let replacement = if operation == CONFIGURE_OBJECT && bound.is_none()
         {
             Some(crate::toolbox::resources::definitions::bind(entry)?)
@@ -368,14 +737,41 @@ impl Manager
         let mut admitted_title = None;
         if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR | CONFIGURE_OBJECT)
         {
-            let (spec, scrollbar) = self.validate_spec(owner, call, entry, gate)?;
+            let scrollbar = if operation == CONFIGURE_OBJECT
+            {
+                self.get(call.id, owner)?.state.spec.scrollbar().is_some()
+            }
+            else
+            {
+                operation == CREATE_SCROLLBAR
+            };
+            if scrollbar && (call.step <= 0 || call.page <= 0)
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let mut spec = *call;
+            spec.operation = if scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD };
+            if operation == CONFIGURE_OBJECT
+            {
+                let old = self.get(call.id, owner)?;
+                spec.reflow = u32::from(old.state.layout.is_some());
+                let highlight = old.state.spec.highlight();
+                spec.standard.highlighted = highlight;
+                spec.scrollbar.highlighted = highlight as i16;
+            }
+            if operation != CONFIGURE_OBJECT
+               || self.get(call.id, owner)?.state.spec != Spec::from_call(&spec, scrollbar)
+            {
+                // Validate through the real resource before publishing or mutating.
+                super::validate(&mut spec, entry, gate)?;
+            }
             if !scrollbar
                && !matches!(spec.procedure,
                             PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE)
             {
                 let previous = if operation == CONFIGURE_OBJECT
                 {
-                    self.get(call.id, owner)?.title.as_ref()
+                    self.get(call.id, owner)?.state.title.as_ref()
                 }
                 else
                 {
@@ -385,14 +781,16 @@ impl Manager
             }
             if matches!(operation, CREATE_STANDARD | CREATE_SCROLLBAR)
             {
-                let binding = crate::toolbox::resources::definitions::bind(entry)?;
+                let next_order = self.next_order.checked_add(1).ok_or(NO_MEMORY)?;
+                let definition = crate::toolbox::resources::definitions::bind(entry)?;
                 let object = Object::new(call.window,
                                          owner,
-                                         spec,
-                                         scrollbar,
+                                         Spec::from_call(&spec, scrollbar),
                                          admitted_title.clone(),
-                                         binding,
-                                         recovery);
+                                         definition,
+                                         call.reflow,
+                                         self.next_order,
+                                         recovery)?;
                 call.id = if recovery
                 {
                     let reservation = self.publications
@@ -417,20 +815,19 @@ impl Manager
                 {
                     self.objects.insert(storage, object).map_err(pool_status)?
                 };
+                self.next_order = next_order;
+                self.schedule_layout(call.id);
             }
         }
-        self.finish_request(call, entry, gate, admitted_title, replacement)
+        self.finish_request_with(call, owner, entry, gate, admitted_title, replacement, publish)
     }
 
-    /// Keep the existing callback turn and invocation scope. Detached ordinary
-    /// publication owns this exact validated snapshot; capacity retries do not
-    /// call foreign code again.
     fn validate_spec(&self, owner: u64, call: &ControlCall, entry: DefinitionRef, gate: TrapGate)
                      -> Result<(Spec, bool), Status>
     {
         let scrollbar = if call.operation == CONFIGURE_OBJECT
         {
-            self.get(call.id, owner)?.scrollbar
+            self.get(call.id, owner)?.state.spec.scrollbar().is_some()
         }
         else
         {
@@ -441,78 +838,141 @@ impl Manager
         if call.operation == CONFIGURE_OBJECT
         {
             let old = self.get(call.id, owner)?;
-            spec.standard.highlighted = old.spec.standard.highlighted;
-            spec.scrollbar.highlighted = old.spec.scrollbar.highlighted;
+            spec.reflow = u32::from(old.state.layout.is_some());
+            spec.standard.highlighted = old.state.spec.highlight();
+            spec.scrollbar.highlighted = old.state.spec.highlight() as i16;
         }
         if call.operation != CONFIGURE_OBJECT
-           || self.get(call.id, owner)?.spec != Spec::from_call(&spec)
+           || self.get(call.id, owner)?.state.spec != Spec::from_call(&spec, scrollbar)
         {
             super::validate(&mut spec, entry, gate)?;
         }
-        Ok((Spec::from_call(&spec), scrollbar))
+        Ok((Spec::from_call(&spec, scrollbar), scrollbar))
     }
 
-    /// One state/tracking/drawing tail for both existing internal publication
-    /// and detached native ordinary publication.
-    fn finish_request(&mut self, call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate,
-                      admitted_title: Option<Arc<super::snapshot::Title>>,
-                      mut replacement: Option<BoundDefinition>)
+    fn finish_request(&mut self, call: &mut ControlCall, owner: u64, entry: DefinitionRef,
+                      gate: TrapGate, admitted_title: Option<Arc<super::snapshot::Title>>,
+                      replacement: Option<BoundDefinition>)
                       -> Result<Option<super::Drawing>, Status>
     {
+        self.finish_request_with(call, owner, entry, gate, admitted_title, replacement, Ok)
+    }
+
+    fn finish_request_with<R>(&mut self, call: &mut ControlCall, owner: u64, entry: DefinitionRef,
+                              gate: TrapGate, admitted_title: Option<Arc<super::snapshot::Title>>,
+                              mut replacement: Option<BoundDefinition>,
+                              publish: impl FnOnce(super::Drawing) -> Result<R, Status>)
+                              -> Result<Option<R>, Status>
+    {
         let operation = call.operation;
-        let mut retired_binding = None;
+        let object = self.get(call.id, owner)?;
+        if operation == BEGIN_TRACKING && call.window != 0 && call.window != object.window
+        {
+            return Err(BAD_ARGUMENT);
+        }
         if operation == DISPOSE_OBJECT
         {
-            self.objects.remove(call.id);
+            if object.tree.parent != 0
+            {
+                return Err(ACCESS_DENIED);
+            }
+            self.remove_tree(call.id)?;
             return Ok(None);
         }
-        let o = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
-        let previous = (o.spec.standard, o.spec.scrollbar, o.spec.procedure);
+        if operation == BEGIN_TRACKING
+           && self.objects.iter().any(|(id, o)| {
+                                     id != call.id
+                                     && o.recipient == owner
+                                     && o.state.tracking.is_some()
+                                 })
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let inherited_clip = self.inherited_clip(call.id);
+        let layout_status = self.layout_status(call.id);
+        let object = self.objects.get_mut(call.id).ok_or(NOT_FOUND)?;
+        let mut next = object.state.clone();
+        let o = &mut next;
+        let previous = o.spec;
+        let previous_visible =
+            o.layout
+             .as_ref()
+             .and_then(Layout::clip)
+             .map_or(previous.bounds(), |clip| super::intersection(previous.bounds(), clip));
         let mut action = false;
         let mut handled = false;
         let mut part = 0;
+        let mut visibility_changed = false;
         match operation
         {
             CREATE_STANDARD | CREATE_SCROLLBAR | INFO_OBJECT | DRAW_OBJECT => (),
+            REFLOW_OBJECT =>
+            {
+                let assigned_hidden = call.layout.message == mac_abi::controls::reflow::ASSIGN_RECT
+                                      && o.layout.as_ref().is_some_and(|l| l.hidden);
+                if assigned_hidden && let Some(l) = &mut o.layout
+                {
+                    l.hidden = false;
+                }
+                visibility_changed = o.reflow(&mut call.layout, entry, gate)? || assigned_hidden;
+            }
+            SET_TABLE_LINES_OBJECT =>
+            {
+                if call.standard.flags & !TABLE_LINE_FLAGS != 0
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                let Spec::Standard { state,
+                                     procedure: TABLE_PROCEDURE } = &mut o.spec
+                else
+                {
+                    return Err(NOT_SUPPORTED);
+                };
+                state.flags = call.standard.flags;
+            }
             CONFIGURE_OBJECT =>
             {
                 // New title backing was admitted before any state/capture mutation.
                 o.title = admitted_title;
-                if let Some(binding) = replacement.take()
+                let next = Spec::from_call(call, o.spec.scrollbar().is_some());
+                let cancel = o.spec.cancels_capture(next, o.tracking);
+                let highlight = if cancel { 0 } else { o.spec.highlight() };
+                o.spec = next;
+                if previous.bounds() != o.spec.bounds()
+                   && let Some(l) = &mut o.layout
                 {
-                    retired_binding = Some(core::mem::replace(&mut o.definition, binding));
+                    l.hidden = false;
                 }
-                let cancel = o.spec.standard.bounds != call.standard.bounds
-                             || o.spec.standard.enabled != call.standard.enabled
-                             || o.spec.scrollbar.bounds != call.scrollbar.bounds
-                             || o.spec.scrollbar.active != call.scrollbar.active
-                             || o.spec.procedure != call.procedure;
-                let highlight = if cancel
-                {
-                    0
-                }
-                else if o.scrollbar
-                {
-                    o.spec.scrollbar.highlighted as u32
-                }
-                else
-                {
-                    o.spec.standard.highlighted
-                };
-                o.spec.standard = call.standard;
-                o.spec.scrollbar = call.scrollbar;
-                o.spec.procedure = call.procedure;
-                o.spec.step = call.step;
-                o.spec.page = call.page;
                 if cancel
                 {
                     o.tracking = None;
+                    o.scroll_axis = None;
+                    o.splitter = None;
+                    o.scroll_highlight = 0;
                 }
-                o.highlight(highlight as i16);
+                o.spec.set_highlight(highlight);
+                if previous != o.spec
+                   && let Some(layout) = &mut o.layout
+                {
+                    layout.measured = None;
+                    layout.intrinsic = None;
+                    layout.arrangement_pending = true;
+                }
             }
             BEGIN_TRACKING =>
             {
-                part = o.hit(call.point, entry, gate)?;
+                if o.tracking.is_some()
+                {
+                    return Err(SERVICE_BUSY);
+                }
+                part = if inherited_clip.is_some_and(|clip| !clip.contains(call.point))
+                {
+                    0
+                }
+                else
+                {
+                    o.hit(call.point, entry, gate)?
+                };
                 if matches!(part,
                             BUTTON_PART
                             | CHECKBOX_PART
@@ -523,71 +983,52 @@ impl Manager
                             | SCROLL_THUMB)
                 {
                     handled = true;
-                    o.tracking = Some(Tracking { part,
-                                                 anchor: call.point,
-                                                 initial: o.spec.scrollbar.value,
-                                                 next: call.ticks.saturating_add(20),
-                                                 point: call.point,
-                                                 hot: true });
+                    o.tracking =
+                        Some(Tracking::new(part,
+                                           call.point,
+                                           o.spec.scrollbar().map_or(0, |state| state.value),
+                                           call.ticks));
                     o.highlight(part);
-                    if o.scrollbar && part != SCROLL_THUMB
+                    if o.spec.scrollbar().is_some() && part != SCROLL_THUMB
                     {
-                        action = o.step(part);
+                        action = o.spec.step(part);
                     }
                 }
             }
             POLL_TRACKING =>
             {
-                if let Some(mut t) = o.tracking.take()
+                if let Some(tracking) = o.tracking
                 {
                     handled = true;
-                    part = t.part;
-                    let down = call.flags & BUTTON_DOWN != 0;
-                    if o.scrollbar && t.part == SCROLL_THUMB
+                    part = tracking.part;
+                    let transition = tracking.poll(call.point,
+                                                   call.flags & BUTTON_DOWN != 0,
+                                                   call.ticks,
+                                                   o.spec.scrollbar(),
+                                                   u32::from(o.layout.is_some()),
+                                                   entry,
+                                                   gate,
+                                                   |point| {
+                                                       if inherited_clip.is_some_and(|clip| {
+                                                                            !clip.contains(point)
+                                                                        })
+                                                       {
+                                                           Ok(0)
+                                                       }
+                                                       else
+                                                       {
+                                                           o.hit(point, entry, gate)
+                                                       }
+                                                   })?;
+                    action = match transition.action
                     {
-                        if call.point != t.point
-                        {
-                            let mut c = o.spec.call(TRACK_SCROLLBAR);
-                            c.scrollbar.value = t.initial;
-                            c.anchor = t.anchor;
-                            c.point = call.point;
-                            super::prepare(&mut c, entry, gate)?;
-                            let value = c.result as i16;
-                            action = value != o.spec.scrollbar.value;
-                            o.spec.scrollbar.value = value;
-                        }
-                        o.highlight(if down { t.part } else { 0 });
-                    }
-                    else
-                    {
-                        let inside = if call.point == t.point
-                        {
-                            t.hot
-                        }
-                        else
-                        {
-                            o.hit(call.point, entry, gate)? == t.part
-                        };
-                        t.hot = inside;
-                        o.highlight(if down && inside { t.part } else { 0 });
-                        if o.scrollbar
-                        {
-                            if down && inside && call.ticks >= t.next
-                            {
-                                action = o.step(t.part);
-                                t.next = call.ticks.saturating_add(3);
-                            }
-                        }
-                        else
-                        {
-                            action = !down && inside;
-                        }
-                    }
-                    t.point = call.point;
-                    if down
-                    {
-                        o.tracking = Some(t);
-                    }
+                        Action::None => false,
+                        Action::Activate => true,
+                        Action::Step(part) => o.spec.step(part),
+                        Action::Value(value) => o.spec.set_value(value)
+                    };
+                    o.highlight(transition.highlight);
+                    o.tracking = transition.tracking;
                 }
             }
             CANCEL_TRACKING =>
@@ -597,100 +1038,164 @@ impl Manager
             }
             _ => return Err(NOT_SUPPORTED)
         }
-        let changed = previous != (o.spec.standard, o.spec.scrollbar, o.spec.procedure);
-        call.window = o.window;
-        call.standard = o.spec.standard;
-        call.scrollbar = o.spec.scrollbar;
-        call.procedure = o.spec.procedure;
-        call.step = o.spec.step;
-        call.page = o.spec.page;
+        let changed = visibility_changed || !previous.appearance_matches(o.spec);
+        call.window = object.window;
+        call.relation = object.tree.relation();
+        o.spec.write(call);
+        call.reflow = u32::from(o.layout.is_some());
+        call.layout.anchors = o.layout.as_ref().map_or(0, |l| l.anchors.into());
+        call.layout.window_border =
+            o.layout.as_ref().map_or(Default::default(), |l| l.window_border.into());
+        call.layout.invalidation = o.layout.as_ref().map_or(0, Layout::pending);
+        call.layout.status = layout_status;
         call.result = i32::from(part);
         call.flags = (u32::from(o.tracking.is_some()) * TRACKING)
                      | (u32::from(handled) * HANDLED)
                      | (u32::from(action) * ACTION)
                      | (u32::from(changed) * CHANGED);
-        let result = if changed || operation == DRAW_OBJECT
+        let drawing = if changed || operation == DRAW_OBJECT
         {
-            let mut state = o.spec.call(if o.scrollbar { DRAW_SCROLLBAR } else { DRAW_STANDARD });
+            let mut state = o.spec.draw();
+            state.reflow = u32::from(o.layout.is_some());
             let mut drawing = super::prepare_with_title(&mut state, entry, gate, o.title.as_ref())?.ok_or(BAD_ARGUMENT)?;
             drawing.id = call.id;
+            drawing.grid = o.layout.as_ref().and_then(|l| l.outlines.clone());
+            Self::scroll_drawing(o, &mut drawing)?;
             if changed
                && operation == CONFIGURE_OBJECT
-               && previous.0.bounds == o.spec.standard.bounds
-               && previous.2 == o.spec.procedure
+               && let (Spec::Standard { state: before,
+                                        procedure: old },
+                       Spec::Standard { state: after,
+                                        procedure: new }) = (previous, o.spec)
+               && before.bounds == after.bounds
+               && old == new
             {
-                drawing.change_from(previous.0)?;
+                drawing.change_from(before)?;
             }
-            Ok(Some(drawing))
+            drawing.set_visible(tree::clip(o.layout.as_ref().and_then(Layout::clip),
+                                           inherited_clip));
+            if visibility_changed
+            {
+                drawing.damage = [previous_visible, drawing.visible_bounds()];
+            }
+            Some(publish(drawing)?)
         }
         else
         {
-            Ok(None)
+            None
         };
+        // No fallible work after publication. A refusal above drops only staging.
+        let parent = object.tree.parent;
+        let changed_requirements =
+            object.state.layout.as_ref().map(|v| {
+                                            (v.sizing.requirements(),
+                                             v.measured.is_none(),
+                                             v.anchors)
+                                        })
+            != next.layout
+                   .as_ref()
+                   .map(|v| (v.sizing.requirements(), v.measured.is_none(), v.anchors));
+        let changed_geometry = object.state.spec.bounds() != next.spec.bounds();
+        let newly_pending = next.layout.as_ref().is_some_and(|l| l.arrangement_pending)
+                            && object.state.layout.as_ref().is_some_and(|l| !l.arrangement_pending);
+        if changed_geometry && let Some(l) = &mut next.layout
+        {
+            l.window_extent = None;
+        }
+        let released_capture = object.state.tracking.is_some() && next.tracking.is_none();
+        let configured = operation == CONFIGURE_OBJECT && previous != next.spec;
+        let retired_binding =
+            replacement.take().map(|next| core::mem::replace(&mut object.definition, next));
+        object.state = next;
+        if changed_requirements
+        {
+            self.invalidate_ancestors(parent);
+        }
+        else if changed_geometry || newly_pending
+        {
+            self.invalidate_arrangement_ancestors(parent);
+        }
+        if changed_requirements
+           || changed_geometry
+           || newly_pending
+           || configured
+           || (operation == REFLOW_OBJECT
+               && call.layout.message == mac_abi::controls::reflow::INVALIDATE_LAYOUT)
+        {
+            self.schedule_layout(call.id);
+        }
+        if released_capture
+        {
+            self.wake_capture(call.id);
+        }
+        self.layout_committed(call.id);
         drop(retired_binding);
-        result
+        Ok(drawing)
     }
 }
 impl Object
 {
-    fn new(window: u64, recipient: u64, spec: Spec, scrollbar: bool,
-           title: Option<Arc<super::snapshot::Title>>, definition: BoundDefinition, recovery: bool)
-           -> Self
+    fn new(window: u64, recipient: u64, spec: Spec, title: Option<Arc<super::snapshot::Title>>,
+           definition: BoundDefinition, reflow: u32, order: u64, recovery: bool)
+           -> Result<Self, Status>
     {
         #[cfg(not(target_arch = "riscv64"))]
         let _ = recovery;
-        Self { window,
-               recipient,
-               spec,
-               scrollbar,
-               title,
-               definition,
-               tracking: None,
-               #[cfg(target_arch = "riscv64")]
-               _recovery_activity: if recovery
-               {
-                   crate::context::recovery_activity()
-               }
-               else
-               {
-                   None
-               } }
+        Ok(Self { window,
+                  recipient,
+                  definition,
+                  tree: tree::Node::new(order),
+                  automatic: automatic::Automatic::default(),
+                  state: State { spec,
+                                 title,
+                                 tracking: None,
+                                 splitter: None,
+                                 scroll_axis: None,
+                                 scroll_highlight: 0,
+                                 layout: if reflow == 1
+                                 {
+                                     Some(Layout::new(spec.bounds())?)
+                                 }
+                                 else
+                                 {
+                                     None
+                                 } },
+                  #[cfg(target_arch = "riscv64")]
+                  _recovery_activity: if recovery
+                  {
+                      crate::context::recovery_activity()
+                  }
+                  else
+                  {
+                      None
+                  } })
     }
-
+}
+impl State
+{
     fn highlight(&mut self, part: i16)
     {
-        if self.scrollbar
-        {
-            self.spec.scrollbar.highlighted = part;
-        }
-        else
-        {
-            self.spec.standard.highlighted = part as u32;
-        }
+        self.spec.set_highlight(part as u32);
     }
 
     fn hit(&self, point: Point, entry: DefinitionRef, gate: TrapGate) -> Result<i16, Status>
     {
-        let mut c = self.spec.call(if self.scrollbar { HIT_SCROLLBAR } else { HIT_STANDARD });
-        c.point = point;
-        super::prepare(&mut c, entry, gate)?;
-        Ok(c.result as i16)
-    }
-
-    fn step(&mut self, part: i16) -> bool
-    {
-        let amount = match part
+        let mut call = self.spec.call(if self.spec.scrollbar().is_some()
+                                      {
+                                          HIT_SCROLLBAR
+                                      }
+                                      else
+                                      {
+                                          HIT_STANDARD
+                                      });
+        if self.layout.as_ref().and_then(Layout::clip).is_some_and(|clip| !clip.contains(point))
         {
-            SCROLL_UP => -i32::from(self.spec.step),
-            SCROLL_DOWN => i32::from(self.spec.step),
-            SCROLL_PAGE_UP => -i32::from(self.spec.page),
-            SCROLL_PAGE_DOWN => i32::from(self.spec.page),
-            _ => 0
-        };
-        let old = self.spec.scrollbar.value;
-        self.spec.scrollbar.value =
-            (i32::from(old) + amount).clamp(0, i32::from(self.spec.scrollbar.maximum)) as i16;
-        old != self.spec.scrollbar.value
+            return Ok(0);
+        }
+        call.reflow = u32::from(self.layout.is_some());
+        call.point = point;
+        super::prepare(&mut call, entry, gate)?;
+        Ok(call.result as i16)
     }
 }
 
@@ -708,3 +1213,15 @@ fn publication_status(error: mac_object_table::store::PublicationError) -> Statu
         mac_object_table::store::PublicationError::Pool(error) => pool_status(error)
     }
 }
+
+mod reflow;
+
+mod tree;
+
+mod grid;
+pub(crate) use grid::Prepared;
+mod window;
+mod automatic;
+mod scrolling;
+
+mod splitter;

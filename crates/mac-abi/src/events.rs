@@ -1,5 +1,5 @@
 //! A bounded Event Manager subset with classic event numbers and a 68k codec.
-use crate::Point;
+use crate::geometry::Point;
 
 pub const EVERY_EVENT: u16 = 0xffff;
 pub const ACTIVE_FLAG: u16 = 1;

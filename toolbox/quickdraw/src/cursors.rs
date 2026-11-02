@@ -9,11 +9,15 @@ use mac_abi::resources::{APPLICATION, CHAIN, SYSTEM};
 #[repr(u32)]
 pub enum StandardCursor
 {
-    Arrow     = 0,
-    IBeam     = 1,
-    Crosshair = 2,
-    Plus      = 3,
-    Watch     = 4
+    Arrow            = 0,
+    IBeam            = 1,
+    Crosshair        = 2,
+    Plus             = 3,
+    Watch            = 4,
+    /// Native resource using the Appearance horizontal-resize cursor identity.
+    ResizeHorizontal = 17,
+    /// Native resource using the later Carbon vertical-resize cursor identity.
+    ResizeVertical   = 21
 }
 use mac_abi::quickdraw::*;
 

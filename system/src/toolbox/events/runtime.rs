@@ -1,6 +1,7 @@
 //! Desktop integration for the pointer-free resident Event Manager service.
 #![forbid(unsafe_code)]
-use mac_abi::{Status, events::EventCall};
+use mac_abi::{Status,
+              events::{Event, EventCall, EventKind}};
 
 impl super::Desktop
 {
@@ -13,6 +14,7 @@ impl super::Desktop
         {
             self.cursor_dirty |= self.responsiveness.foreground(self.foreground, Self::when());
             self.cursor_dirty |= self.responsiveness.polled(self.owner, Self::when());
+            self.automatic_control_layout();
         }
         self.poll_inputs();
         // Quotient/remainder conversion avoids overflowing an intermediate
@@ -34,15 +36,13 @@ impl super::Desktop
 
 impl super::Desktop
 {
-    pub(super) fn event_position(&self, event: mac_abi::Event, owner: u64)
+    pub(super) fn event_position(&self, event: Event, owner: u64)
                                  -> mac_abi::events::EventPosition
     {
-        let needs_front = matches!(event.kind,
-                                   mac_abi::EventKind::Null
-                                   | mac_abi::EventKind::KeyDown
-                                   | mac_abi::EventKind::KeyUp
-                                   | mac_abi::EventKind::AutoKey)
-                          || event.kind == mac_abi::EventKind::MouseUp && event.window == 0;
+        let needs_front =
+            matches!(event.kind,
+                     EventKind::Null | EventKind::KeyDown | EventKind::KeyUp | EventKind::AutoKey)
+            || event.kind == EventKind::MouseUp && event.window == 0;
         let window =
             if needs_front
             {

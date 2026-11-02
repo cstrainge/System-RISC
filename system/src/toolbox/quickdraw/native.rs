@@ -1,5 +1,5 @@
 //! Native QuickDraw ABI boundary. Algorithms consume checked Rust slices below it.
-use mac_abi::{quickdraw::*, traps::*, *};
+use mac_abi::{geometry::Point, quickdraw::*, traps::*, *};
 
 use super::{SurfaceExt, fonts::FontManager, fonts_service, regions_service, service};
 unsafe fn request<'a, T>(pointer: *mut (), size: usize) -> Result<&'a mut T, Status>
@@ -50,6 +50,72 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                        -> i64
 {
     let result = (|| -> Result<(), Status> {
+        if number == FONT && size == size_of::<FontSuitcaseCall>()
+        {
+            use crate::toolbox::font_suitcases::Host;
+            let call = unsafe { request::<FontSuitcaseCall>(pointer, size) }?;
+            let result = (|| -> Result<(), Status> {
+                if call.reserved != 0
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                let owner = crate::context::current_owner()?;
+                if call.operation == FONT_SUITCASE_CREATE
+                {
+                    if call.id != 0
+                       || call.index != 0
+                       || call.data_length != 0
+                       || call.resource_length != 0
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
+                    let source =
+                        crate::toolbox::font_suitcases::Input::new(call.expected_data,
+                                                                   call.expected_resource)?;
+                    return crate::kernel::with_desktop(|desktop| {
+                               desktop.font_suitcases().insert(&owner, source, call)
+                           }).map_err(crate::state::AccessError::status)?;
+                }
+                if call.resource_length != 0
+                   || call.expected_data != 0
+                   || call.expected_resource != 0
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                if call.operation == FONT_SUITCASE_FINISH
+                {
+                    if call.data_length != 0
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
+                    let source = crate::kernel::with_desktop(|desktop| {
+                                     desktop.font_suitcases()
+                                            .take_input(owner.owner().incarnation(), call.id)
+                                 }).map_err(crate::state::AccessError::status)??;
+                    let result = source.inspect();
+                    return crate::kernel::with_desktop(|desktop| {
+                               desktop.font_suitcases()
+                                      .complete(owner.owner().incarnation(), call, result)
+                           }).map_err(crate::state::AccessError::status)?;
+                }
+                let bytes = unsafe { input(call.data, call.data_length, 32 * 1024) }?;
+                if !matches!(call.operation,
+                             FONT_SUITCASE_APPEND_DATA | FONT_SUITCASE_APPEND_RESOURCE)
+                   && !bytes.is_empty()
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                crate::kernel::with_desktop(|desktop| {
+                    desktop.font_suitcases().request(owner.owner().incarnation(), call, bytes)
+                }).map_err(crate::state::AccessError::status)?
+            })();
+            if let Err(status) = result
+            {
+                serial!("FONT_INSPECTION_FAILED operation={} id={} status={}", call.operation,
+                        call.id, status);
+            }
+            return result;
+        }
         match number
         {
             IMAGE =>
@@ -139,11 +205,7 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 }?;
                 let mut canvas = unsafe { surface.canvas() }.ok_or(BAD_ARGUMENT)?;
                 let mut port = service::Port::from_wire(call.state)?;
-                if let Some(drawing) = service::graphics(&mut port, call, points, region)?
-                {
-                    drawing.paint(&mut canvas)?;
-                }
-                Ok(())
+                service::paint_graphics(&mut port, call, points, region, &mut canvas)
             }
             FONT =>
             {
@@ -523,6 +585,15 @@ pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize, fonts: Option
                 }
                 #[cfg(target_arch = "riscv64")]
                 {
+                    if call.operation == ICON_APPLE_MENU_FLAG
+                    {
+                        if call.scope != resources::SYSTEM
+                        {
+                            return Err(BAD_ARGUMENT);
+                        }
+                        super::icons_service::set_apple_menu_icon_flag(call.id != 0);
+                        return Ok(());
+                    }
                     crate::kernel::with_resources_in(call.scope, |manager| {
                         if call.operation != ICON_PLOT
                         {

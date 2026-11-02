@@ -137,6 +137,7 @@ impl OwnedWindow
                                 standard_bounds: None,
                                 grow_icon_clip: None,
                                 content_outline: None,
+                                control_outline: None,
                                 close_deferred: false,
                                 damage: Some(Rect::new(0,
                                                        0,
@@ -184,6 +185,7 @@ pub struct Window
     standard_bounds:     Option<Rect>,
     grow_icon_clip:      Option<Rect>,
     content_outline:     Option<Rect>,
+    control_outline:     Option<Rect>,
     close_deferred:      bool,
     damage:              Option<Rect>,
     hidden:              bool,
@@ -239,7 +241,7 @@ impl Window
 
     pub(crate) fn outline_rect(&self) -> Option<Rect>
     {
-        self.content_outline
+        self.control_outline.or(self.content_outline)
     }
 
     pub fn procedure(&self) -> i16
@@ -305,7 +307,8 @@ impl Window
             disposal: Option<DefinitionDisposal<'_>>)
             -> i64
     {
-        let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
+        let mut call = DefinitionCall { reflow: 0,
+                                        header: Header::for_type::<DefinitionCall>(),
                                         kind: definition::WDEF,
                                         id: self.procedure >> 4,
                                         variation: self.procedure & 15,
@@ -1866,6 +1869,14 @@ impl WindowManager
         Ok(true)
     }
 
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn control_outline(&mut self, id: WindowId, next: Option<Rect>)
+                                  -> Result<bool, mac_abi::Status>
+    {
+        let window = self.window_mut(id).ok_or(mac_abi::NOT_FOUND)?;
+        Ok(core::mem::replace(&mut window.control_outline, next) != next)
+    }
+
     pub fn find_window(&self, point: Point) -> Hit
     {
         if point.v >= 0 && point.v < 25
@@ -1975,8 +1986,9 @@ impl WindowManager
         };
     }
 
-    pub fn track(&mut self, point: Point, released: bool, events: &mut EventManager, when: u32)
-                 -> Option<Action>
+    pub fn track(&mut self, point: Point, released: bool, events: &mut EventManager, when: u32,
+                 mut prepare: impl FnMut(&Self, WindowId, Rect) -> Result<(), Status>)
+                 -> Result<Option<Action>, Status>
     {
         let mut order = core::mem::take(&mut self.geometry_order);
         order.clear();
@@ -1986,16 +1998,25 @@ impl WindowManager
         {
             order.extend_from_slice(&self.order);
         }
-        let result = self.track_prepared(point, released, events, when, &order);
+        let result = self.track_prepared(point, released, events, when, &order, &mut prepare);
+        if released
+        {
+            self.tracking = None;
+        }
         self.geometry_order = order;
         result
     }
 
     fn track_prepared(&mut self, point: Point, released: bool, events: &mut EventManager,
-                      when: u32, old_order: &[WindowId])
-                      -> Option<Action>
+                      when: u32, old_order: &[WindowId],
+                      prepare: &mut impl FnMut(&Self, WindowId, Rect) -> Result<(), Status>)
+                      -> Result<Option<Action>, Status>
     {
-        let tracking = self.tracking?;
+        let Some(tracking) = self.tracking
+        else
+        {
+            return Ok(None);
+        };
         // Snapshot geometry only on release. Mouse motion keeps its existing
         // outline-only path and never builds content visibility regions.
         let previous = if released
@@ -2026,8 +2047,9 @@ impl WindowManager
                                                       armed });
                 if released
                    && armed
-                   && let Some(w) = self.window_mut(window)
+                   && let Some(mut next) = self.window(window).copied()
                 {
+                    let w = &mut next;
                     if let Some(user) = w.user_bounds.take()
                     {
                         w.bounds = user;
@@ -2048,7 +2070,19 @@ impl WindowManager
                                              });
                         w.state.zoomed = 1;
                     }
-                    w.calculate();
+                    if !w.calculate()
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
+                    if self.window(window)
+                           .is_some_and(|old| old.local_bounds() != next.local_bounds())
+                    {
+                        prepare(self, window, next.local_bounds())?;
+                    }
+                    if let Some(w) = self.window_mut(window)
+                    {
+                        *w = next;
+                    }
                     action = Some(Action::Resize(window));
                 }
             }
@@ -2095,7 +2129,7 @@ impl WindowManager
                              bounds,
                              .. } =>
             {
-                let w = self.window(window)?;
+                let w = self.window(window).ok_or(NOT_FOUND)?;
                 let structure = w.structure();
                 let width = (i32::from(bounds.right - bounds.left) + i32::from(point.h)
                              - i32::from(start.h)).clamp(i32::from(w.min_width),
@@ -2115,14 +2149,21 @@ impl WindowManager
                                                       start,
                                                       bounds,
                                                       preview: next });
-                if released
-                   && let Some(w) = self.window_mut(window)
-                   && next != w.bounds
+                if released && self.window(window).is_some_and(|w| next != w.bounds)
                 {
-                    w.bounds = next;
-                    w.user_bounds = None;
-                    w.state.zoomed = 0;
-                    w.calculate();
+                    let mut staged = *self.window(window).ok_or(NOT_FOUND)?;
+                    staged.bounds = next;
+                    staged.user_bounds = None;
+                    staged.state.zoomed = 0;
+                    if !staged.calculate()
+                    {
+                        return Err(BAD_ARGUMENT);
+                    }
+                    prepare(self, window, staged.local_bounds())?;
+                    if let Some(w) = self.window_mut(window)
+                    {
+                        *w = staged;
+                    }
                     action = Some(Action::Resize(window));
                 }
             }
@@ -2140,7 +2181,7 @@ impl WindowManager
                     }
                     else
                     {
-                        let owner = self.window(window)?.owner;
+                        let owner = self.window(window).ok_or(NOT_FOUND)?.owner;
                         if let Err(error) = self.dispose_window(window, events, when)
                         {
                             #[cfg(target_arch = "riscv64")]
@@ -2162,7 +2203,7 @@ impl WindowManager
         {
             self.invalidate_geometry_exposure(&window, &order, action);
         }
-        action
+        Ok(action)
     }
 
     fn local_visibility(&self, id: WindowId, order: &[WindowId], previous: Option<&Window>)
@@ -3264,19 +3305,22 @@ mod tests
         wm.start_tracking(wm.find_window(start), start);
         let moved = Point { h: 340,
                             v: 170 };
-        assert_eq!(wm.track(moved, false, &mut events, 1), None);
+        assert_eq!(wm.track(moved, false, &mut events, 1, |_, _, _| Ok(())).unwrap(), None);
         assert_eq!(wm.window(b).unwrap().bounds, original);
         assert!(wm.next_update(&events, 1).is_none());
         assert_eq!(wm.track(Point { h: 0,
                                     v: 0 },
                             true,
                             &mut events,
-                            2),
+                            2,
+                            |_, _, _| Ok(()))
+                     .unwrap(),
                    None);
         assert_eq!(wm.window(b).unwrap().bounds, original);
         assert!(wm.next_update(&events, 2).is_none());
         wm.start_tracking(wm.find_window(start), start);
-        assert_eq!(wm.track(moved, true, &mut events, 3), Some(Action::Drag(b)));
+        assert_eq!(wm.track(moved, true, &mut events, 3, |_, _, _| Ok(())).unwrap(),
+                   Some(Action::Drag(b)));
         let mut expected = original;
         expected.offset(40, 35);
         assert_eq!(wm.window(b).unwrap().bounds, expected);
@@ -3387,21 +3431,24 @@ mod tests
                          v: 0 },
                  true,
                  &mut events,
-                 1);
+                 1,
+                 |_, _, _| Ok(()))
+          .unwrap();
         assert_eq!(wm.window(id).unwrap().bounds, original);
         let standard = Rect::new(40, 80, 240, 210);
         assert_eq!(wm.set_standard_bounds(id, Some(Rect::ZERO)), Err(BAD_ARGUMENT));
         wm.set_standard_bounds(id, Some(standard)).unwrap();
         assert_eq!(wm.window(id).unwrap().bounds, original, "proposal must not resize or paint");
         wm.start_tracking(wm.find_window(p), p);
-        assert_eq!(wm.track(p, true, &mut events, 2), Some(Action::Resize(id)));
+        assert_eq!(wm.track(p, true, &mut events, 2, |_, _, _| Ok(())).unwrap(),
+                   Some(Action::Resize(id)));
         let zoomed = wm.window(id).unwrap().bounds;
         assert_eq!(zoomed, standard);
         let p = Point { h: zoomed.right - 14,
                         v: zoomed.top - 9 };
         assert_eq!(wm.find_window(p).part, WindowPart::ZoomIn);
         wm.start_tracking(wm.find_window(p), p);
-        wm.track(p, true, &mut events, 3);
+        wm.track(p, true, &mut events, 3, |_, _, _| Ok(())).unwrap();
         assert_eq!(wm.window(id).unwrap().bounds, original);
         assert!(wm.window(id).unwrap().user_bounds.is_none());
     }

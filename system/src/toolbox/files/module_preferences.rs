@@ -87,7 +87,7 @@ impl Manager
                                        expected_cnid: cnid,
                                        when,
                                        file_type: *b"JSON",
-                                       creator: *b"MACS",
+                                       creator: *b"TEDT",
                                        length: new.len(),
                                        ..Default::default() };
         self.write_request_for(label, owner, &mut call, name, &[])?;

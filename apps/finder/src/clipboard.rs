@@ -114,7 +114,7 @@ impl Viewer
                                         controls::ScrollbarState { bounds,
                                                                    ..Default::default() },
                                         LINE_HEIGHT,
-                                        1)
+                                        1, mac_toolbox::controls::Reflow::No)
             };
             let bars = (|| {
                 Ok::<_, Error>([create(vertical(width, height))?,

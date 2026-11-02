@@ -3,6 +3,8 @@
 #![forbid(unsafe_code)]
 use alloc::sync::Arc;
 
+use mac_abi::geometry::Point;
+
 use super::*;
 use crate::toolbox::handles::{InvocationGate, OwnerRef};
 pub(crate) mod lifetime;
@@ -141,11 +143,11 @@ fn reserve(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSourc
     if call.handle != 0
        || sources.is_empty()
        || sources.len() > MAX_TRANSFER_SOURCES
-       || call.mode > TRANSFER_TRASH
-       || (call.mode == TRANSFER_TRASH
+       || call.mode > TRANSFER_DESKTOP
+       || (matches!(call.mode, TRANSFER_TRASH | TRANSFER_DESKTOP)
            && (call.destination_volume != 0 || call.destination_parent != 0))
        || (!query
-           && call.mode != TRANSFER_TRASH
+           && !matches!(call.mode, TRANSFER_TRASH | TRANSFER_DESKTOP)
            && (call.destination_volume == 0 || call.destination_parent < ROOT_ID))
        || sources.iter().any(|s| {
                             s.volume == 0
@@ -187,7 +189,7 @@ fn reserve(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSourc
     let mut volumes = Vec::new();
     volumes.try_reserve_exact(sources.len() + 1).map_err(|_| NO_MEMORY)?;
     volumes.extend(sources.iter().map(|s| s.volume));
-    if call.mode != TRANSFER_TRASH
+    if !matches!(call.mode, TRANSFER_TRASH | TRANSFER_DESKTOP)
     {
         volumes.push(call.destination_volume);
     }

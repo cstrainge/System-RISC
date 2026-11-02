@@ -13,7 +13,7 @@ pub mod icons;
 pub mod pictures;
 pub mod images;
 use mac_abi::*;
-pub use mac_abi::{DrawCommand, Point, Rect, WindowId,
+pub use mac_abi::{DrawCommand, geometry::{Point, Rect}, WindowId,
                   quickdraw::{DrawingTarget, WorldId}};
 pub use mac_traps::{Client, Error, Result,
                     types::{SurfaceFont, SurfaceOperation}};

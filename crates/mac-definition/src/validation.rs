@@ -5,7 +5,8 @@
 use mac_abi::{controls, definitions::ControlDefinitionState};
 
 use crate::{Error, Result,
-            families::{ButtonFamily, Family, ProgressFamily, ScrollbarFamily, StaticFamily}};
+            families::{ButtonFamily, Family, ProgressFamily, ScrollbarFamily, SplitterFamily,
+                       StaticFamily, TableFamily}};
 
 pub fn standard(id: i16, variation: i16, state: &ControlDefinitionState) -> Result<()>
 {
@@ -25,6 +26,16 @@ pub fn standard(id: i16, variation: i16, state: &ControlDefinitionState) -> Resu
         {
             ProgressFamily::variation(variation)?;
             ProgressFamily::decode(state, variation).map(|_| ())
+        }
+        controls::CDEF_TABLE =>
+        {
+            TableFamily::variation(variation)?;
+            TableFamily::decode(state, variation).map(|_| ())
+        }
+        controls::CDEF_SPLITTER =>
+        {
+            SplitterFamily::variation(variation)?;
+            SplitterFamily::decode(state, variation).map(|_| ())
         }
         _ => Err(Error::NotSupported)
     }

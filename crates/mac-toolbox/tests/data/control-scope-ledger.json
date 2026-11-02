@@ -37,11 +37,8 @@
     }
   ],
   "host": {
-    "status": "passed",
-    "command": "cargo test --manifest-path System7/Cargo.toml -p mac-toolbox --test control_conformance",
-    "control_tests": 5,
-    "focused_control_tests": 4,
-    "canonical_suite": "also verified in actual disk-booted ECALL fixture"
+    "status": "retired",
+    "reason": "Host-linked CDEF validation removed; use runtime-loaded RV64 ECALL conformance."
   },
   "rv64_ecall": {
     "status": "passed",

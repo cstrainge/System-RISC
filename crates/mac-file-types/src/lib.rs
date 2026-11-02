@@ -1,5 +1,6 @@
 //! Versioned preference data classifies untyped documents. Installed drivers
 //! separately register what they can open; this registry grants no open action.
+//! Unmatched untyped .ttf names use the native TrueType classification.
 #![no_std]
 #![forbid(unsafe_code)]
 extern crate alloc;
@@ -107,7 +108,17 @@ impl Registry
         self.entries
             .iter()
             .find(|e| e.extension[..e.length].eq_ignore_ascii_case(extension.as_bytes()))
-            .map_or((file_type, creator), |e| (e.file_type, e.creator))
+            .map_or_else(|| {
+                             if extension.eq_ignore_ascii_case("ttf")
+                             {
+                                 (*b"sfnt", creator)
+                             }
+                             else
+                             {
+                                 (file_type, creator)
+                             }
+                         },
+                         |e| (e.file_type, e.creator))
     }
 }
 #[cfg(test)]

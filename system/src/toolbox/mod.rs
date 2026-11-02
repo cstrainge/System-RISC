@@ -42,3 +42,4 @@ pub(crate) mod application_heap;
 
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod native_threads;
+pub(crate) mod font_suitcases;

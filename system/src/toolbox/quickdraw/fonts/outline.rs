@@ -76,7 +76,7 @@ pub(super) fn metrics(resolved: &Resolved<'_>) -> Result<FontMetrics, Status>
                      max_width: advance(libm::ceilf(f32::from(max)*scale),resolved.synthetic).clamp(0,i32::from(i16::MAX)) as i16 })
 }
 
-pub(super) fn width(resolved: &Resolved<'_>, text: &str) -> Result<i16, Status>
+pub(super) fn width(resolved: &Resolved<'_>, text: &str) -> Result<i32, Status>
 {
     if resolved.hinted
     {
@@ -93,7 +93,7 @@ pub(super) fn width(resolved: &Resolved<'_>, text: &str) -> Result<i16, Status>
                                              * scale,
                                              resolved.synthetic));
     }
-    Ok(width.clamp(0, i32::from(i16::MAX)) as i16)
+    Ok(width.max(0))
 }
 
 struct Builder<'a>

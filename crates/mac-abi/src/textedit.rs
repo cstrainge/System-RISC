@@ -1,5 +1,5 @@
 //! Resident monochrome TextEdit, with checked UTF-8 byte offsets for native apps.
-use crate::{Point, Rect, WindowId};
+use crate::{ geometry::{Point, Rect }, WindowId };
 pub const CREATE: u32 = 0;
 pub const DISPOSE: u32 = 1;
 pub const INFO: u32 = 2;

@@ -6,8 +6,19 @@ use core::{fmt::{self, Write},
            sync::atomic::{AtomicPtr, Ordering}};
 
 use mac_toolbox::{System, SystemServices};
+use mac_abi::events::EventKind;
 #[path = "../../../conformance/mod.rs"]
 mod conformance;
+mod reflow;
+mod reflow_tree;
+mod reflow_grid;
+mod reflow_window;
+mod table_lines;
+mod reflow_automatic;
+mod reflow_wrapped;
+mod reflow_scroll;
+#[cfg(feature = "window-anchors")]
+mod reflow_splitter;
 static SERVICES: AtomicPtr<SystemServices> = AtomicPtr::new(core::ptr::null_mut());
 struct LogBuffer
 {
@@ -49,6 +60,9 @@ impl Write for LogBuffer
               feature = "textedit-clipboard")))]
 fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::Failure>
 {
+    reflow::run(system)?;
+    conformance::managed_controls::regressions(system, gate)?;
+    conformance::controls::author_families(system, gate)?;
     conformance::run_all(system)?;
     conformance::dates::filesystem(system)?;
     conformance::strings::shared(system, gate)?;
@@ -56,6 +70,17 @@ fn run(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(), conformance::
     conformance::textedit::legacy(system, gate)?;
     conformance::strings::graphical(system, gate)?;
     conformance::ownership::graphical(system, gate)?;
+    // Preserve the earlier sole-slot control reuse scenario before this grid
+    // deliberately grows the registered pool's permanent generation history.
+    reflow_tree::run(system)?;
+    reflow_grid::run(system)?;
+    reflow_window::run(system)?;
+    table_lines::run(system)?;
+    reflow_automatic::run(system)?;
+    reflow_wrapped::run(system)?;
+    reflow_scroll::run(system)?;
+    reflow_splitter::run(system)?;
+    reflow_splitter::control_suite(system)?;
     Ok(())
 }
 #[cfg(feature = "textedit-clipboard")]
@@ -94,7 +119,7 @@ fn run(system: &System<'_>, _gate: mac_abi::TrapGate) -> Result<(), conformance:
         loop
         {
             let event = system.events().wait_event(mac_toolbox::EventMask::ALL, 1)?;
-            if event.as_record().kind == mac_abi::EventKind::KeyDown
+            if event.as_record().kind == EventKind::KeyDown
                && event.as_record().character() == b' '
             {
                 break;

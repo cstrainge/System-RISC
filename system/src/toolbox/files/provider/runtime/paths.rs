@@ -59,29 +59,41 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>) -> Pr
                 {
                     Ok(entry) => entry,
                     Err(NOT_FOUND)
-                        if flight.key.operation == TRASH_DIRECTORY
+                        if special_folder(flight.key.operation)
                            && flight.key.index == 1
                            && node.is_none()
-                           && parent == Some(ROOT_ID)
+                           && (parent == Some(ROOT_ID) || flight.input == "Fonts")
                            && at == flight.input.len() =>
                     {
-                        // Find before reserving a mutation: an existing Trash
+                        // Find before reserving a mutation: an existing folder
                         // remains readable even on an immutable export. Only a
                         // missing directory enters the ordinary owned writer.
                         if let Err(error) = files(|m| m.end_provider_read(volume))
                         {
                             return Progress::Done(Err(error));
                         }
-                        let call = FileCall { operation: TRASH_DIRECTORY,
+                        let call = FileCall { operation: flight.key.operation,
                                               volume,
                                               index: 1,
+                                              file_type: if flight.input == "Desktop Folder"
+                                              {
+                                                  *b"desk"
+                                              }
+                                              else if flight.input == "Fonts"
+                                              {
+                                                  *b"font"
+                                              }
+                                              else
+                                              {
+                                                  *b"trsh"
+                                              },
                                               position: flight.key.when,
                                               ..Default::default() };
                         return match writes::folder_flight(flight.owner.access(),
                                                            flight.thread,
                                                            flight.key,
                                                            &call,
-                                                           "Trash")
+                                                           &flight.input)
                         {
                             Ok(flight) => Progress::Pending(flight),
                             Err(error) => Progress::Done(Err(error))
@@ -132,7 +144,7 @@ pub(super) fn advance(mut flight: Flight, result: Result<Vec<u8>, Status>) -> Pr
             {
                 return finish_read(volume, Err(BAD_ARGUMENT));
             }
-            if flight.key.operation == TRASH_DIRECTORY && entry.kind != DIRECTORY
+            if special_folder(flight.key.operation) && entry.kind != DIRECTORY
             {
                 return finish_read(volume, Err(ALREADY_EXISTS));
             }
@@ -223,12 +235,11 @@ pub(super) fn begin<'a>(owner: impl Into<crate::toolbox::files::subject::Access<
     }
     input.push_str(name);
     let volume = call.volume;
-    let provider = match files(|manager| manager.begin_provider_read(volume))
+    let node = if special_folder(call.operation)
     {
-        Ok(provider) => provider,
-        Err(error) => return Err(error)
-    };
-    let node = if call.cnid == 0 || call.operation == LOOKUP && name.starts_with('/')
+        folder_parent(call)?
+    }
+    else if call.cnid == 0 || call.operation == LOOKUP && name.starts_with('/')
     {
         ROOT_ID
     }
@@ -236,7 +247,12 @@ pub(super) fn begin<'a>(owner: impl Into<crate::toolbox::files::subject::Access<
     {
         call.cnid
     };
-    let (step, path) = if matches!(call.operation, LOOKUP | TRASH_DIRECTORY)
+    let provider = match files(|manager| manager.begin_provider_read(volume))
+    {
+        Ok(provider) => provider,
+        Err(error) => return Err(error)
+    };
+    let (step, path) = if matches!(call.operation, LOOKUP | TRASH_DIRECTORY | FIND_FOLDER)
     {
         (Step::Lookup { volume,
                         node: Some(node),

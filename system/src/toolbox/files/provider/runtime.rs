@@ -28,6 +28,7 @@ mod metadata;
 mod streams;
 mod groups;
 mod background;
+mod desktop;
 mod resident;
 pub(crate) use resident::{Reply as ResidentReply, Request as ResidentRequest};
 pub(in crate::toolbox::files) mod transfer;
@@ -662,6 +663,118 @@ fn advance(mut flight: Flight) -> Progress
     })
 }
 
+fn special_folder(operation: u32) -> bool
+{
+    matches!(operation, TRASH_DIRECTORY | FIND_FOLDER)
+}
+pub(crate) fn request_desktop(owner: u64, call: &mut FileScanCall) -> Status
+{
+    if let Err(error) = desktop::prepare(call)
+    {
+        return error;
+    }
+    let result = match call.desktop.state
+    {
+        1 =>
+        {
+            let mut query = desktop::lookup(call);
+            let local = files(|m| {
+                if m.read_provider(query.volume)?.is_some()
+                {
+                    return Ok(false);
+                }
+                m.request_owned(owner, &mut query, "", &mut [])?;
+                Ok(true)
+            });
+            let status = match local
+            {
+                Ok(true) => OK,
+                Ok(false) => request(owner, &mut query, "", &mut []),
+                Err(error) => error
+            };
+            if status == SERVICE_BUSY
+            {
+                return status;
+            }
+            if status == OK { Ok(Reply::Entry(query.entry)) } else { Err(status) }
+        }
+        2 =>
+        {
+            let mut query = FileScanCall { operation: SCAN_DIRECTORY,
+                                           volume: call.volume,
+                                           directory: call.directory,
+                                           cursor: if call.cursor.revision == 0
+                                           {
+                                               DirectoryScanCursor::default()
+                                           }
+                                           else
+                                           {
+                                               call.cursor
+                                           },
+                                           ..Default::default() };
+            let local = files(|m| {
+                if m.read_provider(query.volume)?.is_some()
+                {
+                    return Ok(false);
+                }
+                m.scan_request(&mut query)?;
+                Ok(true)
+            });
+            let status = match local
+            {
+                Ok(true) => OK,
+                Ok(false) => request_scan(owner, &mut query),
+                Err(error) => error
+            };
+            if status == SERVICE_BUSY
+            {
+                return status;
+            }
+            if status == OK { Ok(Reply::Scan(query)) } else { Err(status) }
+        }
+        3 => Ok(Reply::Scan(*call)),
+        _ => Err(BAD_ABI)
+    };
+    match desktop::finish(*call, result)
+    {
+        Ok(Reply::Scan(reply)) =>
+        {
+            *call = reply;
+            OK
+        }
+        Ok(_) => BAD_ABI,
+        Err(error) => error
+    }
+}
+fn folder_name(call: &FileCall) -> Result<&'static str, Status>
+{
+    if call.operation == TRASH_DIRECTORY
+    {
+        return Ok("Trash");
+    }
+    match &call.file_type
+    {
+        b"desk" => Ok("Desktop Folder"),
+        b"trsh" => Ok("Trash"),
+        b"font" => Ok("Fonts"),
+        _ => Err(NOT_FOUND)
+    }
+}
+fn folder_parent(call: &FileCall) -> Result<u32, Status>
+{
+    if call.operation == FIND_FOLDER && call.file_type == *b"font"
+    {
+        files(|manager| {
+            let parent = manager.volumes.get(call.volume).and_then(super::super::Mounted::info)
+                .ok_or(NOT_FOUND)?.blessed_folder;
+            if parent < ROOT_ID { Err(NOT_FOUND) } else { Ok(parent) }
+        })
+    }
+    else
+    {
+        Ok(ROOT_ID)
+    }
+}
 fn reply(call: &mut FileCall, output: &mut [u8], result: Result<Reply, Status>) -> Status
 {
     match result
@@ -851,7 +964,18 @@ pub(crate) fn request_scan(owner: u64, call: &mut FileScanCall) -> Status
 pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut [u8]) -> Status
 {
     // Replay identity includes resident-derived paths as well as app strings.
-    let name = if call.operation == TRASH_DIRECTORY { "Trash" } else { name };
+    let name = if special_folder(call.operation)
+    {
+        match folder_name(call)
+        {
+            Ok(name) => name,
+            Err(error) => return error
+        }
+    }
+    else
+    {
+        name
+    };
     let thread = crate::context::current_thread().0;
     if thread <= 1
     {
@@ -868,7 +992,8 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
                     cursor:    DirectoryScanCursor::default(),
                     resource:  None,
                     metadata:  None,
-                    when:      if matches!(call.operation, NEW_FOLDER | TRASH_DIRECTORY)
+                    when:      if matches!(call.operation,
+                                           NEW_FOLDER | TRASH_DIRECTORY | FIND_FOLDER)
                     {
                         call.position
                     }
@@ -897,7 +1022,7 @@ pub(crate) fn request(owner: u64, call: &mut FileCall, name: &str, output: &mut 
     {
         return writes::folder(owner, thread, key, call, name);
     }
-    if call.operation == TRASH_DIRECTORY
+    if special_folder(call.operation)
     {
         return paths::start(owner, thread, key, call, name);
     }

@@ -1,7 +1,7 @@
 //! Native retained drawing is committed by EndUpdate, including while another
 //! actual application thread polls events and the writer explicitly presents.
 #![cfg(target_arch = "riscv64")]
-use mac_toolbox::{Rect, System, WindowId, abi::EventKind, events::classic::EVERY_EVENT};
+use mac_toolbox::{Rect, System, WindowId, abi::events::EventKind, events::classic::EVERY_EVENT};
 
 pub fn run(system: &System<'_>) -> Result<(), mac_toolbox::Error>
 {

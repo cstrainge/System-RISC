@@ -1,7 +1,7 @@
 //! Shared boot rasters and desktop pattern. No allocation or Toolbox runtime.
 #![no_std]
 #![deny(unsafe_code)]
-use mac_abi::Rect;
+use mac_abi::geometry::Rect;
 pub mod ramfb;
 pub const HAPPY: &[u8; 256] = include_bytes!("../assets/happy-mac.icn");
 pub const MISSING: &[u8; 256] = include_bytes!("../assets/missing-disk.icn");

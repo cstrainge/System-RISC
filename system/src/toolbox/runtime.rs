@@ -2,7 +2,9 @@
 #![forbid(unsafe_code)]
 use alloc::{boxed::Box, string::String, vec::Vec};
 
-use mac_abi::*;
+use mac_abi::{events::{CMD_KEY, Event, EventKind},
+              geometry::{Point, Rect},
+              *};
 use mac_object_table::shared::InvocationGate as _;
 
 use super::quickdraw::{SurfaceExt,
@@ -18,6 +20,9 @@ use crate::{platform,
                       resources::definitions::DefinitionRef,
                       windows::{Action, WindowId, WindowManager, WindowPart}},
             virtio_input};
+
+#[path = "menus/feedback.rs"]
+mod menu_feedback;
 
 /// Bootstrap must preserve a definition-publication transport refusal rather
 /// than recasting it as a malformed resource or unrelated service failure.
@@ -57,6 +62,8 @@ pub(crate) use drag_runtime::native_drag;
 mod textedit_runtime;
 #[path = "quickdraw/ordinary_underlay.rs"]
 mod ordinary_underlay;
+#[path = "controls/window_layout.rs"]
+mod window_layout;
 use ordinary_underlay::OrdinaryUnderlay;
 #[path = "processes/runtime.rs"]
 mod local;
@@ -87,6 +94,7 @@ pub struct Desktop
 {
     pub(in crate::toolbox) drag:      super::drag::Manager,
     standard_file:                    super::standard_file::Manager,
+    font_suitcases:                   super::font_suitcases::Manager,
     scroll_boxes:                     super::controls::scrollbox::Manager,
     controls:                         super::controls::objects::Manager,
     crash:                            super::crashes::Manager,
@@ -101,10 +109,13 @@ pub struct Desktop
     core_dialogs_active:              bool,
     desktop:                          DesktopLayer,
     menus:                            super::menus::Manager,
+    system_bar:                       super::menus::SystemBar,
     cursors:                          super::quickdraw::cursors::Cursors,
     busy_cursor:                      super::quickdraw::cursors::Cursors,
     responsiveness:                   super::quickdraw::responsiveness::Responsiveness,
     text_cursor:                      mac_abi::quickdraw::MonoCursor,
+    resize_cursors:                   [mac_abi::quickdraw::MonoCursor; 2],
+    automatic_cursor:                 Option<u32>,
     worlds:                           super::quickdraw::worlds::Worlds,
     classic_font:                     mac_abi::quickdraw::FontSelection,
     pub windows:                      WindowManager,
@@ -143,6 +154,7 @@ pub struct Desktop
     foreground:                       u64,
     locals:                           Vec<local::Saved>,
     pub(in crate::toolbox) processes: super::processes::Manager,
+    menu_feedback:                    Option<menu_feedback::Feedback>,
     app_menu:                         super::processes::menu::ApplicationMenu
 }
 
@@ -165,6 +177,13 @@ impl super::standard_file::FileDialogHost for Desktop
     fn file_dialogs(&mut self) -> &mut super::standard_file::Manager
     {
         &mut self.standard_file
+    }
+}
+impl super::font_suitcases::Host for Desktop
+{
+    fn font_suitcases(&mut self) -> &mut super::font_suitcases::Manager
+    {
+        &mut self.font_suitcases
     }
 }
 
@@ -477,6 +496,12 @@ impl Desktop
         Ok(())
     }
 
+    fn apply_control_outline(&mut self, window: u64, next: Option<Rect>) -> Result<(), Status>
+    {
+        self.feedback_dirty |= self.windows.control_outline(WindowId(window), next)?;
+        Ok(())
+    }
+
     pub(crate) fn new(processes: super::processes::Manager,
                       finder_owner: super::handles::OwnerRef,
                       controls: super::controls::objects::Manager)
@@ -503,6 +528,13 @@ impl Desktop
                                                                  .1
                                                                  .data)
             }).ok_or(NOT_SUPPORTED)??;
+        let mut resize_cursors = [mac_abi::quickdraw::MonoCursor::default(); 2];
+        for (slot, id) in resize_cursors.iter_mut().zip([17, 21])
+        {
+            *slot=crate::kernel::with_resources(|resources| {
+                super::quickdraw::cursors::decode_mono(&resources.get(mac_abi::resources::SYSTEM,ResourceKey {kind:*b"CURS",id})?.1.data)
+            }).ok_or(NOT_SUPPORTED)??;
+        }
         let mut busy_cursor = super::quickdraw::cursors::Cursors::default();
         busy_cursor.resource_request(&mut mac_abi::quickdraw::CursorResourceCall {
             operation: mac_abi::quickdraw::CURSOR_RESOURCE_ANIMATE,
@@ -516,6 +548,10 @@ impl Desktop
                 super::quickdraw::cursors::copy_resource(&resource.data)
             }).ok_or(NOT_SUPPORTED)?
         })?;
+        let mut presentation_damage = Vec::new();
+        shared_scene_allocation(|| presentation_damage.try_reserve_exact(4)).map_err(|_| {
+                                                                                NO_MEMORY
+                                                                            })?;
         let mut content_damage = Vec::new();
         shared_scene_allocation(|| content_damage.try_reserve_exact(1)).map_err(|_| NO_MEMORY)?;
         // The live Finder queue belongs to Finder. Its inactive row contains
@@ -529,6 +565,11 @@ impl Desktop
             shared_scene_allocation(|| locals.try_reserve_exact(1)).map_err(|_| NO_MEMORY)?;
         }
         locals.push(local::Saved::try_placeholder(processes.ledger(finder)?, mdef)?);
+        let mut system_bar =
+            crate::kernel::with_resources(|resources| {
+                super::menus::SystemBar::new(mdef, crate::machine::traps::gateway, resources)
+            }).ok_or(NOT_SUPPORTED)??;
+        system_bar.reset(finder);
         Ok(Self { first_window: WindowId(0),
                   crash: Default::default(),
                   system_report: None,
@@ -538,12 +579,14 @@ impl Desktop
                   system_report_present_pending: false,
                   system_report_cursor_pending: false,
                   standard_file: super::standard_file::Manager::new(super::handles::file_dialog_kinds()?)?,
+                  font_suitcases: super::font_suitcases::Manager::new(super::handles::font_suitcase_kinds()?)?,
                   scroll_boxes: super::controls::scrollbox::Manager::new(super::handles::scroll_box_kinds()?)?,
                   controls,
                   dialogs: super::dialogs::Alerts::new(super::handles::alert_kinds()?, processes.ledger(finder)?)?,
                   core_dialogs: super::dialogs::Alerts::new(super::handles::alert_kinds()?, super::handles::system_owner()?)?,
                   core_dialogs_active: false,
                   menus: super::menus::Manager::new(super::handles::menu_kinds()?, mdef, crate::machine::traps::gateway)?,
+                  system_bar,
                   desktop: DesktopLayer::new(Rect::new(0,
                                                         21,
                                                         crate::display::WIDTH as i16,
@@ -552,6 +595,8 @@ impl Desktop
                   busy_cursor,
                   responsiveness: Default::default(),
                   text_cursor,
+                  resize_cursors,
+                  automatic_cursor:None,
                   worlds: super::quickdraw::worlds::Worlds::new(super::handles::world_kinds()?)?,
                   classic_font: Default::default(),
                   windows: WindowManager::with_kinds(super::handles::window_kinds()?, crate::machine::traps::gateway)?,
@@ -571,8 +616,9 @@ impl Desktop
                   last_action: "READY",
                   redraw: true,
                   content_damage,
-                  presentation_damage:Vec::new(),
+                  presentation_damage,
                   presentation_copy_full:false,
+                  menu_feedback: None,
                   feedback_dirty: false,
                   feedback: Default::default(),
                   outline_clip: Default::default(),
@@ -602,6 +648,22 @@ impl Desktop
 
     pub fn menu(&mut self, call: &mut mac_abi::menus::MenuCall) -> Status
     {
+        if call.reserved != 0
+        {
+            return BAD_ARGUMENT;
+        }
+        if call.operation == mac_abi::menus::SHOW_ABOUT_SYSTEM
+        {
+            if call.handle != 0
+            {
+                return BAD_ARGUMENT;
+            }
+            return self.show_about_system().map_or_else(|status| status, |_| OK);
+        }
+        if call.handle == 0 && call.menu_id == mac_abi::menus::SYSTEM_APPLE_MENU_ID
+        {
+            return self.system_bar.query(call).map_or_else(|status| status, |_| OK);
+        }
         if call.handle == 0 && call.menu_id == super::processes::menu::MENU_ID
         {
             return self.app_menu.query(call).map_or_else(|e| e, |_| OK);
@@ -612,25 +674,27 @@ impl Desktop
             Err(status) => return status
         };
         let result = crate::kernel::with_resources_in(call.scope, |resources| {
-                         self.menus.request(&owner, call, resources)
+                         self.menus.request(&owner, call, resources, &self.system_bar)
                      }).unwrap_or_else(Err);
         if matches!(result, Ok(true)) && self.owner == self.foreground
         {
+            self.refresh_system_menu();
             self.menu_cache.invalidate();
             self.redraw = true;
         }
         result.map_or_else(|status| status, |_| OK)
     }
 
-    fn menu_selection(&mut self, selection: mac_abi::menus::Selection, when: u32)
+    fn menu_selection(&mut self, selection: mac_abi::menus::Selection, when: u32, point: Point,
+                      modifiers: u16)
     {
         self.events.post_system(Event { payload: 0,
                                         kind: EventKind::MenuCommand,
                                         message: ((selection.menu_id as u16 as u32) << 16)
                                                  | u32::from(selection.item),
                                         when,
-                                        where_: self.events.mouse,
-                                        modifiers: self.events.modifiers,
+                                        where_: point,
+                                        modifiers,
                                         window: 0 });
         self.last_action = "MENU";
     }
@@ -1000,6 +1064,7 @@ impl Desktop
                         {
                             self.textedit.begin_cursor_update(id);
                             self.windows.end_update(id);
+                            self.controls.layout_scene_changed(self.owner, id.0);
                             return status;
                         }
                     }
@@ -1010,6 +1075,7 @@ impl Desktop
                     self.textedit.commit_cursor_update(id);
                 }
                 self.windows.end_update(id);
+                self.controls.layout_scene_changed(self.owner, id.0);
                 if let Some(outline) = outline
                    && let Err(status) = self.apply_content_outline(id, outline)
                 {
@@ -1044,7 +1110,7 @@ impl Desktop
         result
     }
 
-    pub fn control_definition(&mut self, id: i16) -> Result<DefinitionRef, Status>
+    pub fn control_definition(id: i16) -> Result<DefinitionRef, Status>
     {
         crate::loader::cached_definition(*b"CDEF", id).and_then(|entry| {
                                                           entry.ok_or_else(|| {
@@ -1095,10 +1161,8 @@ impl Desktop
         {
             return Err(BAD_ARGUMENT);
         }
-        self.scroll_boxes.preflight_definition(&recipient,
-                                                &storage,
-                                                call,
-                                                crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)?;
+        let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
+        self.scroll_boxes.preflight_definition(&recipient, &storage, call, &fonts)?;
         Ok(crate::loader::cached_definition(*b"CDEF", 1).map_err(crate::loader::status)?.is_none())
     }
 
@@ -1149,15 +1213,29 @@ impl Desktop
         {
             return Err(BAD_ARGUMENT);
         }
+        if matches!(call.operation, TRACK_BEGIN | TRACK_POLL)
+           && window != 0
+           && (self.owner != self.foreground
+               || self.windows.active_window() != Some(WindowId(window)))
+        {
+            call.operation = TRACK_CANCEL;
+        }
+        if call.operation == TRACK_CANCEL
+        {
+            self.scroll_boxes.cancel(call, owner)?;
+            self.clear_control_highlight(window, call.id, true);
+            return Ok(None);
+        }
         let entry = match self.scroll_boxes.bound_definition(call, owner)?
         {
             Some(entry) => entry,
-            None => self.control_definition(1)?
+            None => crate::toolbox::runtime::Desktop::control_definition(1)?
         };
         let drawing = self.scroll_boxes.request(&recipient,
                                                  &storage,
                                                  call,
-                                                 crate::kernel::fonts().ok_or(NOT_SUPPORTED)?,
+                                                 crate::kernel::fonts().ok_or(NOT_SUPPORTED)?
+                                                                       .as_ref(),
                                                  entry,
                                                  crate::machine::traps::gateway)?;
         if !call.surface.is_null()
@@ -1234,9 +1312,57 @@ impl Desktop
         Ok(None)
     }
 
+    fn clear_control_highlight(&mut self, window: u64, id: u64, scroll_box: bool)
+    {
+        let mut removed = Vec::new();
+        let mut coalesced = None;
+        for content in self.content
+                           .iter_mut()
+                           .chain(&mut self.pending_content)
+                           .filter(|content| content.id == SceneTarget::from(window))
+        {
+            for command in content.iter_commands_mut()
+            {
+                let bounds = match command
+                {
+                    RenderCommand::Control(drawing) if !scroll_box && drawing.id == id =>
+                    {
+                        let damage = drawing.capture_bounds();
+                        drawing.cancel_tracking().then_some(damage)
+                    }
+                    RenderCommand::ScrollBox(drawing) if scroll_box && drawing.id == id =>
+                    {
+                        drawing.cancel_tracking()
+                    }
+                    _ => None
+                };
+                if let Some(bounds) = bounds
+                {
+                    accumulate_removed_damage(&mut removed, &mut coalesced, bounds);
+                }
+            }
+        }
+        let changed = !removed.is_empty() || coalesced.is_some();
+        for bounds in removed.into_iter().chain(coalesced)
+        {
+            self.content_changed_rect(window, bounds);
+        }
+        if changed && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        {
+            self.present();
+        }
+    }
+
     fn managed_control(&mut self, call: &mut mac_abi::controls::ControlCall) -> Result<(), Status>
     {
         use mac_abi::controls::*;
+        if !call.surface.is_null()
+           || call.reserved != 0
+           || call.reflow > 1
+           || (call.reflow != 0 && !matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR))
+        {
+            return Err(BAD_ARGUMENT);
+        }
         let (recipient, storage) = self.service_owners()?;
         let owner = recipient.owner().incarnation();
         let window = if matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
@@ -1258,16 +1384,6 @@ impl Desktop
                            NOT_FOUND
                        });
         }
-        let entry = match self.controls.bound_definition(call, owner)?
-        {
-            Some(entry) => entry,
-            None =>
-            {
-                let (definition, _) =
-                    self.controls.preflight_definition(&recipient, &storage, call)?;
-                self.control_definition(definition)?
-            }
-        };
         // A deactivated/hidden owner cannot continue a capture after app switching.
         if matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
            && window != 0
@@ -1276,16 +1392,254 @@ impl Desktop
         {
             call.operation = CANCEL_TRACKING;
         }
-        let drawing = self.controls.request(&recipient,
-                                             &storage,
-                                             call,
-                                             entry,
-                                             crate::machine::traps::gateway)?;
-        self.finish_managed_control(call, window, drawing)
+        if call.operation == CANCEL_TRACKING
+        {
+            let split = self.controls.splitter_capture(call.id, owner)?;
+            self.controls.cancel(call, owner)?;
+            if split
+            {
+                self.apply_control_outline(window, None)?;
+                self.present();
+            }
+            self.clear_control_highlight(window, call.id, false);
+            return Ok(());
+        }
+        if matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
+           && self.controls.splitter_request(call, owner, crate::machine::traps::gateway)?
+        {
+            let pending = self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let prepared = self.controls.prepare_splitter(call,
+                                                           owner,
+                                                           pending,
+                                                           crate::machine::traps::gateway,
+                                                           |id| {
+                                                               crate::toolbox::runtime::Desktop::control_definition(id)
+                                                           })?;
+            let (used, limit) = self.retained_admission(SceneTarget::from(window));
+            return self.publish_control_layout(window, prepared, used, limit);
+        }
+        if call.operation == NEXT_CHILD_OBJECT
+        {
+            return self.controls.next_child(call, owner);
+        }
+        if call.operation == HIT_CHILDREN_OBJECT
+        {
+            let (child, part) =
+                self.controls.hit_children(call.id,
+                                            owner,
+                                            call.point,
+                                            crate::machine::traps::gateway,
+                                            |state| {
+                                                let id = super::controls::definition_id(state)?;
+                                                let entry =
+                                                    crate::toolbox::runtime::Desktop::control_definition(id)?;
+                                                let mut state = *state;
+                                                super::controls::prepare(&mut state,
+                                                           entry,
+                                                           crate::machine::traps::gateway)?;
+                                                Ok(state.result as i16)
+                                            })?;
+            call.layout.child = child;
+            call.result = i32::from(part);
+            return Ok(());
+        }
+        if call.operation == REFLOW_OBJECT
+           && matches!(call.layout.message,
+                       reflow::SET_CHILD
+                       | reflow::SET_CHILD_INDEXED
+                       | reflow::REMOVE_CHILD
+                       | reflow::REPARENT)
+        {
+            // Membership publication cannot straddle an unfinished window paint
+            // transaction. Refuse before consuming the child's owner; retry after
+            // EndUpdate. No old scene is re-clipped against a half-built new one.
+            let paint_pending =
+                self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            if self.controls.change_parent(call, owner, paint_pending)?
+            {
+                self.sync_control_tree(window);
+            }
+            return Ok(());
+        }
+        if call.operation == REFLOW_OBJECT
+           && matches!(call.layout.message, reflow::GET_SCROLLING | reflow::GET_LOGICAL_RECT)
+        {
+            return self.controls.scroll_query(call, owner);
+        }
+        if (call.operation == REFLOW_OBJECT
+            && matches!(call.layout.message,
+                        reflow::SET_SCROLLING | reflow::SCROLL_TO | reflow::REVEAL_CHILD))
+           || (matches!(call.operation, BEGIN_TRACKING | POLL_TRACKING)
+               && self.controls.scrolling(call.id, owner)?)
+        {
+            let pending = self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let prepared = self.controls.prepare_scroll(call,
+                                                         owner,
+                                                         pending,
+                                                         crate::machine::traps::gateway,
+                                                         |id| {
+                                                             crate::toolbox::runtime::Desktop::control_definition(id)
+                                                         })?;
+            let (used, limit) = self.retained_admission(SceneTarget::from(window));
+            return self.publish_control_layout(window, prepared, used, limit);
+        }
+        if call.operation == REFLOW_OBJECT
+           && matches!(call.layout.message,
+                       reflow::SET_SPLITTER | reflow::GET_SPLITTER | reflow::RESET_SPLIT_SIZES)
+        {
+            return self.controls.splitter_configuration(call, owner);
+        }
+        if call.operation == REFLOW_OBJECT
+           && matches!(call.layout.message, reflow::SET_GRID_TRACK | reflow::GET_GRID_TRACK)
+        {
+            return self.controls.grid_configuration(call, owner);
+        }
+        if call.operation == REFLOW_OBJECT
+           && matches!(call.layout.message, reflow::SET_ANCHORS | reflow::SET_WINDOW_BORDER)
+           && (call.layout.message == reflow::SET_WINDOW_BORDER
+               || self.controls.is_root(call.id, owner)?)
+        {
+            if !self.controls.is_root(call.id, owner)?
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let viewport = self.windows.window(WindowId(window)).ok_or(NOT_FOUND)?.local_bounds();
+            let pending = self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let prepared = self.controls.prepare_window(window,
+                                                         viewport,
+                                                         pending,
+                                                         Some((call, owner)),
+                                                         crate::machine::traps::gateway,
+                                                         |id| {
+                                                             crate::toolbox::runtime::Desktop::control_definition(id)
+                                                         })?;
+            let (used, limit) = self.retained_admission(SceneTarget::from(window));
+            return self.publish_control_layout(window, prepared, used, limit);
+        }
+        if call.operation == REFLOW_OBJECT
+           && matches!(call.layout.message, reflow::ASK_SIZE | reflow::ASSIGN_RECT)
+           && self.controls.is_table(call.id, owner)?
+        {
+            let paint_pending =
+                self.pending_content.iter().any(|c| c.id == SceneTarget::from(window));
+            let (used, limit) = self.retained_admission(SceneTarget::from(window));
+            let prepared = self.controls.prepare_layout(call,
+                                                         owner,
+                                                         paint_pending,
+                                                         crate::machine::traps::gateway,
+                                                         |id| {
+                                                             crate::toolbox::runtime::Desktop::control_definition(id)
+                                                         },
+                                                         None)?;
+            call.layout.measurement = prepared.measurement;
+            self.publish_control_layout(window, prepared, used, limit)?;
+            return Ok(());
+        }
+        if self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+           && self.controls.changes_tree_geometry(call, owner)?
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if call.operation == DISPOSE_OBJECT
+        {
+            let split_before = self.controls.window_splitter_capture(window);
+            self.controls.dispose(call.id, owner)?;
+            if split_before && !self.controls.window_splitter_capture(window)
+            {
+                self.apply_control_outline(window, None)?;
+                self.present();
+            }
+            self.remove_dead_control_drawings(window);
+            return Ok(());
+        }
+        let split_before = !matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
+                           && self.controls.splitter_capture(call.id, owner)?;
+        let entry = match self.controls.bound_definition(call, owner)?
+        {
+            Some(entry) => entry,
+            None =>
+            {
+                let (id, _) = self.controls.preflight_definition(&recipient, &storage, call)?;
+                crate::toolbox::runtime::Desktop::control_definition(id)?
+            }
+        };
+        let (used, limit) = self.retained_admission(SceneTarget::from(window));
+        let content = self.pending_content
+                          .iter_mut()
+                          .chain(&mut self.content)
+                          .find(|content| content.id == SceneTarget::from(window));
+        let drawing = self.controls.request_with(&recipient,
+                                                  &storage,
+                                                  call,
+                                                  entry,
+                                                  crate::machine::traps::gateway,
+                                                  |drawing| {
+            if window == 0
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let content = content.ok_or(NOT_FOUND)?;
+            let bounds = drawing.bounds();
+            let damage = drawing.damage();
+            let size = drawing.storage();
+            let old = content.iter_commands_mut()
+                .find(|command| matches!(command, RenderCommand::Control(old) if old.id == drawing.id));
+            let old_bounds = if let Some(command) = old
+            {
+                if used - command.storage() + size > limit
+                {
+                    return Err(NO_MEMORY);
+                }
+                let RenderCommand::Control(previous) = command else { return Err(BAD_ABI) };
+                let bounds = previous.bounds();
+                *command = RenderCommand::Control(drawing);
+                Some(bounds)
+            }
+            else
+            {
+                if used + size > limit || content.commands.len() >= 512
+                {
+                    return Err(NO_MEMORY);
+                }
+                content.record(RenderCommand::Control(drawing))?;
+                None
+            };
+            Ok((bounds, damage, old_bounds))
+        })?;
+        if split_before && !self.controls.splitter_capture(call.id, owner)?
+        {
+            self.apply_control_outline(window, None)?;
+            self.present();
+        }
+        if self.controls.in_tree(call.id)
+           && (drawing.as_ref().is_some_and(|(bounds, _, old)| *old != Some(*bounds))
+               || (call.operation == REFLOW_OBJECT
+                   && call.layout.message == reflow::SET_VISIBLE_RECT))
+        {
+            self.sync_control_tree(window);
+        }
+        if let Some((bounds, damage, old_bounds)) = drawing
+        {
+            if let Some(old) = old_bounds
+               && old != bounds
+            {
+                self.content_changed_rect(window, old);
+            }
+            for damage in damage.into_iter().filter(|r| !r.is_empty())
+            {
+                self.content_changed_rect(window, damage);
+            }
+            // A control state change commits its own pixels before returning.
+            // Full window updates remain private until EndUpdate.
+            if damage.iter().any(|r| !r.is_empty())
+               && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+            {
+                self.present();
+            }
+        }
+        Ok(())
     }
 
-    /// Retain the original drawing and damage path for every real publisher.
-    /// A prepared control changes only admission, never its paint contract.
     fn finish_managed_control(&mut self, call: &mac_abi::controls::ControlCall, window: u64,
                               drawing: Option<super::controls::Drawing>)
                               -> Result<(), Status>
@@ -1384,10 +1738,7 @@ impl Desktop
         {
             let (recipient, storage) = self.service_owners()?;
             let owner = recipient.owner().incarnation();
-            if self.controls.bound_definition(call, owner)?.is_some()
-            {
-                return Ok(None);
-            }
+            let bound = self.controls.bound_definition(call, owner)?;
             let window = if matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
             {
                 call.window
@@ -1407,7 +1758,18 @@ impl Desktop
                                NOT_FOUND
                            });
             }
-            self.controls.preflight_definition(&recipient, &storage, call)?.0
+            if let Some(auxiliary) = self.controls.auxiliary_definition(call, owner)?
+            {
+                auxiliary
+            }
+            else if bound.is_some()
+            {
+                return Ok(None);
+            }
+            else
+            {
+                self.controls.preflight_definition(&recipient, &storage, call)?.0
+            }
         }
         else
         {
@@ -1439,13 +1801,68 @@ impl Desktop
         }
     }
 
+    fn remove_dead_control_drawings(&mut self, window: u64)
+    {
+        let mut removed = Vec::new();
+        let mut coalesced = None;
+        for content in self.content
+                           .iter_mut()
+                           .chain(self.pending_content.iter_mut())
+                           .filter(|c| c.id == SceneTarget::from(window))
+        {
+            content.retain_commands(|command| {
+                       if let RenderCommand::Control(d) = command
+                          && d.id != 0
+                          && !self.controls.live(d.id)
+                       {
+                           accumulate_removed_damage(&mut removed, &mut coalesced, d.bounds());
+                           return false;
+                       }
+                       true
+                   });
+        }
+        let changed = !removed.is_empty() || coalesced.is_some();
+        for bounds in removed.into_iter().chain(coalesced)
+        {
+            self.content_changed_rect(window, bounds);
+        }
+        if changed && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        {
+            self.present();
+        }
+    }
+
+    fn sync_control_tree(&mut self, window: u64)
+    {
+        let mut damage = Vec::new();
+        let mut coalesced = None;
+        if let Some(content) = self.pending_content
+                                   .iter_mut()
+                                   .chain(&mut self.content)
+                                   .find(|c| c.id == SceneTarget::from(window))
+        {
+            content.sync_control_tree(&self.controls, |bounds| {
+                       accumulate_removed_damage(&mut damage, &mut coalesced, bounds);
+                   });
+        }
+        let changed = !damage.is_empty() || coalesced.is_some();
+        for bounds in damage.into_iter().chain(coalesced)
+        {
+            self.content_changed_rect(window, bounds);
+        }
+        if changed && !self.pending_content.iter().any(|c| c.id == SceneTarget::from(window))
+        {
+            self.present();
+        }
+    }
+
     pub fn control(&mut self, call: &mut mac_abi::controls::ControlCall) -> Status
     {
         if call.operation >= mac_abi::controls::CREATE_STANDARD
         {
             return self.managed_control(call).map_or_else(|e| e, |_| OK);
         }
-        if !call.surface.is_null()
+        if !call.surface.is_null() || call.reflow != 0
         {
             return BAD_ARGUMENT;
         }
@@ -1842,36 +2259,39 @@ impl Desktop
     /// The foreground application owns cursor policy; only an exposed editor
     /// content region can request an automatic I-beam. WDEF hit-testing excludes
     /// chrome and covered windows, while TextEdit accounts for its port clip.
-    fn text_cursor_at_mouse(&self) -> bool
+    fn automatic_cursor_at_mouse(&self) -> Option<u32>
     {
-        if !self.cursors.is_automatic()
-           || self.menus.is_tracking()
-           || self.app_menu.is_tracking()
-           || self.windows.is_tracking()
+        if !self.cursors.is_automatic() || self.menus.is_tracking() || self.windows.is_tracking()
         {
-            return false;
+            return None;
         }
+        let id = self.windows.active_window()?;
+        if !self.owns(id)
+        {
+            return None;
+        }
+        let window = self.windows.window(id)?;
+        let local = window.global_to_local(self.events.mouse);
         let hit = self.windows.find_window(self.events.mouse);
-        if hit.part != WindowPart::Content
+        let hover = hit.part == WindowPart::Content && hit.window == Some(id);
+        if let Some(axis) = self.controls.splitter_axis_at(id.0, local, hover)
         {
-            return false;
+            return Some(if axis == 0 { 17 } else { 21 });
         }
-        hit.window
-           .filter(|id| self.owns(*id))
-           .and_then(|id| self.windows.window(id).map(|window| (id, window)))
-           .is_some_and(|(id, window)| {
-               let local = window.global_to_local(self.events.mouse);
-               self.textedit.cursor_hit(id, local)
-               || self.standard_file
-                      .active(self.owner)
-                      .and_then(|key| self.standard_file.get(self.owner, key).ok())
-                      .is_some_and(|d| {
-                          d.window == id
-                          && d.mode == mac_abi::standard_file::PUT
-                          && d.sheet == super::standard_file::Sheet::Main
-                          && d.editor.info().view.contains(local)
-                      })
-           })
+        if !hover
+        {
+            return None;
+        }
+        (self.textedit.cursor_hit(id, local)
+         || self.standard_file
+                .active(self.owner)
+                .and_then(|key| self.standard_file.get(self.owner, key).ok())
+                .is_some_and(|d| {
+                    d.window == id
+                    && d.mode == mac_abi::standard_file::PUT
+                    && d.sheet == super::standard_file::Sheet::Main
+                    && d.editor.info().view.contains(local)
+                })).then_some(1)
     }
 
     pub fn world(&mut self, call: &mut mac_abi::quickdraw::WorldCall, pixels: &mut [u32])
@@ -2057,7 +2477,6 @@ impl Desktop
         // Resolve this real ButtonDown once. Motion/keys/ticks use the actual
         // report focus/capture and never add definition HIT calls.
         let hit = if self.system_report_needs_hit()
-                     && !self.app_menu.is_tracking()
                      && !self.menus.is_tracking()
                      && !self.windows.is_tracking()
                      && let Input::Button { point,
@@ -2188,22 +2607,22 @@ impl Desktop
         {
             return;
         }
+        if self.menu_feedback_input(input)
+        {
+            return;
+        }
         match input
         {
             Input::Move(point) =>
             {
                 self.events.mouse = point;
-                if self.app_menu.is_tracking()
-                {
-                    self.redraw |= self.app_menu.hover(point);
-                    return;
-                }
                 if self.menus.is_tracking()
                 {
-                    self.redraw |= self.menus.hover(point);
+                    self.redraw |=
+                        self.menus.hover(point, &mut self.system_bar, &mut self.app_menu);
                     return;
                 }
-                if let Some(action) = self.windows.track(point, false, &mut self.events, when)
+                if let Some(action) = self.track_window(point, false, when)
                 {
                     self.action(action, when);
                 }
@@ -2222,15 +2641,15 @@ impl Desktop
                 }
                 if down
                 {
-                    if self.app_menu.begin(point)
+                    if self.menus.begin(point, &self.system_bar, &self.app_menu)
                     {
                         self.redraw = true;
                         return;
                     }
-                    let previous_menu = self.menus.selected_menu();
-                    if self.menus.begin(point)
+                    if (0..20).contains(&point.v)
                     {
-                        self.redraw |= previous_menu != self.menus.selected_menu();
+                        // Blank/disabled titles consume the press without
+                        // starting capture or activating the desktop behind it.
                         return;
                     }
                     let hit = admitted_hit.unwrap_or_else(|| self.windows.find_window(point));
@@ -2276,7 +2695,7 @@ impl Desktop
                             if let Some(command) = button
                             {
                                 let mut state = control(command);
-                                let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(), kind: u32::from_be_bytes(*b"CDEF"), id: 0, variation: 0, message: 1, reserved: 0, param: (((local.v as u16 as u32) << 16) | local.h as u16 as u32) as i64, object: (&mut state as *mut crate::toolbox::controls::ControlDefinitionState).cast(), gate: crate::machine::traps::gateway, surface: core::ptr::null_mut() };
+                                let mut call = DefinitionCall { reflow: 0, header: Header::for_type::<DefinitionCall>(), kind: u32::from_be_bytes(*b"CDEF"), id: 0, variation: 0, message: 1, reserved: 0, param: (((local.v as u16 as u32) << 16) | local.h as u16 as u32) as i64, object: (&mut state as *mut crate::toolbox::controls::ControlDefinitionState).cast(), gate: crate::machine::traps::gateway, surface: core::ptr::null_mut() };
                                 if super::resources::definitions::invoke(self.cdef, &mut call) > 0
                                 {
                                     self.events.post_system(Event { payload: 0,
@@ -2320,26 +2739,22 @@ impl Desktop
                 }
                 else
                 {
-                    if self.app_menu.is_tracking()
-                    {
-                        self.redraw = true;
-                        if let Some(action) = self.app_menu.release(point)
-                        {
-                            self.application_action(action);
-                        }
-                        return;
-                    }
                     if self.menus.is_tracking()
                     {
-                        self.redraw |= self.menus.selected_menu().is_some();
-                        if let Some(selection) = self.menus.release_tracking(point)
+                        if let Some(command) =
+                            self.menus
+                                .release_tracking(point, &mut self.system_bar, &mut self.app_menu)
                         {
-                            self.menu_selection(selection, when);
+                            self.start_menu_command_feedback(command, false, when);
+                        }
+                        else
+                        {
+                            self.redraw = true;
                         }
                         return;
                     }
                     let active_before = self.windows.active_window();
-                    if let Some(action) = self.windows.track(point, true, &mut self.events, when)
+                    if let Some(action) = self.track_window(point, true, when)
                     {
                         self.action(action, when);
                     }
@@ -2358,12 +2773,18 @@ impl Desktop
                          modifiers,
                          .. } =>
             {
+                if down && character == 27 && self.menus.is_tracking()
+                {
+                    self.menus.cancel_tracking();
+                    self.redraw = true;
+                    return;
+                }
                 if down
                    && modifiers & CMD_KEY != 0
                    && self.menus.has_key(character)
                    && let Some(selection) = self.menus.key(character)
                 {
-                    self.menu_selection(selection, when);
+                    self.start_menu_key_feedback(selection, when);
                     return;
                 }
                 // Menu policy can still reflect the previous frame while the
@@ -2455,6 +2876,7 @@ impl Desktop
         self.cursor_dirty |= self.responsiveness.foreground(self.foreground, Self::when());
         self.cursor_dirty |= self.responsiveness.polled(self.owner, Self::when());
         self.poll_inputs();
+        self.automatic_control_layout();
         let when = Self::when();
         self.route_events();
         let mut synthetic = false;
@@ -2479,19 +2901,33 @@ impl Desktop
                   };
                   event.map(|event| (event, if positioned { self.event_position(event, self.owner) } else { Default::default() }))
               });
-        let available = event.is_some();
-        let (event, mut position) = event.unwrap_or_else(|| {
-                                             let event = self.events.null_event(when);
-                                             (event,
-                                              if positioned
-                                              {
-                                                  self.event_position(event, self.owner)
-                                              }
-                                              else
-                                              {
-                                                  Default::default()
-                                              })
-                                         });
+        let mut available = event.is_some();
+        let (mut event, mut position) = event.unwrap_or_else(|| {
+                                                 let event = self.events.null_event(when);
+                                                 (event,
+                                                  if positioned
+                                                  {
+                                                      self.event_position(event, self.owner)
+                                                  }
+                                                  else
+                                                  {
+                                                      Default::default()
+                                                  })
+                                             });
+        if self.dialogs.system_menu && event.window == self.dialogs.window
+        {
+            if event.kind == EventKind::Update
+            {
+                if let Err(status) = self.service_system_menu_dialog(event)
+                {
+                    serial!("ABOUT_SYSTEM_PAINT_FAILED status={status}; protocol released or \
+                             owned cleanup retained");
+                }
+            }
+            event = self.events.null_event(when);
+            position = Default::default();
+            available = false;
+        }
         // Disposal/reuse never transfers a queued coordinate to another object.
         if position.window != 0
            && (!self.owns(WindowId(position.window))
@@ -2534,6 +2970,7 @@ impl Desktop
             return;
         }
         crate::trace::record(crate::trace::PRESENT, self.owner, 0, 0, 0, 0);
+        self.tick_menu_feedback();
         self.tick_cursor();
         let available =
             if self.redraw || !self.content_damage.is_empty() || self.ordinary_underlay.pending()
@@ -2607,26 +3044,42 @@ impl Desktop
             // A metadata refusal may leave an exact ordinary entry active.
             damage.retain(|(id, _)| !self.system_scene(*id));
             self.content_damage = damage;
-            self.redraw = false;
-            self.frame_incomplete = false;
-            if full || self.menus.is_tracking() || self.app_menu.is_tracking()
+            if full || self.menus.is_tracking()
             {
-                crate::context::without_recovery(|| {
+                let menu_paint = crate::context::without_recovery(|| {
                     let mut canvas = Canvas::new(platform::back_buffer(),
                                                  crate::display::WIDTH,
                                                  crate::display::HEIGHT);
                     self.menu_cache.paint(&mut canvas,
-                                          (self.foreground,
-                                           self.menus.selected_menu(),
-                                           self.app_menu.is_tracking()),
-                                          |canvas| {
-                                              self.menus.draw_bar(canvas);
-                                              self.app_menu.draw_bar(canvas);
-                                          });
-                    self.menus.draw_popup(&mut canvas);
-                    self.app_menu.draw_popup(&mut canvas);
+                                           (self.foreground,
+                                            self.menus.selected_menu(),
+                                            self.menus.application_selected(),
+                                            self.menus.system_selected()),
+                                           |canvas| {
+                                               self.menus.draw_bar(&mut self.system_bar,
+                                                                   &mut self.app_menu, canvas)
+                                           })?;
+                    self.menus.draw_popup(&mut self.system_bar, &mut self.app_menu, &mut canvas)
                 });
+                if let Err(error) = menu_paint
+                {
+                    if !self.frame_incomplete
+                    {
+                        serial!("MENU_PAINT_FAILED menu={} status={}; incomplete frame deferred",
+                                error.menu, error.status);
+                    }
+                    self.redraw = true;
+                    self.frame_incomplete = true;
+                    self.restore_presentation_damage(damaged, copy_full);
+                    if self.processes.ledger(caller).is_ok_and(|owner| owner.accepting())
+                    {
+                        self.enter(caller);
+                    }
+                    return;
+                }
             }
+            self.redraw = false;
+            self.frame_incomplete = false;
             crate::platform::with_tracking_mask(|scratch| {
                 let mut canvas = Canvas::new(platform::back_buffer(),
                                              crate::display::WIDTH,
@@ -2719,7 +3172,7 @@ impl Desktop
         {
             return Feedback::outline(shape, Clip::Screen);
         }
-        if self.menus.is_tracking() || self.app_menu.is_tracking() || self.windows.is_tracking()
+        if self.menus.is_tracking() || self.windows.is_tracking()
         {
             return Feedback::default();
         }
@@ -2771,8 +3224,18 @@ impl Desktop
     fn compose_cursor(&mut self, full: bool, mut damaged: Vec<Rect>, copy_full: bool)
     {
         let feedback = self.prepare_feedback(full);
-        let cursor_changed = self.cursor_dirty;
-        let text_cursor = self.text_cursor_at_mouse().then_some(self.text_cursor);
+        let automatic =
+            if self.responsiveness.active() { None } else { self.automatic_cursor_at_mouse() };
+        let cursor_changed = self.cursor_dirty || self.automatic_cursor != automatic;
+        self.automatic_cursor = automatic;
+        let text_cursor = automatic.map(|id| {
+                                       match id
+                                       {
+                                           17 => self.resize_cursors[0],
+                                           21 => self.resize_cursors[1],
+                                           _ => self.text_cursor
+                                       }
+                                   });
         let cursor =
             if self.responsiveness.active() { &mut self.busy_cursor } else { &mut self.cursors };
         let text_cursor = if self.responsiveness.active() { None } else { text_cursor };
@@ -2798,6 +3261,7 @@ impl Desktop
         {
             platform::present_rects(back, damaged.iter().copied(), overlays);
         }
+        self.acknowledge_menu_feedback();
         self.feedback = feedback;
         self.feedback_dirty = !full && self.redraw;
         if self.presentation_damage.is_empty()
@@ -2859,7 +3323,7 @@ fn paint(canvas: &mut Canvas, command: &DrawCommand, cdef: DefinitionRef)
         {
             let mut state = control(command);
             let mut surface = Surface::from_canvas(canvas);
-            let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(), kind: u32::from_be_bytes(*b"CDEF"), id: 0, variation: 0, message: 0, reserved: 0, param: 0, object: (&mut state as *mut crate::toolbox::controls::ControlDefinitionState).cast(), gate: crate::machine::traps::gateway, surface: &mut surface };
+            let mut call = DefinitionCall { reflow: 0, header: Header::for_type::<DefinitionCall>(), kind: u32::from_be_bytes(*b"CDEF"), id: 0, variation: 0, message: 0, reserved: 0, param: 0, object: (&mut state as *mut crate::toolbox::controls::ControlDefinitionState).cast(), gate: crate::machine::traps::gateway, surface: &mut surface };
             super::resources::definitions::invoke(cdef, &mut call);
         }
         _ =>
@@ -2922,7 +3386,7 @@ impl super::classic::Services for Desktop
         let mut call = mac_abi::quickdraw::FontCall { operation,
                                                       selection,
                                                       ..Default::default() };
-        let status = fonts_service::query(fonts, &mut call, text);
+        let status = fonts_service::query(&fonts, &mut call, text);
         if status != OK
         {
             return Err(status);
@@ -2943,7 +3407,7 @@ impl super::classic::Services for Desktop
                                            baseline: content.port.state.pen_location,
                                            color: content.port.state.foreground,
                                            ..Default::default() };
-        self.font_draw(&mut call, text, crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)?;
+        self.font_draw(&mut call, text, crate::kernel::fonts().ok_or(NOT_SUPPORTED)?.as_ref())?;
         let content = self.content_mut(id.0)?;
         content.port.state.pen_location.h =
             content.port.state.pen_location.h.wrapping_add(call.width);

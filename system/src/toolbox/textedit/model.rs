@@ -1,6 +1,6 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 
-use mac_abi::{textedit::*, *};
+use mac_abi::{geometry::{Point, Rect}, textedit::*, *};
 
 use super::layout;
 
