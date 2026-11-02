@@ -407,11 +407,11 @@ impl super::Toolbox
         // An application can panic between BeginUpdate and EndUpdate. Its
         // uncommitted pixels must never leak into a later presentation.
         while let Some(index) =
-            self.pending_content
+            self.presentation.pending_content
                 .iter()
                 .position(|content| content.id.window().is_ok_and(|id| self.owns(id)))
         {
-            let id = self.pending_content.remove(index).id.window()?;
+            let id = self.presentation.pending_content.remove(index).id.window()?;
             self.windows.end_update(id);
             self.textedit.begin_cursor_update(id);
         }

@@ -440,7 +440,7 @@ impl Toolbox
 
     pub(super) fn observe_cursor_motion(&mut self, point: Point)
     {
-        self.cursor_dirty |= self.cursors.mouse_moved(point);
+        self.presentation.cursor_dirty |= self.cursors.mouse_moved(point);
         for local in &mut self.locals
         {
             local.cursors.mouse_moved(point);
@@ -464,7 +464,7 @@ impl Toolbox
                 .find(|local| local.id == self.foreground)
                 .is_some_and(|local| local.cursors.animation_tick(now))
         };
-        self.cursor_dirty |= changed;
+        self.presentation.cursor_dirty |= changed;
         changed
     }
 
@@ -477,13 +477,13 @@ impl Toolbox
         let fresh_input = previous_activity != self.activity;
         let cursor_activity = self.tick_menu_feedback() | self.tick_cursor();
         let now = Self::when();
-        self.cursor_dirty |=
+        self.presentation.cursor_dirty |=
             self.responsiveness.tick(self.foreground,
                                      now,
                                      waiting.iter().any(|waiter| waiter.app == self.foreground));
         if self.responsiveness.active()
         {
-            self.cursor_dirty |= self.busy_cursor.animation_tick(now);
+            self.presentation.cursor_dirty |= self.busy_cursor.animation_tick(now);
         }
         self.present_cursor_overlay();
         self.route_events();
@@ -758,8 +758,8 @@ impl Toolbox
             serial!("APPLE_MENU_REFRESH_FAILED status={status}; app section removed, System \
                      commands retained");
         }
-        self.menu_cache.invalidate();
-        self.redraw = true;
+        self.presentation.menu_cache.invalidate();
+        self.presentation.redraw = true;
         self.enter(caller);
     }
 
@@ -771,14 +771,14 @@ impl Toolbox
             self.menus.cancel_tracking();
             self.enter(caller);
             self.refresh_system_menu();
-            self.menu_cache.invalidate();
+            self.presentation.menu_cache.invalidate();
             if self.processes.get(self.foreground).is_ok_and(|process| process.info.thread == 0)
             {
                 // A real saved recovery context can park the dying shell before
                 // its replacement thread is published. No stale menu actions live
                 // during that short, explicitly suspended presentation.
                 self.app_menu.suspend();
-                self.redraw = true;
+                self.presentation.redraw = true;
                 return;
             }
             let refreshed = (|| {
@@ -807,7 +807,7 @@ impl Toolbox
                 // membership refresh must cancel tracking of its prior selection.
                 serial!("APPLICATION_MENU_FAILED status={}", status);
             }
-            self.redraw = true;
+            self.presentation.redraw = true;
         });
     }
 
@@ -844,7 +844,7 @@ impl Toolbox
         self.enter(caller);
         self.processes.activate(id)?;
         self.foreground = id;
-        self.cursor_dirty |= self.responsiveness.foreground(id, Self::when());
+        self.presentation.cursor_dirty |= self.responsiveness.foreground(id, Self::when());
         self.windows.set_owner_hidden(id, false);
         self.windows.select_owner_group_focus(id, focus, &mut self.events, Self::when());
         self.route_events();
@@ -1496,7 +1496,7 @@ impl crate::toolbox::textedit::lifetime::EditorHost for Toolbox
         };
         if result.is_ok() && !storage
         {
-            self.cursor_dirty = true;
+            self.presentation.cursor_dirty = true;
         }
         result
     }

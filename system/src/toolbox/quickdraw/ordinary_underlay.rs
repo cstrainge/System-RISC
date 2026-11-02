@@ -139,22 +139,22 @@ impl Toolbox
     /// never present pixels, publish an observation or compose a cursor here.
     pub(crate) fn prepare_ordinary_baseline(&mut self) -> Result<(), Status>
     {
-        if self.ordinary_underlay.valid
+        if self.presentation.ordinary_underlay.valid
         {
             return Ok(());
         }
-        let mut staging = core::mem::take(&mut self.ordinary_underlay.staging);
+        let mut staging = core::mem::take(&mut self.presentation.ordinary_underlay.staging);
         let result = crate::context::without_recovery(|| {
             crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
                 if staging.len() != crate::display::PIXELS
-                   || self.ordinary_underlay.committed.len() != crate::display::PIXELS
+                   || self.presentation.ordinary_underlay.committed.len() != crate::display::PIXELS
                 {
                     return Err(NOT_SUPPORTED);
                 }
                 let cache_budget = crate::toolbox::quickdraw::content_cache::PIXEL_BUDGET
                     .saturating_sub(self.scroll_boxes.raster_storage())
                     .saturating_sub(crate::toolbox::quickdraw::menu_cache::BYTES);
-                self.content_cache.preserve_headroom(crate::kernel::heap_available(),
+                self.presentation.content_cache.preserve_headroom(crate::kernel::heap_available(),
                                                      2 * 1024 * 1024,
                                                      cache_budget);
                 self.paint_ordinary_full(&mut staging)
@@ -162,16 +162,16 @@ impl Toolbox
         });
         if result.is_ok()
         {
-            copy_rect(&staging, &mut self.ordinary_underlay.committed, screen());
-            self.ordinary_underlay.valid = true;
-            self.ordinary_underlay.full_deferred = false;
-            self.ordinary_underlay.deferred.clear();
-            self.ordinary_underlay.refused_available = None;
-            self.ordinary_underlay.refusal = None;
+            copy_rect(&staging, &mut self.presentation.ordinary_underlay.committed, screen());
+            self.presentation.ordinary_underlay.valid = true;
+            self.presentation.ordinary_underlay.full_deferred = false;
+            self.presentation.ordinary_underlay.deferred.clear();
+            self.presentation.ordinary_underlay.refused_available = None;
+            self.presentation.ordinary_underlay.refusal = None;
         }
         // A refusal leaves committed state invalid and returns the exact actual
         // staging allocation to its owner; no fallback pixels are fabricated.
-        self.ordinary_underlay.staging = staging;
+        self.presentation.ordinary_underlay.staging = staging;
         result
     }
 
@@ -190,8 +190,8 @@ impl Toolbox
     pub(super) fn retained_admission(&self, id: SceneTarget) -> (usize, usize)
     {
         super::window_layout::scene_admission(&self.windows,
-                                              &self.content,
-                                              &self.pending_content,
+                                              &self.presentation.content,
+                                              &self.presentation.pending_content,
                                               id)
     }
 
@@ -202,10 +202,10 @@ impl Toolbox
         let font_snapshot = crate::kernel::fonts();
         let fonts = font_snapshot.as_deref();
         let cdef = self.cdef;
-        self.content_cache.begin_frame();
-        self.content_cache.retain(|id| {
+        self.presentation.content_cache.begin_frame();
+        self.presentation.content_cache.retain(|id| {
                               id.window().ok().and_then(|id| self.windows.window(id)).is_some()
-                              && !self.content
+                              && !self.presentation.content
                                       .iter()
                                       .find(|content| content.id == id)
                                       .is_some_and(|content| {
@@ -214,8 +214,8 @@ impl Toolbox
                                           })
                                       })
                           });
-        let content = &self.content;
-        let cache = &mut self.content_cache;
+        let content = &self.presentation.content;
+        let cache = &mut self.presentation.content_cache;
         self.windows.draw_layer(
                                  &mut canvas,
                                  |window| !window.uses_system_resources(),
@@ -245,7 +245,7 @@ impl Toolbox
                                      }
                                  }
         )?;
-        self.menu_cache
+        self.presentation.menu_cache
             .paint(&mut canvas,
                    (self.foreground,
                     self.menus.selected_menu(),
@@ -265,7 +265,7 @@ impl Toolbox
         let font_snapshot = crate::kernel::fonts();
         let fonts = font_snapshot.as_deref();
         let cdef = self.cdef;
-        let cache = &mut self.content_cache;
+        let cache = &mut self.presentation.content_cache;
         let mut canvas = Canvas::new(pixels, crate::display::WIDTH, crate::display::HEIGHT);
         let ordinary =
             |window: &crate::toolbox::windows::manager::Window| !window.uses_system_resources();
@@ -285,7 +285,7 @@ impl Toolbox
                 {
                     continue;
                 };
-                let Some(content) = self.content.iter().find(|content| content.id == *id)
+                let Some(content) = self.presentation.content.iter().find(|content| content.id == *id)
                 else
                 {
                     continue;
@@ -356,15 +356,15 @@ impl Toolbox
                                            screen_copy_full: &mut bool)
                                            -> Result<bool, Status>
     {
-        let mut staging = core::mem::take(&mut self.ordinary_underlay.staging);
-        let mut changed = core::mem::take(&mut self.ordinary_underlay.changed);
-        let deferred = core::mem::take(&mut self.ordinary_underlay.deferred);
+        let mut staging = core::mem::take(&mut self.presentation.ordinary_underlay.staging);
+        let mut changed = core::mem::take(&mut self.presentation.ordinary_underlay.changed);
+        let deferred = core::mem::take(&mut self.presentation.ordinary_underlay.deferred);
         changed.clear();
         let requested_full = full;
-        let full = full || self.ordinary_underlay.full_deferred || !self.ordinary_underlay.valid;
+        let full = full || self.presentation.ordinary_underlay.full_deferred || !self.presentation.ordinary_underlay.valid;
         let mut copy_full = full;
         let result = if staging.len() != crate::display::PIXELS
-                        || self.ordinary_underlay.committed.len() != crate::display::PIXELS
+                        || self.presentation.ordinary_underlay.committed.len() != crate::display::PIXELS
         {
             Err(NOT_SUPPORTED)
         }
@@ -382,27 +382,27 @@ impl Toolbox
                 }
             })
         };
-        self.ordinary_underlay.deferred = deferred;
+        self.presentation.ordinary_underlay.deferred = deferred;
         if result.is_ok()
         {
             if copy_full
             {
-                copy_rect(&staging, &mut self.ordinary_underlay.committed, screen());
+                copy_rect(&staging, &mut self.presentation.ordinary_underlay.committed, screen());
             }
             else
             {
                 for &rect in &changed
                 {
-                    copy_rect(&staging, &mut self.ordinary_underlay.committed, rect);
+                    copy_rect(&staging, &mut self.presentation.ordinary_underlay.committed, rect);
                 }
             }
-            self.ordinary_underlay.valid = true;
-            self.ordinary_underlay.full_deferred = false;
-            self.ordinary_underlay.deferred.clear();
-            self.ordinary_underlay.refused_available = None;
-            self.ordinary_underlay.refusal = None;
+            self.presentation.ordinary_underlay.valid = true;
+            self.presentation.ordinary_underlay.full_deferred = false;
+            self.presentation.ordinary_underlay.deferred.clear();
+            self.presentation.ordinary_underlay.refused_available = None;
+            self.presentation.ordinary_underlay.refusal = None;
             let windows = &self.windows;
-            let committed = &self.ordinary_underlay.committed;
+            let committed = &self.presentation.ordinary_underlay.committed;
             let back = crate::platform::back_buffer();
             let mut expose = |rect| {
                 windows.for_each_ordinary_underlay_rect(rect, |visible| {
@@ -426,33 +426,33 @@ impl Toolbox
         }
         else
         {
-            if self.ordinary_underlay.valid && staging.len() == crate::display::PIXELS
+            if self.presentation.ordinary_underlay.valid && staging.len() == crate::display::PIXELS
             {
-                copy_rect(&self.ordinary_underlay.committed, &mut staging, screen());
+                copy_rect(&self.presentation.ordinary_underlay.committed, &mut staging, screen());
                 if requested_full
                 {
                     // A real structural/full request must remove the prior
                     // transient popup/tracking pixels even if ordinary replay
                     // refuses. System windows and current menus are drawn next.
-                    copy_rect(&self.ordinary_underlay.committed,
+                    copy_rect(&self.presentation.ordinary_underlay.committed,
                               crate::platform::back_buffer(),
                               screen());
                     *screen_copy_full = true;
                 }
             }
             let refusal = result.as_ref().err().copied();
-            if self.ordinary_underlay.refusal != refusal
+            if self.presentation.ordinary_underlay.refusal != refusal
             {
                 if let Some(status) = refusal
                 {
                     serial!("ORDINARY_REPLAY_DEFERRED status={status}; committed ordinary pixels \
                              retained");
                 }
-                self.ordinary_underlay.refusal = refusal;
+                self.presentation.ordinary_underlay.refusal = refusal;
             }
-            self.ordinary_underlay.full_deferred |= full;
-            self.ordinary_underlay.refused_available = Some(available);
-            self.ordinary_underlay.attempted_generation = self.ordinary_underlay.generation;
+            self.presentation.ordinary_underlay.full_deferred |= full;
+            self.presentation.ordinary_underlay.refused_available = Some(available);
+            self.presentation.ordinary_underlay.attempted_generation = self.presentation.ordinary_underlay.generation;
             let mut index = 0;
             while index < damage.len()
             {
@@ -461,41 +461,41 @@ impl Toolbox
                     index += 1;
                     continue;
                 }
-                if self.ordinary_underlay.deferred.len()
-                   == self.ordinary_underlay.deferred.capacity()
+                if self.presentation.ordinary_underlay.deferred.len()
+                   == self.presentation.ordinary_underlay.deferred.capacity()
                 {
                     break;
                 } // Exact owned region stays in the active queue.
                 let entry = damage.swap_remove(index);
-                self.ordinary_underlay.deferred.push(entry);
+                self.presentation.ordinary_underlay.deferred.push(entry);
             }
         }
-        self.ordinary_underlay.staging = staging;
-        self.ordinary_underlay.changed = changed;
+        self.presentation.ordinary_underlay.staging = staging;
+        self.presentation.ordinary_underlay.changed = changed;
         result.map(|()| full)
     }
 
     pub(super) fn paint_system_layer(&mut self, damage: &mut Vec<Rect>, copy_full: &mut bool)
                                      -> Result<(), Status>
     {
-        if !self.ordinary_underlay.valid
+        if !self.presentation.ordinary_underlay.valid
         {
             return Err(SERVICE_BUSY);
         }
         let back = crate::platform::back_buffer();
-        for &bounds in &self.ordinary_underlay.previous_system
+        for &bounds in &self.presentation.ordinary_underlay.previous_system
         {
             super::accumulate_presentation_damage(damage, copy_full, bounds);
-            copy_rect(&self.ordinary_underlay.committed, back, bounds);
+            copy_rect(&self.presentation.ordinary_underlay.committed, back, bounds);
         }
         for window in self.windows.back_to_front().filter(|window| window.uses_system_resources())
         {
             super::accumulate_presentation_damage(damage, copy_full, window.structure());
-            copy_rect(&self.ordinary_underlay.committed, back, window.structure());
+            copy_rect(&self.presentation.ordinary_underlay.committed, back, window.structure());
         }
         let font_snapshot = crate::kernel::fonts();
         let fonts = font_snapshot.as_deref();
-        let content = &self.content;
+        let content = &self.presentation.content;
         let cdef = self.system_cdef;
         let mut canvas = Canvas::new(back, crate::display::WIDTH, crate::display::HEIGHT);
         self.windows.draw_layer(&mut canvas,
@@ -511,15 +511,15 @@ impl Toolbox
                                      }
                                      Ok(())
                                  })?;
-        self.ordinary_underlay.previous_system.clear();
+        self.presentation.ordinary_underlay.previous_system.clear();
         for window in self.windows.back_to_front().filter(|window| window.uses_system_resources())
         {
-            if self.ordinary_underlay.previous_system.len()
-               == self.ordinary_underlay.previous_system.capacity()
+            if self.presentation.ordinary_underlay.previous_system.len()
+               == self.presentation.ordinary_underlay.previous_system.capacity()
             {
                 return Err(SERVICE_BUSY);
             }
-            self.ordinary_underlay.previous_system.push(window.structure());
+            self.presentation.ordinary_underlay.previous_system.push(window.structure());
         }
         Ok(())
     }
@@ -548,7 +548,7 @@ impl Toolbox
             {
                 continue;
             };
-            let Some(content) = self.content.iter().find(|content| content.id == id)
+            let Some(content) = self.presentation.content.iter().find(|content| content.id == id)
             else
             {
                 continue;
