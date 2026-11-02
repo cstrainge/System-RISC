@@ -2,7 +2,9 @@
 #![forbid(unsafe_code)]
 use alloc::{boxed::Box, string::String, vec::Vec};
 
-use mac_abi::{events::{CMD_KEY, Event, EventKind}, *, geometry::{Point, Rect}};
+use mac_abi::{events::{CMD_KEY, Event, EventKind},
+              geometry::{Point, Rect},
+              *};
 use mac_object_table::shared::InvocationGate as _;
 
 use super::quickdraw::{SurfaceExt,
@@ -1996,11 +1998,7 @@ impl Desktop
     /// chrome and covered windows, while TextEdit accounts for its port clip.
     fn automatic_cursor_at_mouse(&self) -> Option<u32>
     {
-        if !self.cursors.is_automatic()
-           || self.menus.is_tracking()
-           || self.system_bar.is_tracking()
-           || self.app_menu.is_tracking()
-           || self.windows.is_tracking()
+        if !self.cursors.is_automatic() || self.menus.is_tracking() || self.windows.is_tracking()
         {
             return None;
         }
@@ -2341,45 +2339,10 @@ impl Desktop
             Input::Move(point) =>
             {
                 self.events.mouse = point;
-                if self.system_bar.is_tracking()
-                {
-                    if (0..20).contains(&point.v) && !self.system_bar.title_bounds().contains(point)
-                    {
-                        if self.menus.begin(point)
-                        {
-                            self.system_bar.cancel();
-                            self.redraw = true;
-                        }
-                        else
-                        {
-                            // A menu-less app has no app bar to capture this
-                            // held gesture. Keep System tracking for re-entry.
-                            self.redraw |= self.system_bar.hover(point);
-                        }
-                    }
-                    else
-                    {
-                        self.redraw |= self.system_bar.hover(point);
-                    }
-                    return;
-                }
-                if self.app_menu.is_tracking()
-                {
-                    self.redraw |= self.app_menu.hover(point);
-                    return;
-                }
                 if self.menus.is_tracking()
                 {
-                    if self.system_bar.title_bounds().contains(point)
-                    {
-                        self.menus.cancel_tracking();
-                        self.system_bar.begin(point);
-                        self.redraw = true;
-                    }
-                    else
-                    {
-                        self.redraw |= self.menus.hover(point);
-                    }
+                    self.redraw |=
+                        self.menus.hover(point, &mut self.system_bar, &mut self.app_menu);
                     return;
                 }
                 if let Some(action) = self.track_window(point, false, when)
@@ -2401,21 +2364,9 @@ impl Desktop
                 }
                 if down
                 {
-                    if self.system_bar.begin(point)
-                    {
-                        self.menus.cancel_tracking();
-                        self.redraw = true;
-                        return;
-                    }
-                    if self.app_menu.begin(point)
+                    if self.menus.begin(point, &self.system_bar, &self.app_menu)
                     {
                         self.redraw = true;
-                        return;
-                    }
-                    let previous_menu = self.menus.selected_menu();
-                    if self.menus.begin(point)
-                    {
-                        self.redraw |= previous_menu != self.menus.selected_menu();
                         return;
                     }
                     if (0..20).contains(&point.v)
@@ -2511,40 +2462,17 @@ impl Desktop
                 }
                 else
                 {
-                    if self.system_bar.is_tracking()
-                    {
-                        if let Some((item, action)) = self.system_bar.release(point)
-                        {
-                            self.start_apple_menu_feedback(item, action, false, when);
-                        }
-                        else
-                        {
-                            self.redraw = true;
-                        }
-                        return;
-                    }
-                    if self.app_menu.is_tracking()
-                    {
-                        if let Some(action) = self.app_menu.release(point)
-                        {
-                            self.start_application_menu_feedback(action, when);
-                        }
-                        else
-                        {
-                            self.redraw = true;
-                        }
-                        return;
-                    }
                     if self.menus.is_tracking()
                     {
-                        let was_open = self.menus.selected_menu().is_some();
-                        if let Some(selection) = self.menus.release_tracking(point)
+                        if let Some(command) =
+                            self.menus
+                                .release_tracking(point, &mut self.system_bar, &mut self.app_menu)
                         {
-                            self.start_menu_feedback(selection, false, when);
+                            self.start_menu_command_feedback(command, false, when);
                         }
                         else
                         {
-                            self.redraw |= was_open;
+                            self.redraw = true;
                         }
                         return;
                     }
@@ -2568,11 +2496,8 @@ impl Desktop
                          modifiers,
                          .. } =>
             {
-                if down
-                   && character == 27
-                   && (self.system_bar.is_tracking() || self.menus.is_tracking())
+                if down && character == 27 && self.menus.is_tracking()
                 {
-                    self.system_bar.cancel();
                     self.menus.cancel_tracking();
                     self.redraw = true;
                     return;
@@ -2582,7 +2507,7 @@ impl Desktop
                    && self.menus.has_key(character)
                    && let Some(selection) = self.menus.key(character)
                 {
-                    self.start_menu_feedback(selection, true, when);
+                    self.start_menu_key_feedback(selection, when);
                     return;
                 }
                 // Menu policy can still reflect the previous frame while the
@@ -2835,10 +2760,7 @@ impl Desktop
             // A metadata refusal may leave an exact ordinary entry active.
             damage.retain(|(id, _)| !self.system_scene(*id));
             self.content_damage = damage;
-            if full
-               || self.menus.is_tracking()
-               || self.system_bar.is_tracking()
-               || self.app_menu.is_tracking()
+            if full || self.menus.is_tracking()
             {
                 let menu_paint = crate::context::without_recovery(|| {
                     let mut canvas = Canvas::new(platform::back_buffer(),
@@ -2847,16 +2769,13 @@ impl Desktop
                     self.menu_cache.paint(&mut canvas,
                                            (self.foreground,
                                             self.menus.selected_menu(),
-                                            self.app_menu.is_tracking(),
-                                            self.system_bar.bar_selected()),
+                                            self.menus.application_selected(),
+                                            self.menus.system_selected()),
                                            |canvas| {
-                                               self.system_bar.draw_bar(canvas)?;
-                                               self.menus.draw_bar(canvas)?;
-                                               self.app_menu.draw_bar(canvas)
+                                               self.menus.draw_bar(&mut self.system_bar,
+                                                                   &mut self.app_menu, canvas)
                                            })?;
-                    self.menus.draw_popup(&mut canvas)?;
-                    self.system_bar.draw_popup(&mut canvas)?;
-                    self.app_menu.draw_popup(&mut canvas)
+                    self.menus.draw_popup(&mut self.system_bar, &mut self.app_menu, &mut canvas)
                 });
                 if let Err(error) = menu_paint
                 {
@@ -2964,10 +2883,7 @@ impl Desktop
         {
             return Feedback::outline(shape, Clip::Screen);
         }
-        if self.menus.is_tracking()
-           || self.system_bar.is_tracking()
-           || self.app_menu.is_tracking()
-           || self.windows.is_tracking()
+        if self.menus.is_tracking() || self.windows.is_tracking()
         {
             return Feedback::default();
         }

@@ -1,28 +1,13 @@
 //! Timer-driven menu acknowledgement. MDEF paints only the changed row/title.
-use mac_abi::{geometry::{Point, Rect}, menus::Selection};
+use mac_abi::{geometry::{Point, Rect},
+              menus::Selection};
 
 use super::{Desktop, Input};
-use crate::toolbox::{events::BTN_STATE, processes::menu::Action, quickdraw::Canvas};
+use crate::toolbox::{events::BTN_STATE, menus::Command, quickdraw::Canvas};
 
 const PHASE_TICKS: u32 = 3;
 const FLASH_COUNT: u8 = 3;
 const PHASE_COUNT: u8 = FLASH_COUNT * 2;
-#[derive(Clone, Copy)]
-enum Target
-{
-    Menu
-    {
-        id: u64, selection: Selection, keyboard: bool
-    },
-    Application
-    {
-        item: i16, action: Action
-    },
-    Apple
-    {
-        item: i16, action: crate::toolbox::menus::AppleAction, keyboard: bool
-    }
-}
 #[derive(Clone, Copy)]
 pub(super) struct Feedback
 {
@@ -31,7 +16,8 @@ pub(super) struct Feedback
     point:     Point,
     modifiers: u16,
     bounds:    Rect,
-    target:    Target,
+    command:   Command,
+    keyboard:  bool,
     phase:     u8,
     deadline:  u32,
     painted:   bool,
@@ -39,7 +25,8 @@ pub(super) struct Feedback
 }
 impl Feedback
 {
-    fn new(owner: u64, bounds: Rect, target: Target, when: u32, point: Point, modifiers: u16)
+    fn new(owner: u64, bounds: Rect, command: Command, keyboard: bool, when: u32, point: Point,
+           modifiers: u16)
            -> Self
     {
         Self { owner,
@@ -47,7 +34,8 @@ impl Feedback
                point,
                modifiers,
                bounds,
-               target,
+               command,
+               keyboard,
                phase: 0,
                deadline: 0,
                painted: false,
@@ -56,32 +44,12 @@ impl Feedback
 }
 impl Desktop
 {
-    pub(super) fn start_menu_feedback(&mut self, selection: Selection, keyboard: bool, when: u32)
+    pub(super) fn start_menu_key_feedback(&mut self, selection: Selection, when: u32)
     {
-        if keyboard && let Some((item, action)) = self.system_bar.begin_key(selection)
+        let command = self.menus.begin_key_feedback(selection, &self.system_bar, &self.app_menu);
+        if let Some(command) = command
         {
-            self.start_apple_menu_feedback(item, action, true, when);
-            return;
-        }
-        let target = if keyboard
-        {
-            self.menus.begin_key_feedback(selection)
-        }
-        else
-        {
-            self.menus.feedback_target()
-        };
-        if let Some((id, bounds)) = target
-        {
-            self.menus.feedback_highlight(0);
-            self.menu_feedback = Some(Feedback::new(self.foreground,
-                                                    bounds,
-                                                    Target::Menu { id,
-                                                                   selection,
-                                                                   keyboard },
-                                                    when,
-                                                    self.events.mouse,
-                                                    self.events.modifiers));
+            self.start_menu_command_feedback(command, true, when);
         }
         else
         {
@@ -90,45 +58,20 @@ impl Desktop
         }
     }
 
-    pub(super) fn start_application_menu_feedback(&mut self, action: Action, when: u32)
+    pub(super) fn start_menu_command_feedback(&mut self, command: Command, keyboard: bool,
+                                              when: u32)
     {
-        if let Some((item, bounds)) = self.app_menu.feedback_target()
+        if let Some(bounds) =
+            self.menus.feedback_bounds(command, keyboard, &self.system_bar, &self.app_menu)
         {
-            self.app_menu.feedback_highlight(0);
-            self.menu_feedback = Some(Feedback::new(self.foreground,
-                                                    bounds,
-                                                    Target::Application { item,
-                                                                          action },
-                                                    when,
-                                                    self.events.mouse,
+            self.menus.feedback_highlight(0);
+            self.menu_feedback = Some(Feedback::new(self.foreground, bounds, command, keyboard,
+                                                    when, self.events.mouse,
                                                     self.events.modifiers));
         }
         else
         {
-            self.app_menu.cancel();
-            self.redraw = true;
-        }
-    }
-
-    pub(super) fn start_apple_menu_feedback(&mut self, item: i16,
-                                            action: crate::toolbox::menus::AppleAction,
-                                            keyboard: bool, when: u32)
-    {
-        if let Some(bounds) = self.system_bar.feedback_bounds(item, keyboard)
-        {
-            self.system_bar.highlight(0);
-            self.menu_feedback = Some(Feedback::new(self.foreground,
-                                                    bounds,
-                                                    Target::Apple { item,
-                                                                    action,
-                                                                    keyboard },
-                                                    when,
-                                                    self.events.mouse,
-                                                    self.events.modifiers));
-        }
-        else
-        {
-            self.system_bar.cancel();
+            self.menus.cancel_tracking();
             self.redraw = true;
         }
     }
@@ -142,13 +85,9 @@ impl Desktop
         };
         let caller = self.owner;
         self.enter(feedback.owner);
-        match feedback.target
+        if self.owner == feedback.owner
         {
-            Target::Menu { .. } if self.owner == feedback.owner => self.menus.cancel_tracking(),
-            Target::Application { .. } => self.app_menu.cancel(),
-            Target::Apple { .. } => self.system_bar.cancel(),
-            _ =>
-            {}
+            self.menus.cancel_tracking();
         }
         self.enter(caller);
         self.menu_cache.invalidate();
@@ -206,32 +145,10 @@ impl Desktop
         }
         let caller = self.owner;
         self.enter(feedback.owner);
-        let valid =
-            self.foreground == feedback.owner
-            && self.owner == feedback.owner
-            && match feedback.target
-            {
-                Target::Menu { id,
-                               selection,
-                               .. } => self.menus.feedback_valid(id, selection),
-                Target::Application { item,
-                                      action } => self.app_menu.feedback_valid(item, action),
-                Target::Apple { item,
-                                action,
-                                .. } =>
-                {
-                    self.system_bar.feedback_valid(feedback.owner, item, action)
-                    && match action
-                    {
-                        crate::toolbox::menus::AppleAction::AboutSystem => true,
-                        crate::toolbox::menus::AppleAction::Application { handle,
-                                                                          selection } =>
-                        {
-                            self.menus.command_valid(handle, selection)
-                        }
-                    }
-                }
-            };
+        let valid = self.foreground == feedback.owner
+                    && self.owner == feedback.owner
+                    && self.menus.feedback_valid(feedback.owner, feedback.command,
+                                                 &self.system_bar, &self.app_menu);
         if !valid
            || self.dialogs.active()
            || self.core_dialogs.active()
@@ -253,37 +170,28 @@ impl Desktop
             feedback.painted = false;
             feedback.presented = false;
         }
-        let keyboard = matches!(feedback.target,
-                                Target::Menu { keyboard: true,
-                                               .. }
-                                | Target::Apple { keyboard: true,
-                                                  .. });
+        let keyboard = feedback.keyboard;
         if feedback.phase == PHASE_COUNT && (!keyboard || feedback.presented)
         {
-            match feedback.target
+            self.menus.cancel_tracking();
+            self.menu_cache.invalidate();
+            self.redraw |= !keyboard;
+            match feedback.command
             {
-                Target::Menu { selection,
-                               .. } =>
+                Command::Resource { selection,
+                                    .. } =>
                 {
-                    self.menus.cancel_tracking();
-                    self.menu_cache.invalidate();
-                    self.redraw |= !keyboard;
                     self.menu_selection(selection, feedback.when, feedback.point,
                                         feedback.modifiers);
                 }
-                Target::Application { action,
-                                      .. } =>
+                Command::Application { action,
+                                       .. } =>
                 {
-                    self.app_menu.cancel();
-                    self.redraw = true;
                     self.application_action(action);
                 }
-                Target::Apple { action,
-                                .. } =>
+                Command::Apple { action,
+                                 .. } =>
                 {
-                    self.system_bar.cancel();
-                    self.menu_cache.invalidate();
-                    self.redraw |= !keyboard;
                     match action
                     {
                         crate::toolbox::menus::AppleAction::Application { selection,
@@ -315,37 +223,13 @@ impl Desktop
             let mut canvas = Canvas::new(crate::platform::back_buffer(),
                                          crate::display::WIDTH,
                                          crate::display::HEIGHT);
-            let result = match feedback.target
+            if keyboard
             {
-                Target::Menu { id,
-                               selection,
-                               keyboard } =>
-                {
-                    self.menus.feedback_highlight(if selected { selection.item as i16 } else { 0 });
-                    if keyboard
-                    {
-                        self.menu_cache.invalidate();
-                    }
-                    self.menus.paint_feedback(id, selection.item, keyboard, &mut canvas)
-                }
-                Target::Application { item,
-                                      .. } =>
-                {
-                    self.app_menu.feedback_highlight(if selected { item } else { 0 });
-                    self.app_menu.paint_feedback(item, &mut canvas)
-                }
-                Target::Apple { item,
-                                keyboard,
-                                .. } =>
-                {
-                    self.system_bar.highlight(if selected { item } else { 0 });
-                    if keyboard
-                    {
-                        self.menu_cache.invalidate();
-                    }
-                    self.system_bar.paint_feedback(item, keyboard, &mut canvas)
-                }
-            };
+                self.menu_cache.invalidate();
+            }
+            let result =
+                self.menus.paint_feedback(feedback.command, keyboard, selected,
+                                          &mut self.system_bar, &mut self.app_menu, &mut canvas);
             if let Err(status) = result
             {
                 serial!("MENU_FEEDBACK_FAILED status={} phase={}", status, feedback.phase);

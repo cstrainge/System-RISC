@@ -2,7 +2,9 @@
 #![forbid(unsafe_code)]
 use alloc::{boxed::Box, vec::Vec};
 
-use mac_abi::{menus::*, *, geometry::{Point, Rect}};
+use mac_abi::{geometry::{Point, Rect},
+              menus::*,
+              *};
 use mac_object_table::domain::{CompletionError, DomainId, PoolError, ReleasedResource};
 
 use crate::toolbox::{handles::{KindLease, OwnerRef, Store},
@@ -12,6 +14,9 @@ pub(crate) mod lifetime;
 
 mod apple;
 pub(crate) use apple::{Action as AppleAction, SystemBar};
+mod tracking;
+pub(crate) use tracking::Command;
+use tracking::Tracking;
 
 /// A definition refusal must never become a cached, partially painted menu bar.
 pub(crate) struct PaintError
@@ -71,13 +76,9 @@ impl Layout
 
 struct Bar
 {
-    order:       Vec<u64>,
-    tracking:    bool,
-    active:      Option<u64>,
-    highlighted: i16,
-    popup:       bool,
-    scratch:     Box<MenuDefinitionState>,
-    reflow:      Vec<(u64, Layout)>
+    order:   Vec<u64>,
+    scratch: Box<MenuDefinitionState>,
+    reflow:  Vec<(u64, Layout)>
 }
 impl Bar
 {
@@ -101,27 +102,16 @@ impl Bar
             kind: crate::toolbox::handles::KindCode(*b"MNST"), used: 0, requested_slots: 1, limit: Some(1) })?;
         Ok(Self { order,
                   scratch,
-                  reflow,
-                  tracking: false,
-                  active: None,
-                  highlighted: 0,
-                  popup: true })
-    }
-
-    fn cancel(&mut self)
-    {
-        self.tracking = false;
-        self.active = None;
-        self.highlighted = 0;
-        self.popup = true;
+                  reflow })
     }
 }
 pub struct Manager
 {
-    objects: Store<Menu, Bar>,
-    owner:   Option<OwnerRef>,
-    entry:   DefinitionEntry,
-    gate:    TrapGate
+    objects:  Store<Menu, Bar>,
+    owner:    Option<OwnerRef>,
+    entry:    DefinitionEntry,
+    gate:     TrapGate,
+    tracking: Tracking
 }
 fn pool_status(error: PoolError) -> Status
 {
@@ -135,7 +125,8 @@ impl Manager
         Ok(Self { objects: Store::owned_state(kinds.0, kinds.1, Bar::new).map_err(pool_status)?,
                   owner: None,
                   entry,
-                  gate })
+                  gate,
+                  tracking: Tracking::default() })
     }
 
     fn bind(&mut self, owner: &OwnerRef) -> Result<(), Status>
@@ -394,7 +385,7 @@ impl Manager
                     bar.order.push(id);
                 }
                 // A changed list invalidates any held or blinking selection.
-                bar.cancel();
+                self.cancel_tracking();
                 call.handle = id;
                 call.menu_id = resource;
                 Ok(true)
@@ -479,10 +470,7 @@ impl Manager
                 let menu = self.objects.get_mut(id).ok_or(NOT_FOUND)?;
                 menu.state = state;
                 menu.revision = menu.revision.wrapping_add(1);
-                if let Some(bar) = self.bar_mut()
-                {
-                    bar.cancel();
-                }
+                self.cancel_tracking();
                 Ok(true)
             }
             SET_ENABLED | SET_CHECKED | COMMAND =>
@@ -551,15 +539,12 @@ impl Manager
 
     pub(crate) fn clear(&mut self) -> bool
     {
-        let changed = self.bar().is_some_and(|bar| !bar.order.is_empty() || bar.tracking);
+        let changed = self.is_tracking() || self.bar().is_some_and(|bar| !bar.order.is_empty());
         while let Some(id) = self.bar_mut().and_then(|bar| bar.order.pop())
         {
             drop(self.objects.remove(id));
         }
-        if let Some(bar) = self.bar_mut()
-        {
-            bar.cancel();
-        }
+        self.cancel_tracking();
         changed
     }
 
@@ -568,8 +553,8 @@ impl Manager
         if let Some(bar) = self.bar_mut()
         {
             bar.order.retain(|other| *other != id);
-            bar.cancel();
         }
+        self.cancel_tracking();
     }
 
     pub(crate) fn release(&mut self, ticket: ReleasedResource) -> Result<(), CompletionError>
@@ -588,189 +573,6 @@ impl Manager
                                   -> Result<(), CompletionError>
     {
         self.objects.release_storage(ticket)
-    }
-
-    pub fn is_tracking(&self) -> bool
-    {
-        self.bar().is_some_and(|bar| bar.tracking)
-    }
-
-    fn title_at(&self, point: Point) -> Option<u64>
-    {
-        if !(0..20).contains(&point.v)
-        {
-            return None;
-        }
-        self.bar()?.order.iter().copied().find(|id| {
-                                             self.objects.get(*id).is_some_and(|menu| {
-                                                                      !is_apple(&menu.state)
-                                                                      && menu.state.enabled != 0
-                                                                      && menu.state
-                                                                             .title_bounds
-                                                                             .contains(point)
-                                                                  })
-                                         })
-    }
-
-    pub fn begin(&mut self, point: Point) -> bool
-    {
-        let Some(active) = self.title_at(point)
-        else
-        {
-            return false;
-        };
-        let Some(bar) = self.bar_mut()
-        else
-        {
-            return false;
-        };
-        bar.tracking = true;
-        bar.popup = true;
-        bar.active = Some(active);
-        bar.highlighted = 0;
-        true
-    }
-
-    pub fn hover(&mut self, point: Point) -> bool
-    {
-        if !self.is_tracking()
-        {
-            return false;
-        }
-        let previous = self.bar().map(|bar| (bar.active, bar.highlighted));
-        if (0..20).contains(&point.v)
-        {
-            let active = self.title_at(point);
-            if let Some(bar) = self.bar_mut()
-            {
-                // Crossing blank/disabled bar space is still the same held
-                // gesture. Retain the popup so the pointer can enter its rows.
-                // Only another enabled title switches the active menu.
-                if let Some(active) = active
-                {
-                    bar.active = Some(active);
-                }
-                bar.highlighted = 0;
-            }
-        }
-        else
-        {
-            let active = self.bar().and_then(|bar| bar.active);
-            let highlighted = active.and_then(|id| self.objects.get_mut(id)).map_or(0, |menu| {
-                                                                                invoke(self.entry,
-                                                                         self.gate,
-                                                                         &mut menu.state,
-                                                                         HIT_ITEM,
-                                                                         ((u32::from(point.v
-                                                                                     as u16)
-                                                                           << 16)
-                                                                          | u32::from(point.h
-                                                                                      as u16))
-                                                                         as i64,
-                                                                         core::ptr::null_mut())
-                                                                  as i16
-                                                                            });
-            if let Some(bar) = self.bar_mut()
-            {
-                bar.highlighted = highlighted;
-            }
-        }
-        previous != self.bar().map(|bar| (bar.active, bar.highlighted))
-    }
-
-    pub fn release_tracking(&mut self, point: Point) -> Option<Selection>
-    {
-        if !self.is_tracking()
-        {
-            return None;
-        }
-        self.hover(point);
-        let selected =
-            self.bar()
-                .and_then(|bar| bar.active.and_then(|id| self.selection(id, bar.highlighted)));
-        if selected.is_none()
-        {
-            self.cancel_tracking();
-        }
-        selected
-    }
-
-    pub(crate) fn cancel_tracking(&mut self)
-    {
-        if let Some(bar) = self.bar_mut()
-        {
-            bar.cancel();
-        }
-    }
-
-    pub(crate) fn feedback_target(&self) -> Option<(u64, Rect)>
-    {
-        let bar = self.bar()?;
-        let id = bar.active?;
-        let menu = self.objects.get(id)?;
-        let item = usize::try_from(bar.highlighted).ok()?.checked_sub(1)?;
-        Some((id, menu.state.items.get(item)?.bounds))
-    }
-
-    pub(crate) fn begin_key_feedback(&mut self, selection: Selection) -> Option<(u64, Rect)>
-    {
-        let id = self.menu_id(selection.menu_id)?;
-        let title = self.objects.get(id)?.state.title_bounds;
-        let bar = self.bar_mut()?;
-        bar.active = Some(id);
-        bar.tracking = true;
-        bar.popup = false;
-        bar.highlighted = 0;
-        Some((id, Rect::new(title.left - 1, 1, title.right + 4, 19)))
-    }
-
-    pub(crate) fn feedback_valid(&self, id: u64, selection: Selection) -> bool
-    {
-        self.bar().is_some_and(|bar| bar.tracking && bar.active == Some(id))
-        && self.selection(id, selection.item as i16)
-               .is_some_and(|current| {
-                   current.menu_id == selection.menu_id && current.command == selection.command
-               })
-    }
-
-    pub(crate) fn feedback_highlight(&mut self, item: i16)
-    {
-        if let Some(bar) = self.bar_mut()
-        {
-            bar.highlighted = item;
-        }
-    }
-
-    pub(crate) fn paint_feedback(&mut self, id: u64, item: u16, keyboard: bool,
-                                 canvas: &mut Canvas<'_>)
-                                 -> Result<(), Status>
-    {
-        let highlighted = self.bar().ok_or(NOT_FOUND)?.highlighted;
-        let menu = self.objects.get_mut(id).ok_or(NOT_FOUND)?;
-        menu.state.highlighted = highlighted;
-        menu.state.first = 0;
-        menu.state.bar_selected = u32::from(highlighted != 0);
-        let mut surface = Surface::from_canvas(canvas);
-        surface.clip = if keyboard
-        {
-            let title = menu.state.title_bounds;
-            Rect::new(title.left - 1, 1, title.right + 4, 19)
-        }
-        else
-        {
-            menu.state
-                .items
-                .get(usize::from(item).checked_sub(1).ok_or(BAD_ARGUMENT)?)
-                .ok_or(BAD_ARGUMENT)?
-                .bounds
-        };
-        let status = invoke(self.entry,
-                            self.gate,
-                            &mut menu.state,
-                            if keyboard { DRAW_BAR } else { DRAW_ITEM },
-                            i64::from(item),
-                            &mut surface);
-        if status == 0 { Ok(()) } else { Err(status as Status) }
     }
 
     fn selection(&self, id: u64, item: i16) -> Option<Selection>
@@ -802,17 +604,16 @@ impl Manager
         })
     }
 
-    pub fn selected_menu(&self) -> Option<i16>
-    {
-        self.objects.get(self.bar()?.active?).map(|menu| menu.state.menu_id)
-    }
-
     pub(crate) fn refresh_apple(&mut self, system: &mut SystemBar, owner: u64)
                                 -> Result<(), Status>
     {
         let id = self.id_at(0)
                      .filter(|id| self.objects.get(*id).is_some_and(|menu| is_apple(&menu.state)));
         let changed = system.refresh(owner, id.and_then(|id| self.objects.get(id)))?;
+        if changed
+        {
+            self.cancel_tracking();
+        }
         if changed && let Some(menu) = id.and_then(|id| self.objects.get_mut(id))
         {
             // Public app layout reflects its displayed rows while logical
@@ -825,61 +626,6 @@ impl Manager
     pub(crate) fn command_valid(&self, id: u64, selection: Selection) -> bool
     {
         self.selection(id, selection.item as i16) == Some(selection)
-    }
-
-    pub(crate) fn draw_bar(&mut self, canvas: &mut Canvas) -> Result<(), PaintError>
-    {
-        canvas.reset_port();
-        let count = self.bar().map_or(0, |bar| bar.order.len());
-        let active = self.bar().and_then(|bar| bar.active);
-        let selected = self.bar().is_some_and(|bar| bar.popup || bar.highlighted != 0);
-        for index in 0..count
-        {
-            let Some(id) = self.id_at(index)
-            else
-            {
-                continue;
-            };
-            let Some(menu) = self.objects.get_mut(id)
-            else
-            {
-                continue;
-            };
-            if is_apple(&menu.state)
-            {
-                continue;
-            }
-            menu.state.first = 0;
-            menu.state.bar_selected = u32::from(active == Some(id) && selected);
-            let mut surface = Surface::from_canvas(canvas);
-            painted(menu.state.menu_id,
-                    invoke(self.entry, self.gate, &mut menu.state, DRAW_BAR, 0, &mut surface))?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn draw_popup(&mut self, canvas: &mut Canvas) -> Result<(), PaintError>
-    {
-        canvas.reset_port();
-        let Some(bar) = self.bar()
-        else
-        {
-            return Ok(());
-        };
-        if !bar.popup
-        {
-            return Ok(());
-        }
-        let (active, highlighted) = (bar.active, bar.highlighted);
-        if let Some(menu) = active.and_then(|id| self.objects.get_mut(id))
-           && !is_apple(&menu.state)
-        {
-            menu.state.highlighted = highlighted;
-            let mut surface = Surface::from_canvas(canvas);
-            painted(menu.state.menu_id,
-                    invoke(self.entry, self.gate, &mut menu.state, DRAW_POPUP, 0, &mut surface))?;
-        }
-        Ok(())
     }
 }
 fn copy_text(output: &mut [u8], length: &mut u32, raw: &[u8]) -> Result<(), Status>
