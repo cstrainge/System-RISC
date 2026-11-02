@@ -1,6 +1,7 @@
 //! Retained drawing shared by window content and the application-owned desktop layer.
 #![forbid(unsafe_code)]
 use alloc::{string::String, sync::Arc, vec::Vec};
+use core::ops::{Deref, DerefMut, Range};
 
 use mac_abi::{BAD_ARGUMENT, DrawCommand, Point, Rect, Status, WindowId};
 
@@ -121,6 +122,260 @@ pub enum RenderCommand
         vertical_ink: Option<(i32, i32)>
     }
 }
+
+/// The original command array and its optional genuine Core frame ownership
+/// move together, including when ordinary patches move arrays into fragments.
+#[derive(Default)]
+pub struct Commands
+{
+    values: Vec<RenderCommand>,
+    core:   Option<CoreBacking>
+}
+struct CoreBacking
+{
+    lease: crate::recovery::CoreFrameLease,
+    text:  Vec<CoreTextSnapshot>
+}
+struct CoreTextSnapshot
+{
+    item:     Option<usize>,
+    source:   Arc<String>,
+    port:     Arc<service::Port>,
+    captured: bool
+}
+/// Inert allocation stock. No Activity, Window identity or owner survives here.
+pub(crate) struct CoreFrame
+{
+    commands: Vec<RenderCommand>,
+    text:     Vec<CoreTextSnapshot>
+}
+pub(crate) struct CoreFramePair(pub(crate) [CoreFrame; 2]);
+
+impl CoreFrame
+{
+    pub(crate) fn prepare(items: usize) -> Result<Self, Status>
+    {
+        let mut commands = Vec::new();
+        commands.try_reserve_exact(512).map_err(|_| mac_abi::NO_MEMORY)?;
+        let mut text = Vec::new();
+        text.try_reserve_exact(items).map_err(|_| mac_abi::NO_MEMORY)?;
+        for _ in 0..items
+        {
+            let mut source = String::new();
+            source.try_reserve_exact(mac_abi::INLINE_STRING_BYTES)
+                  .map_err(|_| mac_abi::NO_MEMORY)?;
+            text.push(CoreTextSnapshot { item: None,
+                source: Arc::try_new(source).map_err(|_| mac_abi::NO_MEMORY)?,
+                port: Arc::try_new(service::Port::default()).map_err(|_| mac_abi::NO_MEMORY)?,
+                captured: false });
+        }
+        Ok(Self { commands,
+                  text })
+    }
+
+    pub(crate) fn unique(&mut self) -> Result<(), Status>
+    {
+        if !self.commands.is_empty() || self.commands.capacity() < 512
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        for item in &mut self.text
+        {
+            Arc::get_mut(&mut item.source).ok_or(mac_abi::SERVICE_BUSY)?;
+            Arc::get_mut(&mut item.port).ok_or(mac_abi::SERVICE_BUSY)?;
+        }
+        Ok(())
+    }
+}
+
+/// Source and Port read pins precede Activity's final-release wake in drop order.
+/// Only the actual pending frame can construct this native internal view.
+pub(crate) struct CoreTextItem
+{
+    source:   Arc<String>,
+    port:     Arc<service::Port>,
+    activity: crate::recovery::Activity,
+    window:   WindowId
+}
+impl CoreTextItem
+{
+    pub(crate) fn text(&self) -> &str
+    {
+        &self.source
+    }
+
+    pub(crate) fn line(&self, range: Range<usize>) -> Result<&str, Status>
+    {
+        self.source.get(range).ok_or(mac_abi::BAD_ABI)
+    }
+}
+
+impl Commands
+{
+    pub(crate) fn record_core_line(&mut self, item: &CoreTextItem,
+                                   call: &mac_abi::quickdraw::FontCall, range: Range<usize>,
+                                   vertical_ink: Option<(i32, i32)>, window: WindowId,
+                                   port: &service::Port, activity: &crate::recovery::Activity)
+                                   -> Result<(), Status>
+    {
+        if !self.validates_core_item(item, window, port, activity)
+        {
+            return Err(mac_abi::ACCESS_DENIED);
+        }
+        item.line(range.clone())?;
+        if self.values.len() >= 512
+        {
+            return Err(mac_abi::NO_MEMORY);
+        }
+        if self.values.capacity() <= self.values.len()
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        self.values.push(RenderCommand::Text { font: call.selection,
+                                               baseline: call.baseline,
+                                               text: TextData::Shared { source: item.source
+                                                                                    .clone(),
+                                                                        range },
+                                               color: call.color,
+                                               port: item.port.clone(),
+                                               vertical_ink });
+        Ok(())
+    }
+
+    pub(crate) fn from_core(frame: CoreFrame, lease: crate::recovery::CoreFrameLease) -> Self
+    {
+        Self { values: frame.commands,
+               core:   Some(CoreBacking { lease,
+                                          text: frame.text }) }
+    }
+
+    pub(crate) fn is_core(&self) -> bool
+    {
+        self.core.is_some()
+    }
+
+    pub(crate) fn core_binding(&self, activity: &crate::recovery::Activity, window: WindowId)
+                               -> bool
+    {
+        self.core.as_ref().is_some_and(|core| core.lease.matches(activity, window))
+    }
+
+    pub(crate) fn prepare_core(&mut self, window: WindowId, alert: &super::super::dialogs::Alert,
+                               activity: &crate::recovery::Activity)
+                               -> Result<(), Status>
+    {
+        let core = self.core.as_mut().ok_or(mac_abi::BAD_ABI)?;
+        if !core.lease.matches(activity, window) || !self.values.is_empty()
+        {
+            return Err(mac_abi::ACCESS_DENIED);
+        }
+        let count = alert.items.iter().filter(|item| item.kind == 8).count();
+        if count > core.text.len()
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        // Admit every source/Port before changing any snapshot.
+        for item in &mut core.text
+        {
+            Arc::get_mut(&mut item.source).ok_or(mac_abi::SERVICE_BUSY)?;
+            Arc::get_mut(&mut item.port).ok_or(mac_abi::SERVICE_BUSY)?;
+        }
+        for (snapshot, (_, item)) in
+            core.text.iter().zip(alert.items.iter().enumerate().filter(|(_, item)| item.kind == 8))
+        {
+            if item.text.len() > mac_abi::INLINE_STRING_BYTES
+               || snapshot.source.capacity() < item.text.len()
+            {
+                return Err(mac_abi::BAD_ABI);
+            }
+        }
+        for snapshot in &mut core.text
+        {
+            snapshot.item = None;
+            snapshot.captured = false;
+        }
+        for (snapshot, (index, item)) in
+            core.text
+                .iter_mut()
+                .zip(alert.items.iter().enumerate().filter(|(_, item)| item.kind == 8))
+        {
+            let source = Arc::get_mut(&mut snapshot.source).ok_or(mac_abi::SERVICE_BUSY)?;
+            source.clear();
+            source.push_str(&item.text);
+            snapshot.item = Some(index);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn core_item(&mut self, window: WindowId, index: usize, port: &service::Port,
+                            activity: &crate::recovery::Activity)
+                            -> Result<CoreTextItem, Status>
+    {
+        let core = self.core.as_mut().ok_or(mac_abi::BAD_ABI)?;
+        if !core.lease.matches(activity, window)
+        {
+            return Err(mac_abi::ACCESS_DENIED);
+        }
+        let item =
+            core.text.iter_mut().find(|item| item.item == Some(index)).ok_or(mac_abi::BAD_ABI)?;
+        if item.captured
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        *Arc::get_mut(&mut item.port).ok_or(mac_abi::SERVICE_BUSY)? = port.clone();
+        item.captured = true;
+        Ok(CoreTextItem { source: item.source.clone(),
+                          port: item.port.clone(),
+                          activity: activity.clone(),
+                          window })
+    }
+
+    fn validates_core_item(&self, item: &CoreTextItem, window: WindowId, port: &service::Port,
+                           activity: &crate::recovery::Activity)
+                           -> bool
+    {
+        self.core.as_ref().is_some_and(|core| {
+                              core.lease.matches(activity, window)
+                              && item.window == window
+                              && item.activity.same_session(activity)
+                              && item.port.origin == port.origin
+                              && item.port.state == port.state
+                              && core.text.iter().any(|snapshot| {
+                                                     snapshot.captured
+                                                     && Arc::ptr_eq(&snapshot.source, &item.source)
+                                                     && Arc::ptr_eq(&snapshot.port, &item.port)
+                                                 })
+                          })
+    }
+}
+impl Deref for Commands
+{
+    type Target = Vec<RenderCommand>;
+
+    fn deref(&self) -> &Self::Target
+    {
+        &self.values
+    }
+}
+impl DerefMut for Commands
+{
+    fn deref_mut(&mut self) -> &mut Self::Target
+    {
+        &mut self.values
+    }
+}
+impl Drop for Commands
+{
+    fn drop(&mut self)
+    {
+        if let Some(core) = self.core.take()
+        {
+            self.values.clear();
+            core.lease.park(CoreFrame { commands: core::mem::take(&mut self.values),
+                                        text:     core.text });
+        }
+    }
+}
 impl RenderCommand
 {
     pub fn storage(&self) -> usize
@@ -233,7 +488,7 @@ impl RenderCommand
 pub struct Content
 {
     pub id:       SceneTarget,
-    pub commands: Vec<RenderCommand>,
+    pub commands: Commands,
     pub port:     service::Port,
     fragments:    Vec<Fragment>,
     patch:        Option<Region>,
@@ -242,7 +497,7 @@ pub struct Content
 struct Fragment
 {
     clip:     Region,
-    commands: Vec<RenderCommand>
+    commands: Commands
 }
 fn region_bytes(region: &Region) -> usize
 {
@@ -253,11 +508,19 @@ impl Content
     pub fn new(id: impl Into<SceneTarget>) -> Self
     {
         Self { id:        id.into(),
-               commands:  Vec::new(),
+               commands:  Commands::default(),
                port:      service::Port::default(),
                fragments: Vec::new(),
                patch:     None,
                outline:   None }
+    }
+
+    pub(crate) fn empty_for_core_binding(&self) -> bool
+    {
+        self.commands.is_empty()
+        && !self.commands.is_core()
+        && self.fragments.is_empty()
+        && self.patch.is_none()
     }
 
     /// Admit command storage before publishing an additional retained drawing.
@@ -287,12 +550,15 @@ impl Content
 
     pub fn iter_commands(&self) -> impl Iterator<Item = &RenderCommand>
     {
-        self.fragments.iter().flat_map(|f| f.commands.iter()).chain(&self.commands)
+        self.fragments.iter().flat_map(|f| f.commands.iter()).chain(self.commands.iter())
     }
 
     pub fn iter_commands_mut(&mut self) -> impl Iterator<Item = &mut RenderCommand>
     {
-        self.fragments.iter_mut().flat_map(|f| f.commands.iter_mut()).chain(&mut self.commands)
+        self.fragments
+            .iter_mut()
+            .flat_map(|f| f.commands.iter_mut())
+            .chain(self.commands.iter_mut())
     }
 
     pub fn blink_caret(&mut self, editor: mac_abi::textedit::EditorId,
@@ -446,7 +712,7 @@ impl Content
         {
             let mut result = Ok(());
             service::with_region_clip(canvas, &fragment.clip, |canvas| {
-                for command in &fragment.commands
+                for command in fragment.commands.iter()
                 {
                     if result.is_err()
                     {
@@ -457,7 +723,7 @@ impl Content
             });
             result?;
         }
-        for command in &self.commands
+        for command in self.commands.iter()
         {
             command.paint(canvas, fonts, &mut legacy)?;
         }

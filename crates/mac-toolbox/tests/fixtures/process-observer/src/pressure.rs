@@ -218,17 +218,32 @@ fn modal(system: &System<'_>) -> Result<(), Error>
     }
     let alert = loop
     {
-        match system.dialogs().out_of_memory_owned("Ordinary memory is exhausted. Protected core \
-                                                    alert remains available.")
+        match system.dialogs().out_of_memory_owned("Ordinary memory is exhausted.\r\n  Protected \
+                                                    core alert  remains available: café.")
         {
             Ok(alert) => break alert,
             Err(Error::ServiceBusy) if now(system)? < limit => wait(system)?,
             Err(error) => return Err(error)
         }
     };
+    // Repaint the SAME live Core window through its public SDK service. These
+    // target calls exercise pending/committed frame reuse without a host gate
+    // or per-operation acknowledgment. Busy has not admitted a paint.
+    for _ in 0..8
+    {
+        loop
+        {
+            match alert.draw()
+            {
+                Ok(()) => break,
+                Err(Error::ServiceBusy) if now(system)? < limit => wait(system)?,
+                Err(error) => return Err(error)
+            }
+        }
+    }
     drop(alert);
     system.log("PRESSURE_MODAL_BEGIN_PASS sessions=2 concurrent=busy core-alert=opened \
-                disposed=RAII\n")
+                disposed=RAII redraws=8\n")
 }
 pub fn run(system: &System<'_>) -> Result<(), Error>
 {

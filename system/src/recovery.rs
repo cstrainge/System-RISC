@@ -58,6 +58,7 @@ struct Session
     object:         AtomicU64,
     windows:        Spinlock<[(u64, bool); 2]>,
     core_payload:   Spinlock<CorePayloadState>,
+    core_frames:    Spinlock<CoreFrames>,
     cleanup_status: AtomicI32
 }
 
@@ -66,6 +67,66 @@ enum CorePayloadState
     Idle,
     Borrowed,
     Pending(crate::toolbox::dialogs::core_alerts::PendingReturn)
+}
+
+struct CoreFrames
+{
+    window: Option<mac_abi::WindowId>,
+    ready:  [Option<crate::toolbox::quickdraw::retained::CoreFrame>; 2]
+}
+impl CoreFrames
+{
+    fn unique(&mut self) -> Result<(), Status>
+    {
+        if self.window.is_none()
+        {
+            return if self.ready.iter().all(Option::is_none)
+            {
+                Ok(())
+            }
+            else
+            {
+                Err(mac_abi::BAD_ABI)
+            };
+        }
+        for frame in &mut self.ready
+        {
+            frame.as_mut().ok_or(mac_abi::BAD_ABI)?.unique()?;
+        }
+        Ok(())
+    }
+}
+
+/// A real full-scene owner. Its slot is not an object ID; actual Window and
+/// Session authority remain pinned until this frame is parked at its origin.
+#[must_use = "retain the Core frame lease with its command storage until returning the same frame"]
+pub(crate) struct CoreFrameLease
+{
+    activity: Activity,
+    window:   mac_abi::WindowId,
+    slot:     usize
+}
+impl CoreFrameLease
+{
+    pub(crate) fn matches(&self, activity: &Activity, window: mac_abi::WindowId) -> bool
+    {
+        self.window == window && self.activity.same_session(activity)
+    }
+
+    pub(crate) fn park(self, frame: crate::toolbox::quickdraw::retained::CoreFrame)
+    {
+        // The affine lease is the sole writer to its absent ready slot. Its
+        // Activity excludes reaping/rebinding until AFTER this inert transfer.
+        InvocationGate::run(|| {
+            self.activity.session.core_frames.lock().ready[self.slot] = Some(frame);
+        });
+    }
+}
+
+pub(crate) struct QuiescedCore
+{
+    pub(crate) payload: Option<crate::toolbox::dialogs::core_alerts::PendingReturn>,
+    pub(crate) frames:  Option<crate::toolbox::quickdraw::retained::CoreFramePair>
 }
 
 /// Affine return route to the exact Opening which checked out Core stock.
@@ -108,6 +169,11 @@ pub(crate) struct CorePayloadQuiescence<'a>
 }
 impl CorePayloadQuiescence<'_>
 {
+    pub(crate) fn has_frames(&mut self) -> bool
+    {
+        self.session.core_frames.get_mut().window.is_some()
+    }
+
     pub(crate) fn template(&mut self) -> Result<Option<usize>, Status>
     {
         match self.session.core_payload.get_mut()
@@ -118,23 +184,61 @@ impl CorePayloadQuiescence<'_>
         }
     }
 
-    pub(crate) fn take(
-        self)
-        -> Result<Option<crate::toolbox::dialogs::core_alerts::PendingReturn>, Status>
+    pub(crate) fn take(self) -> Result<QuiescedCore, Status>
     {
-        let slot = self.session.core_payload.get_mut();
-        match slot
+        match self.session.core_payload.get_mut()
         {
-            CorePayloadState::Idle => return Ok(None),
+            CorePayloadState::Idle =>
+            {}
             CorePayloadState::Borrowed => return Err(mac_abi::BAD_ABI),
             CorePayloadState::Pending(pending) => pending.unique()?
         }
+        let frames = self.session.core_frames.get_mut();
+        frames.unique()?;
+        let window = frames.window;
+        let returned_frames = if window.is_some()
+        {
+            let ready = core::mem::replace(&mut frames.ready, [None, None]);
+            match ready
+            {
+                [Some(a), Some(b)] =>
+                {
+                    Some(crate::toolbox::quickdraw::retained::CoreFramePair([a, b]))
+                }
+                other =>
+                {
+                    frames.ready = other;
+                    return Err(mac_abi::BAD_ABI);
+                }
+            }
+        }
+        else
+        {
+            None
+        };
+        let slot = self.session.core_payload.get_mut();
         match core::mem::replace(slot, CorePayloadState::Idle)
         {
-            CorePayloadState::Pending(pending) => Ok(Some(pending)),
+            CorePayloadState::Pending(pending) =>
+            {
+                self.session.core_frames.get_mut().window = None;
+                Ok(QuiescedCore { payload: Some(pending),
+                                  frames:  returned_frames })
+            }
+            CorePayloadState::Idle =>
+            {
+                self.session.core_frames.get_mut().window = None;
+                Ok(QuiescedCore { payload: None,
+                                  frames:  returned_frames })
+            }
             other =>
             {
                 *slot = other;
+                if let Some(crate::toolbox::quickdraw::retained::CoreFramePair([a, b])) =
+                    returned_frames
+                {
+                    self.session.core_frames.get_mut().ready = [Some(a), Some(b)];
+                }
                 Err(mac_abi::BAD_ABI)
             }
         }
@@ -261,6 +365,76 @@ impl Activity
             *slot = CorePayloadState::Borrowed;
             Ok(CorePayloadLease { activity: self.clone(),
                                   template })
+        })
+    }
+
+    pub(crate) fn validate_core_paint(&self, window: mac_abi::WindowId) -> Result<(), Status>
+    {
+        InvocationGate::run(|| {
+            let modal = MODAL.lock();
+            if !modal.session.as_ref().is_some_and(|session| Arc::ptr_eq(session, &self.session))
+               || self.session.kind != Kind::CoreAlert
+               || CLOSING.load(Ordering::Acquire)
+               || !self.session.recipient.lock().accepting()
+               || !self.session.storage_owner.accepting()
+               || !self.session
+                       .windows
+                       .lock()
+                       .iter()
+                       .any(|(id, closed)| *id == window.0 && !*closed)
+            {
+                return Err(ACCESS_DENIED);
+            }
+            Ok(())
+        })
+    }
+
+    pub(crate) fn bind_core_frames(&self, window: mac_abi::WindowId,
+                                   prepare: impl FnOnce() -> Result<crate::toolbox::quickdraw::retained::CoreFramePair, Status>)
+                                   -> Result<(), Status>
+    {
+        self.validate_core_paint(window)?;
+        InvocationGate::run(|| {
+            let mut frames = self.session.core_frames.lock();
+            if let Some(bound) = frames.window
+            {
+                return if bound == window { Ok(()) } else { Err(ACCESS_DENIED) };
+            }
+            if frames.ready.iter().any(Option::is_some)
+            {
+                return Err(mac_abi::BAD_ABI);
+            }
+            let crate::toolbox::quickdraw::retained::CoreFramePair([a, b]) = prepare()?;
+            frames.ready = [Some(a), Some(b)];
+            frames.window = Some(window);
+            Ok(())
+        })
+    }
+
+    pub(crate) fn take_core_frame(
+        &self, window: mac_abi::WindowId)
+        -> Result<(crate::toolbox::quickdraw::retained::CoreFrame, CoreFrameLease), Status>
+    {
+        self.validate_core_paint(window)?;
+        InvocationGate::run(|| {
+            let mut frames = self.session.core_frames.lock();
+            if frames.window != Some(window)
+            {
+                return Err(ACCESS_DENIED);
+            }
+            for (slot, frame) in frames.ready.iter_mut().enumerate()
+            {
+                if let Some(ready) = frame.as_mut()
+                {
+                    ready.unique()?;
+                    let frame = frame.take().ok_or(mac_abi::BAD_ABI)?;
+                    return Ok((frame,
+                               CoreFrameLease { activity: self.clone(),
+                                                window,
+                                                slot }));
+                }
+            }
+            Err(SERVICE_BUSY)
         })
     }
 
@@ -554,6 +728,8 @@ pub(crate) fn prepare_modal() -> Result<(), Status>
                                    object: AtomicU64::new(0),
                                    windows: Spinlock::new([(0, true); 2]),
                                    core_payload: Spinlock::new(CorePayloadState::Idle),
+                                   core_frames: Spinlock::new(CoreFrames { window: None,
+                                                                           ready:  [None, None] }),
                                    cleanup_status: AtomicI32::new(mac_abi::OK) }).map_err(|_| {
                                                                                      NO_MEMORY
                                                                                  })
@@ -675,6 +851,8 @@ pub(crate) fn reap()
                 })
             }
             else if matches!(unique.core_payload.get_mut(), CorePayloadState::Idle)
+                      && unique.core_frames.get_mut().window.is_none()
+                      && unique.core_frames.get_mut().ready.iter().all(Option::is_none)
             {
                 Ok(())
             }

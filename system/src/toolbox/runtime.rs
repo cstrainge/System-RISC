@@ -956,6 +956,21 @@ impl Desktop
                 }
                 let mut pending = Content::new(id);
                 pending.port = content.port.clone();
+                if content.commands.is_core()
+                {
+                    let Some(activity) = crate::context::recovery_activity()
+                    else
+                    {
+                        return ACCESS_DENIED;
+                    };
+                    let (frame, lease) = match activity.take_core_frame(id)
+                    {
+                        Ok(pair) => pair,
+                        Err(status) => return status
+                    };
+                    pending.commands =
+                        super::quickdraw::retained::Commands::from_core(frame, lease);
+                }
                 // First cut repaints each complete rectangular content port.
                 let local = window.local_bounds();
                 self.windows.invalidate(id, local);
@@ -1551,7 +1566,12 @@ impl Desktop
         }
         else
         {
-            self.content_mut(SceneTarget::decode(call.target)?)?;
+            if self.content_mut(SceneTarget::decode(call.target)?)?.commands.is_core()
+            {
+                // The native Core author uses full replacement only. Reject
+                // patching before decoding/allocating masks or moving owners.
+                return Err(NOT_SUPPORTED);
+            }
         }
         if matches!(call.operation, QD_WINDOW_BEGIN_MASK | QD_WINDOW_BEGIN_RECTS)
         {
@@ -1902,6 +1922,11 @@ impl Desktop
         }
         let (used, limit) = self.retained_admission(SceneTarget::decode(call.target)?);
         let content = self.content_mut(SceneTarget::decode(call.target)?)?;
+        if content.commands.is_core()
+        {
+            // Core text must come from its typed SAME-frame snapshot seam.
+            return Err(ACCESS_DENIED);
+        }
         if content.commands.len() >= 512
         {
             return Err(NO_MEMORY);
@@ -1919,6 +1944,64 @@ impl Desktop
             text: super::quickdraw::retained::TextData::Owned(retained_text), color: call.color, port,
             vertical_ink: fonts.vertical_ink_bounds(fonts_service::selection(call.selection)).ok().flatten() })?;
         self.content_changed(SceneTarget::decode(call.target)?);
+        Ok(())
+    }
+
+    pub(super) fn bind_core_scene(&mut self, window: WindowId,
+                                  activity: &crate::recovery::Activity)
+                                  -> Result<(), Status>
+    {
+        activity.validate_core_paint(window)?;
+        if !self.owns(window) || self.pending_content.iter().any(|content| content.id == window)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let content =
+            self.content.iter_mut().find(|content| content.id == window).ok_or(NOT_FOUND)?;
+        if content.commands.is_core()
+        {
+            return if content.commands.core_binding(activity, window)
+            {
+                Ok(())
+            }
+            else
+            {
+                Err(ACCESS_DENIED)
+            };
+        }
+        if !content.empty_for_core_binding()
+        {
+            return Err(BAD_ABI);
+        }
+        super::dialogs::core_alerts::bind_frames(activity, window)?;
+        let (frame, lease) = activity.take_core_frame(window)?;
+        // No fallible work follows the affine transfer into its actual owner.
+        content.commands = super::quickdraw::retained::Commands::from_core(frame, lease);
+        Ok(())
+    }
+
+    pub(super) fn font_draw_core_line(&mut self, call: &mut mac_abi::quickdraw::FontCall,
+                                      item: &super::quickdraw::retained::CoreTextItem,
+                                      range: core::ops::Range<usize>, fonts: &FontManager)
+                                      -> Result<(), Status>
+    {
+        let window = SceneTarget::decode(call.target)?.window()?;
+        let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+        // Item admission already validated the actual live Window and global
+        // Session once. Each line checks its exact pinned frame/source/Port;
+        // the original END_UPDATE still validates the current Window owner.
+        let text = item.line(range.clone())?;
+        call.width = fonts.text_width(fonts_service::selection(call.selection), text)?;
+        let content = self.pending_content
+                          .iter_mut()
+                          .find(|content| content.id == window)
+                          .ok_or(BAD_ARGUMENT)?;
+        content.commands.record_core_line(item, call, range,
+            fonts.vertical_ink_bounds(fonts_service::selection(call.selection)).ok().flatten(),
+            window, &content.port, &activity)?;
+        // This is the same retained Text command/renderer; pending changes stay
+        // private until the original END_UPDATE commits them.
+        self.content_changed(window);
         Ok(())
     }
 

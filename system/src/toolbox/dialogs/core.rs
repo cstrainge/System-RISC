@@ -17,7 +17,8 @@ struct Templates
 {
     alerts: [Alert; IDS.len()],
     icons:  Vec<(i16, icons_service::Drawing)>,
-    stock:  Spinlock<[Option<Payload>; IDS.len()]>
+    stock:  Spinlock<[Option<Payload>; IDS.len()]>,
+    frames: Spinlock<Option<super::super::quickdraw::retained::CoreFramePair>>
 }
 static TEMPLATES: spin::Once<Templates> = spin::Once::new();
 
@@ -65,23 +66,72 @@ pub(crate) fn return_quiesced(mut proof: CorePayloadQuiescence<'_>) -> Result<()
 {
     let templates = TEMPLATES.get().ok_or(BAD_ABI)?;
     crate::toolbox::handles::InvocationGate::run(|| {
-        let Some(template) = proof.template()?
+        let template = proof.template()?;
+        let mut stock = templates.stock.lock();
+        let slot = if let Some(template) = template
+        {
+            let slot = stock.get_mut(template).ok_or(BAD_ABI)?;
+            if slot.is_some()
+            {
+                return Err(BAD_ABI);
+            }
+            Some(slot)
+        }
         else
         {
-            return Ok(());
+            None
         };
-        let mut stock = templates.stock.lock();
-        let slot = stock.get_mut(template).ok_or(BAD_ABI)?;
-        if slot.is_some()
+        let mut frames = templates.frames.lock();
+        if proof.has_frames() && frames.is_some()
         {
             return Err(BAD_ABI);
         }
-        if let Some(pending) = proof.take()?
+        let returned = proof.take()?;
+        // All fallible checks precede taking this exact Session's owned return.
+        if let Some(slot) = slot
         {
-            *slot = Some(pending.payload);
+            *slot = returned.payload.map(|pending| pending.payload);
+        }
+        if let Some(pair) = returned.frames
+        {
+            *frames = Some(pair);
         }
         Ok(())
     })
+}
+
+pub(crate) fn bind_frames(activity: &Activity, window: WindowId) -> Result<(), Status>
+{
+    activity.bind_core_frames(window, || {
+                let templates = TEMPLATES.get().ok_or(NOT_SUPPORTED)?;
+                crate::toolbox::handles::InvocationGate::run(|| {
+                    let mut stock = templates.frames.lock();
+                    let pair = stock.as_mut().ok_or(SERVICE_BUSY)?;
+                    for frame in &mut pair.0
+                    {
+                        frame.unique()?;
+                    }
+                    stock.take().ok_or(BAD_ABI)
+                })
+            })
+}
+
+/// Only the selected actual Core manager can nominate the current Alert source.
+pub(crate) fn paint_activity(manager: &super::modal::Manager, alert: &Arc<Alert>, window: WindowId)
+                             -> Result<Activity, Status>
+{
+    if manager.window != window.0
+       || !manager.alert.as_ref().is_some_and(|actual| Arc::ptr_eq(actual, alert))
+    {
+        return Err(ACCESS_DENIED);
+    }
+    let activity = manager.recovery_activity.as_ref().ok_or(ACCESS_DENIED)?;
+    if !manager.core_payload.as_ref().is_some_and(|lease| lease.matches_activity(activity))
+    {
+        return Err(ACCESS_DENIED);
+    }
+    activity.validate_core_paint(window)?;
+    Ok(activity.clone())
 }
 
 pub(crate) fn supported(scope: resources::Scope, id: i16) -> bool
@@ -131,19 +181,30 @@ pub(crate) fn prepare() -> Result<(), Status>
                 }).ok_or(NOT_SUPPORTED)??;
             icons.push((item.icon, drawing));
         }
-        let stock = crate::context::with_recovery_allocation(crate::recovery::permit()?, || {
-            crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-                let mut stock = core::array::from_fn(|_| None);
-                for (slot, template) in stock.iter_mut().zip(&alerts)
-                {
-                    *slot = Some(Payload::prepare(template)?);
-                }
-                Ok::<_, Status>(stock)
-            })
-        })?;
+        let (stock, frames) =
+            crate::context::with_recovery_allocation(crate::recovery::permit()?, || {
+                crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                    let mut stock = core::array::from_fn(|_| None);
+                    for (slot, template) in stock.iter_mut().zip(&alerts)
+                    {
+                        *slot = Some(Payload::prepare(template)?);
+                    }
+                    let text_items =
+                        alerts.iter()
+                              .map(|alert| alert.items.iter().filter(|item| item.kind == 8).count())
+                              .max()
+                              .unwrap_or(0);
+                    let frames = super::super::quickdraw::retained::CoreFramePair([
+                    super::super::quickdraw::retained::CoreFrame::prepare(text_items)?,
+                    super::super::quickdraw::retained::CoreFrame::prepare(text_items)?
+                ]);
+                    Ok::<_, Status>((stock, frames))
+                })
+            })?;
         Ok::<_, Status>(Templates { alerts,
                                     icons,
-                                    stock: Spinlock::new(stock) })
+                                    stock: Spinlock::new(stock),
+                                    frames: Spinlock::new(Some(frames)) })
     })?;
     Ok(())
 }

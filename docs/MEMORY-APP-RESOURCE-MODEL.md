@@ -5048,3 +5048,67 @@ list/raster storage, report formatting and final non-application mapping cleanup
 still have separate stock requirements. The full emergency kit, production
 Finder OOM restart, combined std/control-suite integration, performance and SMP
 are not established by this slice. No host Rust suite supplied acceptance.
+
+### Core retained drawing stock
+
+The three Core alert templates now also admit two reusable scene frames for
+their sole live window: committed and pending. Each retains the existing
+512-command vector capacity and one shared text/Port snapshot per actual text
+item. The current templates require one such item, so the two text buffers
+request 1,536 bytes in total. Command arrays, Arc/Port metadata, allocator
+headers and rounding are additional; aggregate native footprint is unmeasured.
+Their original protected System Ordinary allocation receipts survive reuse.
+
+The real Core manager binds the pair to its authenticated Activity, Alert and
+actual window after window creation, before BEGIN_UPDATE. The original
+InitializingAlert retains rollback. Pending preparation copies the substituted
+text while the source is unique, then captures its real Port after the original
+item clip. Checked byte ranges reference that same immutable source. Commands
+use the existing shared Text representation and renderer. Ordinary drawing and
+editor snapshots retain their existing representations; the wrapping algorithm
+remains shared with its borrowed-string caller interface.
+
+An owning command container carries each affine frame lease through full
+replacement, cancel, removal and destruction. Clearing commands releases their
+read references while retaining the underlying source and Port stock. A failed
+pending paint preserves the committed scene. Frames return only to the same
+live window/session; global reuse requires both original frames, unique readers
+and the original Session/Subject/child/publication acknowledgment drain. Refusal
+retains the same owner. There is no third frame or allocation fallback. Managed
+button tracking still replaces its actual Control command and invalidates its
+own bounds; it does not enter the masked-scene route rejected for Core frames.
+
+The first actual RV64 compiler check found two missed iterator adaptations and
+one namespace error. After those corrections and formatting, the System/Finder
+compiler check and fixed-source optimized release/LTO image build completed.
+Native runs used System ELF
+`e15357607f16d16cc46b2c2d13ff3a1bec5f24d7ea279099e0ad557c453326e5`
+and resource
+`06f9fe17f480c09e801d333a9863a18bd60f48ec11a127573a2c3882b6b7e9c4`;
+Finder artifacts remained those recorded above. A private QEMU4/800x600/exact
+2 GiB installed Text Edit workflow completed the Save Changes choices, exact
+saved ab, malformed-file error acknowledgment, subsequent input and three actual
+account closures. Four dialog crops matched the preceding native image exactly;
+error and Save Changes frames were also reviewed.
+
+The existing native pressure application additionally made eight successful
+public-SDK draws of the same Core alert in each healthy/pressured modal phase,
+using CR/LF, repeated spaces and UTF-8 text. No host acknowledgment was inserted
+between draws. A separate one-hart/exact 2 GiB run retained the original ordinary
+refusal/headroom/report/44-worker assertions and completed them, followed by a
+genuine visible OOM acknowledgment, reviewed folder repaint and Get Info
+open/close. Sources/base stayed fixed; both owned guests exited zero, were
+reaped and had private raw/cloned media removed without cleanup errors.
+
+These are finite real loader/trap/allocator/UI observations, not allocation-event
+counts or proof of every rollback/reader/ACK interleaving. Exact rendering of
+the new diagnostic text, forced retained readers, cancellation/stop and failed
+publication/ACK combinations remain unqualified. System report/Standard File
+patch history, other payloads and formatting, control storage, teardown scratch
+and robust close-intent handling remain separate work. Full kit readiness,
+production Finder OOM restart, timing and SMP are not established.
+
+No new host configuration, stub or alternate implementation was introduced to
+preserve the old nonnative test-support harness. Its compatibility is unqualified;
+the shipping path above is the real no_std RV64 kernel. Host Rust tests supplied
+no acceptance, and the broader test-removal/audit work remains deferred.

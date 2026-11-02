@@ -83,10 +83,26 @@ fn resource_text(payload: &[u8], substitution: &str) -> Result<String, Status>
 /// second text buffer is needed. A true flag denotes a width-triggered wrap.
 #[cfg(any(target_arch = "riscv64", test))]
 pub(super) fn wrapped_lines(text: &str, width: i16,
-                            mut measure: impl FnMut(&str) -> Result<i16, Status>,
+                            measure: impl FnMut(&str) -> Result<i16, Status>,
                             mut emit: impl FnMut(&str, bool) -> Result<(), Status>)
                             -> Result<(), Status>
 {
+    wrapped_line_ranges(text, width, measure, |range, wrapped| {
+        emit(text.get(range).ok_or(BAD_ARGUMENT)?, wrapped)
+    })
+}
+
+/// Checked byte ranges belong to this exact source, never inferred from a
+/// borrowed slice's pointer or from equal text in another owner.
+#[cfg(any(target_arch = "riscv64", test))]
+pub(super) fn wrapped_line_ranges(text: &str, width: i16,
+                                  mut measure: impl FnMut(&str) -> Result<i16, Status>,
+                                  mut emit: impl FnMut(core::ops::Range<usize>,
+                                        bool)
+                                        -> Result<(), Status>)
+                                  -> Result<(), Status>
+{
+    let mut paragraph_start = 0usize;
     for paragraph in text.split(['\r', '\n'])
     {
         let mut line = "";
@@ -98,7 +114,10 @@ pub(super) fn wrapped_lines(text: &str, width: i16,
             let candidate = if line.is_empty() { word } else { &paragraph[line_start..word_end] };
             if measure(candidate)? > width && !line.is_empty()
             {
-                emit(line, true)?;
+                let start = paragraph_start.checked_add(line_start).ok_or(BAD_ARGUMENT)?;
+                let end = start.checked_add(line.len()).ok_or(BAD_ARGUMENT)?;
+                text.get(start..end).ok_or(BAD_ARGUMENT)?;
+                emit(start..end, true)?;
                 line_start = word_start;
                 line = word;
             }
@@ -112,7 +131,13 @@ pub(super) fn wrapped_lines(text: &str, width: i16,
             }
             word_start = word_end + 1;
         }
-        emit(line, false)?;
+        let start = paragraph_start.checked_add(line_start).ok_or(BAD_ARGUMENT)?;
+        let end = start.checked_add(line.len()).ok_or(BAD_ARGUMENT)?;
+        text.get(start..end).ok_or(BAD_ARGUMENT)?;
+        emit(start..end, false)?;
+        paragraph_start = paragraph_start.checked_add(paragraph.len())
+                                         .and_then(|n| n.checked_add(1))
+                                         .ok_or(BAD_ARGUMENT)?;
     }
     Ok(())
 }
