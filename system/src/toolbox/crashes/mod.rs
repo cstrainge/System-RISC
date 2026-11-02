@@ -10,7 +10,7 @@ mod detail;
 pub(crate) use detail::FailureDetail;
 #[cfg(target_arch = "riscv64")]
 mod pending;
-use mac_abi::{crashes::*, *};
+use mac_abi::{crashes::*, geometry::Rect, *};
 #[cfg(target_arch = "riscv64")]
 pub(crate) use pending::owner_stopped as pending_owner_stopped;
 #[cfg(target_arch = "riscv64")]
