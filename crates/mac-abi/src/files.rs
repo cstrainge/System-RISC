@@ -68,6 +68,12 @@ pub const WRITE: u32 = 41;
 pub const SET_LENGTH: u32 = 42;
 pub const SYNC: u32 = 43;
 pub const DUPLICATE: u32 = 44;
+/// Process path operations use UTF-8 /Volumes/<unique mounted name>/... paths.
+/// CURRENT_DIRECTORY returns bytes, without a terminator, in output/transferred.
+pub const CURRENT_DIRECTORY: u32 = 46;
+pub const CHANGE_DIRECTORY: u32 = 47;
+pub const RESOLVE_PATH: u32 = 48;
+pub const OPEN_PATH: u32 = 49;
 pub const OPEN_READ: u32 = 1;
 pub const OPEN_WRITE: u32 = 2;
 pub const OPEN_APPEND: u32 = 4;
@@ -78,6 +84,9 @@ pub const OPEN_FLAGS: u32 =
     OPEN_READ | OPEN_WRITE | OPEN_APPEND | OPEN_CREATE | OPEN_CREATE_NEW | OPEN_TRUNCATE;
 pub const SYNC_DATA: u32 = 1;
 pub const MAX_FILE_TRANSFER: usize = 64 * 1024;
+/// READ index flag: output may be uninitialized. Native HFS-B copies only the
+/// returned prefix; providers without this boundary must return Unsupported.
+pub const READ_UNINITIALIZED: u32 = 1;
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct IconMove
@@ -390,7 +399,7 @@ pub struct FileCall
     pub fork:         u32,
     pub whence:       u32,
     pub reserved:     u32,
-    /// Input only for OPEN_OPTIONS; unknown bits refuse before mutation.
+    /// Input only for OPEN_OPTIONS/OPEN_PATH; unknown bits refuse before mutation.
     pub open_flags:   u32,
     pub offset:       i64,
     pub position:     u64,

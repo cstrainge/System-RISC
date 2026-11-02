@@ -689,7 +689,7 @@ fn step_inner(work: Work) -> Option<Work>
                 if binding.is_none()
                 {
                     let directory = crate::toolbox::files::local::directory::LaunchDirectory::prepare(
-                        admission.owner(), admission.allocation(), admission.original_catalog())?;
+                        admission.owner(), admission.allocation())?;
                     WAIT_JOB.store(directory.notification_id().unwrap_or(0), Ordering::Release);
                     binding = Some(directory);
                 }
@@ -713,10 +713,8 @@ fn step_inner(work: Work) -> Option<Work>
                 {
                     WAIT_JOB.store(0, Ordering::Release);
                     let original = admission.original_catalog();
-                    serial!("PROCESS_DIRECTORY_READY app={} volume={} parent={} phase=replacement",
-                            admission.id(),
-                            original.volume,
-                            original.parent);
+                    serial!("PROCESS_DIRECTORY_READY app={} policy=Documents phase=replacement",
+                            admission.id());
                     if let Err(status) = super::pin_launch_executable(admission.owner(),
                                                                       admission.allocation(),
                                                                       original)
@@ -740,11 +738,8 @@ fn step_inner(work: Work) -> Option<Work>
                 Err(status) =>
                 {
                     WAIT_JOB.store(0, Ordering::Release);
-                    let original = admission.original_catalog();
-                    serial!("FINDER_DIRECTORY_REFUSED app={} volume={} parent={} status={status}",
-                            admission.id(),
-                            original.volume,
-                            original.parent);
+                    serial!("FINDER_DIRECTORY_REFUSED app={} policy=Documents status={status}",
+                            admission.id());
                     Some(Work::Failure { target: old,
                                          status,
                                          permit: admission.permit(),

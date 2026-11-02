@@ -2,6 +2,8 @@
 //! admission, and a device is returned before the original thread can wake.
 use super::{super::objects::Payload, *};
 use crate::context::{DeferredIo, ThreadId};
+mod paths;
+pub(in crate::toolbox::files) use paths::request as request_path;
 
 static ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static PUMPING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -11,7 +13,7 @@ pub(super) struct Source
     pub(super) volume:      u32,
     pub(super) node:        core::sync::atomic::AtomicU32,
     opening:                bool,
-    pub(super) description: Arc<OpenDescription>,
+    pub(super) description: Option<Arc<OpenDescription>>,
     disk:                   u32,
     partition:              Partition
 }
@@ -19,13 +21,18 @@ impl Source
 {
     fn conflicts(&self, other: &Self) -> bool
     {
-        Arc::ptr_eq(&self.description, &other.description)
+        let (Some(description), Some(other_description)) = (&self.description, &other.description)
+        else
+        {
+            return false;
+        };
+        Arc::ptr_eq(description, other_description)
         || self.disk == other.disk
            && self.partition == other.partition
            && (self.node.load(Ordering::Acquire) == 0
                || other.node.load(Ordering::Acquire) == 0
                || self.node.load(Ordering::Acquire) == other.node.load(Ordering::Acquire))
-           && self.description.kind == other.description.kind
+           && description.kind == other_description.kind
     }
 }
 
@@ -42,6 +49,7 @@ struct Record
     terminal:      Option<Status>,
     abandoned:     bool,
     started:       bool,
+    mutating:      bool,
     position:      u64,
     length:        u64,
     transferred:   usize,
@@ -49,7 +57,8 @@ struct Record
     open:          Option<open::Open>,
     open_complete: bool,
     catalog:       Option<CatalogInfo>,
-    handle:        u32
+    handle:        u32,
+    path:          Option<paths::State>
 }
 pub(in crate::toolbox::files) struct Entry
 {
@@ -64,6 +73,16 @@ impl Entry
                                               -> bool
     {
         self.packet.source.node.load(Ordering::Acquire) == node && self.uses(manager, volume)
+    }
+
+    /// Queued requests retain lifetime protection but must let an already
+    /// admitted Save/icon transaction finish. Mutation exclusion begins only
+    /// when the first real mutating device step has acquired the mount, and
+    /// lasts through all continuation steps and result publication.
+    pub(in crate::toolbox::files) fn blocks_mutation(&self, manager: &Manager, volume: u32)
+                                                     -> bool
+    {
+        self.uses(manager, volume) && self.packet.record.lock().mutating
     }
 
     pub(in crate::toolbox::files) fn uses(&self, manager: &Manager, volume: u32) -> bool
@@ -156,19 +175,48 @@ pub(crate) fn abandon(thread: ThreadId, handle: Option<u64>)
     });
 }
 
+enum Output<'a>
+{
+    Initialized(&'a mut [u8]),
+    Uninitialized(&'a mut [core::mem::MaybeUninit<u8>])
+}
+impl Output<'_>
+{
+    fn len(&self) -> usize
+    {
+        match self
+        {
+            Self::Initialized(bytes) => bytes.len(),
+            Self::Uninitialized(bytes) => bytes.len()
+        }
+    }
+
+    fn write_prefix(&mut self, bytes: &[u8])
+    {
+        match self
+        {
+            Self::Initialized(output) => output[..bytes.len()].copy_from_slice(bytes),
+            Self::Uninitialized(output) =>
+            {
+                output[..bytes.len()].write_copy_of_slice(bytes);
+            }
+        }
+    }
+}
+
 pub(in crate::toolbox::files) fn request(owner: u64, authority: &OwnerRef, call: &mut FileCall,
-                                         bytes: &[u8], output: &mut [u8])
+                                         bytes: &[u8], output: &mut [core::mem::MaybeUninit<u8>])
                                          -> Status
 {
-    request_input(owner, authority, call, "", bytes, output)
+    request_input(owner, authority, call, "", bytes, Output::Uninitialized(output))
 }
 pub(super) fn request_open(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &str)
                            -> Status
 {
-    request_input(owner, authority, call, name, &[], &mut [])
+    request_input(owner, authority, call, name, &[], Output::Uninitialized(&mut []))
 }
 fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &str, bytes: &[u8],
-                 output: &mut [u8])
+                 output: Output<'_>)
                  -> Status
 {
     if let Err(error) = crate::context::current_thread_context().traps.check_defer()
@@ -218,7 +266,7 @@ fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &s
     let (id, packet) = match existing
     {
         Ok(Some(existing)) => existing,
-        Err(error) => return error,
+        Err(error) => return refused(&key, "preflight", error),
         Ok(None) =>
         {
             let subject =
@@ -269,6 +317,7 @@ fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &s
             {
                 None
             };
+            let mut source_phase = "source-description";
             let source = match files(|manager| {
                       let (volume, node, description) = if let Some(open) = &open
                       {
@@ -281,6 +330,7 @@ fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &s
                               manager.slot_access(subject::Access::Client(owner), key.handle)?;
                           (file.volume, file.id, file.description.clone())
                       };
+                      source_phase = "transfer-admission";
                       if matches!(key.operation, READ | SEEK | TELL)
                       {
                           manager.validate_transfer_read(owner, volume, node)?;
@@ -288,28 +338,33 @@ fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &s
                       else
                       {
                           manager.validate_transfer_conflicts(owner, volume)?;
-                          if manager.writes.iter().any(|(_, mark)| mark.volume == volume)
-                             || manager.streams.iter().any(|(_, mark)| mark.volume == volume)
-                             || manager.groups.iter().any(|(_, mark)| mark.volume == volume)
-                          {
-                              return Err(SERVICE_BUSY);
-                          }
+                          // Existing staged transactions finish before pump admits
+                          // our first effect. Queue without stealing their lease.
                       }
-                      let mounted = manager.mounted(volume)?;
+                      source_phase = "mounted-admission";
+                      let (disk, partition) = match manager.volumes.get(volume).ok_or(NOT_FOUND)?
+                      {
+                          Mounted::Block(mounted) => (mounted.device.index, mounted.partition),
+                          Mounted::Operating(operation) => (operation.disk, operation.partition),
+                          Mounted::Provider(_) => return Err(NOT_SUPPORTED)
+                      };
                       Ok(Source { volume,
                                   node: core::sync::atomic::AtomicU32::new(node),
                                   opening: key.operation == OPEN_OPTIONS,
-                                  description,
-                                  disk: mounted.device.index,
-                                  partition: mounted.partition })
+                                  description: Some(description),
+                                  disk,
+                                  partition })
                   })
             {
                 Ok(source) => source,
-                Err(error) => return error
+                Err(error) =>
+                {
+                    return refused(&key, source_phase, error);
+                }
             };
             // Keep the outer Arc across canonical insertion. Refused insertion
             // cannot drop the last permit/description owner under Files.
-            let packet=match Arc::try_new(Packet {input,subject,source,record:spinning_top::Spinlock::new(Record {flight:None,terminal:None,abandoned:false,started:false,position:0,length:0,transferred:0,output:None,open,open_complete:false,catalog:None,handle:0})}) {Ok(packet)=>packet,Err(_)=>return NO_MEMORY};
+            let packet=match Arc::try_new(Packet {input,subject,source,record:spinning_top::Spinlock::new(Record {flight:None,terminal:None,abandoned:false,started:false,mutating:false,position:0,length:0,transferred:0,output:None,open,open_complete:false,catalog:None,handle:0,path:None})}) {Ok(packet)=>packet,Err(_)=>return NO_MEMORY};
             let kinds = match crate::toolbox::handles::file_operation_kinds()
             {
                 Ok(kinds) => kinds,
@@ -330,12 +385,18 @@ fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &s
                   })
             {
                 Ok(id) => id,
-                Err(error) => return error
+                Err(error) => return refused(&key, "publication", error)
             };
             ACTIVE.store(true, Ordering::Release);
             (id, packet)
         }
     };
+    finish_request(thread, id, packet, call, output)
+}
+fn finish_request(thread: ThreadId, id: u64, packet: Arc<Packet>, call: &mut FileCall,
+                  mut output: Output<'_>)
+                  -> Status
+{
     pump();
     let result = {
         let record = packet.record.lock();
@@ -348,7 +409,14 @@ fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &s
         if !fits
         {
             abandon(thread, Some(id));
-            return BAD_ABI;
+            return if packet.input.call.operation == CURRENT_DIRECTORY
+            {
+                BAD_ARGUMENT
+            }
+            else
+            {
+                BAD_ABI
+            };
         }
         // ACK the canonical record before modifying any replay-key field or
         // consuming owned output. A refused Files guard retains the result.
@@ -359,12 +427,12 @@ fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &s
         let delivered = packet.record.lock().output.take();
         if let Some(bytes) = delivered
         {
-            output[..bytes.len()].copy_from_slice(&bytes);
+            output.write_prefix(&bytes);
         }
         call.position = position;
         call.length = length;
         call.transferred = transferred;
-        if packet.source.opening
+        if packet.source.opening || record_is_path(&packet)
         {
             let record = packet.record.lock();
             if let Some(catalog) = record.catalog
@@ -373,8 +441,26 @@ fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &s
                 call.entry = catalog;
             }
             call.handle = record.handle;
+            if record.path.is_some()
+            {
+                call.volume = packet.source.volume;
+            }
         }
-        return status;
+        if !packet.source.opening && !record_is_path(&packet)
+        {
+            if let Some(catalog) = packet.record.lock().catalog
+            {
+                call.entry = catalog;
+            }
+        }
+        return if status == OK
+        {
+            status
+        }
+        else
+        {
+            refused(&packet.input.call, "completion", status)
+        };
     }
     defer(thread, id)
 }
@@ -385,10 +471,22 @@ fn defer(thread: ThreadId, id: u64) -> Status
         Ok(()) => SERVICE_BUSY,
         Err(error) =>
         {
+            serial!("FILE_OPERATION_WAIT_REFUSED thread={} operation={id} status={error}",
+                    thread.0);
             abandon(thread, Some(id));
             error
         }
     }
+}
+
+fn refused(call: &Call, phase: &str, status: Status) -> Status
+{
+    serial!("FILE_OPERATION_REFUSED operation={} handle={} target={} phase={phase} \
+             status={status}",
+            call.operation,
+            call.handle,
+            call.length);
+    status
 }
 
 /// One fixed-owner bounded device step per maintenance sample. The ordinal is
@@ -492,6 +590,7 @@ pub(crate) fn pump()
             record.abandoned = true;
         }
     }
+    paths::publish(&packet, &authority);
     publish_open(&packet, owner, &authority);
     let (terminal, open_complete) = {
         let record = packet.record.lock();
@@ -504,18 +603,32 @@ pub(crate) fn pump()
         let step = crate::machine::io::run_owned(packet.clone(), |packet| {
             crate::context::with_bootstrap_io_subject(Some(packet.subject.clone()), || {
                 crate::context::with_allocation(packet.subject.allocation().clone(), || {
+                    let input =
+                        packet.record
+                              .lock()
+                              .path
+                              .as_ref()
+                              .map_or_else(|| packet.input.clone(), |state| state.input.clone());
+                    let mutating = matches!(input.call.operation, WRITE | SET_LENGTH)
+                                   || input.call.operation == OPEN_OPTIONS
+                                      && input.call.open_flags
+                                         & (OPEN_CREATE | OPEN_CREATE_NEW | OPEN_TRUNCATE)
+                                         != 0;
                     let work = files(|manager| {
-                        manager.begin_local(owner,
-                                            &authority,
-                                            packet.subject.clone(),
-                                            packet.input.clone(),
-                                            Some(&packet.source))
-                    })?;
-                    {
+                        let work = manager.begin_local(owner,
+                                                       &authority,
+                                                       packet.subject.clone(),
+                                                       input,
+                                                       Some(&packet.source))?;
+                        // Publish exclusion under the same Files guard that
+                        // acquired the mount: no staged admission can slip in
+                        // between device acquisition and this continuation.
                         let mut record = packet.record.lock();
                         record.started = true;
+                        record.mutating |= mutating;
                         record.flight = Some(work.operation.clone());
-                    }
+                        Ok(work)
+                    })?;
                     work.execute();
                     files(|manager| manager.local_ready())
                 })
@@ -581,6 +694,10 @@ fn settle(packet: &Packet) -> bool
             record.position = position;
             record.length = length;
             record.transferred = transferred;
+            if packet.input.call.operation == TELL
+            {
+                record.catalog = *flight.catalog.lock();
+            }
             let complete = match packet.input.call.operation
             {
                 SET_LENGTH => length == packet.input.call.length,
@@ -622,7 +739,14 @@ fn settle(packet: &Packet) -> bool
             {
                 if let Some(fork) = fork
                 {
-                    *packet.source.description.fork.lock() = FileFork::Block(fork);
+                    if let Some(description) = &packet.source.description
+                    {
+                        *description.fork.lock() = FileFork::Block(fork);
+                    }
+                    else
+                    {
+                        record.terminal = Some(BAD_ABI);
+                    }
                 }
                 else
                 {
@@ -630,7 +754,12 @@ fn settle(packet: &Packet) -> bool
                 }
             }
         }
-        Ok(Reply::Directory(_)) => record.terminal = Some(BAD_ABI),
+        Ok(Reply::Directory(entry)) =>
+        {
+            drop(record);
+            paths::consume(packet, entry);
+            return true;
+        }
         Err(error) =>
         {
             if let Some(catalog) = *flight.catalog.lock()
@@ -694,4 +823,9 @@ fn publish_open(packet: &Packet, owner: u64, authority: &OwnerRef)
         {}
         Err(error) => record.terminal = Some(error)
     }
+}
+
+fn record_is_path(packet: &Packet) -> bool
+{
+    packet.record.lock().path.is_some()
 }

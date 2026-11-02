@@ -1,4 +1,4 @@
-//! Initial Finder admission through READY and the original launch directory.
+//! Initial Finder admission through READY and the user's Documents directory.
 //! The scheduler may enter System idle only with the seal minted by install.
 #![forbid(unsafe_code)]
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -123,15 +123,15 @@ fn directory_cause(status: Status) -> &'static str
 {
     match status
     {
-        NOT_FOUND => "The original launch directory could not be found.",
-        ACCESS_DENIED => "Access to the original launch directory was refused.",
-        NO_MEMORY => "Memory for the original launch directory was refused.",
-        OPERATION_CANCELLED => "Original launch-directory admission was cancelled.",
+        NOT_FOUND => "The user's Documents directory could not be found.",
+        ACCESS_DENIED => "Access to the user's Documents directory was refused.",
+        NO_MEMORY => "Memory for Documents-directory admission was refused.",
+        OPERATION_CANCELLED => "Documents-directory admission was cancelled.",
         IO_ERROR => "An input or output operation failed.",
-        STORAGE_UNAVAILABLE => "The original launch volume is unavailable.",
-        SERVICE_BUSY => "The original launch directory is busy.",
-        BAD_ABI => "The original launch directory does not match its mounted catalog.",
-        _ => "The original launch directory could not be admitted."
+        STORAGE_UNAVAILABLE => "The user's startup volume is unavailable.",
+        SERVICE_BUSY => "The user's Documents directory is busy.",
+        BAD_ABI => "The Documents directory does not match its mounted catalog.",
+        _ => "The user's Documents directory could not be admitted."
     }
 }
 
@@ -160,18 +160,14 @@ fn refused(mut flight: Flight, status: Status, cancellation: Option<Status>) -> 
         }
         Stage::Directory =>
         {
-            serial!("SYSTEM_STARTUP_DIRECTORY_FAILED: Finder app={owner} volume={} parent={} \
-                     status={status}; original boot resources retained, reset required",
-                    original.volume,
-                    original.parent);
+            serial!("SYSTEM_STARTUP_DIRECTORY_FAILED: Finder app={owner} policy=Documents \
+                     status={status}; original boot resources retained, reset required");
             crate::machine::emergency::enter(crate::emergency::Kind::StartupRefused,
-                                             format_args!("Finder could not admit its original \
-                                                           launch directory (volume {}, \
-                                                           directory {}). {} Status: {status}. \
-                                                           Original boot resources remain \
-                                                           retained; restart is required.",
-                                                          original.volume,
-                                                          original.parent,
+                                             format_args!("Finder could not admit the user's \
+                                                           Documents working directory. {} \
+                                                           Status: {status}. Original boot \
+                                                           resources remain retained; restart is \
+                                                           required.",
                                                           directory_cause(status)))
         }
         Stage::Executable =>
@@ -263,9 +259,10 @@ pub(crate) fn pump()
     flight.stage = Stage::Directory;
     if flight.directory.is_none()
     {
-        match crate::toolbox::files::local::directory::LaunchDirectory::prepare(
-            flight.admission.owner(), flight.admission.allocation(),
-            flight.admission.original_catalog())
+        match crate::toolbox::files::local::directory::LaunchDirectory::prepare(flight.admission
+                                                                                      .owner(),
+                                                                                flight.admission
+                                                                                      .allocation())
         {
             Ok(directory) =>
             {
@@ -293,10 +290,9 @@ pub(crate) fn pump()
     }
     WAIT_JOB.store(0, Ordering::Release);
     let original = flight.admission.original_catalog();
-    serial!("PROCESS_DIRECTORY_READY app={} volume={} parent={} phase=initial",
-            flight.admission.id(),
-            original.volume,
-            original.parent);
+    // The common admission records its actual bound Documents volume/node.
+    // Original executable metadata below belongs only to executable protection.
+    serial!("PROCESS_DIRECTORY_READY app={} policy=Documents phase=initial", flight.admission.id());
     flight.stage = Stage::Executable;
     if let Err(status) = super::pin_launch_executable(flight.admission.owner(),
                                                       flight.admission.allocation(),

@@ -158,7 +158,11 @@ impl Work
         let call = &input.call;
         let mut volume = io(Volume::mount(&mut self.mounted.device, self.mounted.partition))?;
         let mut changed = false;
-        let mut entry = if call.operation == OPEN_OPTIONS
+        let mut entry = if call.operation == LOOKUP
+        {
+            required(io(volume.lookup(self.node, input.name.as_bytes()))?)?
+        }
+        else if call.operation == OPEN_OPTIONS
         {
             let flags = call.open_flags;
             let existing = if self.node != 0
@@ -249,7 +253,7 @@ impl Work
         };
         let parent = entry.parent;
         self.parent = parent;
-        if call.operation == CATALOG
+        if matches!(call.operation, CATALOG | LOOKUP)
         {
             return Ok((Reply::Directory(metadata(call.volume, &entry)), false, parent));
         }
@@ -278,6 +282,10 @@ impl Work
                        parent));
         }
         let description = self.description.as_ref().ok_or(BAD_ABI)?;
+        if call.operation == TELL
+        {
+            *self.operation.catalog.lock() = Some(metadata(call.volume, &entry));
+        }
         let mut fork = selected(&mut entry, description.kind)?;
         let mut position = description.position.load(Ordering::Acquire);
         let mut transferred = 0;
@@ -557,7 +565,7 @@ impl Manager
         self.local_ready()?;
         self.validate_file_authority(owner, authority)?;
         let call = &input.call;
-        let (volume, node, description) = if call.operation == CATALOG
+        let (volume, node, description) = if matches!(call.operation, CATALOG | LOOKUP)
         {
             (call.volume, call.cnid, None)
         }
@@ -569,15 +577,13 @@ impl Manager
             self.prepare_forks(crate::toolbox::handles::file_fork_kinds()?)?;
             (call.volume,
              source.map_or(0, |source| source.node.load(Ordering::Acquire)),
-             source.map(|source| source.description.clone()))
+             source.and_then(|source| source.description.clone()))
         }
         else
         {
             if let Some(source) = source
             {
-                (source.volume,
-                 source.node.load(Ordering::Acquire),
-                 Some(source.description.clone()))
+                (source.volume, source.node.load(Ordering::Acquire), source.description.clone())
             }
             else
             {
@@ -589,7 +595,7 @@ impl Manager
                 (file.volume, file.id, Some(file.description.clone()))
             }
         };
-        if matches!(call.operation, READ | SEEK | TELL | CATALOG)
+        if matches!(call.operation, READ | SEEK | TELL | CATALOG | LOOKUP)
         {
             self.validate_transfer_read(owner, volume, node)?;
         }
@@ -602,7 +608,7 @@ impl Manager
         {
             self.validate_transfer_mutation(owner, volume)?;
         }
-        if !matches!(call.operation, READ | SEEK | TELL | CATALOG)
+        if !matches!(call.operation, READ | SEEK | TELL | CATALOG | LOOKUP)
            && (self.writes.iter().any(|(_, mark)| mark.volume == volume)
                || self.streams.iter().any(|(_, mark)| mark.volume == volume)
                || self.groups.iter().any(|(_, mark)| mark.volume == volume))
@@ -632,8 +638,15 @@ impl Manager
             return Err(NOT_SUPPORTED);
         }
         let mut protected = Vec::new();
-        protected.try_reserve_exact(self.pins.len()).map_err(|_| NO_MEMORY)?;
-        protected.extend(self.pins.objects().filter(|pin| pin.volume == volume).map(|pin| pin.id));
+        if mutating
+           || call.operation == OPEN_OPTIONS && call.open_flags & (OPEN_WRITE | OPEN_APPEND) != 0
+        {
+            protected.try_reserve_exact(self.pins.len()).map_err(|_| NO_MEMORY)?;
+            protected.extend(self.pins
+                                 .objects()
+                                 .filter(|pin| pin.volume == volume)
+                                 .map(|pin| pin.id));
+        }
         if description.is_some()
            && matches!(call.operation, WRITE | SET_LENGTH)
            && protected.contains(&node)

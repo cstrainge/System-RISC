@@ -77,7 +77,8 @@ pending replacement and provider-withdrawal cases remain unqualified. The
 mac-build's normal manifest compilation; authors need no readiness call or
 manifest entry. Identical declarations are reused, conflicting versions refused.
 Low-level native packaging does not infer std from arbitrary ELF input. Writable
-files, launch data and process streams remain adoption gates, as detailed in
+files and launch data remain adoption gates; GUI standard streams deliberately
+use the null profile and real CLAP streams/pipes are deferred, as detailed in
 `docs/RUST-STD.md`.
 There is no no_threads implementation, static TLS, zero-seed generator or host
 allocator substituted to get an executable to link.
@@ -104,12 +105,13 @@ their upstream semantics. Native OOM reporting remains a separate runtime gate.
 
 Instant and SystemTime now bind the published native clocks, with checked signed
 Unix-epoch arithmetic and nanosecond calculations. Their std execution remains
-subject to matching-artifact observations. Files, launch environment and process
-streams still require their named implementations. The temporary stdio backend
-returns explicit Unsupported errors for unavailable reads, writes and flushing;
-it does not discard output as successful writes or fabricate input EOF. Existing
-upstream unsupported backends remain unsupported
-while this stage is developed. Neither linking std nor resolving one of its
+subject to matching-artifact observations. Basic native std File/cwd adapters
+are under target qualification; launch environment support remains a separate
+gate. GUI stdin deliberately returns EOF, while stdout/stderr discard bytes and
+flush successfully; all are non-terminal. These graphical semantics do not
+implement real CLAP session streams. Full pipes belong to the planned pipes
+extension replacing kernel stubs through the production service boundary.
+Other upstream unsupported backends remain explicitly unsupported. Neither linking std nor resolving one of its
 private symbols qualifies a service.
 
 `mac_toolbox::System::new()` now acquires the table installed by the current

@@ -7,7 +7,7 @@ use mac_filesystem_interface as fs;
 use super::*;
 use crate::toolbox::handles::InvocationGate;
 mod forks;
-mod path;
+pub(in crate::toolbox::files) mod path;
 mod scan;
 pub(super) mod writes;
 pub(super) mod streams;

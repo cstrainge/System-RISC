@@ -289,3 +289,27 @@
      target_os = "motor" => {
          use moto_rt::time as imp;
      }
+--- a/library/std/src/sys/fs/mod.rs
++++ b/library/std/src/sys/fs/mod.rs
+@@ -6,6 +6,10 @@
+ pub mod common;
+ 
+ cfg_select! {
++    target_os = "systemrisc" => {
++        mod systemrisc;
++        use systemrisc as imp;
++    }
+     any(target_family = "unix", target_os = "wasi") => {
+         mod unix;
+         use unix as imp;
+--- a/library/std/src/sys/paths/mod.rs
++++ b/library/std/src/sys/paths/mod.rs
+@@ -1,4 +1,8 @@
+ cfg_select! {
++    target_os = "systemrisc" => {
++        mod systemrisc;
++        use systemrisc as imp;
++    }
+     target_os = "hermit" => {
+         mod hermit;
+         #[expect(dead_code)]

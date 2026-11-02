@@ -56,8 +56,11 @@ PATH syntax and explicit path rules.
 
 ## Streams, terminal behavior and lifecycle
 
-System owns session streams/pseudo-terminal queues and process lifecycle;
-Terminal owns presentation. Define stdin/stdout/stderr, terminal detection,
+System owns session admission, endpoint lifetimes and process lifecycle;
+Terminal owns presentation. Full pipe functionality is planned in a pipes
+extension replacing the kernel's current placeholders. The std platform must bind
+the normal service/module boundary so that implementation can replace the stubs,
+without growing a parallel full pipe stack in the resident kernel. Define stdin/stdout/stderr, terminal detection,
 partial reads/writes, EOF, backpressure, resize notifications and readiness.
 Redirection and pipelines keep the same Terminal session even when a particular
 stream is a file/pipe rather than the display. A GUI caller requesting a CLAP

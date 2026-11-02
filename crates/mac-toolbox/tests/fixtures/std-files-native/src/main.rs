@@ -1,7 +1,7 @@
 //! Real target application using the public SDK and actual FILE trap. These
-//! finite observations do not qualify std, arbitrary large files or pressure.
-#![no_std]
-#![no_main]
+//! finite workflows exercise ordinary std file and intentional GUI null I/O;
+//! they do not qualify arbitrary files, providers, pressure or CLAP streams.
+
 use mac_toolbox::{Error, System, ToolboxResult,
                   abi::{self, files::*}};
 
@@ -60,6 +60,66 @@ fn read(system: &System<'_>, handle: u32, output: &mut [u8]) -> ToolboxResult<us
     system.client().file(&mut call, "", output)?;
     Ok(call.transferred)
 }
+fn path(system: &System<'_>, operation: u32, name: &str, flags: u32, output: &mut [u8])
+        -> ToolboxResult<FileCall>
+{
+    let mut call = FileCall { operation,
+                              open_flags: flags,
+                              ..Default::default() };
+    system.client().file(&mut call, name, output)?;
+    Ok(call)
+}
+fn path_cases(system: &System<'_>, volume: u32) -> ToolboxResult<()>
+{
+    let mut info = FileCall { operation: VOLUME_INFO,
+                              volume,
+                              ..Default::default() };
+    system.client().file(&mut info, "", &mut [])?;
+    let root = format!("/Volumes/{}", info.volume_info.name());
+    let documents = format!("{root}/Documents");
+    let mut bytes = [0; 4096];
+    system.log("STD_FILES_NATIVE_PATH_CURRENT_BEGIN\n")?;
+    assert_eq!(path(system, CURRENT_DIRECTORY, "", 0, &mut []).err(), Some(Error::BadArgument));
+    let current = path(system, CURRENT_DIRECTORY, "", 0, &mut bytes)?;
+    assert_eq!(&bytes[..current.transferred],
+               documents.as_bytes(),
+               "GUI launch directory is not the user Documents folder");
+    system.log("STD_FILES_NATIVE_PATH_CURRENT_OBSERVED\n")?;
+    let parent = path(system, RESOLVE_PATH, ".././..", 0, &mut [])?;
+    assert_eq!((parent.volume, parent.cnid), (volume, ROOT_ID));
+    system.log("STD_FILES_NATIVE_PATH_PARENT_OBSERVED\n")?;
+    path(system, CHANGE_DIRECTORY, "..", 0, &mut [])?;
+    let current = path(system, CURRENT_DIRECTORY, "", 0, &mut bytes)?;
+    assert_eq!(&bytes[..current.transferred], root.as_bytes());
+    system.log("STD_FILES_NATIVE_PATH_ROOT_OBSERVED\n")?;
+    path(system, CHANGE_DIRECTORY, &documents, 0, &mut [])?;
+    system.log("STD_FILES_NATIVE_PATH_RESTORED_OBSERVED\n")?;
+    let opened = path(system,
+                      OPEN_PATH,
+                      "../Std Path File",
+                      OPEN_READ | OPEN_WRITE | OPEN_CREATE | OPEN_TRUNCATE,
+                      &mut [])?;
+    write(system, opened.handle, b"PATH")?;
+    call(system, SYNC, opened.handle)?;
+    call(system, CLOSE, opened.handle)?;
+    let opened = path(system, OPEN_PATH, &format!("{root}/Std Path File"), OPEN_READ, &mut [])?;
+    let mut saved = [0; 4];
+    assert_eq!(read(system, opened.handle, &mut saved)?, 4);
+    assert_eq!(&saved, b"PATH");
+    call(system, CLOSE, opened.handle)?;
+    assert_eq!(path(system, CHANGE_DIRECTORY, "../Std Path File", 0, &mut []).err(),
+               Some(Error::BadArgument));
+    assert_eq!(path(system, CHANGE_DIRECTORY, "No Such Native Directory", 0, &mut []).err(),
+               Some(Error::NotFound));
+    assert_eq!(path(system, RESOLVE_PATH, "bad\0name", 0, &mut []).err(), Some(Error::BadArgument));
+    let current = path(system, CURRENT_DIRECTORY, "", 0, &mut bytes)?;
+    assert_eq!(&bytes[..current.transferred],
+               documents.as_bytes(),
+               "failed directory change replaced old alias");
+    assert_eq!(path(system,OPEN_PATH,"../Std Path File",OPEN_WRITE|OPEN_CREATE_NEW,&mut []).err(),Some(Error::AlreadyExists));
+    system.log("STD_FILES_NATIVE_PATH_CWD_OPEN_REFUSAL_REUSE_OBSERVED\n")?;
+    Ok(())
+}
 fn run(system: &System<'_>) -> ToolboxResult<()>
 {
     system.log("STD_FILES_NATIVE_BEGIN\n")?;
@@ -78,6 +138,7 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
         }
     }
     let volume = volume.ok_or(Error::NotFound)?;
+    path_cases(system, volume)?;
     let mut lookup = FileCall { operation: LOOKUP,
                                 volume,
                                 cnid: ROOT_ID,
@@ -115,6 +176,9 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
                     "Std Native File").err(),
                Some(Error::AlreadyExists));
     write(system, first, b"abcdef")?;
+    assert_eq!(call(system, TELL, first)?.entry.id,
+               id,
+               "descriptor metadata must use its canonical live file");
     let clone = call(system, DUPLICATE, first)?.handle;
     seek(system, clone, 2)?;
     let mut pair = [0; 2];
@@ -226,4 +290,127 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
     let _ = abi::NATIVE_LAYOUT_FINGERPRINT;
     Ok(())
 }
-mac_toolbox::application!(run);
+fn main() -> Result<(), Box<dyn std::error::Error>>
+{
+    let system = System::new().expect("native diagnostic has installed platform services");
+    run(&system).expect("finite native file/path cases");
+    std_cases(&system).expect("finite real std File/BufReader/BufWriter workflow");
+    null_stdio_cases(&system).expect("GUI null standard streams");
+    if cfg!(feature = "result-error")
+    {
+        system.log("STD_GUI_RESULT_ERROR_BEGIN\n")?;
+        return Err(std::io::Error::other("intentional ordinary GUI main error").into());
+    }
+    Ok(())
+}
+
+fn std_cases(system: &System<'_>) -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::{fs::{self, File, OpenOptions},
+              io::{BufRead, BufReader, BufWriter, ErrorKind, Read, Seek, SeekFrom, Write}};
+    let original = std::env::current_dir()?;
+    assert!(original.ends_with("Documents"));
+    let path = original.join("Std Rust File");
+    if path.try_exists()?
+    {
+        assert_eq!(fs::read_to_string(&path)?,
+                   "STD α\n",
+                   "std-written bytes did not survive the fresh guest boot");
+        system.log("STD_FILES_ACTUAL_STD_REBOOT_BYTES_OBSERVED\n")?;
+    }
+    let mut file =
+        OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
+    file.write_all(b"abcdef")?;
+    let mut cloned = file.try_clone()?;
+    cloned.seek(SeekFrom::Start(2))?;
+    let mut pair = [0; 2];
+    file.read_exact(&mut pair)?;
+    assert_eq!(&pair, b"cd");
+    drop(file);
+    cloned.write_all(b"Z")?;
+    assert_eq!(cloned.metadata()?.len(), 6);
+    assert!(cloned.metadata()?.is_file());
+    assert!(cloned.metadata()?.modified()?.duration_since(std::time::UNIX_EPOCH).is_ok());
+    let mut append = OpenOptions::new().append(true).open(&path)?;
+    append.write_all(b"+")?;
+    drop(append);
+    cloned.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    cloned.read_to_end(&mut bytes)?;
+    assert_eq!(&bytes, b"abcdZf+");
+    let cursor = cloned.stream_position()?;
+    cloned.set_len(3 * MAX_FILE_TRANSFER as u64 + 19)?;
+    assert_eq!(cloned.stream_position()?, cursor);
+    cloned.seek(SeekFrom::Start(MAX_FILE_TRANSFER as u64 + 7))?;
+    let mut zeros = [0x55; 32];
+    cloned.read_exact(&mut zeros)?;
+    assert_eq!(zeros, [0; 32]);
+    assert_eq!(cloned.seek(SeekFrom::Start(u64::MAX)).unwrap_err().kind(), ErrorKind::InvalidInput);
+    cloned.set_len(4)?;
+    cloned.seek(SeekFrom::Start(0))?;
+    {
+        let mut writer = BufWriter::with_capacity(5, &cloned);
+        writer.write_all("STD α\n".as_bytes())?;
+        writer.flush()?;
+    }
+    cloned.sync_data()?;
+    cloned.sync_all()?;
+    drop(cloned);
+    assert_eq!(fs::read_to_string(&path)?, "STD α\n");
+    let mut reader = BufReader::with_capacity(5, File::open(&path)?);
+    assert_eq!(reader.fill_buf()?,
+               b"STD \xCE",
+               "diagnostic must split the UTF-8 scalar across actual reads");
+    let mut text = String::new();
+    reader.read_to_string(&mut text)?;
+    assert_eq!(text, "STD α\n");
+    drop(reader);
+    fs::write(&path, [0xff])?;
+    assert_eq!(fs::read_to_string(&path).unwrap_err().kind(), ErrorKind::InvalidData);
+    assert_eq!(fs::read(&path)?, [0xff]);
+    fs::write(&path, "STD α\n")?;
+    File::open(&path)?.sync_all()?;
+    assert!(fs::metadata(&original)?.is_dir());
+    assert!(path.try_exists()?);
+    assert_eq!(OpenOptions::new().write(true).create_new(true).open(&path).unwrap_err().kind(),
+               ErrorKind::AlreadyExists);
+    assert_eq!(File::open(original.join("No Such Std File")).unwrap_err().kind(),
+               ErrorKind::NotFound);
+    let mut read_only = File::open(&path)?;
+    assert_eq!(read_only.write(b"!").unwrap_err().kind(), ErrorKind::PermissionDenied);
+    drop(read_only);
+    std::env::set_current_dir("..")?;
+    assert_eq!(fs::read_to_string("Documents/Std Rust File")?, "STD α\n");
+    assert_eq!(std::env::set_current_dir("No Such Std Folder").unwrap_err().kind(),
+               ErrorKind::NotFound);
+    assert_ne!(std::env::current_dir()?, original);
+    std::env::set_current_dir(&original)?;
+    assert_eq!(fs::read_to_string("Std Rust File")?, "STD α\n");
+    system.log("STD_FILES_ACTUAL_STD_FILE_BUFFER_CWD_REFUSAL_REUSE_OBSERVED\n")?;
+    Ok(())
+}
+
+fn null_stdio_cases(system: &System<'_>) -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::io::{self, IsTerminal, Read, Write};
+    let mut bytes = [0x55; 16];
+    assert_eq!(io::stdin().read(&mut bytes)?, 0);
+    assert_eq!(bytes, [0x55; 16], "null stdin changed its caller's buffer");
+    let mut text = String::new();
+    assert_eq!(io::stdin().read_to_string(&mut text)?, 0);
+    assert!(text.is_empty());
+    let arbitrary = [0xff, 0x80, 0, 0xce, 0xb1, b'\n'];
+    assert_eq!(io::stdout().write(&arbitrary)?, arbitrary.len());
+    io::stdout().flush()?;
+    assert_eq!(io::stderr().write(&arbitrary)?, arbitrary.len());
+    io::stderr().flush()?;
+    println!("intentional GUI null stdout");
+    eprintln!("intentional GUI null stderr");
+    io::stdout().flush()?;
+    io::stderr().flush()?;
+    assert!(!io::stdin().is_terminal());
+    assert!(!io::stdout().is_terminal());
+    assert!(!io::stderr().is_terminal());
+    system.log("STD_GUI_NULL_STDIN_STDOUT_STDERR_OBSERVED\n")?;
+    Ok(())
+}
