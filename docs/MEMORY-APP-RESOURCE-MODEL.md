@@ -208,6 +208,11 @@ adapter; accounting/free-list policy stays safe.
 
 ## Configurable starting defaults and remaining profile proposals
 
+As of 2026-11-02, the QEMU VM default is temporarily **2 GiB RAM** to reduce
+host memory pressure. Both VM launchers read this setting from
+`platforms/QemuRISC-V.json`. Heap and recovery budgets remain unchanged.
+Earlier runtime observations retain their recorded memory configurations.
+
 The initial configurable defaults approved on 2026-10-24 are **8 GiB native
 release VM RAM, 512 MiB fixed System heap, 32 MiB protected recovery reserve,
 16 MiB per-process kernel budget and 64 MiB app committed-heap budget**. These
@@ -231,7 +236,7 @@ private process mappings remain a separate paging gate.
 
 | Configured policy | Minimum / initial default / maximum proposal | Reason |
 |---|---|---|
-| Physical RAM for native release VM | 512 MiB / 8 GiB / platform-discovered | Target class is ~8 GiB; small guest remains a deliberate test profile |
+| Physical RAM for native release VM | 512 MiB / 2 GiB (temporary default) / platform-discovered | Reduced default limits host memory pressure; broader target class remains ~8 GiB |
 | Fixed System heap | 128 MiB / 512 MiB / 1 GiB | Must hold resident state plus charged process kernel allocations, including high-water reserve |
 | Protected recovery floor within System heap | 16 MiB / 32 MiB / 128 MiB | Measured kit + Finder restart, unavailable to ordinary process charges |
 | Finder restart portion of that floor | 8 MiB / 16 MiB / 64 MiB | Subset of floor, never added twice; final value measured from restart peak |
