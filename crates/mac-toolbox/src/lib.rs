@@ -29,6 +29,7 @@ pub mod application;
 pub use toolbox_controls as controls;
 pub use toolbox_crashes as crashes;
 pub use toolbox_dialogs as dialogs;
+pub use toolbox_entropy as entropy;
 pub use toolbox_events as events;
 pub use toolbox_files as files;
 pub use toolbox_memory as memory;
@@ -63,6 +64,11 @@ impl System<'static>
 }
 impl<'a> System<'a>
 {
+    pub fn entropy(&self) -> entropy::Entropy<'a>
+    {
+        entropy::Entropy::new(self.client)
+    }
+
     pub fn power(&self) -> power::Power<'a>
     {
         power::Power::new(self.client)

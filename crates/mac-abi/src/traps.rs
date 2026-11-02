@@ -15,6 +15,7 @@ pub const POWER: u32 = 0x10027;
 /// Public CPU discovery/activity, independent of inspector and scheduler grants.
 pub const APPLICATION_HEAP: u32 = 0x10028;
 pub const CPU_INFO: u32 = 0x10029;
+pub const ENTROPY: u32 = 0x1002d;
 pub const PSTRING_SCROLL_BOX: u32 = SCROLL_BOX | PSTRING_BIT;
 pub const STANDARD_FILE: u32 = 0x10020;
 pub const PSTRING_STANDARD_FILE: u32 = STANDARD_FILE | PSTRING_BIT;

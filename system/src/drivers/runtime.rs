@@ -1133,6 +1133,8 @@ pub(crate) fn discard_thread_jobs(thread: u64)
     let queue = &JOBS;
     queue.discard_owner(super::jobs::Owner::Thread(thread));
     crate::toolbox::files::abandon_provider_thread(thread);
+    crate::toolbox::entropy::abandon_thread(crate::context::ThreadId(thread));
+    crate::toolbox::processes::launch::abandon_thread(crate::context::ThreadId(thread));
 }
 
 /// At most one bounded callback per scheduler sample. Empty queues cost one
@@ -1243,6 +1245,10 @@ pub(crate) fn pump_jobs()
 
 fn wake_job(notice: super::jobs::CompletionNotice)
 {
+    // Advisory exact-job wakes only. The real coordinators retain their own
+    // unique OwnedJob receipts/runtime authority; notices cannot admit work.
+    crate::toolbox::processes::startup::ready_changed(notice.job);
+    crate::toolbox::processes::finder::ready_changed(notice.job);
     if let Some(thread) = notice.waiter
     {
         crate::machine::scheduler::wake_io(thread,
@@ -1301,6 +1307,12 @@ pub struct OwnedJob
 }
 impl OwnedJob
 {
+    /// Advisory notification identity, never a replacement for the owned receipt.
+    pub(crate) fn notification_id(&self) -> u64
+    {
+        self.id
+    }
+
     pub(crate) fn subject(&self) -> &super::jobs::subjects::Subject
     {
         &self.subject

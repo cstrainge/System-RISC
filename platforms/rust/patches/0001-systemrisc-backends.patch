@@ -92,6 +92,17 @@
  #[optimize(size)]
  fn default_hook(info: &PanicHookInfo<'_>) {
      // If this is a double panic, make sure that we print a backtrace
+@@ -808,7 +828,9 @@
+         // methods, this means we avoid formatting the string at all!
+         // (The panic runtime might still call `payload.take_box()` though and trigger
+         // formatting.)
+-        Hook::Default if panic_output().is_none() => {}
++        // System RISC reports through its resident crash service, independently
++        // of whether this process has a stderr endpoint.
++        Hook::Default if !cfg!(target_os = "systemrisc") && panic_output().is_none() => {}
+         Hook::Default => {
+             default_hook(&PanicHookInfo::new(
+                 location,
 --- a/library/std/src/sys/alloc/mod.rs
 +++ b/library/std/src/sys/alloc/mod.rs
 @@ -64,6 +64,10 @@
@@ -170,6 +181,19 @@
      // Tier 1
      any(target_os = "linux", target_os = "android") => {
          mod linux;
+--- a/library/std/src/sys/stdio/mod.rs
++++ b/library/std/src/sys/stdio/mod.rs
+@@ -1,6 +1,10 @@
+ #![forbid(unsafe_op_in_unsafe_fn)]
+ 
+ cfg_select! {
++    target_os = "systemrisc" => {
++        mod systemrisc;
++        pub use systemrisc::*;
++    }
+     any(target_family = "unix", target_os = "hermit", target_os = "wasi") => {
+         mod unix;
+         pub use unix::*;
 --- a/library/std/src/sys/sync/condvar/mod.rs
 +++ b/library/std/src/sys/sync/condvar/mod.rs
 @@ -1,5 +1,6 @@

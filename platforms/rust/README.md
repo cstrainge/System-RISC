@@ -55,16 +55,25 @@ CRT interface, not Rust types from different crate instances.
 ## Backend status
 
 The source port selects the existing real application-heap transport and std's
-atomic/futex synchronization implementations. It forwards thread creation, OS-key
-TLS, waits, entropy and exit through private CRT symbols declared in
-`library/std/src/sys/pal/systemrisc/runtime.rs`. Startup now installs the validated
+atomic/futex synchronization implementations. Native child threads and entropy
+use the shared minimal trap transport; OS-key TLS and termination retain their
+platform CRT boundaries. Startup installs the validated
 service table once inside std before entering the compiler's main wrapper. The
 Toolbox reads that same installation through a C-layout getter. Canonical current
 thread and OS-key TLS bind the published native traps; std and no_std startup
 share the real teardown protocol in mac-traps. Atomic wait/wake now bind the
 published scheduler compare-and-park transport; only timeout returns false,
-while typed refusals retain their resident diagnostic. Child threads, entropy and
-process exit still need native adapters: missing symbols must fail final linkage.
+while typed refusals retain their resident diagnostic. Signed process exit binds
+the native termination service. Main return runs current-thread TLS teardown;
+explicit process exit skips it. Child creation/join/detach uses genuine native
+thread rights. The random backend fills through checked native entropy calls and
+reports a source failure through System's failure service before Abort; it never
+substitutes a seed. ENTR1 launch readiness retains the genuine prospective
+Process and provider job before author entry. Bounded native observations cover
+initial/ordinary/document launch, cancellation and injected-device refusal/retry;
+pending replacement and provider-withdrawal cases remain unqualified. Automatic
+std requirement packaging, writable files, launch data and process streams remain
+adoption gates, as detailed in `docs/RUST-STD.md`.
 There is no no_threads implementation, static TLS, zero-seed generator or host
 allocator substituted to get an executable to link.
 
@@ -75,9 +84,11 @@ no allocation, stdio lock, thread-name/TLS lookup or backtrace lock. This does n
 remove TLS/synchronization used earlier by std's panic machinery. Custom hooks
 remain upstream behavior; explicit abort and abort after a custom hook use a
 separate terminal bridge and do not call the default hook again. The CRT report
-bridge now uses the existing CRASH begin/append/show service and its resident
-viewer; early failure uses the shared core-only emergency transport. Native std
-reporting and concurrent process-failure ownership remain unqualified; compiling
+bridge uses the existing CRASH begin/append/show service, then immediately asks
+System to Abort. System owns report retention and dismissal; the failed author
+never polls the viewer. Early failure uses the shared core-only emergency Abort
+transport. Native std reporting and concurrent process-failure ownership require
+their own matching-artifact evidence; compiling
 this hook does not establish a functioning bomb dialog.
 
 The actual default allocation-error hook also uses a dedicated CRT report bridge,
@@ -88,8 +99,11 @@ their upstream semantics. Native OOM reporting remains a separate runtime gate.
 
 Instant and SystemTime now bind the published native clocks, with checked signed
 Unix-epoch arithmetic and nanosecond calculations. Their std execution remains
-unqualified. Files, launch environment and process streams still require their
-named implementations. Existing upstream unsupported backends remain unsupported
+subject to matching-artifact observations. Files, launch environment and process
+streams still require their named implementations. The temporary stdio backend
+returns explicit Unsupported errors for unavailable reads, writes and flushing;
+it does not discard output as successful writes or fabricate input EOF. Existing
+upstream unsupported backends remain unsupported
 while this stage is developed. Neither linking std nor resolving one of its
 private symbols qualifies a service.
 
@@ -111,3 +125,11 @@ The next integration boundary is the kernel Thread Manager contract, especially
 TLS before std initialization, actual child completion/destruction before join,
 and address-lifetime-safe compare-and-park/wake. Native thread creation is a
 required delivery milestone, not an optional permanent stub.
+
+
+For this pinned Cargo, private native rebuilds select both
+`CARGO_UNSTABLE_CHECKSUM_FRESHNESS=true` and `CARGO_BUILD_FINGERPRINT=content`.
+Inspect actual generated Cargo fingerprint records for `content`; the feature
+flag alone does not change the default mtime mode. Build-script/resource inputs
+still require explicit rebuilds when changed. Record final packaged artifact
+hashes before native capture; compilation success is not runtime acceptance.

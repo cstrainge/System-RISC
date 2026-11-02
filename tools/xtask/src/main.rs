@@ -117,6 +117,7 @@ impl Workspace
                || matches!(*package,
                            "vhost-transport"
                            | "vdagent-channel"
+                           | "virtio-rng"
                            | "host-clipboard-extension"
                            | "multi-scheduler-extension"
                            | "vhost-filesystem"
@@ -147,7 +148,7 @@ impl Workspace
         self.guest_build(&["mac-system", "mac-finder", "quickdraw-test", "cursor-test",
                            "panic-test", "resedit", "reactor", "bootrom", "vhost-transport",
                            "vhost-filesystem", "stuffit-filesystem", "qemu-power-device",
-                           "vdagent-channel", "host-clipboard-extension",
+                           "vdagent-channel", "virtio-rng", "host-clipboard-extension",
                            "multi-scheduler-extension"])?;
         // Keep userspace's allocation-free serde graph independent of the
         // resident System's alloc-enabled serde. Cargo feature unification
@@ -166,6 +167,7 @@ impl Workspace
              ("apps/reactor", "Reactor Room", "Reactor"),
              ("drivers/vhost-transport", "Host Transport", "HostTransport"),
              ("drivers/vdagent-channel", "VDAgent Channel", "VDAgentChannel"),
+             ("drivers/virtio-rng", "VirtIO RNG", "VirtioRng"),
              ("extensions/host-clipboard", "Host Clipboard", "HostClipboard"),
              ("extensions/multi-scheduler", "Multi-Scheduler", "MultiScheduler"),
              ("drivers/vhost-filesystem", "Host Filesystem", "HostFilesystem"),

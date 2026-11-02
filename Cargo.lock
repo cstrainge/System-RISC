@@ -427,6 +427,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mac-entropy-interface"
+version = "0.1.0"
+dependencies = [
+ "mac-module",
+]
+
+[[package]]
 name = "mac-file-source-interface"
 version = "0.1.0"
 dependencies = [
@@ -591,6 +598,7 @@ dependencies = [
  "mac-definition",
  "mac-device-interface",
  "mac-driver",
+ "mac-entropy-interface",
  "mac-file-source-interface",
  "mac-file-types",
  "mac-filesystem",
@@ -656,6 +664,7 @@ dependencies = [
  "toolbox-crashes",
  "toolbox-dialogs",
  "toolbox-drag",
+ "toolbox-entropy",
  "toolbox-events",
  "toolbox-files",
  "toolbox-inspection",
@@ -1127,6 +1136,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "toolbox-entropy"
+version = "0.1.0"
+dependencies = [
+ "mac-traps",
+]
+
+[[package]]
 name = "toolbox-events"
 version = "0.1.0"
 dependencies = [
@@ -1308,6 +1324,17 @@ dependencies = [
  "mac-driver",
  "mac-host-protocol",
  "mac-virtio-console",
+ "spinning_top",
+]
+
+[[package]]
+name = "virtio-rng"
+version = "0.1.0"
+dependencies = [
+ "mac-abi",
+ "mac-build",
+ "mac-driver",
+ "mac-entropy-interface",
  "spinning_top",
 ]
 

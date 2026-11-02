@@ -681,6 +681,31 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
     }
     match number
     {
+        ENTROPY =>
+        {
+            let call = read_request!(mac_abi::entropy::Call);
+            if call.capacity as usize > mac_abi::entropy::MAX_CAPACITY
+               || (call.capacity != 0 && call.output.is_null())
+            {
+                toolbox::entropy::abandon_thread(crate::context::current_thread());
+                return toolbox::entropy::refusal(call,
+                                                 BAD_ARGUMENT,
+                                                 format_args!("entropy output pointer/capacity \
+                                                               is invalid"))
+                       as i64;
+            }
+            // Trusted native supervisor ABI: the caller owns this valid mutable
+            // span for the synchronous call. No slice survives park/replay.
+            let output = if call.capacity == 0
+            {
+                &mut []
+            }
+            else
+            {
+                unsafe { core::slice::from_raw_parts_mut(call.output, call.capacity as usize) }
+            };
+            toolbox::entropy::request(call, output) as i64
+        }
         TLS =>
         {
             let call = read_request!(mac_abi::tls::Call);

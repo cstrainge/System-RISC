@@ -1,12 +1,13 @@
 # Rust standard library bring-up
 
-Status: design/backlog, tracked as [platform workstream P8](CORE-TOOLBOX-ROADMAP.md#p8--rust-standard-library).
+Status: incremental implementation, tracked as [platform workstream P8](CORE-TOOLBOX-ROADMAP.md#p8--rust-standard-library).
 The goal is ordinary `std` for every native userspace application, including
 Finder and all `apps/*`; userspace applications must no longer need `#![no_std]`,
 `#![no_main]`, a handwritten `_start` or a panic-handler macro. Toolbox libraries
 remain usable without std. Kernel, machine adapters, resource definitions and the
-minimal ABI/transport remain `no_std`. This plan does not install a new toolchain
-or implement a std backend.
+minimal ABI/transport remain `no_std`. The private development SDK and a native
+ordinary-main probe now exist; the installed application set still uses no_std
+until the remaining adoption gates below are met.
 
 The application policy includes [P11 CLAP commands](TERMINAL.md), hosted by
 Terminal with preference-defined base environments and checked session identity.
@@ -15,10 +16,9 @@ adds hardware process protection. Ordinary CLI/std support does not establish
 either compiler hosting or memory isolation.
 
 [P15 HFS-B](CORE-TOOLBOX-ROADMAP.md#p15--hfs-b-and-early-system-migration) is the
-immediate implementation priority, before the P8 application/sysroot migration.
-Use the current no_std apps to establish its boot/launch gate; do not make P15
-depend on std support. HFS-B is the boot/system/workspace target. After its
-formatter/boot/write-integrity gate, normal builds require HFS-B startup media.
+current boot/system/workspace target. The normal image's no_std application
+startup does not depend on the staged std SDK. Continue qualifying actual
+formatter/boot/write behavior on HFS-B startup media.
 Keep mounted classic HFS behavior unchanged; validate the new format's full-name,
 64-bit size/time and dual-fork services instead of extending HFS storage limits.
 Audit the existing 4 MiB resource-loading and staged-write ceilings early as part
@@ -28,20 +28,73 @@ with bounded memory use before making std the application build default.
 
 ## Current evidence and gaps
 
-At this planning checkpoint the host has rustc nightly 1.101.0, commit
-`28221559263a3976766cf305940e80e30cf9ba8a`, and rust-src installed. This is an
-observed toolchain, not a selected release requirement. Guest builds explicitly
-require `riscv64imac-unknown-none-elf`; they use `_start(SystemServices)`, compact
-native resource packaging and `panic = "abort"`. The linker drops `.eh_frame`.
+The development SDK pins rustc commit
+`28221559263a3976766cf305940e80e30cf9ba8a` and its matching rust-src, with custom
+target `riscv64-unknown-systemrisc`, PIC and `panic = "abort"`. The reproducible
+private-source builder is documented in [platforms/rust](../platforms/rust/README.md).
+Kernel and independent low-level modules keep their no_std target. An application
+supplies normal `main`; the platform supplies native entry and shared services.
 
-The one-hart scheduler supplies separate application threads, preemption, trusted
-identities and event-specific blocking/wakeup. This is not worker-thread spawning,
-general park/wake, TLS or a std runtime. Memory handles are generation checked
-but do not expose a stable-pointer allocator. File reads/catalog operations and
-bounded transactional data-file creation exist; generic writable file streams,
-pipes and std descriptors do not. Monotonic nanoseconds and signed Unix wall
-seconds exist, with finer wall-clock precision still to define. Networking is
-[P7](NETWORKING.md), not an existing socket backend.
+Finite optimized four-CPU QEMU runs of the real packaged `Std Probe` exercised
+ordinary main, Vec/String/Box allocation, repeated `System::new()`, native TLS and
+its destructor, clocks, a scheduler-backed Condvar timeout, and window create/close.
+Matching terminal variants observed normal return with code0, explicit
+`std::process::exit(-23)` without user TLS cleanup, the default System panic report,
+and a real 512MiB allocation refusal against the 64MiB process account. Panic and
+OOM submit Abort immediately after reporting. System owns the report, dismissal,
+thread/process reclamation and subsequent input; these were observed in each
+applicable case. The panic dispatcher must not skip the System hook merely because
+stderr has no panic-output endpoint.
+
+These are bounded main-thread cases, not complete S1 or std adoption acceptance.
+Their scope does not qualify early-startup failures, custom hooks, full memory exhaustion, Finder OOM recovery,
+Windows or other hardware. Non-ASCII bytes reached the report transport; glyph
+availability is a separate font/rendering concern. Existing native scheduler and
+module-worker evidence does not substitute for std child-thread observations.
+
+Later finite optimized four-CPU QEMU observations exercised actual std children,
+TLS teardown, synchronization, scoped borrowing, transferred join/detach rights,
+creation-budget refusal/reuse, child panic and process exit with a live child.
+Paused physical PC/SP observations caught each of four real child register bodies
+migrating at the same stack pointer, with overlapping execution. Actual thread
+and Process/account reclamation and subsequent input were observed. These are
+bounded scenarios, including instrumentation and pauses, not race-absence or
+latency guarantees.
+
+The native random backend now uses the same checked entropy transport as the
+public API. With optimized SDK
+`c76fa2ded199ab765b77d4dbc45abb9113e30a8aa00fade3f82ac1364c19ec9e`,
+System resource hash
+`bb6873aad2b92a75fa85861f46c040080cfdd7b79a5b6892656bbbd6da4e7727`,
+and private RV64 QEMU with four CPUs and 8 GiB, HashMap/HashSet operations completed
+in main and four native children. Queue metadata recorded six real device
+completions; source bytes and seeds were not logged. Removing the RNG produced
+an informative System report, Abort101, actual reclamation and subsequent input.
+The positive diagnostic explicitly checked source readiness in main. It does
+not qualify pending readiness during launch, initial/replacement Finder,
+malformed-device handling, provider retirement, source security or full adoption.
+
+The retained ENTR1 launch coordinator now has bounded native observations for
+initial Finder, ordinary launch/cancellation/retry and asynchronous document
+commit/refusal/retry, plus already-ready Finder-role replacements. Their exact
+artifacts, source-freshness correction, injected-device configuration and remaining
+gaps are recorded in [application runtime observations](APPLICATION-RUNTIME.md#bounded-ready-observations--2026-11-01).
+Matching SDK `056bc07dc1d2272fed1caf2c3a318a0b87ff16eee8a6ed434f6c39bdb04a58a3`
+also exercised cross-thread std join/drop with actual THRD/account closure on that
+System artifact. Public entropy normal, absent, short completion and caller-stop /
+reset / fresh retry ran on the same artifact; no bytes or seeds were logged.
+The prior explicit-readiness HashMap cases above remain scoped to their earlier
+SDK/System artifact and do not establish later automatic launch admission.
+
+Native writable files, process streams, launch data and automatic ENTR1
+requirements for std application packaging remain adoption gates. Installed apps
+have not begun migration.
+The current stdio backend reports Unsupported on unavailable I/O and flushing;
+it does not silently discard output or fabricate stdin EOF. Buffered Rust writes
+can defer that error until flushing. `println!` is not supported by an emergency
+serial log. File catalog/read and staged
+save services are not ordinary writable `File` descriptions. Networking remains
+[P7](NETWORKING.md).
 
 ## Application build and default panic contract
 
@@ -157,9 +210,9 @@ a linked std stub as an implemented service.
 | --- | --- | --- |
 | `alloc`, Box/Vec/String, collections, Arc | Internal System heap, atomics and memory handles | Stable-pointer allocate/deallocate/reallocate with alignment, zeroing, ownership and OOM policy. Never use movable handles as raw allocations. Match GlobalAlloc contracts, including no unwinding/reentrant allocation; test alignment, growth, reuse, failure and concurrent clients. |
 | Iterators, formatting, Unicode/string logic, numerics, generic `io` helpers | Mostly portable Rust/compiler code | Audit target intrinsics/math/builtins and dependency paths; verify representative runtime results. Their presence does not imply the OS-backed portions of std work. |
-| HashMap/HashSet and random-dependent runtime behavior | No verified OS entropy service | Add an entropy/randomness backend, seed policy, early-boot failure behavior and independent state across apps/threads. Verify the actual pinned std seeding path; do not present timestamps as secure entropy for P7 TLS or third-party getrandom. |
-| `thread`, scoped threads, join, sleep, park/unpark | One main OS thread per app; event wait blocks it | Spawn native workers in the same AppId with distinct ThreadIds/stacks, join/exit, wake tokens, deadlines, names/IDs, stack exhaustion and cleanup. Scoped threads must not outlive borrowed state; dropping a join handle and app exit require explicit lifecycle rules. |
-| `thread_local!` and runtime TLS | App-local manager context, not native thread TLS | Per-OS-thread keys/values, initialization/reentrancy, destructor order/reentrancy and teardown. Keep code and thread state alive through destructors. Test distinct values on workers, multiple apps and thread-slot reuse. |
+| HashMap/HashSet and random-dependent runtime behavior | External VirtIO RNG, checked resident entropy transport and bounded native seeding observations | Add an entropy/randomness backend, seed policy, early-boot failure behavior and independent state across apps/threads. Verify the actual pinned std seeding path; do not present timestamps as secure entropy for P7 TLS or third-party getrandom. |
+| `thread`, scoped threads, join, sleep, park/unpark | Genuine native children/rights and bounded std thread observations | Spawn native workers in the same AppId with distinct ThreadIds/stacks, join/exit, wake tokens, deadlines, names/IDs, stack exhaustion and cleanup. Scoped threads must not outlive borrowed state; dropping a join handle and app exit require explicit lifecycle rules. |
+| `thread_local!` and runtime TLS | Canonical per-thread OS-key TLS and bounded std teardown observations | Per-OS-thread keys/values, initialization/reentrancy, destructor order/reentrancy and teardown. Keep code and thread state alive through destructors. Test distinct values on workers, multiple apps and thread-slot reuse. |
 | Mutex/RwLock/Condvar/Once/OnceLock/LazyLock, channels | Interrupt-masked service guards; event-specific wait | General atomic check/enqueue-and-park plus wake/timeout; no lost wakeups, spins behind preempted owners or locks across switches. Specify memory ordering, spurious wakes and fairness. Test blocked-thread progress, initialization races and channels using real workers. |
 | `time::{Instant,SystemTime}`, thread sleep | Monotonic ns, signed Unix seconds and checked HFS conversion | Define precision/resolution, range, subtraction/overflow and wall adjustment. Sleep uses scheduler deadlines and never UI event consumption. Test 2026+, before/after epoch, 2040 HFS boundary and adjustment-independent Instant. |
 | `io` stdin/stdout/stderr, buffering and printing | Serial diagnostics and UI services | Owned stream/descriptor table, partial reads/writes, EOF, locks, redirection and pipe readiness. Define absent stdin and broken-pipe behavior. GUI apps need no terminal until actual output requests one; no serial log stream masquerading as user stdout. |

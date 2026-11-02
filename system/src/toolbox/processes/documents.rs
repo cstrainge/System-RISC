@@ -231,7 +231,7 @@ fn clear_pending(owner: u64, handle: u64)
 }
 fn pending_io() -> bool
 {
-    crate::toolbox::files::current_io_pending()
+    crate::toolbox::files::current_io_pending() || super::launch::pending()
 }
 fn dispose(manager: &mut super::Manager, owner: u64, handle: u64, preparing: bool)
            -> Result<(), Status>
@@ -251,6 +251,11 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
 {
     call.requirement_class = [0; 4];
     call.requirement_version = 0;
+    if super::launch::pending() && call.operation != DOCUMENT_COMMIT
+    {
+        super::launch::abandon_thread(crate::context::current_thread());
+        return BAD_ABI;
+    }
     if call.reserved != [0; 2] || call.operation > DOCUMENT_ACCEPTS_DRAG
     {
         return BAD_ARGUMENT;
@@ -310,7 +315,7 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                     files.pin_document(&authority, call.handle, scope, call.application_volume,
                                        call.application_cnid)
                 }).map_err(crate::state::AccessError::status)??;
-                let cached = if application::pending()
+                let cached = if application::pending() || super::launch::pending()
                 {
                     None
                 }
@@ -453,7 +458,27 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                 {
                     desktop(|d| activate_existing(d, owner, call.handle, &mut launch))?
                 };
-                if !existing
+                let resumed = if super::launch::pending()
+                {
+                    if let Err(error) =
+                        super::launch::resume(&mut launch,
+                                              super::launch::Origin::Document(call.handle))
+                    {
+                        call.requirement_class = launch.requirement_class;
+                        call.requirement_version = launch.requirement_version;
+                        if !pending_io()
+                        {
+                            clear_pending(owner, call.handle);
+                        }
+                        return Err(error);
+                    }
+                    true
+                }
+                else
+                {
+                    false
+                };
+                if !existing && !resumed
                 {
                     let loaded = match crate::context::without_recovery(|| {
                               application::read(owner, volume, cnid)
@@ -486,11 +511,19 @@ pub(crate) fn request(owner: u64, call: &mut DocumentCall) -> Status
                     })?;
                     if launch_needed
                     {
-                        super::launch_application(&mut launch, *loaded).map_err(|status| {
+                        if let Err(error) =
+                            super::launch_application(&mut launch,
+                                                      *loaded,
+                                                      super::launch::Origin::Document(call.handle))
+                        {
                             call.requirement_class = launch.requirement_class;
                             call.requirement_version = launch.requirement_version;
-                            status
-                        })?;
+                            if !pending_io()
+                            {
+                                clear_pending(owner, call.handle);
+                            }
+                            return Err(error);
+                        }
                     }
                 }
                 desktop(|d| {
@@ -648,6 +681,7 @@ pub(crate) fn pump()
     CLEANUP.store(true, Ordering::Release);
     if let Some(pending) = pending
     {
+        super::launch::abandon_document(crate::context::ThreadId(pending.thread), handle);
         let is_application = matches!(pending.operation, DOCUMENT_BEGIN | DOCUMENT_COMMIT);
         let (volume, cnid) =
             if is_application { application } else { (pending.volume, pending.cnid) };

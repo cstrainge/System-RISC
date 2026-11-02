@@ -43,6 +43,18 @@ enum Work
     {
         old: ResourceBinding, admission: FinderAdmission
     },
+    Ready
+    {
+        old:          ResourceBinding,
+        admission:    FinderAdmission,
+        job:          crate::drivers::OwnedJob,
+        failure:      Option<Status>,
+        cancellation: Option<Status>
+    },
+    Copy
+    {
+        old: ResourceBinding, admission: FinderAdmission
+    },
     Prepare
     {
         old:       ResourceBinding,
@@ -104,6 +116,7 @@ static FLIGHT: Spinlock<Option<Work>> = Spinlock::new(None);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static ORIGIN_OWNER: AtomicU64 = AtomicU64::new(0);
 static ORIGIN_IMAGE: AtomicU64 = AtomicU64::new(0);
+static READY_JOB: AtomicU64 = AtomicU64::new(0);
 static WAKE: AtomicBool = AtomicBool::new(false);
 static WAITING_FOR_STACK: AtomicBool = AtomicBool::new(false);
 static WAITING_FOR_REPORT: AtomicBool = AtomicBool::new(false);
@@ -156,6 +169,20 @@ pub(crate) fn retry(binding: &ResourceBinding) -> Result<(), Status>
 {
     InvocationGate::run(|| {
         let flight = FLIGHT.lock();
+        if let Some(Work::Ready { old,
+                                  failure: Some(_),
+                                  .. }) = flight.as_ref()
+        {
+            if old.ledger().owner() != binding.ledger().owner()
+               || old.image().map(crate::images::Binding::id)
+                  != binding.image().map(crate::images::Binding::id)
+            {
+                return Err(ACCESS_DENIED);
+            }
+            RETRY.store(true, Ordering::Release);
+            WAKE.store(true, Ordering::Release);
+            return Ok(());
+        }
         let Some(Work::Paused { next,
                                 admission,
                                 .. }
@@ -225,6 +252,10 @@ fn step(work: Work) -> Option<Work>
                     .. }
         | Work::Image { admission,
                       .. }
+        | Work::Ready { admission,
+                      .. }
+        | Work::Copy { admission,
+                     .. }
         | Work::Prepare { admission,
                         .. }
         | Work::Commit { admission,
@@ -426,16 +457,141 @@ fn step_inner(work: Work) -> Option<Work>
         Work::Image { old,
                       admission } =>
         {
+            let selected = (|| {
+                let tls = desktop(&old, |desktop| desktop.processes.tls(admission.id()))?;
+                let provider = crate::kernel::select_application_services(admission.owner(),
+                                                                          admission.allocation(),
+                                                                          &tls,
+                                                                          admission.original())?;
+                provider.map(|provider| super::launch::ready_job(&tls, admission.owner(), provider))
+                        .transpose()
+            })();
+            match selected
+            {
+                Ok(Some(job)) =>
+                {
+                    READY_JOB.store(job.notification_id(), Ordering::Release);
+                    WAKE.store(true, Ordering::Release);
+                    Some(Work::Ready { old,
+                                       admission,
+                                       job,
+                                       failure: None,
+                                       cancellation: None })
+                }
+                Ok(None) =>
+                {
+                    Some(Work::Copy { old,
+                                      admission })
+                }
+                Err(SERVICE_BUSY) =>
+                {
+                    Some(Work::Image { old,
+                                       admission })
+                }
+                Err(status) =>
+                {
+                    Some(Work::Failure { target: old,
+                                         status,
+                                         permit: admission.permit(),
+                                         activity: admission.activity() })
+                }
+            }
+        }
+        Work::Ready { old,
+                      admission,
+                      mut job,
+                      mut failure,
+                      mut cancellation } =>
+        {
+            // No coordinator, Desktop or registry guard crosses this callback.
+            // Admission retains the genuine recovery Activity until terminal ACK.
+            let result = job.run_once();
+            match result
+            {
+                Ok(Some(completed)) =>
+                {
+                    READY_JOB.store(0, Ordering::Release);
+                    let status = failure.or_else(|| {
+                                     match completed.result
+                                     {
+                                         Ok(bytes) if bytes.is_empty() => None,
+                                         Ok(_) => Some(BAD_ABI),
+                                         Err(crate::drivers::jobs::Failure::Cancelled) =>
+                                         {
+                                             Some(OPERATION_CANCELLED)
+                                         }
+                                         Err(crate::drivers::jobs::Failure::Service(status)) =>
+                                         {
+                                             Some(status)
+                                         }
+                                     }
+                                 });
+                    return Some(match status
+                                {
+                                    None =>
+                                    {
+                                        Work::Copy { old,
+                                                     admission }
+                                    }
+                                    Some(status) =>
+                                    {
+                                        Work::Failure { target: old,
+                                                        status,
+                                                        permit: admission.permit(),
+                                                        activity: admission.activity() }
+                                    }
+                                });
+                }
+                Ok(None) => (),
+                Err(status) =>
+                {
+                    if failure.is_none() || RETRY.swap(false, Ordering::AcqRel)
+                    {
+                        failure.get_or_insert(status);
+                        InvocationGate::run(|| {
+                            admission.owner().stop_admission();
+                            scheduler::retire_owner(admission.id());
+                        });
+                        super::retirement::resources_released();
+                        match job.cancel()
+                        {
+                            Ok(()) => WAKE.store(true, Ordering::Release),
+                            Err(cause) =>
+                            {
+                                cancellation = Some(cause);
+                                serial!("FINDER_READY_CANCEL_RETAINED app={} original={status} \
+                                         cancellation={cause}; owned job/runtime retained",
+                                        admission.id());
+                                let _notification =
+                                    desktop(&old, |desktop| desktop.finder_restart_failed(cause));
+                            }
+                        }
+                    }
+                    else if cancellation != Some(status)
+                    {
+                        cancellation = Some(status);
+                        serial!("FINDER_READY_DELIVERY_RETAINED app={} original={failure:?} \
+                                 delivery={status}; owned job/runtime retained",
+                                admission.id());
+                        let _notification =
+                            desktop(&old, |desktop| desktop.finder_restart_failed(status));
+                    }
+                }
+            }
+            Some(Work::Ready { old,
+                               admission,
+                               job,
+                               failure,
+                               cancellation })
+        }
+        Work::Copy { old,
+                     admission } =>
+        {
             let target =
                 crate::allocator::Target::Owner { account: admission.allocation(),
                                                   class:
                                                       mac_kernel_model::policy::MemoryClass::Kernel };
             match crate::allocator::with_target(target, || {
-                      let tls = desktop(&old, |desktop| desktop.processes.tls(admission.id()))?;
-                      crate::kernel::admit_application_services(admission.owner(),
-                                                                admission.allocation(),
-                                                                &tls,
-                                                                admission.original())?;
                       crate::kernel::copy_application(admission.owner(),
                                                       &admission.allocation(),
                                                       admission.original())
@@ -449,8 +605,8 @@ fn step_inner(work: Work) -> Option<Work>
                 }
                 Err(SERVICE_BUSY) =>
                 {
-                    Some(Work::Image { old,
-                                       admission })
+                    Some(Work::Copy { old,
+                                      admission })
                 }
                 Err(status) =>
                 {
@@ -777,8 +933,9 @@ pub(crate) fn pump()
     WAKE.store(false, Ordering::Release);
     let next = step(work);
     let sleep = matches!(&next,
-                         Some(Work::Paused { attempted: true,
-                                             .. }
+                         Some(Work::Ready { .. }
+                              | Work::Paused { attempted: true,
+                                               .. }
                               | Work::BackingPaused { attempted: true,
                                                       .. }
                               | Work::RunningUi { .. }))
@@ -826,6 +983,15 @@ pub(crate) fn report_cleanup_wait()
 pub(crate) fn report_cleanup_progress()
 {
     if WAITING_FOR_REPORT.load(Ordering::Acquire)
+    {
+        WAKE.store(true, Ordering::Release);
+    }
+}
+
+/// Exact completion notice is only a wake hint; Work retains the unique job.
+pub(crate) fn ready_changed(job: u64)
+{
+    if job != 0 && READY_JOB.load(Ordering::Acquire) == job
     {
         WAKE.store(true, Ordering::Release);
     }

@@ -3751,3 +3751,23 @@ The build now requires both `CARGO_UNSTABLE_CHECKSUM_FRESHNESS=true` and
 fingerprints and artifact hashes. Build-script inputs still need explicit
 rebuilding when their mtime tracking misses changes; content mode does not
 remove that separate limitation. See the [Cargo freshness contract](https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#checksum-freshness).
+
+
+### Retained READY integration with Process roots — 2026-11-01
+
+Immediate and delayed launches prepare their original Process page-root pin
+only after provider READY, before acquiring Desktop for real author-thread
+publication. Initial Finder uses the same boundary; replacement retains the
+existing recovery preparation. Pending bootstrap explicitly selects and activates
+the genuine System root before its owned idle-frame entry. No application pin
+is left on the abandoned bootstrap stack.
+
+The combined optimized native image observed delayed initial Finder with all
+four actual CPUs in System idle on the System root before Finder publication,
+then source release and desktop. Actual document launch also exercised pending
+READY, a labelled device-status failure with reset/unstarted-account closure,
+typed refusal/dismissal, fresh retry, document entry and eventual account closure.
+Exact artifacts, configuration, observer effects and scope are recorded in
+[application runtime observations](APPLICATION-RUNTIME.md#ready-with-owned-process-page-roots--2026-11-01).
+These are finite trusted-supervisor observations, not full std adoption, private
+user mappings, timing/race proof or protected Finder OOM recovery.

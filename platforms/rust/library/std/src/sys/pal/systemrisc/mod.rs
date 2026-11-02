@@ -4,7 +4,7 @@
 use crate::io;
 
 pub(crate) mod runtime;
-mod failure;
+pub(crate) mod failure;
 mod native_tls;
 mod native_wait;
 

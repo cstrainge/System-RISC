@@ -39,17 +39,7 @@ impl RootBinding
     pub(crate) fn service_scope(&self, owner: &OwnerRef)
                                 -> Result<mac_object_table::scope::Lease<InvocationGate>, Error>
     {
-        let actual = root(self, owner)?;
-        if !actual.owner.accepting() || actual.closing.load(Ordering::Acquire)
-        {
-            return Err(Error::Finished);
-        }
-        if actual.scope.subject() != owner.owner()
-        {
-            return Err(Error::Authority);
-        }
-        actual.scope.admitting().map_err(|_| Error::Finished)?;
-        Ok(actual.scope.clone())
+        root(self, owner)?.service_scope()
     }
 }
 /// A sealed pin to this registered Process runtime admission root. System
@@ -72,9 +62,30 @@ impl RuntimeAdmission
         self.root.owner.accepting() && !self.root.closing.load(Ordering::Acquire)
     }
 
+    /// Service admission derives only from this actual runtime; no copied
+    /// owner ID or caller-selected scope can reconstruct its dependency root.
+    pub(crate) fn service_scope(&self)
+                                -> Result<mac_object_table::scope::Lease<InvocationGate>, Error>
+    {
+        self.root.service_scope()
+    }
+
     pub(crate) fn close(&self)
     {
         self.root.closing.store(true, Ordering::Release);
+    }
+
+    /// A clonable lifetime use for owned I/O; it grants no author/key admission
+    /// or authority to close the runtime. The actual broker must retain it until
+    /// terminal completion/cancellation, not merely until its waiter disappears.
+    pub(crate) fn activity(&self) -> Result<RuntimeActivity, Error>
+    {
+        if !self.accepting()
+        {
+            return Err(Error::Finished);
+        }
+        Ok(RuntimeActivity { root:      self.root.clone(),
+                             _released: RuntimeActivityReleased { owner: self.root.owner.clone() } })
     }
 
     pub(crate) fn prepare_slots(&self) -> Result<ThreadSlots, Error>
@@ -86,6 +97,44 @@ impl RuntimeAdmission
         slots::prepare_from_root(&self.root)
     }
 }
+/// Authentic lifetime-only view of one actual Process runtime. Only a checked
+/// RuntimeAdmission can issue it; a copied root ID cannot reconstruct this pin.
+#[derive(Clone)]
+pub(crate) struct RuntimeActivity
+{
+    root:      Arc<Root>,
+    // LAST: publish progress only after this actual runtime Arc decrements.
+    _released: RuntimeActivityReleased
+}
+#[derive(Clone)]
+struct RuntimeActivityReleased
+{
+    owner: OwnerRef
+}
+impl Drop for RuntimeActivityReleased
+{
+    fn drop(&mut self)
+    {
+        if !self.owner.accepting()
+        {
+            crate::toolbox::processes::retirement::resources_released();
+        }
+    }
+}
+impl RuntimeActivity
+{
+    pub(crate) fn owner(&self) -> &OwnerRef
+    {
+        &self.root.owner
+    }
+
+    pub(crate) fn allocation_target(&self) -> crate::allocation::Target
+    {
+        crate::allocation::Target::Owner { account: self.root.allocation.clone(),
+                                           class:   mac_kernel_model::policy::MemoryClass::Kernel }
+    }
+}
+
 pub(crate) fn runtime_admission(binding: &RootBinding, owner: &OwnerRef)
                                 -> Result<RuntimeAdmission, Error>
 {
@@ -101,6 +150,20 @@ pub(super) struct Root
 }
 impl Root
 {
+    fn service_scope(&self) -> Result<mac_object_table::scope::Lease<InvocationGate>, Error>
+    {
+        if !self.owner.accepting() || self.closing.load(Ordering::Acquire)
+        {
+            return Err(Error::Finished);
+        }
+        if self.scope.subject() != self.owner.owner()
+        {
+            return Err(Error::Authority);
+        }
+        self.scope.admitting().map_err(|_| Error::Finished)?;
+        Ok(self.scope.clone())
+    }
+
     fn kernel<R>(&self, action: impl FnOnce() -> R) -> R
     {
         crate::allocator::with_target(crate::allocator::Target::Owner {

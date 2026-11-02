@@ -1,6 +1,6 @@
 # Native application runtime and allocation
 
-Native RV64 applications use the `mac-toolbox` application feature and one safe
+The installed no_std RV64 applications use the `mac-toolbox` application feature and one safe
 entry declaration. The SDK owns service installation, the Rust global allocator,
 panic reporting and allocation-failure reporting. Drivers, extensions and
 WDEF/CDEF definitions retain their own runtimes; an application runtime is not a
@@ -67,8 +67,31 @@ Normal native launch, initial Finder and replacement Finder decode the same NREQ
 
 The TLRT scope belongs to the actual runtime Root, not its long-lived directory selector. Real runtime use keeps it open; closing author admission alone does not acknowledge it. DDEP retains a scope lease without retaining Root, avoiding an account-close cycle. Cleanup keeps the unique dependency ticket while the scope remains open, and actual closure/removal wakes both Process retirement and dependent module recovery. Prepared-root publication binds its reservation in the canonical owner-ledger turn and returns redundant pins for disposal after manager guards.
 
-Provider selection establishes registration availability and exact-version agreement. It does not establish hardware readiness, entropy availability, successful future requests or arbitrary fault containment. Provider readiness callbacks must execute outside registry, image and Desktop guards and retain the genuine runtime admission pin and owned request while pending. That asynchronous launch coordinator remains separate work. No installed application currently declares NREQ.
+Provider selection establishes registration availability and exact-version agreement.
+For ENTR1, launch also submits the real provider READY operation before author
+publication. The ordinary-launch continuation retains the original prospective
+Process, loaded package, heap/TLS roots and exact provider job across the actual
+launcher's park/replay. Document commits retain their batch identity and propagate
+the same typed refusal on replay. Caller stop before publication acceptance
+abandons the launch; acceptance and cancellation share one bounded slot turn.
+A later publication failure still retires the prospective owner.
 
+Initial Finder retains those original resources in an owned startup continuation.
+A sealed pending token permits the genuine System idle/scheduler path while the
+provider is pending; canonical driver-job wakes resume startup maintenance.
+Only READY completion publishes Finder's thread and desktop. An initial refusal
+enters the minimal startup-failure UI, retaining original boot ownership until
+machine reset. Replacement Finder uses its existing recovery coordinator and
+retains its admission and exact job through READY or cancellation.
+
+No manager, image or Desktop guard crosses a provider callback or wait. Queued
+requests carry genuine runtime activity through completion/cancellation ACK;
+dropping a launch continuation does not release that activity early. Public
+entropy requests reuse the runtime's exact scoped dependency, admitting it lazily
+for a caller without NREQ; they cannot reselect another provider after withdrawal.
+Readiness is an admission observation, not a promise of future device health.
+Installed applications still use no_std and do not yet declare NREQ by default;
+private packages below exercise these paths.
 Direct Process launch and document-commit refusals carry the required class/version through their respective call records and the public typed ServiceRequirement error. Finder obtains its explanatory template from resources. Existing numeric status values and development ABI version1 remain; the changed record fingerprint requires rebuilding every client. The DocumentCall adapter clears failure-only outputs before entry and accepts them only on a failed DOCUMENT_COMMIT. Both transports share the same checked payload decoder. Finder document associations and application drops use DocumentOpen::commit and retain the typed error through the existing resource-based alert. Other Open wrappers do not automatically gain this payload.
 
 ### Bounded native observations — 2026-11-01
@@ -98,6 +121,24 @@ These are finite production-path scenarios. They do not qualify provider
 withdrawal races, asynchronous READY completion, resource exhaustion, all Open
 transports, race absence, SMP safety or latency. Guest assertions and logging
 perturb execution; no timing claim follows from these observations.
+
+## Standard-library startup
+
+The staged std application target uses a platform-owned startup instead of the
+application feature. Authors provide ordinary `fn main()` and acquire the same
+services with `mac_toolbox::System::new()`. Do not combine that target with the
+old application entry/allocator/panic macros. Build it with the pinned private
+[std SDK](../platforms/rust/README.md); this is not yet the installed-app default.
+
+Std startup publishes its validated service table before Rust initialization,
+checks the actual canonical current thread, and enters the compiler's main
+wrapper. Main return runs shared native TLS teardown then signed Normal exit.
+Explicit process exit skips user TLS destructors. The default panic and allocation
+error hooks report through System independently of stdio, then request Abort
+immediately. System owns dismissal and actual quiescence/reclamation; failed
+author code does not wait on the viewer. Early/recursive failures use the shared
+core-only emergency Abort transport. See [current std evidence and remaining
+gates](RUST-STD.md#current-evidence-and-gaps) for the bounded native observations.
 
 ## Heap admission
 
@@ -285,3 +326,94 @@ The build now requires both `CARGO_UNSTABLE_CHECKSUM_FRESHNESS=true` and
 fingerprints and artifact hashes. Build-script inputs still need explicit
 rebuilding when their mtime tracking misses changes; content mode does not
 remove that separate limitation. See the [Cargo freshness contract](https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#checksum-freshness).
+
+
+### Bounded READY observations — 2026-11-01
+
+Optimized release/LTO RV64 System resource
+`faccb1df3c35b79cb1454f84b759bc7e1e2dbc7dbefe214e114ed4c977639006`,
+ROM `73954623bc3ed093a15ddce337473768263e14dfc748cf5cfda39be07fbf1a09`
+and matching std SDK `056bc07dc1d2272fed1caf2c3a318a0b87ff16eee8a6ed434f6c39bdb04a58a3`
+ran in private 8 GiB, four-CPU QEMU guests. Holding the actual virtual RNG source
+left a real descriptor outstanding during initial production Finder READY; all
+four paused CPU samples were in genuine System idle, input responded, and no
+Finder thread had been published. Source release led to Finder entry/desktop.
+Ordinary launch exercised pending identity, caller termination, original unstarted
+Process/account closure, actual device reset and a fresh successful retry.
+
+A packaged production Text Edit declaring ENTR1, opened through the real Finder
+association, remained unstarted while READY was pending; source release opened
+the actual document. A private debugger-injected RNG DeviceStatus FAILED bit
+then exercised actual driver refusal/reset, typed document replay error, unstarted
+account closure while source was still withheld, alert dismissal and successful
+source-backed retry/document/quit. The final Finder resource
+`d1b2a1237d0f56b2067ae862be729ebf5a727f3b2df6392ce6169844a193eea2`
+displayed the required ENTR/version and the corrected general I/O cause. The
+original capture's storage-specific wording failed informative-cause review;
+a collector prematurely started during rebuilding also failed and is not counted.
+
+The same bounded device-status injection during initial Finder READY reached the
+startup-failure screen, retained unique original boot resources until reset, and
+its real Restart action reached a fresh Finder desktop. Two ENTR1 Finder-role
+fixture replacements exercised the recovery coordinator with an already-ready
+provider; they were not production Finder OOM or pending replacement cases.
+Actual THRD and Process/account closure and subsequent input were observed where
+applicable. Source and base media were fixed per accepted capture; owned guests
+were reaped and cloned media removed.
+
+Cargo's actual guest records selected content fingerprints with both the feature
+and content-mode settings; generated/resource inputs received explicit rebuilds.
+This corrects earlier feature-only freshness guidance: that flag alone left this
+Cargo's default mtime mode active. Earlier artifact observations still describe
+what ran, but do not establish freshness of a later source revision.
+
+Logs, paused CPU/device-metadata observations and the private debugger channel
+perturb execution. Device-status injection does not qualify spontaneous failure,
+malformed DMA, source security, timing, race absence, arbitrary fault recovery,
+provider-withdrawal races, pending replacement cancellation, stalled-source
+deadline policy, exhaustion, Windows
+or other hardware. These finite cases do not establish full std adoption.
+
+
+### READY with owned Process page roots — 2026-11-01
+
+The launch continuation admits the genuine Process page root after READY and
+before author-thread publication, outside Desktop. Immediate and delayed initial
+Finder use that same admission boundary. The sealed pending-startup route selects
+and activates the System root before entering the actual idle frame; it retains
+no application-root pin on the abandoned bootstrap stack. Replacement Finder
+continues through its existing owned recovery preparation.
+
+An optimized release/LTO, four-CPU, 8 GiB QEMU image combined this continuation
+with the independent supervisor Process roots. System resource SHA-256 was
+`f785ef9ac17812dd24ba66e0cc979d42e24b70462f5dde8bc49c67151f2f5878`,
+System ELF was
+`7ffdff68724a279e98838077d82bc815c064c6eed032b72db872c948d8b55047`,
+and ROM was
+`ddf4e7d953b20de364ee9abe4acd08882a823eb43dc35a420d69370e0b3bdc05`.
+The build used both Cargo freshness settings, actual content fingerprint records
+and an explicit System-package rebuild for generated inputs.
+
+The actual Finder ELF was packaged with ENTR1. With the real virtual entropy
+response withheld and an actual descriptor outstanding, all four paused CPU
+PC/SP/SATP observations were in the genuine System idle body on System root
+`0x8c802000`; no Finder thread or author entry had been published. Input responded.
+Releasing the source led to actual Finder entry and desktop. A production Finder
+document association likewise held the actual Text Edit package before READY,
+then opened its document and reclaimed its thread and original account on quit.
+
+A separately labelled private virtual-device fault set only the verified RNG
+DeviceStatus FAILED bit through QEMU's physical debugger channel. The real
+driver reset and acknowledged the failed operation while the source remained
+withheld. The original unstarted Process/account closed; Finder displayed the
+typed ENTR1/general I/O cause. Dismissal and a fresh source-backed retry opened
+the document, followed by quit, actual reclamation and input. No guest RAM,
+PTE, CPU register, entropy payload or seed was written by the observer.
+
+Sources and base artifacts stayed fixed during each observation; owned guests
+and helper processes were reaped and cloned media removed. Paused metadata/CPU
+observations, injected input, logs and the fault channel perturb execution.
+These finite cases do not qualify arbitrary faults, races, timing, full std
+children on this combined image, pending replacement cancellation, exhaustion
+or production Finder OOM restart. Applications remain trusted supervisor code;
+these roots do not provide user-mode isolation.

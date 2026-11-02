@@ -110,15 +110,15 @@ pub(crate) fn copy_application(owner: &crate::toolbox::handles::OwnerRef,
 
 /// Clone immutable package ownership under IMAGES, then admit dependencies
 /// without retaining its guard across registry or future provider calls.
-pub(crate) fn admit_application_services(owner: &crate::toolbox::handles::OwnerRef,
-                                         allocation: crate::machine::scheduler::accounting::AllocationAuthority,
-                                         tls: &crate::toolbox::native_threads::RootBinding,
-                                         image: crate::images::Binding)
-                                         -> Result<(), Status>
+pub(crate) fn select_application_services(owner: &crate::toolbox::handles::OwnerRef,
+                                          allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+                                          tls: &crate::toolbox::native_threads::RootBinding,
+                                          image: crate::images::Binding)
+                                          -> Result<Option<u64>, Status>
 {
     let source = IMAGES.with(|images| images.read(image).map(|read| read.shared_source()))
                        .map_err(AccessError::status)??;
-    crate::toolbox::processes::admit_required_services(&source.resources, owner, allocation, tls)
+    crate::toolbox::processes::select_required_services(&source.resources, owner, allocation, tls)
         .map_err(|cause| cause.status())
 }
 
@@ -772,6 +772,12 @@ fn launch() -> Result<(), crate::machine::scheduler::StartError>
         mac_formats::Error::AllocationFailed("Finder lifetime domain admission failed")
     })?;
     serial!("BOOT_FINDER_DOMAIN app={finder_id}");
+    let finder_admission =
+        processes.launch_admission(finder_id).map_err(|status| {
+                                                  recovery_boot_error("Finder initial launch \
+                                                                       admission refused",
+                                                                      status)
+                                              })?;
     let finder_owner =
         processes.ledger(finder_id)
                  .map_err(|_| mac_formats::Error::Malformed("Finder owner unavailable"))?;
@@ -865,8 +871,8 @@ fn launch() -> Result<(), crate::machine::scheduler::StartError>
                             system: None }
     };
     crate::context::set_finder_app(finder_id);
-    crate::context::with_bootstrap_resources(Some(selection), || {
-        initialize_desktop(system, processes, finder_loaded)
+    let pending = crate::context::with_bootstrap_resources(Some(selection), || {
+        initialize_desktop(system, processes, finder_loaded, finder_admission)
     })?;
     let released = current_resource_selection();
     if released.owner != 0 || released.image.is_some()
@@ -877,7 +883,7 @@ fn launch() -> Result<(), crate::machine::scheduler::StartError>
     serial!("BOOT_RESOURCE_SCOPE_RELEASED");
     // End the bootstrap resource scope and drop all admission guards before
     // leaving this stack permanently. Scheduled threads own their actual pins.
-    crate::machine::scheduler::start()
+    crate::machine::scheduler::start(pending)
 }
 
 fn recovery_boot_error(service: &'static str, status: Status) -> mac_formats::Error
@@ -892,11 +898,12 @@ fn recovery_boot_error(service: &'static str, status: Status) -> mac_formats::Er
     }
 }
 
-fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resource>,
-                      processes: crate::toolbox::processes::Manager, finder_loaded: LoadedImage)
-                      -> crate::loader::LoadResult<()>
+fn initialize_desktop(
+    mut system: alloc::vec::Vec<mac_formats::resource::Resource>,
+    processes: crate::toolbox::processes::Manager, finder_loaded: LoadedImage,
+    mut finder_admission: crate::toolbox::processes::LaunchAdmission)
+    -> crate::loader::LoadResult<Option<crate::toolbox::processes::startup::PendingStartup>>
 {
-    let finder_entry = finder_loaded.entry();
     let finder_owner = processes.ledger(crate::context::finder_app().0).map_err(|_| {
         mac_formats::Error::Malformed("Finder bootstrap owner is unavailable")
     })?;
@@ -1030,25 +1037,22 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
             _ => mac_formats::Error::Malformed("module discovery failed; see recorded status")
         }
                                               })?;
-    admit_application_services(&finder_owner,
-                               finder_allocation.clone(),
-                               &finder_tls,
-                               finder_loaded.binding()).map_err(|status| {
-                                                           recovery_boot_error("Finder required \
-                                                                                provider admission \
-                                                                                refused",
-                                                                               status)
-                                                       })?;
-    // Provider admission above and table preparation here run without a
-    // Desktop guard. Move the sole space pin into actual THRD preparation.
-    let finder_space = crate::machine::paging::process::admit(&finder_owner, &finder_allocation,
-                                                              &finder_loaded).map_err(|cause| {
-                           serial!("PROCESS_SPACE_REFUSED owner={} {cause}",
-                                   finder_owner.owner().incarnation());
-                           recovery_boot_error("Finder space admission refused", cause.status())
-                       })?;
-    drop(finder_allocation);
-    drop(finder_owner);
+    let selected = select_application_services(&finder_owner,
+                                               finder_allocation,
+                                               &finder_tls,
+                                               finder_loaded.binding()).map_err(|status| {
+                       recovery_boot_error("Finder required provider admission refused", status)
+                   })?;
+    let ready =
+        selected.map(|provider| {
+                    crate::toolbox::processes::launch::ready_job(&finder_tls,
+                                                                 finder_admission.owner(),
+                                                                 provider)
+                })
+                .transpose()
+                .map_err(|status| {
+                    recovery_boot_error("Finder READY job admission refused", status)
+                })?;
     if let Err(status) = crate::toolbox::files::mount_startup_exports()
     {
         serial!("HOST_VOLUME_DISCOVERY_FAILED status={}", status);
@@ -1071,7 +1075,33 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
     with_desktop(|desktop| desktop.boot_progress(&mut boot_screen, 5))
         .map_err(|error| recovery_boot_error("boot progress manager unavailable", error.status()))??;
     serial!("BOOT_SYSTEM_READY: services=0x{:x}", &SERVICES as *const SystemServices as usize);
-    serial!("SYSTEM_FINDER_LAUNCH entry=0x{:x}", finder_entry);
+    if let Some(ready) = ready
+    {
+        let pending = crate::toolbox::processes::startup::install(finder_admission, finder_tls,
+                                                                  finder_loaded, ready,
+                                                                  boot_screen).map_err(|status| {
+                          recovery_boot_error("Finder pending startup publication refused", status)
+                      })?;
+        return Ok(Some(pending));
+    }
+    finish_initial_finder(&mut finder_admission, finder_loaded, &mut boot_screen)?;
+    Ok(None)
+}
+
+pub(crate) fn finish_initial_finder(finder_admission: &mut crate::toolbox::processes::LaunchAdmission,
+                                    finder_loaded: LoadedImage,
+                                    boot_screen: &mut crate::boot_screen::BootScreen)
+                                    -> crate::loader::LoadResult<()>
+{
+    serial!("SYSTEM_FINDER_LAUNCH entry=0x{:x}", finder_loaded.entry());
+    // Both immediate bootstrap and delayed READY reach this same authentic
+    // admission. No Desktop guard or copied owner ID authorizes the page root.
+    let finder_space = crate::machine::paging::process::admit(finder_admission.owner(),
+                                                              &finder_admission.allocation(),
+                                                              &finder_loaded).map_err(|cause| {
+                           serial!("PROCESS_SPACE_REFUSED owner={} {cause}", finder_admission.id());
+                           recovery_boot_error("Finder space admission refused", cause.status())
+                       })?;
     let thread =
         with_desktop(|desktop| {
             desktop.spawn_process(crate::context::finder_app().0, finder_loaded, finder_space)
@@ -1080,18 +1110,18 @@ fn initialize_desktop(mut system: alloc::vec::Vec<mac_formats::resource::Resourc
               serial!("FINDER_THREAD_CREATION_FAILED status={status}");
               mac_formats::Error::Malformed("Finder thread creation failed")
           })?;
-    with_desktop(|desktop| desktop.boot_progress(&mut boot_screen, 6))
+    finder_admission.started();
+    with_desktop(|desktop| desktop.boot_progress(boot_screen, 6))
         .map_err(|error| recovery_boot_error("boot progress manager unavailable", error.status()))??;
     with_desktop(|desktop| desktop.started(crate::context::finder_app().0, thread)).map_err(|_| {
                                                           mac_formats::Error::Malformed("Finder context \
                                                                               initialization \
                                                                               failed")
                                                       })?;
-    with_desktop(|desktop| desktop.boot_progress(&mut boot_screen, 7))
+    with_desktop(|desktop| desktop.boot_progress(boot_screen, 7))
         .map_err(|error| recovery_boot_error("boot progress manager unavailable", error.status()))??;
-    with_desktop(|desktop| desktop.finish_boot_progress(&mut boot_screen))
+    with_desktop(|desktop| desktop.finish_boot_progress(boot_screen))
         .map_err(|error| recovery_boot_error("boot progress cleanup unavailable", error.status()))??;
-    drop(boot_screen);
     let allocations = crate::allocator::statistics();
     serial!("RESIDENT_ALLOCATION_READY capacity={} admitted={} foundation={} system={} \
              domains={} header_bytes={} owned_app_heap=true module_heap=false \

@@ -1,14 +1,47 @@
 //! A real APPL with ordinary Rust startup. No custom entry, allocator, panic
 //! handler or host service substitute. Execute only in an owned private guest.
+#[cfg(any(all(feature = "exit", feature = "panic"),
+          all(feature = "exit", feature = "oom"),
+          all(feature = "panic", feature = "oom")))]
+compile_error!("select only one terminal scenario");
+#[cfg(any(all(feature = "child-panic", feature = "live-child"),
+          all(feature = "child-panic", feature = "exit"),
+          all(feature = "child-panic", feature = "panic"),
+          all(feature = "child-panic", feature = "oom"),
+          all(feature = "live-child", feature = "panic"),
+          all(feature = "live-child", feature = "oom"),
+          all(feature = "threads", feature = "child-panic"),
+          all(feature = "threads", feature = "live-child")))]
+compile_error!("select one child lifecycle scenario");
+
+#[cfg(feature = "launch-ready")]
+mod launch_ready;
+#[cfg(feature = "threads")]
+mod threads;
+#[cfg(feature = "thread-residency")]
+mod residency;
+#[cfg(any(feature = "child-panic", feature = "live-child"))]
+mod child_retirement;
+#[cfg(feature = "entropy")]
+mod entropy;
+#[cfg(feature = "std-random")]
+mod random;
+
+use std::error::Error;
+#[cfg(not(feature = "launch-ready"))]
 use std::{cell::RefCell,
-          error::Error,
           hint::black_box,
+          io::{ErrorKind, Read, Write},
           sync::{Condvar, Mutex, OnceLock, TryLockError},
           time::{Duration, Instant, SystemTime}};
 
-use mac_toolbox::{Rect, System, windows::WindowSpec};
+use mac_toolbox::System;
+#[cfg(not(feature = "launch-ready"))]
+use mac_toolbox::{Rect, windows::WindowSpec};
 
+#[cfg(not(feature = "launch-ready"))]
 struct Witness(String);
+#[cfg(not(feature = "launch-ready"))]
 impl Drop for Witness
 {
     fn drop(&mut self)
@@ -21,6 +54,7 @@ impl Drop for Witness
         }
     }
 }
+#[cfg(not(feature = "launch-ready"))]
 thread_local! {
     static VALUE: RefCell<Option<Witness>> = const { RefCell::new(None) };
 }
@@ -28,6 +62,15 @@ thread_local! {
 fn main() -> Result<(), Box<dyn Error>>
 {
     let system = System::new()?;
+    #[cfg(feature = "launch-ready")]
+    return launch_ready::run(&system);
+    #[cfg(not(feature = "launch-ready"))]
+    run_standard(system)
+}
+
+#[cfg(not(feature = "launch-ready"))]
+fn run_standard(system: System) -> Result<(), Box<dyn Error>>
+{
     let repeated = System::new()?;
     let process = system.processes().current()?;
     assert_eq!(process.id, repeated.processes().current()?.id, "System acquisition changed caller");
@@ -74,12 +117,45 @@ fn main() -> Result<(), Box<dyn Error>>
     assert_eq!(*once.get_or_init(|| panic!("OnceLock initialized twice")), 13);
     system.log("STD_PROBE_SYNC_TIMEOUT_OBSERVED\n")?;
 
+    assert_eq!(std::io::stdin().read(&mut [0u8; 1]).unwrap_err().kind(), ErrorKind::Unsupported);
+    assert_eq!(std::io::stdout().write_all(b"unavailable stdout\n").unwrap_err().kind(),
+               ErrorKind::Unsupported);
+    assert_eq!(std::io::stderr().write_all(b"unavailable stderr\n").unwrap_err().kind(),
+               ErrorKind::Unsupported);
+    assert_eq!(std::io::stdout().flush().unwrap_err().kind(), ErrorKind::Unsupported);
+    system.log("STD_PROBE_STREAM_REFUSALS_OBSERVED\n")?;
+
     let window =
         system.windows().create(WindowSpec::new(Rect::new(60, 80, 290, 440), "Std Probe"))?;
     system.close_window(window)?;
+    #[cfg(feature = "entropy")]
+    entropy::run(&system)?;
+    #[cfg(feature = "std-random")]
+    random::run(&system)?;
+    #[cfg(feature = "threads")]
+    threads::run(&system)?;
+    #[cfg(any(feature = "child-panic", feature = "live-child"))]
+    child_retirement::run(&system)?;
     drop(boxed);
     drop(bytes);
-    system.log("STD_PROBE_MAIN_RETURN\n")?;
-    // The platform, not author code, runs VALUE's destructor after main returns.
-    Ok(())
+    #[cfg(feature = "exit")]
+    {
+        system.log("STD_PROBE_EXPLICIT_EXIT code=-23\n")?;
+        std::process::exit(-23);
+    }
+    #[cfg(feature = "panic")]
+    panic!("STD_PROBE_DEFAULT_PANIC: UTF-8 αβ 🦀; default System hook");
+    #[cfg(feature = "oom")]
+    {
+        system.log("STD_PROBE_OOM_REQUEST bytes=536870912\n")?;
+        let allocation = Vec::<u8>::with_capacity(black_box(536_870_912));
+        black_box(&allocation);
+        panic!("STD_PROBE_OOM_REQUEST unexpectedly succeeded");
+    }
+    #[cfg(not(any(feature = "exit", feature = "panic", feature = "oom")))]
+    {
+        system.log("STD_PROBE_MAIN_RETURN\n")?;
+        // The platform, not author code, runs VALUE's destructor after main returns.
+        Ok(())
+    }
 }

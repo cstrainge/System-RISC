@@ -1,4 +1,4 @@
-use crate::sys::pal::runtime;
+use crate::sys::pal::{failure, runtime};
 
 pub fn fill_bytes(bytes: &mut [u8])
 {
@@ -6,9 +6,8 @@ pub fn fill_bytes(bytes: &mut [u8])
     {
         return;
     }
-    let status = unsafe { runtime::__system_risc_entropy_v1(bytes.as_mut_ptr(), bytes.len()) };
-    if status != mac_abi::OK
+    if let Err(cause) = runtime::client().entropy_fill(bytes)
     {
-        runtime::failure(status, b"System entropy service could not fill the requested buffer");
+        failure::report(format_args!("System entropy required by std failed: {cause}"));
     }
 }
