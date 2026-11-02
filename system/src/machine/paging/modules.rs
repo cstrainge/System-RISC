@@ -431,6 +431,17 @@ enum Phase
     Settled,
     Quarantined(CleanupCause)
 }
+/// A read-only observation for the unique prepared image writer. Mapped is
+/// not itself an ACK receipt: only a returned instruction-publication Busy
+/// after translation completion permits the same writer's retry.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublicationState
+{
+    Prepared,
+    Mapped,
+    Live,
+    Blocked
+}
 struct Entries
 {
     leaves:    Vec<Slot>,
@@ -709,6 +720,27 @@ impl Mapping
                                                       requested: false }) }).map_err(|_| {
                                                                                 Error::Metadata
                                                                             })
+    }
+
+    pub(crate) fn publication_state(&self) -> PublicationState
+    {
+        self.with_state(|state| {
+                if state.requested
+                {
+                    return PublicationState::Blocked;
+                }
+                match state.phase
+                {
+                    Phase::Prepared => PublicationState::Prepared,
+                    Phase::Mapped => PublicationState::Mapped,
+                    Phase::Live => PublicationState::Live,
+                    Phase::Preparing
+                    | Phase::Cleared
+                    | Phase::Unmapped
+                    | Phase::Settled
+                    | Phase::Quarantined(_) => PublicationState::Blocked
+                }
+            })
     }
 
     pub(crate) fn entry(&self) -> Option<u64>

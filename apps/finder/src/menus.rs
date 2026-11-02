@@ -4,7 +4,7 @@ use mac_toolbox::{Error, *};
 use crate::browser::Browser;
 pub use crate::resources::commands::{ABOUT, CLEAR, CLOSE, EMPTY, GET_INFO, NEW_FOLDER, OPEN,
                                      PUT_AWAY, RESTART, SELECT_ALL, SHOW_CLIPBOARD, SHUTDOWN};
-pub fn install(system: &System<'_>) -> Result<(), Error>
+pub fn install<'a>(system: &System<'a>) -> Result<[mac_toolbox::menus::MenuRef<'a>; 6], Error>
 {
     let menus = system.menus();
     menus.clear()?;
@@ -35,7 +35,13 @@ pub fn install(system: &System<'_>) -> Result<(), Error>
             system.log(line.as_str())?;
         }
     }
-    Ok(())
+    // These views do not own resident menu lifetime.
+    Ok([menus.find(MenuId(1251))?,
+        menus.find(MenuId(1252))?,
+        menus.find(MenuId(1253))?,
+        menus.find(MenuId(1254))?,
+        menus.find(MenuId(1256))?,
+        menus.find(MenuId(1255))?])
 }
 /// Idle scrollbar tracking changes neither selection nor file command policy.
 /// Consumed clipboard events still pass through this shared policy guard.

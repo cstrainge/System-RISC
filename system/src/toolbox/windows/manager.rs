@@ -206,6 +206,12 @@ impl Window
         self.source.with(self.owner, operation)
     }
 
+    /// Hidden windows cannot be restored as a modal's active window.
+    pub(crate) fn is_hidden(&self) -> bool
+    {
+        self.hidden
+    }
+
     pub fn zoomed(&self) -> bool
     {
         self.state.zoomed != 0

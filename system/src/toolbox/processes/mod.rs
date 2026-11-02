@@ -264,6 +264,32 @@ pub(crate) struct ResourceBinding
     owner: crate::toolbox::handles::OwnerRef,
     image: Option<crate::images::Binding>
 }
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RetirementCheckError
+{
+    AdmissionOpen,
+    BindingChanged
+}
+impl core::fmt::Display for RetirementCheckError
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        out.write_str(match self
+                      {
+                          Self::AdmissionOpen =>
+                          {
+                              "old Finder admission is still open after handoff; full retirement \
+                               is not established"
+                          }
+                          Self::BindingChanged =>
+                          {
+                              "old Finder directory binding differs from its retained owner/image; \
+                               full retirement cannot be authorized"
+                          }
+                      })
+    }
+}
+
 impl ResourceBinding
 {
     pub(crate) fn ledger(&self) -> &crate::toolbox::handles::OwnerRef
@@ -705,6 +731,30 @@ impl Manager
         Ok(())
     }
 
+    /// The retained genuine binding is correlation after handoff, not a Read
+    /// or account pin. Only actual directory absence establishes full removal;
+    /// empty THRD/image tables alone cannot establish that barrier.
+    pub(crate) fn retired_binding(&self, old: &ResourceBinding)
+                                  -> Result<bool, RetirementCheckError>
+    {
+        if old.ledger().accepting()
+        {
+            return Err(RetirementCheckError::AdmissionOpen);
+        }
+        let Some(process) = self.entries.get(old.owner())
+        else
+        {
+            return Ok(true);
+        };
+        if process.ledger().owner() != old.ledger().owner()
+           || process.value().image.map(crate::images::Binding::id)
+              != old.image().map(crate::images::Binding::id)
+        {
+            return Err(RetirementCheckError::BindingChanged);
+        }
+        Ok(false)
+    }
+
     pub fn remove(&mut self, id: u64) -> Result<(), Status>
     {
         // A retired thread still owns its context and stack until a different
@@ -771,6 +821,52 @@ impl Manager
         Ok(info)
     }
 }
+/// Acknowledgement belongs to the actual current Finder main, never a wire ID.
+/// The moved future-default capability leaves every critical turn before Drop.
+fn finder_desktop_ready() -> Result<(), Status>
+{
+    use mac_object_table::shared::InvocationGate as _;
+
+    let released = crate::context::with_application_executor(|executor| {
+                       crate::kernel::with_desktop(|desktop| {
+                           crate::toolbox::handles::InvocationGate::run(|| {
+                               let owner = executor.owner().owner();
+                               let id = owner.incarnation();
+                               if id != crate::context::finder_app().0
+                               {
+                                   return Err(ACCESS_DENIED);
+                               }
+                               let entry = desktop.processes.entries.get(id).ok_or(NOT_FOUND)?;
+                               let process = entry.value();
+                               if entry.ledger().owner() != owner
+                                  || process.info.id != id
+                                  || process.image != Some(executor.image())
+                                  || process.account.owner() != owner
+                                  || !process.account.owns_use(executor.allocation())
+                               {
+                                   return Err(ACCESS_DENIED);
+                               }
+                               if !entry.ledger().accepting()
+                                  || process.info.thread == 0
+                                  || process.termination.record().is_some()
+                                  || process.account.snapshot().closing
+                               {
+                                   return Err(SERVICE_BUSY);
+                               }
+                               if process.info.thread != executor.thread()
+                               {
+                                   return Err(WRONG_THREAD);
+                               }
+                               // All fallible validation precedes this pointer transition.
+                               // Scoped service permits and original receipts are untouched.
+                               Ok(executor.take_recovery_default_after_desktop_ready())
+                           })
+                       }).map_err(|cause| cause.status())?
+                   }).map_err(|cause| cause.status())??;
+    drop(released);
+    Ok(())
+}
+
 /// Dispatch native and classic process requests without holding desktop state
 /// across storage reads, provider callbacks or scheduler waits.
 pub(crate) fn request(call: &mut ProcessCall) -> Status
@@ -784,6 +880,15 @@ pub(crate) fn request(call: &mut ProcessCall) -> Status
             {
                 launch::abandon_thread(crate::context::current_thread());
                 return Err(BAD_ABI);
+            }
+            if call.operation == FINDER_DESKTOP_READY
+            {
+                if call.id != 0 || call.index != 0 || call.volume != 0 || call.cnid != 0
+                {
+                    return Err(BAD_ARGUMENT);
+                }
+                finder_desktop_ready()?;
+                return Ok(OK);
             }
             return crate::kernel::with_desktop(|d| d.process(call)).map_err(|e| e.status());
         }

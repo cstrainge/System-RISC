@@ -5,20 +5,22 @@ use core::ops::Deref;
 
 use mac_abi::*;
 use mac_object_table::{domain::{CompletionError, ReleasedResource},
-                       registry::{Release, Source, Specification}};
+                       registry::{Release, Source, Specification},
+                       shared::InvocationGate as _};
 
-use super::Alert;
+use super::{Alert,
+            core_alerts::{OpenError, PreparedAlert}};
 use crate::toolbox::handles::{CapacityPolicy, InvocationGate, KindCode, KindLease, OwnerRef,
                               Store, cleanup::Failure};
 
 pub(crate) struct DialogState
 {
-    pub previous:      Option<WindowId>,
-    pub window:        u64,
-    pub alert:         Option<Arc<Alert>>,
-    pub controls:      Vec<Option<u64>>,
-    pub tracking:      Option<usize>,
-    recovery_activity: Option<crate::recovery::Activity>
+    pub previous:                 Option<WindowId>,
+    pub window:                   u64,
+    pub alert:                    Option<Arc<Alert>>,
+    pub controls:                 Vec<Option<u64>>,
+    pub tracking:                 Option<usize>,
+    pub(super) recovery_activity: Option<crate::recovery::Activity>
 }
 static EMPTY: DialogState = DialogState { previous:          None,
                                           window:            0,
@@ -28,6 +30,24 @@ static EMPTY: DialogState = DialogState { previous:          None,
                                           recovery_activity: None };
 impl DialogState
 {
+    /// The original payload factory; a caller chooses its genuine scope before
+    /// entering. Core Alert calls it outside Desktop, ordinary Alerts retain
+    /// their existing allocation path.
+    pub(super) fn prepare(alert: Alert, activity: Option<crate::recovery::Activity>)
+                          -> Result<Self, Status>
+    {
+        let mut controls = Vec::new();
+        controls.try_reserve_exact(alert.items.len()).map_err(|_| NO_MEMORY)?;
+        controls.resize(alert.items.len(), None);
+        let alert = Arc::try_new(alert).map_err(|_| NO_MEMORY)?;
+        Ok(Self { previous: None,
+                  window: 0,
+                  alert: Some(alert),
+                  controls,
+                  tracking: None,
+                  recovery_activity: activity })
+    }
+
     pub fn active(&self) -> bool
     {
         self.window != 0 && self.alert.is_some()
@@ -92,70 +112,81 @@ impl Manager
         {
             return Err(SERVICE_BUSY);
         }
-        let activity = crate::context::recovery_activity();
-        let core_subject = if self.owner.owner().kind()
-                              == mac_object_table::domain::DomainKind::System
+        // System core Alerts have one detached publication path below. A
+        // protected caller never falls back to ordinary payload construction.
+        if self.owner.owner().kind() == mac_object_table::domain::DomainKind::System
+           || crate::context::recovery_activity().is_some()
         {
-            let activity = activity.as_ref().ok_or(ACCESS_DENIED)?;
-            if activity.storage_owner().owner() != self.owner.owner()
-            {
-                return Err(ACCESS_DENIED);
-            }
-            let subject = crate::context::io_subject().ok_or(ACCESS_DENIED)?;
-            let root = activity.root_subject();
-            if !subject.scope().same_scope(root.scope())
-            {
-                return Err(ACCESS_DENIED);
-            }
-            if !self.publication.as_ref().ok_or(NOT_SUPPORTED)?.ready()
-            {
-                return Err(SERVICE_BUSY);
-            }
-            Some(subject)
+            return Err(ACCESS_DENIED);
         }
-        else
-        {
-            // A protected core alert must use the one System-owned manager.
-            if activity.is_some()
-            {
-                return Err(ACCESS_DENIED);
-            }
-            None
-        };
-        let mut controls = Vec::new();
-        controls.try_reserve_exact(alert.items.len()).map_err(|_| NO_MEMORY)?;
-        controls.resize(alert.items.len(), None);
-        let alert = Arc::try_new(alert).map_err(|_| NO_MEMORY)?;
-        let state = DialogState { previous,
-                                  window: 0,
-                                  alert: Some(alert),
-                                  controls,
-                                  tracking: None,
-                                  recovery_activity: activity.clone() };
-        let id = if let Some(subject) = core_subject
-        {
-            let reservation = self.publication.as_mut().ok_or(NOT_SUPPORTED)?;
-            let pin = activity.as_ref().ok_or(ACCESS_DENIED)?.acknowledgement_pin();
-            self.records
-                .insert_reserved_in_scope_with_acknowledgement(reservation,
-                                                               subject.scope(),
-                                                               Some(pin),
-                                                               |_| state)
-                .map_err(|error| {
-                    match error
-                    {
-                        mac_object_table::store::PublicationError::Busy => SERVICE_BUSY,
-                        mac_object_table::store::PublicationError::Pool(error) => pool_status(error)
-                    }
-                })?
-                .id()
-        }
-        else
-        {
-            self.records.insert(&self.owner, state).map_err(pool_status)?
-        };
+        let mut state = DialogState::prepare(alert, None)?;
+        state.previous = previous;
+        let id = self.records.insert(&self.owner, state).map_err(pool_status)?;
         self.current = Some(id);
         Ok(id)
+    }
+
+    /// No allocation or definition callback occurs in this final native turn.
+    /// Every prebirth refusal retains/restores the same state in its outer owner.
+    pub(in crate::toolbox) fn begin_core_prepared(&mut self, recipient: &OwnerRef,
+                                                  storage: &OwnerRef,
+                                                  call: &mut mac_abi::dialogs::DialogCall,
+                                                  previous: Option<WindowId>,
+                                                  prepared: &mut PreparedAlert)
+                                                  -> Result<u64, OpenError>
+    {
+        InvocationGate::run(|| {
+            prepared.validate(recipient, storage, call)
+                    .map_err(|status| OpenError::service("final admission", status))?;
+            if !prepared.positioned
+            {
+                return Err(OpenError::service("positioning state", BAD_ABI));
+            }
+            if self.owner.owner() != storage.owner()
+            {
+                return Err(OpenError::service("storage owner", ACCESS_DENIED));
+            }
+            if !self.owner.accepting()
+               || self.current.is_some_and(|id| self.records.get(id).is_some())
+            {
+                return Err(OpenError::service("protocol vacancy", SERVICE_BUSY));
+            }
+            let reservation = self.publication
+                                  .as_mut()
+                                  .ok_or(OpenError::service("reserved endpoint", NOT_SUPPORTED))?;
+            if !reservation.ready()
+            {
+                return Err(OpenError::service("reserved completion", SERVICE_BUSY));
+            }
+            let mut state =
+                prepared.state.take().ok_or(OpenError::service("prepared state", BAD_ABI))?;
+            let Some(activity) = state.recovery_activity.as_ref()
+            else
+            {
+                prepared.state = Some(state);
+                return Err(OpenError::service("prepared activity", ACCESS_DENIED));
+            };
+            let subject = activity.root_subject();
+            let pin = activity.acknowledgement_pin();
+            state.previous = previous;
+            match self.records.insert_reserved_in_scope_owned_with_acknowledgement(reservation,
+                                                                                   subject.scope(),
+                                                                                   Some(pin),
+                                                                                   state)
+            {
+                Ok(publication) =>
+                {
+                    let id = publication.id();
+                    self.current = Some(id);
+                    Ok(id)
+                }
+                Err((cause, state)) =>
+                {
+                    prepared.state = Some(state);
+                    Err(OpenError::Publication(cause))
+                }
+            }
+        })
     }
 
     pub(crate) fn state_mut(&mut self) -> Result<&mut DialogState, Status>
@@ -255,7 +286,7 @@ impl Release<crate::toolbox::runtime::Desktop, Failure> for ReleaseStorage
     }
 }
 
-fn pool_status(error: mac_object_table::domain::PoolError) -> Status
+pub(super) fn pool_status(error: mac_object_table::domain::PoolError) -> Status
 {
     crate::toolbox::handles::projection_status(mac_object_table::projected::Error::Pool(error))
 }

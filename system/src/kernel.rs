@@ -98,13 +98,14 @@ fn admit_image(owner: &crate::toolbox::handles::OwnerRef,
     prepare_shared_image(owner, account, source)?.write_application(account)
 }
 
-/// Replacement Finder selects genuine protected payload storage explicitly;
-/// ordinary application loads never infer it from an ambient allocation scope.
-pub(crate) fn copy_recovery_application(owner: &crate::toolbox::handles::OwnerRef,
-                                        account: &crate::machine::scheduler::accounting::AllocationAuthority,
-                                        original: crate::images::Binding,
-                                        permit: crate::allocator::recovery::Permit)
-                                        -> Result<LoadedImage, Status>
+/// Publish the replacement's genuine source alias without allocating its image
+/// payload yet. The pending owner retains protected authority explicitly; the
+/// caller decides when the old Process has actually retired before advancing.
+pub(crate) fn prepare_recovery_application(owner: &crate::toolbox::handles::OwnerRef,
+                                           account: &crate::machine::scheduler::accounting::AllocationAuthority,
+                                           original: crate::images::Binding,
+                                           permit: crate::allocator::recovery::Permit)
+                                           -> Result<crate::images::PendingRecoveryImage, Status>
 {
     crate::context::with_recovery_allocation(permit.clone(), || {
         crate::allocator::with_target(crate::allocator::Target::Owner {
@@ -165,7 +166,10 @@ pub(crate) fn copy_recovery_application(owner: &crate::toolbox::handles::OwnerRe
             };
             retired.dispose();
             drop(original); // new canonical alias now retains the same target
-            prepared.write_recovery_application(account, permit).map_err(application_image_status)
+            prepared.into_recovery(permit).map_err(|(cause, prepared)| {
+                drop(prepared);
+                cause.status()
+            })
         })
     })
 }
