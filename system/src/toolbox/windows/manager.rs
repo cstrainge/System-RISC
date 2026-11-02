@@ -1336,7 +1336,11 @@ impl WindowManager
                          #[cfg(target_arch = "riscv64")] recovery_slot: Option<usize>)
                          -> Result<WindowId, CreationError>
     {
-        let stay_in_back = self.window(id).ok_or(CreationError::Binding(NOT_FOUND))?.stay_in_back;
+        // The canonical slot exists, but public lookup deliberately hides it
+        // until NEW and CALCULATE have completed below.
+        let stay_in_back = self.windows.get(id.0)
+                               .ok_or(CreationError::Binding(NOT_FOUND))?
+                               .window.stay_in_back;
         let previous = self.active;
         let mut guard = InitializingWindow { manager: self,
                                              id,
