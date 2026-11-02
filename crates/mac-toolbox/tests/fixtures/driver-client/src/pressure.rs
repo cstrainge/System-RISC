@@ -10,6 +10,9 @@ use crate::{Device, machine};
 const SECOND: u64 = 10_000_000;
 const COUNT: usize = 44;
 const FINISHER_PAYLOAD: usize = 8 * 1024 * 1024;
+const FINISHER_CHUNK: usize = 64 * 1024;
+const REFILL_SLOTS_PER_TURN: usize = 64;
+const REFILL_ATTEMPTS_PER_SLOT: usize = 5;
 static CONTROLLER: Mutex<Option<Worker>> = Mutex::new(None);
 static INITIALIZING: AtomicBool = AtomicBool::new(true);
 fn ordinal() -> usize
@@ -102,7 +105,7 @@ fn fill_tail(chunks: &mut [Vec<u8>], used: &mut usize, bytes: &mut usize, refuse
              ordinal: usize)
              -> bool
 {
-    let mut request = 64 * 1024;
+    let mut request = FINISHER_CHUNK;
     while *used < chunks.len() && *bytes < FINISHER_PAYLOAD
     {
         request = request.min(FINISHER_PAYLOAD - *bytes);
@@ -122,6 +125,59 @@ fn fill_tail(chunks: &mut [Vec<u8>], used: &mut usize, bytes: &mut usize, refuse
         *used += 1;
     }
     false
+}
+/// Full descriptor stock must not stop ordinary demand when the OS releases
+/// caches. Keep every old payload on refusal. Each replacement is at most the
+/// original 64 KiB chunk size, so realloc never needs a multi-MiB transient
+/// second block from this holder's genuine Kernel account.
+fn grow_tail(chunks: &mut [Vec<u8>], cursor: &mut usize, bytes: &mut usize, refused: &mut usize,
+             ordinal: usize)
+{
+    let count = chunks.len();
+    for _ in 0..REFILL_SLOTS_PER_TURN.min(count)
+    {
+        if *bytes == FINISHER_PAYLOAD
+        {
+            break;
+        }
+        let chunk = &mut chunks[*cursor];
+        *cursor += 1;
+        if *cursor == count
+        {
+            *cursor = 0;
+        }
+        let old_capacity = chunk.capacity();
+        if old_capacity >= FINISHER_CHUNK
+        {
+            continue;
+        }
+        let remaining = FINISHER_PAYLOAD - *bytes;
+        let mut growth = (FINISHER_CHUNK - old_capacity).min(remaining);
+        // At most 64 slots * five real reserve attempts per existing 250 ms
+        // turn. Decay by sixteen reaches one without adding descriptors.
+        for _ in 0..REFILL_ATTEMPTS_PER_SLOT
+        {
+            let target = old_capacity + growth;
+            if chunk.try_reserve_exact(target - chunk.len()).is_ok()
+            {
+                let capacity = chunk.capacity();
+                assert!(capacity > old_capacity && capacity <= FINISHER_CHUNK);
+                let added = capacity - old_capacity;
+                assert!(added <= remaining);
+                chunk.resize(capacity, ordinal as u8);
+                *bytes += added;
+                break;
+            }
+            *refused += 1;
+            if growth == 1
+            {
+                // A grow-by-one refusal can require a whole replacement block;
+                // it is not the fresh one-byte minimum refusal from fill_tail.
+                break;
+            }
+            growth = (growth / 16).max(1);
+        }
+    }
 }
 fn run(context: WorkerContext, host: Client, provider: mac_driver::Provider) -> Result<()>
 {
@@ -172,6 +228,7 @@ fn run(context: WorkerContext, host: Client, provider: mac_driver::Provider) -> 
     let mut bytes = 0;
     let mut refused = 0;
     let mut minimum_refused = false;
+    let mut refill_cursor = 0;
     if ordinal + 1 == COUNT
     {
         while machine::now() < finish
@@ -209,6 +266,10 @@ fn run(context: WorkerContext, host: Client, provider: mac_driver::Provider) -> 
         if ordinal + 1 == COUNT && machine::now() >= next_fill
         {
             minimum_refused |= fill_tail(&mut chunks, &mut used, &mut bytes, &mut refused, ordinal);
+            if used == chunks.len() && bytes < FINISHER_PAYLOAD
+            {
+                grow_tail(&mut chunks, &mut refill_cursor, &mut bytes, &mut refused, ordinal);
+            }
             next_fill = machine::now() + SECOND / 4;
         }
         if machine::now() >= next_cancel

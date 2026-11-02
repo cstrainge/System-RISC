@@ -174,7 +174,22 @@ fn await_pressure(system: &System<'_>, ordinary: &mac_toolbox::memory::Handle<'_
         // Rendering may legitimately return ordinary cache backing. Independent
         // native holders keep applying demand; do not disable real OS recovery
         // merely to hold an assumed free-byte value constant for this workload.
-        require(now(system)? < limit)?;
+        let observed = now(system)?;
+        if observed >= limit
+        {
+            // Use the already-read summary. A failed diagnostic must not hide
+            // the original unchanged deadline assertion below.
+            let _ = log(system,
+                        format_args!("PRESSURE_REWITNESS_TIMEOUT phase={phase} used={} \
+                                      capacity={} free={} physical_free_pages={} revision={} \
+                                      now={observed} deadline={limit}\n",
+                                     current.heap_used,
+                                     current.heap_capacity,
+                                     current.heap_capacity - current.heap_used,
+                                     current.free_pages,
+                                     current.revision));
+        }
+        require(observed < limit)?;
         wait(system)?;
     }
 }

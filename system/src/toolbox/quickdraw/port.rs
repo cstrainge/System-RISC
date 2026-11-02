@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use super::{Canvas, Point, Rect,
             raster::TransferMode,
-            region::{BooleanOp, Region}};
+            region::{BooleanOp, Region, Span}};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PortState
@@ -380,6 +380,21 @@ fn region_clipped(shape: Shape<'_>, clip: Rect) -> Result<Region, GraphicsError>
     check_area(rect)?;
     Region::from_predicate(rect, |p| contains(shape, p)).map_err(GraphicsError::from)
 }
+/// Retained draw geometry keeps its original admission checks. Scalar rounded
+/// rectangles need no owned Region solely to validate their dimensions/area.
+pub(super) fn validate_drawing(shape: Shape<'_>) -> Result<(), GraphicsError>
+{
+    match shape
+    {
+        Shape::Rect(_) => Ok(()),
+        Shape::RoundRect { .. } =>
+        {
+            validate(shape)?;
+            check_area(bounds(shape))
+        }
+        _ => shape_region(shape).map(|_| ())
+    }
+}
 pub fn shape_region(shape: Shape<'_>) -> Result<Region, GraphicsError>
 {
     validate(shape)?;
@@ -427,50 +442,45 @@ fn paint(canvas: &mut Canvas, state: &PortState, region: Region, verb: Verb)
     {
         region
     };
-    let o = canvas.origin();
     for band in region.bands()
     {
         for y in band.top..band.bottom
         {
             for span in &band.spans
             {
-                for x in span.left..span.right
-                {
-                    let offset = (i32::from(y) + i32::from(o.v)) as usize * canvas.width
-                                 + (i32::from(x) + i32::from(o.h)) as usize;
-                    let destination = canvas.pixels[offset];
-                    let pattern = match verb
-                    {
-                        Verb::Fill(pattern) => pattern,
-                        Verb::Erase => state.background_pattern,
-                        _ => state.pen_pattern
-                    };
-                    let bit =
-                        pattern[(i32::from(y) & 7) as usize] & (0x80 >> (i32::from(x) & 7)) != 0;
-                    canvas.pixels[offset] = match verb
-                    {
-                        Verb::Invert => (!destination) & 0xffffff,
-                        Verb::Erase =>
-                        {
-                            TransferMode::PAT_COPY.pattern(bit, destination, state.foreground,
-                                                           state.background)
-                        }
-                        Verb::Fill(_) =>
-                        {
-                            TransferMode::PAT_COPY.pattern(bit, destination, state.foreground,
-                                                           state.background)
-                        }
-                        _ =>
-                        {
-                            state.pen_mode
-                                 .pattern(bit, destination, state.foreground, state.background)
-                        }
-                    };
-                }
+                paint_span(canvas, state, y, *span, verb);
             }
         }
     }
     Ok(())
+}
+/// Spans have already been intersected with the Canvas local clip. Pattern
+/// phase stays local; only the destination address applies the Canvas origin.
+fn paint_span(canvas: &mut Canvas, state: &PortState, y: i16, span: Span, verb: Verb)
+{
+    let o = canvas.origin();
+    let pattern = match verb
+    {
+        Verb::Fill(pattern) => pattern,
+        Verb::Erase => state.background_pattern,
+        _ => state.pen_pattern
+    };
+    for x in span.left..span.right
+    {
+        let offset = (i32::from(y) + i32::from(o.v)) as usize * canvas.width
+                     + (i32::from(x) + i32::from(o.h)) as usize;
+        let destination = canvas.pixels[offset];
+        let bit = pattern[(i32::from(y) & 7) as usize] & (0x80 >> (i32::from(x) & 7)) != 0;
+        canvas.pixels[offset] = match verb
+        {
+            Verb::Invert => (!destination) & 0xffffff,
+            Verb::Erase | Verb::Fill(_) =>
+            {
+                TransferMode::PAT_COPY.pattern(bit, destination, state.foreground, state.background)
+            }
+            _ => state.pen_mode.pattern(bit, destination, state.foreground, state.background)
+        };
+    }
 }
 fn inset(r: Rect, h: i16, v: i16) -> Rect
 {
@@ -484,6 +494,201 @@ fn inset(r: Rect, h: i16, v: i16) -> Rect
     }
     Rect::new(left as i16, top as i16, right as i16, bottom as i16)
 }
+
+/// Draw-only scalar geometry. Region-returning operations still build their
+/// owned bands; these shapes can instead borrow the current clip's spans.
+#[derive(Clone, Copy)]
+struct AnalyticShape
+{
+    bounds: Rect,
+    corner: Option<Point>
+}
+impl AnalyticShape
+{
+    fn inset(self, pen: Point) -> Self
+    {
+        Self { bounds: inset(self.bounds, pen.h, pen.v),
+               corner: self.corner.map(|corner| {
+                                      Point { h: corner.h
+                                                       .saturating_sub(pen.h.saturating_mul(2))
+                                                       .max(0),
+                                              v: corner.v
+                                                       .saturating_sub(pen.v.saturating_mul(2))
+                                                       .max(0) }
+                                  }) }
+    }
+
+    fn row(self, y: i16, clip: Rect) -> Option<Span>
+    {
+        let r = intersect(self.bounds, clip);
+        if r.is_empty() || y < r.top || y >= r.bottom
+        {
+            return None;
+        }
+        let Some(corner) = self.corner
+        else
+        {
+            return Some(Span { left:  r.left,
+                               right: r.right });
+        };
+        // For a fixed y, rounded's squared-distance predicate has one interval
+        // or is empty. Find its edges with that same predicate and rounding.
+        let mut left = r.left;
+        let mut right = r.right;
+        while left < right
+              && !rounded(self.bounds,
+                          corner.h,
+                          corner.v,
+                          Point { h: left,
+                                  v: y })
+        {
+            left += 1;
+        }
+        if left == right
+        {
+            return None;
+        }
+        // left is already known true; do not test it twice in a one-pixel row.
+        while right > left + 1
+              && !rounded(self.bounds,
+                          corner.h,
+                          corner.v,
+                          Point { h: right - 1,
+                                  v: y })
+        {
+            right -= 1;
+        }
+        Some(Span { left,
+                    right })
+    }
+}
+
+fn subtract_span(outer: Span, inner: Option<Span>, mut visit: impl FnMut(Span))
+{
+    let Some(inner) = inner
+    else
+    {
+        visit(outer);
+        return;
+    };
+    let left = outer.left.max(inner.left);
+    let right = outer.right.min(inner.right);
+    if left >= right
+    {
+        visit(outer);
+        return;
+    }
+    if outer.left < left
+    {
+        visit(Span { left:  outer.left,
+                     right: left });
+    }
+    if right < outer.right
+    {
+        visit(Span { left:  right,
+                     right: outer.right });
+    }
+}
+
+fn paint_clipped_span(canvas: &mut Canvas, state: &PortState, y: i16, span: Span,
+                      clips: Option<&[Span]>, verb: Verb)
+{
+    let Some(clips) = clips
+    else
+    {
+        paint_span(canvas, state, y, span, verb);
+        return;
+    };
+    for clip in clips
+    {
+        if clip.right <= span.left
+        {
+            continue;
+        }
+        if clip.left >= span.right
+        {
+            break;
+        }
+        paint_span(canvas,
+                   state,
+                   y,
+                   Span { left:  span.left.max(clip.left),
+                          right: span.right.min(clip.right) },
+                   verb);
+    }
+}
+
+fn draw_analytic(canvas: &mut Canvas, state: &PortState, shape: AnalyticShape, verb: Verb,
+                 clip: Rect)
+                 -> Result<(), GraphicsError>
+{
+    let bounds = intersect(shape.bounds, clip);
+    // Keep RoundRect's clipped-area check before the original zero-pen return,
+    // and before a port clip can discard pixels. Rect has no such area gate.
+    if shape.corner.is_some()
+    {
+        check_area(bounds)?;
+    }
+    if verb == Verb::Frame && (state.pen_size.h == 0 || state.pen_size.v == 0)
+    {
+        return Ok(());
+    }
+    let inner = if verb == Verb::Frame
+    {
+        let inner = shape.inset(state.pen_size);
+        if inner.corner.is_some()
+        {
+            check_area(intersect(inner.bounds, clip))?;
+        }
+        Some(inner)
+    }
+    else
+    {
+        None
+    };
+    if bounds.is_empty()
+    {
+        return Ok(());
+    }
+
+    let mut rows = |top: i16, bottom: i16, clips: Option<&[Span]>| {
+        for y in top..bottom
+        {
+            let Some(outer) = shape.row(y, bounds)
+            else
+            {
+                continue;
+            };
+            let inner = inner.and_then(|inner| inner.row(y, bounds));
+            // Difference emits at most two disjoint spans; neither frame
+            // corners nor multiple clip spans can double-apply XOR/Invert.
+            subtract_span(outer, inner, |span| {
+                paint_clipped_span(canvas, state, y, span, clips, verb);
+            });
+        }
+    };
+    if let Some(clip) = &state.clip
+    {
+        for band in clip.bands()
+        {
+            if band.bottom <= bounds.top
+            {
+                continue;
+            }
+            if band.top >= bounds.bottom
+            {
+                break;
+            }
+            rows(band.top.max(bounds.top), band.bottom.min(bounds.bottom), Some(&band.spans));
+        }
+    }
+    else
+    {
+        rows(bounds.top, bounds.bottom, None);
+    }
+    Ok(())
+}
+
 fn line_region(start: Point, end: Point, size: Point, clip: Rect) -> Result<Region, GraphicsError>
 {
     if size.h < 0 || size.v < 0
@@ -578,36 +783,89 @@ pub fn draw(canvas: &mut Canvas, state: &PortState, shape: Shape<'_>, verb: Verb
         return Ok(());
     }
     let clip = local_clip(canvas);
-    let mut region = region_clipped(shape, clip)?;
-    if verb == Verb::Frame
+    let frame = verb == Verb::Frame;
+    let empty_pen = state.pen_size.h == 0 || state.pen_size.v == 0;
+    let region = match shape
     {
-        if state.pen_size.h == 0 || state.pen_size.v == 0
+        Shape::Rect(bounds) =>
         {
-            return Ok(());
+            return draw_analytic(canvas,
+                                 state,
+                                 AnalyticShape { bounds,
+                                                 corner: None },
+                                 verb,
+                                 clip);
         }
-        if let Shape::Polygon(points) = shape
+        Shape::RoundRect { bounds,
+                           oval_width,
+                           oval_height } =>
         {
-            region = Region::new();
-            for (a, b) in points.iter().zip(points.iter().cycle().skip(1)).take(points.len())
+            return draw_analytic(canvas,
+                                 state,
+                                 AnalyticShape { bounds,
+                                                 corner: Some(Point { h: oval_width,
+                                                                      v: oval_height }) },
+                                 verb,
+                                 clip);
+        }
+        Shape::Oval(rect)
+        | Shape::Arc { bounds: rect,
+                     .. } =>
+        {
+            let region = region_clipped(shape, clip)?;
+            if frame
             {
-                region =
-                    region.combine(&line_region(*a, *b, state.pen_size, clip)?, BooleanOp::Union)?;
+                if empty_pen
+                {
+                    return Ok(());
+                }
+                let inner = region_clipped(Shape::Oval(inset(rect, state.pen_size.h,
+                                                             state.pen_size.v)),
+                                           clip)?;
+                region.combine(&inner, BooleanOp::Difference)?
+            }
+            else
+            {
+                region
             }
         }
-        else
+        Shape::Polygon(points) =>
         {
-            let inner=match shape{
-    Shape::Rect(r)=>region_clipped(Shape::Rect(inset(r,state.pen_size.h,state.pen_size.v)),clip)?,
-    Shape::Oval(r)|Shape::Arc{bounds:r,..}=>region_clipped(Shape::Oval(inset(r,state.pen_size.h,state.pen_size.v)),clip)?,
-    Shape::RoundRect{bounds,oval_width,oval_height}=>region_clipped(Shape::RoundRect{bounds:inset(bounds,state.pen_size.h,state.pen_size.v),oval_width:oval_width.saturating_sub(state.pen_size.h.saturating_mul(2)).max(0),oval_height:oval_height.saturating_sub(state.pen_size.v.saturating_mul(2)).max(0)},clip)?,
-    Shape::Region(r)=>r.inset(state.pen_size.h,state.pen_size.v)
-                    .map_err(GraphicsError::from)?
-                    .combine(&Region::from_rect(clip),BooleanOp::Intersection)?,
-Shape::Polygon(_)=>unreachable!(),
-   };
-            region = region.combine(&inner, BooleanOp::Difference)?;
+            let mut region = region_clipped(shape, clip)?;
+            if frame
+            {
+                if empty_pen
+                {
+                    return Ok(());
+                }
+                region = Region::new();
+                for (a, b) in points.iter().zip(points.iter().cycle().skip(1)).take(points.len())
+                {
+                    region = region.combine(&line_region(*a, *b, state.pen_size, clip)?,
+                                            BooleanOp::Union)?;
+                }
+            }
+            region
         }
-    }
+        Shape::Region(source) =>
+        {
+            let region = region_clipped(shape, clip)?;
+            if frame
+            {
+                if empty_pen
+                {
+                    return Ok(());
+                }
+                let inner = source.inset(state.pen_size.h, state.pen_size.v)?
+                                  .combine(&Region::from_rect(clip), BooleanOp::Intersection)?;
+                region.combine(&inner, BooleanOp::Difference)?
+            }
+            else
+            {
+                region
+            }
+        }
+    };
     paint(canvas, state, region, verb)?;
     Ok(())
 }
