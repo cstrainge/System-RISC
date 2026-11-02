@@ -457,6 +457,25 @@ impl super::Desktop
         Ok(bytes)
     }
 
+    /// Actual retained Text calls, including the fixed owned detail branch.
+    /// Each interchangeable slot covers every input at the original copy point.
+    pub(crate) fn measure_crash_text_stock(layout: ReportLayout) -> Result<(usize, usize), Status>
+    {
+        let rows = usize::try_from(layout.page_lines).map_err(|_| BAD_ABI)?;
+        let fixed = [1usize, // Title
+                     1,      // App/thread header
+                     2,      // Warning/detail rows
+                     1]; // Footer
+        let count = fixed.into_iter()
+                         .try_fold(rows, |count, term| count.checked_add(term).ok_or(BAD_ABI))?;
+        let bytes = Self::measure_crash_paint_capacity(layout)?
+            .max(label(0)?.len())
+            .max(label(8)?.len())
+            .max(label(11)?.len())
+            .max(crate::toolbox::crashes::FailureDetail::line_capacity());
+        Ok((count, bytes))
+    }
+
     fn prepare_crash_layout(&mut self) -> Result<(), Status>
     {
         let layout = crate::toolbox::crashes::prepared_layout()?;
@@ -663,17 +682,18 @@ impl super::Desktop
         Ok(())
     }
 
-    fn crash_text(&mut self, window: u64, font: FontSelection, x: i16, baseline: i16, text: &str)
+    fn crash_text(&mut self, window: u64, port: &crate::recovery::ReportPortView,
+                  font: FontSelection, x: i16, baseline: i16, text: &str)
                   -> Result<(), Status>
     {
-        self.font_draw(&mut FontCall { target:
+        self.font_draw_report_port(&mut FontCall { target:
                                            mac_abi::quickdraw::Target::window(WindowId(window)),
                                        selection: font,
                                        baseline: Point { h: x,
                                                          v: baseline },
                                        ..Default::default() },
                        text,
-                       crate::kernel::fonts().ok_or(NOT_SUPPORTED)?)
+                       crate::kernel::fonts().ok_or(NOT_SUPPORTED)?, port)
     }
 
     fn is_current_finder_report(&self) -> bool
@@ -785,40 +805,47 @@ impl super::Desktop
                               &[],
                               &[])?;
             }
-            if mode == Paint::Full
-            {
-                let call = IconCall { target:
-                                          mac_abi::quickdraw::Target::window(WindowId(window)),
-                                      scope: resources::SYSTEM,
-                                      id: RESOURCE_ID,
-                                      destination: Rect::new(18, 14, 50, 46),
-                                      ..Default::default() };
-                self.icon(&call, prepared_icon()?)?;
-                self.crash_text(window, FontSelection::default(), 64, 29, label(0)?.text()?)?;
-                paint.clear();
-                paint.write(format_args!("{} {}   {} {}",
-                                         label(12)?,
-                                         info.app,
-                                         label(13)?,
-                                         info.thread))
-                     .map_err(paint_error)?;
-                self.crash_text(window, MONACO, 64, 48, paint.text())?;
-            }
             if matches!(mode, Paint::Full | Paint::Warnings)
             {
+                let port =
+                    self.capture_report_port(info.window, crate::recovery::ReportPortKind::Reset)?;
+                if mode == Paint::Full
+                {
+                    let call = IconCall { target:
+                                              mac_abi::quickdraw::Target::window(WindowId(window)),
+                                          scope: resources::SYSTEM,
+                                          id: RESOURCE_ID,
+                                          destination: Rect::new(18, 14, 50, 46),
+                                          ..Default::default() };
+                    self.icon(&call, prepared_icon()?)?;
+                    self.crash_text(window,
+                                    &port,
+                                    FontSelection::default(),
+                                    64,
+                                    29,
+                                    label(0)?.text()?)?;
+                    paint.clear();
+                    paint.write(format_args!("{} {}   {} {}",
+                                             label(12)?,
+                                             info.app,
+                                             label(13)?,
+                                             info.thread))
+                         .map_err(paint_error)?;
+                    self.crash_text(window, &port, MONACO, 64, 48, paint.text())?;
+                }
                 if let Some(detail) =
                     self.crash.restart_detail.filter(|_| self.crash.power_failure.is_none())
                 {
                     // Fixed owned lines were formatted once outside Desktop.
                     // This paint touches only the bounded description/warning band.
-                    self.crash_text(window, MONACO, 14, 72, detail.line(0)?)?;
-                    self.crash_text(window, MONACO, 14, 84, detail.line(1)?)?;
+                    self.crash_text(window, &port, MONACO, 14, 72, detail.line(0)?)?;
+                    self.crash_text(window, &port, MONACO, 14, 84, detail.line(1)?)?;
                 }
                 else
                 {
                     let description =
                         if self.is_current_finder_report() { label(8)? } else { label(11)? };
-                    self.crash_text(window, MONACO, 14, 72, description.text()?)?;
+                    self.crash_text(window, &port, MONACO, 14, 72, description.text()?)?;
                     paint.clear();
                     for (enabled, index) in [(info.flags & TRUNCATED != 0, 9),
                                              (info.flags & FORMAT_FAILED != 0, 10),
@@ -875,7 +902,7 @@ impl super::Desktop
                              .map_err(paint_error)?;
                         paint.write(format_args!(" ({status})")).map_err(paint_error)?;
                     }
-                    self.crash_text(window, MONACO, 14, 84, paint.text())?;
+                    self.crash_text(window, &port, MONACO, 14, 84, paint.text())?;
                 }
             }
             if matches!(mode, Paint::Full | Paint::Report)
@@ -897,6 +924,8 @@ impl super::Desktop
                                               ..Default::default() },
                           &[],
                           &[])?;
+                let port = self.capture_report_port(info.window,
+                                                    crate::recovery::ReportPortKind::Viewport)?;
                 let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
                 let metrics = fonts.metrics(fonts_service::selection(MONACO))?;
                 let advance = metrics.ascent
@@ -931,6 +960,7 @@ impl super::Desktop
                         }
                     }
                     self.crash_text(window,
+                                    &port,
                                     MONACO,
                                     REPORT.left + 4,
                                     REPORT.top + 4 + metrics.ascent + visible as i16 * advance,
@@ -942,6 +972,8 @@ impl super::Desktop
                                               ..Default::default() },
                           &[],
                           &[])?;
+                let port =
+                    self.capture_report_port(info.window, crate::recovery::ReportPortKind::Footer)?;
                 paint.clear();
                 paint.write(format_args!("{} {}-{} {} {}   {} {}",
                                          label(14)?,
@@ -961,7 +993,7 @@ impl super::Desktop
                                          info.report_bytes,
                                          label(16)?))
                      .map_err(paint_error)?;
-                self.crash_text(window, MONACO, 14, 360, paint.text())?;
+                self.crash_text(window, &port, MONACO, 14, 360, paint.text())?;
             }
             if mode == Paint::Full
             {

@@ -5414,3 +5414,90 @@ production Finder OOM restart, performance, hardware and SMP remain unqualified.
 Retained report text/Ports, masks/fragment/damage regions, pending scene storage,
 font/layout scratch, raster/COW and control payloads remain separate allocation
 work. This is not a complete allocation-free report or emergency-kit guarantee.
+
+### Same-frame report text and captured Ports
+
+Report bootstrap now prepares three immutable Port owners in the same reusable
+Session: the actual reset, report-viewport and restored full-body states. Native
+paint captures each actual pending Port once per real Window binding. Later
+paints compare the complete state and share the same immutable owner while old
+committed fragments retain readers. An unexpected state is a typed refusal;
+there is no fresh-owner fallback or geometry reconstruction. New-Window binding
+and final return require all four command frames, all three Port owners unique,
+and the original Window completion ACK before any reset or other payload return.
+Typed views release their Port before their Activity pin; command destruction
+releases readers before parking the original frame and waking cleanup.
+
+Each of those four original frames also boot-owns its own bounded text snapshots.
+The native producer derives Full's maximum as visible rows plus title, header,
+two warning/detail rows and footer. Current resources give Full 27, Report 23
+and Warnings 2 text calls. Each interchangeable slot's byte bound is the maximum
+of actual formatted-label/scalar/layout inputs and the actual FailureDetail row
+capacity. The latter is now shared with its private representation. Current
+resources require 360 bytes, yielding 108 Arc/String owners and 38,880 requested
+raw String bytes; headers, allocator rounding and target physical footprint are
+not measured by that arithmetic.
+
+Frame checkout and return preflight every original source's shape, capacity and
+uniqueness before resetting its cursor. Each text call performs bounded next-slot
+checks, fills that unique String completely, and then publishes an immutable
+Shared source with its checked range. It never grows or replaces the source.
+The sources and cursor move with the original command carrier and frame lease.
+All command readers die before that same stock is parked. Refusal retains the
+same original Session and stock rather than refunding or retargeting ownership.
+
+The native author still formats once in its original order. A private shared
+retained-text writer keeps original admission, metrics, copy, Port preparation,
+recording and damage ordering. Ordinary text still owns its original String and
+Port; Core's separate snapshot path and the early World path remain unchanged.
+Report text uses existing Shared rendering, without a new renderer or SDK path.
+Each snapshot's actual length equals the former Owned String length, preserving
+existing conservative retained-storage accounting. No per-row Session lock or
+whole-stock scan was added.
+
+Exact optimized no_std RV64/release/LTO System ELF:
+`ee3faa3660d52be7b4dc6d2fb8e890612fd6ac8efeebd57d50e83b6fe24f74c7`,
+resource `817dcec451ffd4d7f82a1f778f8aeb872abf9ddefdc2908781fb597e954b3c56`.
+The actual System/Finder compiler check and whole image build succeeded with
+fixed source. Finder and ROM hashes stayed unchanged.
+
+Four finite private exact-2-GiB native workflows used this image. Six normal
+installed app lifetimes and the 27,246-byte/331-line Unicode/tab/long-line Panic
+Test report completed, including end scroll, dismissal and actual abort account
+closure. Entire first/last report frames matched the preceding published image.
+Text Edit completed Core Save Changes choices, real PUT handoff, saved ab,
+malformed-UTF8 Error acknowledgment/new input and three account closures; four
+dialog crops also matched. Current Error and final-report frames were reviewed.
+
+The one-hart pressure workflow observed ordinary handle MemoryFull with retained
+16 W bytes and caller account headroom, healthy/pressured modal reuse and eight
+Core draws per phase. Report overflow returned strict NoMemory with truncation
+and all original 1 MiB bytes intact before Show/Dismiss. All 44 holder payload
+releases and actual worker reclamations completed. Genuine acknowledgment of
+Finder's remaining OOM modal restored its same Applications folder and menus;
+reviewed frames and subsequent Get Info open/close and mouse input completed.
+
+The existing Finder-role/survivor fixture separately completed two real
+crash/replacement cycles, actual old account closure, stale Window/Handle and
+fresh-state checks, repeated desktop-readiness acknowledgment with malformed
+request refusal, replacement input and survivor input. Genuine independent
+System-owned reports remained visible behind both replacements, exercising
+actual same-Session report handoff and rebind. Both frames were reviewed.
+Replacement/survivor actors remained live at guest shutdown; their final account
+closure is not claimed. Paused read-only page/text sampling matched actual
+protected replacement backing in both permanent supervisor roots; observer
+costs preclude race/timing conclusions and do not establish user-mode isolation.
+
+Every capture kept source/base fixed, recorded exact-2-GiB argv/boot/page-bank
+RAM, exited/reaped its owned guest with status zero and removed private media
+without cleanup errors. Existing fixture/package producers and actual target
+services supplied these observations; no host Rust suite supplied OS acceptance.
+
+Live source/Port addresses and allocation events were not measured. Forced
+constructor/frame/reader/cancel/ACK refusal combinations, all warning/detail
+branches and every World/font path remain unqualified. These results do not
+establish full Save/Save As exhaustion, production Finder OOM restart, arbitrary
+privileged-fault recovery, timing, hardware or SMP safety. Actual masks,
+fragment directories/clips, pending/damage backing, managed control payloads,
+font/layout and raster/COW work remain separate; report/whole-kit allocation-free
+readiness is not established.

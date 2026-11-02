@@ -5,10 +5,12 @@ use core::fmt::{self, Write};
 
 use mac_abi::{BAD_ABI, Status};
 
+const ROW_BYTES: usize = 256;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FailureDetail
 {
-    rows:         [[u8; 256]; 2],
+    rows:         [[u8; ROW_BYTES]; 2],
     lengths:      [usize; 2],
     columns_used: [usize; 2],
     columns:      usize,
@@ -17,11 +19,16 @@ pub(crate) struct FailureDetail
 }
 impl FailureDetail
 {
+    pub(crate) const fn line_capacity() -> usize
+    {
+        ROW_BYTES
+    }
+
     /// Use the actual boot-prepared Monaco bitmap layout, outside Desktop.
     pub(crate) fn prepare(cause: &impl fmt::Display) -> Result<Self, Status>
     {
         let columns = super::prepared_layout()?.columns.clamp(4, 256);
-        let mut detail = Self { rows: [[0; 256]; 2],
+        let mut detail = Self { rows: [[0; ROW_BYTES]; 2],
                                 lengths: [0; 2],
                                 columns_used: [0; 2],
                                 columns,
@@ -50,11 +57,11 @@ impl FailureDetail
         let row = 1;
         while self.columns_used[row] > self.columns - 3 || self.lengths[row] > 253
         {
-            let last =
-                core::str::from_utf8(&self.rows[row][..self.lengths[row]]).ok().and_then(|text| {
-                                                                                   text.chars()
+            let last = core::str::from_utf8(&self.rows[row][..self.lengths[row]]).ok()
+                                                                                 .and_then(|text| {
+                                                                                     text.chars()
                                                                                        .next_back()
-                                                                               });
+                                                                                 });
             let Some(last) = last
             else
             {

@@ -201,28 +201,86 @@ struct ReportFrames
 {
     window: Option<(mac_abi::WindowId, bool)>,
     limit:  usize,
-    ready:  [Option<crate::toolbox::quickdraw::retained::ReportFrame>; 4]
+    ready:  [Option<crate::toolbox::quickdraw::retained::ReportFrame>; 4],
+    ports:  [ReportPortSlot; 3]
+}
+struct ReportPortSlot
+{
+    port:     Arc<crate::toolbox::quickdraw::service::Port>,
+    captured: bool
+}
+impl ReportPortSlot
+{
+    fn prepare() -> Result<Self, Status>
+    {
+        Ok(Self { port: Arc::try_new(crate::toolbox::quickdraw::service::Port::default())
+                    .map_err(|_| NO_MEMORY)?, captured: false })
+    }
+}
+/// Roles of the actual native report's three real port transitions.
+#[derive(Clone, Copy)]
+pub(crate) enum ReportPortKind
+{
+    Reset,
+    Viewport,
+    Footer
+}
+impl ReportPortKind
+{
+    fn index(self) -> usize
+    {
+        match self
+        {
+            Self::Reset => 0,
+            Self::Viewport => 1,
+            Self::Footer => 2
+        }
+    }
+}
+/// Lexical native paint view. Actual Port readers drop before Activity wakes
+/// the original closing Session; no mutable Arc or stock slot escapes.
+pub(crate) struct ReportPortView
+{
+    port:     Arc<crate::toolbox::quickdraw::service::Port>,
+    activity: Activity,
+    window:   mac_abi::WindowId,
+    frame:    usize
 }
 impl ReportFrames
 {
-    fn prepare(limit: usize) -> Result<Self, Status>
+    fn prepare(limit: usize, text_count: usize, text_bytes: usize) -> Result<Self, Status>
     {
         use crate::toolbox::quickdraw::retained::ReportFrame;
         Ok(Self { window: None,
                   limit,
-                  ready: [Some(ReportFrame::prepare(limit)?),
-                          Some(ReportFrame::prepare(limit)?),
-                          Some(ReportFrame::prepare(limit)?),
-                          Some(ReportFrame::prepare(limit)?)] })
+                  ready: [Some(ReportFrame::prepare(limit, text_count, text_bytes)?),
+                          Some(ReportFrame::prepare(limit, text_count, text_bytes)?),
+                          Some(ReportFrame::prepare(limit, text_count, text_bytes)?),
+                          Some(ReportFrame::prepare(limit, text_count, text_bytes)?)],
+                  ports: [ReportPortSlot::prepare()?,
+                          ReportPortSlot::prepare()?,
+                          ReportPortSlot::prepare()?] })
     }
 
-    fn returned(&self) -> Result<(), Status>
+    fn returned(&mut self) -> Result<(), Status>
     {
-        for frame in &self.ready
+        for frame in &mut self.ready
         {
-            frame.as_ref().ok_or(SERVICE_BUSY)?.validate(self.limit)?;
+            frame.as_mut().ok_or(SERVICE_BUSY)?.validate(self.limit)?;
+        }
+        for slot in &mut self.ports
+        {
+            Arc::get_mut(&mut slot.port).ok_or(SERVICE_BUSY)?;
         }
         Ok(())
+    }
+
+    fn reset_ports(&mut self)
+    {
+        for slot in &mut self.ports
+        {
+            slot.captured = false;
+        }
     }
 }
 
@@ -238,6 +296,33 @@ impl ReportFrameLease
     pub(crate) fn matches(&self, activity: &Activity, window: mac_abi::WindowId) -> bool
     {
         self.window == window && self.activity.same_session(activity)
+    }
+
+    pub(crate) fn capture_port(&self, activity: &Activity, window: mac_abi::WindowId,
+                               kind: ReportPortKind,
+                               actual: &crate::toolbox::quickdraw::service::Port)
+                               -> Result<ReportPortView, Status>
+    {
+        if !self.matches(activity, window)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        activity.capture_report_port(window, self.slot, kind, actual)
+    }
+
+    pub(crate) fn text_port(&self, view: &ReportPortView, window: mac_abi::WindowId,
+                            actual: &crate::toolbox::quickdraw::service::Port)
+                            -> Result<Arc<crate::toolbox::quickdraw::service::Port>, Status>
+    {
+        if !self.matches(&view.activity, window)
+           || view.window != window
+           || view.frame != self.slot
+           || view.port.origin != actual.origin
+           || view.port.state != actual.state
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(view.port.clone())
     }
 
     pub(crate) fn park(self, frame: crate::toolbox::quickdraw::retained::ReportFrame)
@@ -620,8 +705,46 @@ impl Activity
             // A genuine old Window ACK plus ALL original inert buffers is
             // required before a Finder-to-System same-Session rebind.
             frames.returned()?;
+            frames.reset_ports();
             frames.window = Some((window, false));
             Ok(())
+        })
+    }
+
+    fn capture_report_port(&self, window: mac_abi::WindowId, frame: usize, kind: ReportPortKind,
+                           actual: &crate::toolbox::quickdraw::service::Port)
+                           -> Result<ReportPortView, Status>
+    {
+        self.validate_report_paint(window)?;
+        InvocationGate::run(|| {
+            let mut frames = self.session.report_frames.lock();
+            if frames.window != Some((window, false))
+            {
+                return Err(ACCESS_DENIED);
+            }
+            if frames.ready.get(frame).ok_or(mac_abi::BAD_ABI)?.is_some()
+            {
+                return Err(mac_abi::BAD_ABI);
+            }
+            let slot = &mut frames.ports[kind.index()];
+            if slot.captured
+            {
+                if slot.port.origin != actual.origin || slot.port.state != actual.state
+                {
+                    return Err(mac_abi::BAD_ABI);
+                }
+            }
+            else
+            {
+                // Capture the actual post-operation Port. Native report clips
+                // are inline rectangles; clone/drop does not allocate here.
+                *Arc::get_mut(&mut slot.port).ok_or(SERVICE_BUSY)? = actual.clone();
+                slot.captured = true;
+            }
+            Ok(ReportPortView { port: slot.port.clone(),
+                                activity: self.clone(),
+                                window,
+                                frame })
         })
     }
 
@@ -639,9 +762,10 @@ impl Activity
             let limit = frames.limit;
             for (slot, frame) in frames.ready.iter_mut().enumerate()
             {
-                if let Some(ready) = frame.as_ref()
+                if let Some(ready) = frame.as_mut()
                 {
                     ready.validate(limit)?;
+                    ready.reset_text();
                     let frame = frame.take().ok_or(mac_abi::BAD_ABI)?;
                     return Ok((frame,
                                ReportFrameLease { activity: self.clone(),
@@ -939,9 +1063,11 @@ pub(crate) fn prepare_modal() -> Result<(), Status>
     })?;
     let session = crate::context::with_recovery_allocation(permit.clone(), || {
         crate::allocator::with_system(SystemClass::Ordinary, || {
-            let limit = crate::toolbox::runtime::Desktop::measure_crash_command_capacity(
-                crate::toolbox::crashes::prepared_layout()?)?;
-            let report_frames = ReportFrames::prepare(limit)?;
+            let layout = crate::toolbox::crashes::prepared_layout()?;
+            let limit = crate::toolbox::runtime::Desktop::measure_crash_command_capacity(layout)?;
+            let (text_count, text_bytes) =
+                crate::toolbox::runtime::Desktop::measure_crash_text_stock(layout)?;
+            let report_frames = ReportFrames::prepare(limit, text_count, text_bytes)?;
             Arc::try_new(Session { recipient: Spinlock::new(owner.clone()),
                                    recipient_id: AtomicU64::new(owner.owner().incarnation()),
                                    storage_owner: owner,
@@ -1110,6 +1236,7 @@ fn reap()
             if returned.is_ok()
             {
                 unique.report_frames.get_mut().window = None;
+                unique.report_frames.get_mut().reset_ports();
                 let owner = unique.storage_owner.clone();
                 let old = core::mem::replace(unique.recipient.get_mut(), owner);
                 drop(old);

@@ -138,37 +138,115 @@ enum CommandBacking
     Report
     {
         lease: crate::recovery::ReportFrameLease,
-        limit: usize
+        limit: usize,
+        text:  ReportTextStock
     }
 }
-/// Inert report-only command allocation; text and Ports keep their original
-/// owned representation and are destroyed before this buffer is parked.
+/// Inert report-only command/text stock. Commands destroy immutable readers
+/// before parking this SAME allocation; sources mutate only while unique.
 pub(crate) struct ReportFrame
 {
     commands: Vec<RenderCommand>,
-    limit:    usize
+    limit:    usize,
+    text:     ReportTextStock
+}
+struct ReportTextStock
+{
+    sources: Vec<Arc<String>>,
+    count:   usize,
+    bytes:   usize,
+    used:    usize
+}
+impl ReportTextStock
+{
+    fn prepare(count: usize, bytes: usize) -> Result<Self, Status>
+    {
+        let mut sources = Vec::new();
+        sources.try_reserve_exact(count).map_err(|_| mac_abi::NO_MEMORY)?;
+        for _ in 0..count
+        {
+            let mut text = String::new();
+            text.try_reserve_exact(bytes).map_err(|_| mac_abi::NO_MEMORY)?;
+            sources.push(Arc::try_new(text).map_err(|_| mac_abi::NO_MEMORY)?);
+        }
+        Ok(Self { sources,
+                  count,
+                  bytes,
+                  used: 0 })
+    }
+
+    fn unique(&mut self) -> Result<(), Status>
+    {
+        if self.count == 0
+           || self.sources.len() != self.count
+           || self.bytes == 0
+           || self.used > self.count
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        for source in &mut self.sources
+        {
+            if source.capacity() < self.bytes || source.len() > self.bytes
+            {
+                return Err(mac_abi::BAD_ABI);
+            }
+            Arc::get_mut(source).ok_or(mac_abi::SERVICE_BUSY)?;
+        }
+        Ok(())
+    }
+
+    fn snapshot(&mut self, text: &str) -> Result<TextData, Status>
+    {
+        if text.len() > self.bytes
+        {
+            return Err(mac_abi::NO_MEMORY);
+        }
+        let source = self.sources.get_mut(self.used).ok_or(mac_abi::NO_MEMORY)?;
+        if source.capacity() < self.bytes
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        let value = Arc::get_mut(source).ok_or(mac_abi::SERVICE_BUSY)?;
+        value.clear();
+        value.push_str(text);
+        let range = 0..value.len();
+        value.get(range.clone()).ok_or(mac_abi::BAD_ABI)?;
+        self.used += 1;
+        Ok(TextData::Shared { source: source.clone(),
+                              range })
+    }
 }
 impl ReportFrame
 {
-    pub(crate) fn prepare(limit: usize) -> Result<Self, Status>
+    pub(crate) fn prepare(limit: usize, text_count: usize, text_bytes: usize)
+                          -> Result<Self, Status>
     {
-        if limit == 0 || limit > 512
+        if limit == 0 || limit > 512 || text_count == 0 || text_count > limit || text_bytes == 0
         {
             return Err(mac_abi::BAD_ABI);
         }
         let mut commands = Vec::new();
         commands.try_reserve_exact(limit).map_err(|_| mac_abi::NO_MEMORY)?;
+        let text = ReportTextStock::prepare(text_count, text_bytes)?;
         Ok(Self { commands,
-                  limit })
+                  limit,
+                  text })
     }
 
-    pub(crate) fn validate(&self, limit: usize) -> Result<(), Status>
+    pub(crate) fn validate(&mut self, limit: usize) -> Result<(), Status>
     {
         if !self.commands.is_empty() || self.limit != limit || self.commands.capacity() < limit
         {
             return Err(mac_abi::BAD_ABI);
         }
-        Ok(())
+        self.text.unique()
+    }
+
+    pub(crate) fn reset_text(&mut self)
+    {
+        // Caller preflighted every original source before taking this frame.
+        // Each next slot is filled fully before its first immutable clone.
+        self.text.used = 0;
     }
 }
 struct CoreBacking
@@ -294,7 +372,8 @@ impl Commands
     {
         Self { values:  frame.commands,
                backing: Some(CommandBacking::Report { lease,
-                                                      limit: frame.limit }) }
+                                                      limit: frame.limit,
+                                                      text: frame.text }) }
     }
 
     fn is_report(&self) -> bool
@@ -306,6 +385,38 @@ impl Commands
     {
         matches!(&self.backing, Some(CommandBacking::Report { lease, .. })
                  if lease.matches(activity, window))
+    }
+
+    pub(crate) fn capture_report_port(&self, activity: &crate::recovery::Activity,
+                                      window: WindowId, kind: crate::recovery::ReportPortKind,
+                                      actual: &service::Port)
+                                      -> Result<crate::recovery::ReportPortView, Status>
+    {
+        let Some(CommandBacking::Report { lease,
+                                          .. }) = &self.backing
+        else
+        {
+            return Err(mac_abi::ACCESS_DENIED);
+        };
+        lease.capture_port(activity, window, kind, actual)
+    }
+
+    pub(crate) fn report_text(&mut self, view: &crate::recovery::ReportPortView, window: WindowId,
+                              actual: &service::Port, value: &str)
+                              -> Result<(TextData, Arc<service::Port>), Status>
+    {
+        let Some(CommandBacking::Report { lease,
+                                          text,
+                                          .. }) = &mut self.backing
+        else
+        {
+            return Err(mac_abi::ACCESS_DENIED);
+        };
+        // Keep the original per-call order: metrics/admission happened in the
+        // writer, then copy text, then prepare the exact immutable Port.
+        let source = text.snapshot(value)?;
+        let port = lease.text_port(view, window, actual)?;
+        Ok((source, port))
     }
 
     fn admit_additional(&mut self, additional: usize) -> Result<(), Status>
@@ -509,10 +620,12 @@ impl Drop for Commands
                                                 text:     core.text })
                 }
                 CommandBacking::Report { lease,
-                                         limit } =>
+                                         limit,
+                                         text } =>
                 {
                     lease.park(ReportFrame { commands: core::mem::take(&mut self.values),
-                                             limit })
+                                             limit,
+                                             text })
                 }
             }
         }

@@ -1,6 +1,6 @@
 //! System-owned event routing, retained application drawing and compositing.
 #![forbid(unsafe_code)]
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
 use mac_abi::*;
 use mac_object_table::shared::InvocationGate as _;
@@ -1967,6 +1967,24 @@ impl Desktop
         {
             return self.worlds.get_mut(world.0, self.owner)?.text(call, text, fonts);
         }
+        self.font_draw_retained(call, text, fonts, |content, text| {
+                let mut retained_text = String::new();
+                retained_text.try_reserve_exact(text.len()).map_err(|_| NO_MEMORY)?;
+                retained_text.push_str(text);
+                let port = Arc::try_new(content.port.clone()).map_err(|_| NO_MEMORY)?;
+                Ok((super::quickdraw::retained::TextData::Owned(retained_text), port))
+            })
+    }
+
+    fn font_draw_retained(&mut self, call: &mut mac_abi::quickdraw::FontCall, text: &str,
+                          fonts: &FontManager,
+                          prepare_text: impl FnOnce(&mut Content,
+                                 &str)
+                                 -> Result<(super::quickdraw::retained::TextData,
+                                            Arc<service::Port>),
+                                           Status>)
+                          -> Result<(), Status>
+    {
         let (used, limit) = self.retained_admission(SceneTarget::decode(call.target)?);
         let content = self.content_mut(SceneTarget::decode(call.target)?)?;
         if content.commands.is_core()
@@ -1983,15 +2001,38 @@ impl Desktop
             return Err(NO_MEMORY);
         }
         call.width = fonts.text_width(fonts_service::selection(call.selection), text)?;
-        let mut retained_text = String::new();
-        retained_text.try_reserve_exact(text.len()).map_err(|_| NO_MEMORY)?;
-        retained_text.push_str(text);
-        let port = alloc::sync::Arc::try_new(content.port.clone()).map_err(|_| NO_MEMORY)?;
+        let (retained_text, port) = prepare_text(content, text)?;
         content.record(RenderCommand::Text { font: call.selection, baseline: call.baseline,
-            text: super::quickdraw::retained::TextData::Owned(retained_text), color: call.color, port,
+            text: retained_text, color: call.color, port,
             vertical_ink: fonts.vertical_ink_bounds(fonts_service::selection(call.selection)).ok().flatten() })?;
         self.content_changed(SceneTarget::decode(call.target)?);
         Ok(())
+    }
+
+    pub(super) fn capture_report_port(&self, window: WindowId,
+                                      kind: crate::recovery::ReportPortKind)
+                                      -> Result<crate::recovery::ReportPortView, Status>
+    {
+        let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+        let content = self.pending_content.iter().find(|c| c.id == window).ok_or(BAD_ARGUMENT)?;
+        if self.crash.info().window != window || !content.report_binding(&activity, window)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        content.commands.capture_report_port(&activity, window, kind, &content.port)
+    }
+
+    pub(super) fn font_draw_report_port(&mut self, call: &mut mac_abi::quickdraw::FontCall,
+                                        text: &str, fonts: &FontManager,
+                                        view: &crate::recovery::ReportPortView)
+                                        -> Result<(), Status>
+    {
+        let window = SceneTarget::decode(call.target)?.window()?;
+        // Capture admitted the real live Session once per actual transition.
+        // Each record checks only its pinned frame, Window and actual Port.
+        self.font_draw_retained(call, text, fonts, |content, text| {
+                content.commands.report_text(view, window, &content.port, text)
+            })
     }
 
     pub(super) fn bind_core_scene(&mut self, window: WindowId,
