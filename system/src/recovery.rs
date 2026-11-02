@@ -1064,9 +1064,9 @@ pub(crate) fn prepare_modal() -> Result<(), Status>
     let session = crate::context::with_recovery_allocation(permit.clone(), || {
         crate::allocator::with_system(SystemClass::Ordinary, || {
             let layout = crate::toolbox::crashes::prepared_layout()?;
-            let limit = crate::toolbox::runtime::Desktop::measure_crash_command_capacity(layout)?;
+            let limit = crate::toolbox::runtime::Toolbox::measure_crash_command_capacity(layout)?;
             let (text_count, text_bytes) =
-                crate::toolbox::runtime::Desktop::measure_crash_text_stock(layout)?;
+                crate::toolbox::runtime::Toolbox::measure_crash_text_stock(layout)?;
             let report_frames = ReportFrames::prepare(limit, text_count, text_bytes)?;
             Arc::try_new(Session { recipient: Spinlock::new(owner.clone()),
                                    recipient_id: AtomicU64::new(owner.owner().incarnation()),

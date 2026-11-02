@@ -804,6 +804,37 @@ impl Content
         self.commands.try_push(command)
     }
 
+    /// Replace a prepared control batch after admitting its complete growth.
+    /// The carrier keeps the original Core/Report backing and cannot allocate
+    /// after the first live command is removed.
+    pub(crate) fn replace_controls(&mut self, drawings: &mut Vec<crate::toolbox::controls::Drawing>,
+                                   mut removed: impl FnMut(&crate::toolbox::controls::Drawing))
+                                   -> Result<(), Status>
+    {
+        if self.has_report_commands() && !self.commands.is_report()
+        {
+            return Err(mac_abi::BAD_ABI);
+        }
+        let replaced = self.commands.iter().filter(|command| {
+            matches!(command, RenderCommand::Control(old) if drawings.iter().any(|new| new.id == old.id))
+        }).count();
+        self.commands.admit_additional(drawings.len().saturating_sub(replaced))?;
+        self.retain_commands(|command| {
+            if let RenderCommand::Control(old) = command
+               && drawings.iter().any(|new| new.id == old.id)
+            {
+                removed(old);
+                false
+            }
+            else { true }
+        });
+        for drawing in drawings.drain(..)
+        {
+            self.commands.values.push(RenderCommand::Control(drawing));
+        }
+        Ok(())
+    }
+
     /// Append a prepared resident batch through the same carrier checks as a
     /// single record. An unbacked report tail cannot acquire a new allocation.
     pub(crate) fn try_extend(&mut self, commands: Vec<RenderCommand>) -> Result<(), Status>
