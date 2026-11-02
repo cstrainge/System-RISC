@@ -1,8 +1,12 @@
 //! Existing 32-bit treaty namespaces projected onto registered owner storage.
 //! The projection is an index, never a second payload or ownership authority.
+mod prepared;
 use alloc::sync::Arc;
 use core::{fmt, ops::Deref};
 
+pub use prepared::{AdmissionFailure, PreparedCapacity, PreparedError, PreparedPublication,
+                   PublicationPermit, PublicationPlan, PublishFailure, RetiredCapacity,
+                   RetiredPublication};
 use spinning_top::Spinlock;
 
 use crate::{Kind, Table,

@@ -6,13 +6,17 @@ use core::{alloc::Layout, fmt};
 
 use super::{super::windows::manager::{CreationError, PreparedWindow, WindowCommit, WindowPlan},
             *};
-use crate::machine::scheduler::accounting::AllocationAuthority;
+use crate::{machine::scheduler::accounting::AllocationAuthority,
+            toolbox::drag::{PreparedReceiver, ReceiverError, ReceiverPlan, ReceiverRetired,
+                            ReceiverTarget}};
 
 pub(super) struct NativeWindowPublication<'a>
 {
-    prepared: &'a mut Option<PreparedWindow>,
-    retired:  &'a mut Option<WindowCommit>,
-    refusal:  &'a mut Option<CreationError>
+    prepared:         &'a mut Option<PreparedWindow>,
+    retired:          &'a mut Option<WindowCommit>,
+    refusal:          &'a mut Option<CreationError>,
+    receiver:         &'a mut Option<PreparedReceiver>,
+    receiver_retired: &'a mut Option<ReceiverRetired>
 }
 
 #[derive(Debug)]
@@ -26,6 +30,7 @@ enum AdmissionError
     },
     Scene(SceneCapacityError),
     Window(CreationError),
+    Receiver(ReceiverError),
     Definition(crate::loader::LoadError)
 }
 impl AdmissionError
@@ -39,6 +44,7 @@ impl AdmissionError
                             .. } => status,
             Self::Scene(cause) => cause.status(),
             Self::Window(cause) => window_creation_status(cause),
+            Self::Receiver(cause) => cause.status(),
             Self::Definition(cause) => crate::loader::status(cause)
         }
     }
@@ -71,6 +77,7 @@ impl fmt::Display for AdmissionError
                             status } => write!(out, "window {stage} refused with status {status}"),
             Self::Scene(cause) => cause.fmt(out),
             Self::Window(cause) => cause.fmt(out),
+            Self::Receiver(cause) => cause.fmt(out),
             Self::Definition(cause) => cause.fmt(out)
         }
     }
@@ -89,6 +96,7 @@ fn capacity_changed(cause: CreationError) -> bool
 struct ProcessPlan
 {
     window:     WindowPlan,
+    receiver:   ReceiverPlan,
     scene:      SceneCapacityPlan,
     allocation: AllocationAuthority
 }
@@ -134,7 +142,14 @@ impl Desktop
         let window = self.windows
                          .plan_process_window(&storage, request, entry)
                          .map_err(AdmissionError::Window)?;
+        let receiver =
+            self.drag
+                .plan_receiver(&recipient,
+                               crate::context::current_thread_context().identity().thread,
+                               &allocation)
+                .map_err(AdmissionError::Receiver)?;
         Ok(Turn::Process(ProcessPlan { window,
+                                       receiver,
                                        scene: self.plan_window_scene()
                                                   .map_err(AdmissionError::Scene)?,
                                        allocation }))
@@ -168,7 +183,7 @@ fn create_native(request: &mut WindowRequest) -> Result<Status, AdmissionError>
     let mut cold_prepared = false;
     // Before an actual permit is issued, contention returns the complete
     // unadmitted preparation for disposal and a fresh snapshot outside Desktop.
-    let (mut prepared, mut scene) = loop
+    let (mut prepared, mut scene, mut receiver) = loop
     {
         let plan = match desktop(|desktop| desktop.plan_native_window(request))?
         {
@@ -210,7 +225,12 @@ fn create_native(request: &mut WindowRequest) -> Result<Status, AdmissionError>
         }
         match admitted
         {
-            Ok(value) => break (Some(value), scene),
+            Ok(value) =>
+            {
+                let receiver = super::drag_runtime::admit_receiver_plan(plan.receiver)
+                    .map_err(AdmissionError::Receiver)?;
+                break (Some(value), scene, Some(receiver));
+            }
             Err(AdmissionError::Window(cause)) if capacity_changed(cause) => continue,
             Err(cause) => return Err(cause)
         }
@@ -218,6 +238,7 @@ fn create_native(request: &mut WindowRequest) -> Result<Status, AdmissionError>
     loop
     {
         let mut retired = None;
+        let mut receiver_retired = None;
         let mut refusal = None;
         let result = desktop(|desktop| {
             let value = prepared.as_ref()
@@ -231,11 +252,18 @@ fn create_native(request: &mut WindowRequest) -> Result<Status, AdmissionError>
             }
             desktop.install_window_scene(&mut scene).map_err(AdmissionError::Scene)?;
             Ok(desktop.create_window(request,
-                                     Some(NativeWindowPublication { prepared: &mut prepared,
-                                                                    retired:  &mut retired,
-                                                                    refusal:  &mut refusal })))
+                                     Some(NativeWindowPublication { prepared:         &mut prepared,
+                                                                    retired:          &mut retired,
+                                                                    refusal:          &mut refusal,
+                                                                    receiver:         &mut receiver,
+                                                                    receiver_retired:
+                                                                        &mut receiver_retired })))
         });
         if let Some(retired) = retired
+        {
+            retired.dispose();
+        }
+        if let Some(retired) = receiver_retired
         {
             retired.dispose();
         }
@@ -585,18 +613,49 @@ impl Desktop
             }
         };
         if crate::context::recovery_activity().is_none()
-           && let Err(status) =
-               self.drag.ensure_receiver(&recipient,
-                                         crate::context::current_thread_context().identity()
-                                                                                 .thread
-                                                                                 .0,
-                                         id.0)
         {
-            if let Err(error) = self.windows.dispose_window(id, &mut self.events, when)
+            let receiver = if let Some(publication) = publication.as_mut()
             {
-                serial!("WINDOW_INITIALIZATION_ROLLBACK_REFUSED: owner={} {error}", self.owner);
+                if publication.receiver_retired.is_some()
+                {
+                    Err(BAD_ABI)
+                }
+                else
+                {
+                    // WIND has actually been born and initialized. Only this
+                    // real ID may become the prepared receiver's target.
+                    match self.drag
+                              .commit_receiver(publication.receiver, ReceiverTarget::Window(id))
+                    {
+                        Ok(retired) =>
+                        {
+                            *publication.receiver_retired = retired;
+                            Ok(())
+                        }
+                        Err(cause) =>
+                        {
+                            serial!("WINDOW_RECEIVER_BINDING_REFUSED: owner={} {cause}",
+                                    self.owner);
+                            Err(cause.status())
+                        }
+                    }
+                }
             }
-            return status;
+            else
+            {
+                self.drag
+                    .ensure_receiver(&recipient,
+                                     crate::context::current_thread_context().identity().thread,
+                                     id.0)
+            };
+            if let Err(status) = receiver
+            {
+                if let Err(error) = self.windows.dispose_window(id, &mut self.events, when)
+                {
+                    serial!("WINDOW_INITIALIZATION_ROLLBACK_REFUSED: owner={} {error}", self.owner);
+                }
+                return status;
+            }
         }
         request.id = id.0;
         if self.first_window.0 == 0

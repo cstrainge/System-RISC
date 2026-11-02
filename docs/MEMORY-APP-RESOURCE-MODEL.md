@@ -4292,3 +4292,90 @@ Successful postbirth WDEF rollback disposal, generic alias cleanup, drag-receive
 and control admission, ordinary internal publishers and deep equality planning
 retain separate migration or performance work. There is no U-mode, race-absence,
 latency, arbitrary privileged-fault recovery or whole-OS qualification claim.
+
+
+## Prepared projected receivers and native controls — 2026-11-02
+
+Native application Window creation now prepares its actual drag receiver before
+Window birth. The shared projected Store prepares its original native owner
+storage and the existing 32-bit Table capacity outside Desktop. After the native
+permit exists, `admit_projection` selects a real wire generation/slot and attaches
+its original release hook to the same completion reserve. The index contains the
+actual native permit ID, never a provisional zero. Ordinary lookup cannot find a
+payload before canonical publication. The initialized real WindowId supplies the
+receiver target afterward; Finder's desktop is a distinct explicit target.
+
+This shared pre-effect step can be used by other resident managers. It does not
+make later effects or publication infallible: final birth checks the original
+owner, Store incarnation and permit again. A late stop returns the same permit,
+selected wire/hook and payload; the consumer must retain its actual committed or
+rollback outcome. No second issuer, manual wire release, generation rollback or
+synthetic acknowledgment is permitted. The original high16-generation/low16-slot
+wire format and global namespace generation history remain unchanged.
+
+Before native admission, projection-capacity contention refreshes only the same
+Table preparation; native metadata contention requires a fresh pre-permit plan
+using the original owner/account. After admission, capacity refresh retains the
+same genuine native permit. All obsolete/refused arrays return outside manager
+and projection guards. Native Store operations never run under the projection
+lock. A selected wire stays occupied through the actual completion acknowledgment,
+or through unstarted permit cancellation. Numeric wire observation grants no
+lookup or owner authority.
+
+Native managed CTRL creation retains the original CDEF VALIDATE invocation under
+Desktop and seals its resulting specification. Its immutable title, original
+BoundDefinition and canonical publication metadata prepare outside Desktop under
+the actual Process Kernel account. Capacity retry does not rerun author code.
+Final publication rechecks the original owner/account, live owned parent Window,
+unchanged request and exact current definition reference. Both prepared native and
+existing internal/modal callers use the same payload factory, control state tail
+and retained drawing/damage implementation. System modal reservations remain a
+separate genuine Activity contract, never a fallback after prepared refusal.
+
+Source review found a backing-retirement gap in prepared WIND storage and the new
+CSTA/DRVS paths: accepting a backing ticket while an unpublished permit remained
+could leave empty storage without a later payload removal. These handlers now
+return the same original ticket with typed owner/kind/preparation-count context
+before accepting it. Actual permit release wakes the stopped Process's original
+quarantine retry. Constructor allocation refusals preserve NO_MEMORY. This is an
+implementation and source-review result; the exact stop/permit race was not
+forced by the native scenarios below. Existing internal publishers, callback
+allocation, successful disposal and some backing destruction still run under
+Desktop and remain separate migration debt.
+
+### Bounded native observations
+
+The final release/LTO/no_std RVA23 System ELF is
+`91e42848471b55472335268feaa19bddeb483bd81910f006d3c8e614e1fe64dc`,
+with resource fork
+`d801047bbb90d2c63d3e39594d22b5856723064f7cbf004f2a27a201cfd48065`
+and ROM
+`cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+Private QEMU virt guests used four physical CPUs, exactly 2 GiB detected RAM,
+800×600 display, and event/TextEdit tracing disabled. Actual launch commands and
+BOOT_RAM/PAGE_BANK records agree on 2,147,483,648 bytes. Production platform
+selection was not changed to obtain that private configuration.
+
+Six installed native applications entered and quit through their own UI paths,
+with sampled nonidentity image mappings absent after actual Process closure.
+Panic Test relaunched at the same placement and exercised System-owned report
+scroll/dismissal and original account closure. Two native Finder-role fixture
+crash/replacement cycles observed fresh state, stale Window/handle rejection,
+protected replacement payload leaves, old account closure and subsequent input.
+These used the real loader, traps, allocator, MMU, scheduler and owner walks.
+
+The aggregate native fixture reached its managed-control tracking, repeated
+release/cancel, stale/reuse, parent cleanup and classic control markers, alongside
+its earlier Window/handle reuse scenarios. It then FAILED at the existing later
+alert ownership check with Service(-12). The aggregate is not green; its partial
+observations do not establish later cases or complete control conformance. No
+assertion was weakened or harness service substituted. Earlier candidate
+observations remain attached to their separate 8 GiB artifacts and were not
+relabeled onto this image. All owned guests were reaped and their cloned media
+removed; source/base hashes stayed fixed within each capture.
+
+No host Rust suite ran. Static optimized target compilation and image construction
+establish only those build properties. Forced factory exhaustion, native permit
+stop/capacity races, delayed/uncertain ACK, namespace exhaustion, FFRK device-effect
+rollback, protected standby/headroom, full production Finder OOM restart, U-mode
+isolation, hardware timing and general SMP/OS correctness remain unverified.

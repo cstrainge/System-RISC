@@ -1046,8 +1046,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         DRAG =>
         unsafe {
             toolbox::drag::native::dispatch(pointer, size, |call, input, output| {
-                crate::kernel::with_desktop(|runtime| runtime.drag_request(call, input, output))
-                    .map_err(|error| error.status())?
+                toolbox::runtime::native_drag(call, input, output)
             })
         },
         SCRAP =>
@@ -1094,6 +1093,11 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                                                         },
                                                         gateway)
                 };
+            }
+            if matches!(call.operation,
+                        mac_abi::controls::CREATE_STANDARD | mac_abi::controls::CREATE_SCROLLBAR)
+            {
+                return toolbox::runtime::native_control(call) as i64;
             }
             definition_request(|runtime| {
                 if let Some(id) = runtime.preflight_control(call)?
