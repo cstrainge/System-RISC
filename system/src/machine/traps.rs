@@ -936,6 +936,10 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                 let call = read_request!(files::FileCall);
                 if matches!(call.operation,
                             files::OPEN
+                            | files::OPEN_OPTIONS
+                            | files::WRITE
+                            | files::SET_LENGTH
+                            | files::SYNC
                             | files::WATCH_DIRECTORY
                             | files::POLL_WATCH
                             | files::DISPOSE_WATCH)

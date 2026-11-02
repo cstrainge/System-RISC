@@ -21,12 +21,16 @@ impl super::objects::Payload for OpenFile
 
     fn cleanup_pending(&self) -> bool
     {
-        matches!(&*self.fork.lock(),FileFork::Provider(fork) if !fork.closed())
+        self.operations.load(core::sync::atomic::Ordering::Acquire) != 0
+        || (self.final_handle()
+            && matches!(&*self.description.fork.lock(),FileFork::Provider(fork) if !fork.closed()))
     }
 
     fn begin_cleanup(&self)
     {
-        if let FileFork::Provider(fork) = &*self.fork.lock()
+        self.relinquish();
+        if self.last_close.load(core::sync::atomic::Ordering::Acquire)
+           && let FileFork::Provider(fork) = &*self.description.fork.lock()
         {
             fork.abandon();
         }

@@ -133,6 +133,8 @@ impl Manager
                            call: &mut DataWriteCall, name: &str, data: &[u8])
                            -> Result<(), Status>
     {
+        #[cfg(target_arch = "riscv64")]
+        self.local_ready()?;
         if call.reserved != [0; 2]
         {
             return Err(BAD_ARGUMENT);

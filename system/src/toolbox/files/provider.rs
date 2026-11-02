@@ -281,7 +281,17 @@ impl Manager
     {
         match self.volumes.get(id).ok_or(NOT_FOUND)?
         {
-            super::Mounted::Block(_) => Ok(None),
+            super::Mounted::Block(_) =>
+            {
+                #[cfg(target_arch = "riscv64")]
+                if self.local_operation.is_some()
+                {
+                    return Err(SERVICE_BUSY);
+                }
+                Ok(None)
+            }
+            #[cfg(target_arch = "riscv64")]
+            super::Mounted::Operating(_) => Err(SERVICE_BUSY),
             super::Mounted::Provider(mounted) =>
             {
                 match mounted.phase
