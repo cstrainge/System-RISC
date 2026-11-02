@@ -435,6 +435,11 @@ fn dispatch_frame(frame: &mut TrapFrame) -> Dispatch
             // delivery while cancellation safely drains the owned request.
             match job
             {
+                crate::context::DeferredIo::FileOperation(handle) =>
+                {
+                    crate::toolbox::files::local::pending::abandon(thread.identity().thread,
+                                                                   Some(handle))
+                }
                 crate::context::DeferredIo::FileTransfer(handle) =>
                 {
                     crate::toolbox::files::abandon_transfer_waiter(thread.identity().thread.0,
@@ -977,6 +982,13 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                 let call = read_request!(files::FileCall);
                 if matches!(call.operation,
                             files::OPEN
+                            | files::OPEN_OPTIONS
+                            | files::WRITE
+                            | files::READ
+                            | files::SEEK
+                            | files::TELL
+                            | files::SET_LENGTH
+                            | files::SYNC
                             | files::WATCH_DIRECTORY
                             | files::POLL_WATCH
                             | files::DISPOSE_WATCH)
@@ -1046,8 +1058,7 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
         DRAG =>
         unsafe {
             toolbox::drag::native::dispatch(pointer, size, |call, input, output| {
-                crate::kernel::with_desktop(|runtime| runtime.drag_request(call, input, output))
-                    .map_err(|error| error.status())?
+                toolbox::runtime::native_drag(call, input, output)
             })
         },
         SCRAP =>
@@ -1094,6 +1105,11 @@ unsafe fn dispatch(number: u32, pointer: *mut (), size: usize) -> i64
                                                         },
                                                         gateway)
                 };
+            }
+            if matches!(call.operation,
+                        mac_abi::controls::CREATE_STANDARD | mac_abi::controls::CREATE_SCROLLBAR)
+            {
+                return toolbox::runtime::native_control(call) as i64;
             }
             definition_request(|runtime| {
                 if let Some(id) = runtime.preflight_control(call)?

@@ -641,7 +641,9 @@ impl WindowManager
     {
         Ok(Self { visibility: RefCell::new(Default::default()),
                   front_cache: Cell::new(None),
-                  windows: Store::owned_prepared(kinds.0, kinds.1).map_err(|_| BAD_ARGUMENT)?,
+                  windows: Store::owned_prepared(kinds.0, kinds.1).map_err(|cause| {
+                      crate::toolbox::handles::registry_status(&mac_object_table::registry::Error::Pool(cause))
+                  })?,
                   retained_failures: VecDeque::new(),
                   #[cfg(target_arch = "riscv64")]
                   recovery_windows: core::array::from_fn(|_| None),
@@ -949,6 +951,11 @@ impl WindowManager
                                   -> Result<(), Failure>
     {
         self.retry_retained_quarantines();
+        let preparing = self.windows.publication_preparations(ticket.key().owner());
+        if preparing != 0
+        {
+            return Err(Failure::publication_preparations(ticket, preparing));
+        }
         self.windows.release_storage(ticket).map_err(Failure::from)
     }
 

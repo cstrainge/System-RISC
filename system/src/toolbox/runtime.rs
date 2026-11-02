@@ -52,6 +52,7 @@ mod dialog_runtime;
 mod event_runtime;
 #[path = "drag/runtime.rs"]
 mod drag_runtime;
+pub(crate) use drag_runtime::native_drag;
 #[path = "textedit/runtime.rs"]
 mod textedit_runtime;
 #[path = "quickdraw/ordinary_underlay.rs"]
@@ -63,6 +64,9 @@ pub(crate) use local::{FinderAdmission, FinderCapacityError, FinderPreparation};
 #[path = "windows/runtime.rs"]
 mod window_runtime;
 pub(crate) use window_runtime::native_window;
+#[path = "controls/runtime.rs"]
+mod control_runtime;
+pub(crate) use control_runtime::native_control;
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
@@ -741,7 +745,8 @@ impl Desktop
                             super::handles::cleanup::Cause::ThreadPreparations { .. }
                             | super::handles::cleanup::Cause::DefinitionPending { .. }
                             | super::handles::cleanup::Cause::NativeJoin { .. } => SERVICE_BUSY,
-                            super::handles::cleanup::Cause::Alias(_)
+                            super::handles::cleanup::Cause::PublicationPreparations { .. }
+                            | super::handles::cleanup::Cause::Alias(_)
                             | super::handles::cleanup::Cause::ContextUnavailable { .. }
                             | super::handles::cleanup::Cause::DriverInterfaceBusy { .. }
                             | super::handles::cleanup::Cause::DriverDependencyBusy { .. }
@@ -1248,6 +1253,16 @@ impl Desktop
                                              call,
                                              entry,
                                              crate::machine::traps::gateway)?;
+        self.finish_managed_control(call, window, drawing)
+    }
+
+    /// Retain the original drawing and damage path for every real publisher.
+    /// A prepared control changes only admission, never its paint contract.
+    fn finish_managed_control(&mut self, call: &mac_abi::controls::ControlCall, window: u64,
+                              drawing: Option<super::controls::Drawing>)
+                              -> Result<(), Status>
+    {
+        use mac_abi::controls::*;
         if call.operation == DISPOSE_OBJECT
         {
             let mut removed = Vec::new();

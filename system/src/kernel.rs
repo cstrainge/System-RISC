@@ -938,11 +938,17 @@ fn launch() -> Result<(), crate::machine::scheduler::StartError>
         recovery_boot_error("native child manager initialization refused", cause.status())
     })?;
     let system = crate::loader::read_startup("System")?;
-    let finder = crate::loader::read_startup("Finder")?;
+    let finder = crate::loader::read_startup_application("Finder")?;
+    let original_catalog = finder.catalog;
     let mut processes = crate::toolbox::processes::Manager::new();
-    let finder_id = processes.provision("Finder", 0, 0).map_err(|status| {
-        serial!("FINDER_DOMAIN_REFUSED status={status}");
-        mac_formats::Error::AllocationFailed("Finder lifetime domain admission failed")
+    let finder_id = processes.provision("Finder", original_catalog.volume, original_catalog.id)
+                             .map_err(|status| {
+                                 serial!("FINDER_DOMAIN_REFUSED status={status}");
+                                 mac_formats::Error::AllocationFailed("Finder lifetime domain \
+                                                                       admission failed")
+                             })?;
+    processes.bind_launch_catalog(finder_id, original_catalog).map_err(|status| {
+        recovery_boot_error("Finder original catalog retention refused", status)
     })?;
     serial!("BOOT_FINDER_DOMAIN app={finder_id}");
     let finder_admission =
@@ -959,7 +965,7 @@ fn launch() -> Result<(), crate::machine::scheduler::StartError>
         .map_err(|_| mac_formats::Error::AllocationFailed("image manager allocation failed"))?)
         .map_err(|_| mac_formats::Error::Malformed("image manager already published"))?;
     let authority =
-        policy_authority(&system, &finder).map_err(|_| {
+        policy_authority(&system, &finder.resources).map_err(|_| {
                                               mac_formats::Error::Malformed("invalid Finder \
                                                                              authority policy")
                                           })?;
@@ -1012,10 +1018,10 @@ fn launch() -> Result<(), crate::machine::scheduler::StartError>
     let finder_loaded = crate::allocator::with_target(crate::allocator::Target::Owner {
         account: finder_allocation.clone(), class: mac_kernel_model::policy::MemoryClass::Kernel
     }, || admit_image(&finder_owner, &finder_allocation,
-                       AppImage { resources: finder,
+                       AppImage { resources: finder.resources,
                                   role: crate::images::Role::Application { authority },
-                                  creator: *b"MACS",
-                                  file_type: *b"FNDR" })).map_err(|cause| {
+                                  creator: original_catalog.creator,
+                                  file_type: original_catalog.file_type })).map_err(|cause| {
                             serial!("FINDER_IMAGE_REFUSED: {cause}");
                             match cause
                             {
@@ -1074,7 +1080,7 @@ fn recovery_boot_error(service: &'static str, status: Status) -> mac_formats::Er
 fn initialize_desktop(
     mut system: alloc::vec::Vec<mac_formats::resource::Resource>,
     processes: crate::toolbox::processes::Manager, finder_loaded: LoadedImage,
-    mut finder_admission: crate::toolbox::processes::LaunchAdmission)
+    finder_admission: crate::toolbox::processes::LaunchAdmission)
     -> crate::loader::LoadResult<Option<crate::toolbox::processes::startup::PendingStartup>>
 {
     let finder_owner = processes.ledger(crate::context::finder_app().0).map_err(|_| {
@@ -1254,17 +1260,15 @@ fn initialize_desktop(
     with_desktop(|desktop| desktop.boot_progress(&mut boot_screen, 5))
         .map_err(|error| recovery_boot_error("boot progress manager unavailable", error.status()))??;
     serial!("BOOT_SYSTEM_READY: services=0x{:x}", &SERVICES as *const SystemServices as usize);
-    if let Some(ready) = ready
-    {
-        let pending = crate::toolbox::processes::startup::install(finder_admission, finder_tls,
-                                                                  finder_loaded, ready,
-                                                                  boot_screen).map_err(|status| {
-                          recovery_boot_error("Finder pending startup publication refused", status)
-                      })?;
-        return Ok(Some(pending));
-    }
-    finish_initial_finder(&mut finder_admission, finder_loaded, &mut boot_screen)?;
-    Ok(None)
+    // Even applications without an explicit provider requirement must bind
+    // their original launch directory before author execution. The unique
+    // startup flight owns the same admission while any real job is pending.
+    let pending =
+        crate::toolbox::processes::startup::install(finder_admission, finder_tls, finder_loaded,
+                                                    ready, boot_screen).map_err(|status| {
+            recovery_boot_error("Finder pending startup publication refused", status)
+        })?;
+    Ok(Some(pending))
 }
 
 pub(crate) fn finish_initial_finder(finder_admission: &mut crate::toolbox::processes::LaunchAdmission,

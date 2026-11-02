@@ -177,6 +177,20 @@ impl Reserve
                               acknowledgement: None }).map(|record| Self(Some(record)))
     }
 
+    pub(crate) fn attach_projection(&mut self, projection: crate::projected::ProjectionRelease)
+                                    -> Result<(), crate::projected::ProjectionRelease>
+    {
+        match &mut self.0
+        {
+            Some(record) if record.projection.is_none() =>
+            {
+                record.projection = Some(projection);
+                Ok(())
+            }
+            _ => Err(projection)
+        }
+    }
+
     pub(crate) fn with_projection(mut self,
                                   projection: Option<crate::projected::ProjectionRelease>)
                                   -> Self

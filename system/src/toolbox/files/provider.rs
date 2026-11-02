@@ -53,8 +53,9 @@ impl Mounted
 
 /// Decode before exposing any provider bytes to an application. In addition to
 /// wire validation, bind the reply to the requested volume, node or parent.
-fn catalog(volume: u32, bytes: &[u8], node: Option<u32>, parent: Option<u32>)
-           -> Result<CatalogInfo, Status>
+pub(in crate::toolbox::files) fn catalog(volume: u32, bytes: &[u8], node: Option<u32>,
+                                         parent: Option<u32>)
+                                         -> Result<CatalogInfo, Status>
 {
     let metadata = fs::Metadata::decode(bytes).map_err(|_| BAD_ABI)?;
     catalog_metadata(volume, metadata, node, parent)
@@ -281,7 +282,17 @@ impl Manager
     {
         match self.volumes.get(id).ok_or(NOT_FOUND)?
         {
-            super::Mounted::Block(_) => Ok(None),
+            super::Mounted::Block(_) =>
+            {
+                #[cfg(target_arch = "riscv64")]
+                if self.local_operation.is_some()
+                {
+                    return Err(SERVICE_BUSY);
+                }
+                Ok(None)
+            }
+            #[cfg(target_arch = "riscv64")]
+            super::Mounted::Operating(_) => Err(SERVICE_BUSY),
             super::Mounted::Provider(mounted) =>
             {
                 match mounted.phase

@@ -208,16 +208,22 @@ impl Saved
 /// process. Lost preparations stop admission and enter the ordinary reaper.
 pub(crate) struct FinderAdmission
 {
-    old:        u64,
-    owner:      crate::toolbox::handles::OwnerRef,
-    original:   crate::images::Binding,
-    allocation: crate::machine::scheduler::accounting::AllocationAuthority,
-    permit:     crate::allocator::recovery::Permit,
-    activity:   crate::recovery::Activity,
-    active:     bool
+    old:              u64,
+    owner:            crate::toolbox::handles::OwnerRef,
+    original:         crate::images::Binding,
+    original_catalog: mac_abi::files::CatalogInfo,
+    allocation:       crate::machine::scheduler::accounting::AllocationAuthority,
+    permit:           crate::allocator::recovery::Permit,
+    activity:         crate::recovery::Activity,
+    active:           bool
 }
 impl FinderAdmission
 {
+    pub(crate) fn original_catalog(&self) -> mac_abi::files::CatalogInfo
+    {
+        self.original_catalog
+    }
+
     pub(crate) fn old(&self) -> u64
     {
         self.old
@@ -355,6 +361,7 @@ impl Desktop
         }
         let binding = self.processes.resource_binding(old)?;
         let original = binding.image().ok_or(BAD_ABI)?;
+        let original_catalog = self.processes.original_catalog(old)?;
         // Check both capacities before moving either buffer. These observations
         // reserve no identity; final provision remains in this Desktop turn.
         let required = self.locals.len().checked_add(1).ok_or(BAD_ARGUMENT)?;
@@ -395,6 +402,7 @@ impl Desktop
             class: mac_kernel_model::policy::MemoryClass::Kernel
         }, || self.crash.snapshot())?;
         recipient.local.crash = crate::toolbox::crashes::Manager::from_snapshot(snapshot);
+        recipient.process.bind_launch_catalog(original_catalog)?;
         let FinderPreparation { local,
                                 allocation,
                                 owner,
@@ -418,6 +426,7 @@ impl Desktop
         Ok(FinderAdmission { old,
                              owner,
                              original,
+                             original_catalog,
                              allocation,
                              permit,
                              activity,
@@ -1168,15 +1177,21 @@ impl Desktop
     /// Only provisional directory/account/checkpoint publication is performed
     /// here. The caller prepares its heap after releasing Desktop.
     pub(crate) fn reserve_application(
-        &mut self, call: &mut ProcessCall, name: &str)
+        &mut self, call: &mut ProcessCall, catalog: mac_abi::files::CatalogInfo)
         -> Result<Option<crate::toolbox::processes::LaunchAdmission>, Status>
     {
+        if catalog.volume != call.volume || catalog.id != call.cnid
+        {
+            return Err(BAD_ABI);
+        }
         if self.activate_existing_application(call)?
         {
             return Ok(None);
         }
-        let id = self.processes.provision(name, call.volume, call.cnid)?;
-        let capture = self.processes.launch_admission(id);
+        let id = self.processes.provision(catalog.name(), catalog.volume, catalog.id)?;
+        let capture = self.processes
+                          .bind_launch_catalog(id, catalog)
+                          .and_then(|()| self.processes.launch_admission(id));
         match capture
         {
             Ok(admission) => Ok(Some(admission)),
@@ -1625,12 +1640,15 @@ impl crate::toolbox::files::forks::lifetime::ForkHost for Desktop
                          -> Result<(), crate::toolbox::handles::cleanup::Failure>
     {
         match crate::kernel::with_files_owned(ticket, |ticket, files| {
-                  crate::toolbox::files::forks::lifetime::ForkHost::release_file_fork(files,
-                                                                                      ticket,
-                                                                                      storage)
+                  files.release_fork_owned(ticket, storage)
               })
         {
-            Ok(result) => result,
+            Ok(Ok(retired)) =>
+            {
+                retired.dispose();
+                Ok(())
+            }
+            Ok(Err(failure)) => Err(failure),
             Err((error, ticket)) =>
             {
                 Err(crate::toolbox::handles::cleanup::Failure::files_unavailable(ticket, error))
@@ -1871,5 +1889,24 @@ impl Desktop
                           self.processes.resource_binding(binding.owner())?,
                           None);
         Ok(())
+    }
+}
+
+impl crate::toolbox::files::local::lifetime::OperationHost for Desktop
+{
+    fn release_file_operation(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                              storage: bool)
+                              -> Result<(), crate::toolbox::handles::cleanup::Failure>
+    {
+        match crate::kernel::with_files_owned(ticket, |ticket, files| {
+                  crate::toolbox::files::local::lifetime::OperationHost::release_file_operation(files,ticket,storage)
+              })
+        {
+            Ok(result) => result,
+            Err((error, ticket)) =>
+            {
+                Err(crate::toolbox::handles::cleanup::Failure::files_unavailable(ticket, error))
+            }
+        }
     }
 }

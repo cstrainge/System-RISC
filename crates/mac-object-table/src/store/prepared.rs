@@ -295,6 +295,16 @@ impl<G: InvocationGate> Drop for PublicationReleased<G>
 }
 impl<G: InvocationGate> PublicationPermit<G>
 {
+    pub(crate) fn attach_projection(&mut self, projection: crate::projected::ProjectionRelease)
+                                    -> Result<(), crate::projected::ProjectionRelease>
+    {
+        match &mut self.reserve
+        {
+            Some(reserve) => reserve.attach_projection(projection),
+            None => Err(projection)
+        }
+    }
+
     /// Identity already issued by this exact canonical preparation. Observing
     /// it grants no publication or lookup authority; only consuming this permit
     /// can publish its associated object. Useful for an object's own immutable ID.

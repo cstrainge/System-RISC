@@ -37,8 +37,28 @@ impl Client<'_>
         result
     }
 
+    /// WRITE lends an immutable buffer separately from all output borrows. The
+    /// operation is sealed here so caller bytes cannot be reinterpreted as READ.
+    pub fn file_write(self, call: &mut FileCall, input: &[u8]) -> Result<()>
+    {
+        call.operation = mac_abi::files::WRITE;
+        call.name = core::ptr::null();
+        call.name_length = 0;
+        call.output = core::ptr::null_mut();
+        call.capacity = 0;
+        call.input = input.as_ptr();
+        call.input_length = input.len().min(mac_abi::files::MAX_FILE_TRANSFER);
+        call.transferred = 0;
+        let result = status(self.invoke(FILE, call));
+        call.input = core::ptr::null();
+        call.input_length = 0;
+        result
+    }
+
     pub fn file(self, call: &mut FileCall, name: &str, output: &mut [u8]) -> Result<()>
     {
+        call.input = core::ptr::null();
+        call.input_length = 0;
         call.name = name.as_ptr();
         call.name_length = name.len();
         call.output = output.as_mut_ptr();

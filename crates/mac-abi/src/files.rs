@@ -1,4 +1,4 @@
-//! Read-only native File Manager. Volume IDs and open handles are opaque.
+//! Native File Manager. Volume IDs and open handles are opaque.
 //! Directory enumeration is zero-based; catalog identities are persistent HFS CNIDs.
 pub const VOLUME_COUNT: u32 = 0;
 pub const VOLUME_INDEX: u32 = 1;
@@ -60,6 +60,24 @@ pub const REMOVE: u32 = 38;
 /// Properties are in entry; name/name_length carry only the comment text.
 /// Every non-property input field of entry must be zero.
 pub const SET_PROPERTIES: u32 = 39;
+/// Ordinary open descriptions, separate from atomic Save/replace transactions.
+pub const OPEN_OPTIONS: u32 = 40;
+pub const WRITE: u32 = 41;
+/// Development stepping request: length is target on input and actual on
+/// output; growth is currently limited to MAX_FILE_TRANSFER per call.
+pub const SET_LENGTH: u32 = 42;
+pub const SYNC: u32 = 43;
+pub const DUPLICATE: u32 = 44;
+pub const OPEN_READ: u32 = 1;
+pub const OPEN_WRITE: u32 = 2;
+pub const OPEN_APPEND: u32 = 4;
+pub const OPEN_CREATE: u32 = 8;
+pub const OPEN_CREATE_NEW: u32 = 16;
+pub const OPEN_TRUNCATE: u32 = 32;
+pub const OPEN_FLAGS: u32 =
+    OPEN_READ | OPEN_WRITE | OPEN_APPEND | OPEN_CREATE | OPEN_CREATE_NEW | OPEN_TRUNCATE;
+pub const SYNC_DATA: u32 = 1;
+pub const MAX_FILE_TRANSFER: usize = 64 * 1024;
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct IconMove
@@ -364,24 +382,29 @@ impl CatalogInfo
 #[derive(Default, Clone, Copy)]
 pub struct FileCall
 {
-    pub operation:   u32,
-    pub volume:      u32,
-    pub cnid:        u32,
-    pub index:       u32,
-    pub handle:      u32,
-    pub fork:        u32,
-    pub whence:      u32,
-    pub reserved:    u32,
-    pub offset:      i64,
-    pub position:    u64,
-    pub length:      u64,
-    pub name:        *const u8,
-    pub name_length: usize,
-    pub output:      *mut u8,
-    pub capacity:    usize,
-    pub transferred: usize,
-    pub volume_info: VolumeInfo,
-    pub entry:       CatalogInfo
+    pub operation:    u32,
+    pub volume:       u32,
+    pub cnid:         u32,
+    pub index:        u32,
+    pub handle:       u32,
+    pub fork:         u32,
+    pub whence:       u32,
+    pub reserved:     u32,
+    /// Input only for OPEN_OPTIONS; unknown bits refuse before mutation.
+    pub open_flags:   u32,
+    pub offset:       i64,
+    pub position:     u64,
+    pub length:       u64,
+    pub name:         *const u8,
+    pub name_length:  usize,
+    /// Immutable borrowed bytes for WRITE. System owns its staging before waits.
+    pub input:        *const u8,
+    pub input_length: usize,
+    pub output:       *mut u8,
+    pub capacity:     usize,
+    pub transferred:  usize,
+    pub volume_info:  VolumeInfo,
+    pub entry:        CatalogInfo
 }
 
 #[cfg(test)]

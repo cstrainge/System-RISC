@@ -14,11 +14,13 @@ use crate::{context::ThreadId,
 
 pub(super) struct Prepared
 {
-    pub admission: LaunchAdmission,
-    pub heap:      application_heap::RootBinding,
-    pub tls:       native_threads::RootBinding,
-    pub loaded:    Option<super::super::files::application::Loaded>,
-    pub ready:     Option<OwnedJob>
+    pub admission:       LaunchAdmission,
+    pub heap:            application_heap::RootBinding,
+    pub tls:             native_threads::RootBinding,
+    pub loaded:          Option<super::super::files::application::Loaded>,
+    pub ready:           Option<OwnedJob>,
+    pub directory:       Option<crate::toolbox::files::local::directory::LaunchDirectory>,
+    pub directory_bound: bool
 }
 impl Drop for Prepared
 {
@@ -27,6 +29,7 @@ impl Drop for Prepared
         // The queued Subject keeps the genuine runtime alive through actual
         // cancellation ACK after this caller abandons result delivery.
         drop(self.ready.take());
+        drop(self.directory.take());
         retire(&mut self.admission);
     }
 }
@@ -316,38 +319,34 @@ fn drive(call: &mut ProcessCall, loaded: Option<super::super::files::application
         }
         else
         {
-            if !crate::machine::traps::can_defer_io()
-            {
-                return refusal(call, WRONG_THREAD);
-            }
-            let mut pending = Some(prepared);
-            let result = InvocationGate::run(|| {
-                let mut flights = FLIGHTS.lock();
-                let slot = flights.iter_mut()
-                                  .find(|slot| slot.thread == turn.thread)
-                                  .ok_or(OPERATION_CANCELLED)?;
-                if slot.cancelled || !accepting(turn.thread)
-                {
-                    return Err(OPERATION_CANCELLED);
-                }
-                slot.prepared = pending.take();
-                slot.prepared
-                    .as_ref()
-                    .and_then(|value| value.ready.as_ref())
-                    .ok_or(BAD_ABI)?
-                    .defer_current()
-            });
-            if let Err(status) = result
+            if let Err(status) = defer_prepared(&mut turn, prepared)
             {
                 return refusal(call, status);
             }
-            turn.active = false;
             return Err(SERVICE_BUSY);
         }
     }
     if cancelled(&turn)
     {
         return Err(OPERATION_CANCELLED);
+    }
+    if !prepared.directory_bound
+    {
+        if prepared.directory.is_none()
+        {
+            let original = prepared.loaded.as_ref().ok_or(BAD_ABI)?.catalog;
+            let directory = crate::toolbox::files::local::directory::LaunchDirectory::prepare(
+                prepared.admission.owner(), prepared.admission.allocation(), original)?;
+            prepared.directory = Some(directory);
+        }
+        let completed = crate::toolbox::files::local::directory::LaunchDirectory::advance(
+            &mut prepared.directory)?;
+        if !completed
+        {
+            defer_prepared(&mut turn, prepared)?;
+            return Err(SERVICE_BUSY);
+        }
+        prepared.directory_bound = true;
     }
     commit(&turn)?;
     super::finish_launch(call, &mut prepared)
@@ -359,4 +358,35 @@ fn refusal(call: &mut ProcessCall, status: Status) -> Result<(), Status>
     call.requirement_version = mac_entropy_interface::VERSION;
     serial!("PROCESS_READY_REFUSED class=ENTR version=1 status={status}");
     Err(status)
+}
+
+fn defer_prepared(turn: &mut Turn, prepared: Prepared) -> Result<(), Status>
+{
+    if !crate::machine::traps::can_defer_io()
+    {
+        return Err(WRONG_THREAD);
+    }
+    let mut pending = Some(prepared);
+    InvocationGate::run(|| {
+        let mut flights = FLIGHTS.lock();
+        let slot = flights.iter_mut()
+                          .find(|slot| slot.thread == turn.thread)
+                          .ok_or(OPERATION_CANCELLED)?;
+        if slot.cancelled || !accepting(turn.thread)
+        {
+            return Err(OPERATION_CANCELLED);
+        }
+        slot.prepared = pending.take();
+        let value = slot.prepared.as_ref().ok_or(BAD_ABI)?;
+        if let Some(job) = value.ready.as_ref()
+        {
+            job.defer_current()
+        }
+        else
+        {
+            value.directory.as_ref().ok_or(BAD_ABI)?.defer_current()
+        }
+    })?;
+    turn.active = false;
+    Ok(())
 }

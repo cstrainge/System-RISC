@@ -48,9 +48,9 @@ pub(crate) struct WindowPreparation
     window:      OwnedWindow,
     capacity:    WindowCapacity,
     owner:       OwnerRef,
-    allocation:  AllocationAuthority,
     intent:      Intent,
-    publication: PreparedPublication<OwnedWindow, InvocationGate>
+    publication: PreparedPublication<OwnedWindow, InvocationGate>,
+    allocation:  AllocationAuthority
 }
 /// A real unpublished slot/credit and its exact bound payload. Capacity refresh
 /// replaces empty WM arrays only, never this permit or the original account.
@@ -60,10 +60,10 @@ pub(crate) struct PreparedWindow
     window:     OwnedWindow,
     capacity:   WindowCapacity,
     owner:      OwnerRef,
-    allocation: AllocationAuthority,
     intent:     Intent,
     admission:  RetiredCapacity<OwnedWindow, InvocationGate>,
-    permit:     PublicationPermit<InvocationGate>
+    permit:     PublicationPermit<InvocationGate>,
+    allocation: AllocationAuthority
 }
 pub(crate) struct WindowCapacityPlan
 {

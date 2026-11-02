@@ -39,7 +39,7 @@ impl Manager
         -> Result<(u64, mac_filesystem_interface::Arguments<'static>), Status>
     {
         let file = self.slot_access(scope.into(), handle)?;
-        let fork_guard = file.fork.lock();
+        let fork_guard = file.description.fork.lock();
         let FileFork::Provider(fork) = &*fork_guard
         else
         {
@@ -50,7 +50,7 @@ impl Manager
             return Err(BAD_ARGUMENT);
         }
         // This mark is private to the source lease, never a public app mark.
-        file.position.store(offset, core::sync::atomic::Ordering::Relaxed);
+        file.description.position.store(offset, core::sync::atomic::Ordering::Relaxed);
         drop(fork_guard);
         self.begin_provider_file_read(scope, handle, length)
     }
@@ -149,7 +149,7 @@ impl Manager
         }
         let (volume, mut fork) = {
             let file = self.slot_access(scope.into(), handle)?;
-            let FileFork::Block(fork) = &*file.fork.lock()
+            let FileFork::Block(fork) = &*file.description.fork.lock()
             else
             {
                 return Err(NOT_SUPPORTED);
@@ -161,7 +161,7 @@ impl Manager
             (file.volume, fork.clone())
         };
         let read = self.with_volume(volume, |volume| io(volume.read(&mut fork, offset, output)))?;
-        *self.slot_access(scope.into(), handle)?.fork.lock() = FileFork::Block(fork);
+        *self.slot_access(scope.into(), handle)?.description.fork.lock() = FileFork::Block(fork);
         Ok(read)
     }
 
@@ -169,7 +169,7 @@ impl Manager
                                      -> Result<(), Status>
     {
         let file = self.slot_access(scope.into(), handle)?;
-        if !matches!(&*file.fork.lock(), FileFork::Block(_))
+        if !matches!(&*file.description.fork.lock(), FileFork::Block(_))
         {
             return Err(NOT_SUPPORTED);
         }

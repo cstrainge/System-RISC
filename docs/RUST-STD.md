@@ -1,6 +1,8 @@
 # Rust standard library bring-up
 
 Status: incremental implementation, tracked as [platform workstream P8](CORE-TOOLBOX-ROADMAP.md#p8--rust-standard-library).
+The bounded [native File Manager foundation](NATIVE-FILE-IO.md) has finite target
+observations; it does not yet implement the std filesystem backend or streams.
 The goal is ordinary `std` for every native userspace application, including
 Finder and all `apps/*`; userspace applications must no longer need `#![no_std]`,
 `#![no_main]`, a handwritten `_start` or a panic-handler macro. Toolbox libraries

@@ -1413,6 +1413,14 @@ pub fn wait_io(job: crate::context::DeferredIo) -> Result<bool, mac_abi::Status>
     service::suspension_allowed(thread.state.get())?;
     let pending = match job
     {
+        crate::context::DeferredIo::FileOperation(handle) =>
+        {
+            crate::toolbox::files::local::pending::io_pending(thread.core
+                                                                    .context
+                                                                    .identity()
+                                                                    .thread,
+                                                              handle)?
+        }
         crate::context::DeferredIo::FileTransfer(handle) =>
         {
             crate::toolbox::files::transfer_io_pending(thread.id, handle)?

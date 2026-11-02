@@ -1134,6 +1134,7 @@ pub(crate) fn discard_thread_jobs(thread: u64)
     let queue = &JOBS;
     queue.discard_owner(super::jobs::Owner::Thread(thread));
     crate::toolbox::files::abandon_provider_thread(thread);
+    crate::toolbox::files::local::pending::abandon(crate::context::ThreadId(thread), None);
     crate::toolbox::entropy::abandon_thread(crate::context::ThreadId(thread));
     crate::toolbox::processes::launch::abandon_thread(crate::context::ThreadId(thread));
 }

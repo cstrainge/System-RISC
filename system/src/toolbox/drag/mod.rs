@@ -2,6 +2,9 @@
 mod manager;
 pub(crate) mod lifetime;
 pub use manager::{Manager, Notice};
+#[cfg(target_arch = "riscv64")]
+pub(crate) use manager::{PreparedReceiver, ReceiverError, ReceiverPlan, ReceiverRetired,
+                         ReceiverTarget};
 pub mod native;
 
 /// Freeze source mount policy with the offered references, not on each motion.

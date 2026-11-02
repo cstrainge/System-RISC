@@ -58,7 +58,8 @@ pub fn bootstrap_thread() -> ThreadId
 pub enum DeferredIo
 {
     DriverJob(u64),
-    FileTransfer(u64)
+    FileTransfer(u64),
+    FileOperation(u64)
 }
 #[cfg(any(target_arch = "riscv64", test))]
 impl DeferredIo
@@ -68,7 +69,7 @@ impl DeferredIo
         match self
         {
             Self::DriverJob(id) => id != 0,
-            Self::FileTransfer(id) => id != 0
+            Self::FileTransfer(id) | Self::FileOperation(id) => id != 0
         }
     }
 }
@@ -117,13 +118,11 @@ impl ThreadTrapState
                     depth }
     }
 
-    pub fn defer(&self, job: DeferredIo) -> Result<(), mac_abi::Status>
+    /// Refuse a non-replayable invocation before admitting a mutation that may
+    /// require a scheduler wait. Actual publication rechecks the wait slot.
+    pub(crate) fn check_defer(&self) -> Result<(), mac_abi::Status>
     {
         use core::sync::atomic::Ordering::Relaxed;
-        if !job.valid()
-        {
-            return Err(mac_abi::BAD_ARGUMENT);
-        }
         #[cfg(target_arch = "riscv64")]
         if !crate::machine::traps::can_defer_io()
         {
@@ -133,6 +132,16 @@ impl ThreadTrapState
         {
             return Err(mac_abi::WRONG_THREAD);
         }
+        Ok(())
+    }
+
+    pub fn defer(&self, job: DeferredIo) -> Result<(), mac_abi::Status>
+    {
+        if !job.valid()
+        {
+            return Err(mac_abi::BAD_ARGUMENT);
+        }
+        self.check_defer()?;
         use mac_object_table::shared::InvocationGate as _;
         crate::toolbox::handles::InvocationGate::run(|| {
             let mut deferred = self.deferred.lock();

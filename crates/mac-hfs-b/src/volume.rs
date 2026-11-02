@@ -222,6 +222,7 @@ pub struct Volume<'a, D: BlockDevice>
     budget:    Budget
 }
 /// A bounded name-ordered scan snapshot. A mutation invalidates it explicitly.
+#[derive(Clone, Copy)]
 pub struct CatalogScanner
 {
     partition: Partition,

@@ -54,6 +54,12 @@ enum Work
         failure:      Option<Status>,
         cancellation: Option<Status>
     },
+    Directory
+    {
+        old:       ResourceBinding,
+        admission: FinderAdmission,
+        binding:   Option<crate::toolbox::files::local::directory::LaunchDirectory>
+    },
     Copy
     {
         old: ResourceBinding, admission: FinderAdmission
@@ -129,7 +135,7 @@ static FLIGHT: Spinlock<Option<Work>> = Spinlock::new(None);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static ORIGIN_OWNER: AtomicU64 = AtomicU64::new(0);
 static ORIGIN_IMAGE: AtomicU64 = AtomicU64::new(0);
-static READY_JOB: AtomicU64 = AtomicU64::new(0);
+static WAIT_JOB: AtomicU64 = AtomicU64::new(0);
 static WAKE: AtomicBool = AtomicBool::new(false);
 static WAITING_FOR_STACK: AtomicBool = AtomicBool::new(false);
 static WAITING_FOR_REPORT: AtomicBool = AtomicBool::new(false);
@@ -337,6 +343,8 @@ fn step(work: Work) -> Option<Work>
                       .. }
         | Work::Ready { admission,
                       .. }
+        | Work::Directory { admission,
+                          .. }
         | Work::Copy { admission,
                      .. }
         | Work::Prepare { admission,
@@ -557,7 +565,7 @@ fn step_inner(work: Work) -> Option<Work>
             {
                 Ok(Some(job)) =>
                 {
-                    READY_JOB.store(job.notification_id(), Ordering::Release);
+                    WAIT_JOB.store(job.notification_id(), Ordering::Release);
                     WAKE.store(true, Ordering::Release);
                     Some(Work::Ready { old,
                                        admission,
@@ -567,8 +575,9 @@ fn step_inner(work: Work) -> Option<Work>
                 }
                 Ok(None) =>
                 {
-                    Some(Work::Copy { old,
-                                      admission })
+                    Some(Work::Directory { old,
+                                           admission,
+                                           binding: None })
                 }
                 Err(SERVICE_BUSY) =>
                 {
@@ -597,7 +606,7 @@ fn step_inner(work: Work) -> Option<Work>
             {
                 Ok(Some(completed)) =>
                 {
-                    READY_JOB.store(0, Ordering::Release);
+                    WAIT_JOB.store(0, Ordering::Release);
                     let status = failure.or_else(|| {
                                      match completed.result
                                      {
@@ -617,8 +626,9 @@ fn step_inner(work: Work) -> Option<Work>
                                 {
                                     None =>
                                     {
-                                        Work::Copy { old,
-                                                     admission }
+                                        Work::Directory { old,
+                                                          admission,
+                                                          binding: None }
                                     }
                                     Some(status) =>
                                     {
@@ -670,6 +680,77 @@ fn step_inner(work: Work) -> Option<Work>
                                job,
                                failure,
                                cancellation })
+        }
+        Work::Directory { old,
+                          admission,
+                          mut binding } =>
+        {
+            let result = (|| {
+                if binding.is_none()
+                {
+                    let directory = crate::toolbox::files::local::directory::LaunchDirectory::prepare(
+                        admission.owner(), admission.allocation(), admission.original_catalog())?;
+                    WAIT_JOB.store(directory.notification_id().unwrap_or(0), Ordering::Release);
+                    binding = Some(directory);
+                }
+                let completed = crate::toolbox::files::local::directory::LaunchDirectory::advance(
+                    &mut binding)?;
+                if !completed && WAIT_JOB.load(Ordering::Acquire) == 0
+                {
+                    return Err(BAD_ABI);
+                }
+                Ok(completed)
+            })();
+            match result
+            {
+                Ok(false) =>
+                {
+                    Some(Work::Directory { old,
+                                           admission,
+                                           binding })
+                }
+                Ok(true) =>
+                {
+                    WAIT_JOB.store(0, Ordering::Release);
+                    let original = admission.original_catalog();
+                    serial!("PROCESS_DIRECTORY_READY app={} volume={} parent={} phase=replacement",
+                            admission.id(),
+                            original.volume,
+                            original.parent);
+                    if let Err(status) = super::pin_launch_executable(admission.owner(),
+                                                                      admission.allocation(),
+                                                                      original)
+                    {
+                        serial!("FINDER_EXECUTABLE_REFUSED app={} volume={} id={} status={status}",
+                                admission.id(),
+                                original.volume,
+                                original.id);
+                        return Some(Work::Failure { target: old,
+                                                    status,
+                                                    permit: admission.permit(),
+                                                    activity: admission.activity() });
+                    }
+                    serial!("PROCESS_EXECUTABLE_READY app={} volume={} id={} phase=replacement",
+                            admission.id(),
+                            original.volume,
+                            original.id);
+                    Some(Work::Copy { old,
+                                      admission })
+                }
+                Err(status) =>
+                {
+                    WAIT_JOB.store(0, Ordering::Release);
+                    let original = admission.original_catalog();
+                    serial!("FINDER_DIRECTORY_REFUSED app={} volume={} parent={} status={status}",
+                            admission.id(),
+                            original.volume,
+                            original.parent);
+                    Some(Work::Failure { target: old,
+                                         status,
+                                         permit: admission.permit(),
+                                         activity: admission.activity() })
+                }
+            }
         }
         Work::Copy { old,
                      admission } =>
@@ -1082,6 +1163,8 @@ pub(crate) fn pump()
                          Some(Work::Terminal { attempted: true,
                                                .. }
                               | Work::Ready { .. }
+                              | Work::Directory { binding: Some(_),
+                                                  .. }
                               | Work::Paused { attempted: true,
                                                .. }
                               | Work::BackingPaused { attempted: true,
@@ -1139,7 +1222,7 @@ pub(crate) fn report_cleanup_progress()
 /// Exact completion notice is only a wake hint; Work retains the unique job.
 pub(crate) fn ready_changed(job: u64)
 {
-    if job != 0 && READY_JOB.load(Ordering::Acquire) == job
+    if job != 0 && WAIT_JOB.load(Ordering::Acquire) == job
     {
         WAKE.store(true, Ordering::Release);
     }

@@ -200,7 +200,8 @@ fn reserve(owner: u64, call: &mut FileTransferCall, sources: &[FileTransferSourc
         for &volume in &volumes
         {
             m.volumes.get(volume).and_then(super::super::super::Mounted::info).ok_or(NOT_FOUND)?;
-            if m.transfers.iter().any(|(_, entry)| entry.uses(volume))
+            if m.operations.iter().any(|(_, entry)| entry.uses(m, volume))
+               || m.transfers.iter().any(|(_, entry)| entry.uses(volume))
                || m.writes.iter().any(|(_, mark)| mark.volume == volume)
                || m.streams.iter().any(|(_, mark)| mark.volume == volume)
                || m.groups.iter().any(|(_, mark)| mark.volume == volume)
