@@ -7,7 +7,7 @@ publish.workspace = true
 [features]
 guest = []
 event-trace = []
-# Debug-only: Command+Option+Control+R toggles the reported screen size.
+# Debug-only: Command+Option+Shift+R toggles the reported screen size.
 display-event-debug = []
 emergency-qualification = []
 emergency-qualification-oom = ["emergency-qualification"]
