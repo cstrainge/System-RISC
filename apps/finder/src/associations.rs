@@ -26,6 +26,13 @@ struct Request<'a>
     rank:       (bool, u32),
     diagnostic: Option<Error>
 }
+/// The failed Open owns its original catalog identity and display snapshot.
+/// Neither discovery turns nor a later selection can change its subject.
+pub struct OpenFailure
+{
+    pub document: CatalogInfo,
+    pub cause:    Error
+}
 pub struct Controller<'a>
 {
     directories:  [Option<Directory<'a>>; 2],
@@ -63,161 +70,175 @@ impl<'a> Controller<'a>
     }
 
     pub fn begin(&mut self, system: &System<'a>, startup: VolumeId, document: CatalogInfo)
-                 -> Result<(), Error>
+                 -> Result<(), OpenFailure>
     {
-        if self.pending()
-        {
-            return Err(Error::ServiceBusy);
-        }
-        let source = DocumentRef { volume: document.volume,
-                                   id:     document.parent };
-        let installed = match system.files().lookup(startup, ROOT_ID, "Applications")
-        {
-            Ok(folder) =>
+        let result = (|| {
+            if self.pending()
             {
-                Some(DocumentRef { volume: startup,
-                                   id:     folder.id })
+                return Err(Error::ServiceBusy);
             }
-            Err(Error::NotFound) => None,
-            Err(error) => return Err(error)
-        };
-        let wanted = [Some(source), installed.filter(|folder| *folder != source)];
-        let mut stale = false;
-        for (slot, wanted) in self.directories.iter_mut().zip(wanted)
-        {
-            if slot.as_ref().map(|directory| directory.file) != wanted
+            let source = DocumentRef { volume: document.volume,
+                                       id:     document.parent };
+            let installed = match system.files().lookup(startup, ROOT_ID, "Applications")
             {
-                *slot = match wanted
+                Ok(folder) =>
                 {
-                    Some(file) =>
+                    Some(DocumentRef { volume: startup,
+                                       id:     folder.id })
+                }
+                Err(Error::NotFound) => None,
+                Err(error) => return Err(error)
+            };
+            let wanted = [Some(source), installed.filter(|folder| *folder != source)];
+            let mut stale = false;
+            for (slot, wanted) in self.directories.iter_mut().zip(wanted)
+            {
+                if slot.as_ref().map(|directory| directory.file) != wanted
+                {
+                    *slot = match wanted
                     {
-                        Some(Directory { file,
-                                         watch: system.files()
-                                                      .watch_directory(file.volume, file.id)?,
-                                         cursor: DirectoryCursor::default(),
-                                         done: false })
-                    }
-                    None => None
-                };
-                stale = true;
+                        Some(file) =>
+                        {
+                            Some(Directory { file,
+                                             watch:
+                                                 system.files()
+                                                       .watch_directory(file.volume, file.id)?,
+                                             cursor: DirectoryCursor::default(),
+                                             done: false })
+                        }
+                        None => None
+                    };
+                    stale = true;
+                }
+                else if let Some(directory) = slot
+                {
+                    stale |= directory.watch.poll()?.is_some();
+                }
             }
-            else if let Some(directory) = slot
+            if stale
             {
-                stale |= directory.watch.poll()?.is_some();
+                self.applications.fill(None);
+                self.count = 0;
+                for directory in self.directories.iter_mut().flatten()
+                {
+                    directory.cursor = DirectoryCursor::default();
+                    directory.done = false;
+                }
             }
-        }
-        if stale
-        {
-            self.applications.fill(None);
-            self.count = 0;
-            for directory in self.directories.iter_mut().flatten()
+            // Live applications may have been launched from any mounted directory.
+            for at in 0..system.processes().count()?
             {
-                directory.cursor = DirectoryCursor::default();
-                directory.done = false;
+                let process = system.processes().at(at)?;
+                if process.cnid.0 <= ROOT_ID.0
+                {
+                    continue;
+                }
+                let entry = system.files().catalog(process.volume, process.cnid)?;
+                self.add(Application { file:    DocumentRef { volume: entry.volume,
+                                                              id:     entry.id },
+                                       creator: entry.creator })?;
             }
-        }
-        // Live applications may have been launched from any mounted directory.
-        for at in 0..system.processes().count()?
-        {
-            let process = system.processes().at(at)?;
-            if process.cnid.0 <= ROOT_ID.0
-            {
-                continue;
-            }
-            let entry = system.files().catalog(process.volume, process.cnid)?;
-            self.add(Application { file:    DocumentRef { volume: entry.volume,
-                                                          id:     entry.id },
-                                   creator: entry.creator })?;
-        }
-        self.request = Some(Request { document,
-                                      probe: 0,
-                                      best: None,
-                                      rank: (true, u32::MAX),
-                                      diagnostic: None });
-        Ok(())
+            self.request = Some(Request { document,
+                                          probe: 0,
+                                          best: None,
+                                          rank: (true, u32::MAX),
+                                          diagnostic: None });
+            Ok(())
+        })();
+        result.map_err(|cause| {
+                  OpenFailure { document,
+                                cause }
+              })
     }
 
-    pub fn advance(&mut self, system: &System<'a>) -> Result<(), Error>
+    pub fn advance(&mut self, system: &System<'a>) -> Result<(), OpenFailure>
     {
         let Some(mut request) = self.request.take()
         else
         {
             return Ok(());
         };
-        if let Some(directory) =
-            self.directories.iter_mut().flatten().find(|directory| !directory.done)
-        {
-            let scan =
-                system.files().scan_directory(directory.file.volume, directory.file.id,
-                                              &mut directory.cursor);
-            let scan = match scan
+        let document = request.document;
+        let result = (|| {
+            if let Some(directory) =
+                self.directories.iter_mut().flatten().find(|directory| !directory.done)
             {
-                Ok(scan) => scan,
-                Err(error) =>
+                let scan = system.files().scan_directory(directory.file.volume, directory.file.id,
+                                                         &mut directory.cursor);
+                let scan = match scan
                 {
-                    self.applications.fill(None);
-                    self.count = 0;
-                    for directory in self.directories.iter_mut().flatten()
+                    Ok(scan) => scan,
+                    Err(error) =>
                     {
-                        directory.cursor = DirectoryCursor::default();
-                        directory.done = false;
-                    }
-                    return Err(error);
-                }
-            };
-            match scan
-            {
-                ScanStep::Entry { catalog,
-                                  .. } if catalog.file_type == TypeCode::new(*b"APPL") && !catalog.is_directory() =>
-                {
-                    self.add(Application { file:    DocumentRef { volume: catalog.volume,
-                                                                  id:     catalog.id },
-                                           creator: catalog.creator })?;
-                }
-                ScanStep::Done => directory.done = true,
-                _ => ()
-            }
-        }
-        else if request.probe < self.count
-        {
-            let application = self.applications[request.probe].ok_or(Error::BadAbi)?;
-            request.probe += 1;
-            // Creator match wins. Otherwise prefer the most specific declared
-            // handler, so a general resource browser does not steal TEXT files.
-            match system.processes().begin_document_open(application.file)
-            {
-                Ok(batch) =>
-                {
-                    match batch.accepts(request.document.file_type)
-                    {
-                        Ok(true) =>
+                        self.applications.fill(None);
+                        self.count = 0;
+                        for directory in self.directories.iter_mut().flatten()
                         {
-                            let rank = (application.creator != request.document.creator,
-                                        batch.supported_type_count());
-                            if rank < request.rank
-                            {
-                                request.rank = rank;
-                                request.best = Some(batch);
-                            }
+                            directory.cursor = DirectoryCursor::default();
+                            directory.done = false;
                         }
-                        Ok(false) => (),
-                        Err(error) => request.diagnostic = Some(error)
+                        return Err(error);
                     }
+                };
+                match scan
+                {
+                    ScanStep::Entry { catalog,
+                                      .. } if catalog.file_type == TypeCode::new(*b"APPL")
+                            && !catalog.is_directory() =>
+                    {
+                        self.add(Application { file:    DocumentRef { volume: catalog.volume,
+                                                                      id:     catalog.id },
+                                               creator: catalog.creator })?;
+                    }
+                    ScanStep::Done => directory.done = true,
+                    _ => ()
                 }
-                Err(Error::NotSupported | Error::NotFound) => (),
-                Err(error) => request.diagnostic = Some(error)
             }
-        }
-        else
-        {
-            let mut batch =
-                request.best.ok_or(request.diagnostic.unwrap_or(Error::NotSupported))?;
-            batch.push(DocumentRef { volume: request.document.volume,
-                                     id:     request.document.id })?;
-            batch.commit()?;
-            return Ok(());
-        }
-        self.request = Some(request);
-        Ok(())
+            else if request.probe < self.count
+            {
+                let application = self.applications[request.probe].ok_or(Error::BadAbi)?;
+                request.probe += 1;
+                // Creator match wins. Otherwise prefer the most specific declared
+                // handler, so a general resource browser does not steal TEXT files.
+                match system.processes().begin_document_open(application.file)
+                {
+                    Ok(batch) =>
+                    {
+                        match batch.accepts(request.document.file_type)
+                        {
+                            Ok(true) =>
+                            {
+                                let rank = (application.creator != request.document.creator,
+                                            batch.supported_type_count());
+                                if rank < request.rank
+                                {
+                                    request.rank = rank;
+                                    request.best = Some(batch);
+                                }
+                            }
+                            Ok(false) => (),
+                            Err(error) => request.diagnostic = Some(error)
+                        }
+                    }
+                    Err(Error::NotSupported | Error::NotFound) => (),
+                    Err(error) => request.diagnostic = Some(error)
+                }
+            }
+            else
+            {
+                let mut batch =
+                    request.best.ok_or(request.diagnostic.unwrap_or(Error::NotSupported))?;
+                batch.push(DocumentRef { volume: request.document.volume,
+                                         id:     request.document.id })?;
+                batch.commit()?;
+                return Ok(());
+            }
+            self.request = Some(request);
+            Ok(())
+        })();
+        result.map_err(|cause| {
+                  OpenFailure { document,
+                                cause }
+              })
     }
 }

@@ -44,6 +44,13 @@ pub(crate) enum Error
     Missing,
     Authority,
     Metadata,
+    CloneInventory(super::modules::CloneInventoryError),
+    CloneFootprint
+    {
+        expected: usize,
+        observed: usize,
+        revision: u64
+    },
     Template
     {
         physical: u64
@@ -96,6 +103,8 @@ impl fmt::Display for Error
                 f.write_str("Process space does not match genuine Process/image/account")
             }
             Self::Metadata => f.write_str("Process page-table metadata admission refused"),
+            Self::CloneInventory(cause) => cause.fmt(f),
+            Self::CloneFootprint { expected, observed, revision } => write!(f, "Process clone exceeded System-owned table inventory at mapping revision {revision}: expected at most {expected} tables, observed {observed}; unpublished clone discarded"),
             Self::DefinitionVisibility { status } =>
             {
                 write!(f,
@@ -540,10 +549,21 @@ fn clone_space(owner: &OwnerRef, allocation: &AllocationAuthority, image: core::
                               count:   0,
                               account: Some(allocation.clone()) };
     let source = spaces.kernel.owner.root_physical();
+    // admit retains the real translation lease across inventory, copying and
+    // publication. No source hierarchy growth can invalidate this bound.
+    let footprint = modules::clone_footprint().map_err(Error::CloneInventory)?;
     let mut definitions = crate::toolbox::resources::definitions::visibility_snapshot()
         .map_err(|cause| Error::DefinitionVisibility { status: cause.status() })?;
     definitions.sort_unstable_by_key(|range| range.base);
     let physical = copy_table(&mut tables, source, 2, 0, &image, owner.owner(), &definitions)?;
+    if tables.count > footprint.tables
+    {
+        // Frames still owns every table and original charge. Refusal drops the
+        // unpublished clone; no root extraction, linking or CPU activation ran.
+        return Err(Error::CloneFootprint { expected: footprint.tables,
+                                           observed: tables.count,
+                                           revision: footprint.revision });
+    }
     let (root, charge) = tables.take_root(physical).map_err(Error::Tables)?;
     let owner=AddressSpace::<Rva, TableBacking>::reserve(owner.owner(),root,AsidTag::Untagged).map_err(|e|Error::Tables(super::Error::Policy(e)))?;
     let register = MODE | (physical.0 as usize >> 12);

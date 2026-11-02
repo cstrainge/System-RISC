@@ -52,6 +52,27 @@ fn try_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>, result: R
     }
 }
 
+fn try_document_open<'a>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
+                         result: Result<(), associations::OpenFailure>)
+                         -> Result<bool, Error>
+{
+    use core::fmt::Write;
+    match result
+    {
+        Ok(()) => Ok(true),
+        Err(failure) =>
+        {
+            if let Err(error) = alerts.document_open_error(system, failure)
+            {
+                let mut message = browser::Text::<80>::default();
+                let _ = writeln!(&mut message, "FINDER_ALERT_FAILED status={}", error.status());
+                system.log(message.as_str())?;
+            }
+            Ok(false)
+        }
+    }
+}
+
 fn about(system: &System<'_>, id: WindowId) -> Result<(), Error>
 {
     system.begin_update(id)?;
@@ -144,13 +165,20 @@ fn finder(system: &System<'_>) -> Result<(), Error>
     {
         if alerts.window() == WindowId(0)
         {
-            if let Some(document) = browser.take_document_open()
+            let accepted = if let Some(document) = browser.take_document_open()
             {
-                let _ = try_action(system,
-                                   &mut alerts,
-                                   associations.begin(system, browser.startup, document))?;
+                try_document_open(system,
+                                  &mut alerts,
+                                  associations.begin(system, browser.startup, document))?
             }
-            let _ = try_action(system, &mut alerts, associations.advance(system))?;
+            else
+            {
+                true
+            };
+            if accepted && alerts.window() == WindowId(0)
+            {
+                let _ = try_document_open(system, &mut alerts, associations.advance(system))?;
+            }
         }
         let completed = match dragging.advance(system, &mut browser)
         {

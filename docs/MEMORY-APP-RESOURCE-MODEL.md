@@ -3909,3 +3909,52 @@ SPCE/Node/publication stock and fresh replacement-image backing still gate Finde
 restart under exhaustion. Existing module-binding unload and author/port callback
 work retain their limits; installed apps remain no_std pending the separate file/
 stream/runtime adoption gates.
+
+
+## Committed clone inventory and original Open failure context
+
+The permanent kernel hierarchy now maintains its actual committed table count:
+bootstrap Frames, including the extracted root, plus branches committed for that
+root. Checked inventory arithmetic shares the existing mapping lock and revision
+transaction and precedes PTE publication. Empty kernel branches remain owned;
+private-root retirement does not subtract them. Process cloning takes the
+inventory under its genuine translation lease and refuses an unpublished clone
+that exceeds the bound, retaining ordinary RAII refund of every table and charge.
+This is an active invariant, not a quota, reserved stock or recovery guarantee.
+
+Finder association failures now own the original catalog snapshot and typed
+cause. Both discovery and synchronous DocumentOpen commit report an explicit
+Open operation and the retained filename rather than guessing from the latest
+update event or selection. Human error text remains in the alert; typed/numeric
+identity remains in diagnostics. No request identity or kernel authority is
+reconstructed from the presentation snapshot, and IO_ERROR alone does not
+justify inventing a timeout diagnosis.
+
+A frozen optimized release/LTO four-CPU, 8 GiB, 800x600 private QEMU image used
+System ELF `2488908ad3c1cfcbcd8ad2153d930f8abd6aaea9d19d040df1d9e40510b7ca7d`,
+System resource `bf20701a28aec0c4d289ad01cb5c9e570bc295c48b45c8cd4035dde9e0c8cb33`,
+Finder ELF `e83308e02f08eb0713602b408d2fdb1572d04f0c75f839033d7f58412252b8b8`,
+and ROM `cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+All packages rebuilt together with actual System content-fingerprint records;
+event/TextEdit tracing was disabled. Two applications acquired distinct private
+roots, with own images and shared modules while omitting each other's low image.
+All four app/worker bodies were sampled migrating with the same stacks and
+running concurrently, followed by native register/service/cancellation checks,
+actual worker/process/account closure and input. The 116 paused read-only samples
+cost approximately40–146 ms of host time each and perturb execution; no latency,
+race-absence or U-mode qualification follows.
+
+A labelled device-FAILED injection and a separate genuinely withheld-source
+deadline exercised document launch refusal, actual reset, unstarted-account
+closure, alert dismissal, fresh retry, Text Edit document/quit/account closure
+and input. Direct visual review of both retained alert frames found the original
+Open item and filename, required ENTR version and readable input/output cause,
+without Rust Debug text. The timeout run used no debugger or guest-state writes.
+Sources/base stayed fixed per run; owned guests were reaped and cloned media
+removed. Earlier defective frames remain historical evidence, not rewritten.
+
+These finite observations do not qualify multi-selection refusal, renaming or
+moving a pending subject, competing modal/allocation failures, complete error UX,
+uncertain translation acknowledgments, pressure or general SMP correctness.
+Protected table/Node stock, fresh replacement image backing and full low-memory
+Finder restart remain separate work. No host Rust suite supplied OS acceptance.
