@@ -467,6 +467,32 @@ impl Manifest
         self.binary_name.as_deref().unwrap_or(&self.name)
     }
 
+    pub(crate) fn require_runtime(&mut self, runtime: &[Requirement]) -> Result<()>
+    {
+        // read() has already refused duplicates in the author manifest. Reuse
+        // an identical runtime dependency but never accept another version.
+        for requirement in runtime
+        {
+            let class = text::decode(&requirement.class.0);
+            if let Some(existing) = self.required_services.iter().find(|item| item.class == class)
+            {
+                if existing.version != requirement.version
+                {
+                    return Err(error(format!("runtime requires {class} version {}, but the \
+                                              manifest requires version {}",
+                                             requirement.version, existing.version)));
+                }
+            }
+            else
+            {
+                self.required_services.push(RequiredService { class,
+                                                              version: requirement.version });
+            }
+        }
+        self.service_requirements()?;
+        Ok(())
+    }
+
     fn service_requirements(&self) -> Result<Vec<u8>>
     {
         if self.required_services.is_empty()

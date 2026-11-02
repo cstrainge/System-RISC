@@ -91,7 +91,18 @@ pub fn inspect(bytes: &[u8]) -> Result<Value>
 
 pub fn build(manifest_path: &Path, elf_path: &Path, out: &Path) -> Result<Value>
 {
-    let manifest = Manifest::read(manifest_path)?;
+    build_requiring(manifest_path, elf_path, out, &[])
+}
+
+/// Package an image with the non-optional provider requirements of its selected
+/// runtime. Explicit manifest requirements remain subject to the same decoder;
+/// an incompatible version is a build failure, never an override or fallback.
+pub fn build_requiring(manifest_path: &Path, elf_path: &Path, out: &Path,
+                       runtime: &[requirements::Requirement])
+                       -> Result<Value>
+{
+    let mut manifest = Manifest::read(manifest_path)?;
+    manifest.require_runtime(runtime)?;
     if manifest.archive
     {
         return Err(error("use rebuild for a lossless archive"));

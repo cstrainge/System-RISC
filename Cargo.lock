@@ -1459,6 +1459,7 @@ dependencies = [
  "hfs-b",
  "mac-abi",
  "mac-build",
+ "mac-entropy-interface",
  "mac-file-types",
  "mac-formats",
  "mac-hfs-b",
