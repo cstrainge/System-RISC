@@ -41,10 +41,11 @@ impl TryFrom<WindowRequest> for WindowInfo
 
 pub struct WindowSpec<'a>
 {
-    bounds:    Rect,
-    title:     &'a str,
-    minimum:   (i16, i16),
-    procedure: i16
+    bounds:       Rect,
+    title:        &'a str,
+    minimum:      (i16, i16),
+    procedure:    i16,
+    stay_in_back: bool
 }
 impl<'a> WindowSpec<'a>
 {
@@ -53,7 +54,15 @@ impl<'a> WindowSpec<'a>
         Self { bounds,
                title,
                minimum: (1, 1),
-               procedure: 0 }
+               procedure: 0,
+               stay_in_back: false }
+    }
+
+    /// Keep the window behind every ordinary window: activation never reorders it.
+    pub fn stay_in_back(mut self) -> Self
+    {
+        self.stay_in_back = true;
+        self
     }
 
     pub fn minimum(mut self, width: i16, height: i16) -> Self
@@ -94,6 +103,7 @@ impl<'a> Windows<'a>
         request.minimum_width = spec.minimum.0;
         request.minimum_height = spec.minimum.1;
         request.procedure = spec.procedure;
+        request.reserved = if spec.stay_in_back { WINDOW_STAY_IN_BACK } else { 0 };
         Ok(WindowId(self.client.window(NEW_WINDOW, request)?.id))
     }
 
