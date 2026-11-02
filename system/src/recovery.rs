@@ -153,6 +153,36 @@ impl Activity
         Arc::ptr_eq(&self.session, &other.session)
     }
 
+    /// Admission for the same genuine Opening before Standard File birth.
+    /// Retained origin metadata or a matching recipient ID cannot substitute
+    /// for the active Session, live owners and its still-empty protocol slot.
+    pub(crate) fn validate_standard_file_begin(&self, recipient: &OwnerRef, storage: &OwnerRef)
+                                               -> Result<(), Status>
+    {
+        InvocationGate::run(|| {
+            let modal = MODAL.lock();
+            if !modal.session.as_ref().is_some_and(|session| Arc::ptr_eq(session, &self.session))
+               || self.session.kind != Kind::StandardFile
+               || self.session.recipient.lock().owner() != recipient.owner()
+               || self.owner() != recipient.owner().incarnation()
+               || self.session.storage_owner.owner() != storage.owner()
+               || recipient.owner().kind() != mac_object_table::domain::DomainKind::Process
+               || storage.owner().kind() != mac_object_table::domain::DomainKind::System
+            {
+                return Err(ACCESS_DENIED);
+            }
+            if CLOSING.load(Ordering::Acquire)
+               || !recipient.accepting()
+               || !storage.accepting()
+               || self.session.object.load(Ordering::Acquire) != 0
+               || self.session.windows.lock().iter().any(|(id, closed)| *id != 0 && !*closed)
+            {
+                return Err(SERVICE_BUSY);
+            }
+            Ok(())
+        })
+    }
+
     pub(crate) fn window_created(&self, id: mac_abi::WindowId) -> Result<(), Status>
     {
         InvocationGate::run(|| {
@@ -573,11 +603,6 @@ pub(crate) fn owner_stopped(owner: &OwnerRef)
     });
 }
 
-pub(crate) fn standard_file_subject(owner: u64) -> Result<Subject, Status>
-{
-    Ok(for_input(owner).ok_or(NOT_FOUND)?.subject())
-}
-
 pub(crate) fn claim_report(recipient: OwnerRef) -> Result<Activity, Status>
 {
     if !recipient.accepting()
@@ -709,12 +734,27 @@ pub(crate) fn standard_file_request(call: &mut mac_abi::standard_file::StandardF
         if call.operation == BEGIN
         {
             let opening = begin(owner, Kind::StandardFile)?;
+            let mut prepared = opening.activity().run(|| {
+                crate::toolbox::standard_file::PreparedDialog::prepare(opening.activity(), call)
+            })?.map_err(|cause| {
+                serial!("STANDARD_FILE_REFUSED: {cause}");
+                cause.status()
+            })?;
             let result = opening.activity().run(|| {
                                                 crate::kernel::with_desktop(|desktop| {
-                                                    desktop.standard_file_request(call)
-                                                }).map_err(|error| error.status())?
+                                           desktop.begin_standard_file(call, &mut prepared)
+                                       }).map_err(|error| {
+                                             crate::toolbox::standard_file::BeginError::service(
+                                                        "Desktop admission", error.status())
+                                         })?
                                             })?;
-            result?;
+            // Unpublished payload and admission pins are disposed after
+            // Desktop release. Published children keep their original cleanup.
+            drop(prepared);
+            result.map_err(|cause| {
+                      serial!("STANDARD_FILE_REFUSED: {cause}");
+                      cause.status()
+                  })?;
             opening.activity().session.object.store(call.handle, Ordering::Release);
             opening.commit();
             Ok(())

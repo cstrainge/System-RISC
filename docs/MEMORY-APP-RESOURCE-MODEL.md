@@ -4540,3 +4540,48 @@ refusal order; it was revised before publication and its original static receipt
 was retained separately. Native consumers, prebirth refusal disposal timing and
 exhaustion/stop/rearm behavior require connected target evidence. Earlier native
 report observations belong to their recorded artifacts, not this new method.
+
+### Detached Standard File dialog preparation
+
+Standard File BEGIN now constructs its actual Dialog, filename Editor, bounded
+icon/ancestor arrays and original font/input metrics before Desktop entry. The
+same genuine Opening and Activity retain System resources, scoped System
+operation accounting and protected backing. Selecting I/O Subject also selects
+its admitted allocation scope; an application label or an unscoped allocator
+override does not substitute for that authority.
+
+Final admission revalidates the live Session, exact recipient/storage owners,
+original Subject and intent, closing state and current protocol vacancy. The
+owned reserved publisher installs the same payload in the existing System SFDG
+endpoint. Every prebirth refusal restores that value to its outside-owned
+envelope. Initialization still uses the original actual Window/control/render
+transaction and rollback; legacy strings continue through the same native
+service. No public SDK, wire ABI, reserved count or alternate implementation is
+added. This moves specific allocation work outside Desktop, not all dialog
+painting/allocation or a complete pinned exhaustion kit.
+
+An unchanged-source release/LTO no_std RVA23 image used System ELF
+`721092e3aa043f8ed4681f2a863435daa127f47290f5c8592433cb3cd2a656ed`
+and resource
+`a65ba6db7fb98dc393094a2f2438e04356b4b5062d4a7c2f93f374ff7276ec60`;
+ROM was `cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+Two private QEMU4/800x600 guests requested and discovered exactly 2 GiB with
+tracing off. Text Edit saved physically typed `hi`, persisted Geneva18 options,
+opened/saved preference documents and closed actual accounts. Res Edit exercised
+Open, Save, Save As cancellation, replacement and New Folder; a duplicate-name
+refusal visibly said “An item with this name already exists.” Acknowledgment and
+Cancel left the application usable; both actual saved JSON exports matched.
+Following QuickDraw page input and both Process/account closures were observed.
+Each source/base stayed fixed; owned guests exited zero and were reaped, with
+all private raw/cloned media removed.
+
+First-run failures remain retained. One collector used stale preference-icon
+coordinates; its two host clicks were corrected using captured labeled icons.
+An early replacement confirmation arrived before the actual auxiliary window;
+the repeated host flow waited visible managed-button readiness and real window
+birth. A separate broad collector failed launching Res Edit after an application
+switch before any file dialog; its cause remains unresolved and is not covered
+by the focused run. These paced, observed UI workflows establish no latency,
+race absence, general switching behavior, prebirth allocation/publication refusal,
+stopped-recipient/ACK overlap, exhaustive error coverage or full Save/Save As
+exhaustion. No host Rust suite supplied OS acceptance.
