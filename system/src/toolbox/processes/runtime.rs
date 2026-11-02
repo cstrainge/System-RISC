@@ -713,6 +713,15 @@ impl Toolbox
     pub(crate) fn display_changed(&mut self, bounds: mac_abi::geometry::Rect)
     {
         self.screen = bounds;
+        let when = Self::when();
+        let events = &mut self.events;
+        self.windows
+            .fit_to_screen(bounds, mac_abi::menus::MENU_BAR_HEIGHT as i16, |id| {
+                events.post_system(Event { kind: EventKind::OsEvent,
+                                           message: mac_abi::events::WINDOW_GEOMETRY_CHANGED,
+                                           window: id.0,
+                                           ..events.null_event(when) });
+            });
         self.presentation.redraw = true;
         let event = Event { kind: EventKind::OsEvent,
                             message: mac_abi::events::DISPLAY_CHANGED,
