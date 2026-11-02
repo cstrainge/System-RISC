@@ -4982,3 +4982,69 @@ transfer-wake behavior under every modal, race absence, performance or SMP.
 Production Finder OOM restart, full preallocated recovery kits and std/combined
 control-suite integration remain separate work. No host Rust suite supplied
 OS acceptance; the diagnostic additions use the existing real no_std actor.
+
+### Boot-stocked Core alert payloads
+
+Boot now prepares one mutable payload for each of the three existing Core alert
+templates. Actual resource item counts determine the item/control vectors; each
+item string reserves the existing 768-byte substitution bound. Their Alert Arcs
+and buffers originate in the existing protected permit with explicit System
+Ordinary attribution. Moving or resetting them preserves their original
+allocation receipts. Immutable templates and icons retain their previous paths.
+Ordinary application alerts and validation keep their existing factories.
+
+A protected Core opening checks complete substituted lengths, vector shape,
+capacity and actual Alert uniqueness before resetting the same payload. Its
+affine lease retains the genuine originating modal Activity. Semantic state
+destruction parks only inert buffers inside that exact original Session; parked
+stock contains no Activity, Subject, owner reference, public object ID or Session
+Arc/Weak. Actual children, release tickets and completion acknowledgment pins
+retain their independent cleanup obligations.
+
+The existing closing reaper returns stock only after its original Session is
+unique, its Subject exclusive and publication endpoints idle. Alert uniqueness
+and the original template's empty stock slot are checked before moving the
+return. Refusal preserves the same pending payload in the same closing Session
+for retry. Neither a successful close call nor disappearance of a public ID
+authorizes reuse. This does not add a mutable extraction API to the object store,
+change an ID issuer, or substitute for the real completion protocol.
+
+The exact three-file production patch compiled with optimized no_std RV64 System
+and Finder; a fixed-source release/LTO full image build also completed. Native
+observations used System ELF
+`23347dd9d42e889ed9d78980c2b394cc107ca344b81e19ba8603630788a84bca`
+and resource
+`5ad35cf6ec2aae39970b42a3ea1c24e4d3fb6960a07322c4efa0e84f13e4cb0d`,
+with Finder ELF/resource unchanged from the preceding subsection.
+
+A private QEMU4/800x600 guest requesting and discovering exactly 2 GiB ran the
+installed Text Edit: Save Changes Cancel, Save and Do not Save; exact saved bytes
+ab; malformed UTF-8 Core Error acknowledgment; subsequent document input; and
+three actual process/account closures. Reviewed error and Save Changes frames,
+and four exact dialog-crop comparisons with the preceding image, retained the
+observed pixels. These comparisons cover those captures, not all geometry or
+original Macintosh fidelity.
+
+The existing native pressure packages were rebuilt for that same System. A
+separate one-hart, exactly 2 GiB guest observed ordinary MemoryFull with retained
+16 W bytes and caller account headroom, healthy/pressured managed sessions and
+competing Busy refusals, exact 1 MiB report capture/read/show, all 44 payload
+releases and all 44 actual worker reclamations. The visible Core OOM remained
+until genuine acknowledgment. Reviewed subsequent frames showed restored menus
+and the same Applications folder with its item; selection and Get Info open/close
+then completed. The finisher's checksum samples each chunk's first byte. Host
+UI review occurred after the original stress/reclamation assertions, not after
+each allocation. Sources/base stayed fixed, both owned guests exited zero and
+were reaped, and their private raw/cloned media was removed without cleanup
+errors. The host's older dialog-pixel reference was explicitly distinguished
+from the new System artifact and supplied no inherited kernel acceptance.
+
+These finite observations exercise real payload reuse, dialogs and account
+cleanup; they do not count allocation events or prove zero new allocations.
+Forced original/child ACK refusal, retained Alert readers, publication failure,
+caller stop/cancellation and complete rollback combinations remain unqualified.
+Managed control title/payload storage, retained drawing, Standard File editor/
+list/raster storage, report formatting and final non-application mapping cleanup
+still have separate stock requirements. The full emergency kit, production
+Finder OOM restart, combined std/control-suite integration, performance and SMP
+are not established by this slice. No host Rust suite supplied acceptance.

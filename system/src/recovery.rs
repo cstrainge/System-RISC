@@ -57,7 +57,88 @@ struct Session
     publication:    crate::drivers::jobs::RecoveryEndpoints,
     object:         AtomicU64,
     windows:        Spinlock<[(u64, bool); 2]>,
+    core_payload:   Spinlock<CorePayloadState>,
     cleanup_status: AtomicI32
+}
+
+enum CorePayloadState
+{
+    Idle,
+    Borrowed,
+    Pending(crate::toolbox::dialogs::core_alerts::PendingReturn)
+}
+
+/// Affine return route to the exact Opening which checked out Core stock.
+/// The Activity lives only in the Prepared/live state, never in parked stock.
+#[must_use = "retain the Core payload lease until its semantic state returns the same buffers"]
+pub(crate) struct CorePayloadLease
+{
+    activity: Activity,
+    template: usize
+}
+impl CorePayloadLease
+{
+    pub(crate) fn matches_activity(&self, activity: &Activity) -> bool
+    {
+        self.activity.same_session(activity)
+    }
+
+    pub(crate) fn template(&self) -> usize
+    {
+        self.template
+    }
+
+    pub(crate) fn park(self, pending: crate::toolbox::dialogs::core_alerts::PendingReturn)
+    {
+        // Only this non-Clone lease can fill the Borrowed slot. It holds the
+        // original Activity until after parking, excluding a later Session use.
+        // PendingReturn has no Activity/Subject/owner pin, so there is no cycle.
+        InvocationGate::run(|| {
+            *self.activity.session.core_payload.lock() = CorePayloadState::Pending(pending);
+        });
+    }
+}
+
+/// Minted only after the exact old Session's original ACK and child drain.
+/// It can take only that Session's OWN pending return, never a supplied payload.
+#[must_use = "consume the original Session's quiescence proof before making it ready"]
+pub(crate) struct CorePayloadQuiescence<'a>
+{
+    session: &'a mut Session
+}
+impl CorePayloadQuiescence<'_>
+{
+    pub(crate) fn template(&mut self) -> Result<Option<usize>, Status>
+    {
+        match self.session.core_payload.get_mut()
+        {
+            CorePayloadState::Idle => Ok(None),
+            CorePayloadState::Pending(pending) => Ok(Some(pending.template())),
+            CorePayloadState::Borrowed => Err(mac_abi::BAD_ABI)
+        }
+    }
+
+    pub(crate) fn take(
+        self)
+        -> Result<Option<crate::toolbox::dialogs::core_alerts::PendingReturn>, Status>
+    {
+        let slot = self.session.core_payload.get_mut();
+        match slot
+        {
+            CorePayloadState::Idle => return Ok(None),
+            CorePayloadState::Borrowed => return Err(mac_abi::BAD_ABI),
+            CorePayloadState::Pending(pending) => pending.unique()?
+        }
+        match core::mem::replace(slot, CorePayloadState::Idle)
+        {
+            CorePayloadState::Pending(pending) => Ok(Some(pending)),
+            other =>
+            {
+                *slot = other;
+                Err(mac_abi::BAD_ABI)
+            }
+        }
+    }
 }
 
 /// A real use of the current modal service. Child payloads retain this guard
@@ -166,6 +247,21 @@ impl Activity
                                            -> Result<(), Status>
     {
         self.validate_modal_opening(Kind::CoreAlert, recipient, storage)
+    }
+
+    pub(crate) fn lease_core_payload(&self, template: usize) -> Result<CorePayloadLease, Status>
+    {
+        self.validate_core_alert_open(&self.recipient(), &self.storage_owner())?;
+        InvocationGate::run(|| {
+            let mut slot = self.session.core_payload.lock();
+            if !matches!(*slot, CorePayloadState::Idle)
+            {
+                return Err(SERVICE_BUSY);
+            }
+            *slot = CorePayloadState::Borrowed;
+            Ok(CorePayloadLease { activity: self.clone(),
+                                  template })
+        })
     }
 
     fn validate_modal_opening(&self, kind: Kind, recipient: &OwnerRef, storage: &OwnerRef)
@@ -457,6 +553,7 @@ pub(crate) fn prepare_modal() -> Result<(), Status>
                                    publication,
                                    object: AtomicU64::new(0),
                                    windows: Spinlock::new([(0, true); 2]),
+                                   core_payload: Spinlock::new(CorePayloadState::Idle),
                                    cleanup_status: AtomicI32::new(mac_abi::OK) }).map_err(|_| {
                                                                                      NO_MEMORY
                                                                                  })
@@ -569,11 +666,50 @@ pub(crate) fn reap()
     });
     if let Some(mut session) = removed
     {
-        if let Some(unique) = Arc::get_mut(&mut session)
+        let returned = if let Some(unique) = Arc::get_mut(&mut session)
         {
-            let owner = unique.storage_owner.clone();
-            let old = core::mem::replace(unique.recipient.get_mut(), owner);
-            drop(old);
+            let returned = if unique.kind == Kind::CoreAlert
+            {
+                crate::toolbox::dialogs::core_alerts::return_quiesced(CorePayloadQuiescence {
+                    session: unique
+                })
+            }
+            else if matches!(unique.core_payload.get_mut(), CorePayloadState::Idle)
+            {
+                Ok(())
+            }
+            else
+            {
+                Err(mac_abi::BAD_ABI)
+            };
+            if returned.is_ok()
+            {
+                let owner = unique.storage_owner.clone();
+                let old = core::mem::replace(unique.recipient.get_mut(), owner);
+                drop(old);
+            }
+            returned
+        }
+        else
+        {
+            Err(SERVICE_BUSY)
+        };
+        if let Err(status) = returned
+        {
+            let previous = session.cleanup_status.swap(status, Ordering::AcqRel);
+            InvocationGate::run(|| {
+                let mut modal = MODAL.lock();
+                // Keep the SAME pending payload and closing Session on refusal.
+                modal.session = Some(session);
+                modal.opening = false;
+                REAP_REQUESTED.store(true, Ordering::Release);
+            });
+            if previous != status
+            {
+                serial!("CORE_PAYLOAD_RETURN_REFUSED status={status}; original closing Session \
+                         retained");
+            }
+            return;
         }
         InvocationGate::run(|| {
             let mut modal = MODAL.lock();
