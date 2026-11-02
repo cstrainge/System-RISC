@@ -1,4 +1,4 @@
-//! Detached native thread admission shared by Process mains and children.
+//! Detached native thread admission shared by actual Process, Module and System publishers.
 //! Capacity and canonical publication preparation are allocated outside SCHEDULER;
 //! obsolete backing is likewise returned before disposal.
 use core::fmt;
@@ -66,14 +66,14 @@ impl From<PoolError> for Error
         Self::Pool(cause)
     }
 }
-struct Buffers
+pub(super) struct Buffers
 {
     threads: Vec<Option<CompletionKey>>,
     waiters: Vec<EventWaiter>
 }
 impl Buffers
 {
-    fn prepare() -> Result<Self, Error>
+    pub(super) fn prepare() -> Result<Self, Error>
     {
         let (thread_capacity, waiter_capacity) = super::super::interrupts::with_masked(|| {
             let scheduler = SCHEDULER.lock();
@@ -103,7 +103,7 @@ impl Buffers
         })
     }
 
-    fn install(&mut self, scheduler: &mut Scheduler) -> Result<usize, Error>
+    pub(super) fn install(&mut self, scheduler: &mut Scheduler) -> Result<usize, Error>
     {
         let slot =
             scheduler.threads.iter().position(Option::is_none).unwrap_or(scheduler.threads.len());
@@ -129,7 +129,7 @@ impl Buffers
         Ok(slot)
     }
 }
-fn thread_permit(owner: &OwnerRef) -> Result<PublicationPermit<InvocationGate>, Error>
+pub(super) fn thread_permit(owner: &OwnerRef) -> Result<PublicationPermit<InvocationGate>, Error>
 {
     loop
     {

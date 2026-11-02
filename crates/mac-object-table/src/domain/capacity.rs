@@ -4,7 +4,18 @@
 use alloc::vec::Vec;
 use core::{alloc::Layout, fmt, marker::PhantomData};
 
-use super::{Directory, DomainEntry, InvocationGate};
+use super::{Directory, DirectoryError, DomainEntry, DomainId, InvocationGate};
+use crate::shared::OwnerRef;
+
+/// A refused publication returns its authentic owner and payload untouched.
+/// Dispose or retry them after leaving the directory's manager guard.
+#[must_use = "retain or dispose the original owner and payload outside manager guards"]
+pub struct DirectoryInsertFailure<T, G: InvocationGate>
+{
+    pub cause:  DirectoryError,
+    pub ledger: OwnerRef<G>,
+    pub value:  T
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DirectoryCapacityError
@@ -82,6 +93,34 @@ impl<T, G: InvocationGate> DirectoryCapacityPlan<T, G>
 }
 impl<T, G: InvocationGate> Directory<T, G>
 {
+    /// Publish into already admitted storage. This never allocates or destroys
+    /// the rejected entry. Capacity is checked again in the publication turn.
+    pub fn insert_prepared(&mut self, ledger: OwnerRef<G>, value: T)
+                           -> Result<DomainId, DirectoryInsertFailure<T, G>>
+    {
+        let owner = ledger.owner();
+        let at =
+            match self.entries.binary_search_by_key(&owner.incarnation(), |entry| {
+                                  entry.owner().incarnation()
+                              })
+            {
+                Ok(_) =>
+                {
+                    return Err(DirectoryInsertFailure { cause: DirectoryError::Duplicate { owner },
+                                                        ledger,
+                                                        value });
+                }
+                Err(at) => at
+            };
+        if self.entries.len() == self.entries.capacity()
+        {
+            return Err(DirectoryInsertFailure { cause: DirectoryError::Storage { owner },
+                                                ledger,
+                                                value });
+        }
+        Ok(self.insert_at(at, ledger, value))
+    }
+
     /// Observe space for one later birth without allocating under the manager.
     pub fn plan_insert_capacity(&self)
                                 -> Result<DirectoryCapacityPlan<T, G>, DirectoryCapacityError>

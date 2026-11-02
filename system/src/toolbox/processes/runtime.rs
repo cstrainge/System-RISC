@@ -8,7 +8,7 @@ use mac_abi::{processes::*, *};
 use crate::toolbox::{events::EventManager,
                      handles::{DirectoryCapacityError, DirectoryCapacityPlan, OwnerRef,
                                PreparedDirectoryCapacity},
-                     processes::{Process, ResourceBinding,
+                     processes::{PreparedProcess, Process, ResourceBinding,
                                  menu::{Action, Entry},
                                  termination::{Outcome, Retention}},
                      resources::definitions::DefinitionRef,
@@ -32,7 +32,8 @@ pub(super) struct Saved
 pub(crate) struct FinderCapacityPlan
 {
     processes: DirectoryCapacityPlan<Process>,
-    locals:    usize
+    locals:    usize,
+    mdef:      DefinitionRef
 }
 #[must_use = "dispose detached and obsolete Finder directory buffers outside Desktop"]
 pub(crate) struct FinderCapacity
@@ -104,8 +105,39 @@ impl core::fmt::Display for FinderCapacityError
         }
     }
 }
+/// Detached, authentic recipient backing. Empty manager Stores issue no object
+/// IDs. Keep those managers before the canonical account so their receipts
+/// disappear before its root closes on an unpublished refusal.
+pub(crate) struct FinderPreparation
+{
+    local:      Saved,
+    allocation: crate::machine::scheduler::accounting::AllocationAuthority,
+    owner:      OwnerRef,
+    process:    PreparedProcess
+}
+impl FinderPreparation
+{
+    /// A refused publication can retain a report snapshot. Release it outside
+    /// Desktop before the next attempt captures the current report checkpoint.
+    pub(crate) fn release_report(&mut self)
+    {
+        drop(core::mem::take(&mut self.local.crash));
+    }
+}
 impl FinderCapacityPlan
 {
+    pub(crate) fn prepare_recipient(&self) -> Result<FinderPreparation, Status>
+    {
+        let process = PreparedProcess::prepare("Finder", 0, 0)?;
+        let owner = process.owner().clone();
+        let allocation = process.allocation()?;
+        let local = Saved::try_new(owner.clone(), self.mdef, allocation.clone())?;
+        Ok(FinderPreparation { local,
+                               allocation,
+                               owner,
+                               process })
+    }
+
     pub(crate) fn prepare(self) -> Result<FinderCapacity, FinderCapacityError>
     {
         use mac_object_table::shared::InvocationGate as _;
@@ -290,6 +322,7 @@ impl Desktop
         Ok(FinderCapacityPlan { processes: self.processes
                                                .plan_provision_capacity()
                                                .map_err(FinderCapacityError::Directory)?,
+                                mdef: self.mdef,
                                 locals:    if self.locals.capacity() < required
                                 {
                                     required
@@ -301,16 +334,18 @@ impl Desktop
     }
 
     pub(crate) fn reserve_finder(&mut self, old: u64, permit: crate::allocator::recovery::Permit,
-                                 capacity: &mut FinderCapacity)
+                                 capacity: &mut FinderCapacity,
+                                 prepared: &mut Option<FinderPreparation>)
                                  -> Result<FinderAdmission, Status>
     {
         crate::context::with_recovery_allocation(permit.clone(), || {
-            self.reserve_finder_inner(old, permit, capacity)
+            self.reserve_finder_inner(old, permit, capacity, prepared)
         })
     }
 
     fn reserve_finder_inner(&mut self, old: u64, permit: crate::allocator::recovery::Permit,
-                            capacity: &mut FinderCapacity)
+                            capacity: &mut FinderCapacity,
+                            prepared: &mut Option<FinderPreparation>)
                             -> Result<FinderAdmission, Status>
     {
         let activity = crate::context::recovery_activity().ok_or(NOT_SUPPORTED)?;
@@ -342,27 +377,43 @@ impl Desktop
             capacity.locals.extend(self.locals.drain(..));
             core::mem::swap(&mut self.locals, &mut capacity.locals);
         }
-        self.enter(old);
-        let id = self.processes.provision("Finder", 0, 0)?;
-        let prepared = (|| {
-            let owner = self.processes.ledger(id)?;
-            let allocation = self.processes.allocation(id)?;
-            let snapshot = crate::allocator::with_target(crate::allocator::Target::Owner {
-                account: allocation.clone(), class: mac_kernel_model::policy::MemoryClass::Kernel
-            }, || self.crash.snapshot())?;
-            let mut local = Saved::try_new(owner.clone(), self.mdef, allocation.clone())?;
-            local.crash = crate::toolbox::crashes::Manager::from_snapshot(snapshot);
-            Ok::<_, Status>((local, owner, allocation))
-        })();
-        let (local, owner, allocation) = match prepared
+        let recipient = prepared.as_mut().ok_or(BAD_ARGUMENT)?;
+        if !recipient.owner.accepting()
         {
-            Ok(prepared) => prepared,
-            Err(status) =>
+            return Err(SERVICE_BUSY);
+        }
+        self.enter(old);
+        if self.owner != old
+        {
+            return Err(NOT_FOUND);
+        }
+        // The original report checkpoint remains here. Protected payloads share
+        // their genuine archived Arc; Local report deep-copy remains separate
+        // migration debt. The previous detached report was released outside.
+        let snapshot = crate::allocator::with_target(crate::allocator::Target::Owner {
+            account: recipient.allocation.clone(),
+            class: mac_kernel_model::policy::MemoryClass::Kernel
+        }, || self.crash.snapshot())?;
+        recipient.local.crash = crate::toolbox::crashes::Manager::from_snapshot(snapshot);
+        let FinderPreparation { local,
+                                allocation,
+                                owner,
+                                process } = prepared.take().ok_or(BAD_ARGUMENT)?;
+        match self.processes.provision_prepared(process)
+        {
+            Ok(_) =>
+            {}
+            Err((cause, process)) =>
             {
-                self.retire_unstarted(id)?;
-                return Err(status);
+                *prepared = Some(FinderPreparation { local,
+                                                     allocation,
+                                                     owner,
+                                                     process });
+                return Err(cause);
             }
-        };
+        }
+        // Capacities and authentic old/recipient state were checked in this
+        // same Desktop turn. No fallible work follows Process publication.
         self.locals.push(local);
         Ok(FinderAdmission { old,
                              owner,

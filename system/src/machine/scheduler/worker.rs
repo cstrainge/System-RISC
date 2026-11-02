@@ -218,66 +218,10 @@ pub(crate) fn prepare_worker(launch: crate::drivers::WorkerLaunch)
 }
 pub(crate) fn publish_worker(prepared: PreparedWorker) -> Result<u64, WorkerPublishFailure>
 {
-    let result = interrupts::with_masked(|| {
-        let mut scheduler = SCHEDULER.lock();
-        let slot = crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-            scheduler.prepare()
-        })?;
-        if prepared.core.launch.lock().is_none()
-        {
-            return Err(mac_abi::BAD_ABI);
-        }
+    let result = crate::context::without_recovery(|| {
         let target = crate::allocator::Target::Owner { account: prepared.allocation.clone(),
                                                        class:   MemoryClass::Kernel };
-        let publication = crate::allocator::with_target(target, || {
-            let kind = crate::toolbox::handles::KindCode(*b"THRD");
-            let root = mac_object_table::scope::Reservation::try_new(&prepared.owner, kind)
-                .map_err(lifetime::pool_status)?;
-            let scope = root.lease();
-            let store = scheduler.records.as_mut().ok_or(mac_abi::BAD_ABI)?;
-            let record = |id| {
-                let worker = WorkerState { phase:            mac_module::abi::worker::PREPARED,
-                                           cancelled:        false,
-                                           wake:             false,
-                                           dispose:          false,
-                                           started:          false,
-                                           resume_committed: false,
-                                           returned:         false,
-                                           park_return:      false,
-                                           exit_status:      mac_abi::OK };
-                let mut state = RunState::new();
-                state.affinity = prepared.affinity;
-                Record::Scheduled(Thread { id,
-                                           core: prepared.core.share(),
-                                           scope: Some(scope),
-                                           worker: Some(Cell::new(worker)),
-                                           state: Cell::new(state) })
-            };
-            store.insert_root_with_receipt(root, record).map_err(lifetime::pool_status)
-        })?;
-        let (id, receipt) = publication.into_parts();
-        // No fallible operation remains after this unique ownership handoff.
-        {
-            let mut launch = prepared.core.launch.lock();
-            if let Some(launch) = launch.as_mut()
-            {
-                prepared.core.context.assign_module(prepared.owner.clone(),
-                                                    id,
-                                                    launch.execution(),
-                                                    &prepared.allocation,
-                                                    prepared.subject.clone());
-                launch.accept();
-            }
-        }
-        if slot == scheduler.threads.len()
-        {
-            scheduler.threads.push(Some(receipt));
-        }
-        else
-        {
-            scheduler.threads[slot] = Some(receipt);
-        }
-        Ok(id)
+        crate::allocator::with_target(target, || publish_prepared_worker(&prepared))
     });
     match result
     {
@@ -308,10 +252,131 @@ pub(crate) fn publish_worker(prepared: PreparedWorker) -> Result<u64, WorkerPubl
             }
             Ok(id)
         }
-        Err(status) =>
+        Err(cause) =>
         {
-            Err(WorkerPublishFailure { status,
+            serial!("MODULE_WORKER_PUBLICATION_REFUSED module={} {cause}",
+                    prepared.owner.owner().incarnation());
+            Err(WorkerPublishFailure { status: cause.status(),
                                        prepared })
+        }
+    }
+}
+
+fn publish_prepared_worker(prepared: &PreparedWorker) -> Result<u64, super::admission::Error>
+{
+    use mac_object_table::store::PreparedError;
+
+    use super::admission::{Buffers, Error, thread_permit};
+
+    if prepared.core.launch.lock().is_none()
+    {
+        return Err(Error::Admission { status: mac_abi::BAD_ABI,
+                                      stage:  "module worker capture" });
+    }
+    let kind = crate::toolbox::handles::KindCode(*b"THRD");
+    let mut root = mac_object_table::scope::Reservation::try_new(&prepared.owner, kind)?;
+    let mut permit = thread_permit(&prepared.owner)?;
+    let id = permit.id();
+    let worker = WorkerState { phase:            mac_module::abi::worker::PREPARED,
+                               cancelled:        false,
+                               wake:             false,
+                               dispose:          false,
+                               started:          false,
+                               resume_committed: false,
+                               returned:         false,
+                               park_return:      false,
+                               exit_status:      mac_abi::OK };
+    let mut state = RunState::new();
+    state.affinity = prepared.affinity;
+    let mut record = Record::Scheduled(Thread { id,
+                                                core: prepared.core.share(),
+                                                scope: Some(root.lease()),
+                                                worker: Some(Cell::new(worker)),
+                                                state: Cell::new(state) });
+    loop
+    {
+        let mut buffers = Buffers::prepare()?;
+        let result = interrupts::with_masked(|| {
+            let mut scheduler = SCHEDULER.lock();
+            // Keep the genuine offered capture borrowed through publication and
+            // acceptance; no lookup after publication can silently lose it.
+            let mut offered = prepared.core.launch.lock();
+            let Some(launch) = offered.as_mut()
+            else
+            {
+                return Err((Error::Admission { status: mac_abi::BAD_ABI,
+                                               stage:  "module worker capture" },
+                            permit,
+                            root,
+                            record));
+            };
+            let slot = match buffers.install(&mut scheduler)
+            {
+                Ok(slot) => slot,
+                Err(cause) => return Err((cause, permit, root, record))
+            };
+            let publication = match scheduler.records.as_mut()
+            {
+                Some(store) => store.publish_prepared_root(permit, root, record)
+                                    .map_err(|failure| {
+                                        (Error::Publication(failure.cause),
+                                         failure.permit,
+                                         failure.reservation,
+                                         failure.value)
+                                    }),
+                None =>
+                {
+                    Err((Error::Admission { status: mac_abi::BAD_ABI,
+                                            stage:  "canonical THRD Store" },
+                         permit,
+                         root,
+                         record))
+                }
+            };
+            match publication
+            {
+                Err(failure) => Err(failure),
+                Ok((publication, old)) =>
+                {
+                    let (_, receipt) = publication.into_parts();
+                    // Sealed preparation makes these moves infallible; capture
+                    // acceptance is the original unique ownership handoff.
+                    prepared.core.context.assign_module(prepared.owner.clone(),
+                                                        id,
+                                                        launch.execution(),
+                                                        &prepared.allocation,
+                                                        prepared.subject.clone());
+                    launch.accept();
+                    if slot == scheduler.threads.len()
+                    {
+                        scheduler.threads.push(Some(receipt));
+                    }
+                    else
+                    {
+                        scheduler.threads[slot] = Some(receipt);
+                    }
+                    Ok(old)
+                }
+            }
+        });
+        drop(buffers);
+        match result
+        {
+            Ok(old) =>
+            {
+                old.dispose();
+                return Ok(id);
+            }
+            Err((cause, returned_permit, returned_root, returned_record)) =>
+            {
+                permit = returned_permit;
+                root = returned_root;
+                record = returned_record;
+                if !matches!(cause, Error::Publication(PreparedError::CapacityChanged))
+                {
+                    return Err(cause);
+                }
+            }
         }
     }
 }

@@ -9,7 +9,8 @@ use spinning_top::Spinlock;
 
 use super::ResourceBinding;
 use crate::{machine::scheduler::{self, PreparedThread},
-            toolbox::{handles::InvocationGate, runtime::FinderAdmission}};
+            toolbox::{handles::InvocationGate,
+                      runtime::{FinderAdmission, FinderPreparation}}};
 
 /// Unpublished backing is still owned here; published backing remains owned by
 /// its canonical THRD row. The admission authenticates both retry stages.
@@ -24,6 +25,8 @@ enum Work
     Requested
     {
         old:      ResourceBinding,
+        // Unpublished backing retires before its original recovery scope pins.
+        prepared: Option<FinderPreparation>,
         permit:   crate::allocator::recovery::Permit,
         activity: crate::recovery::Activity
     },
@@ -167,7 +170,8 @@ pub(crate) fn request(binding: ResourceBinding, permit: crate::allocator::recove
         UI_PROGRESS.store(false, Ordering::Release);
         *flight = Some(Work::Requested { old: binding,
                                          permit,
-                                         activity });
+                                         activity,
+                                         prepared: None });
         WAKE.store(true, Ordering::Release);
         Ok(())
     })
@@ -290,19 +294,28 @@ fn capacity_status(cause: crate::toolbox::runtime::FinderCapacityError) -> Statu
     status
 }
 
-fn reserve_finder(binding: &ResourceBinding, permit: &crate::allocator::recovery::Permit)
+fn reserve_finder(binding: &ResourceBinding, permit: &crate::allocator::recovery::Permit,
+                  prepared: &mut Option<FinderPreparation>)
                   -> Result<FinderAdmission, Status>
 {
     let plan = desktop(binding, |desktop| desktop.plan_finder_capacity().map_err(capacity_status))?;
     // The real recovery allocation scope remains active, but no Desktop,
     // directory or owner lock crosses these fresh shared-buffer allocations.
+    if prepared.is_none()
+    {
+        *prepared = Some(plan.prepare_recipient()?);
+    }
     let mut capacity = plan.prepare().map_err(capacity_status)?;
     let result = desktop(binding, |desktop| {
-        desktop.reserve_finder(binding.owner(), permit.clone(), &mut capacity)
+        desktop.reserve_finder(binding.owner(), permit.clone(), &mut capacity, prepared)
     });
     // Successful installation leaves obsolete empty arrays here. On refusal
     // these are still the original prepared arrays. Neither drops under Desktop.
     drop(capacity);
+    if let Some(prepared) = prepared.as_mut()
+    {
+        prepared.release_report();
+    }
     result
 }
 
@@ -357,9 +370,10 @@ fn step_inner(work: Work) -> Option<Work>
     {
         Work::Requested { old,
                           permit,
-                          activity } =>
+                          activity,
+                          mut prepared } =>
         {
-            match reserve_finder(&old, &permit)
+            match reserve_finder(&old, &permit, &mut prepared)
             {
                 Ok(admission) =>
                 {
@@ -371,7 +385,8 @@ fn step_inner(work: Work) -> Option<Work>
                 {
                     Some(Work::Requested { old,
                                            permit,
-                                           activity })
+                                           activity,
+                                           prepared })
                 }
                 Err(status) =>
                 {

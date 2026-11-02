@@ -477,28 +477,6 @@ impl Scheduler
     {
         self.threads.iter().enumerate().filter_map(|(slot, _)| self.thread(slot).map(|t| (slot, t)))
     }
-
-    fn prepare_records(&mut self) -> Result<(), mac_abi::Status>
-    {
-        if self.records.is_none() { Err(mac_abi::BAD_ABI) } else { Ok(()) }
-    }
-
-    fn prepare(&mut self) -> Result<usize, mac_abi::Status>
-    {
-        self.prepare_records()?;
-        let slot = self.threads.iter().position(Option::is_none).unwrap_or(self.threads.len());
-        if slot == self.threads.len()
-        {
-            self.threads.try_reserve(1).map_err(|_| mac_abi::NO_MEMORY)?;
-        }
-        // Admission grows scratch, never the timer/event polling path. If input
-        // handling births a thread while a snapshot is leased, reserve a spare;
-        // returning the lease keeps the larger buffer.
-        self.waiters
-            .try_reserve(slot.saturating_add(1).saturating_sub(self.waiters.len()))
-            .map_err(|_| mac_abi::NO_MEMORY)?;
-        Ok(slot)
-    }
 }
 static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler { records:        None,
                                                             threads:        Vec::new(),
@@ -1105,24 +1083,74 @@ fn prepare_system_idle(target: super::traps::execution::IdleTarget)
                                                      target,
                                                      publication: spin::Once::new(),
                                                      name }).map_err(|_| mac_abi::NO_MEMORY)?;
+            let mut permit = admission::thread_permit(&owner).map_err(|cause| {
+                                 serial!("SYSTEM_IDLE_PREPARATION_REFUSED hart={} {cause}",
+                                         core.target.number());
+                                 cause.status()
+                             })?;
+            let mut record = Record::SystemIdle(IdleRecord { id:   permit.id(),
+                                                             core: core.clone() });
+            loop
             {
-                let mut scheduler = SCHEDULER.lock();
-                scheduler.prepare_records()?;
-                let store = scheduler.records.as_mut().ok_or(mac_abi::BAD_ABI)?;
-                let publication = store.insert_with_receipt(&owner, |id| {
-                                           Record::SystemIdle(IdleRecord { id,
-                                                                           core: core.clone() })
-                                       })
-                                       .map_err(lifetime::pool_status)?;
-                let (_, receipt) = publication.into_parts();
-                // No fallible action follows actual native publication. The proof
-                // binds this row's same fresh Arc, canonical System owner and source.
-                core.publication.call_once(|| receipt);
-                ThreadContext::assign_system(SystemThreadBinding { context: core.context
-                                                                                .clone(),
-                                                                   owner,
-                                                                   publication: receipt,
-                                                                   resources });
+                let result =
+                    super::interrupts::with_masked(|| {
+                        let mut scheduler = SCHEDULER.lock();
+                        let published = match scheduler.records.as_mut()
+                        {
+                            Some(store) => store.publish_prepared(permit, record)
+                                                .map_err(|failure| {
+                                                    (admission::Error::Publication(failure.cause),
+                                                     failure.permit,
+                                                     failure.value)
+                                                }),
+                            None =>
+                            {
+                                Err((admission::Error::Admission { status: mac_abi::BAD_ABI,
+                                                                   stage:  "canonical System idle \
+                                                                            THRD Store" },
+                                     permit,
+                                     record))
+                            }
+                        };
+                        match published
+                        {
+                            Err(failure) => Err(failure),
+                            Ok((publication, old)) =>
+                            {
+                                let (_, receipt) = publication.into_parts();
+                                // Only this successful canonical birth constructs the
+                                // sealed System binding. Idle never enters the run queue.
+                                core.publication.call_once(|| receipt);
+                                ThreadContext::assign_system(SystemThreadBinding {
+                                    context: core.context.clone(),
+                                    owner: owner.clone(),
+                                    publication: receipt,
+                                    resources
+                                });
+                                Ok(old)
+                            }
+                        }
+                    });
+                match result
+                {
+                    Ok(old) =>
+                    {
+                        old.dispose();
+                        break;
+                    }
+                    Err((cause, returned_permit, returned_record)) =>
+                    {
+                        permit = returned_permit;
+                        record = returned_record;
+                        if !matches!(cause, admission::Error::Publication(
+                            mac_object_table::store::PreparedError::CapacityChanged))
+                        {
+                            serial!("SYSTEM_IDLE_PUBLICATION_REFUSED hart={} {cause}",
+                                    core.target.number());
+                            return Err(cause.status());
+                        }
+                    }
+                }
             }
             serial!("SYSTEM_IDLE_REGISTERED thread={} hart={} name={}",
                     core.context.identity().thread.0,

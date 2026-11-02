@@ -4149,3 +4149,75 @@ contention, terminal binding failure, uncertain acknowledgment or heap/reserve
 exhaustion. Read-only paused page walks, serial logging and paced UI input
 perturb execution. Race absence, latency, U-mode isolation, full Save/Save As
 exhaustion and production Finder OOM recovery remain unqualified.
+
+## Detached authentic Process preparation and remaining THRD publishers
+
+Process construction now has one factory for the genuine ledger, configured
+account and cleanup checkpoint. Ordinary provision composes that factory with
+its existing publication; replacement Finder prepares it and its empty Saved
+service state outside Desktop. The detached value owns the original account,
+not authority reconstructed from an ID. Empty managers issue no resource IDs.
+Their backing and admitted account use drop before the canonical account root.
+
+Prepared directory insertion rechecks existing storage and returns the complete
+owner/payload on refusal, without allocation or rejected-owner destruction.
+Both ordinary and prepared insertion use the same membership mutation. Finder
+retains the same unpublished preparation on capacity contention. Its final
+current-Finder validation and original report snapshot remain at the existing
+Desktop checkpoint; refused snapshot pins release after leaving the guard.
+After successful Process publication no fallible operation precedes the Saved
+row insertion. Existing report-close acknowledgments, recipient handoff,
+old-stack wait, thread publication and final start retain their ordering.
+
+Account construction also allocates its actual Foundation Inner outside its
+outer invocation gate. The genuine owner admission bit is checked before and
+after construction; rejected metadata is destroyed after the gate returns.
+Caller interrupt state is preserved: this does not unmask an already masked
+caller or move ordinary callers outside their existing Desktop turns. A stop
+after the final check still closes later admissions through the original owner.
+
+Module workers now reuse detached scheduler capacity and canonical THRD permits.
+The actual scope Reservation, permit and record survive capacity retry. The
+original launch stays borrowed through canonical root publication and its
+infallible acceptance; rejected offers return unchanged. System idle uses the
+same permit preparation with its distinct System record and sealed context,
+without entering the run queue or allocating its buffers. Superseded scheduler
+preparation helpers are removed. New allocations and retired storage disposal
+remain outside bounded interrupt-masked scheduler turns.
+
+The source-fixed release/LTO RVA23 four-CPU, 8 GiB, 800x600 private QEMU image
+used System ELF
+`676ac9750e9b4ea56e80bb6fce33a03d2e352efff36dbd3b258e6e64450d8341`
+and System resource
+`3ac99d2f5296373e54a3581a962f18d4d73c4a206c77e04404cbfc09200c83cd`;
+ROM remained `cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+The world rebuilt with content fingerprints and event/TextEdit tracing off.
+While the real initial Finder awaited its source, all four CPUs were sampled in
+System idle on the System root; actual readiness preceded Finder entry and input.
+The existing native Finder-role workload completed two replacements, fresh-state
+and stale-ID checks, protected image identity, old account closure and input.
+Actual image-VA reservation refusal retained a copyable report and closed the
+unstarted account; pressure-owner quit enabled one fresh replacement. This was
+not heap or reserve exhaustion.
+
+On that same artifact, two ordinary applications and two module workers used
+independent application roots, own image/shared modules and absent foreign low
+images. Same-stack CPU migration and overlapping bodies were sampled, followed
+by register/service/cancel checks and actual worker/process/account closure.
+The 124 paused samples cost approximately31–62 ms of host time each, perturbing
+execution; they establish no latency bound. Sources/base remained fixed and
+owned guests were reaped with cloned media removed. No host Rust suite supplied
+OS acceptance. Forced preparation failures, capacity contention, cancellation
+at every publication boundary, stop/allocation races, uncertain acknowledgment,
+reserve exhaustion, general SMP correctness and U-mode remain unqualified.
+Local report deep-copy, ordinary provision under Desktop, ordinary image
+interning, preadmitted stock and complete production Finder OOM recovery remain
+explicit work.
+
+The unchanged production Finder ELF
+`e83308e02f08eb0713602b408d2fdb1572d04f0c75f839033d7f58412252b8b8`
+declares 1,761 page-normalized payload pages (7,213,056 bytes), including its
+large writable/BSS segment. This artifact census was checked against its native
+resource and ELF segments; it is not an allocation or recovery observation.
+The 15-page native recovery workload therefore cannot size production Finder
+stock or establish production recovery headroom.

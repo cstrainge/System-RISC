@@ -9,7 +9,8 @@ use core::{fmt,
 use crate::shared::{InvocationGate, OwnerRef};
 
 mod capacity;
-pub use capacity::{DirectoryCapacityError, DirectoryCapacityPlan, PreparedDirectoryCapacity};
+pub use capacity::{DirectoryCapacityError, DirectoryCapacityPlan, DirectoryInsertFailure,
+                   PreparedDirectoryCapacity};
 
 static SYSTEM_INDEX_ISSUED: AtomicBool = AtomicBool::new(false);
 // Native identities and domain incarnations share one boot-wide issuer. The
@@ -1179,11 +1180,19 @@ impl<T, G: InvocationGate> Directory<T, G>
             };
         G::with_system_allocation(|| self.entries.try_reserve(1))
             .map_err(|_| DirectoryError::Storage { owner })?;
+        Ok(self.insert_at(at, ledger, value))
+    }
+
+    // Both ordinary and detached publication use this single membership change.
+    // Their callers have checked ordering and capacity in the same manager turn.
+    fn insert_at(&mut self, at: usize, ledger: OwnerRef<G>, value: T) -> DomainId
+    {
+        let owner = ledger.owner();
         self.entries.insert(at,
                             DomainEntry { ledger,
                                           value });
         self.revision = self.revision.saturating_add(1);
-        Ok(owner)
+        owner
     }
 
     fn index(&self, incarnation: u64) -> Option<usize>

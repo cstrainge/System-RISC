@@ -155,13 +155,16 @@ impl<G: InvocationGate> Account<G>
     pub fn try_new(owner: OwnerRef<G>, kernel: ConfiguredRange, application: ConfiguredRange)
                    -> Result<Self, Error>
     {
-        G::run(|| {
-            let identity = owner.owner();
-            if !owner.accepting()
-            {
-                return Err(Error::Closed { owner: identity });
-            }
-            let inner = G::with_foundation_allocation(|| {
+        let identity = owner.owner();
+        if !owner.accepting()
+        {
+            return Err(Error::Closed { owner: identity });
+        }
+        // This is detached authority metadata, not a published counter change.
+        // Neither its allocation nor rejected Arc destruction belongs inside
+        // the interrupt-masked invocation gate. Recheck the real admission bit
+        // after construction; an observed identity grants no authority.
+        let inner = G::with_foundation_allocation(|| {
                             Arc::try_new(Inner { state:
                                          Spinlock::new(State { account:
                                                                    DomainAccount::new(identity,
@@ -170,14 +173,12 @@ impl<G: InvocationGate> Account<G>
                                                                closing: false }),
                                      owner })
                         }).map_err(|_| Error::Metadata { owner: identity })?;
-            // The allocation itself holds no owner/counter lock. Refuse a stop
-            // that raced metadata admission before handing out the root.
-            if !inner.owner.accepting()
-            {
-                return Err(Error::Closed { owner: identity });
-            }
-            Ok(Self { inner })
-        })
+        let accepting = G::run(|| inner.owner.accepting());
+        if !accepting
+        {
+            return Err(Error::Closed { owner: identity });
+        }
+        Ok(Self { inner })
     }
 
     pub fn owner(&self) -> DomainId

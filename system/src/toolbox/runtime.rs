@@ -59,7 +59,7 @@ mod ordinary_underlay;
 use ordinary_underlay::OrdinaryUnderlay;
 #[path = "processes/runtime.rs"]
 mod local;
-pub(crate) use local::{FinderAdmission, FinderCapacityError};
+pub(crate) use local::{FinderAdmission, FinderCapacityError, FinderPreparation};
 const MAX_RETAINED_BYTES: usize = 2 * 1024 * 1024;
 pub struct Desktop
 {
