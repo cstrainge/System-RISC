@@ -22,6 +22,14 @@ pub(crate) enum Cause
     #[cfg(target_arch = "riscv64")]
     NativeTls(crate::toolbox::native_threads::CleanupCause),
     #[cfg(target_arch = "riscv64")]
+    ProcessSpace(crate::machine::paging::process::CleanupCause),
+    #[cfg(target_arch = "riscv64")]
+    DefinitionPending
+    {
+        owner: u64,
+        drain: crate::toolbox::resources::definitions::Drain
+    },
+    #[cfg(target_arch = "riscv64")]
     ModuleMapping(crate::machine::paging::modules::CleanupCause),
     #[cfg(target_arch = "riscv64")]
     RequestRegistryUnavailable(crate::state::AccessError),
@@ -131,6 +139,16 @@ impl core::fmt::Display for Cause
             Self::ApplicationHeap(cause) => cause.fmt(f),
             #[cfg(target_arch = "riscv64")]
             Self::NativeTls(cause) => cause.fmt(f),
+            #[cfg(target_arch = "riscv64")]
+            Self::ProcessSpace(cause) => cause.fmt(f),
+            #[cfg(target_arch = "riscv64")]
+            Self::DefinitionPending { owner,
+                                      drain } =>
+            {
+                write!(f,
+                       "definition owner {owner} awaits {drain:?}; original callable and cleanup \
+                        ticket retained")
+            }
             #[cfg(target_arch = "riscv64")]
             Self::ModuleMapping(cause) => cause.fmt(f),
             #[cfg(target_arch = "riscv64")]
@@ -295,6 +313,16 @@ pub(crate) struct Failure
 impl Failure
 {
     #[cfg(target_arch = "riscv64")]
+    pub(crate) fn definition_pending(ticket: ReleasedResource, owner: u64,
+                                     drain: crate::toolbox::resources::definitions::Drain)
+                                     -> Self
+    {
+        Self { ticket,
+               cause: Cause::DefinitionPending { owner,
+                                                 drain } }
+    }
+
+    #[cfg(target_arch = "riscv64")]
     pub(crate) fn module_mapping(ticket: ReleasedResource,
                                  cause: crate::machine::paging::modules::CleanupCause)
                                  -> Self
@@ -317,6 +345,15 @@ impl Failure
         Self { ticket,
                cause: Cause::NativeJoin { readers,
                                           preparations } }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn process_space(ticket: ReleasedResource,
+                                cause: crate::machine::paging::process::Error)
+                                -> Self
+    {
+        Self { ticket,
+               cause: Cause::ProcessSpace(cause.into()) }
     }
 
     #[cfg(target_arch = "riscv64")]

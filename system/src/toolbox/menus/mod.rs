@@ -1,5 +1,6 @@
 //! Resource-based native menu state and tracking; all geometry/drawing is MDEF.
 #![forbid(unsafe_code)]
+use crate::toolbox::resources::definitions::DefinitionRef;
 use alloc::{boxed::Box, vec::Vec};
 
 use mac_abi::{menus::*, *};
@@ -89,7 +90,7 @@ pub struct Manager
 {
     objects: Store<Menu, Bar>,
     owner:   Option<OwnerRef>,
-    entry:   DefinitionEntry,
+    entry:   DefinitionRef,
     gate:    TrapGate
 }
 fn pool_status(error: PoolError) -> Status
@@ -98,7 +99,7 @@ fn pool_status(error: PoolError) -> Status
 }
 impl Manager
 {
-    pub(crate) fn new(kinds: (KindLease, KindLease), entry: DefinitionEntry, gate: TrapGate)
+    pub(crate) fn new(kinds: (KindLease, KindLease), entry: DefinitionRef, gate: TrapGate)
                       -> Result<Self, Status>
     {
         Ok(Self { objects: Store::owned_state(kinds.0, kinds.1, Bar::new).map_err(pool_status)?,
@@ -149,7 +150,7 @@ impl Manager
         Self::measure_with(self.entry, self.gate, state)
     }
 
-    fn measure_with(entry: DefinitionEntry, gate: TrapGate, state: &mut MenuDefinitionState)
+    fn measure_with(entry: DefinitionRef, gate: TrapGate, state: &mut MenuDefinitionState)
                     -> Result<(), Status>
     {
         state.bar_bounds = Rect::new(0, 0, crate::display::WIDTH as i16, 20);
@@ -784,7 +785,7 @@ fn parse_fmnu(bytes: &[u8], state: &mut MenuDefinitionState) -> Result<(), Statu
 // Empty bars need the definition's full ABI record too. Keep that rare temporary
 // out of the compositor and pointer-poll stack frames.
 #[inline(never)]
-fn draw_empty(entry: DefinitionEntry, gate: TrapGate, canvas: &mut Canvas)
+fn draw_empty(entry: DefinitionRef, gate: TrapGate, canvas: &mut Canvas)
 {
     let mut state = MenuDefinitionState { first: 1,
                                           bar_bounds: Rect::new(0, 0, canvas.width as i16, 20),
@@ -792,7 +793,7 @@ fn draw_empty(entry: DefinitionEntry, gate: TrapGate, canvas: &mut Canvas)
     let mut surface = Surface::from_canvas(canvas);
     invoke(entry, gate, &mut state, DRAW_BAR, 0, &mut surface);
 }
-fn invoke(entry: DefinitionEntry, gate: TrapGate, state: &mut MenuDefinitionState, message: i16,
+fn invoke(entry: DefinitionRef, gate: TrapGate, state: &mut MenuDefinitionState, message: i16,
           param: i64, surface: *mut Surface)
           -> i64
 {

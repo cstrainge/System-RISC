@@ -3575,3 +3575,199 @@ Private roots, user entry, shared immutable app frames, definition backing,
 failed-publication pressure, lost-ACK/foreign-PTE injection, full-range stale
 translation reuse and race absence remain unverified or unimplemented as stated
 above. QMP reads and guest diagnostics perturb execution; no latency claim follows.
+
+## Registered definition callables — implementation
+
+Window, control, menu, process-menu and boot-panel state retain opaque definition
+completion references rather than bare executable addresses. DDEF/DSTA use the
+shared registered Store; every invocation validates its original completion
+receipt, generation, owner and resource kind/ID, and obtains an execution pin
+plus the retained source before leaving the registry. Author code executes only
+after that guard is gone. New registrations refuse stopped sources; an existing
+private completion reference can still service an owned object's Dispose during
+teardown. No callable reference is exported to userspace.
+
+The canonical definition record owns its source pin and fixed execution-range
+reservation. Desktop's cache owns lookup rows only. Definition roots retire after
+all non-image/non-definition resources and actual threads drain, then acquire
+execution exclusion before removing the canonical record. A refusal retains its
+original cleanup ticket. Cache eviction cannot prematurely reuse an active range;
+a copied stale reference cannot invoke a replacement slot. Definition completion
+wakes retirement only when a retirement request is pending, not on every paint.
+Resident CDEF/MDEF defaults select the genuine System catalog, so a bootstrap
+Finder override cannot own globals that survive Finder restart.
+
+This slice deliberately retains the fixed definition identity arena and existing
+loader publication timing. Definition payload physical accounting and guard-free
+prepare/publish remain unimplemented. App-origin callable payloads, execution
+pins and per-owner registration growth use the original Process Kernel account
+retained at image admission. Shared Store indices keep their explicit System
+allocation scopes; genuine System definitions use System ordinary storage.
+An image retains its actual admission account alongside its original owner,
+validated before publication, and releases that authority with the Instance.
+Fresh cache resolution refuses a stopped definition owner even though an already
+issued private callable can still perform teardown. No additional executable
+IMAG instances are introduced. Before that next stage, image retirement must
+iterate multiple instances per owner and preserve application source origin
+separately from a definition's execution identity. Private process roots and
+user-mode isolation remain separate gates.
+
+Optimized RV64 compilation alone is static evidence. The observations below
+qualify only their stated artifact/scenarios; direct stale private-ref injection,
+concurrent cleanup and responsiveness remain separate runtime gates. Retained
+host-test substitutions were neither run nor adapted for this change.
+
+### Definition callable native observations — 2026-11-01
+
+The optimized release/LTO RV64 System resource
+`353e58c139e7669873a1370a7b06970b1b8704d825fec1f9e523787df6ce79d2`
+with ROM `a85d5a5ce9b2de9c267493d87836aac580c8283de075ce6da90c7bb1ec324b60`
+ran in private 8 GiB/four-CPU QEMU with event/TextEdit tracing disabled. Six
+installed applications entered, quit and closed their accounts, with sampled
+image mappings absent afterward; Panic Test relaunched and completed its report
+path. A real Finder-role fixture completed two Abort/replacement cycles with old
+thread/Process/account closure and replacement/survivor input.
+
+The existing no_std Image Probe packaged the real Static Text CDEF in its own
+application fork and invoked it through public controls. Three normal launches
+observed distinct source image IDs at the same reused definition VA and actual
+Process/account closure each time. An explicit native diagnostic variant panicked
+with its app-owned control still live; the System report was dismissed, DDEF's
+original ticket initially waited for actual objects, then the Process/account
+closed. This exercises real owner-stop cleanup, not arbitrary privileged-fault
+containment. Source/base media stayed fixed within each capture, owned guests
+were reaped and private disks pruned. The variant changes only the diagnostic
+application, not production kernel dispatch or definition code.
+
+Direct stale private-ref injection, concurrent invocation/cleanup races and timing
+remain unverified. Fixed definition payload backing/accounting and its identity
+mapping remain unchanged. Lazy loading still runs under Desktop; guard-free
+preflight and real physical definition ownership must land before that identity
+span is removed. No U-mode isolation follows from callable lifetime protection.
+
+## Owned process supervisor roots — 2026-11-01
+
+Each genuine Process now owns a canonical SPCE root and SPST backing through the
+shared facility. Its original Kernel account pays for independent page-table
+and metadata pages. Normal and initial Finder admission prepares the space
+outside Desktop, then moves a sealed pin into actual THRD preparation/publication.
+Recovery likewise admits the root outside Desktop. A native child retains its
+actual parent's space through the authenticated ApplicationExecutor. Modules and
+System idle explicitly select the System root; a missing application space is an
+error, not a fallback to that root.
+
+The hierarchy copies actual System/module supervisor aliases and only its own
+application's low image leaves. Immutable physical code backing is not charged
+again for aliases. The physmap, System data and existing application heap/stack
+pointers remain supervisor accessible: this is trusted S-mode execution with
+separate table ownership, **not hardware application isolation**. Explicit app
+placements and global overlap checks remain. U-mode entry, private user heap and
+stack mappings, checked nested user-buffer access, service-descriptor cleanup
+and application fault containment are still required before removing them.
+
+The real translation command lease serializes root registration/removal with
+module publication and retirement. Publication plans and retirement snapshots
+retain actual root pins through translation/instruction acknowledgments. A
+mapping does not permanently retain private process table pointers. Stopping
+roots remain in retirement snapshots until unlinked. SPCE disposal closes
+admission, awaits actual thread/claim/pin quiescence, unlinks and receives full
+invalidation acknowledgment before destroying its tables. Refused or uncertain
+acknowledgments retain the original root, charge and cleanup ticket. SPCE does
+not wait for DDEF or IMAG: root disposal precedes definition source release and
+image retirement, preserving that dependency order.
+
+Scheduler commitment selects the retained space with the actual thread claim.
+Outer trap entry discards the interrupted root's restoration intent before any
+handoff can release that claim. Once service borrows/guards end, return restores
+only the selected hart's authenticated root. Process roots use explicit untagged
+hardware ASID0 and conservative local full translation flushes. No ASID lease
+or performance improvement is claimed. Fixed-owner firmware scopes preserve
+their distinct restoration rule.
+
+### Bounded native observations
+
+The optimized whole-world QemuRISC-V build used four CPUs, 8 GiB
+RAM, an 800×600 display and disabled event/TextEdit input tracing. System resource
+SHA-256 was
+`4489143ae1b13e5b6c36e59d761b6de4468c78f93b55dd2c4386043a710d16c7`;
+System ELF was
+`bcb9f66e3d4a7c69d95e8c053d64798faa9ef7d7c5fd695fc1f58197900ef2bf`;
+boot ROM was
+`831c68a54582b71736b0b5f45853fc9c7311a1b958610614c5115088380e4708`.
+Private guests exercised ordinary Finder boot, six bundled app entries/own quits,
+System-owned panic reporting, native child TLS/heap/wait/join and budget refusal,
+and two Finder-role abort/replacement cycles with actual original account closure.
+The Finder-role diagnostic is not the production Finder or an exhaustion claim.
+Sampled app image leaves disappeared from the permanent roots after process close.
+
+Read-only paused CPU/PTE observations of two actual application bodies found
+roots at physical `0x8c996000` and `0x8c9d7000`. Both root and branch pages were
+independent from the permanent hierarchies. Each mapped its own body to the same
+physical code as the permanent roots, omitted the other live application's low
+code mapping and retained genuine shared module aliases. Both app bodies moved
+with the same stack between harts1/2/3; two worker bodies did so between
+harts0/1/2/3. Twenty paused snapshots showed overlapping bodies on different CPUs.
+Guest register/service checks, cancellation and actual worker/process retirement
+followed. The first, sparser capture failed to observe one app migrate; a denser
+finite capture retained the same assertions and recorded its host pause costs.
+These observations establish no latency bound, race absence or executed U-mode
+protection fault. Guest logs, input pacing and paused reads perturb execution.
+
+The broader host-filesystem scenario has **not passed on this artifact**. One
+run hit an actual one-second VirtIO FLUSH timeout and retained a poisoned queue.
+A later run reached the external exit worker, which returned ScanStale before
+its ownership-check marker. A repeat with failure-only context in the real native
+worker identified its own ledger's first pool read still returning ScanStale
+after the unchanged 64 coherent-snapshot attempts. The original public detail
+reported that the domain ledger changed while reading pools; lookup and transfer
+stepping had succeeded in that repeat. This does not establish the cause of the
+revision churn or repair the failed scenario. Source tracing finds inspection
+read-only while independent transfer pumping publishes/retires scoped jobs;
+coherence across these separate calls has no guaranteed quiet window within
+64 attempts. No kernel semantics, waits or transfer serialization were changed
+to force that diagnostic to pass. The full scenario and the disk-flush failure
+remain unqualified. An
+intermediate collector also ignored real Drop/Trash progress and stopped at its
+unchanged inactivity deadline; correcting that observer does not repair either
+native failure. No host Rust suite supplied evidence, no timeout was increased,
+and no full filesystem/DMA qualification follows. Source/base artifacts remained
+unchanged during captures; owned guests were reaped and cloned media pruned.
+
+Concurrent publication/retirement interleavings, uncertain-acknowledgment paths,
+private-root reuse, full-RAM recovery, native responsiveness and user isolation
+remain separate qualification gates. Guaranteed Finder OOM recovery additionally
+needs preadmitted root/table backing; ordinary buddy allocation is not its kit.
+
+
+### Build-freshness claim correction — 2026-11-01
+
+The earlier “checksum-fresh” label for the recorded builds was unsupported.
+Their recorded feature flag alone did not establish content-based freshness.
+The exact artifact hashes, native observations and unchanged-source receipts
+remain their evidence; they do not prove that every changed source was rebuilt.
+
+The build now requires both `CARGO_UNSTABLE_CHECKSUM_FRESHNESS=true` and
+`CARGO_BUILD_FINGERPRINT=content`, followed by checking the actual Cargo
+fingerprints and artifact hashes. Build-script inputs still need explicit
+rebuilding when their mtime tracking misses changes; content mode does not
+remove that separate limitation. See the [Cargo freshness contract](https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#checksum-freshness).
+
+
+### Retained READY integration with Process roots — 2026-11-01
+
+Immediate and delayed launches prepare their original Process page-root pin
+only after provider READY, before acquiring Desktop for real author-thread
+publication. Initial Finder uses the same boundary; replacement retains the
+existing recovery preparation. Pending bootstrap explicitly selects and activates
+the genuine System root before its owned idle-frame entry. No application pin
+is left on the abandoned bootstrap stack.
+
+The combined optimized native image observed delayed initial Finder with all
+four actual CPUs in System idle on the System root before Finder publication,
+then source release and desktop. Actual document launch also exercised pending
+READY, a labelled device-status failure with reset/unstarted-account closure,
+typed refusal/dismissal, fresh retry, document entry and eventual account closure.
+Exact artifacts, configuration, observer effects and scope are recorded in
+[application runtime observations](APPLICATION-RUNTIME.md#ready-with-owned-process-page-roots--2026-11-01).
+These are finite trusted-supervisor observations, not full std adoption, private
+user mappings, timing/race proof or protected Finder OOM recovery.

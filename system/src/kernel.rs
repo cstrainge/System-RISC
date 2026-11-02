@@ -135,6 +135,7 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
         .map_err(|cause| crate::images::LoadError::Write(cause.into()))?;
     let prepared = IMAGES.with(|images| {
                              images.prepare_load(owner,
+                                           account,
                                            source,
                                            layout.preferred,
                                            layout.preferred,
@@ -185,6 +186,7 @@ pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,
                              }));
     let prepared = IMAGES.with(|images| {
                              images.prepare_load(owner,
+                                                 account,
                                                  source,
                                                  code.descriptor.load_base,
                                                  crate::machine::memory::VM_MODULE_START,
@@ -744,6 +746,10 @@ fn launch() -> Result<(), crate::machine::scheduler::StartError>
         serial!("APPLICATION_HEAP_INITIALIZATION_FAILED: {cause}");
         recovery_boot_error("application heap manager initialization refused", cause.status())
     })?;
+    crate::machine::paging::process::initialize().map_err(|cause| {
+        serial!("PROCESS_SPACE_INITIALIZATION_REFUSED: {cause}");
+        mac_formats::Error::Malformed("Process space manager admission failed")
+    })?;
     crate::toolbox::native_threads::initialize().map_err(|cause| {
                                                     recovery_boot_error("native TLS manager \
                                                                          initialization refused",
@@ -950,7 +956,7 @@ fn initialize_desktop(
                                         recovery_boot_error("System modal service admission failed",
                                                             status)
                                     })?;
-    let mut definitions = crate::loader::Definitions::new(files);
+    let mut definitions = crate::loader::Definitions::new(files)?;
     let mut controls = crate::toolbox::controls::objects::Manager::new(
         crate::toolbox::handles::controls_kinds().map_err(|status| recovery_boot_error("Control Manager kind admission failed", status))?)
         .map_err(|status| recovery_boot_error("Control Manager admission failed", status))?;
@@ -1088,9 +1094,17 @@ pub(crate) fn finish_initial_finder(finder_admission: &mut crate::toolbox::proce
                                     -> crate::loader::LoadResult<()>
 {
     serial!("SYSTEM_FINDER_LAUNCH entry=0x{:x}", finder_loaded.entry());
+    // Both immediate bootstrap and delayed READY reach this same authentic
+    // admission. No Desktop guard or copied owner ID authorizes the page root.
+    let finder_space = crate::machine::paging::process::admit(finder_admission.owner(),
+                                                              &finder_admission.allocation(),
+                                                              &finder_loaded).map_err(|cause| {
+                           serial!("PROCESS_SPACE_REFUSED owner={} {cause}", finder_admission.id());
+                           recovery_boot_error("Finder space admission refused", cause.status())
+                       })?;
     let thread =
         with_desktop(|desktop| {
-            desktop.spawn_process(crate::context::finder_app().0, finder_loaded)
+            desktop.spawn_process(crate::context::finder_app().0, finder_loaded, finder_space)
         }).map_err(|_| mac_formats::Error::Malformed("Finder owner directory is unavailable"))?
           .map_err(|status| {
               serial!("FINDER_THREAD_CREATION_FAILED status={status}");

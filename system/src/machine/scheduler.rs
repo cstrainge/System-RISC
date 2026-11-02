@@ -579,6 +579,7 @@ struct ThreadCore
     context:            Arc<ThreadContext>,
     release:            Mutex<Option<ReleasedResource>>,
     binding:            crate::images::Binding,
+    space:              Option<super::paging::process::Pin>,
     top:                usize,
     cleanup_refusal:    Mutex<Option<ReapState>>,
     // Only impossible service binding uncertainty fills this prepaid slot.
@@ -634,7 +635,8 @@ pub(crate) struct SpawnFailure
 pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                       loaded: crate::kernel::LoadedImage, charges: accounting::ThreadCharges,
                       heap: crate::toolbox::application_heap::RootBinding,
-                      tls: crate::toolbox::native_threads::RootBinding)
+                      tls: crate::toolbox::native_threads::RootBinding,
+                      space: super::paging::process::Pin)
                       -> Result<PreparedThread, PrepareFailure>
 {
     let target = crate::allocator::Target::Owner { account: charges.allocation().clone(),
@@ -649,6 +651,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
            || loaded.binding().owner() != owner.owner().incarnation()
            || heap.owner() != owner.owner()
            || charges.allocation().owner() != owner.owner()
+           || !space.matches(&owner, loaded.binding())
         {
             return Err(mac_abi::ACCESS_DENIED);
         }
@@ -685,6 +688,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                              context,
                                              release: Mutex::new(None),
                                              binding: loaded.binding(),
+                                             space: Some(space),
                                              top,
                                              cleanup_refusal: Mutex::new(None),
                                              service_quarantine: spin::Once::new(),
@@ -758,6 +762,7 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
             {
                 return Err(mac_abi::ACCESS_DENIED);
             }
+            let space=super::paging::process::admit(&owner,charges.allocation(),&loaded).map_err(|cause|{serial!("PROCESS_SPACE_REFUSED owner={} {cause}",owner.owner().incarnation());cause.status()})?;
             let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
             let slots =
                 crate::toolbox::native_threads::prepare_slots(&owner, &tls).map_err(|cause| {
@@ -775,6 +780,7 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
                                     context,
                                     release: Mutex::new(None),
                                     binding: loaded.binding(),
+                                    space: Some(space),
                                     top: 0,
                                     cleanup_refusal: Mutex::new(None),
                                     service_quarantine: spin::Once::new(),
@@ -969,20 +975,20 @@ pub(crate) fn start_prepared(thread: u64, owner: &OwnerRef) -> Result<(), mac_ab
 pub(crate) fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
                     charges: accounting::ThreadCharges,
                     heap: crate::toolbox::application_heap::RootBinding,
-                    tls: crate::toolbox::native_threads::RootBinding)
+                    tls: crate::toolbox::native_threads::RootBinding,
+                    space: super::paging::process::Pin)
                     -> Result<u64, mac_abi::Status>
 {
-    let prepared =
-        prepare(owner, loaded, charges, heap, tls).map_err(|failure| {
-                                                      let PrepareFailure { status,
-                                                                           loaded } = failure;
-                                                      // Failed preparation retains the unique image
-                                                      // until its caller accepts
-                                                      // the refusal; dispose that lease through its
-                                                      // ordinary owned path.
-                                                      drop(loaded);
-                                                      status
-                                                  })?;
+    let prepared = prepare(owner, loaded, charges, heap, tls, space).map_err(|failure| {
+                       let PrepareFailure { status,
+                                            loaded } = failure;
+                       // Failed preparation retains the unique image
+                       // until its caller accepts
+                       // the refusal; dispose that lease through its
+                       // ordinary owned path.
+                       drop(loaded);
+                       status
+                   })?;
     spawn_prepared(prepared, true).map_err(|failure| failure.status)
 }
 
@@ -1178,6 +1184,7 @@ pub(crate) fn start(pending: Option<crate::toolbox::processes::startup::PendingS
         }
         let hart = selected_hart();
         let frame = idle_frame();
+        super::traps::execution::select_space(None);
         activate_idle_context();
         select_current(IDLE);
         super::traps::execution::dispatch::idle_committed(hart, frame);
@@ -1188,7 +1195,10 @@ pub(crate) fn start(pending: Option<crate::toolbox::processes::startup::PendingS
         arm();
         wake::admitted(wake_receiver);
         hart.resume_activity(true);
-        unsafe { __system_start_frame(frame) }
+        unsafe {
+            super::paging::activate_scheduled_root();
+            __system_start_frame(frame)
+        }
     }
     let scheduler = SCHEDULER.lock();
     // Module preparations can precede Finder in the shared THRD store. Start
@@ -1218,6 +1228,7 @@ pub(crate) fn start(pending: Option<crate::toolbox::processes::startup::PendingS
     {
         return Err(mac_formats::Error::Malformed("scheduler bootstrap Finder is already claimed").into());
     }
+    select_space(&t.core);
     t.commit_execution(hart);
     t.core.publish_cpu();
     activate_context(Some(&t.core.context));
@@ -1228,7 +1239,11 @@ pub(crate) fn start(pending: Option<crate::toolbox::processes::startup::PendingS
     // Publish the real receiver, then notify only retained callable/cleanup work.
     wake::admitted(wake_receiver);
     hart.resume_activity(false);
-    unsafe { __system_start_frame(frame) }
+    // The genuine selected claim pins its SPCE throughout restoration.
+    unsafe {
+        super::paging::activate_scheduled_root();
+        __system_start_frame(frame)
+    }
 }
 extern "C" fn idle() -> !
 {
@@ -1835,6 +1850,7 @@ fn commit_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture, in
             return None;
         }
         let next = if index == current { capture.frame() } else { thread.core.cpu_frame()? };
+        select_space(&thread.core);
         worker::commit_resume(thread);
         thread.commit_execution(hart);
         thread.core.publish_cpu();
@@ -1848,6 +1864,7 @@ fn commit_choice(scheduler: &Scheduler, capture: &super::traps::OuterCapture, in
     }
     let next = if current == IDLE { capture.frame() } else { idle_frame() };
     activate_idle_context();
+    super::traps::execution::select_space(None);
     select_current(IDLE);
     release_claim(scheduler, current, hart);
     super::traps::execution::dispatch::idle_committed(hart, next);
@@ -1945,4 +1962,46 @@ pub fn image_for(app: u64) -> Option<crate::images::Binding>
                                                                    })
                                                                    .flatten()
                            })
+}
+
+/// The actual SCHEDULER turn pins this space through the outgoing claim.
+/// Final native return reads the selected hart's scalar without another lock.
+fn select_space(core: &ThreadCore)
+{
+    if core.context.is_module_worker()
+    {
+        if core.space.is_some()
+        {
+            super::traps::entry_lost("module THRD carries a Process space")
+        }
+        super::traps::execution::select_space(None);
+    }
+    else
+    {
+        let Some(space) = core.space.as_ref()
+        else
+        {
+            super::traps::entry_lost("application THRD has no canonical Process space")
+        };
+        if space.owner().incarnation() != core.binding.owner()
+        {
+            super::traps::entry_lost("application THRD Process space owner changed")
+        }
+        super::traps::execution::select_space(Some(space));
+    }
+}
+
+fn application_space(executor: &crate::context::ApplicationExecutor<'_>)
+                     -> Result<super::paging::process::Pin, mac_abi::Status>
+{
+    let scheduler = SCHEDULER.lock();
+    let thread = scheduler.iter()
+                          .find_map(|(_, t)| (t.id == executor.thread()).then_some(t))
+                          .ok_or(mac_abi::WRONG_THREAD)?;
+    let space = thread.core.space.as_ref().ok_or(mac_abi::ACCESS_DENIED)?;
+    if !space.matches(executor.owner(), executor.image())
+    {
+        return Err(mac_abi::ACCESS_DENIED);
+    }
+    Ok(space.clone())
 }

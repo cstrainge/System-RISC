@@ -187,6 +187,7 @@ pub(crate) fn prepare_worker(launch: crate::drivers::WorkerLaunch)
                                 context,
                                 release: Mutex::new(None),
                                 binding: launch.execution().binding(),
+                                space: None,
                                 top,
                                 cleanup_refusal: Mutex::new(None),
                                 service_quarantine: spin::Once::new(),

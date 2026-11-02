@@ -27,6 +27,7 @@ static RETIRING: AtomicUsize = AtomicUsize::new(0);
 pub(crate) enum Error
 {
     Missing,
+    Process(super::process::Error),
     Owner,
     Closed,
     State,
@@ -61,6 +62,7 @@ impl Error
     {
         match self
         {
+            Self::Process(e) => e.status(),
             Self::Metadata => NO_MEMORY,
             Self::Account(cause) => crate::allocation::account_status(cause),
             Self::Pages(cause) => cause.status(),
@@ -81,6 +83,7 @@ impl fmt::Display for Error
     {
         match self
         {
+            Self::Process(e) => e.fmt(out),
             Self::Missing =>
             {
                 out.write_str("executable mappings require the actual permanent supervisor roots")
@@ -310,6 +313,7 @@ struct SegmentMap
 #[derive(Clone, Copy)]
 struct Slot
 {
+    root:    u64,
     cpu:     usize,
     index:   usize,
     bits:    u64,
@@ -514,13 +518,30 @@ impl Mapping
         // treating a legitimate concurrently installed branch as corruption.
         let lease =
             crate::machine::monitor::prepare_translation_invalidation().map_err(Error::Monitor)?;
-        let plan = Plan::prepare(&self.segments)?;
+        let plan = Plan::prepare(&self.segments, self.owner.owner())?;
         let mut leaves = Vec::new();
-        leaves.try_reserve_exact(plan.leaves.len()).map_err(|_| Error::Metadata)?;
-        leaves.extend_from_slice(&plan.leaves); // fallible capacity precedes effects
+        leaves.try_reserve_exact(plan.leaves.iter().filter(|s| is_permanent_root(s.root)).count())
+              .map_err(|_| Error::Metadata)?;
+        for slot in &plan.leaves
+        {
+            if is_permanent_root(slot.root)
+            {
+                leaves.push(*slot)
+            }
+        } // exact fallible capacity precedes effects
         let mut ancestors = Vec::new();
-        ancestors.try_reserve_exact(plan.ancestors.len()).map_err(|_| Error::Metadata)?;
-        ancestors.extend_from_slice(&plan.ancestors);
+        ancestors.try_reserve_exact(plan.ancestors
+                                        .iter()
+                                        .filter(|s| is_permanent_root(s.root))
+                                        .count())
+                 .map_err(|_| Error::Metadata)?;
+        for slot in &plan.ancestors
+        {
+            if is_permanent_root(slot.root)
+            {
+                ancestors.push(*slot)
+            }
+        }
         self.leaves.call_once(|| {
                        Entries { leaves,
                                  ancestors }
@@ -529,7 +550,7 @@ impl Mapping
         {
             return Err(Error::Closed);
         }
-        plan.commit()?;
+        let _committed = plan.commit()?;
         self.set_phase(Phase::Mapped);
         match lease.finish()
         {
@@ -611,7 +632,29 @@ impl Mapping
                     }
                 };
                 let leaves = self.leaves.get().ok_or(Error::State)?;
-                if let Err(cause) = unmap(leaves)
+                let roots = if self.owner.owner().kind()
+                               == mac_object_table::domain::DomainKind::Module
+                {
+                    super::process::snapshot(false).map_err(Error::Process)?
+                }
+                else
+                {
+                    Vec::new()
+                };
+                let dynamic = process_entries(&self.segments, &roots)?;
+                let mut all = Entries { leaves:    Vec::new(),
+                                        ancestors: Vec::new() };
+                all.leaves
+                   .try_reserve_exact(leaves.leaves.len() + dynamic.leaves.len())
+                   .map_err(|_| Error::Metadata)?;
+                all.ancestors
+                   .try_reserve_exact(leaves.ancestors.len() + dynamic.ancestors.len())
+                   .map_err(|_| Error::Metadata)?;
+                all.leaves.extend_from_slice(&leaves.leaves);
+                all.leaves.extend_from_slice(&dynamic.leaves);
+                all.ancestors.extend_from_slice(&leaves.ancestors);
+                all.ancestors.extend_from_slice(&dynamic.ancestors);
+                if let Err(cause) = unmap(&all)
                 {
                     let refusal = match &cause
                     {
@@ -783,7 +826,7 @@ struct Table
 struct Branch
 {
     key:   Key,
-    table: Foundation<Backing>,
+    table: BranchBacking,
     next:  Option<Box<Branch>>
 }
 impl Branch
@@ -814,32 +857,73 @@ impl Tables
         None
     }
 }
+enum BranchBacking
+{
+    Foundation(Foundation<Backing>),
+    Process
+    {
+        backing: Backing,
+        _charge: Committed<NativeInvocationGate>
+    }
+}
+impl core::ops::Deref for BranchBacking
+{
+    type Target = Backing;
+
+    fn deref(&self) -> &Backing
+    {
+        match self
+        {
+            Self::Foundation(b) => b,
+            Self::Process { backing,
+                            .. } => backing
+        }
+    }
+}
 struct Plan
 {
-    branches:  Vec<Box<Branch>>,
-    edits:     Vec<Slot>,
-    leaves:    Vec<Slot>,
-    checks:    Vec<Slot>,
-    ancestors: Vec<Slot>
+    _processes: Vec<super::process::Pin>,
+    branches:   Vec<Box<Branch>>,
+    edits:      Vec<Slot>,
+    leaves:     Vec<Slot>,
+    checks:     Vec<Slot>,
+    ancestors:  Vec<Slot>
 }
 impl Plan
 {
-    fn prepare(segments: &[SegmentMap]) -> Result<Self, Error>
+    fn prepare(segments: &[SegmentMap], owner: mac_object_table::domain::DomainId)
+               -> Result<Self, Error>
     {
-        let mut plan = Self { branches:  Vec::new(),
-                              edits:     Vec::new(),
-                              leaves:    Vec::new(),
-                              checks:    Vec::new(),
-                              ancestors: Vec::new() };
+        let mut plan = Self { _processes: Vec::new(),
+                              branches:   Vec::new(),
+                              edits:      Vec::new(),
+                              leaves:     Vec::new(),
+                              checks:     Vec::new(),
+                              ancestors:  Vec::new() };
         let spaces = SPACES.get().ok_or(Error::Missing)?;
         let boot = BOOT.get().ok_or(Error::Missing)?;
         let pages = segments.iter()
                             .try_fold(0usize, |n, s| n.checked_add((s.bytes / PAGE_BYTES) as usize))
-                            .and_then(|n| n.checked_mul(2))
                             .ok_or(Error::Metadata)?;
-        plan.leaves.try_reserve_exact(pages).map_err(|_| Error::Metadata)?;
-        plan.edits.try_reserve_exact(pages).map_err(|_| Error::Metadata)?;
-        for space in [&spaces.kernel, &spaces.firmware]
+        let processes = if owner.kind() == mac_object_table::domain::DomainKind::Module
+        {
+            super::process::snapshot(true).map_err(Error::Process)?
+        }
+        else
+        {
+            Vec::new()
+        };
+        let total = pages.checked_mul(processes.len().checked_add(2).ok_or(Error::Metadata)?)
+                         .ok_or(Error::Metadata)?;
+        plan.leaves.try_reserve_exact(total).map_err(|_| Error::Metadata)?;
+        plan.edits.try_reserve_exact(total).map_err(|_| Error::Metadata)?;
+        for (space, account) in
+            [&spaces.kernel, &spaces.firmware].into_iter()
+                                              .map(|s| (s, None))
+                                              .chain(processes.iter()
+                                                              .map(|r| {
+                                                                  (&r.space, Some(&r.allocation))
+                                                              }))
         {
             let root = space.owner.root_physical();
             let root_table = Table { cpu:      boot.ram
@@ -867,7 +951,8 @@ impl Plan
                                                          prefix: l1_prefix },
                                                    root_table,
                                                    address,
-                                                   space)?;
+                                                   space,
+                                                   account)?;
                             l1_cache = Some((l1_prefix, table));
                             table
                         }
@@ -883,7 +968,8 @@ impl Plan
                                                          prefix: l0_prefix },
                                                    l1,
                                                    address,
-                                                   space)?;
+                                                   space,
+                                                   account)?;
                             l0_cache = Some((l0_prefix, table));
                             table
                         }
@@ -898,21 +984,28 @@ impl Plan
                                            permissions,
                                            PageOwnership::Manual).map_err(Error::Encoding)?
                                                                  .bits();
-                    let slot = Slot { cpu: l0.cpu,
+                    let slot = Slot { root: root.0,
+                                      cpu: l0.cpu,
                                       index: Sv39::index(address, 0).map_err(Error::Encoding)?,
                                       bits,
                                       address };
+                    // Branch edits consume their own admitted positions. Keep
+                    // the final leaf insertion fallible as well; a branch is
+                    // not allowed to steal untracked future-leaf headroom.
+                    plan.edits.try_reserve(1).map_err(|_| Error::Metadata)?;
                     plan.leaves.push(slot);
                     plan.edits.push(slot);
                     offset += PAGE_BYTES;
                 }
             }
         }
+        plan._processes = processes;
         plan.leaves.sort_unstable_by_key(|leaf| leaf.address);
         Ok(plan)
     }
 
-    fn table(&mut self, key: Key, parent: Table, address: u64, space: &super::Space)
+    fn table(&mut self, key: Key, parent: Table, address: u64, space: &super::Space,
+             account: Option<&crate::machine::scheduler::accounting::AllocationAuthority>)
              -> Result<Table, Error>
     {
         if let Some(table) =
@@ -921,7 +1014,8 @@ impl Plan
             return Ok(table);
         }
         let index = Sv39::index(address, key.level + 1).map_err(Error::Encoding)?;
-        let mut slot = Slot { cpu: parent.cpu,
+        let mut slot = Slot { root: key.root,
+                              cpu: parent.cpu,
                               index,
                               bits: 0,
                               address };
@@ -977,14 +1071,19 @@ impl Plan
                                          expected: 1,
                                          observed });
         }
-        let branch =
-            crate::allocator::with_system(crate::allocator::SystemClass::Foundation, || {
-                let table = Foundation::<Backing>::allocate(PAGE_BYTES as usize)
-                .map_err(Error::Foundation)?;
-                Box::try_new(Branch { key,
-                                      table,
-                                      next: None }).map_err(|_| Error::Metadata)
-            })?;
+        let prepare = || {
+            let table=match account {
+                Some(account)=>{let charge=account.reserve_kernel(PAGE_BYTES).map_err(Error::Account)?;let backing=Backing::allocate(PAGE_BYTES as usize).map_err(Error::Pages)?;BranchBacking::Process{backing,_charge:charge.commit()}},
+                None=>BranchBacking::Foundation(Foundation::<Backing>::allocate(PAGE_BYTES as usize).map_err(Error::Foundation)?)
+            };
+            Box::try_new(Branch { key,
+                                  table,
+                                  next: None }).map_err(|_| Error::Metadata)
+        };
+        let branch=match account {
+            Some(account)=>crate::allocator::with_target(crate::allocator::Target::Owner{account:account.clone(),class:mac_kernel_model::policy::MemoryClass::Kernel},prepare),
+            None=>crate::allocator::with_system(crate::allocator::SystemClass::Foundation,prepare)
+        }?;
         self.branches.try_reserve(1).map_err(|_| Error::Metadata)?;
         self.edits.try_reserve(1).map_err(|_| Error::Metadata)?;
         let table = branch.reference();
@@ -997,7 +1096,7 @@ impl Plan
         Ok(table)
     }
 
-    fn commit(mut self) -> Result<(), Error>
+    fn commit(mut self) -> Result<Self, Error>
     {
         interrupts::with_masked(|| {
             let mut tables = TABLES.lock();
@@ -1036,7 +1135,8 @@ impl Plan
             }
             REVISION.store(next, Ordering::Release);
             Ok(())
-        })
+        })?;
+        Ok(self)
     }
 }
 fn unmap(entries: &Entries) -> Result<(), Error>
@@ -1088,6 +1188,7 @@ pub(crate) fn revision() -> Option<u64>
 }
 pub(crate) fn monitor_released()
 {
+    super::process::monitor_released();
     if RETIRING.load(Ordering::Acquire) != 0
     {
         PENDING.store(true, Ordering::Release);
@@ -1101,4 +1202,159 @@ pub(crate) fn changed()
 pub(crate) fn take_pending() -> bool
 {
     PENDING.swap(false, Ordering::AcqRel)
+}
+
+fn is_permanent_root(root: u64) -> bool
+{
+    SPACES.get()
+          .is_some_and(|s| {
+              root == s.kernel.owner.root_physical().0 || root == s.firmware.owner.root_physical().0
+          })
+}
+/// Physical coordinates are interpreted only after matching a real retained
+/// table owner. Source cloning holds the actual translation command lease.
+pub(super) fn table_snapshot(physical: PhysicalAddress) -> Result<[u64; 512], Error>
+{
+    let spaces = SPACES.get().ok_or(Error::Missing)?;
+    let cpu = table_in_space(&spaces.kernel, physical).or_else(|| {
+                                                          table_in_space(&spaces.firmware, physical)
+                                                      })
+                                                      .ok_or(Error::State)?;
+    let mut entries = [0u64; 512];
+    for (index, entry) in entries.iter_mut().enumerate()
+    {
+        // SAFETY: table_in_space proves the complete aligned native table;
+        // the actual command lease excludes table/PTE retirement. Returning
+        // copied scalars avoids borrowing mutable hardware-visible entries.
+        *entry =
+            unsafe { AtomicU64::from_ptr((cpu as *mut u64).add(index)) }.load(Ordering::Acquire);
+    }
+    Ok(entries)
+}
+
+fn table_in_space(space: &super::Space, physical: PhysicalAddress) -> Option<usize>
+{
+    if space.owner.root_physical() == physical
+    {
+        return BOOT.get()?.ram.virtual_address(physical, PAGE_BYTES).ok().map(|a| a.0 as usize);
+    }
+    if let Ok(node) = space.tables.node(physical)
+    {
+        return Some(node.cpu);
+    }
+    interrupts::with_masked(|| {
+        let tables = TABLES.lock();
+        let mut next = tables.branches.as_deref();
+        while let Some(branch) = next
+        {
+            if branch.key.root == space.owner.root_physical().0
+               && branch.table.physical() == physical
+            {
+                return Some(branch.table.cpu_base());
+            }
+            next = branch.next.as_deref();
+        }
+        None
+    })
+}
+fn process_entries(segments: &[SegmentMap], roots: &[super::process::Pin])
+                   -> Result<Entries, Error>
+{
+    let mut entries = Entries { leaves:    Vec::new(),
+                                ancestors: Vec::new() };
+    let count = segments.iter()
+                        .try_fold(0usize, |n, s| n.checked_add((s.bytes / PAGE_BYTES) as usize))
+                        .and_then(|n| n.checked_mul(roots.len()))
+                        .ok_or(Error::Metadata)?;
+    entries.leaves.try_reserve_exact(count).map_err(|_| Error::Metadata)?;
+    entries.ancestors
+           .try_reserve_exact(count.checked_mul(2).ok_or(Error::Metadata)?)
+           .map_err(|_| Error::Metadata)?;
+    for row in roots
+    {
+        let space = &row.space;
+        for segment in segments
+        {
+            'page: for offset in (0..segment.bytes).step_by(PAGE_BYTES as usize)
+            {
+                let address = segment.virtual_base + offset;
+                let mut physical = space.owner.root_physical();
+                for level in [2, 1]
+                {
+                    let cpu = table_in_space(space, physical).ok_or(Error::State)?;
+                    let index = Sv39::index(address, level).map_err(Error::Encoding)?;
+                    let mut slot = Slot { root: space.owner.root_physical().0,
+                                          cpu,
+                                          index,
+                                          bits: 0,
+                                          address };
+                    slot.bits = slot.load();
+                    let child = match Entry::decode_raw(slot.bits, level).map_err(Error::Encoding)?
+                    {
+                        Decoded::Table { physical,
+                                         .. } => physical,
+                        Decoded::Invalid => continue 'page,
+                        _ => return Err(Error::State)
+                    };
+                    entries.ancestors.push(slot);
+                    physical = child;
+                }
+                let cpu = table_in_space(space, physical).ok_or(Error::State)?;
+                let permissions = Permissions { read:    segment.flags & image::READ != 0,
+                                                write:   segment.flags & image::WRITE != 0,
+                                                execute: segment.flags & image::EXECUTE != 0,
+                                                access:  Access::Supervisor,
+                                                global:  false };
+                let bits = Entry::leaf(PhysicalAddress(segment.physical + offset),
+                                       LeafSize::Page,
+                                       permissions,
+                                       PageOwnership::Manual).map_err(Error::Encoding)?
+                                                             .bits();
+                let slot = Slot { root: space.owner.root_physical().0,
+                                  cpu,
+                                  index: Sv39::index(address, 0).map_err(Error::Encoding)?,
+                                  bits,
+                                  address };
+                // A root prepared after publication inherited this mapping;
+                // stopped roots omitted from a later publisher may not have it.
+                if slot.load() != 0
+                {
+                    entries.leaves.push(slot);
+                }
+            }
+        }
+    }
+    Ok(entries)
+}
+/// Canonical SPCE retirement owns the actual invalidation ACK before taking
+/// these physical/receipt owners. No Mapping retains private-root raw Slots.
+pub(super) fn retire_process_branches(root: PhysicalAddress)
+{
+    let mut removed = interrupts::with_masked(|| {
+        let mut tables = TABLES.lock();
+        let mut source = tables.branches.take();
+        let mut keep = None;
+        let mut removed = None;
+        while let Some(mut branch) = source
+        {
+            source = branch.next.take();
+            if branch.key.root == root.0
+            {
+                branch.next = removed.take();
+                removed = Some(branch)
+            }
+            else
+            {
+                branch.next = keep.take();
+                keep = Some(branch)
+            }
+        }
+        tables.branches = keep;
+        removed
+    });
+    while let Some(mut branch) = removed
+    {
+        removed = branch.next.take();
+        drop(branch)
+    }
 }

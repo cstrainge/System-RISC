@@ -1,5 +1,6 @@
 //! Welcome panel using the same owned Control Manager object and loaded CDEF
 //! as application progress bars. No desktop or app event loop is needed yet.
+use crate::toolbox::resources::definitions::DefinitionRef;
 use mac_abi::{controls::*, definitions::ControlDefinitionState, *};
 use mac_formats::{Error, Result, resource::Resource};
 
@@ -12,7 +13,7 @@ pub(crate) use strip::Refusal as ExtensionRefusal;
 pub struct BootScreen
 {
     id:         u64,
-    entry:      DefinitionEntry,
+    entry:      DefinitionRef,
     state:      ControlDefinitionState,
     extensions: strip::Strip
 }

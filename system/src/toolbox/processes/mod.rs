@@ -860,10 +860,20 @@ fn finish_launch(call: &mut ProcessCall, prepared: &mut launch::Prepared) -> Res
     }, || crate::kernel::load_application(prepared.admission.owner(),
                                           &prepared.admission.allocation(),
                                           catalog.creator, catalog.file_type, resources))?;
+    // READY has settled; admit the genuine private table hierarchy without a
+    // Desktop borrow, then move its sole pin into actual THRD preparation.
+    let space = crate::machine::paging::process::admit(prepared.admission.owner(),
+                                                       &prepared.admission.allocation(),
+                                                       &image).map_err(|cause| {
+                                                                  serial!("PROCESS_SPACE_REFUSED \
+                                                                           owner={} {cause}",
+                                                                          prepared.admission.id());
+                                                                  cause.status()
+                                                              })?;
     crate::kernel::with_desktop(|desktop| {
         desktop.processes.bind_heap(prepared.admission.owner(), prepared.heap.clone())?;
         desktop.processes.bind_tls(prepared.admission.owner(), prepared.tls.clone())?;
-        desktop.finish_application_launch(call, catalog, image, &mut prepared.admission)
+        desktop.finish_application_launch(call, catalog, image, space, &mut prepared.admission)
     }).map_err(|error| error.status())?
 }
 

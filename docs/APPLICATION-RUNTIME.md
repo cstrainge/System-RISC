@@ -289,8 +289,47 @@ Partial identities or success replies carrying error identity are BadAbi.
 
 The whole-world layout fingerprint includes DocumentCall size and both field
 offsets. Development ABI remains1; System, apps, modules, definitions and SDK
-clients must rebuild together. The bounded observations below exercise this wire through genuine asynchronous
-document replay; earlier artifact observations remain scoped to their layouts.
+clients must rebuild together. This source transport is not proof of asynchronous
+provider readiness or correct pending-document replay. Its updated native wire
+was exercised separately in the bounded observations below; previous artifact
+observations above remain scoped to their recorded earlier layouts.
+
+An optimized QemuRISC-V whole-world build ran in private QEMU
+virt guests with four CPUs, 8 GiB RAM and event/TextEdit input tracing disabled.
+System resource SHA-256 was
+`2f23cf112f75dda00feef4b4af3903581cd2f7eb2a742d8083a2b3b5b73cc629`;
+System ELF was
+`9c3629856fb18ed77478a023e783c4a94eec52750a64415459212087287774c8`;
+boot ROM was
+`831c68a54582b71736b0b5f45853fc9c7311a1b958610614c5115088380e4708`.
+The actual packaged Finder opened a TEXT/TEDT document through its association
+and public DocumentOpen::commit. The actual rebuilt Text Edit package declared
+either absent MISS1 or incompatible POWR2. Each variant refused twice before
+author entry, retained class/version and cause in the System-owned Finder alert,
+closed the original unstarted Process/account, accepted dismissal and retried.
+A direct application-open variant also retained MISS1 through the common decoder.
+Following mouse input was observed after the refusals. Source/base artifacts
+were unchanged; owned guests were reaped and private media removed.
+
+These finite scenarios cover the synchronous declared-provider refusal paths
+and updated native transport. They do not establish asynchronous READY ordering,
+pending-document replay/cancellation, exhaustive malformed-wire rejection,
+latency or race absence. Existing diagnostic output, screenshots and injected
+input affect execution. No host-linked service supplied these observations.
+
+
+### Build-freshness claim correction — 2026-11-01
+
+The earlier “checksum-fresh” label for the recorded builds was unsupported.
+Their recorded feature flag alone did not establish content-based freshness.
+The exact artifact hashes, native observations and unchanged-source receipts
+remain their evidence; they do not prove that every changed source was rebuilt.
+
+The build now requires both `CARGO_UNSTABLE_CHECKSUM_FRESHNESS=true` and
+`CARGO_BUILD_FINGERPRINT=content`, followed by checking the actual Cargo
+fingerprints and artifact hashes. Build-script inputs still need explicit
+rebuilding when their mtime tracking misses changes; content mode does not
+remove that separate limitation. See the [Cargo freshness contract](https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#checksum-freshness).
 
 
 ### Bounded READY observations — 2026-11-01
@@ -338,3 +377,47 @@ malformed DMA, source security, timing, race absence, arbitrary fault recovery,
 provider-withdrawal races, pending replacement cancellation, stalled-source
 deadline policy, exhaustion, Windows
 or other hardware. These finite cases do not establish full std adoption.
+
+
+### READY with owned Process page roots — 2026-11-01
+
+The launch continuation admits the genuine Process page root after READY and
+before author-thread publication, outside Desktop. Immediate and delayed initial
+Finder use that same admission boundary. The sealed pending-startup route selects
+and activates the System root before entering the actual idle frame; it retains
+no application-root pin on the abandoned bootstrap stack. Replacement Finder
+continues through its existing owned recovery preparation.
+
+An optimized release/LTO, four-CPU, 8 GiB QEMU image combined this continuation
+with the independent supervisor Process roots. System resource SHA-256 was
+`f785ef9ac17812dd24ba66e0cc979d42e24b70462f5dde8bc49c67151f2f5878`,
+System ELF was
+`7ffdff68724a279e98838077d82bc815c064c6eed032b72db872c948d8b55047`,
+and ROM was
+`ddf4e7d953b20de364ee9abe4acd08882a823eb43dc35a420d69370e0b3bdc05`.
+The build used both Cargo freshness settings, actual content fingerprint records
+and an explicit System-package rebuild for generated inputs.
+
+The actual Finder ELF was packaged with ENTR1. With the real virtual entropy
+response withheld and an actual descriptor outstanding, all four paused CPU
+PC/SP/SATP observations were in the genuine System idle body on System root
+`0x8c802000`; no Finder thread or author entry had been published. Input responded.
+Releasing the source led to actual Finder entry and desktop. A production Finder
+document association likewise held the actual Text Edit package before READY,
+then opened its document and reclaimed its thread and original account on quit.
+
+A separately labelled private virtual-device fault set only the verified RNG
+DeviceStatus FAILED bit through QEMU's physical debugger channel. The real
+driver reset and acknowledged the failed operation while the source remained
+withheld. The original unstarted Process/account closed; Finder displayed the
+typed ENTR1/general I/O cause. Dismissal and a fresh source-backed retry opened
+the document, followed by quit, actual reclamation and input. No guest RAM,
+PTE, CPU register, entropy payload or seed was written by the observer.
+
+Sources and base artifacts stayed fixed during each observation; owned guests
+and helper processes were reaped and cloned media removed. Paused metadata/CPU
+observations, injected input, logs and the fault channel perturb execution.
+These finite cases do not qualify arbitrary faults, races, timing, full std
+children on this combined image, pending replacement cancellation, exhaustion
+or production Finder OOM restart. Applications remain trusted supervisor code;
+these roots do not provide user-mode isolation.

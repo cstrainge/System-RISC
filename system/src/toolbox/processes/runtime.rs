@@ -10,6 +10,7 @@ use crate::toolbox::{events::EventManager,
                      processes::{ResourceBinding,
                                  menu::{Action, Entry},
                                  termination::{Outcome, Retention}},
+                     resources::definitions::DefinitionRef,
                      runtime::Desktop,
                      windows::{GroupFocus, WindowId}};
 
@@ -26,7 +27,7 @@ pub(super) struct Saved
 }
 impl Saved
 {
-    pub fn try_new(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionEntry,
+    pub fn try_new(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionRef,
                    allocation: crate::machine::scheduler::accounting::AllocationAuthority)
                    -> Result<Self, Status>
     {
@@ -44,7 +45,7 @@ impl Saved
 
     /// The active row holds the one empty swap placeholder. Its boxed queue
     /// travels between active rows and must never retain a process account.
-    pub fn try_placeholder(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionEntry)
+    pub fn try_placeholder(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionRef)
                            -> Result<Self, Status>
     {
         use mac_object_table::shared::InvocationGate as _;
@@ -56,7 +57,7 @@ impl Saved
         Self::construct(owner, mdef, events)
     }
 
-    fn construct(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionEntry,
+    fn construct(owner: crate::toolbox::handles::OwnerRef, mdef: DefinitionRef,
                  events: Box<EventManager>)
                  -> Result<Self, Status>
     {
@@ -404,15 +405,22 @@ impl Desktop
         }
     }
 
-    pub(crate) fn spawn_process(&self, id: u64, loaded: crate::kernel::LoadedImage)
+    pub(crate) fn spawn_process(&self, id: u64, loaded: crate::kernel::LoadedImage,
+                                space: crate::machine::paging::process::Pin)
                                 -> Result<u64, Status>
     {
+        let owner = self.processes.ledger(id)?;
+        if !space.matches(&owner, loaded.binding())
+        {
+            return Err(ACCESS_DENIED);
+        }
         let charges = self.processes.thread_charges(id)?;
-        crate::machine::scheduler::spawn(self.processes.ledger(id)?,
+        crate::machine::scheduler::spawn(owner,
                                          loaded,
                                          charges,
                                          self.processes.heap(id)?,
-                                         self.processes.tls(id)?)
+                                         self.processes.tls(id)?,
+                                         space)
     }
 
     pub(super) fn post_drag_notice(&mut self, notice: crate::toolbox::drag::Notice)
@@ -1007,12 +1015,14 @@ impl Desktop
     pub(crate) fn finish_application_launch(&mut self, call: &mut ProcessCall,
                                             catalog: mac_abi::files::CatalogInfo,
                                             loaded: crate::kernel::LoadedImage,
+                                            space: crate::machine::paging::process::Pin,
                                             admission: &mut crate::toolbox::processes::LaunchAdmission)
                                             -> Result<(), Status>
     {
         let id = admission.id();
         if self.processes.ledger(id)?.owner() != admission.owner().owner()
            || self.processes.heap(id)?.owner() != admission.owner().owner()
+           || !space.matches(admission.owner(), loaded.binding())
         {
             return Err(ACCESS_DENIED);
         }
@@ -1045,7 +1055,7 @@ impl Desktop
             self.locals.push(local);
             return Err(error);
         }
-        let thread = match self.spawn_process(id, loaded)
+        let thread = match self.spawn_process(id, loaded, space)
         {
             Ok(t) => t,
             Err(e) =>

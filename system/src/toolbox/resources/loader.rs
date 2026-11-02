@@ -2,12 +2,14 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-use mac_abi::{BAD_ARGUMENT, DefinitionEntry, NOT_FOUND, Status};
+use mac_abi::{BAD_ARGUMENT, NOT_FOUND, Status};
 use mac_formats::{Error, Result,
                   code::{CodeRegistry, NoTranslator},
                   native::{Descriptor, Role, image},
                   resource::Resource,
                   text};
+
+use super::definitions::{self, DefinitionRef};
 
 /// Format refusal and executable publication failure retain distinct identity.
 /// The trap boundary deliberately chooses numeric Status; loading callers keep
@@ -17,7 +19,8 @@ pub(crate) enum LoadError
 {
     Format(Error),
     Publication(crate::machine::monitor::Error),
-    Mapping(crate::machine::paging::modules::Error)
+    Mapping(crate::machine::paging::modules::Error),
+    Definition(definitions::Error)
 }
 impl fmt::Display for LoadError
 {
@@ -27,6 +30,7 @@ impl fmt::Display for LoadError
         {
             Self::Format(cause) => cause.fmt(out),
             Self::Mapping(cause) => cause.fmt(out),
+            Self::Definition(cause) => cause.fmt(out),
             Self::Publication(cause) => write!(out, "executable publication refused: {cause}")
         }
     }
@@ -50,6 +54,13 @@ impl From<crate::machine::paging::modules::Error> for LoadError
     fn from(cause: crate::machine::paging::modules::Error) -> Self
     {
         Self::Mapping(cause)
+    }
+}
+impl From<definitions::Error> for LoadError
+{
+    fn from(cause: definitions::Error) -> Self
+    {
+        Self::Definition(cause)
     }
 }
 pub(crate) type LoadResult<T> = core::result::Result<T, LoadError>;
@@ -173,13 +184,10 @@ fn load(descriptor: &Descriptor, bytes: &[u8], relocations: Option<&[u8]>, desti
 
 struct Binding
 {
-    kind:    [u8; 4],
-    id:      i16,
-    origin:  u64,
-    base:    u64,
-    limit:   u64,
-    entry:   DefinitionEntry,
-    _source: Option<crate::images::Read>
+    kind:   [u8; 4],
+    id:     i16,
+    origin: u64,
+    entry:  DefinitionRef
 }
 pub struct Definitions
 {
@@ -188,10 +196,11 @@ pub struct Definitions
 }
 impl Definitions
 {
-    pub fn new(_files: &'static super::manager::Files) -> Self
+    pub fn new(_files: &'static super::manager::Files) -> LoadResult<Self>
     {
-        Self { registry: CodeRegistry::new(),
-               bindings: Vec::new() }
+        definitions::initialize()?;
+        Ok(Self { registry: CodeRegistry::new(),
+                  bindings: Vec::new() })
     }
 
     pub(crate) fn evict_origin(&mut self, origin: u64)
@@ -199,7 +208,7 @@ impl Definitions
         self.bindings.retain(|binding| binding.origin != origin);
     }
 
-    pub(crate) fn resolve(&mut self, kind: [u8; 4], id: i16) -> LoadResult<DefinitionEntry>
+    pub(crate) fn resolve(&mut self, kind: [u8; 4], id: i16) -> LoadResult<DefinitionRef>
     {
         // A process-resource cleanup wrapper can nest inside the resident
         // service scope. The genuine Activity still selects System definitions.
@@ -218,13 +227,13 @@ impl Definitions
 
     pub(crate) fn resolve_system(&mut self, source: crate::kernel::SystemResources, kind: [u8; 4],
                                  id: i16)
-                                 -> LoadResult<DefinitionEntry>
+                                 -> LoadResult<DefinitionRef>
     {
         source.with(|| self.resolve_selected(kind, id))
               .map_err(|_| Error::Malformed("System UI resource scope is unavailable"))?
     }
 
-    fn resolve_selected(&mut self, kind: [u8; 4], id: i16) -> LoadResult<DefinitionEntry>
+    fn resolve_selected(&mut self, kind: [u8; 4], id: i16) -> LoadResult<DefinitionRef>
     {
         let lookup = crate::kernel::definition_resource_scope();
         crate::kernel::with_resources_in(lookup, |manager| {
@@ -237,7 +246,11 @@ impl Definitions
             if let Some(binding) =
                 self.bindings.iter().find(|b| b.kind == kind && b.id == id && b.origin == origin)
             {
-                return Ok(binding.entry);
+                return if definitions::matches(binding.entry, kind, id, origin)? {
+                    Ok(binding.entry)
+                } else {
+                    Err(Error::Missing("cached definition callable has retired").into())
+                };
             }
             // The shared definition loader owns code/relocation staging,
             // independently of the application which first requested it.
@@ -254,26 +267,7 @@ impl Definitions
             {
                 return Err(Error::Malformed("invalid code resource reservation").into());
             }
-            // Definition resources are independently relocatable modules. Allocate
-            // top-down rather than depending on their build-time preferred addresses.
-            let mut base = crate::machine::memory::DEFINITION_LIMIT - extent;
-            loop
-            {
-                if base < crate::machine::memory::DEFINITION_BASE
-                {
-                    return Err(Error::BudgetExceeded("code resource address space exhausted").into());
-                }
-                let overlap =
-                    self.bindings.iter().find(|b| base < b.limit && b.base < base + extent);
-                let Some(other) = overlap
-                else
-                {
-                    break;
-                };
-                base = other.base
-                            .checked_sub(extent)
-                            .ok_or(Error::Malformed("code resource placement overflow"))?;
-            }
+            let base = definitions::placement(extent)?;
             // Reserve publication storage and retain the source before touching
             // executable memory. Refusal leaves no half-published definition.
             crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
@@ -288,15 +282,20 @@ impl Definitions
                 manager.retain_origin()
                        .map_err(|_| Error::AllocationFailed("definition source pin refused"))?
             };
+            let owner = match &source {
+                Some(source) => source.owner().clone(),
+                None => crate::toolbox::handles::system_owner().map_err(definitions::Error::OwnerUnavailable)?,
+            };
+            if !owner.accepting() {
+                return Err(definitions::Error::Stopping.into());
+            }
             let address = load(d, &code.code, Some(&code.relocations), base)?;
-            let entry: DefinitionEntry = unsafe { core::mem::transmute(address) };
-            self.bindings.push(Binding { kind,
-                                         id,
-                                         origin,
-                                         base,
-                                         limit: base + extent,
-                                         entry,
-                                         _source: source });
+            // This fixed-arena write exposes no callable until canonical
+            // publication succeeds. Desktop serializes placement during this
+            // transitional loader; physical preparation is the next stage.
+            let raw: mac_abi::DefinitionEntry = unsafe { core::mem::transmute(address) };
+            let entry = definitions::publish(owner, source, kind, id, origin, base, base + extent, raw)?;
+            self.bindings.push(Binding { kind, id, origin, entry });
             serial!("CODE_LOADED {}{} entry=0x{:x} origin={} linked=0x{:x} actual=0x{:x}",
                     text::decode(&kind),
                     id,
@@ -325,7 +324,8 @@ pub(crate) fn status(error: impl Into<LoadError>) -> Status
         {
             status(LoadError::Format(cause))
         }
-        LoadError::Mapping(cause) => cause.status()
+        LoadError::Mapping(cause) => cause.status(),
+        LoadError::Definition(cause) => cause.status()
     }
 }
 

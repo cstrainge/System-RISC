@@ -1,4 +1,5 @@
 //! Resident Control Manager. Each CDEF owns drawing, hit geometry and tracking math.
+use crate::toolbox::resources::definitions::DefinitionRef;
 mod snapshot;
 use alloc::sync::Arc;
 
@@ -39,7 +40,7 @@ pub struct Drawing
 {
     pub id:    u64,
     state:     State,
-    entry:     DefinitionEntry,
+    entry:     DefinitionRef,
     gate:      TrapGate,
     variation: i16,
     damage:    [Rect; 2]
@@ -209,8 +210,8 @@ pub fn definition_id(call: &ControlCall) -> Result<i16, Status>
     }
 }
 /// Validate CDEF state without allocating a retained drawing.
-pub fn validate(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
-                -> Result<(), Status>
+pub(crate) fn validate(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate)
+                       -> Result<(), Status>
 {
     let id = definition_id(call)?;
     if id == 1
@@ -252,12 +253,12 @@ pub fn validate(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
     Ok(())
 }
 /// Validate and resolve a typed request. No per-control geometry lives here.
-pub fn prepare(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
-               -> Result<Option<Drawing>, Status>
+pub(crate) fn prepare(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate)
+                      -> Result<Option<Drawing>, Status>
 {
     prepare_with_title(call, entry, gate, None)
 }
-fn prepare_with_title(call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate,
+fn prepare_with_title(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate,
                       title: Option<&Arc<snapshot::Title>>)
                       -> Result<Option<Drawing>, Status>
 {
@@ -364,10 +365,10 @@ pub mod native
     /// Shared ABI adapter for offscreen control services, including loaded CDEF calls.
     /// # Safety
     /// Request/surface storage must be live and exclusively borrowed for this call.
-    pub unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
-                           mut resolve: impl FnMut(i16) -> Result<DefinitionEntry, Status>,
-                           gate: TrapGate)
-                           -> i64
+    pub(crate) unsafe fn dispatch(number: u32, pointer: *mut (), size: usize,
+                                  mut resolve: impl FnMut(i16) -> Result<DefinitionRef, Status>,
+                                  gate: TrapGate)
+                                  -> i64
     {
         let result = (|| -> Result<(), Status> {
             if number != mac_abi::traps::CONTROL

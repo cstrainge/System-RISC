@@ -1,6 +1,7 @@
 //! Owned resident controls. CDEFs own geometry; this manager owns identity and
 //! tracking policy. No caller memory or callback survives a request.
 #![forbid(unsafe_code)]
+use crate::toolbox::resources::definitions::DefinitionRef;
 
 use alloc::{sync::Arc, vec::Vec};
 
@@ -202,7 +203,7 @@ impl Manager
     }
 
     pub(crate) fn request(&mut self, recipient: &OwnerRef, storage: &OwnerRef,
-                          call: &mut ControlCall, entry: DefinitionEntry, gate: TrapGate)
+                          call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate)
                           -> Result<Option<super::Drawing>, Status>
     {
         let owner = recipient.owner().incarnation();
@@ -513,7 +514,7 @@ impl Object
         }
     }
 
-    fn hit(&self, point: Point, entry: DefinitionEntry, gate: TrapGate) -> Result<i16, Status>
+    fn hit(&self, point: Point, entry: DefinitionRef, gate: TrapGate) -> Result<i16, Status>
     {
         let mut c = self.spec.call(if self.scrollbar { HIT_SCROLLBAR } else { HIT_STANDARD });
         c.point = point;
