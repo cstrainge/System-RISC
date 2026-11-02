@@ -200,9 +200,11 @@ arithmetic state uses fallible owned storage instead of being copied on every
 callback or enlarging simple codecs. Small forks cap workspace by their known RLE bound.
 The actual reference uses 512 KiB blocks; the module's declared/private heap is
 4 MiB, with a matching larger link reservation. Shared generic admission limits
-separate code bytes (2 MiB), runtime reservation (6 MiB), heap (4 MiB) and stack
-(64 KiB), with specific errors and negative tests. Total machine-arena bounds
-still apply independently.
+separate code bytes (2 MiB), declared heap (4 MiB) and callback stack (64 KiB),
+with specific errors. There is no fixed per-module runtime-image size ceiling:
+System relocates the validated image into available module virtual space, and
+actual physical backing remains subject to the original module account and
+available RAM. Package inspection alone does not grant backing or execution.
 
 Validation: 16 parser/codec tests; eight driver callback/cancellation tests;
 module contract tests; public error-range and package-budget tests; seven private

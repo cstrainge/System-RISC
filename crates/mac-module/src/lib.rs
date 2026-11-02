@@ -25,10 +25,11 @@ pub const MAX_RECORDS: usize = 32;
 pub const MAX_BYTES: usize = 16 * 1024;
 /// Existing encoded UTF-8 module-name bound.
 pub const MAX_NAME_BYTES: usize = 128;
-/// Current native module admission profile. Stored code and zeroed runtime
-/// workspace have separate limits: a decoder's BSS is not executable payload.
+/// Current native module admission profile. Encoded executable bytes are bounded
+/// here; image/BSS/DMA backing is sized from validated segments at load time and
+/// charged to the original module account. Relocation placement, actual physical
+/// memory and that account decide admission, not a fixed image-size ceiling.
 pub const MAX_CODE_BYTES: usize = 2 * 1024 * 1024;
-pub const MAX_LOAD_BYTES: u64 = 6 * 1024 * 1024;
 pub const MAX_HEAP_BYTES: u32 = 4 * 1024 * 1024;
 pub const MAX_STACK_BYTES: u32 = 64 * 1024;
 
