@@ -104,8 +104,10 @@ pub fn image(workspace: &Workspace) -> Result<Value>
             let module = macbinary::decode(&bytes)?;
             let resources = mac_formats::resource::decode(&module.resources)?;
             let package = mac_formats::module::Package::inspect(&resources, module.file_type)?;
-            let filename = mac_module::preferences::filename(package.contract.identity);
-            let filename = core::str::from_utf8(&filename)?;
+            let mut buffer = [0; 37];
+            let filename =
+                mac_module::preferences::filename(package.contract.identity, &mut buffer);
+            let filename = core::str::from_utf8(filename)?;
             let file = volume.create(folder, filename, false, when)?.id;
             volume.set_finder_metadata(file, 0, finder_info, when)?;
             let mut bytes = [0; mac_host_clipboard::MAX_SETTINGS_BYTES];

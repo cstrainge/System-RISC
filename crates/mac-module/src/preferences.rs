@@ -15,15 +15,18 @@ pub const ABSENT: u32 = u32::MAX;
 
 /// Stable persistent key; module display-name changes cannot redirect storage.
 /// Runtime authorization still comes from the actual admitted module owner.
-pub fn filename(identity: [u8; 16]) -> [u8; 37]
+pub fn filename(identity: [u8; 16], buffer: &mut [u8; 37]) -> &[u8]
 {
+    if identity == [0x77, 0x31, 0xa0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80]
+    {
+        return b"Host Clipboard Prefs";
+    }
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut name = [0; 37];
     for (index, byte) in identity.into_iter().enumerate()
     {
-        name[2 * index] = HEX[(byte >> 4) as usize];
-        name[2 * index + 1] = HEX[(byte & 15) as usize];
+        buffer[2 * index] = HEX[(byte >> 4) as usize];
+        buffer[2 * index + 1] = HEX[(byte & 15) as usize];
     }
-    name[32..].copy_from_slice(b".json");
-    name
+    buffer[32..].copy_from_slice(b".json");
+    buffer
 }
