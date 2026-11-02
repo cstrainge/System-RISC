@@ -71,9 +71,13 @@ reports a source failure through System's failure service before Abort; it never
 substitutes a seed. ENTR1 launch readiness retains the genuine prospective
 Process and provider job before author entry. Bounded native observations cover
 initial/ordinary/document launch, cancellation and injected-device refusal/retry;
-pending replacement and provider-withdrawal cases remain unqualified. Automatic
-std requirement packaging, writable files, launch data and process streams remain
-adoption gates, as detailed in `docs/RUST-STD.md`.
+pending replacement and provider-withdrawal cases remain unqualified. The
+`sdk app` packager automatically merges ENTR1 into the actual NREQ through
+mac-build's normal manifest compilation; authors need no readiness call or
+manifest entry. Identical declarations are reused, conflicting versions refused.
+Low-level native packaging does not infer std from arbitrary ELF input. Writable
+files, launch data and process streams remain adoption gates, as detailed in
+`docs/RUST-STD.md`.
 There is no no_threads implementation, static TLS, zero-seed generator or host
 allocator substituted to get an executable to link.
 

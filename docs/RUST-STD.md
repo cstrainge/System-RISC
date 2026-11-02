@@ -86,9 +86,27 @@ reset / fresh retry ran on the same artifact; no bytes or seeds were logged.
 The prior explicit-readiness HashMap cases above remain scoped to their earlier
 SDK/System artifact and do not establish later automatic launch admission.
 
-Native writable files, process streams, launch data and automatic ENTR1
-requirements for std application packaging remain adoption gates. Installed apps
-have not begun migration.
+The normal `xtask sdk app` packaging route now adds ENTR1 automatically. An
+identical author declaration is reused; an incompatible version or duplicate
+author declaration fails with its cause. Generic low-level native packaging does
+not infer a runtime from arbitrary ELF files; std builds use the SDK route.
+
+With optimized SDK
+`21e9737a2b06f05b90dc4a7ff69f4cb47ee3e32b28e69b113b91aac8cd2193db`
+and the System/ROM artifacts recorded in the application-runtime READY observations,
+a private ordinary-main application declared no services and made no author
+readiness call. Its actual packaged NREQ contained ENTR1. Holding the real source
+kept main unpublished while input responded; release led to HashMap/HashSet work
+in main and four children, six device completions, five actual THRD reclaims,
+original Process/account closure and input. Removing the real RNG refused launch
+before main, reclaimed the unstarted owner and allowed typed alert dismissal/input.
+Actual SDK builds also observed identical-declaration reuse, informative version
+conflict/duplicate refusals, then a restored successful build. These are finite
+packaging/launch/seeding cases, not source-security or complete adoption acceptance.
+
+Native writable files, process streams, launch data and the remaining readiness /
+role-default build and migration gates remain required. Installed apps have not
+begun migration.
 The current stdio backend reports Unsupported on unavailable I/O and flushing;
 it does not silently discard output or fabricate stdin EOF. Buffered Rust writes
 can defer that error until flushing. `println!` is not supported by an emergency

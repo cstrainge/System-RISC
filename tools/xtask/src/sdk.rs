@@ -69,8 +69,10 @@ pub(super) fn run(workspace: &Workspace, action: &str, manifest: Option<&str>) -
         let path = |name: &str| -> Result<&Path> {
             result[name].as_str().map(Path::new).ok_or_else(|| error("SDK app receipt lacks paths"))
         };
-        let packaged =
-            mac_build::package::build(path("resource_manifest")?, path("elf")?, path("output")?);
+        let packaged = mac_build::package::build_requiring(
+            path("resource_manifest")?, path("elf")?, path("output")?,
+            &[mac_formats::requirements::Requirement { class: mac_entropy_interface::CLASS,
+                                                       version: mac_entropy_interface::VERSION }]);
         match packaged
         {
             Ok(package) =>
