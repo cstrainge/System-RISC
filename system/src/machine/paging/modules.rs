@@ -3,18 +3,19 @@
 //! module payloads are charged to their original Kernel account; no user-mode
 //! mapping or private application address space is implied.
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::{fmt,
+use core::{alloc::Layout,
+           fmt,
            sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}};
 
 use mac_abi::{BAD_ABI, BAD_ARGUMENT, NO_MEMORY, Status};
 use mac_formats::native::{Descriptor, Role,
                           image::{self, Destination}};
 use mac_kernel_model::{account::{AccountUse, Committed},
-                       pages::{Access, PageOwnership, Permissions, PhysicalAddress}};
+                       pages::{Access, PageBacking, PageOwnership, Permissions, PhysicalAddress}};
 use mac_riscv_pages::{Decoded, Entry, LeafSize, Sv39};
 use spinning_top::Spinlock as Mutex;
 
-use super::{BOOT, Backing, Foundation, SPACES, interrupts};
+use super::{BOOT, Backing, Foundation, PagingBacking, SPACES, interrupts};
 use crate::{machine::{interrupts::NativeInvocationGate, memory::*},
             toolbox::handles::OwnerRef};
 
@@ -46,6 +47,8 @@ pub(crate) enum Error
     Format(mac_formats::Error),
     Account(mac_kernel_model::account::Error),
     Pages(crate::machine::pages::Error),
+    Recovery(crate::allocator::recovery::Error),
+    Frames(super::FrameError),
     Foundation(crate::allocator::foundation::Error),
     OrdinaryPhysical(crate::allocator::ordinary_physical::Error),
     Encoding(mac_riscv_pages::Error),
@@ -69,6 +72,11 @@ impl Error
             Self::Metadata => NO_MEMORY,
             Self::Account(cause) => crate::allocation::account_status(cause),
             Self::Pages(cause) => cause.status(),
+            Self::Recovery(crate::allocator::recovery::Error::Exhausted { .. }
+                           | crate::allocator::recovery::Error::BackingRefused { .. }) => NO_MEMORY,
+            Self::Recovery(crate::allocator::recovery::Error::Layout) => BAD_ARGUMENT,
+            Self::Recovery(crate::allocator::recovery::Error::AlreadyInitialized) => BAD_ABI,
+            Self::Frames(cause) => cause.status(),
             Self::Foundation(cause) => cause.status(),
             Self::OrdinaryPhysical(cause) => cause.status(),
             Self::Monitor(cause) => cause.status(),
@@ -126,6 +134,8 @@ impl fmt::Display for Error
             Self::Format(cause) => cause.fmt(out),
             Self::Account(cause) => cause.fmt(out),
             Self::Pages(cause) => cause.fmt(out),
+            Self::Recovery(cause) => cause.fmt(out),
+            Self::Frames(cause) => cause.fmt(out),
             Self::Foundation(cause) => cause.fmt(out),
             Self::OrdinaryPhysical(cause) => cause.fmt(out),
             Self::Encoding(cause) => cause.fmt(out),
@@ -263,24 +273,51 @@ enum PayloadBacking
 {
     Owner
     {
-        backing: Backing,
+        // Actual physical ownership precedes its original domain charge.
+        backing: PagingBacking,
         _charge: Committed<NativeInvocationGate>
     },
     System(crate::allocator::ordinary_physical::SystemBacking)
 }
-impl core::ops::Deref for PayloadBacking
+impl PayloadBacking
 {
-    type Target = Backing;
-
-    fn deref(&self) -> &Backing
+    fn cpu_base(&self) -> usize
     {
         match self
         {
             Self::Owner { backing,
-                          .. } => backing,
-            Self::System(b) => b
+                          .. } => backing.cpu_base(),
+            Self::System(b) => b.cpu_base()
         }
     }
+
+    fn physical(&self) -> PhysicalAddress
+    {
+        match self
+        {
+            Self::Owner { backing,
+                          .. } => backing.physical(),
+            Self::System(b) => b.physical()
+        }
+    }
+
+    fn bytes(&self) -> u64
+    {
+        match self
+        {
+            Self::Owner { backing,
+                          .. } => backing.bytes(),
+            Self::System(b) => b.bytes()
+        }
+    }
+}
+/// Storage policy is explicit and independent from the original account.
+/// A protected source requires the genuine resident recovery capability.
+#[derive(Clone, Copy)]
+enum PayloadSource<'a>
+{
+    Ordinary,
+    Protected(&'a crate::allocator::recovery::Permit)
 }
 /// Only genuine source authority can choose the corresponding physical receipt.
 pub(crate) enum DefinitionTarget
@@ -478,6 +515,32 @@ impl Mapping
         Self::prepare_payload(owner,
                               PayloadAuthority::Owner(account),
                               target,
+                              PayloadSource::Ordinary,
+                              descriptor,
+                              bytes,
+                              relocations,
+                              base)
+    }
+
+    /// The only protected executable customer is the genuine replacement
+    /// Application. Its canonical image/account and Mapping lifecycle are unchanged.
+    pub(crate) fn prepare_recovery_application(owner: &OwnerRef,
+                                               account: &AccountUse<NativeInvocationGate>,
+                                               permit: &crate::allocator::recovery::Permit,
+                                               descriptor: &Descriptor, bytes: &[u8],
+                                               relocations: &[u8], base: u64)
+                                               -> Result<Arc<Self>, Error>
+    {
+        if owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+           || descriptor.role != Role::Application
+           || owner.owner() != account.owner()
+        {
+            return Err(Error::Owner);
+        }
+        Self::prepare_payload(owner,
+                              PayloadAuthority::Owner(account),
+                              TargetKind::Application,
+                              PayloadSource::Protected(permit),
                               descriptor,
                               bytes,
                               relocations,
@@ -512,6 +575,7 @@ impl Mapping
         Self::prepare_payload(owner,
                               authority,
                               TargetKind::Definition,
+                              PayloadSource::Ordinary,
                               descriptor,
                               bytes,
                               relocations,
@@ -519,7 +583,8 @@ impl Mapping
     }
 
     fn prepare_payload(owner: &OwnerRef, authority: PayloadAuthority<'_>, target: TargetKind,
-                       descriptor: &Descriptor, bytes: &[u8], relocations: &[u8], base: u64)
+                       source: PayloadSource<'_>, descriptor: &Descriptor, bytes: &[u8],
+                       relocations: &[u8], base: u64)
                        -> Result<Arc<Self>, Error>
     {
         if !owner.accepting()
@@ -569,24 +634,57 @@ impl Mapping
                 return Err(Error::Extent { offset: segment.offset,
                                            bytes:  segment.memory_length });
             }
-            let planned = Backing::planned_bytes(mapped as usize).map_err(Error::Pages)?;
             let backing = match authority
             {
                 PayloadAuthority::Owner(account) =>
                 {
-                    let charge = account.reserve_kernel(planned).map_err(Error::Account)?;
-                    let backing = Backing::reserve_uninitialized(mapped as usize).map_err(Error::Pages)?;
-                    PayloadBacking::Owner { backing, _charge: charge.commit() }
+                    match source
+                    {
+                        PayloadSource::Ordinary =>
+                        {
+                            let planned =
+                                Backing::planned_bytes(mapped as usize).map_err(Error::Pages)?;
+                            let charge = account.reserve_kernel(planned).map_err(Error::Account)?;
+                            let backing = Backing::reserve_uninitialized(mapped as usize).map_err(Error::Pages)?;
+                            if backing.bytes() != planned
+                            {
+                                return Err(Error::State);
+                            }
+                            PayloadBacking::Owner { backing: PagingBacking::Ordinary(backing),
+                                                    _charge: charge.commit() }
+                        }
+                        PayloadSource::Protected(permit) =>
+                        {
+                            let layout = Layout::from_size_align(mapped as usize, PAGE_BYTES as usize)
+                            .map_err(|_| Error::Recovery(crate::allocator::recovery::Error::Layout))?;
+                            let planned = crate::allocator::recovery::Permit::backing_layout(layout)
+                            .map_err(Error::Recovery)?.size() as u64;
+                            // Preflight the original account before consuming raw storage.
+                            // Commit only after its real normalized extent is owned;
+                            // LoadPlan clears it before any PTE publication.
+                            let charge = account.reserve_kernel(planned).map_err(Error::Account)?;
+                            let backing = permit.reserve_uninitialized_backing(layout)
+                                                .map_err(Error::Recovery)?;
+                            if backing.bytes() != planned
+                            {
+                                return Err(Error::State);
+                            }
+                            PayloadBacking::Owner { backing: PagingBacking::Protected(backing),
+                                                    _charge: charge.commit() }
+                        }
+                    }
                 }
                 PayloadAuthority::System(source) =>
                 {
-                    PayloadBacking::System(crate::allocator::ordinary_physical::SystemBacking::reserve_uninitialized(source, mapped as usize).map_err(Error::OrdinaryPhysical)?)
+                    let planned = Backing::planned_bytes(mapped as usize).map_err(Error::Pages)?;
+                    let backing = crate::allocator::ordinary_physical::SystemBacking::reserve_uninitialized(source, mapped as usize).map_err(Error::OrdinaryPhysical)?;
+                    if backing.bytes() != planned
+                    {
+                        return Err(Error::State);
+                    }
+                    PayloadBacking::System(backing)
                 }
             };
-            if backing.bytes() != planned
-            {
-                return Err(Error::State);
-            }
             segments.push(SegmentMap { virtual_base: base + segment.offset,
                                        physical:     backing.physical().0,
                                        bytes:        mapped,
@@ -1087,24 +1185,33 @@ enum BranchBacking
     Foundation(Foundation<Backing>),
     Process
     {
-        backing: Backing,
+        backing: PagingBacking,
         _charge: Committed<NativeInvocationGate>
     }
 }
-impl core::ops::Deref for BranchBacking
+impl BranchBacking
 {
-    type Target = Backing;
-
-    fn deref(&self) -> &Backing
+    fn cpu_base(&self) -> usize
     {
         match self
         {
-            Self::Foundation(b) => b,
+            Self::Foundation(b) => b.cpu_base(),
             Self::Process { backing,
-                            .. } => backing
+                            .. } => backing.cpu_base()
+        }
+    }
+
+    fn physical(&self) -> PhysicalAddress
+    {
+        match self
+        {
+            Self::Foundation(b) => b.physical(),
+            Self::Process { backing,
+                            .. } => mac_kernel_model::pages::PageBacking::physical(backing)
         }
     }
 }
+
 struct Plan
 {
     _processes: Vec<super::process::Pin>,
@@ -1291,17 +1398,39 @@ impl Plan
                                          observed });
         }
         let prepare = || {
-            let table=match account {
-                Some(account)=>{let charge=account.reserve_kernel(PAGE_BYTES).map_err(Error::Account)?;let backing=Backing::allocate(PAGE_BYTES as usize).map_err(Error::Pages)?;BranchBacking::Process{backing,_charge:charge.commit()}},
-                None=>BranchBacking::Foundation(Foundation::<Backing>::allocate(PAGE_BYTES as usize).map_err(Error::Foundation)?)
+            let table = match account
+            {
+                Some(account) =>
+                {
+                    let layout = Layout::new::<[u64; 512]>()
+                        .align_to(PAGE_BYTES as usize).map_err(|_| Error::State)?;
+                    let bytes = space.tables.source.planned_bytes(layout).map_err(Error::Frames)?;
+                    let charge = account.reserve_kernel(bytes).map_err(Error::Account)?;
+                    let backing = space.tables.source.allocate_zeroed(layout).map_err(Error::Frames)?;
+                    BranchBacking::Process { backing, _charge: charge.commit() }
+                }
+                None => BranchBacking::Foundation(
+                    Foundation::<Backing>::allocate(PAGE_BYTES as usize).map_err(Error::Foundation)?
+                )
             };
             Box::try_new(Branch { key,
                                   table,
                                   next: None }).map_err(|_| Error::Metadata)
         };
-        let branch=match account {
-            Some(account)=>crate::allocator::with_target(crate::allocator::Target::Owner{account:account.clone(),class:mac_kernel_model::policy::MemoryClass::Kernel},prepare),
-            None=>crate::allocator::with_system(crate::allocator::SystemClass::Foundation,prepare)
+        let branch = match account
+        {
+            Some(account) =>
+            {
+                let target = crate::allocator::Target::Owner {
+                    account: account.clone(),
+                    class: mac_kernel_model::policy::MemoryClass::Kernel
+                };
+                space.tables.source.with_metadata(|| crate::allocator::with_target(target, prepare))
+            }
+            None =>
+            {
+                crate::allocator::with_system(crate::allocator::SystemClass::Foundation, prepare)
+            }
         }?;
         self.branches.try_reserve(1).map_err(|_| Error::Metadata)?;
         self.edits.try_reserve(1).map_err(|_| Error::Metadata)?;

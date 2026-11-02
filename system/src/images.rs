@@ -295,13 +295,41 @@ impl PreparedLoad
         self, account: &crate::machine::scheduler::accounting::AllocationAuthority)
         -> Result<Loaded, LoadError<crate::toolbox::resources::loader::LoadError>>
     {
+        self.write_application_from(account, None)
+    }
+
+    pub(crate) fn write_recovery_application(
+        self, account: &crate::machine::scheduler::accounting::AllocationAuthority,
+        permit: crate::allocator::recovery::Permit)
+        -> Result<Loaded, LoadError<crate::toolbox::resources::loader::LoadError>>
+    {
+        self.write_application_from(account, Some(permit))
+    }
+
+    fn write_application_from(
+        self, account: &crate::machine::scheduler::accounting::AllocationAuthority,
+        recovery: Option<crate::allocator::recovery::Permit>)
+        -> Result<Loaded, LoadError<crate::toolbox::resources::loader::LoadError>>
+    {
         let (descriptor, bytes, relocations) =
             crate::toolbox::resources::loader::application_code(&self.read.source.resources)
                 .map_err(|cause| LoadError::Write(cause.into()))?;
-        let mapping = crate::machine::paging::modules::Mapping::prepare(
-            &self.read.instance.owner, account, &descriptor, bytes, relocations,
-            self.read.instance.base)
-            .map_err(|cause| LoadError::Write(cause.into()))?;
+        use crate::machine::paging::modules::Mapping;
+        let mapping = match recovery
+                      {
+                          Some(permit) =>
+                          {
+                              Mapping::prepare_recovery_application(&self.read.instance.owner,
+                                                                    account, &permit, &descriptor,
+                                                                    bytes, relocations,
+                                                                    self.read.instance.base)
+                          }
+                          None =>
+                          {
+                              Mapping::prepare(&self.read.instance.owner, account, &descriptor,
+                                               bytes, relocations, self.read.instance.base)
+                          }
+                      }.map_err(|cause| LoadError::Write(cause.into()))?;
         self.publish_mapping(mapping, &descriptor).map_err(|cause| LoadError::Write(cause.into()))
     }
 

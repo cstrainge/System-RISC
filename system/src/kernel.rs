@@ -95,17 +95,24 @@ fn admit_image(owner: &crate::toolbox::handles::OwnerRef,
     let source = crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
                      alloc::sync::Arc::try_new(source)
                  }).map_err(|_| NO_MEMORY)?;
-    admit_shared_image(owner, account, source)
+    prepare_shared_image(owner, account, source)?.write_application(account)
 }
 
-pub(crate) fn copy_application(owner: &crate::toolbox::handles::OwnerRef,
-                               account: &crate::machine::scheduler::accounting::AllocationAuthority,
-                               original: crate::images::Binding)
-                               -> Result<LoadedImage, Status>
+/// Replacement Finder selects genuine protected payload storage explicitly;
+/// ordinary application loads never infer it from an ambient allocation scope.
+pub(crate) fn copy_recovery_application(owner: &crate::toolbox::handles::OwnerRef,
+                                        account: &crate::machine::scheduler::accounting::AllocationAuthority,
+                                        original: crate::images::Binding,
+                                        permit: crate::allocator::recovery::Permit)
+                                        -> Result<LoadedImage, Status>
 {
     let source = IMAGES.with(|images| images.read(original).map(|read| read.shared_source()))
                        .map_err(AccessError::status)??;
-    admit_shared_image(owner, account, source).map_err(application_image_status)
+    prepare_shared_image(owner, account, source).and_then(|prepared| {
+                                                    prepared.write_recovery_application(account,
+                                                                                        permit)
+                                                })
+                                                .map_err(application_image_status)
 }
 
 /// Clone immutable package ownership under IMAGES, then admit dependencies
@@ -122,10 +129,10 @@ pub(crate) fn select_application_services(owner: &crate::toolbox::handles::Owner
         .map_err(|cause| cause.status())
 }
 
-fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
-                      account: &crate::machine::scheduler::accounting::AllocationAuthority,
-                      source: alloc::sync::Arc<AppImage>)
-                      -> Result<LoadedImage, ApplicationImageError>
+fn prepare_shared_image(owner: &crate::toolbox::handles::OwnerRef,
+                        account: &crate::machine::scheduler::accounting::AllocationAuthority,
+                        source: alloc::sync::Arc<AppImage>)
+                        -> Result<crate::images::PreparedLoad, ApplicationImageError>
 {
     if !matches!(source.role, crate::images::Role::Application { .. })
     {
@@ -149,7 +156,7 @@ fn admit_shared_image(owner: &crate::toolbox::handles::OwnerRef,
     // The original alias already reserves its destination and retains its
     // source/loading ownership. Long byte writes and monitor waits borrow no
     // IMAGES guard. Callers must also leave Desktop before this boundary.
-    prepared.write_application(account)
+    Ok(prepared)
 }
 /// All resident DRVR/INIT code uses real page-backed supervisor mappings.
 pub(crate) fn load_module(owner: &crate::toolbox::handles::OwnerRef,

@@ -3958,3 +3958,67 @@ moving a pending subject, competing modal/allocation failures, complete error UX
 uncertain translation acknowledgments, pressure or general SMP correctness.
 Protected table/Node stock, fresh replacement image backing and full low-memory
 Finder restart remain separate work. No host Rust suite supplied OS acceptance.
+
+
+## Protected backing for replacement Process spaces and images
+
+Recovery thread preparation now supplies its genuine Finder backing permit to
+Process-space admission. The same PageBox, Frames, mapper and canonical SPCE
+lifetime own either ordinary page leases or protected heap-parent subleases.
+Frames retains that source for later private-root branches and their Box storage;
+origin follows the root, independently of a mapped module's current allocation
+scope. Ordinary roots suppress ambient recovery origin. Recovery admission
+refuses an existing ordinary root rather than silently upgrading or substituting
+it. Original Process Kernel charges use the actual normalized backend extents.
+
+Replacement image copying likewise passes the genuine Finder admission permit
+explicitly through shared image preparation to the existing Mapping writer.
+Only immutable package Source bytes are shared; executable backing, writable
+state and relocation are fresh. Each segment preflights its original new Process
+account, acquires actual protected backing and commits the charge after checking
+its extent. The normal LoadPlan clears that uninitialized backing once, including
+padding. Ordinary app/module/definition payloads retain their ordinary policy.
+No synthetic buddy token, owner, account, alternate mapper or fallback is added.
+
+Canonical IMAG anchoring, real publication acknowledgment and existing SPCE,
+DDEF and IMAG retirement barriers remain. Protected backing is returned before
+its original charge refunds. Uncertain acknowledgments retain the real backing
+and ticket. This is on-demand allocation from the existing protected reserve,
+not preadmitted stock or a larger budget.
+
+A source-fixed optimized release/LTO RVA23 four-CPU, 8 GiB, 800x600 private QEMU
+image used System ELF
+`0905d367c48ba1b033aec24d6803a4f9aea8c82a70f901fa50348205a1fc6d30`
+and System resource
+`5298437cdcfca9d265ff2089f80fa11a81c988e1fcfa8197edf64f6a78d00513`;
+ROM remained `cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+System rebuilt with actual content fingerprints; event/TextEdit tracing was off.
+The existing independently packaged native Finder-role recovery workload and
+survivor exercised two actual Abort/replacement cycles, fresh writable state,
+stale window/handle rejection, old process/account closure, replacement input
+and survivor input. Both replacement images' complete immutable text matched the
+packaged runtime ELF. Every declared segment's 15 pages had expected RX/R/RW
+permissions and physical backing inside the admitted protected tail in both
+permanent roots. Actual relocated bases were `0x84000000` and then `0x81000000`.
+The prior report remained inspectable. These observations do not enumerate
+private SPCE table/Node physical addresses or establish production Finder OOM
+recovery.
+
+On the same artifact, two ordinary apps used distinct private roots and shared
+module backing, omitting each other's low image; four app/worker bodies migrated
+with the same stacks and overlapped on CPUs. Native register/service/cancel,
+worker/process/account closure and input were observed. Six installed graphical
+apps entered/quit with sampled image leaves absent after closure; Panic Test
+relaunched and completed report scrolling, dismissal and retirement. Sources/base
+stayed fixed per capture; owned guests were reaped and cloned media removed.
+The 137 paused body observations cost approximately34–80 ms of host time each;
+recovery mapping scans cost approximately267–352 ms, plus immutable-code reads.
+These observers and serial/input pacing perturb execution and prove no latency,
+race absence, U-mode isolation or arbitrary-fault recovery.
+
+The first recovery capture stopped on an observer's malformed HMP memory-save
+argument; its failure and cleanup were retained. Structured QMP memory capture
+then completed the unchanged guest scenario. No host Rust test suite supplied OS
+acceptance. Permanent-root branches, publication/index headroom, standby stock,
+protected refusal/pressure and uncertain-ACK qualification remain separate gates;
+ordinary-memory fixture success is not an exhaustion guarantee.

@@ -250,16 +250,39 @@ impl Permit
                      bytes })
     }
 
-    /// Unique zeroed physical backing, without a GlobalAlloc header. The caller
-    /// retains the genuine canonical stack/CPU charge outside this lease. Raw
-    /// storage occupancy is counted once here, separately from ordinary memory.
-    pub(crate) fn allocate_backing(&self, requested: Layout) -> Result<Backing, Error>
+    /// Exact normalized extent used by raw allocation and its owner's admission.
+    /// This computes layout metadata only; it does not reserve backing.
+    pub(crate) fn backing_layout(requested: Layout) -> Result<Layout, Error>
     {
         if requested.size() == 0
         {
             return Err(Error::Layout);
         }
-        let layout = HoleList::align_layout(requested).map_err(|_| Error::Layout)?;
+        HoleList::align_layout(requested).map_err(|_| Error::Layout)
+    }
+
+    pub(crate) fn same_storage(&self, other: &Self) -> bool
+    {
+        core::ptr::eq(self.storage, other.storage)
+    }
+
+    /// Unique zeroed physical backing, without a GlobalAlloc header. The caller
+    /// retains the genuine canonical stack/CPU charge outside this lease. Raw
+    /// storage occupancy is counted once here, separately from ordinary memory.
+    pub(crate) fn allocate_backing(&self, requested: Layout) -> Result<Backing, Error>
+    {
+        let mut backing = self.reserve_uninitialized_backing(requested)?;
+        backing.zero_range(0, backing.layout.size())?;
+        Ok(backing)
+    }
+
+    /// Unique uninitialized raw storage for an audited native writer. Addresses
+    /// expose no typed byte view: the owning caller must initialize every byte
+    /// before publishing a mapping or letting another reader observe it.
+    pub(crate) fn reserve_uninitialized_backing(&self, requested: Layout)
+                                                -> Result<Backing, Error>
+    {
+        let layout = Self::backing_layout(requested)?;
         let bytes = layout.size() as u64;
         self.storage.reserve(Charge::RawBacking, bytes)?;
         let receipt = RawReceipt { storage: self.storage,
@@ -283,9 +306,6 @@ impl Permit
             drop(receipt);
             return Err(Error::Layout);
         };
-        // SAFETY: this unpublished allocation is exclusive. Bulk initialization
-        // happens after native free-list/IRQ guards have been released.
-        unsafe { ptr::write_bytes(base.as_ptr(), 0, layout.size()) };
         Ok(Backing { base,
                      layout,
                      physical: PhysicalAddress(physical),

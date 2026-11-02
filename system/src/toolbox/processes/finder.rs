@@ -592,9 +592,10 @@ fn step_inner(work: Work) -> Option<Work>
                                                   class:
                                                       mac_kernel_model::policy::MemoryClass::Kernel };
             match crate::allocator::with_target(target, || {
-                      crate::kernel::copy_application(admission.owner(),
-                                                      &admission.allocation(),
-                                                      admission.original())
+                      crate::kernel::copy_recovery_application(admission.owner(),
+                                                               &admission.allocation(),
+                                                               admission.original(),
+                                                               admission.permit())
                   })
             {
                 Ok(loaded) =>
