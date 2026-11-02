@@ -80,6 +80,7 @@ impl Manager
         let file = self.slot_access(owner.into(), id)?;
         match &*file.description.fork.lock()
         {
+            FileFork::Opening => Err(SERVICE_BUSY),
             FileFork::Block(_) => Ok(None),
             FileFork::Provider(_) =>
             {

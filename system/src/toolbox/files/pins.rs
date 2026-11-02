@@ -59,6 +59,80 @@ impl Pins
              .map_err(status)
     }
 
+    pub(super) fn begin_directory(&mut self, owner: &OwnerRef, volume: u32, id: u32,
+                                  scope: super::subject::Lease, state: Arc<DirectoryState>)
+                                  -> Result<u64, Status>
+    {
+        let store = self.aliases.as_mut().ok_or(NOT_SUPPORTED)?;
+        if store.iter().any(|(_, actual, _, role)| {
+                           actual == owner.owner() && matches!(role, Role::Directory { .. })
+                       })
+        {
+            return Err(SERVICE_BUSY);
+        }
+        store.insert(owner,
+                     File { volume,
+                            id },
+                     Role::Directory { scope,
+                                       state })
+             .map_err(status)
+    }
+
+    pub(super) fn activate_directory(&self, owner: &OwnerRef, id: u64, state: &Arc<DirectoryState>)
+                                     -> Result<(), Status>
+    {
+        let (_, role) =
+            self.aliases.as_ref().ok_or(NOT_SUPPORTED)?.get(owner, id).map_err(status)?;
+        let Role::Directory { scope,
+                              state: actual } = role
+        else
+        {
+            return Err(BAD_ABI);
+        };
+        if !Arc::ptr_eq(actual, state) || scope.closed() || state.cancelled.load(Ordering::Acquire)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        state.ready.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    pub(super) fn directory(&self, owner: &OwnerRef) -> Result<File, Status>
+    {
+        self.aliases
+            .as_ref()
+            .ok_or(NOT_SUPPORTED)?
+            .iter()
+            .find_map(|(_, actual, file, role)| {
+                if actual != owner.owner()
+                {
+                    return None;
+                }
+                match role
+                {
+                    Role::Directory { state,
+                                      .. } if state.ready.load(Ordering::Acquire)
+                            && !state.cancelled.load(Ordering::Acquire) =>
+                    {
+                        Some(*file)
+                    }
+                    _ => None
+                }
+            })
+            .ok_or(NOT_FOUND)
+    }
+
+    fn finish_directory_cleanup(&mut self) -> bool
+    {
+        if let Some(store) = &mut self.aliases
+        {
+            store.remove_where(|_,role|matches!(role,Role::Directory {scope,state} if state.cancelled.load(Ordering::Acquire) && scope.closed()));
+            store.finish_deferred(Role::cleanup_ready);
+            return store.iter().any(|(_,_,_,role)|matches!(role,Role::Directory {state,..} if state.cancelled.load(Ordering::Acquire))) || store.deferred_tags().any(|role|matches!(role,Role::Directory {..}));
+        }
+        false
+    }
+
     pub(super) fn document(&mut self, owner: &OwnerRef, batch: u64, scope: ScopeLease,
                            volume: u32, id: u32)
                            -> Result<(), Status>
@@ -95,6 +169,8 @@ impl Pins
                      match role
                      {
                          Role::Executable => true,
+                         Role::Directory { scope,
+                                           .. } => scope.closed(),
                          Role::Document { scope,
                                           .. } => scope.closed()
                      }
@@ -234,14 +310,14 @@ impl PinHost for super::Manager
         {
             Registration::Alias =>
             {
-                if let Some((_,
-                             Role::Document { scope,
-                                              .. })) = store.releasing(&ticket)
+                if store.releasing(&ticket).is_some_and(|(_, role)| !role.cleanup_ready())
                 {
-                    if !scope.closed()
+                    if store.releasing(&ticket)
+                            .is_some_and(|(_, role)| matches!(role, Role::Directory { .. }))
                     {
-                        return store.defer_alias(ticket).map_err(Into::into);
+                        directory_changed();
                     }
+                    return store.defer_alias(ticket).map_err(Into::into);
                 }
                 store.release_alias(ticket)
             }
@@ -329,6 +405,11 @@ impl ScopeLease
 enum Role
 {
     Executable,
+    Directory
+    {
+        scope: super::subject::Lease,
+        state: Arc<DirectoryState>
+    },
     Document
     {
         batch: u64,
@@ -337,13 +418,68 @@ enum Role
 }
 impl Role
 {
+    fn cleanup_ready(&self) -> bool
+    {
+        match self
+        {
+            Self::Executable => true,
+            Self::Document { scope,
+                             .. } => scope.closed(),
+            Self::Directory { scope,
+                              .. } => scope.closed()
+        }
+    }
+
     fn batch(&self) -> Option<u64>
     {
         match self
         {
-            Self::Executable => None,
+            Self::Executable | Self::Directory { .. } => None,
             Self::Document { batch,
                              .. } => Some(*batch)
         }
     }
+}
+
+pub(super) struct DirectoryState
+{
+    pub(super) ready:     AtomicBool,
+    pub(super) cancelled: AtomicBool
+}
+impl DirectoryState
+{
+    pub(super) fn new() -> Self
+    {
+        Self { ready:     AtomicBool::new(false),
+               cancelled: AtomicBool::new(false) }
+    }
+}
+static DIRECTORY_ACTIVE: AtomicBool = AtomicBool::new(false);
+static DIRECTORY_DIRTY: AtomicBool = AtomicBool::new(false);
+static DIRECTORY_REVISION: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub(super) fn directory_changed()
+{
+    DIRECTORY_ACTIVE.store(true, Ordering::Release);
+    DIRECTORY_DIRTY.store(true, Ordering::Release);
+}
+#[cfg(target_arch = "riscv64")]
+pub(super) fn pump_directory_cleanup()
+{
+    if !DIRECTORY_ACTIVE.load(Ordering::Acquire) && !DIRECTORY_DIRTY.load(Ordering::Acquire)
+    {
+        return;
+    }
+    let revision = mac_object_table::scope::closed_revision();
+    if !DIRECTORY_DIRTY.load(Ordering::Acquire)
+       && DIRECTORY_REVISION.load(Ordering::Acquire) == revision
+    {
+        return;
+    }
+    let _ = crate::kernel::with_files(|manager| {
+        DIRECTORY_DIRTY.store(false, Ordering::Release);
+        let pending = manager.pins.finish_directory_cleanup();
+        DIRECTORY_ACTIVE.store(pending || DIRECTORY_DIRTY.load(Ordering::Acquire),
+                               Ordering::Release);
+        DIRECTORY_REVISION.store(revision, Ordering::Release);
+    });
 }

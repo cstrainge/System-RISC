@@ -407,26 +407,25 @@ impl Manager
 
     /// Startup reads use the same mounted filesystem service as later launches.
     /// ROM supplies block I/O, never an opaque whole-fork copying callback.
-    pub(crate) fn startup_resources(&mut self, name: &str, payload_bytes: usize)
-                                    -> Result<Vec<mac_formats::resource::Resource>, Status>
+    /// Capture original catalog identity at the same read as package resources.
+    /// Startup/replacement cwd must not be recovered by a later filename lookup.
+    pub(crate) fn startup_application(&mut self, name: &str, payload_bytes: usize)
+                                      -> Result<application::Loaded, Status>
     {
         let id = self.volumes
                      .iter()
-                     .find(|(_, v)| v.info().is_some_and(|info| info.startup != 0))
+                     .find(|(_, volume)| volume.info().is_some_and(|info| info.startup != 0))
                      .map(|(id, _)| id)
                      .ok_or(NOT_FOUND)?;
-        self.with_volume(id, |volume| {
-                let folder = io(volume.blessed_folder())?;
-                let file = io(volume.find_file(folder.id, name.as_bytes()))?;
-                // Trusted boot bundles grow with the System. Bound payload admission
-                // by current backing availability, not the ordinary application cap.
-                // Parser metadata stays bounded and every allocation remains fallible.
-                Self::load_selected_resources(volume,
-                                              file.resources,
-                                              |_, _| true,
-                                              mac_formats::resource::stream::Budget { payload_bytes,
-                                                                                      ..Default::default() })
-            })
+        self.with_volume(id,|volume| {
+            let folder=io(volume.blessed_folder())?;
+            let mut entry=required(io(volume.lookup(folder.id,name.as_bytes()))?)?;
+            if entry.directory {return Err(BAD_ARGUMENT);}
+            if entry.data.is_none() {return Err(NOT_FOUND);}
+            let catalog=metadata(id,&entry);
+            let resources=Self::load_selected_resources(volume,entry.resources.take().ok_or(NOT_FOUND)?,|_,_|true,mac_formats::resource::stream::Budget {payload_bytes,..Default::default()})?;
+            Ok(application::Loaded {catalog,resources})
+        })
     }
 
     fn load_selected_resources(volume: &mut Volume<'_, Device>, mut fork: Fork,

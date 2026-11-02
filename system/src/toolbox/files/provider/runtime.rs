@@ -1084,6 +1084,7 @@ pub(crate) fn pump()
         let _ = files(|manager| manager.local_ready());
     }
     super::super::local::pending::pump();
+    super::super::pins::pump_directory_cleanup();
     resident::pump_cleanup();
     crate::drivers::file_sources::runtime::pump();
     transfer::pump();

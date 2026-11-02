@@ -910,7 +910,9 @@ fn prepare_launch(call: &mut ProcessCall, loaded: crate::toolbox::files::applica
                                        heap,
                                        tls,
                                        loaded: Some(loaded),
-                                       ready }))
+                                       ready,
+                                       directory: None,
+                                       directory_bound: false }))
         }
         Err(status) =>
         {

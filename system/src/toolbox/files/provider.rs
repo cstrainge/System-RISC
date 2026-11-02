@@ -53,8 +53,9 @@ impl Mounted
 
 /// Decode before exposing any provider bytes to an application. In addition to
 /// wire validation, bind the reply to the requested volume, node or parent.
-fn catalog(volume: u32, bytes: &[u8], node: Option<u32>, parent: Option<u32>)
-           -> Result<CatalogInfo, Status>
+pub(in crate::toolbox::files) fn catalog(volume: u32, bytes: &[u8], node: Option<u32>,
+                                         parent: Option<u32>)
+                                         -> Result<CatalogInfo, Status>
 {
     let metadata = fs::Metadata::decode(bytes).map_err(|_| BAD_ABI)?;
     catalog_metadata(volume, metadata, node, parent)

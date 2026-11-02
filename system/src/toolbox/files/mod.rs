@@ -441,6 +441,9 @@ impl OpenFile
 }
 enum FileFork
 {
+    /// Private, preallocated description held by an uncompleted OPEN. No FFRK
+    /// payload is published until actual catalog/fork state replaces this.
+    Opening,
     Block(Fork),
     Provider(provider::Open)
 }
@@ -450,6 +453,7 @@ impl FileFork
     {
         match self
         {
+            Self::Opening => Err(SERVICE_BUSY),
             Self::Block(fork) => Ok(fork.length),
             Self::Provider(fork) => fork.ready_length()
         }

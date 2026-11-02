@@ -57,10 +57,16 @@ pub(crate) type LoadResult<T> = core::result::Result<T, LoadError>;
 
 pub fn read_startup(name: &str) -> Result<Vec<Resource>>
 {
+    read_startup_application(name).map(|loaded| loaded.resources)
+}
+
+pub(crate) fn read_startup_application(name: &str)
+                                       -> Result<crate::toolbox::files::application::Loaded>
+{
     crate::kernel::with_files(|files| {
         // Both startup packages become immutable System registry sources.
         crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-            files.startup_resources(name, crate::kernel::heap_available())
+            files.startup_application(name, crate::kernel::heap_available())
         })
     }).map_err(|error| {
           serial!("STARTUP_RESOURCE_SERVICE_REFUSED name={} cause={:?}", name, error);

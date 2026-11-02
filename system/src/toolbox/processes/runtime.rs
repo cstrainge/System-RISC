@@ -322,7 +322,7 @@ impl Desktop
         Ok(FinderCapacityPlan { processes: self.processes
                                                .plan_provision_capacity()
                                                .map_err(FinderCapacityError::Directory)?,
-                                mdef: self.mdef,
+                                mdef:      self.mdef,
                                 locals:    if self.locals.capacity() < required
                                 {
                                     required
@@ -1625,12 +1625,15 @@ impl crate::toolbox::files::forks::lifetime::ForkHost for Desktop
                          -> Result<(), crate::toolbox::handles::cleanup::Failure>
     {
         match crate::kernel::with_files_owned(ticket, |ticket, files| {
-                  crate::toolbox::files::forks::lifetime::ForkHost::release_file_fork(files,
-                                                                                      ticket,
-                                                                                      storage)
+                  files.release_fork_owned(ticket, storage)
               })
         {
-            Ok(result) => result,
+            Ok(Ok(retired)) =>
+            {
+                retired.dispose();
+                Ok(())
+            }
+            Ok(Err(failure)) => Err(failure),
             Err((error, ticket)) =>
             {
                 Err(crate::toolbox::handles::cleanup::Failure::files_unavailable(ticket, error))

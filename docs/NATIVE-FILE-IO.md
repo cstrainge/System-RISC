@@ -2,8 +2,9 @@
 
 The resident File Manager has development operations for ordinary HFS-B fork
 writes and shared open descriptions. This is a bounded native foundation;
-`std::fs`, resident launch-directory/path resolution, resumable open/truncate
-admission and process streams are not delivered by this milestone. The existing
+`std::fs`, public path/current-directory resolution and process streams are not
+delivered by this milestone. Ordinary launch-directory admission and bounded
+prepared open/truncate now have connected resident implementations. The existing
 transactional Save/replace writer remains a separate API.
 
 FileCall uses the existing FILE trap, ABI version 1 and the whole-world native
@@ -17,7 +18,7 @@ objects charged to their genuine owner.
 | --- | --- |
 | OPEN_OPTIONS (40) | Volume plus existing CNID and empty name, or parent CNID plus one native UTF-8 leaf name. Select data/resource fork and explicit read/write/append/create/create_new/truncate flags. Unknown bits and invalid combinations refuse before mutation. |
 | WRITE (41) | At most 64 KiB of immutable input. Access rights are checked. Append selects live EOF and writes within the same exclusive mounted-storage operation, including independent open descriptions. A gap is zero-filled through resident steps before the payload commits; the original operation retains cursor/fork admission across those steps. An empty write neither grows a gap nor moves an append cursor. |
-| SET_LENGTH (42) | Input length is the requested target; output length is actual length. One request continues to its target through resident growth or shrink steps with at most 64 KiB of length change per step. It retains its original cursor and I/O subject while parked; a failure reports the actual completed prefix and original cause. Large OPEN_OPTIONS truncation remains a separate unfinished admission path. |
+| SET_LENGTH (42) | Input length is the requested target; output length is actual length. One request continues to its target through resident growth or shrink steps with at most 64 KiB of length change per step. It retains its original cursor and I/O subject while parked; a failure reports the actual completed prefix and original cause. OPEN_OPTIONS truncation uses the same bounded device-step rule. |
 | SYNC (43) | Calls actual backing-device flush; SYNC_DATA currently requests the same stronger full flush. Unsupported backends return an error. |
 | DUPLICATE (44) | Creates another independently owned handle sharing fork identity, access mode, cursor and underlying lifetime. Temporary operation references do not count as open handles. |
 
@@ -38,7 +39,7 @@ an invalidated supported scanner into an Unsupported error. Exact partition
 aliases share the immutable native snapshot; unequal overlapping mounted layouts
 refuse mutation. This is not authorization for foreign-hart firmware callbacks.
 
-Resumable WRITE, SET_LENGTH and SYNC, together with native READ/SEEK/TELL,
+Resumable OPEN_OPTIONS, WRITE, SET_LENGTH and SYNC, together with native READ/SEEK/TELL,
 use canonical FIOP operation objects and FIOB backing registered with the ordinary
 owner walk. The record retains the original typed OS thread identity, genuine
 I/O subject/account and shared description. Admission copies semantic scalars and
@@ -56,14 +57,29 @@ Existing staged save/transfer admissions retain their own conflict rules.
 Firmware still masks interrupts for a complete device step. The 64 KiB data/size
 bound does not establish a bound on metadata processing or target latency.
 
-Two open-admission gaps remain before std adoption: create/truncate can commit
-before late FFRK/description allocation or publication refuses, and that open
-path still needs genuine preadmitted publication capacity plus explicit retained
-handling of any committed failure. Handle requests now perform allocation-free canonical owner/handle/access-mode
+Native OPEN_OPTIONS prepares the real canonical FFRK publication permit, wire
+identity and shared description before create/truncate effects. Actual global
+publication credits protect shared completion metadata capacity. Partial truncate
+continues with the same resolved catalog identity, permit and operation; a late
+publication refusal retains the actual committed outcome and original value
+rather than repeating create/truncate. Final owner-stop refusal is still possible.
+Backing removal returns its real affine owner for disposal outside Files; cleanup
+withholds its original storage ticket while genuine publication preparations
+remain. Forced refusal, cancellation and rollback paths still need target evidence.
+
+Handle requests perform allocation-free canonical owner/handle/access-mode
 preflight before admitting a Subject or copying write bytes, and repeat it before
 operation publication. An admitted continuation keeps its genuine description
-when the public handle closes; replay does not require reopening that handle. The finite observations below do not qualify refusal under
-memory pressure or make these paths ready for std OpenOptions.
+when the public handle closes; replay does not require reopening that handle.
+
+Ordinary application launch admits its parent directory after required services
+are READY and before author execution. It uses the CatalogInfo captured with the
+original executable read, the prospective owner's actual authority/account and a
+real catalog protection alias. Provider admission retains the genuine job across
+scheduler defer; cancellation retains protection until its actual subject scope
+closes. Successful admission releases the operation root while the owner retains
+its directory alias. Initial/replacement Finder consumers, public current-dir/path
+APIs and provider/cancellation/owner-stop qualification remain separate gates.
 
 Ordinary writable operations currently support native HFS-B. Classic HFS and
 provider operations without the required implementation return explicit errors.
@@ -137,3 +153,26 @@ stayed fixed; owned guests exited zero and generated private media was removed.
 This does not qualify forced allocation failure, foreign-owner overlap, races,
 cancellation, global memory pressure or late open-publication failure. Older
 8 GiB observations retain their original configuration and are not relabeled.
+
+The prepared-open and ordinary launch-directory consumer subsequently ran on
+optimized release/LTO RV64 QEMU with four configured CPUs, exactly 2 GiB RAM
+(actual command and guest BOOT_RAM checked) and 800x600 output:
+
+- System ELF: `225fc0a920580c6e5f8a2745f98697f5b124ab15f8015ba72c29209b9e56c3f4`
+- System resources: `d3286623e8875e7eb0ad275ab06042e690707633ba6b5db8e4b5bab76e3955ce`
+- ROM: `19cc55b172094ec7505d461be6dca90f48f6d87e47cd078c150db2e8771a50e2`
+
+The real APPL diagnostic issued one OPEN_TRUNCATE against a 196,627-byte file.
+It observed length zero, refreshed length through another open description,
+that description's unchanged cursor, preserved resource-fork bytes and a
+subsequent successful write. Earlier finite file/refusal/reuse cases repeated;
+a clean second boot read saved SYNC bytes. Both actual Process/account removals,
+Finder refresh/command-close/input and reviewed final screens were observed.
+Sources/base stayed fixed, both owned guests exited zero and private generated
+media was removed. This exercises the connected native ordinary launch-directory
+happy path; it does not qualify provider deferral, forced post-effect refusal,
+stop/cancel/rollback, arbitrary pressure, public std paths/streams or full adoption.
+A preceding host launch was refused before boot because its QMP pathname was too
+long. Another capture is excluded because final evidence cleanup failed; its
+original logs remain failure evidence. The final repeat uses the same target
+artifacts with corrected host socket/receipt paths.

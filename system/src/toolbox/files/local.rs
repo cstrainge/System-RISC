@@ -6,6 +6,8 @@ use core::sync::atomic::Ordering;
 use super::*;
 pub(crate) mod lifetime;
 pub(crate) mod pending;
+pub(crate) mod directory;
+mod open;
 use crate::drivers::jobs::subjects::Subject;
 static PENDING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 pub(in crate::toolbox::files) fn needs_cleanup() -> bool
@@ -22,7 +24,8 @@ pub(super) struct Operation
     _subject:  Subject,
     finished:  spinning_top::Spinlock<Option<Finished>>,
     completed: spinning_top::Spinlock<Option<Result<Reply, Status>>>,
-    progress:  spinning_top::Spinlock<Option<(u64, u64)>>
+    progress:  spinning_top::Spinlock<Option<(u64, u64)>>,
+    catalog:   spinning_top::Spinlock<Option<CatalogInfo>>
 }
 struct Finished
 {
@@ -96,7 +99,13 @@ struct Work
 }
 enum Reply
 {
-    Open(CatalogEntry),
+    Open
+    {
+        entry:    CatalogInfo,
+        fork:     Option<Fork>,
+        complete: bool
+    },
+    Directory(CatalogInfo),
     Read
     {
         position: u64,
@@ -152,7 +161,11 @@ impl Work
         let mut entry = if call.operation == OPEN_OPTIONS
         {
             let flags = call.open_flags;
-            let existing = if input.name.is_empty()
+            let existing = if self.node != 0
+            {
+                io(volume.entry(self.node))?
+            }
+            else if input.name.is_empty()
             {
                 io(volume.entry(call.cnid))?
             }
@@ -163,7 +176,10 @@ impl Work
             };
             let mut entry = match existing
             {
-                Some(_) if flags & OPEN_CREATE_NEW != 0 => return Err(ALREADY_EXISTS),
+                Some(_) if flags & OPEN_CREATE_NEW != 0 && self.node == 0 =>
+                {
+                    return Err(ALREADY_EXISTS);
+                }
                 Some(entry) => entry,
                 None if flags & (OPEN_CREATE | OPEN_CREATE_NEW) != 0 =>
                 {
@@ -173,6 +189,8 @@ impl Work
                                            input.when)
                               .map_err(mutation_status)?;
                     self.changed = true;
+                    self.node = entry.id;
+                    *self.operation.catalog.lock() = Some(metadata(call.volume, &entry));
                     self.mounted.scanner = Some(io(volume.catalog_scanner())?);
                     self.parent = entry.parent;
                     entry
@@ -196,18 +214,32 @@ impl Work
                     return Err(READ_ONLY);
                 }
             }
+            self.node = entry.id;
+            *self.operation.catalog.lock() = Some(metadata(call.volume, &entry));
             if flags & OPEN_TRUNCATE != 0 && flags & OPEN_CREATE_NEW == 0
             {
-                entry = volume.set_fork_len(entry.id,
-                                            call.fork == RESOURCE_FORK,
-                                            0,
-                                            input.when,
-                                            &self.protected)
-                              .map_err(mutation_status)?;
-                changed = true;
-                self.changed = true;
-                self.mounted.scanner = Some(io(volume.catalog_scanner())?);
-                self.parent = entry.parent;
+                let old = match call.fork
+                          {
+                              DATA_FORK => entry.data.as_ref(),
+                              RESOURCE_FORK => entry.resources.as_ref(),
+                              _ => None
+                          }.ok_or(NOT_SUPPORTED)?
+                           .length;
+                let target = old.saturating_sub(MAX_FILE_TRANSFER as u64);
+                if target != old
+                {
+                    entry = volume.set_fork_len(entry.id,
+                                                call.fork == RESOURCE_FORK,
+                                                target,
+                                                input.when,
+                                                &self.protected)
+                                  .map_err(mutation_status)?;
+                    changed = true;
+                    self.changed = true;
+                    *self.operation.catalog.lock() = Some(metadata(call.volume, &entry));
+                    self.mounted.scanner = Some(io(volume.catalog_scanner())?);
+                    self.parent = entry.parent;
+                }
             }
             entry
         }
@@ -217,6 +249,10 @@ impl Work
         };
         let parent = entry.parent;
         self.parent = parent;
+        if call.operation == CATALOG
+        {
+            return Ok((Reply::Directory(metadata(call.volume, &entry)), false, parent));
+        }
         if call.operation == OPEN_OPTIONS
         {
             // Check that this format actually exposes the requested fork.
@@ -231,7 +267,15 @@ impl Work
             }
             self.mounted.info.free_bytes = volume.free_bytes;
             self.mounted.info.modified = volume.modified;
-            return Ok((Reply::Open(entry), changed, parent));
+            let catalog = metadata(call.volume, &entry);
+            *self.operation.catalog.lock() = Some(catalog);
+            let fork = selected(&mut entry, call.fork)?;
+            let complete = call.open_flags & OPEN_TRUNCATE == 0 || fork.length == 0;
+            return Ok((Reply::Open { entry: catalog,
+                                     fork: complete.then_some(fork),
+                                     complete },
+                       changed,
+                       parent));
         }
         let description = self.description.as_ref().ok_or(BAD_ABI)?;
         let mut fork = selected(&mut entry, description.kind)?;
@@ -384,7 +428,8 @@ impl Work
         }
         let node = match &reply
         {
-            Ok(Reply::Open(entry)) => entry.id,
+            Ok(Reply::Open { entry,
+                             .. }) => entry.id,
             _ => self.node
         };
         let resource =
@@ -512,19 +557,27 @@ impl Manager
         self.local_ready()?;
         self.validate_file_authority(owner, authority)?;
         let call = &input.call;
-        let (volume, node, description) = if call.operation == OPEN_OPTIONS
+        let (volume, node, description) = if call.operation == CATALOG
+        {
+            (call.volume, call.cnid, None)
+        }
+        else if call.operation == OPEN_OPTIONS
         {
             self.validate_creation(subject::Access::Client(owner),
                                    &subject::Authority::Client(authority.clone()),
                                    crate::toolbox::handles::KindCode(*b"FFRK"))?;
             self.prepare_forks(crate::toolbox::handles::file_fork_kinds()?)?;
-            (call.volume, call.cnid, None)
+            (call.volume,
+             source.map_or(0, |source| source.node.load(Ordering::Acquire)),
+             source.map(|source| source.description.clone()))
         }
         else
         {
             if let Some(source) = source
             {
-                (source.volume, source.node, Some(source.description.clone()))
+                (source.volume,
+                 source.node.load(Ordering::Acquire),
+                 Some(source.description.clone()))
             }
             else
             {
@@ -536,7 +589,7 @@ impl Manager
                 (file.volume, file.id, Some(file.description.clone()))
             }
         };
-        if matches!(call.operation, READ | SEEK | TELL)
+        if matches!(call.operation, READ | SEEK | TELL | CATALOG)
         {
             self.validate_transfer_read(owner, volume, node)?;
         }
@@ -549,7 +602,7 @@ impl Manager
         {
             self.validate_transfer_mutation(owner, volume)?;
         }
-        if !matches!(call.operation, READ | SEEK | TELL)
+        if !matches!(call.operation, READ | SEEK | TELL | CATALOG)
            && (self.writes.iter().any(|(_, mark)| mark.volume == volume)
                || self.streams.iter().any(|(_, mark)| mark.volume == volume)
                || self.groups.iter().any(|(_, mark)| mark.volume == volume))
@@ -588,7 +641,18 @@ impl Manager
             return Err(ACCESS_DENIED);
         }
         let revision = scan::next_revision()?;
-        let operation=Arc::try_new(Operation {volume,disk,partition,info,_subject:subject,finished:spinning_top::Spinlock::new(None),completed:spinning_top::Spinlock::new(None),progress:spinning_top::Spinlock::new(None)}).map_err(|_|NO_MEMORY)?;
+        let operation =
+            Arc::try_new(Operation { volume,
+                                     disk,
+                                     partition,
+                                     info,
+                                     _subject: subject,
+                                     finished: spinning_top::Spinlock::new(None),
+                                     completed: spinning_top::Spinlock::new(None),
+                                     progress: spinning_top::Spinlock::new(None),
+                                     catalog: spinning_top::Spinlock::new(None) }).map_err(|_| {
+                                                                                      NO_MEMORY
+                                                                                  })?;
         let slot = self.volumes.get_mut(volume).ok_or(NOT_FOUND)?;
         let original = core::mem::replace(slot, Mounted::Operating(operation.clone()));
         let mounted = match original
@@ -618,7 +682,7 @@ pub(super) fn request(owner: u64, authority: &OwnerRef, call: &mut FileCall, nam
                       bytes: &[u8])
                       -> Status
 {
-    let mut flags = call.open_flags;
+    let flags = call.open_flags;
     if call.operation == OPEN_OPTIONS
     {
         if flags & !OPEN_FLAGS != 0
@@ -635,104 +699,10 @@ pub(super) fn request(owner: u64, authority: &OwnerRef, call: &mut FileCall, nam
         {
             return BAD_ARGUMENT;
         }
-        if flags & OPEN_APPEND != 0
-        {
-            flags |= OPEN_WRITE;
-        }
     }
     if call.operation != OPEN_OPTIONS
     {
         return pending::request(owner, authority, call, bytes, &mut []);
     }
-    let subject = match crate::drivers::jobs::subjects::resident().and_then(|operations| {
-                            operations.admit_current(&subject::Authority::Client(authority.clone()))
-                        })
-    {
-        Ok(subject) => subject,
-        Err(error) => return error
-    };
-    let when = match crate::machine::clock::now().and_then(|now| {
-                                                     now.mac_microseconds().ok_or(BAD_ARGUMENT)
-                                                 })
-    {
-        Ok(when) => when,
-        Err(error) => return error
-    };
-    let mut owned_name = String::new();
-    if owned_name.try_reserve_exact(name.len()).is_err()
-    {
-        return NO_MEMORY;
-    }
-    owned_name.push_str(name);
-    let mut owned_bytes = Vec::new();
-    if owned_bytes.try_reserve_exact(bytes.len()).is_err()
-    {
-        return NO_MEMORY;
-    }
-    owned_bytes.extend_from_slice(bytes);
-    let mut snapshot = Call::from(&*call);
-    snapshot.open_flags = flags;
-    let input = match Arc::try_new(Input { call: snapshot,
-                                           name: owned_name,
-                                           bytes: owned_bytes,
-                                           when })
-    {
-        Ok(input) => input,
-        Err(_) => return NO_MEMORY
-    };
-    let outcome=crate::context::with_io_subject(subject.clone(),|| {
-        crate::machine::io::run(|| {
-            let work=crate::kernel::with_files(|manager|manager.begin_local(owner,authority,subject,input,None)).map_err(|error|error.status())??;
-            let operation=work.operation.clone();
-            // Fixed-owner I/O remains active; no Files/state lock crosses I/O.
-            work.execute();
-            let restored=crate::kernel::with_files(|manager|manager.local_ready()).map_err(|error|error.status()).and_then(core::convert::identity);
-            if let Err(refusal)=restored {
-                // The original mounted device AND terminal result remain in
-                // the canonical operation. Publish any real committed prefix.
-                let guard=operation.finished.lock();
-                let finished=guard.as_ref().ok_or(BAD_ABI)?;
-                return match &finished.reply {
-                    Err(original)=>Err(*original),
-                    Ok(Reply::Progress {position,length,transferred})=>{
-                        call.position=*position;call.length=*length;call.transferred=*transferred;Err(refusal)
-                    },
-                    Ok(Reply::Open(_))|Ok(Reply::Read {..})=>Err(refusal),
-                };
-            }
-            let outcome=operation.completed.lock().take().ok_or(BAD_ABI)?;
-            outcome
-        }).map_err(|error|error.status()).and_then(core::convert::identity)
-    }).and_then(core::convert::identity);
-    match outcome
-    {
-        Ok(Reply::Progress { position,
-                             length,
-                             transferred }) =>
-        {
-            call.position = position;
-            call.length = length;
-            call.transferred = transferred;
-            OK
-        }
-        Ok(Reply::Open(mut entry)) =>
-        {
-            let fork = match selected(&mut entry, call.fork)
-            {
-                Ok(fork) => fork,
-                Err(error) => return error
-            };
-            let length = fork.length;
-            match crate::kernel::with_files(|manager| {
-                manager.handles.insert_authorized(&subject::Authority::Client(authority.clone()),OpenFile {
-                    owner,id:entry.id,volume:call.volume,description:OpenDescription::new(FileFork::Block(fork),call.fork,flags)?,
-                    retired:core::sync::atomic::AtomicBool::new(false),last_close:core::sync::atomic::AtomicBool::new(false),operations:core::sync::atomic::AtomicU32::new(0),authority:subject::Authority::Client(authority.clone()),io_subject:None,resource_index:spinning_top::Spinlock::new(None),
-                })
-            }).map_err(|error|error.status()).and_then(core::convert::identity) {
-                Ok(handle)=>{call.handle=handle;call.position=0;call.length=length;call.cnid=entry.id;OK},Err(error)=>error,
-            }
-        }
-        Ok(Reply::Read { .. }) => BAD_ABI,
-        Err(error) => error
-    }
+    pending::request_open(owner, authority, call, name)
 }

@@ -9,7 +9,8 @@ static PUMPING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool:
 pub(super) struct Source
 {
     pub(super) volume:      u32,
-    pub(super) node:        u32,
+    pub(super) node:        core::sync::atomic::AtomicU32,
+    opening:                bool,
     pub(super) description: Arc<OpenDescription>,
     disk:                   u32,
     partition:              Partition
@@ -21,7 +22,9 @@ impl Source
         Arc::ptr_eq(&self.description, &other.description)
         || self.disk == other.disk
            && self.partition == other.partition
-           && self.node == other.node
+           && (self.node.load(Ordering::Acquire) == 0
+               || other.node.load(Ordering::Acquire) == 0
+               || self.node.load(Ordering::Acquire) == other.node.load(Ordering::Acquire))
            && self.description.kind == other.description.kind
     }
 }
@@ -35,14 +38,18 @@ struct Packet
 }
 struct Record
 {
-    flight:      Option<Arc<Operation>>,
-    terminal:    Option<Status>,
-    abandoned:   bool,
-    started:     bool,
-    position:    u64,
-    length:      u64,
-    transferred: usize,
-    output:      Option<Vec<u8>>
+    flight:        Option<Arc<Operation>>,
+    terminal:      Option<Status>,
+    abandoned:     bool,
+    started:       bool,
+    position:      u64,
+    length:        u64,
+    transferred:   usize,
+    output:        Option<Vec<u8>>,
+    open:          Option<open::Open>,
+    open_complete: bool,
+    catalog:       Option<CatalogInfo>,
+    handle:        u32
 }
 pub(in crate::toolbox::files) struct Entry
 {
@@ -56,7 +63,7 @@ impl Entry
     pub(in crate::toolbox::files) fn protects(&self, manager: &Manager, volume: u32, node: u32)
                                               -> bool
     {
-        self.packet.source.node == node && self.uses(manager, volume)
+        self.packet.source.node.load(Ordering::Acquire) == node && self.uses(manager, volume)
     }
 
     pub(in crate::toolbox::files) fn uses(&self, manager: &Manager, volume: u32) -> bool
@@ -153,12 +160,27 @@ pub(in crate::toolbox::files) fn request(owner: u64, authority: &OwnerRef, call:
                                          bytes: &[u8], output: &mut [u8])
                                          -> Status
 {
+    request_input(owner, authority, call, "", bytes, output)
+}
+pub(super) fn request_open(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &str)
+                           -> Status
+{
+    request_input(owner, authority, call, name, &[], &mut [])
+}
+fn request_input(owner: u64, authority: &OwnerRef, call: &mut FileCall, name: &str, bytes: &[u8],
+                 output: &mut [u8])
+                 -> Status
+{
     if let Err(error) = crate::context::current_thread_context().traps.check_defer()
     {
         return error;
     }
     let thread = crate::context::current_thread();
-    let key = Call::from(&*call);
+    let mut key = Call::from(&*call);
+    if key.operation == OPEN_OPTIONS && key.open_flags & OPEN_APPEND != 0
+    {
+        key.open_flags |= OPEN_WRITE;
+    }
     let existing = files(|manager| {
         manager.validate_file_authority(owner, authority)?;
         let found = manager.operations.iter().find(|(_, entry)| entry.thread == thread);
@@ -168,6 +190,7 @@ pub(in crate::toolbox::files) fn request(owner: u64, authority: &OwnerRef, call:
                 if entry.owner == owner
                    && entry.authority.owner() == authority.owner()
                    && entry.packet.input.call == key
+                   && entry.packet.input.name == name
                    && entry.packet.input.bytes == bytes
                    && !entry.packet.record.lock().abandoned =>
             {
@@ -180,7 +203,14 @@ pub(in crate::toolbox::files) fn request(owner: u64, authority: &OwnerRef, call:
             }
             None =>
             {
-                manager.preflight_local_file(owner, authority, &key)?;
+                if key.operation != OPEN_OPTIONS
+                {
+                    manager.preflight_local_file(owner, authority, &key)?;
+                }
+                else if manager.read_provider(key.volume)?.is_some()
+                {
+                    return Err(NOT_SUPPORTED);
+                }
                 Ok(None)
             }
         }
@@ -213,31 +243,44 @@ pub(in crate::toolbox::files) fn request(owner: u64, authority: &OwnerRef, call:
                 return NO_MEMORY;
             }
             owned.extend_from_slice(bytes);
+            let mut owned_name = String::new();
+            if owned_name.try_reserve_exact(name.len()).is_err()
+            {
+                return NO_MEMORY;
+            }
+            owned_name.push_str(name);
             let input = match Arc::try_new(Input { call: key,
-                                                   name: String::new(),
+                                                   name: owned_name,
                                                    bytes: owned,
                                                    when })
             {
                 Ok(input) => input,
                 Err(_) => return NO_MEMORY
             };
-            let kinds = match crate::toolbox::handles::file_operation_kinds()
+            let open = if key.operation == OPEN_OPTIONS
             {
-                Ok(kinds) => kinds,
-                Err(error) => return error
+                match open::Open::prepare(authority, &subject, &key)
+                {
+                    Ok(open) => Some(open),
+                    Err(error) => return error
+                }
+            }
+            else
+            {
+                None
             };
-            match files(|manager| {
-                      manager.preflight_local_file(owner, authority, &key)?;
-                      manager.operations.prepare(kinds)?;
-                      let file = manager.slot(owner, call.handle)?;
-                      if !matches!(&*file.description.fork.lock(), FileFork::Block(_))
+            let source = match files(|manager| {
+                      let (volume, node, description) = if let Some(open) = &open
                       {
-                          return Err(NOT_SUPPORTED);
+                          (key.volume, 0, open.description.clone())
                       }
-                      let (volume, node, description) =
-                          (file.volume, file.id, file.description.clone());
-                      // Never publish a waiter behind a transaction whose own
-                      // apply/undo would then be blocked by our admission pin.
+                      else
+                      {
+                          manager.preflight_local_file(owner, authority, &key)?;
+                          let file =
+                              manager.slot_access(subject::Access::Client(owner), key.handle)?;
+                          (file.volume, file.id, file.description.clone())
+                      };
                       if matches!(key.operation, READ | SEEK | TELL)
                       {
                           manager.validate_transfer_read(owner, volume, node)?;
@@ -253,25 +296,44 @@ pub(in crate::toolbox::files) fn request(owner: u64, authority: &OwnerRef, call:
                           }
                       }
                       let mounted = manager.mounted(volume)?;
-                      let source = Source { volume,
-                                            node,
-                                            description,
-                                            disk: mounted.device.index,
-                                            partition: mounted.partition };
-                      let packet=Arc::try_new(Packet {input,subject,source,record:spinning_top::Spinlock::new(Record {flight:None,terminal:None,abandoned:false,started:false,position:0,length:0,transferred:0,output:None})}).map_err(|_|NO_MEMORY)?;
-                      let id = manager.operations.insert(authority,
-                                                          Entry { thread,
-                                                                  owner,
-                                                                  authority:
-                                                                      authority.clone(),
-                                                                  packet: packet.clone() })?;
-                      ACTIVE.store(true, Ordering::Release);
-                      Ok((id, packet))
+                      Ok(Source { volume,
+                                  node: core::sync::atomic::AtomicU32::new(node),
+                                  opening: key.operation == OPEN_OPTIONS,
+                                  description,
+                                  disk: mounted.device.index,
+                                  partition: mounted.partition })
                   })
             {
-                Ok(value) => value,
+                Ok(source) => source,
                 Err(error) => return error
-            }
+            };
+            // Keep the outer Arc across canonical insertion. Refused insertion
+            // cannot drop the last permit/description owner under Files.
+            let packet=match Arc::try_new(Packet {input,subject,source,record:spinning_top::Spinlock::new(Record {flight:None,terminal:None,abandoned:false,started:false,position:0,length:0,transferred:0,output:None,open,open_complete:false,catalog:None,handle:0})}) {Ok(packet)=>packet,Err(_)=>return NO_MEMORY};
+            let kinds = match crate::toolbox::handles::file_operation_kinds()
+            {
+                Ok(kinds) => kinds,
+                Err(error) => return error
+            };
+            let id = match files(|manager| {
+                      manager.validate_file_authority(owner, authority)?;
+                      if key.operation != OPEN_OPTIONS
+                      {
+                          manager.preflight_local_file(owner, authority, &key)?;
+                      }
+                      manager.operations.prepare(kinds)?;
+                      manager.operations.insert(authority,
+                                                Entry { thread,
+                                                        owner,
+                                                        authority: authority.clone(),
+                                                        packet: packet.clone() })
+                  })
+            {
+                Ok(id) => id,
+                Err(error) => return error
+            };
+            ACTIVE.store(true, Ordering::Release);
+            (id, packet)
         }
     };
     pump();
@@ -302,6 +364,16 @@ pub(in crate::toolbox::files) fn request(owner: u64, authority: &OwnerRef, call:
         call.position = position;
         call.length = length;
         call.transferred = transferred;
+        if packet.source.opening
+        {
+            let record = packet.record.lock();
+            if let Some(catalog) = record.catalog
+            {
+                call.cnid = catalog.id;
+                call.entry = catalog;
+            }
+            call.handle = record.handle;
+        }
         return status;
     }
     defer(thread, id)
@@ -420,8 +492,12 @@ pub(crate) fn pump()
             record.abandoned = true;
         }
     }
-    let terminal = packet.record.lock().terminal.is_some();
-    if !terminal
+    publish_open(&packet, owner, &authority);
+    let (terminal, open_complete) = {
+        let record = packet.record.lock();
+        (record.terminal.is_some(), record.open_complete)
+    };
+    if !terminal && !open_complete
     {
         // run_owned returns its unconsumed argument on wrong-hart/admission
         // refusal. Never drop a moved device through a fallible context switch.
@@ -455,6 +531,7 @@ pub(crate) fn pump()
         }
         // Consume only a real returned device/result, never an elapsed-time ACK.
         settle(&packet);
+        publish_open(&packet, owner, &authority);
     }
     let (terminal, abandoned) = {
         let record = packet.record.lock();
@@ -464,7 +541,14 @@ pub(crate) fn pump()
     {
         if abandoned
         {
-            let _ = files(|manager| manager.operations.remove(id).ok_or(NOT_FOUND));
+            let handle = packet.record.lock().handle;
+            let _ = files(|manager| {
+                if handle != 0 && manager.handles.get(handle).is_some()
+                {
+                    manager.handles.abandon(handle)?;
+                }
+                manager.operations.remove(id).ok_or(NOT_FOUND)
+            });
         }
         else
         {
@@ -519,9 +603,49 @@ fn settle(packet: &Packet) -> bool
             record.output = Some(bytes);
             record.terminal = Some(OK);
         }
-        Ok(Reply::Open(_)) => record.terminal = Some(BAD_ABI),
+        Ok(Reply::Open { entry,
+                         fork,
+                         complete }) =>
+        {
+            packet.source.node.store(entry.id, Ordering::Release);
+            record.catalog = Some(entry);
+            record.length = if packet.input.call.fork == RESOURCE_FORK
+            {
+                entry.resource_length
+            }
+            else
+            {
+                entry.data_length
+            };
+            record.open_complete = complete;
+            if complete
+            {
+                if let Some(fork) = fork
+                {
+                    *packet.source.description.fork.lock() = FileFork::Block(fork);
+                }
+                else
+                {
+                    record.terminal = Some(BAD_ABI);
+                }
+            }
+        }
+        Ok(Reply::Directory(_)) => record.terminal = Some(BAD_ABI),
         Err(error) =>
         {
+            if let Some(catalog) = *flight.catalog.lock()
+            {
+                record.catalog = Some(catalog);
+                record.length = if packet.input.call.fork == RESOURCE_FORK
+                {
+                    catalog.resource_length
+                }
+                else
+                {
+                    catalog.data_length
+                };
+                packet.source.node.store(catalog.id, Ordering::Release);
+            }
             if let Some((position, length)) = *flight.progress.lock()
             {
                 record.position = position;
@@ -531,4 +655,43 @@ fn settle(packet: &Packet) -> bool
         }
     }
     true
+}
+
+fn publish_open(packet: &Packet, owner: u64, authority: &OwnerRef)
+{
+    let next = {
+        let mut record = packet.record.lock();
+        if record.terminal.is_some() || record.abandoned || !record.open_complete
+        {
+            return;
+        }
+        let Some(entry) = record.catalog
+        else
+        {
+            record.terminal = Some(BAD_ABI);
+            return;
+        };
+        record.open.take().map(|open| (open, entry))
+    };
+    let Some((mut open, entry)) = next
+    else
+    {
+        return;
+    };
+    // Never hold Record or Files across another manager acquisition. The same
+    // affine open/permit/value returns to the canonical packet on refusal.
+    let result = open.publish(owner, authority, packet.source.volume, entry);
+    let mut record = packet.record.lock();
+    record.open = Some(open);
+    match result
+    {
+        Ok(handle) =>
+        {
+            record.handle = handle;
+            record.terminal = Some(OK);
+        }
+        Err(SERVICE_BUSY) if authority.accepting() =>
+        {}
+        Err(error) => record.terminal = Some(error)
+    }
 }

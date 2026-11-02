@@ -187,6 +187,21 @@ fn run(system: &System<'_>) -> ToolboxResult<()>
     assert_eq!(read(system, resource, &mut rsrc)?, 4);
     assert_eq!(&rsrc, b"RSRC");
     system.log("STD_FILES_NATIVE_CONTINUATION_GROW_GAP_SHRINK_OBSERVED\n")?;
+    length(system, clone, LARGE)?;
+    let truncated =
+        open(system, volume, id, DATA_FORK, OPEN_READ | OPEN_WRITE | OPEN_TRUNCATE, "")?;
+    assert_eq!(truncated.length, 0, "single open truncate did not finish");
+    assert_eq!(call(system, TELL, clone)?.length, 0, "independent descriptor kept old length");
+    assert_eq!(call(system, TELL, clone)?.position,
+               gap_position + 3,
+               "open truncate moved another cursor");
+    seek(system, resource, 0)?;
+    assert_eq!(read(system, resource, &mut rsrc)?, 4);
+    assert_eq!(&rsrc, b"RSRC");
+    write(system, truncated.handle, b"new")?;
+    call(system, CLOSE, truncated.handle)?;
+    length(system, clone, 5)?;
+    system.log("STD_FILES_NATIVE_PREPARED_OPEN_TRUNCATE_OBSERVED\n")?;
     call(system, CLOSE, resource)?;
     let readonly = open(system, volume, id, DATA_FORK, OPEN_READ, "")?.handle;
     assert_eq!(write(system, readonly, b"X"), Err(Error::AccessDenied));
