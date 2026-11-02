@@ -1,5 +1,5 @@
 //! Lifetime-domain identity, the resident process owner directory, and ledger
-//! metadata. Other managers migrate under memory/app/resource spec §13.
+//! metadata. Directory capacity can be prepared without publishing an owner.
 //! Native/legacy wire projections remain the responsibility of the facility.
 use alloc::{sync::Arc, vec::Vec};
 use core::{fmt,
@@ -7,6 +7,9 @@ use core::{fmt,
            sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 
 use crate::shared::{InvocationGate, OwnerRef};
+
+mod capacity;
+pub use capacity::{DirectoryCapacityError, DirectoryCapacityPlan, PreparedDirectoryCapacity};
 
 static SYSTEM_INDEX_ISSUED: AtomicBool = AtomicBool::new(false);
 // Native identities and domain incarnations share one boot-wide issuer. The

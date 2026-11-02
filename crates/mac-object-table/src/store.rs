@@ -1112,6 +1112,13 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
         true
     }
 
+    /// Actual detached publication promises in this Store incarnation. Alias
+    /// retirement capacity follows these SAME credits, not another issuer.
+    pub(crate) fn publication_credits(&self) -> usize
+    {
+        self.incarnation.as_ref().map_or(0, |state| state.credits())
+    }
+
     /// Backing reservation count, including invalidated payloads awaiting their
     /// unique cleanup dispatcher. This is not an ordinary live-ID query.
     pub(crate) fn stored_len(&self) -> usize

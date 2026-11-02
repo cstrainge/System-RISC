@@ -4073,3 +4073,79 @@ storage; its raw payload was already ordinary. That definition-pressure behavior
 is unqualified. Shared-index publication headroom, dynamic retirement scratch,
 preallocated stock, pressure/refusal, uncertain ACK, private-SPCE physical-origin
 enumeration and complete production Finder OOM recovery remain separate gates.
+
+## Detached recovery image, thread and directory admission
+
+Replacement Finder image sharing now retains the original genuine IMAG Read
+through canonical alias publication. Detached preparations retain the original
+source completion, recipient owner/account and existing Store publication
+credit. Source/instance identity, recipient admission and image placement are
+revalidated at publication. A stopped source may supply its pinned immutable
+bytes; it grants no right to execute the stopped instance. Payload construction,
+reader admission and obsolete-buffer disposal occur outside IMAGES. The same
+canonical Store counts outstanding publication credits when preparing deferred
+cleanup capacity; no second issuer, credit counter or re-interning fallback is
+introduced. Ordinary new-source interning remains a separate migration.
+
+Process main/recovery and child threads now share the existing detached THRD
+admission path. Only missing scheduler storage is allocated. Short scheduler
+turns mask local interrupts before locking; allocation and obsolete-storage
+destruction occur outside those turns. Actual publication, stack binding and
+context assignment retain the original account and preparation. A late failure
+after the one-time stack binding is terminal: retrying the same stack under a new
+thread ID is invalid. Its retained System report offers Copy and a queued System
+Restart through the existing power service, with readable stage-specific refusal.
+That rare terminal binding/report/power branch has no guest execution evidence.
+Stopping owners follow ordinary cancellation and retirement instead of retry.
+
+The existing Process directory and Saved-context array also accept detached
+empty capacity. Plans grant no identity, owner authority or reservation. Finder
+prepares their storage outside Desktop under its genuine recovery allocation
+scope, revalidates current capacity, then moves existing entries and provisions
+in the same Desktop turn. Displaced or refused storage drops after leaving the
+guard. Original ledger identities, account receipts and directory ordering stay
+intact. Fresh owner/account, Saved-state and report factories still execute under
+Desktop; this slice moves shared-array growth only. Worker and boot-idle THRD
+publication, reserved stock and headroom remain separate work.
+
+A source-fixed optimized release/LTO RVA23 four-CPU, 8 GiB, 800x600 private QEMU
+image used System ELF
+`b0d7057d44d8e83ad458a93296c26276c88d7579b02e49b93c1187c2ec43b9a4`
+and System resource
+`724587609b940e4a8b88b3532f5025ffa8ffa4083954c23aaf3a4b4d5423aa5f`;
+ROM remained `cb31b42bf3c0620cc9aa0b2904cccae1ee937af784c9ce1da72a92c78f7dd9f9`.
+The whole world rebuilt with content fingerprints and event/TextEdit tracing off.
+The existing native Finder-role workload completed two Abort/replacement cycles,
+fresh-state/stale-ID checks, old account closure and replacement/survivor input.
+Complete packaged immutable-code identity and all 15 declared segment pages
+identified protected replacement backing. Actual first protected permanent
+branches remained retained after old payload leaves disappeared.
+
+On the same artifact, two ordinary applications and two module workers used
+distinct application roots with own image/shared module mappings, omitted the
+other application's low image, migrated with the same stacks and overlapped on
+CPUs. Register/service/cancel and actual thread/process/account closure followed.
+The 136 paused body observations cost approximately34–86 ms of host time each;
+these are observer costs, not guest latency measurements. A separate existing
+native child workload admitted 14 default-stack children up to budget refusal,
+exercised independent TLS, overlapping heap/waits, joins, self-join refusal,
+detach, RAII and reuse, then observed actual THRD and Process reclamation.
+Stacks are charged to the configured 64 MiB application budget; kernel metadata
+has its separate 16 MiB budget.
+
+An existing image-arena reservation-pressure workload refused replacement,
+closed the actual unstarted account and kept the report copyable. Quitting the
+real pressure owner released its reservation; a fresh retry completed one
+replacement, fresh-state/stale-ID checks and old account closure. This was
+virtual-image reservation pressure, not heap or protected-reserve exhaustion.
+The production Finder document path separately observed a real withheld-source
+deadline, reset, unstarted-account closure, readable original Open/name alert,
+dismissal, retry, Text Edit entry/quit/account closure and subsequent input.
+Sources/base stayed fixed per capture; owned guests exited zero, were reaped and
+their cloned media removed. No host Rust suite supplied OS acceptance.
+
+These finite observations do not force detached-directory growth, capacity
+contention, terminal binding failure, uncertain acknowledgment or heap/reserve
+exhaustion. Read-only paused page walks, serial logging and paced UI input
+perturb execution. Race absence, latency, U-mode isolation, full Save/Save As
+exhaustion and production Finder OOM recovery remain unqualified.

@@ -1,13 +1,14 @@
 //! App-local state is swapped only at the interrupt-masked service boundary.
 //! The compositor/window registry are shared; applications never select identity.
 #![forbid(unsafe_code)]
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 
 use mac_abi::{processes::*, *};
 
 use crate::toolbox::{events::EventManager,
-                     handles::OwnerRef,
-                     processes::{ResourceBinding,
+                     handles::{DirectoryCapacityError, DirectoryCapacityPlan, OwnerRef,
+                               PreparedDirectoryCapacity},
+                     processes::{Process, ResourceBinding,
                                  menu::{Action, Entry},
                                  termination::{Outcome, Retention}},
                      resources::definitions::DefinitionRef,
@@ -24,6 +25,101 @@ pub(super) struct Saved
     classic_font: mac_abi::quickdraw::FontSelection,
     events:       Box<EventManager>,
     textedit:     crate::toolbox::textedit::Manager
+}
+
+/// Empty storage only: neither this plan nor its prepared buffers authenticate
+/// an owner or reserve a process identity. Final admission revalidates both.
+pub(crate) struct FinderCapacityPlan
+{
+    processes: DirectoryCapacityPlan<Process>,
+    locals:    usize
+}
+#[must_use = "dispose detached and obsolete Finder directory buffers outside Desktop"]
+pub(crate) struct FinderCapacity
+{
+    processes: PreparedDirectoryCapacity<Process>,
+    locals:    Vec<Saved>
+}
+#[derive(Debug)]
+pub(crate) enum FinderCapacityError
+{
+    Directory(DirectoryCapacityError),
+    Geometry,
+    Storage
+    {
+        entries: usize
+    },
+    Changed
+    {
+        required: usize,
+        prepared: usize
+    }
+}
+impl FinderCapacityError
+{
+    pub(crate) fn status(&self) -> Status
+    {
+        match self
+        {
+            Self::Directory(DirectoryCapacityError::Storage { .. }) | Self::Storage { .. } =>
+            {
+                NO_MEMORY
+            }
+            Self::Directory(DirectoryCapacityError::Changed { .. }) | Self::Changed { .. } =>
+            {
+                SERVICE_BUSY
+            }
+            Self::Directory(DirectoryCapacityError::Geometry { .. }) | Self::Geometry =>
+            {
+                BAD_ARGUMENT
+            }
+        }
+    }
+}
+impl core::fmt::Display for FinderCapacityError
+{
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+    {
+        match self
+        {
+            Self::Directory(cause) => cause.fmt(out),
+            Self::Geometry =>
+            {
+                out.write_str("Finder saved-context directory capacity overflows; no replacement \
+                               admitted")
+            }
+            Self::Storage { entries } =>
+            {
+                write!(out,
+                       "not enough System storage for {entries} saved application contexts; \
+                        original desktop retained")
+            }
+            Self::Changed { required,
+                            prepared } =>
+            {
+                write!(out,
+                       "saved application directory now requires {required} entries but detached \
+                        storage holds {prepared}; prepare again")
+            }
+        }
+    }
+}
+impl FinderCapacityPlan
+{
+    pub(crate) fn prepare(self) -> Result<FinderCapacity, FinderCapacityError>
+    {
+        use mac_object_table::shared::InvocationGate as _;
+        let processes = self.processes.prepare().map_err(FinderCapacityError::Directory)?;
+        core::alloc::Layout::array::<Saved>(self.locals).map_err(|_| {
+                                                            FinderCapacityError::Geometry
+                                                        })?;
+        let mut locals = Vec::new();
+        crate::toolbox::handles::InvocationGate::with_system_allocation(|| {
+            locals.try_reserve_exact(self.locals)
+        }).map_err(|_| FinderCapacityError::Storage { entries: self.locals })?;
+        Ok(FinderCapacity { processes,
+                            locals })
+    }
 }
 impl Saved
 {
@@ -188,15 +284,33 @@ impl Desktop
         Ok(())
     }
 
-    pub(crate) fn reserve_finder(&mut self, old: u64, permit: crate::allocator::recovery::Permit)
+    pub(crate) fn plan_finder_capacity(&self) -> Result<FinderCapacityPlan, FinderCapacityError>
+    {
+        let required = self.locals.len().checked_add(1).ok_or(FinderCapacityError::Geometry)?;
+        Ok(FinderCapacityPlan { processes: self.processes
+                                               .plan_provision_capacity()
+                                               .map_err(FinderCapacityError::Directory)?,
+                                locals:    if self.locals.capacity() < required
+                                {
+                                    required
+                                }
+                                else
+                                {
+                                    0
+                                } })
+    }
+
+    pub(crate) fn reserve_finder(&mut self, old: u64, permit: crate::allocator::recovery::Permit,
+                                 capacity: &mut FinderCapacity)
                                  -> Result<FinderAdmission, Status>
     {
         crate::context::with_recovery_allocation(permit.clone(), || {
-            self.reserve_finder_inner(old, permit)
+            self.reserve_finder_inner(old, permit, capacity)
         })
     }
 
-    fn reserve_finder_inner(&mut self, old: u64, permit: crate::allocator::recovery::Permit)
+    fn reserve_finder_inner(&mut self, old: u64, permit: crate::allocator::recovery::Permit,
+                            capacity: &mut FinderCapacity)
                             -> Result<FinderAdmission, Status>
     {
         let activity = crate::context::recovery_activity().ok_or(NOT_SUPPORTED)?;
@@ -206,11 +320,27 @@ impl Desktop
         }
         let binding = self.processes.resource_binding(old)?;
         let original = binding.image().ok_or(BAD_ABI)?;
+        // Check both capacities before moving either buffer. These observations
+        // reserve no identity; final provision remains in this Desktop turn.
+        let required = self.locals.len().checked_add(1).ok_or(BAD_ARGUMENT)?;
+        if self.locals.capacity() < required && capacity.locals.capacity() < required
         {
-            use mac_object_table::shared::InvocationGate as _;
-            crate::toolbox::handles::InvocationGate::with_system_allocation(|| {
-                self.locals.try_reserve(1)
-            }).map_err(|_| NO_MEMORY)?;
+            let cause = FinderCapacityError::Changed { required,
+                                                       prepared: capacity.locals.capacity() };
+            return Err(cause.status());
+        }
+        self.processes.install_provision_capacity(&mut capacity.processes).map_err(|cause| {
+            let cause = FinderCapacityError::Directory(cause);
+            if cause.status() != SERVICE_BUSY
+            {
+                serial!("FINDER_CAPACITY_REFUSED: {cause}");
+            }
+            cause.status()
+        })?;
+        if self.locals.capacity() < required
+        {
+            capacity.locals.extend(self.locals.drain(..));
+            core::mem::swap(&mut self.locals, &mut capacity.locals);
         }
         self.enter(old);
         let id = self.processes.provision("Finder", 0, 0)?;

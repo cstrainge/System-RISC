@@ -408,6 +408,21 @@ impl Manager
         Ok(tls.clone())
     }
 
+    pub(crate) fn plan_provision_capacity(
+        &self)
+        -> Result<super::handles::DirectoryCapacityPlan<Process>,
+                  super::handles::DirectoryCapacityError>
+    {
+        self.entries.plan_insert_capacity()
+    }
+
+    pub(crate) fn install_provision_capacity(
+        &mut self, prepared: &mut super::handles::PreparedDirectoryCapacity<Process>)
+        -> Result<(), super::handles::DirectoryCapacityError>
+    {
+        self.entries.install_insert_capacity(prepared)
+    }
+
     pub(crate) fn provision(&mut self, name: &str, volume: u32, cnid: u32) -> Result<u64, Status>
     {
         let mut info = ProcessInfo { volume,

@@ -14,6 +14,7 @@ use super::traps::TrapFrame;
 use crate::{context::{EventWaiter, ThreadContext},
             toolbox::handles::{OwnerRef, Store}};
 mod lifetime;
+mod admission;
 pub(crate) mod application;
 pub(crate) mod address;
 pub(crate) use address::changed as address_wait_changed;
@@ -627,10 +628,18 @@ pub(crate) struct PrepareFailure
     pub(crate) status: mac_abi::Status,
     pub(crate) loaded: crate::kernel::LoadedImage
 }
+#[derive(Clone, Copy)]
+pub(crate) enum SpawnRefusal
+{
+    RetryableAdmission,
+    TerminalBinding,
+    Cancelled
+}
 pub(crate) struct SpawnFailure
 {
-    pub(crate) status:   mac_abi::Status,
-    pub(crate) prepared: PreparedThread
+    pub(crate) disposition: SpawnRefusal,
+    pub(crate) status:      mac_abi::Status,
+    pub(crate) prepared:    PreparedThread
 }
 pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                       loaded: crate::kernel::LoadedImage, charges: accounting::ThreadCharges,
@@ -842,85 +851,54 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
 pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
                              -> Result<u64, SpawnFailure>
 {
-    match prepared.recovery.clone()
+    let mut disposition = SpawnRefusal::RetryableAdmission;
+    let published = match admission::publish(&prepared, runnable)
     {
-        Some(permit) =>
+        Err(cause) =>
         {
-            crate::context::with_recovery_allocation(permit, || {
-                spawn_prepared_inner(prepared, runnable)
-            })
+            serial!("THREAD_ADMISSION_REFUSED owner={} {cause}",
+                    prepared.owner.owner().incarnation());
+            Err(cause.status())
         }
-        None => spawn_prepared_inner(prepared, runnable)
-    }
-}
-fn spawn_prepared_inner(prepared: PreparedThread, runnable: bool) -> Result<u64, SpawnFailure>
-{
-    let published = (|| {
-        let mut scheduler = SCHEDULER.lock();
-        let slot = crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
-            scheduler.prepare()
-        })?;
-        if !prepared.owner.accepting()
+        Ok(publication) =>
         {
-            return Err(mac_abi::ACCESS_DENIED);
-        }
-        let store = scheduler.records.as_mut().ok_or(mac_abi::BAD_ABI)?;
-        // Shared Store indices grow under their narrow System hook. Its actual
-        // per-owner Claim, slots and completions belong to this admitted child.
-        let publication = crate::context::with_allocation(crate::allocator::Target::Owner {
-                account: prepared.allocation.clone(),
-                class: mac_kernel_model::policy::MemoryClass::Kernel
-            }, || store.insert_with_receipt(&prepared.owner, |id| {
-                Record::Scheduled(Thread { id,
-                         core: prepared.core.share(),
-                         worker: None, scope: None,
-                         state: Cell::new(RunState::new()) })
-            })).map_err(lifetime::pool_status)?;
-        let (id, receipt) = publication.into_parts();
-        if slot == scheduler.threads.len()
-        {
-            scheduler.threads.push(Some(receipt));
-        }
-        else
-        {
-            scheduler.threads[slot] = Some(receipt);
-        }
-        // Publication's receipt remains valid if a stopping walk has already
-        // invalidated ordinary lookup. An unstarted refusal retains the same
-        // preparation; its stack/image pins are never dropped under this lock.
-        let stack_binding = prepared.core.backing.lock().as_ref().map_or(Err(mac_abi::BAD_ABI),
-                                                                         |backing| {
-                                                                             backing.stack
-                                                                                    .bind(receipt)
-                                                                         });
-        let assigned = stack_binding.and_then(|()| {
-                                        prepared.core.context.assign(prepared.owner.clone(),
-                                                                     id,
-                                                                     prepared.core.binding,
-                                                                     &prepared.allocation,
-                                                                     &prepared.heap)
-                                    });
-        if let Err(status) = assigned
-        {
-            let removed = scheduler.records.as_mut().and_then(|store| store.remove(id));
-            if removed.is_some()
+            match publication.assigned
             {
-                scheduler.threads[slot] = None;
+                Ok(()) => Ok(publication.id),
+                Err(status) =>
+                {
+                    disposition = SpawnRefusal::TerminalBinding;
+                    let removed = super::interrupts::with_masked(|| {
+                        let mut scheduler = SCHEDULER.lock();
+                        let slot = scheduler.iter().find_map(|(slot, thread)| {
+                                                       (thread.id == publication.id).then_some(slot)
+                                                   });
+                        let removed =
+                            scheduler.records
+                                     .as_mut()
+                                     .and_then(|store| store.remove_with_backing(publication.id));
+                        if let Some(slot) = slot
+                        {
+                            if removed.is_some()
+                            {
+                                scheduler.threads[slot] = None;
+                            }
+                            else if let Some(thread) = scheduler.thread(slot)
+                            {
+                                retire(thread);
+                            }
+                        }
+                        removed
+                    });
+                    // Includes detached canonical owner capacity, not only Record.
+                    // A concurrent walk may already own the row; leave it inert and
+                    // retiring, retaining the same original preparation on refusal.
+                    drop(removed);
+                    Err(status)
+                }
             }
-            else if let Some(thread) = scheduler.thread(slot)
-            {
-                retire(thread);
-            }
-            drop(scheduler);
-            drop(removed);
-            return Err(status);
         }
-        if let Some(thread) = scheduler.thread(slot)
-        {
-            thread.update(|state| state.live = runnable);
-        }
-        Ok(id)
-    })();
+    };
     match published
     {
         Ok(id) =>
@@ -949,6 +927,7 @@ fn spawn_prepared_inner(prepared: PreparedThread, runnable: bool) -> Result<u64,
         Err(status) =>
         {
             Err(SpawnFailure { status,
+                               disposition: if prepared.owner.accepting() { disposition } else { SpawnRefusal::Cancelled },
                                prepared })
         }
     }

@@ -1,5 +1,6 @@
 //! Registered immutable sources and private flat execution reservations.
 #![forbid(unsafe_code)]
+mod sharing;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -453,6 +454,38 @@ impl<E: core::fmt::Display> core::fmt::Display for LoadError<E>
     }
 }
 
+fn prepare_instance(owner: &OwnerRef,
+                    allocation: &crate::machine::scheduler::accounting::AllocationAuthority,
+                    module: bool, base: u64, extent: u64, linked_origin: u64,
+                    mut executable: Vec<core::ops::Range<u64>>,
+                    mut writable: Vec<core::ops::Range<u64>>)
+                    -> Result<Arc<Instance>, Status>
+{
+    for ranges in [&mut executable, &mut writable]
+    {
+        for range in ranges
+        {
+            let start = range.start.checked_sub(linked_origin).ok_or(BAD_ABI)?;
+            let end = range.end.checked_sub(linked_origin).ok_or(BAD_ABI)?;
+            if start >= end || end > extent
+            {
+                return Err(BAD_ABI);
+            }
+            *range =
+                base.checked_add(start).ok_or(BAD_ABI)?..base.checked_add(end).ok_or(BAD_ABI)?;
+        }
+    }
+    let activity =
+        Arc::try_new(Activity { readers:  AtomicUsize::new(0),
+                                retiring: AtomicBool::new(false) }).map_err(|_| NO_MEMORY)?;
+    let instance = Arc::try_new(Instance { owner: owner.clone(), module, executable, writable,
+            initialized: AtomicBool::new(false), mapping: spin::Once::new(), retirement_claimed:AtomicBool::new(false), base,
+            limit: base.checked_add(extent).ok_or(NO_MEMORY)?,
+            execution: mac_kernel_model::image::ExecutionGate::try_new().map_err(|_| NO_MEMORY)?, activity,
+            binding: spin::Once::new(), allocation: allocation.clone() }).map_err(|_| NO_MEMORY)?;
+    Ok(instance)
+}
+
 pub(crate) struct Manager
 {
     sources: aliases::Store<Arc<Source>, InvocationGate, Arc<Instance>>
@@ -462,42 +495,25 @@ impl Manager
     pub(crate) fn new(system: OwnerRef, kinds: [KindLease; 4]) -> Result<Self, Status>
     {
         let [alias, backing, object, object_backing] = kinds;
-        Ok(Self { sources: aliases::Store::new(system, (alias, backing), (object, object_backing)).map_err(status)? })
+        Ok(Self { sources: aliases::Store::new_prepared_sharing(system, (alias, backing), (object, object_backing)).map_err(status)? })
     }
 
-    /// Caller owns a genuine child ledger before any source is admitted. All
-    /// fallible metadata allocation precedes executable-memory writes.
-    pub(crate) fn prepare_load(&mut self, owner: &OwnerRef,
-                               allocation: &crate::machine::scheduler::accounting::AllocationAuthority,
-                               source: Arc<Source>, linked_origin: u64, preferred: u64,
-                               extent: u64, relocation_base: u64, limit: u64,
-                               mut executable: Vec<core::ops::Range<u64>>,
-                               mut writable: Vec<core::ops::Range<u64>>)
-                               -> Result<PreparedLoad, Status>
+    fn free_placement(&self, base: u64, extent: u64, limit: u64) -> bool
     {
-        let role_matches_owner =
-            matches!((&source.role, owner.owner().kind()),
-                     (Role::Application { .. }, mac_object_table::domain::DomainKind::Process)
-                     | (Role::Module, mac_object_table::domain::DomainKind::Module));
-        if !role_matches_owner || allocation.owner() != owner.owner()
-        {
-            return Err(ACCESS_DENIED);
-        }
-        if !owner.accepting()
-        {
-            return Err(SERVICE_BUSY);
-        }
-        let free = |base: u64| {
-            base.checked_add(extent).is_some_and(|end| {
-                                        end <= limit
-                                        && !self.sources
-                                                .retained()
-                                                .any(|(_, instance)| {
-                                                    base < instance.limit && instance.base < end
-                                                })
-                                    })
-        };
-        let base = if free(preferred)
+        base.checked_add(extent).is_some_and(|end| {
+                                    end <= limit
+                                    && !self.sources
+                                            .retained()
+                                            .any(|(_, instance)| {
+                                                base < instance.limit && instance.base < end
+                                            })
+                                })
+    }
+
+    fn placement(&self, preferred: u64, extent: u64, relocation_base: u64, limit: u64)
+                 -> Result<u64, Status>
+    {
+        let base = if self.free_placement(preferred, extent, limit)
         {
             preferred
         }
@@ -520,28 +536,40 @@ impl Manager
                 }
             }
         };
-        for ranges in [&mut executable, &mut writable]
+        Ok(base)
+    }
+
+    /// Caller owns a genuine child ledger before any source is admitted. All
+    /// fallible metadata allocation precedes executable-memory writes.
+    pub(crate) fn prepare_load(&mut self, owner: &OwnerRef,
+                               allocation: &crate::machine::scheduler::accounting::AllocationAuthority,
+                               source: Arc<Source>, linked_origin: u64, preferred: u64,
+                               extent: u64, relocation_base: u64, limit: u64,
+                               executable: Vec<core::ops::Range<u64>>,
+                               writable: Vec<core::ops::Range<u64>>)
+                               -> Result<PreparedLoad, Status>
+    {
+        let role_matches_owner =
+            matches!((&source.role, owner.owner().kind()),
+                     (Role::Application { .. }, mac_object_table::domain::DomainKind::Process)
+                     | (Role::Module, mac_object_table::domain::DomainKind::Module));
+        if !role_matches_owner || allocation.owner() != owner.owner()
         {
-            for range in ranges
-            {
-                let start = range.start.checked_sub(linked_origin).ok_or(BAD_ABI)?;
-                let end = range.end.checked_sub(linked_origin).ok_or(BAD_ABI)?;
-                if start >= end || end > extent
-                {
-                    return Err(BAD_ABI);
-                }
-                *range = base.checked_add(start).ok_or(BAD_ABI)?
-                         ..base.checked_add(end).ok_or(BAD_ABI)?;
-            }
+            return Err(ACCESS_DENIED);
         }
-        let activity =
-            Arc::try_new(Activity { readers:  AtomicUsize::new(0),
-                                    retiring: AtomicBool::new(false) }).map_err(|_| NO_MEMORY)?;
-        let instance = Arc::try_new(Instance { owner: owner.clone(), module: source.role == Role::Module, executable, writable,
-            initialized: AtomicBool::new(false), mapping: spin::Once::new(), retirement_claimed:AtomicBool::new(false), base,
-            limit: base.checked_add(extent).ok_or(NO_MEMORY)?,
-            execution: mac_kernel_model::image::ExecutionGate::try_new().map_err(|_| NO_MEMORY)?, activity,
-            binding: spin::Once::new(), allocation: allocation.clone() }).map_err(|_| NO_MEMORY)?;
+        if !owner.accepting()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let base = self.placement(preferred, extent, relocation_base, limit)?;
+        let instance = prepare_instance(owner,
+                                        allocation,
+                                        source.role == Role::Module,
+                                        base,
+                                        extent,
+                                        linked_origin,
+                                        executable,
+                                        writable)?;
         let (_, receipt) = self.sources
                                .insert_with_receipt(owner, source, instance.clone())
                                .map_err(status)?
