@@ -55,7 +55,7 @@ fn try_folder_action<'a, T>(system: &System<'a>, alerts: &mut ui::Alerts<'a>,
                 let _ = system.log(message.as_str());
                 if let Err(error) = alerts.folder_error(system, status, failed)
                 {
-                    message.clear();
+                    let mut message = browser::Text::<80>::default();
                     let _ = writeln!(&mut message, "FINDER_ALERT_FAILED status={}", error.status());
                     let _ = system.log(message.as_str());
                 }
@@ -307,7 +307,6 @@ fn main() -> Result<(), Error>
     let mut deferred_command = None;
     let mut retry_folder: Option<browser::FailedFolder> = None;
     let mut prune_pending = false;
-    let mut deferred_about: Option<WindowId> = None;
     let mut modal_input_owned = false;
     loop
     {
@@ -369,28 +368,7 @@ fn main() -> Result<(), Error>
            && !dragging.runnable()
            && !dragging.positions_pending(&browser)
         {
-            if let Some(id) = deferred_about
-            {
-                let result = if id != about_id
-                {
-                    Ok(())
-                }
-                else
-                {
-                    match system.window(id)
-                    {
-                        Ok(_) => about(system, id),
-                        Err(Error::NotFound) => Ok(()),
-                        Err(cause) => Err(cause)
-                    }
-                };
-                if result.is_ok()
-                {
-                    deferred_about = None;
-                }
-                let _ = try_action(system, &mut alerts, result)?;
-            }
-            else if clipboard.has_deferred_update()
+            if clipboard.has_deferred_update()
             {
                 let _ = try_action(system, &mut alerts, clipboard.draw_deferred(system))?;
             }
@@ -610,17 +588,6 @@ fn main() -> Result<(), Error>
         if alerts.active() && matches!(event, Event::Update { .. })
         {
             let window = event.window().unwrap_or_default();
-            if window == about_id && about_id != WindowId(0)
-            {
-                deferred_about = Some(window);
-                let result = system.windows().validate(window);
-                if result.is_err()
-                {
-                    alerts.defer_service(system);
-                }
-                let _ = try_action(system, &mut alerts, result)?;
-                continue;
-            }
             if window == clipboard.window && clipboard.window != WindowId(0)
             {
                 let result = clipboard.defer_update(system, window);
@@ -739,7 +706,7 @@ fn main() -> Result<(), Error>
             }
             continue;
         }
-        if alerts.window() != WindowId(0)
+        if alerts.active()
         {
             continue;
         }
