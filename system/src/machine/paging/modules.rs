@@ -99,6 +99,11 @@ pub(crate) enum Error
     Process(super::process::Error),
     Owner,
     Closed,
+    DefinitionRetirement
+    {
+        owner: mac_object_table::domain::DomainId,
+        drain: crate::toolbox::resources::definitions::Drain
+    },
     State,
     UserMapping(CleanupCause),
     Metadata,
@@ -139,6 +144,7 @@ impl Error
         {
             Self::Process(e) => e.status(),
             Self::UserMapping(_) => BAD_ABI,
+            Self::DefinitionRetirement { .. } => mac_abi::SERVICE_BUSY,
             Self::Metadata => NO_MEMORY,
             Self::Workspace(cause) => cause.status(),
             Self::Account(cause) => crate::allocation::account_status(cause),
@@ -180,6 +186,13 @@ impl fmt::Display for Error
             Self::Closed =>
             {
                 out.write_str("image owner stopped before executable mapping publication")
+            }
+            Self::DefinitionRetirement { owner,
+                                         drain } =>
+            {
+                write!(out,
+                       "definition mapping retirement for {owner} refused: {drain:?}; original \
+                        mapping/source/ticket retained")
             }
             Self::State =>
             {
