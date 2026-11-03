@@ -35,19 +35,19 @@ impl Raster
 }
 struct Object
 {
-    window:             u64,
-    recipient:          u64,
-    recovery:           bool,
-    spec:               Spec,
-    top:                u32,
-    raster:             Arc<Raster>,
-    tracking:           Option<Tracking>,
-    highlight:          i16,
+    window:           u64,
+    recipient:        u64,
+    recovery:         bool,
+    spec:             Spec,
+    top:              u32,
+    raster:           Arc<Raster>,
+    tracking:         Option<Tracking>,
+    highlight:        i16,
     // Retain executable source through all control payload destruction; the
     // recovery Activity below remains the final modal-session acknowledgment.
-    definition:         BoundDefinition,
+    definition:       BoundDefinition,
     #[cfg(target_arch = "riscv64")]
-    _recovery_activity: Option<crate::recovery::Activity>
+    _recovery_origin: Option<crate::recovery::ScrollBoxOrigin>
 }
 pub struct Manager
 {
@@ -135,10 +135,14 @@ impl Manager
 }
 pub struct Drawing
 {
-    pub id: u64,
-    bounds: Rect,
-    raster: Arc<Raster>,
-    bar:    super::Drawing
+    pub id:           u64,
+    bounds:           Rect,
+    raster:           Arc<Raster>,
+    bar:              super::Drawing,
+    // Actual immutable readers release raster and executable source BEFORE
+    // this original Session pin wakes closing cleanup.
+    #[cfg(target_arch = "riscv64")]
+    _recovery_origin: Option<crate::recovery::ScrollBoxOrigin>
 }
 impl Drawing
 {
@@ -374,17 +378,29 @@ impl Manager
             return Err(ACCESS_DENIED);
         }
         let storage = self.objects.owner(id).ok_or(NOT_FOUND)?;
+        #[cfg(target_arch = "riscv64")]
+        {
+            if object.recovery != object._recovery_origin.is_some()
+            {
+                return Err(BAD_ABI);
+            }
+            if let Some(origin) = &object._recovery_origin
+            {
+                let current = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                current.validate_scroll_box_origin(origin,
+                                                   origin.recipient(),
+                                                   storage,
+                                                   mac_abi::WindowId(object.window),
+                                                   crate::recovery::ScrollBoxAccess::Cleanup)?;
+            }
+            else if storage.incarnation() != owner
+            {
+                return Err(ACCESS_DENIED);
+            }
+        }
+        #[cfg(not(target_arch = "riscv64"))]
         if storage.incarnation() != owner
         {
-            #[cfg(target_arch = "riscv64")]
-            {
-                let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
-                if activity.owner() != owner || activity.storage_owner().owner() != storage
-                {
-                    return Err(ACCESS_DENIED);
-                }
-            }
-            #[cfg(not(target_arch = "riscv64"))]
             return Err(ACCESS_DENIED);
         }
         Ok(object)
@@ -393,6 +409,25 @@ impl Manager
     fn get_mut(&mut self, id: u64, owner: u64) -> Result<&mut Object, Status>
     {
         self.get(id, owner)?;
+        self.objects.get_mut(id).ok_or(NOT_FOUND)
+    }
+
+    /// Direct resident row providers require the same live entry admission as
+    /// request SET_ROW. Cleanup/cancel keep their separate get_mut path.
+    fn get_mut_live(&mut self, id: u64, owner: u64) -> Result<&mut Object, Status>
+    {
+        let object = self.get(id, owner)?;
+        #[cfg(target_arch = "riscv64")]
+        if let Some(origin) = &object._recovery_origin
+        {
+            let current = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+            let storage = self.objects.owner(id).ok_or(NOT_FOUND)?;
+            current.validate_scroll_box_origin(origin,
+                                               origin.recipient(),
+                                               storage,
+                                               mac_abi::WindowId(object.window),
+                                               crate::recovery::ScrollBoxAccess::Live)?;
+        }
         self.objects.get_mut(id).ok_or(NOT_FOUND)
     }
 
@@ -407,7 +442,7 @@ impl Manager
                                draw: impl FnOnce(&mut Canvas<'_>) -> Result<(), Status>)
                                -> Result<(), Status>
     {
-        paint_row(self.get_mut(id, owner)?, row, draw)
+        paint_row(self.get_mut_live(id, owner)?, row, draw)
     }
 
     /// Reserve both committed and staging rasters against the compositor's
@@ -488,30 +523,39 @@ impl Manager
         }
     }
 
+    #[cfg(target_arch = "riscv64")]
+    fn creation_origin(recipient: &OwnerRef, storage: &OwnerRef, window: u64)
+                       -> Result<Option<crate::recovery::ScrollBoxOrigin>, Status>
+    {
+        match crate::context::recovery_activity()
+        {
+            Some(activity) =>
+            {
+                activity.scroll_box_origin(recipient, storage, mac_abi::WindowId(window)).map(Some)
+            }
+            None if recipient.owner() == storage.owner() => Ok(None),
+            None => Err(ACCESS_DENIED)
+        }
+    }
+
     /// Admission only: no definition callbacks, raster allocation or mutation.
     pub(crate) fn preflight_definition(&self, recipient: &OwnerRef, storage: &OwnerRef,
                                        call: &Call, fonts: &FontManager)
                                        -> Result<Option<DefinitionRef>, Status>
     {
         let owner = recipient.owner().incarnation();
+        #[cfg(target_arch = "riscv64")]
+        let creation_origin = if call.operation == CREATE
+        {
+            Self::creation_origin(recipient, storage, call.window)?
+        }
+        else
+        {
+            None
+        };
+        #[cfg(not(target_arch = "riscv64"))]
         if storage.owner() != recipient.owner()
         {
-            #[cfg(target_arch = "riscv64")]
-            {
-                let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
-                if activity.owner() != owner
-                   || activity.storage_owner().owner() != storage.owner()
-                   || !crate::context::io_subject().is_some_and(|subject| {
-                                                       subject.scope()
-                                                              .same_scope(activity.root_subject()
-                                                                                  .scope())
-                                                   })
-                   || (call.operation == CREATE && !recipient.accepting())
-                {
-                    return Err(ACCESS_DENIED);
-                }
-            }
-            #[cfg(not(target_arch = "riscv64"))]
             return Err(ACCESS_DENIED);
         }
         if call.operation == CREATE && !storage.accepting()
@@ -542,7 +586,29 @@ impl Manager
         }
         if call.operation != CREATE
         {
-            self.get(call.id, owner)?;
+            let object = self.get(call.id, owner)?;
+            #[cfg(target_arch = "riscv64")]
+            if let Some(origin) = &object._recovery_origin
+            {
+                let current = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                let access = if call.operation == DISPOSE
+                {
+                    crate::recovery::ScrollBoxAccess::Cleanup
+                }
+                else
+                {
+                    crate::recovery::ScrollBoxAccess::Live
+                };
+                current.validate_scroll_box_origin(origin,
+                                                   recipient.owner(),
+                                                   storage.owner(),
+                                                   mac_abi::WindowId(object.window),
+                                                   access)?;
+            }
+            else if storage.owner() != recipient.owner()
+            {
+                return Err(ACCESS_DENIED);
+            }
         }
         if call.operation == SET_ROW && call.flags & !SELECTED != 0
         {
@@ -563,7 +629,14 @@ impl Manager
             let used = self.raster_bytes;
             let recovery = if call.operation == CREATE
             {
-                storage.owner() != recipient.owner()
+                #[cfg(target_arch = "riscv64")]
+                {
+                    creation_origin.is_some()
+                }
+                #[cfg(not(target_arch = "riscv64"))]
+                {
+                    false
+                }
             }
             else
             {
@@ -614,9 +687,25 @@ impl Manager
                 0
             };
             let used = self.raster_bytes;
+            #[cfg(target_arch = "riscv64")]
+            let creation_origin = if call.operation == CREATE
+            {
+                Self::creation_origin(recipient, storage, call.window)?
+            }
+            else
+            {
+                None
+            };
             let recovery = if call.operation == CREATE
             {
-                storage.owner() != recipient.owner()
+                #[cfg(target_arch = "riscv64")]
+                {
+                    creation_origin.is_some()
+                }
+                #[cfg(not(target_arch = "riscv64"))]
+                {
+                    false
+                }
             }
             else
             {
@@ -636,35 +725,27 @@ impl Manager
                                       tracking: None,
                                       highlight: 0,
                                       #[cfg(target_arch = "riscv64")]
-                                      _recovery_activity: if recovery
-                                      {
-                                          crate::context::recovery_activity()
-                                      }
-                                      else
-                                      {
-                                          None
-                                      } };
-                call.id = if recovery
+                                      _recovery_origin: creation_origin.clone() };
+                #[cfg(target_arch = "riscv64")]
                 {
-                    #[cfg(target_arch = "riscv64")]
+                    call.id = if let Some(origin) = creation_origin
                     {
-                        let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
+                        let activity = origin.activity();
                         let subject = activity.root_subject();
                         self.objects.insert_reserved_in_scope_with_acknowledgement(
-                            self.publication.as_mut().ok_or(NOT_SUPPORTED)?, subject.scope(),
-                            Some(activity.acknowledgement_pin()), |_| object)
-                            .map_err(publication_status)?.id()
+                        self.publication.as_mut().ok_or(NOT_SUPPORTED)?, subject.scope(),
+                        Some(activity.acknowledgement_pin()), |_| object)
+                        .map_err(publication_status)?.id()
                     }
-                    #[cfg(not(target_arch = "riscv64"))]
+                    else
                     {
-                        drop(object);
-                        return Err(NOT_SUPPORTED);
-                    }
+                        self.objects.insert(storage, object).map_err(pool_status)?
+                    };
                 }
-                else
+                #[cfg(not(target_arch = "riscv64"))]
                 {
-                    self.objects.insert(storage, object).map_err(pool_status)?
-                };
+                    call.id = self.objects.insert(storage, object).map_err(pool_status)?;
+                }
                 self.raster_bytes = used + w * h * 8;
                 if recovery
                 {
@@ -876,7 +957,9 @@ impl Manager
             return Ok(Some(Drawing { id: call.id,
                                      bounds: object.spec.viewport,
                                      raster: object.raster.clone(),
-                                     bar }));
+                                     bar,
+                                     #[cfg(target_arch = "riscv64")]
+                                     _recovery_origin: object._recovery_origin.clone() }));
         }
         Ok(None)
     }

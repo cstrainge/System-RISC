@@ -14,13 +14,10 @@ use crate::toolbox::{crashes::{PaintError, PaintScratch, RESOURCE_ID, ReportLayo
                      windows::WindowPart};
 
 const REPORT: Rect = Rect::new(14, 91, 566, 347);
-const BUTTONS: [Rect; 6] = [Rect::new(14, 369, 55, 391),
-                            Rect::new(61, 369, 102, 391),
-                            Rect::new(108, 369, 160, 391),
-                            Rect::new(166, 369, 225, 391),
-                            Rect::new(302, 369, 421, 391),
-                            Rect::new(435, 369, 566, 391)];
-const LABELS: [u32; 6] = [3, 4, 5, 6, 2, 1];
+const BUTTONS: [Rect; 2] = [Rect::new(302, 369, 421, 391), Rect::new(435, 369, 566, 391)];
+const LABELS: [u32; 2] = [2, 1];
+#[path = "viewer.rs"]
+mod viewer;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Paint
 {
@@ -126,20 +123,6 @@ fn paint_error(cause: PaintError) -> Status
     }
     cause.status()
 }
-/// Exact UTF-8 extent after the existing four-column tab expansion.
-fn expanded_line_length(line: &str) -> Result<usize, Status>
-{
-    let (mut length, mut column) = (0usize, 0usize);
-    for character in line.chars()
-    {
-        let columns = if character == '\t' { 4 - (column % 4) } else { 1 };
-        column = column.checked_add(columns).ok_or(BAD_ARGUMENT)?;
-        length = length.checked_add(if character == '\t' { columns } else { character.len_utf8() })
-                       .ok_or(BAD_ARGUMENT)?;
-    }
-    Ok(length)
-}
-
 fn window_request(id: WindowId) -> WindowRequest
 {
     WindowRequest { id:             id.0,
@@ -411,7 +394,8 @@ impl super::Toolbox
         let metrics = fonts.metrics(fonts_service::selection(MONACO))?;
         let advance =
             metrics.ascent.saturating_add(metrics.descent).saturating_add(metrics.leading).max(1);
-        let columns = ((REPORT.right - REPORT.left - 8) / metrics.max_width.max(1)).max(1) as usize;
+        let columns =
+            ((REPORT.right - REPORT.left - 8 - 16) / metrics.max_width.max(1)).max(1) as usize;
         let page_lines = ((REPORT.bottom - REPORT.top - 8) / advance).max(1) as u32;
         Ok(ReportLayout { columns,
                           page_lines })
@@ -419,17 +403,19 @@ impl super::Toolbox
 
     /// Actual Full-scene producers bound every interchangeable report buffer.
     /// Called once during protected modal admission, never while painting.
-    pub(crate) fn measure_crash_command_capacity(layout: ReportLayout) -> Result<usize, Status>
+    pub(crate) fn measure_crash_command_capacity(_layout: ReportLayout) -> Result<usize, Status>
     {
-        let rows = usize::try_from(layout.page_lines).map_err(|_| BAD_ABI)?;
+        // The managed viewport emits one retained ScrollBox drawing, not one
+        // retained Text command per visible row. Its raster owns those rows.
         let terms = [1usize, // Full-window erase
                      1,      // Bomb icon
                      2,      // Title and app/thread header
-                     2,      // Warning rows (including FailureDetail)
+                     2,      // Warning/detail rows
                      1,      // Report frame
+                     1,      // Managed scrollbox
                      1,      // Footer
-                     BUTTONS.len()]; // Actual managed button producers
-        terms.into_iter().try_fold(rows, |count, term| count.checked_add(term).ok_or(BAD_ABI))
+                     BUTTONS.len()];
+        terms.into_iter().try_fold(0usize, |count, term| count.checked_add(term).ok_or(BAD_ABI))
     }
 
     /// Count the actual shipped label formats and real scalar maxima once.
@@ -438,31 +424,31 @@ impl super::Toolbox
     {
         let mut bytes = layout.columns.checked_mul(4).ok_or(BAD_ARGUMENT)?;
         bytes = bytes.max(formatted_bytes(format_args!("{} {}   {} {}",
-                                                       label(12)?,
+                                                       label(8)?,
                                                        u64::MAX,
-                                                       label(13)?,
+                                                       label(9)?,
                                                        u64::MAX))?);
         bytes = bytes.max(formatted_bytes(format_args!("{}   {}   {}",
-                                                       label(9)?,
-                                                       label(10)?,
-                                                       label(17)?))?);
-        for index in [25, 26, 27, 28, 29, 24, 18, 19]
+                                                       label(5)?,
+                                                       label(6)?,
+                                                       label(13)?))?);
+        for index in [21, 22, 23, 24, 25, 20, 14, 15]
         {
             bytes =
                 bytes.max(formatted_bytes(format_args!("{} ({})", label(index)?, Status::MIN))?);
         }
         bytes = bytes.max(formatted_bytes(format_args!("{}  {} ({})",
-                                                       label(22)?,
-                                                       label(7)?,
+                                                       label(18)?,
+                                                       label(3)?,
                                                        Status::MIN))?);
         bytes = bytes.max(formatted_bytes(format_args!("{} {}-{} {} {}   {} {}",
-                                                       label(14)?,
+                                                       label(10)?,
                                                        u32::MAX,
                                                        u32::MAX,
-                                                       label(15)?,
+                                                       label(11)?,
                                                        u32::MAX,
                                                        MAX_REPORT_BYTES,
-                                                       label(16)?))?);
+                                                       label(12)?))?);
         Ok(bytes)
     }
 
@@ -470,17 +456,18 @@ impl super::Toolbox
     /// Each interchangeable slot covers every input at the original copy point.
     pub(crate) fn measure_crash_text_stock(layout: ReportLayout) -> Result<(usize, usize), Status>
     {
-        let rows = usize::try_from(layout.page_lines).map_err(|_| BAD_ABI)?;
         let fixed = [1usize, // Title
                      1,      // App/thread header
                      2,      // Warning/detail rows
                      1]; // Footer
         let count = fixed.into_iter()
-                         .try_fold(rows, |count, term| count.checked_add(term).ok_or(BAD_ABI))?;
+                         .try_fold(0usize, |count, term| count.checked_add(term).ok_or(BAD_ABI))?;
         let bytes = Self::measure_crash_paint_capacity(layout)?
             .max(label(0)?.len())
-            .max(label(8)?.len())
-            .max(label(11)?.len())
+            .max(label(26)?.len())
+            .max(label(27)?.len())
+            .max(label(4)?.len())
+            .max(label(7)?.len())
             .max(crate::toolbox::crashes::FailureDetail::line_capacity());
         Ok((count, bytes))
     }
@@ -499,9 +486,10 @@ impl super::Toolbox
     }
 
     /// Position the whole WDEF structure, including its title and frame, in the
-    /// usable desktop. The free vertical space is split one part above and two
-    /// below, so the report sits in the upper middle rather than at a fixed pixel.
-    fn position_main_error(&self, request: &mut WindowRequest, title: &str) -> Result<(), Status>
+    /// usable desktop. Panic reports are centered; ordinary main errors split
+    /// spare vertical space one part above and two below for upper-middle placement.
+    fn position_crash_report(&self, request: &mut WindowRequest, title: &str, main_error: bool)
+                             -> Result<(), Status>
     {
         use mac_abi::definitions;
         let id = request.procedure >> 4;
@@ -538,7 +526,8 @@ impl super::Toolbox
             return Err(NOT_SUPPORTED);
         }
         let dx = i32::from(usable.left) + spare_width / 2 - i32::from(frame.left);
-        let dy = i32::from(usable.top) + spare_height / 3 - i32::from(frame.top);
+        let dy = i32::from(usable.top) + spare_height / if main_error { 3 } else { 2 }
+                 - i32::from(frame.top);
         let shifted = |value: i16, delta: i32| {
             i16::try_from(i32::from(value) + delta).map_err(|_| BAD_ARGUMENT)
         };
@@ -733,13 +722,10 @@ impl super::Toolbox
                               Ok::<_, Status>(request)
                           }).ok_or(NOT_SUPPORTED)??;
         let main_error = self.crash.info().flags & MAIN_ERROR != 0;
-        let title = label(if main_error { 30 } else { 0 })?;
+        let title = label(if main_error { 26 } else { 0 })?;
         request.title[..title.len()].copy_from_slice(title.as_bytes());
         request.title_length = title.len() as u32;
-        if main_error
-        {
-            self.position_main_error(&mut request, title.text()?)?;
-        }
+        self.position_crash_report(&mut request, title.text()?, main_error)?;
         checked(self.window(NEW_WINDOW, &mut request))?;
         self.crash.set_window(WindowId(request.id));
         activity.set_object(request.id);
@@ -793,10 +779,8 @@ impl super::Toolbox
         let info = self.crash.info();
         match index
         {
-            0 | 1 => info.first_line != 0,
-            2 | 3 => info.first_line.saturating_add(info.page_lines) < info.line_count,
-            4 => info.report_bytes.saturating_add(8) <= mac_abi::scrap::MAX_BYTES,
-            5 => !self.crash.restart_pending,
+            0 => info.report_bytes.saturating_add(8) <= mac_abi::scrap::MAX_BYTES,
+            1 => !self.crash.restart_pending,
             _ => false
         }
     }
@@ -829,20 +813,6 @@ impl super::Toolbox
         // Borrow the original boot stock before consuming update/mask state.
         // Every later return/cancel drops this loan back to its exact stock.
         let mut paint = PaintScratch::take().map_err(paint_error)?;
-        if matches!(mode, Paint::Full | Paint::Report)
-        {
-            let mut length = 0;
-            for visible in 0..info.page_lines
-            {
-                let Some(line) = self.crash.line((info.first_line + visible) as usize)
-                else
-                {
-                    break;
-                };
-                length = length.max(expanded_line_length(line)?);
-            }
-            paint.admits(length).map_err(paint_error)?;
-        }
         let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
         self.bind_report_scene(info.window, &activity)?;
         if mode == Paint::Full
@@ -894,8 +864,7 @@ impl super::Toolbox
             }
             if matches!(mode, Paint::Full | Paint::Warnings)
             {
-                let port =
-                    self.capture_report_port(info.window, crate::recovery::ReportPortKind::Reset)?;
+                let port = self.capture_report_port(info.window)?;
                 if mode == Paint::Full
                 {
                     let call = IconCall { target:
@@ -910,12 +879,12 @@ impl super::Toolbox
                                     FontSelection::default(),
                                     64,
                                     29,
-                                    label(if info.flags & MAIN_ERROR != 0 { 30 } else { 0 })?.text()?)?;
+                                    label(if info.flags & MAIN_ERROR != 0 { 26 } else { 0 })?.text()?)?;
                     paint.clear();
                     paint.write(format_args!("{} {}   {} {}",
-                                             label(12)?,
+                                             label(8)?,
                                              info.app,
-                                             label(13)?,
+                                             label(9)?,
                                              info.thread))
                          .map_err(paint_error)?;
                     self.crash_text(window, &port, MONACO, 64, 48, paint.text())?;
@@ -932,21 +901,21 @@ impl super::Toolbox
                 {
                     let description = label(if self.is_current_finder_report()
                                             {
-                                                8
+                                                4
                                             }
                                             else if info.flags & MAIN_ERROR != 0
                                             {
-                                                31
+                                                27
                                             }
                                             else
                                             {
-                                                11
+                                                7
                                             })?;
                     self.crash_text(window, &port, MONACO, 14, 72, description.text()?)?;
                     paint.clear();
-                    for (enabled, index) in [(info.flags & TRUNCATED != 0, 9),
-                                             (info.flags & FORMAT_FAILED != 0, 10),
-                                             (self.crash.copy_failed, 17)]
+                    for (enabled, index) in [(info.flags & TRUNCATED != 0, 5),
+                                             (info.flags & FORMAT_FAILED != 0, 6),
+                                             (self.crash.copy_failed, 13)]
                     {
                         if enabled
                         {
@@ -964,18 +933,18 @@ impl super::Toolbox
                         {
                             let message = match stage
                             {
-                                mac_abi::power::SELECTION_FAILURE => 25,
-                                mac_abi::power::APPLICATION_FAILURE => 26,
-                                mac_abi::power::STORAGE_FAILURE => 27,
-                                mac_abi::power::DEVICE_FAILURE => 28,
-                                _ => 29
+                                mac_abi::power::SELECTION_FAILURE => 21,
+                                mac_abi::power::APPLICATION_FAILURE => 22,
+                                mac_abi::power::STORAGE_FAILURE => 23,
+                                mac_abi::power::DEVICE_FAILURE => 24,
+                                _ => 25
                             };
                             paint.write(format_args!("{} ({status})", label(message)?))
                                  .map_err(paint_error)?;
                         }
                         else
                         {
-                            paint.append(label(24)?.text()?).map_err(paint_error)?;
+                            paint.append(label(20)?.text()?).map_err(paint_error)?;
                             if let Some(status) = self.crash.restart_error
                             {
                                 paint.write(format_args!(" ({status})")).map_err(paint_error)?;
@@ -985,17 +954,17 @@ impl super::Toolbox
                     else if self.crash.capture_superseded()
                     {
                         paint.clear();
-                        paint.append(label(22)?.text()?).map_err(paint_error)?;
+                        paint.append(label(18)?.text()?).map_err(paint_error)?;
                         if let Some(status) = self.crash.restart_error
                         {
-                            paint.write(format_args!("  {} ({status})", label(7)?))
+                            paint.write(format_args!("  {} ({status})", label(3)?))
                                  .map_err(paint_error)?;
                         }
                     }
                     else if let Some(status) = self.crash.restart_error
                     {
                         paint.clear();
-                        paint.append(label(if status == NO_MEMORY { 19 } else { 18 })?.text()?)
+                        paint.append(label(if status == NO_MEMORY { 15 } else { 14 })?.text()?)
                              .map_err(paint_error)?;
                         paint.write(format_args!(" ({status})")).map_err(paint_error)?;
                     }
@@ -1012,68 +981,11 @@ impl super::Toolbox
                                               ..Default::default() },
                           &[],
                           &[])?;
-                self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
-                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
-                                              bounds: Rect::new(REPORT.left + 3,
-                                                                REPORT.top + 3,
-                                                                REPORT.right - 3,
-                                                                REPORT.bottom - 3),
-                                              ..Default::default() },
-                          &[],
-                          &[])?;
-                let port = self.capture_report_port(info.window,
-                                                    crate::recovery::ReportPortKind::Viewport)?;
-                let fonts = crate::kernel::fonts().ok_or(NOT_SUPPORTED)?;
-                let metrics = fonts.metrics(fonts_service::selection(MONACO))?;
-                let advance = metrics.ascent
-                                     .saturating_add(metrics.descent)
-                                     .saturating_add(metrics.leading)
-                                     .max(1);
-                for visible in 0..info.page_lines
-                {
-                    let Some(line) = self.crash.line((info.first_line + visible) as usize)
-                    else
-                    {
-                        break;
-                    };
-                    paint.clear();
-                    let mut column = 0;
-                    for character in line.chars()
-                    {
-                        if character == '\t'
-                        {
-                            let spaces = 4 - (column % 4);
-                            for _ in 0..spaces
-                            {
-                                paint.append(" ").map_err(paint_error)?;
-                            }
-                            column += spaces;
-                        }
-                        else
-                        {
-                            paint.append(character.encode_utf8(&mut [0; 4]))
-                                 .map_err(paint_error)?;
-                            column += 1;
-                        }
-                    }
-                    self.crash_text(window,
-                                    &port,
-                                    MONACO,
-                                    REPORT.left + 4,
-                                    REPORT.top + 4 + metrics.ascent + visible as i16 * advance,
-                                    paint.text())?;
-                }
-                self.graphics(&mut GraphicsCall { operation: QD_CLIP_RECT,
-                                              target: mac_abi::quickdraw::Target::window(WindowId(window)),
-                                              bounds: Rect::new(0, 0, 580, 404),
-                                              ..Default::default() },
-                          &[],
-                          &[])?;
-                let port =
-                    self.capture_report_port(info.window, crate::recovery::ReportPortKind::Footer)?;
+                self.crash_scrollbox()?;
+                let port = self.capture_report_port(info.window)?;
                 paint.clear();
                 paint.write(format_args!("{} {}-{} {} {}   {} {}",
-                                         label(14)?,
+                                         label(10)?,
                                          if info.line_count == 0
                                          {
                                              0
@@ -1085,10 +997,10 @@ impl super::Toolbox
                                          info.first_line
                                              .saturating_add(info.page_lines)
                                              .min(info.line_count),
-                                         label(15)?,
+                                         label(11)?,
                                          info.line_count,
                                          info.report_bytes,
-                                         label(16)?))
+                                         label(12)?))
                      .map_err(paint_error)?;
                 self.crash_text(window, &port, MONACO, 14, 360, paint.text())?;
             }
@@ -1144,24 +1056,24 @@ impl super::Toolbox
             let enabled = u32::from(self.crash_button_enabled(index));
             // This chooses presentation only. Retry execution independently
             // validates the retained Work admission and genuine binding.
-            let label_index = if index == 5 && self.crash.restart_terminal
+            let label_index = if index == 1 && self.crash.restart_terminal
             {
-                23
+                19
             }
-            else if index == 5 && self.is_current_finder_report()
+            else if index == 1 && self.is_current_finder_report()
             {
-                7
+                3
             }
-            else if index == 5
+            else if index == 1
                       && (self.owner == crate::context::finder_app().0
                           || self.system_report_selected())
                       && (self.crash.restart_error.is_some() || self.crash.restart_pending)
             {
-                21
+                17
             }
-            else if index == 5 && self.crash.info().app != self.owner
+            else if index == 1 && self.crash.info().app != self.owner
             {
-                20
+                16
             }
             else
             {
@@ -1199,7 +1111,7 @@ impl super::Toolbox
                     let mut standard =
                         mac_abi::definitions::ControlDefinitionState::new(*bounds, title.text()?);
                     standard.enabled = enabled;
-                    if index == 5
+                    if index == 1
                     {
                         standard.bounds.inset(-4, -4);
                         standard.flags = mac_abi::definitions::DEFAULT_BUTTON;
@@ -1398,6 +1310,7 @@ impl super::Toolbox
 
     pub(super) fn cancel_crash_tracking(&mut self)
     {
+        self.cancel_crash_scrollbox();
         if let Some(index) = self.crash.tracking.take()
            && let Some(id) = self.crash.controls[index]
         {
@@ -1412,13 +1325,9 @@ impl super::Toolbox
         {
             return Ok(());
         }
-        let delta = match index
+        match index
         {
-            0 => i32::MIN,
-            1 => -(self.crash.info().page_lines as i32),
-            2 => self.crash.info().page_lines as i32,
-            3 => i32::MAX,
-            4 =>
+            0 =>
             {
                 let copied = crate::kernel::with_scrap(|scrap| {
                                  scrap.replace_text(self.crash.report())
@@ -1440,7 +1349,7 @@ impl super::Toolbox
                         self.crash.info().report_bytes);
                 return Ok(());
             }
-            5 =>
+            1 =>
             {
                 if self.system_report_selected()
                 {
@@ -1498,14 +1407,8 @@ impl super::Toolbox
                                           "",
                                           &mut []);
             }
-            _ => return Err(BAD_ARGUMENT)
-        };
-        if self.crash.scroll(delta)
-        {
-            self.draw_crash_scroll()?;
-            self.log_crash_scroll();
+            _ => Err(BAD_ARGUMENT)
         }
-        Ok(())
     }
 
     fn log_crash_scroll(&self)
@@ -1529,6 +1432,10 @@ impl super::Toolbox
         };
         let local = Point { h: point.h.saturating_sub(bounds.left),
                             v: point.v.saturating_sub(bounds.top) };
+        if self.crash.scroll_tracking && self.crash_scroll_pointer(local, down, when)
+        {
+            return true;
+        }
         if let Some(index) = self.crash.tracking
         {
             let Some(id) = self.crash.controls[index]
@@ -1569,6 +1476,10 @@ impl super::Toolbox
             return false;
         }
         let _ = self.window(SELECT_WINDOW, &mut window_request(window));
+        if self.crash_scroll_pointer(local, down, when)
+        {
+            return true;
+        }
         for index in 0..self.crash.controls.len()
         {
             let Some(id) = self.crash.controls[index]
@@ -1627,6 +1538,15 @@ impl super::Toolbox
                 {
                     return true;
                 }
+                if (mac_code == 0x35 || character == 27) && self.crash.tracks_input()
+                {
+                    self.cancel_crash_tracking();
+                    if let Err(status) = self.draw_crash_scroll()
+                    {
+                        serial!("CRASH_SCROLL_REFUSED status={status}; report retained");
+                    }
+                    return true;
+                }
                 let delta = match mac_code
                 {
                     0x7e => -1,
@@ -1637,27 +1557,44 @@ impl super::Toolbox
                     0x77 => i32::MAX,
                     _ => 0
                 };
-                if delta != 0 && self.crash.scroll(delta) && self.draw_crash_scroll().is_ok()
+                if delta != 0
                 {
-                    self.log_crash_scroll();
+                    let captured = self.crash.scroll_tracking;
+                    if captured
+                    {
+                        self.cancel_crash_tracking();
+                    }
+                    let moved = self.crash.scroll(delta);
+                    if moved || captured
+                    {
+                        match self.draw_crash_scroll()
+                        {
+                            Ok(()) if moved => self.log_crash_scroll(),
+                            Ok(()) => (),
+                            Err(status) =>
+                            {
+                                serial!("CRASH_SCROLL_REFUSED status={status}; report retained")
+                            }
+                        }
+                    }
                 }
                 if modifiers & CMD_KEY != 0 && character.eq_ignore_ascii_case(&b'c')
                 {
-                    let _ = self.crash_button(4);
+                    let _ = self.crash_button(0);
                 }
                 if character == b'\r' || character == 3
                 {
-                    let _ = self.crash_button(5);
+                    let _ = self.crash_button(1);
                 }
                 if modifiers & CMD_KEY != 0 && character.eq_ignore_ascii_case(&b'w')
                 {
-                    let _ = self.crash_button(5);
+                    let _ = self.crash_button(1);
                 }
                 true
             }
             Input::Button { point,
                             down } => self.crash_pointer(point, down, when, admitted_hit),
-            Input::Move(point) if self.crash.tracking.is_some() =>
+            Input::Move(point) if self.crash.tracks_input() =>
             {
                 self.crash_pointer(point, true, when, None)
             }

@@ -163,7 +163,7 @@ impl super::Toolbox
                                                 -> Result<(), Status>
     {
         self.standard_file.prepare_recovery(storage)?;
-        self.scroll_boxes.prepare_recovery(storage, standard_file::templates::raster_budget()?)
+        self.scroll_boxes.prepare_recovery(storage, standard_file::templates::raster_budget()?.max(Self::crash_scroll_raster_budget()?))
     }
 
     /// BEGIN consumes the one detached payload; postbirth operations retain

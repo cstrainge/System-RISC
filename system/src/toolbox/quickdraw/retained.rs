@@ -386,8 +386,7 @@ impl Commands
     }
 
     pub(crate) fn capture_report_port(&self, activity: &crate::recovery::Activity,
-                                      window: WindowId, kind: crate::recovery::ReportPortKind,
-                                      actual: &service::Port)
+                                      window: WindowId, actual: &service::Port)
                                       -> Result<crate::recovery::ReportPortView, Status>
     {
         let Some(CommandBacking::Report { lease,
@@ -396,7 +395,7 @@ impl Commands
         {
             return Err(mac_abi::ACCESS_DENIED);
         };
-        lease.capture_port(activity, window, kind, actual)
+        lease.capture_port(activity, window, actual)
     }
 
     pub(crate) fn report_text(&mut self, view: &crate::recovery::ReportPortView, window: WindowId,

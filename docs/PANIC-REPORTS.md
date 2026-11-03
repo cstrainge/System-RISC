@@ -1,12 +1,14 @@
 # Native application panic reports
 
-Every installed Rust application, including Finder, installs the loader's
-application-lifetime service table with `mac_toolbox::panic::install` before
-entering its application code and defines `mac_toolbox::panic_handler!()`.
-The shared handler formats the complete `PanicInfo` (message, source file, line
-and column), together with the process name and canonical process/thread IDs.
-It streams UTF-8 through a 512-byte stack buffer without allocating in the
-application. The complete formatted stream also goes to the serial log.
+Installed Rust applications, including Finder, use ordinary `std` startup. The
+platform installs their application-lifetime Toolbox service table and default
+panic hook before `main`; `System::new()` uses that same admitted table. Apps do
+not install another entry point, allocator, panic handler or reporting bridge.
+The default hook formats the panic message and available source location with
+canonical process/thread identity, then streams UTF-8 through bounded chunks to
+System. The complete formatted stream also goes to the serial log. Independently
+loaded low-level modules remain `no_std` and use their separate module-failure
+contract; they cannot impersonate an application report.
 
 `System::crashes()` is the public client for beginning, appending, showing,
 reading, scrolling and dismissing a report. Its `CRASH = 0x1001f` trap is outside
@@ -35,13 +37,39 @@ when it fits the clipboard's existing limit; otherwise its button is disabled.
 READ and clipboard copying can still copy a large report in one resident call;
 their latency needs target measurements.
 
-After submitting a report, the failed application waits with an empty event
-mask. It runs no application handlers or drawing callbacks. System services
-scrolling, Home/End, Page Up/Down, Copy Report and Close Application. Dismissal
-wakes the parked application so it can request ordinary process exit. Finder's
-report instead offers shell replacement through the normal Finder image and
-scheduler path. This panic-abort runtime has no stack unwinder, so the report
-contains the available panic diagnostics rather than a promised backtrace.
+After submitting a panic report, the failed application stops executing author
+code. System services the report while the original termination/account cleanup
+waits for acknowledged dismissal, then completes abort exit 101. The application
+runs no handlers or drawing callbacks. Finder's report instead coordinates shell
+replacement through its genuine image and scheduler path. This panic-abort runtime
+has no stack unwinder, so diagnostics do not promise a backtrace or user destructor
+execution after a panic.
+
+The report body uses the resident managed ScrollBox and loaded standard scrollbar.
+Arrow and page presses, thumb dragging and held-arrow repeat use that control's
+normal tracking logic. Capture continues outside the window until release or
+Escape; keyboard arrows, Home/End and Page Up/Down scroll the same retained text.
+The visible, active report uses its own System arrow cursor, independently of the
+stopped app's busy, animated or hidden cursor state. The app's responsiveness is
+not reset to manufacture progress. Only changed scrollbar/viewport state is
+repainted. Copy Report (Command-C) copies
+the complete report, independently of the visible page; Close Application, Return
+and Command-W request its canonical dismissal. Panic windows are horizontally and
+vertically centered using the actual WDEF structure and usable desktop bounds.
+
+An ordinary `main -> Result<(), E>` returning `Err` has a different contract:
+System captures `E: Debug` while the error is alive, finishes normal local/std/TLS
+cleanup, then shows **Application error** in the horizontal center and upper middle
+of the usable desktop. Acknowledged dismissal completes normal failure exit 1.
+A panic during cleanup supersedes the pending error draft and follows the panic
+path instead. GUI stdout/stderr discarding does not suppress either System report.
+
+Report text commands share one immutable captured parent Port: the managed
+ScrollBox does not mutate it. Original Window acknowledgment and command-reader
+uniqueness still gate its reuse. ScrollBox ownership retains the authenticated
+recovery Session through row and drawing readers. Raster/row backing and its
+copy-on-write generations still allocate; these changes do not establish a fully
+preadmitted pixel pool or success under arbitrary memory pressure.
 
 The recovery implementation uses one reusable System modal session. A report
 from another recipient receives a typed busy refusal while that session is in

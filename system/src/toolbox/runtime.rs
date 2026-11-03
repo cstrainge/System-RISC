@@ -117,12 +117,14 @@ pub(in crate::toolbox) struct Presentation
 /// Pointer shape selection and busy-cursor tracking.
 struct Pointer
 {
-    cursors:          super::quickdraw::cursors::Cursors,
-    busy_cursor:      super::quickdraw::cursors::Cursors,
-    responsiveness:   super::quickdraw::responsiveness::Responsiveness,
-    text_cursor:      mac_abi::quickdraw::MonoCursor,
-    resize_cursors:   [mac_abi::quickdraw::MonoCursor; 2],
-    automatic_cursor: Option<u32>
+    cursors:               super::quickdraw::cursors::Cursors,
+    busy_cursor:           super::quickdraw::cursors::Cursors,
+    report_cursor:         super::quickdraw::cursors::Cursors,
+    report_cursor_visible: bool,
+    responsiveness:        super::quickdraw::responsiveness::Responsiveness,
+    text_cursor:           mac_abi::quickdraw::MonoCursor,
+    resize_cursors:        [mac_abi::quickdraw::MonoCursor; 2],
+    automatic_cursor:      Option<u32>
 }
 
 pub struct Toolbox
@@ -584,7 +586,9 @@ impl Toolbox
                   menus: super::menus::Manager::new(super::handles::menu_kinds()?, mdef, crate::machine::traps::gateway)?,
                   system_bar,
                   screen: Rect::new(0, 0, crate::display::width() as i16, crate::display::height() as i16),
-                  pointer: Pointer { cursors: Default::default(), busy_cursor, text_cursor, resize_cursors,
+                  pointer: Pointer { cursors: Default::default(), busy_cursor,
+                                     report_cursor: Default::default(), report_cursor_visible: false,
+                                     text_cursor, resize_cursors,
                                      responsiveness: Default::default(), automatic_cursor: None },
                   worlds: super::quickdraw::worlds::Worlds::new(super::handles::world_kinds()?)?,
                   classic_font: Default::default(),
@@ -2349,8 +2353,7 @@ impl Toolbox
         Ok(())
     }
 
-    pub(super) fn capture_report_port(&self, window: WindowId,
-                                      kind: crate::recovery::ReportPortKind)
+    pub(super) fn capture_report_port(&self, window: WindowId)
                                       -> Result<crate::recovery::ReportPortView, Status>
     {
         let activity = crate::context::recovery_activity().ok_or(ACCESS_DENIED)?;
@@ -2363,7 +2366,7 @@ impl Toolbox
         {
             return Err(ACCESS_DENIED);
         }
-        content.commands.capture_report_port(&activity, window, kind, &content.port)
+        content.commands.capture_report_port(&activity, window, &content.port)
     }
 
     pub(super) fn font_draw_report_port(&mut self, call: &mut mac_abi::quickdraw::FontCall,
@@ -3485,17 +3488,14 @@ impl Toolbox
     fn compose_cursor(&mut self, full: bool, mut damaged: Vec<Rect>, copy_full: bool)
     {
         let feedback = self.prepare_feedback(full);
-        let automatic = if self.pointer.responsiveness.active()
-        {
-            None
-        }
-        else
-        {
-            self.automatic_cursor_at_mouse()
-        };
-        let cursor_changed =
-            self.presentation.cursor_dirty || self.pointer.automatic_cursor != automatic;
+        let report_cursor = self.report_cursor_is_front();
+        let busy = self.pointer.responsiveness.active() && !report_cursor;
+        let automatic = if report_cursor || busy { None } else { self.automatic_cursor_at_mouse() };
+        let cursor_changed = self.presentation.cursor_dirty
+                             || self.pointer.automatic_cursor != automatic
+                             || self.pointer.report_cursor_visible != report_cursor;
         self.pointer.automatic_cursor = automatic;
+        self.pointer.report_cursor_visible = report_cursor;
         let text_cursor = automatic.map(|id| {
                                        match id
                                        {
@@ -3504,7 +3504,14 @@ impl Toolbox
                                            _ => self.pointer.text_cursor
                                        }
                                    });
-        let cursor = if self.pointer.responsiveness.active()
+        // A System-owned report remains interactive after its author stops.
+        // Use an independent visible arrow, preserving the app's actual cursor
+        // policy, hidden state and responsiveness for restoration afterwards.
+        let cursor = if report_cursor
+        {
+            &mut self.pointer.report_cursor
+        }
+        else if busy
         {
             &mut self.pointer.busy_cursor
         }
@@ -3512,7 +3519,7 @@ impl Toolbox
         {
             &mut self.pointer.cursors
         };
-        let text_cursor = if self.pointer.responsiveness.active() { None } else { text_cursor };
+        let text_cursor = if report_cursor || busy { None } else { text_cursor };
         let sprite = cursor.sprite(self.events.mouse, text_cursor);
         let bounds = sprite.map_or(Rect::ZERO, |sprite| sprite.bounds());
         let overlays =
