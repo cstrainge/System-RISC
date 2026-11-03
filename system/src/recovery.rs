@@ -1237,6 +1237,29 @@ pub(crate) fn active(owner: u64, kind: Kind) -> Option<Activity>
     })
 }
 
+/// Capture only the actual Core Alert close subject. Request resource/scope
+/// fields are not authority, and a closing session remains a valid subject for
+/// joining its original cleanup. This grants no new publication or paint right.
+pub(crate) fn alert_close_activity(owner: &OwnerRef, window: mac_abi::WindowId)
+                                    -> Option<Activity>
+{
+    if window.0 == 0 || !ACTIVE.load(Ordering::Acquire)
+    {
+        return None;
+    }
+    InvocationGate::run(|| {
+        let modal = MODAL.lock();
+        let session = modal.session.as_ref()?;
+        if session.kind != Kind::CoreAlert
+           || session.recipient.lock().owner() != owner.owner()
+           || session.object.load(Ordering::Acquire) != window.0
+        {
+            return None;
+        }
+        Some(Activity { session: session.clone(), _released: ReleasedActivity })
+    })
+}
+
 /// Bounded checkpoint: no per-event registry scan or retry loop. Quarantined
 /// children keep their real Activity; queued I/O keeps its original Subject.
 fn reap()

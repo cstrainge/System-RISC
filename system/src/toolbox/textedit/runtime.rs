@@ -105,6 +105,7 @@ impl super::Toolbox
             self.content_changed_region(call.window.0, region);
             return Ok(());
         }
+        self.windows.content_changed(call.window)?;
         let window = self.windows.window(call.window).ok_or(NOT_FOUND)?;
         let mut canvas = crate::toolbox::quickdraw::Canvas::new(crate::platform::back_buffer(),
                                                                 crate::display::width(),
@@ -366,7 +367,8 @@ impl super::Toolbox
         }
         content.try_extend(commands)?;
         self.content_changed_rect(call.window.0, info.view);
-        let staged = self.presentation.pending_content.iter().any(|content| content.id == call.window);
+        let staged =
+            self.presentation.pending_content.iter().any(|content| content.id == call.window);
         self.textedit.bind_cursor(call.id, call.window, port, staged)?;
         call.info = info;
         Ok(())

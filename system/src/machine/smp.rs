@@ -78,6 +78,7 @@ pub(crate) fn apply_harts(generation: u64, count: u32) -> Result<(), mac_abi::St
     if !traps::execution::selected_hart().is_primary()
        || generation == 0
        || count == 0
+       || count > super::scheduler::MAXIMUM_ACTIVE_HARTS
        || count as usize > set.harts.len() + 1
     {
         return Err(mac_abi::BAD_ARGUMENT);

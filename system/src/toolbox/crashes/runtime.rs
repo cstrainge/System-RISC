@@ -270,6 +270,11 @@ impl super::Toolbox
                                 &mut [])?;
             self.crash.seal_system_diagnostic();
         }
+        if let Some(fault) = record.fault
+        {
+            let name = self.processes.get(binding.owner()).map(|process| process.info.name()).unwrap_or("");
+            self.crash.append_native_fault(fault, label(32)?.text()?, name)?;
+        }
         let retention = self.crash.seal_failure_capture();
         self.resume_crash_report()?;
         Ok(retention)
@@ -466,6 +471,10 @@ impl super::Toolbox
             .max(label(0)?.len())
             .max(label(26)?.len())
             .max(label(27)?.len())
+            .max(label(28)?.len())
+            .max(label(29)?.len())
+            .max(label(30)?.len())
+            .max(label(31)?.len())
             .max(label(4)?.len())
             .max(label(7)?.len())
             .max(crate::toolbox::crashes::FailureDetail::line_capacity());
@@ -722,7 +731,7 @@ impl super::Toolbox
                               Ok::<_, Status>(request)
                           }).ok_or(NOT_SUPPORTED)??;
         let main_error = self.crash.info().flags & MAIN_ERROR != 0;
-        let title = label(if main_error { 26 } else { 0 })?;
+        let title = label(self.crash.title_label())?;
         request.title[..title.len()].copy_from_slice(title.as_bytes());
         request.title_length = title.len() as u32;
         self.position_crash_report(&mut request, title.text()?, main_error)?;
@@ -879,7 +888,7 @@ impl super::Toolbox
                                     FontSelection::default(),
                                     64,
                                     29,
-                                    label(if info.flags & MAIN_ERROR != 0 { 26 } else { 0 })?.text()?)?;
+                                    label(self.crash.title_label())?.text()?)?;
                     paint.clear();
                     paint.write(format_args!("{} {}   {} {}",
                                              label(8)?,
@@ -899,18 +908,7 @@ impl super::Toolbox
                 }
                 else
                 {
-                    let description = label(if self.is_current_finder_report()
-                                            {
-                                                4
-                                            }
-                                            else if info.flags & MAIN_ERROR != 0
-                                            {
-                                                27
-                                            }
-                                            else
-                                            {
-                                                7
-                                            })?;
+                    let description = label(self.crash.description_label(self.is_current_finder_report()))?;
                     self.crash_text(window, &port, MONACO, 14, 72, description.text()?)?;
                     paint.clear();
                     for (enabled, index) in [(info.flags & TRUNCATED != 0, 5),

@@ -98,20 +98,84 @@ code authentication or an execution permission.
 | 6 | 2 | Role: 1 = resident System, 2 = application, 3 = code resource |
 | 8 | 4 | Native System service ABI version: 1 until the first proper release |
 | 12 | 4 | Native ABI layout fingerprint (`mac-abi::NATIVE_LAYOUT_FINGERPRINT`) |
-| 16 | 8 | Linked image base; System fixed, applications currently preferred |
+| 16 | 8 | Linked image base derived from checked platform policy |
 | 24 | 8 | Exclusive image span limit in linked coordinates |
 | 32 | 8 | Linked entry point |
 
-System and independently loadable definitions/modules no longer declare address
-fields in build manifests. System uses the checked platform image mapping;
-code-resource artifacts share one checked link origin/capacity and package their
-actual page-rounded ELF memory extent. Runtime placement is System-owned and
-independent of that link origin. Applications retain their manifest placement
-until private process mappings replace the current flat layout. Entry is explicit because
+Executable build manifests never declare `load_base` or `load_limit`; unknown
+project fields are rejected with an update/rebuild diagnostic. System uses its
+checked platform image mapping. Definitions/modules share the platform's native
+code-resource link origin/capacity. Applications share
+`virtual_memory.application_image_base` (4 MiB on QemuRISC-V) in separate Process
+roots; their link capacity ends at the checked application virtual range limit.
+Packaging derives application and code-resource NABI limits from the actual
+page-rounded PT_LOAD memory extent, including BSS, rather than the link capacity.
+NABI's base/limit fields remain required loader geometry; they are not physical
+reservations, quotas or global application exclusions. Runtime storage and its
+original-account charges are admitted separately. Different Processes may use
+the same virtual addresses; application images do not acquire permanent
+System/firmware executable aliases. Entry is explicit because
 there is no ELF header at runtime. It must be even and lie inside initialized
 executable segment bytes. Versions, layout fingerprints, lengths, address overflows
 and roles are checked. The obsolete 32-byte NABI layout is rejected with a rebuild
 error. There is no fallback to ELF.
+
+## URTM application runtime entries
+
+Every native application (`NABI` role2, including APPL and CLAP packages) has one
+packager-generated `URTM` resource, ID0. It identifies that same application's
+user-mode callback loop and nonreturning thread-return trampoline. System and
+independently loaded code resources do not require or emit URTM. Missing,
+duplicate or malformed application URTM is an admission error requiring an
+application rebuild with the current SDK; there is no resident-function fallback.
+The native development ABI remains1.
+
+URTM has exactly32 bytes. All numeric resource fields are big endian.
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | Magic `URT1` |
+| 4 | 2 | Format version:1 |
+| 6 | 2 | Descriptor length:32 |
+| 8 | 8 | Callback-loop offset from the application's NABI linked load base |
+| 16 | 8 | Thread-return offset from that same base |
+| 24 | 8 | Reserved, all zero |
+
+Offsets are unsigned and even. At load/use, each offset is added with checked
+arithmetic to the genuine admitted image's actual base. The base is instruction
+aligned, its exclusive limit follows it, and both bytes of the minimum RV64C
+instruction halfword at each resolved entry must lie inside initialized
+executable payload bytes of that same retained image. Image reservation space,
+zero-filled executable memory tails, unmapped holes and another image's ranges
+are not entry authority. This validates entry placement; it does not prove the
+semantics or full instruction stream of application code or grant supervisor
+privilege. Source and execution lifetime checks remain required when invoking an
+entry.
+
+The build-time source is the current std CRT's retained
+`.system_risc_user_runtime` section: exactly16 bytes containing two RV64
+little-endian linked function addresses, ordered `[callback_loop, thread_return]`.
+This table is not the URTM resource wire layout. The native linker keeps it at
+eight-byte alignment in its read-only, nonexecutable load segment. Packaging
+checks allocated/nonexecutable section flags, alignment, and the actual
+initialized PT_LOAD span: its virtual and file offsets must describe the same16
+retained bytes and its final permissions must be exactly read-only, without
+write or execute. A PIC pointer section may carry `SHF_WRITE` for relocations;
+that section flag does not authorize writable native mappings. The checked
+PT_LOAD permissions govern publication. Both function addresses must resolve into initialized
+executable ELF file bytes, not merely `p_memsz` or a section name. A table on a
+non-application executable is refused.
+
+Packaging subtracts the checked linked NABI base to create URTM offsets before
+ELF metadata is stripped. Absolute data pointers in the retained read-only table
+continue through the ordinary validated RLOC producer and are patched through
+owned writable initialization aliases before final read-only publication. The
+URTM offsets themselves are relative metadata and receive no RLOC patches.
+Runtime resolution uses the original application's retained source and its
+validated relocated executable ranges; resource lookup in the current drawing
+application cannot replace that provenance. All native applications, SDK/std
+artifacts and media must be rebuilt together when this unreleased contract
+changes.
 
 ## RV64 segment stream
 
@@ -257,6 +321,17 @@ placement is independent of linked addresses; current System allocates its
 `0x82000000..0x83000000` module pool from the top down, and records actual ranges
 for collision checks. A definition's entry ABI and variation dispatch remain
 specific to its resource family. Translation routing remains unchanged.
+
+Process-owned definition callbacks receive owned native packets. A managed draw
+packet's Surface is a bounded scratch viewport, not a borrowed framebuffer or
+screen-sized buffer. Its dimensions describe its own pixel storage; its origin
+preserves logical coordinates and its clip admits only the actual target. The
+viewport offset is aligned to eight pixels to preserve pattern phase. Padding
+outside the admitted target is zero and is never copied back. Raw ABI authors
+must honor the clip; safe SurfacePort operations apply it. System validates the
+original object binding, rendering dependency and exact admitted baseline before
+copying a result into the current target. Opaque direct callbacks instead use
+the original surface owned by their own Process.
 
 Before entry, provide a 16-byte-aligned stack and the established privilege/trap
 environment. Module entries are C functions, taking their first argument in

@@ -42,11 +42,10 @@ fn relayout(windows: &WindowManager, content: &mut [Content], pending: &[Content
             -> Result<Vec<Rect>, Status>
 {
     let prepared = controls.prepare_window(id.0,
-                                   viewport,
-                                   pending.iter().any(|c| c.id == SceneTarget::from(id)),
-                                   None,
-                                   crate::machine::traps::gateway,
-                                   |id| crate::toolbox::runtime::Toolbox::control_definition(id))?;
+                                           viewport,
+                                           pending.iter().any(|c| c.id == SceneTarget::from(id)),
+                                           None,
+                                           crate::machine::traps::gateway)?;
     let (used, limit) = scene_admission(windows, content, pending, SceneTarget::from(id));
     publish(content, controls, id.0, prepared, used, limit)
 }
@@ -55,10 +54,31 @@ fn publish(content: &mut [Content], controls: &mut Manager, window: u64, mut pre
            used: usize, limit: usize)
            -> Result<Vec<Rect>, Status>
 {
+    publish_staged(content, controls, window, &mut prepared, None, used, limit)
+}
+
+/// Publish the same prepared plan while the outer carrier retains its claims
+/// and original source pins. Every refusal precedes retained/state mutation.
+fn publish_staged(content: &mut [Content], controls: &mut Manager, window: u64,
+                  prepared: &mut Prepared, retired: Option<&mut Vec<RenderCommand>>, used: usize,
+                  limit: usize)
+                  -> Result<Vec<Rect>, Status>
+{
+    // Typed actual manager publication, after the owned carrier's full-key
+    // validation and before any retained/state effects; raw ids never seal paint.
+    controls.seal_prepared_paint_origins(window, prepared)?;
     let mut damage = Vec::new();
+    let staged = retired.is_some();
     if prepared.drawings.is_empty()
     {
-        controls.commit_layout(prepared);
+        if staged
+        {
+            controls.commit_layout_staged(prepared);
+        }
+        else
+        {
+            controls.commit_layout(prepared.take());
+        }
         return Ok(damage);
     }
     let limited_damage = prepared.limited_damage;
@@ -104,17 +124,32 @@ fn publish(content: &mut [Content], controls: &mut Manager, window: u64, mut pre
         }
     }
     // Carrier admission precedes both removal and all infallible appends.
-    content.replace_controls(drawings, |drawing| {
-               if limited_damage.is_none()
-               {
-                   damage.push(drawing.visible_bounds());
-               }
-           })?;
+    let mut removed = |drawing: &crate::toolbox::controls::Drawing| {
+        if limited_damage.is_none()
+        {
+            damage.push(drawing.visible_bounds());
+        }
+    };
+    if let Some(retired) = retired
+    {
+        content.replace_controls_staged(drawings, retired, &mut removed)?;
+    }
+    else
+    {
+        content.replace_controls(drawings, &mut removed)?;
+    }
     if let Some(rect) = limited_damage
     {
         damage.push(rect);
     }
-    controls.commit_layout(prepared);
+    if staged
+    {
+        controls.commit_layout_staged(prepared);
+    }
+    else
+    {
+        controls.commit_layout(prepared.take());
+    }
     let mut changed_clip = None;
     content.sync_control_tree(controls, |rect| {
                changed_clip = Some(changed_clip.map_or(rect, |old| {
@@ -127,6 +162,18 @@ fn publish(content: &mut [Content], controls: &mut Manager, window: u64, mut pre
     }
     Ok(damage)
 }
+/// Window completion callers split Toolbox fields, validate their original
+/// Window claim, and compute scene admission in the SAME Desktop turn first.
+pub(super) fn publish_prepared_window_layout(content: &mut [Content], controls: &mut Manager,
+                                             ready: &mut super::super::controls::objects::PreparedWindowLayout,
+                                             used: usize, limit: usize)
+                                             -> Result<Vec<Rect>, Status>
+{
+    ready.publish(controls, |controls, window, prepared, retired| {
+             publish_staged(content, controls, window, prepared, Some(retired), used, limit)
+         })
+}
+
 impl Toolbox
 {
     pub(super) fn publish_control_layout(&mut self, window: u64, prepared: Prepared, used: usize,
@@ -173,17 +220,41 @@ impl Toolbox
         let mut changed = false;
         for root in roots
         {
+            // A resident/non-suspending event caller cannot run application
+            // authors. Preserve their actual Ready state for the user prelude.
+            match self.controls.automatic_root_needs_user(root, owner)
+            {
+                Ok(true) => continue,
+                Ok(false) => (),
+                Err(status) =>
+                {
+                    if self.controls.layout_refused(root.id, status, now)
+                    {
+                        serial!("CONTROL_LAYOUT_DEFERRED root={} window={} status={status}; \
+                                 previous geometry retained",
+                                root.id,
+                                root.window);
+                    }
+                    continue;
+                }
+            }
             let result = (|| -> Result<Vec<Rect>, Status> {
                 let window = self.windows.window(WindowId(root.window)).ok_or(NOT_FOUND)?;
                 if !self.owns(WindowId(root.window))
                 {
                     return Err(ACCESS_DENIED);
                 }
-                let prepared = self.controls.prepare_automatic(
-                    root, owner, window.local_bounds(),
-                    self.presentation.pending_content.iter().any(|c| c.id == SceneTarget::from(root.window)),
-                    crate::machine::traps::gateway,
-                    |id| crate::toolbox::runtime::Toolbox::control_definition(id))?;
+                let prepared =
+                    self.controls.prepare_automatic(root,
+                                                     owner,
+                                                     window.local_bounds(),
+                                                     self.presentation
+                                                         .pending_content
+                                                         .iter()
+                                                         .any(|c| {
+                                                             c.id == SceneTarget::from(root.window)
+                                                         }),
+                                                     crate::machine::traps::gateway)?;
                 let (used, limit) = self.retained_admission(SceneTarget::from(root.window));
                 publish(&mut self.presentation.content, &mut self.controls, root.window, prepared,
                         used, limit)
@@ -243,6 +314,13 @@ impl Toolbox
     pub(super) fn track_window(&mut self, point: Point, released: bool, when: u32)
                                -> Option<Action>
     {
+        if released
+           && let Some(window) = self.windows.tracking_close_window()
+           && self.controls.prepare_remove_window(window.0).is_err()
+        {
+            self.presentation.redraw |= self.windows.cancel_close_tracking(window);
+            return None;
+        }
         let content = &mut self.presentation.content;
         let pending = &self.presentation.pending_content;
         let controls = &mut self.controls;
@@ -257,14 +335,9 @@ impl Toolbox
                                                                    c.id == SceneTarget::from(id)
                                                                }),
                                                         None,
-                                                        crate::machine::traps::gateway,
-                                                        |id| {
-                                                            crate::toolbox::runtime::Toolbox::control_definition(id)
-                                                        })?;
-                            let (used, limit) = scene_admission(windows,
-                                                                content,
-                                                                pending,
-                                                                SceneTarget::from(id));
+                                                        crate::machine::traps::gateway)?;
+                            let (used, limit) =
+                                scene_admission(windows, content, pending, SceneTarget::from(id));
                             let changed = publish(content, controls, id.0, prepared, used, limit)?;
                             damage = Some((id, changed));
                             Ok(())
@@ -274,7 +347,8 @@ impl Toolbox
 
     /// Programmatic SizeWindow/MoveWindow: the same staged layout as a user
     /// grow, so a refused layout leaves the window and controls unchanged.
-    pub(super) fn set_window_bounds(&mut self, id: WindowId, bounds: Rect) -> Option<Action>
+    pub(super) fn set_window_bounds(&mut self, id: WindowId, bounds: Rect)
+                                    -> Result<Option<Action>, Status>
     {
         let content = &mut self.presentation.content;
         let pending = &self.presentation.pending_content;
@@ -286,7 +360,8 @@ impl Toolbox
                                                              controls, id, viewport)?));
                                      Ok(())
                                  });
-        self.finish_relayout(result, damage)
+        let action = result?;
+        Ok(self.finish_relayout(Ok(action), damage))
     }
 
     fn finish_relayout(&mut self, result: Result<Option<Action>, Status>,

@@ -4,9 +4,9 @@ use super::*;
 
 impl State
 {
-    pub(super) fn reflow(&mut self, payload: &mut wire::Payload, entry: DefinitionRef,
-                         gate: TrapGate)
-                         -> Result<bool, Status>
+    pub(super) async fn reflow_with(&mut self, payload: &mut wire::Payload, entry: DefinitionRef,
+                                    author: &super::super::effects::Author)
+                                    -> Result<bool, Status>
     {
         let request = layout::decode_leaf(payload).map_err(|e| e.status())?;
         let layout = self.layout.as_mut().ok_or(NOT_SUPPORTED)?;
@@ -50,8 +50,8 @@ impl State
             }
             else
             {
-                let mut state = self.spec.draw();
-                super::super::reflow::invoke(&mut state, payload, entry, gate)?;
+                let state = super::super::effects::DetachedCall::capture(&self.spec.draw())?;
+                *payload = author.reflow(state, *payload, entry).await?;
                 let measured =
                     layout::Measurement::try_from(payload.measurement).map_err(|_| BAD_ABI)?;
                 let change = layout.sizing.prepare_calculated(layout::SizePreferences {
@@ -83,8 +83,8 @@ impl State
         {
             return Ok(false);
         }
-        let mut state = self.spec.draw();
-        super::super::reflow::invoke(&mut state, payload, entry, gate)?;
+        let state = super::super::effects::DetachedCall::capture(&self.spec.draw())?;
+        *payload = author.reflow(state, *payload, entry).await?;
         match request
         {
             layout::Message::AssignRect(rect) =>

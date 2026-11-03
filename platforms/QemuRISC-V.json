@@ -6,6 +6,7 @@
   "qemu_ram": "2G",
   "qemu_harts": 4,
   "scheduling": {
+    "maximum_active_harts": 1,
     "quantum_microseconds": 250,
     "callback_budget_microseconds": 1000
   },

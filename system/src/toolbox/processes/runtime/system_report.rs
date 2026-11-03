@@ -555,17 +555,6 @@ impl Toolbox
                                         })
     }
 
-    pub(in crate::toolbox::runtime) fn system_report_needs_hit(&self) -> bool
-    {
-        self.system_report_input_state().is_some_and(|(session, manager)| {
-                                            !session.close_requested
-                                            && !session.activity.closing()
-                                            && !session.frame_tracking
-                                            && !manager.tracks_input()
-                                            && manager.info().window.0 != 0
-                                        })
-    }
-
     pub(in crate::toolbox::runtime) fn sync_system_report_input(&mut self,
                                                                 mouse: mac_abi::geometry::Point,
                                                                 modifiers: u16,
@@ -583,6 +572,25 @@ impl Toolbox
     pub(in crate::toolbox::runtime) fn system_report_input(&mut self, input: Input, when: u32,
                                                            hit: Option<crate::toolbox::windows::manager::Hit>)
                                                            -> Result<bool, Status>
+    {
+        self.system_report_input_with_observation(input, when, hit, None)
+    }
+
+    pub(in crate::toolbox::runtime) fn system_report_observed_input(&mut self,
+                                                                    observation: crate::toolbox::runtime::input_callbacks::ObservedInput,
+                                                                    hit: Option<crate::toolbox::windows::manager::Hit>)
+                                                                    -> Result<bool, Status>
+    {
+        self.system_report_input_with_observation(observation.input,
+                                                  observation.when,
+                                                  hit,
+                                                  Some(observation))
+    }
+
+    fn system_report_input_with_observation(&mut self, input: Input, when: u32,
+                                            hit: Option<crate::toolbox::windows::manager::Hit>,
+                                            observation: Option<crate::toolbox::runtime::input_callbacks::ObservedInput>)
+                                            -> Result<bool, Status>
     {
         let Some((session, manager)) = self.system_report_input_state()
         else
@@ -611,7 +619,7 @@ impl Toolbox
         let activity = session.activity.clone();
         let started = !self.windows.is_tracking();
         let result = self.with_system_report_activity(&activity, |toolbox| {
-                             toolbox.input_impl_with_hit(input, when, hit);
+                             toolbox.input_observed_or_physical(input, when, hit, observation);
                              let tracking = toolbox.windows.is_tracking();
                              if let Some(session) = &mut toolbox.system_report_active
                              {

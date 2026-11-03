@@ -303,8 +303,9 @@ impl Manager
 
 impl State
 {
-    pub(super) fn scroll_hit(&self, point: Point, gate: TrapGate)
-                             -> Result<Option<(usize, i16)>, Status>
+    pub(super) async fn scroll_hit_with(&self, point: Point,
+                                        author: &super::super::effects::Author)
+                                        -> Result<Option<(usize, i16)>, Status>
     {
         if self.layout.as_ref().and_then(Layout::clip).is_some_and(|c| !c.contains(point))
         {
@@ -320,12 +321,12 @@ impl State
             if let Some(scrollbar) =
                 scroll.bar(self.spec.bounds(), axis, 0, self.spec.draw().standard.enabled != 0)
             {
-                let mut call = ControlCall { operation: HIT_SCROLLBAR,
+                let call = super::super::effects::DetachedCall::capture(&ControlCall { operation: HIT_SCROLLBAR,
                                              reflow: 1,
                                              scrollbar,
                                              point,
-                                             ..Default::default() };
-                super::super::prepare(&mut call, scroll.definition.reference(), gate)?;
+                                             ..Default::default() })?;
+                let (call, _) = author.prepare(call, scroll.definition.reference(), None).await?;
                 if call.result != 0
                 {
                     return Ok(Some((axis, call.result as i16)));
@@ -335,9 +336,11 @@ impl State
         Ok(None)
     }
 
-    pub(super) fn scroll_tracking(&mut self, call: &mut ControlCall, scroll: &mut Scroll,
-                                  clip: Option<Rect>, gate: TrapGate)
-                                  -> Result<bool, Status>
+    pub(super) async fn scroll_tracking_with(&mut self,
+                                             call: &mut super::super::effects::DetachedCall,
+                                             scroll: &mut Scroll, clip: Option<Rect>,
+                                             author: &super::super::effects::Author)
+                                             -> Result<bool, Status>
     {
         let before =
             (self.scroll_axis, self.scroll_highlight, self.tracking.is_some(), scroll.data);
@@ -351,7 +354,7 @@ impl State
                 return Err(SERVICE_BUSY);
             }
             if !clip.is_some_and(|c| !c.contains(call.point))
-               && let Some((axis, hit)) = self.scroll_hit(call.point, gate)?
+               && let Some((axis, hit)) = self.scroll_hit_with(call.point, author).await?
             {
                 part = hit;
                 handled = true;
@@ -372,29 +375,31 @@ impl State
             let axis = self.scroll_axis.ok_or(CORRUPT_DATA)?;
             let bar = scroll.bar(self.spec.bounds(), axis, self.scroll_highlight, true)
                             .ok_or(CORRUPT_DATA)?;
+            let entry = scroll.definition.reference();
             let transition =
-                tracking.poll(call.point,
-                              call.flags & BUTTON_DOWN != 0,
-                              call.ticks,
-                              Some(bar),
-                              1,
-                              scroll.definition.reference(),
-                              gate,
-                              |point| {
-                                  if clip.is_some_and(|c| !c.contains(point))
-                                  {
-                                      return Ok(0);
-                                  }
-                                  let mut hit = ControlCall { operation: HIT_SCROLLBAR,
-                                                              reflow: 1,
-                                                              scrollbar: bar,
-                                                              point,
-                                                              ..Default::default() };
-                                  super::super::prepare(&mut hit,
-                                                        scroll.definition.reference(),
-                                                        gate)?;
-                                  Ok(hit.result as i16)
-                              })?;
+                tracking.poll_with(call.point,
+                                   call.flags & BUTTON_DOWN != 0,
+                                   call.ticks,
+                                   Some(bar),
+                                   1,
+                                   scroll.definition.reference(),
+                                   author,
+                                   |point| {
+                                       async move {
+                                           if clip.is_some_and(|c| !c.contains(point))
+                                           {
+                                               return Ok(0);
+                                           }
+                                           let hit = super::super::effects::DetachedCall::capture(&ControlCall { operation: HIT_SCROLLBAR,
+                                                                       reflow: 1,
+                                                                       scrollbar: bar,
+                                                                       point,
+                                                                       ..Default::default() })?;
+                                           let (hit, _) = author.prepare(hit, entry, None).await?;
+                                           Ok(hit.result as i16)
+                                       }
+                                   })
+                        .await?;
             action = transition.action;
             self.tracking = transition.tracking;
             self.scroll_highlight = transition.highlight;

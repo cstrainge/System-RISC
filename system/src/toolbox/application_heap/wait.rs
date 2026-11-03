@@ -7,24 +7,141 @@ use core::{num::NonZeroU64,
 use super::*;
 
 static REAP_PENDING: AtomicBool = AtomicBool::new(false);
+static MONITOR_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Non-owning exact Heap wake capability. It cannot select an account, retain
+/// physical pages or keep Heap -> Mapping -> Heap ownership cyclic.
+#[derive(Clone)]
+pub(crate) struct Progress(alloc::sync::Weak<Heap>);
+impl Progress
+{
+    pub(super) fn new(heap: &Arc<Heap>) -> Self
+    {
+        Self(Arc::downgrade(heap))
+    }
+
+    pub(crate) fn notify(self)
+    {
+        let heap = self.0.upgrade();
+        drop(self);
+        if let Some(heap) = heap
+        {
+            heap.notify_wait_release();
+            drop(heap);
+        }
+    }
+}
 
 pub(super) struct Region
 {
     incarnation: NonZeroU64,
     bytes:       u64,
-    accepting:   AtomicBool
+    accepting:   AtomicBool,
+    ready:       AtomicBool,
+    mapping:     spinning_top::Spinlock<MappingState>
+}
+struct MappingState
+{
+    mapping: Option<crate::machine::paging::user::Mapping>,
+    busy:    bool
 }
 impl Region
 {
-    pub(super) fn prepare(bytes: u64) -> Result<Arc<Self>, Error>
+    pub(super) fn prepare(bytes: u64, mapping: crate::machine::paging::user::Mapping)
+                          -> Result<Arc<Self>, Error>
     {
         let incarnation = mac_object_table::domain::issue_correlation_identity()
             .map_err(|_| Error::Pool(PoolError::IdentityExhausted))?;
         Arc::try_new(Self { incarnation,
                             bytes,
-                            accepting: AtomicBool::new(true) }).map_err(|_| {
+                            accepting: AtomicBool::new(true),
+                            ready:AtomicBool::new(false),
+                            mapping:spinning_top::Spinlock::new(MappingState{mapping:Some(mapping),busy:false}) }).map_err(|_| {
             Error::Metadata { stage:     "wait extent identity",
                               requested: 1 }
+        })
+    }
+
+    fn mapping_turn<T>(&self,
+                       operation: impl FnOnce(&mut crate::machine::paging::user::Mapping)
+                              -> Result<T, crate::machine::paging::user::Error>)
+                       -> Result<T, Error>
+    {
+        let mut mapping = interrupts::with_masked(|| {
+            let mut state = self.mapping.lock();
+            if state.busy
+            {
+                return Err(Error::Busy);
+            }
+            let mapping = state.mapping.take().ok_or(Error::Root)?;
+            state.busy = true;
+            Ok(mapping)
+        })?;
+        let result = operation(&mut mapping);
+        interrupts::with_masked(|| {
+            let mut state = self.mapping.lock();
+            state.mapping = Some(mapping);
+            state.busy = false;
+        });
+        result.map_err(Error::UserMapping)
+    }
+
+    pub(super) fn publish(&self) -> Result<(), Error>
+    {
+        self.mapping_turn(|mapping| mapping.publish())?;
+        self.ready.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    pub(super) fn quarantine_cause(&self) -> Option<crate::machine::paging::modules::CleanupCause>
+    {
+        interrupts::with_masked(|| {
+            self.mapping.lock().mapping.as_ref().and_then(|mapping| mapping.quarantine_cause())
+        })
+    }
+
+    pub(super) fn retire_mapping(&self) -> Result<(), Error>
+    {
+        self.mapping_turn(|m| m.retire())
+    }
+
+    pub(super) fn user_address(&self, cpu: usize, bytes: usize) -> Result<usize, Error>
+    {
+        if !self.accepting()
+        {
+            return Err(Error::Pointer);
+        }
+        interrupts::with_masked(|| {
+            let state = self.mapping.lock();
+            let mapping = state.mapping.as_ref().ok_or(Error::Busy)?;
+            let offset = cpu.checked_sub(mapping.cpu_base()).ok_or(Error::Pointer)?;
+            if offset.checked_add(bytes).is_none_or(|end| end > self.bytes as usize)
+            {
+                return Err(Error::Pointer);
+            }
+            mapping.user_base().checked_add(offset).ok_or(Error::Layout)
+        })
+    }
+
+    pub(super) fn cpu_address(&self, address: usize, bytes: usize) -> Result<Option<usize>, Error>
+    {
+        if !self.accepting()
+        {
+            return Ok(None);
+        }
+        interrupts::with_masked(|| {
+            let state = self.mapping.lock();
+            let mapping = state.mapping.as_ref().ok_or(Error::Busy)?;
+            let Some(offset) = address.checked_sub(mapping.user_base())
+            else
+            {
+                return Ok(None);
+            };
+            if offset.checked_add(bytes).is_none_or(|end| end > self.bytes as usize)
+            {
+                return Ok(None);
+            }
+            mapping.cpu_base().checked_add(offset).map(Some).ok_or(Error::Layout)
         })
     }
 
@@ -35,7 +152,7 @@ impl Region
 
     pub(super) fn accepting(&self) -> bool
     {
-        self.accepting.load(Ordering::Acquire)
+        self.accepting.load(Ordering::Acquire) && self.ready.load(Ordering::Acquire)
     }
 
     pub(super) fn close(&self)
@@ -141,23 +258,33 @@ pub(crate) fn pin(executor: &crate::context::ApplicationExecutor<'_>, address: u
         return Err(Error::Layout);
     }
     let heap = bind(executor)?;
-    let Some((extent, region)) = Heap::wait_extent(&heap, address)?
+    let Some(cpu) = heap.try_cpu_address(address, core::mem::size_of::<AtomicU32>())?
+    else
+    {
+        return Ok(None);
+    };
+    let Some((extent, region)) = Heap::wait_extent(&heap, cpu)?
     else
     {
         return Ok(None);
     };
     let identity = HeapWaitIdentity { root:   executor.heap().key(),
                                       extent: region.incarnation,
-                                      offset: address - extent.base() };
+                                      offset: cpu - extent.base() };
     Ok(Some(HeapWaitPin { extent: Some(extent),
                           region: Some(region),
                           owner: heap.owner.clone(),
                           heap: Some(heap),
                           identity,
-                          address }))
+                          address: cpu }))
 }
 
-pub(super) fn request_reap()
+pub(crate) fn monitor_released()
+{
+    MONITOR_PENDING.store(true, Ordering::Release);
+    crate::machine::scheduler::wake::request();
+}
+pub(crate) fn request_reap()
 {
     REAP_PENDING.store(true, Ordering::Release);
     crate::machine::scheduler::wake::request();
@@ -169,7 +296,9 @@ pub(super) fn request_reap()
 /// most once in this turn, including when its reaper is temporarily busy.
 pub(crate) fn pump()
 {
-    if !REAP_PENDING.swap(false, Ordering::AcqRel)
+    let readers = REAP_PENDING.swap(false, Ordering::AcqRel);
+    let monitor = MONITOR_PENDING.swap(false, Ordering::AcqRel);
+    if !readers && !monitor
     {
         return;
     }
@@ -181,7 +310,8 @@ pub(crate) fn pump()
                    .retained_values()
                    .filter(|heap| {
                        heap.owner.owner().incarnation() > after
-                       && heap.wait_dirty.load(Ordering::Acquire)
+                       && (heap.wait_dirty.load(Ordering::Acquire)
+                           || (monitor && heap.has_retirement()))
                    })
                    .min_by_key(|heap| heap.owner.owner().incarnation())
                    .map(|heap| {

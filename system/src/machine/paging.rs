@@ -3,6 +3,7 @@
 pub(crate) mod inspection;
 pub(crate) mod modules;
 pub(crate) mod process;
+pub(crate) mod user;
 mod alias;
 mod heap_partition;
 use core::{alloc::Layout, arch::asm, fmt, marker::PhantomData, ptr};

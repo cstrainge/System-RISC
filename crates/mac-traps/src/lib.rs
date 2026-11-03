@@ -1,6 +1,9 @@
 //! Small native trap transport. There are no manager implementations in this crate.
 #![no_std]
-use mac_abi::{ events::Event, geometry::{ Rect, Point }, traps::*, * };
+use mac_abi::{events::Event,
+              geometry::{Point, Rect},
+              traps::*,
+              *};
 
 pub mod application_heap;
 pub mod native_threads;
@@ -8,6 +11,8 @@ pub mod native_exit;
 pub mod entropy;
 #[cfg(target_arch = "riscv64")]
 pub mod emergency;
+#[cfg(target_arch = "riscv64")]
+pub mod user_callbacks;
 pub mod address_wait;
 mod error;
 pub mod types;
@@ -18,6 +23,30 @@ pub use types::{Cnid, DocumentBatchId, FileTransferId, MenuId, ProcessId, Thread
 pub type Result<T> = core::result::Result<T, Error>;
 mod files;
 mod images;
+/// Local architecture syscall instruction, shared by user applications and trusted
+/// supervisor modules. The descriptor never contains a resident code address.
+///
+/// # Safety
+/// The request and nested storage obey the selected synchronous ABI contract.
+/// System validates user memory and derives authority from the actual trap frame.
+pub unsafe extern "C" fn invoke(number: u32, request: *mut (), size: usize) -> i64
+{
+    #[cfg(target_arch = "riscv64")]
+    {
+        let mut result = request.addr();
+        unsafe {
+            core::arch::asm!("ecall", in("a7") number, inlateout("a0") result,
+                             in("a1") size, clobber_abi("C"));
+        }
+        result as i64
+    }
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        let _ = (number, request, size);
+        NOT_SUPPORTED as i64
+    }
+}
+
 pub fn status(value: i64) -> Result<()>
 {
     if value == 0 { Ok(()) } else { Err(Error::from_status(value as Status)) }
@@ -150,16 +179,14 @@ impl<'a> Client<'a>
 
     pub fn menu(self, call: &mut mac_abi::menus::MenuCall) -> Result<()>
     {
-        status(unsafe {
-            (self.services.trap)(MENU,
-                                 (call as *mut mac_abi::menus::MenuCall).cast(),
-                                 core::mem::size_of::<mac_abi::menus::MenuCall>())
-        })
+        status(self.invoke(MENU, call))
     }
 
     pub fn new(services: &'a SystemServices) -> Result<Self>
     {
         if !services.header.supports::<SystemServices>()
+           || services.header.size as usize != core::mem::size_of::<SystemServices>()
+           || services.capabilities & !(CAP_GRAPHICS | CAP_EVENT_WAIT | CAP_MONOTONIC_CLOCK) != 0
         {
             return Err(Error::BadAbi);
         }
@@ -168,14 +195,17 @@ impl<'a> Client<'a>
 
     /// # Safety
     /// Pointer must expose a readable Header and the advertised initialized table,
-    /// whose callbacks and storage remain valid for lifetime 'a.
+    /// whose immutable storage remains valid for lifetime 'a.
     pub unsafe fn from_raw(services: *const SystemServices) -> Result<Self>
     {
         if services.is_null()
+           || !services.addr().is_multiple_of(core::mem::align_of::<SystemServices>())
         {
             return Err(Error::BadArgument);
         }
         if !unsafe { &*services.cast::<Header>() }.supports::<SystemServices>()
+           || unsafe { (*services.cast::<Header>()).size } as usize
+              != core::mem::size_of::<SystemServices>()
         {
             return Err(Error::BadAbi);
         }
@@ -189,9 +219,7 @@ impl<'a> Client<'a>
 
     fn invoke<T>(self, number: u32, request: &mut T) -> i64
     {
-        unsafe {
-            (self.services.trap)(number, (request as *mut T).cast(), core::mem::size_of::<T>())
-        }
+        unsafe { invoke(number, (request as *mut T).cast(), core::mem::size_of::<T>()) }
     }
 
     pub fn log(self, text: &str) -> Result<()>
@@ -323,8 +351,27 @@ impl<'a> Client<'a>
     /// for the supplied resource's native contract throughout this call.
     pub unsafe fn definition(self, call: &mut DefinitionCall) -> Result<i64>
     {
-        let result = self.invoke(DEFINITION, call);
-        if result < 0 { Err(Error::from_status(result as Status)) } else { Ok(result) }
+        let mut request = definitions::UserCall { header:
+                                                      Header::for_type::<definitions::UserCall>(),
+                                                  kind:      call.kind,
+                                                  id:        call.id,
+                                                  variation: call.variation,
+                                                  message:   call.message,
+                                                  reserved:  call.reserved,
+                                                  reflow:    call.reflow,
+                                                  param:     call.param,
+                                                  object:    call.object.addr(),
+                                                  surface:   call.surface.addr(),
+                                                  result:    0 };
+        status(self.invoke(DEFINITION, &mut request))?;
+        if request.result < 0
+        {
+            Err(Error::from_status(Status::try_from(request.result).unwrap_or(BAD_ABI)))
+        }
+        else
+        {
+            Ok(request.result)
+        }
     }
 }
 
@@ -514,7 +561,8 @@ impl Client<'_>
     }
 
     pub fn font_suitcase(self, call: &mut quickdraw::FontSuitcaseCall, data: &[u8],
-                         resource: &[u8]) -> Result<()>
+                         resource: &[u8])
+                         -> Result<()>
     {
         call.data = data.as_ptr();
         call.data_length = data.len();
@@ -650,8 +698,8 @@ impl SurfaceConnection<'_>
 
     /// Preserve the borrowed surface's global clip while limiting font ink to
     /// the requested horizontal span, including partially visible glyphs.
-    pub fn font_draw_clipped(&mut self, selection: quickdraw::FontSelection,
-                             baseline: Point, text: &str, limit: i16, color: u32)
+    pub fn font_draw_clipped(&mut self, selection: quickdraw::FontSelection, baseline: Point,
+                             text: &str, limit: i16, color: u32)
                              -> Result<i16>
     {
         let saved = self.surface.clip;

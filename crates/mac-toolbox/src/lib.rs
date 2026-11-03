@@ -1,6 +1,8 @@
 //! Rust Toolbox facade over the resident System trap gate.
 #![no_std]
 #![cfg_attr(all(feature = "application", target_arch = "riscv64"), feature(alloc_error_handler))]
+#[cfg(feature = "application")]
+extern crate alloc;
 #[cfg(all(feature = "application", target_os = "systemrisc"))]
 compile_error!("the System RISC std target supplies startup; remove the no_std application \
                 feature");
@@ -329,8 +331,8 @@ mod tests
 
 /// Supply the platform entry for a safe native `run(&System) -> ToolboxResult<()>`.
 ///
-/// Enable the `application` feature. Current native applications are no_std and
-/// may use `alloc`; this does not provide a Rust std platform implementation.
+/// Enable the `application` feature for an explicit no_std application using
+/// its existing allocator. The std target supplies its own CRT.
 /// The SDK owns service installation, GlobalAlloc, panic and allocation failure.
 #[cfg(feature = "application")]
 #[macro_export]
@@ -341,8 +343,7 @@ macro_rules! application {
         #[cfg(target_arch = "riscv64")]
         #[unsafe(no_mangle)]
         #[unsafe(link_section = ".text.entry")]
-        pub unsafe extern "C" fn _start(services: *const $crate::SystemServices)
-                                        -> $crate::abi::Status
+        pub unsafe extern "C" fn _start(services: *const $crate::SystemServices) -> !
         {
             // SAFETY: the real native loader owns this entry's live table,
             // initialized image and permanent service callbacks.

@@ -7,18 +7,8 @@ use core::{arch::asm,
 use crate::display::{height, pixels, width};
 
 static BACKBUFFER_INITIALIZED: AtomicBool = AtomicBool::new(false);
-// Window tracking never paints the menu bar's first 21 rows.
-fn tracking_pixels() -> usize
-{
-    width() * (height() - 21)
-}
-const MAX_TRACKING_PIXELS: usize = crate::display::MAX_WIDTH * (crate::display::MAX_HEIGHT - 21);
-// This physical scratch reservation is generated from the same checked
-// platform record as the loader arena and BootInfo reservations. It is not
-// image BSS and cannot be allocated by the later physical page pool.
-const _: () =
-    assert!(super::memory::DISPLAY_TRACKING_BASE + (MAX_TRACKING_PIXELS * size_of::<u32>()) as u64
-            <= super::memory::DISPLAY_SCRATCH_BASE + super::memory::DISPLAY_SCRATCH_BYTES);
+// The complete physical display reservation remains build-owned and excluded
+// from the page pool. Only the live front/back mapped views are used here.
 const _: () = assert!(super::memory::DISPLAY_BACKBUFFER_BASE
                       + (crate::display::MAX_PIXELS * size_of::<u32>()) as u64
                       <= super::memory::DISPLAY_SCRATCH_BASE
@@ -35,11 +25,6 @@ const BACK_CPU: usize = (super::memory::VM_PHYSMAP_START
                          + (super::memory::DISPLAY_BACKBUFFER_BASE
                             - super::memory::VM_PHYSMAP_PHYSICAL_BASE))
                         as usize;
-const TRACKING_CPU: usize = (super::memory::VM_PHYSMAP_START
-                             + (super::memory::DISPLAY_TRACKING_BASE
-                                - super::memory::VM_PHYSMAP_PHYSICAL_BASE))
-                            as usize;
-
 /// Scan-out memory System draws into: the platform reservation for ramfb, or
 /// the video driver's own framebuffer once one attaches.
 static FRONT: AtomicUsize = AtomicUsize::new(FRONT_CPU);
@@ -134,55 +119,12 @@ pub(super) fn take_dirty() -> Option<mac_abi::geometry::Rect>
     (rect.right > rect.left && rect.bottom > rect.top).then_some(rect)
 }
 
-static TRACKING_INITIALIZED: AtomicBool = AtomicBool::new(false);
-static TRACKING_AVAILABLE: AtomicBool = AtomicBool::new(false);
-static TRACKING_BORROWED: AtomicBool = AtomicBool::new(false);
-
-/// Scratch belongs to the serialized compositor and cannot escape this call.
-/// A future/reentrant caller receives None instead of aliasing the active mask.
-pub fn with_tracking_mask<R>(call: impl FnOnce(Option<&mut [u32]>) -> R) -> R
-{
-    // Bootstrap still owns the shared range until our framebuffer is installed.
-    if !TRACKING_AVAILABLE.load(Ordering::Acquire)
-    {
-        return call(None);
-    }
-    if TRACKING_BORROWED.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                        .is_err()
-    {
-        return call(None);
-    }
-    struct Borrow;
-    impl Drop for Borrow
-    {
-        fn drop(&mut self)
-        {
-            TRACKING_BORROWED.store(false, Ordering::Release);
-        }
-    }
-    let _borrow = Borrow;
-    let pointer = TRACKING_CPU as *mut u32;
-    // Only this serialized device boundary accesses the dedicated RAM range.
-    // Initialize bytes before publishing a reference, once per boot; subsequent
-    // frames reuse the same pinned storage without allocation or clearing here.
-    if !TRACKING_INITIALIZED.load(Ordering::Acquire)
-    {
-        unsafe {
-            core::ptr::write_bytes(pointer, 0, tracking_pixels());
-        }
-        TRACKING_INITIALIZED.store(true, Ordering::Release);
-    }
-    // The platform checker proves page alignment, non-overlap and containment
-    // in discovered minimum RAM; the guarded slice cannot escape this call.
-    call(Some(unsafe { core::slice::from_raw_parts_mut(pointer, tracking_pixels()) }))
-}
-
 pub fn back_buffer() -> &'static mut [u32]
 {
     let pointer = BACK_CPU as *mut u32;
     // Bootstrap initializes this before applications start. Afterwards only the
     // interrupt-masked, serialized compositor borrows the dedicated reservation.
-    // It is disjoint from the frontbuffer and guarded tracking scratch.
+    // It is disjoint from the frontbuffer.
     if !BACKBUFFER_INITIALIZED.load(Ordering::Acquire)
     {
         unsafe {
@@ -201,7 +143,6 @@ pub(super) fn clear_mode_buffers()
     // painting. The front-buffer pin is retained through this entire clear.
     unsafe {
         core::ptr::write_bytes(BACK_CPU as *mut u32, 0, pixels());
-        core::ptr::write_bytes(TRACKING_CPU as *mut u32, 0, tracking_pixels());
         core::ptr::write_bytes(front_cpu() as *mut u32, 0, pixels());
     }
 }
@@ -232,11 +173,9 @@ pub fn setup_framebuffer() -> bool
     if !ready
     {
         serial!("DISPLAY_NO_RAMFB: continuing until a video driver attaches");
-        TRACKING_AVAILABLE.store(true, Ordering::Release);
     }
     if ready
     {
-        TRACKING_AVAILABLE.store(true, Ordering::Release);
         serial!("RAMFB {}x{} addr=0x{:x}", width(), height(), address);
         serial!("DISPLAY_BUFFERS back={} front={} bytes={}",
                 super::memory::DISPLAY_BACKBUFFER_BASE,

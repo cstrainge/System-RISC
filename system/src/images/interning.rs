@@ -169,7 +169,7 @@ impl Manager
             {
                 return Err(SERVICE_BUSY);
             }
-            self.placement(preferred, extent, relocation_base, limit)
+            self.placement(owner.owner(), preferred, extent, relocation_base, limit)
         })();
         let base = match validated
         {
@@ -231,7 +231,10 @@ impl Manager
         if !pending.owner.accepting()
            || pending.allocation.owner() != pending.owner.owner()
            || pending.instance.binding.get().is_some()
-           || !self.free_placement(pending.instance.base, pending.extent, pending.limit)
+           || !self.free_placement(pending.owner.owner(),
+                                   pending.instance.base,
+                                   pending.extent,
+                                   pending.limit)
         {
             return Err(LoadFailure { cause:       SERVICE_BUSY,
                                      preparation: LoadPublishRemainder::Unpublished(preparation) });

@@ -447,9 +447,21 @@ pub fn patches(bytes: &[u8], image: &Image, table: &[u8], base: u64, destination
     })
 }
 
+/// Checked named section metadata. The view borrows original ELF bytes; it
+/// does not authorize loading. Consumers must match actual PT_LOAD placement.
+#[derive(Clone, Copy, Debug)]
+pub struct NamedSection<'a>
+{
+    pub data:        &'a [u8],
+    pub flags:       u64,
+    pub address:     u64,
+    pub file_offset: u64,
+    pub alignment:   u64
+}
+
 /// A named build-time section. Duplicate names and malformed string tables are
 /// rejected; no section-table information is retained in native code resources.
-pub fn named_section<'a>(bytes: &'a [u8], name: &[u8]) -> Result<Option<&'a [u8]>>
+pub fn named_section_view<'a>(bytes: &'a [u8], name: &[u8]) -> Result<Option<NamedSection<'a>>>
 {
     let count = usize::from(u16le(bytes, 60)?);
     let names = contents(bytes, section(bytes, usize::from(u16le(bytes, 62)?))?)?;
@@ -472,10 +484,24 @@ pub fn named_section<'a>(bytes: &'a [u8], name: &[u8]) -> Result<Option<&'a [u8]
             {
                 return Err(Error::Malformed("expected section file data"));
             }
-            found = Some(contents(bytes, header)?);
+            let data = contents(bytes, header)?;
+            let address = u64le(header, 16)?;
+            address.checked_add(data.len() as u64)
+                   .ok_or(Error::Malformed("ELF named section address overflow"))?;
+            found = Some(NamedSection { data,
+                                        flags: u64le(header, 8)?,
+                                        address,
+                                        file_offset: u64le(header, 24)?,
+                                        alignment: u64le(header, 48)? });
         }
     }
     Ok(found)
+}
+
+/// Byte-only view retained for existing module metadata consumers.
+pub fn named_section<'a>(bytes: &'a [u8], name: &[u8]) -> Result<Option<&'a [u8]>>
+{
+    Ok(named_section_view(bytes, name)?.map(|section| section.data))
 }
 
 #[cfg(test)]

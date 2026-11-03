@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use hashbrown::HashMap;
 use mac_abi::{ACCESS_DENIED, BAD_ARGUMENT, DefinitionCall, NO_MEMORY, NOT_FOUND, SERVICE_BUSY,
               Status};
-use mac_kernel_model::image::{ExecutionGate, ExecutionPin};
+use mac_kernel_model::image::{ExecutionGate, ExecutionPin, Loading};
 use mac_object_table::{domain::{DomainId, ReleasedResource},
                        registry::{Release, Source, Specification},
                        shared::InvocationGate as _,
@@ -16,6 +16,9 @@ use spinning_top::Spinlock;
 use crate::{machine::paging::modules::{DefinitionTarget, Mapping},
             toolbox::handles::{CapacityPolicy, InvocationGate, KindCode, OwnerRef, Store,
                                cleanup::Failure}};
+
+#[path = "callbacks.rs"]
+pub(crate) mod callbacks;
 
 #[derive(Debug)]
 pub(crate) enum Error
@@ -79,8 +82,27 @@ impl core::fmt::Display for Error
     }
 }
 /// Private original key. Only Ready publication returns one to a manager.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DefinitionRef(CompletionKey);
+impl DefinitionRef
+{
+    pub(crate) fn same(self, other: Self) -> bool
+    {
+        self.0 == other.0
+    }
+}
+
+pub(crate) fn is_user(reference: DefinitionRef) -> Result<bool, Status>
+{
+    state(|state| {
+        let definition = state.store.completing(&reference.0).ok_or(NOT_FOUND)?;
+        if definition.owner.owner() != reference.0.owner()
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(definition.owner.owner().kind() == mac_object_table::domain::DomainKind::Process)
+    }).map_err(|cause| cause.status())?
+}
 
 /// One original definition dependency owned by a canonical bound object. This
 /// is not a new resource identity and cannot be copied into a temporary view.
@@ -93,14 +115,192 @@ pub(crate) struct BoundDefinition
 }
 impl BoundDefinition
 {
+    /// Retain only the already admitted original source. This grants no new
+    /// callback admission, publication or storage allocation authority.
+    pub(crate) fn retain_source(&self) -> RetainedDefinition
+    {
+        RetainedDefinition { definition: self._definition.clone(),
+                             reference:  self.reference,
+                             _released:  BindingReleased }
+    }
+
+    /// Move a genuine newly admitted binding into a retained source without a
+    /// temporary reader-return notification or a second binding operation.
+    pub(crate) fn into_retained_source(self) -> RetainedDefinition
+    {
+        let Self { _definition,
+                   reference,
+                   _released } = self;
+        RetainedDefinition { definition: _definition,
+                             reference,
+                             _released }
+    }
+
+    /// Retain this original dependency for guard-free owner-death admission.
+    /// This does not mint a new binding or bypass stopped-owner publication.
+    pub(crate) fn quiescence_plan(&self) -> QuiescencePlan
+    {
+        QuiescencePlan { definition: self._definition.clone(),
+                         reference:  self.reference,
+                         _released:  BindingReleased }
+    }
+
     pub(crate) fn reference(&self) -> DefinitionRef
     {
         self.reference
     }
 
+    /// Original bound source classification; this never consults the current
+    /// caller/resource selection or recreates a binding from a numeric owner.
+    /// The authenticated callback execution is the canonical single callback
+    /// role of its actual Process/image. No owner number supplied by user code
+    /// can create this proof or select a different queue.
+    pub(crate) fn callback_waits_on(&self,
+                                    execution:&crate::machine::scheduler::callbacks::CallbackExecution)
+                                    -> bool
+    {
+        match &self._definition.source
+        {
+            SourceBinding::Image(source) =>
+            {
+                source.owner().owner() == execution.owner().owner()
+                && source.binding().id() == execution.image_id()
+            }
+            _ => false
+        }
+    }
+
+    pub(crate) fn resource_id(&self) -> i16
+    {
+        self._definition.identity.id
+    }
+
+    pub(crate) fn is_process_source(&self) -> bool
+    {
+        self._definition.owner.owner().kind() == mac_object_table::domain::DomainKind::Process
+    }
+
     pub(crate) fn matches(&self, reference: DefinitionRef) -> bool
     {
         self.reference.0 == reference.0
+    }
+}
+/// An immutable reader of one genuine admitted definition. Retaining it after
+/// stop does not permit another invocation; canonical author admission remains
+/// responsible for that check. Field order drops the Arc before its checkpoint.
+pub(crate) struct RetainedDefinition
+{
+    definition: Arc<Definition>,
+    reference:  DefinitionRef,
+    _released:  BindingReleased
+}
+impl Clone for RetainedDefinition
+{
+    fn clone(&self) -> Self
+    {
+        Self { definition: self.definition.clone(),
+               reference:  self.reference,
+               _released:  BindingReleased }
+    }
+}
+impl RetainedDefinition
+{
+    pub(crate) fn reference(&self) -> DefinitionRef
+    {
+        self.reference
+    }
+
+    pub(crate) fn matches(&self, binding: &BoundDefinition) -> bool
+    {
+        self.reference.same(binding.reference)
+        && Arc::ptr_eq(&self.definition, &binding._definition)
+    }
+
+    pub(crate) fn is_process_source(&self) -> bool
+    {
+        self.definition.owner.owner().kind() == mac_object_table::domain::DomainKind::Process
+    }
+}
+pub(crate) struct QuiescencePlan
+{
+    definition: Arc<Definition>,
+    reference:  DefinitionRef,
+    _released:  BindingReleased
+}
+impl QuiescencePlan
+{
+    /// Compare the retained original dependency without creating another bind.
+    pub(crate) fn matches(&self, binding: &BoundDefinition) -> bool
+    {
+        self.reference == binding.reference && Arc::ptr_eq(&self.definition, &binding._definition)
+    }
+}
+/// Abandoned user author state may be torn down by the kernel only while this
+/// original source/exclusion remains held. This is not a DISPOSE callback ACK.
+/// Carry it out of Desktop before Drop and before the canonical DDEF walk.
+pub(crate) struct QuiescedDefinition
+{
+    _loading:   Loading,
+    definition: Arc<Definition>,
+    reference:  DefinitionRef,
+    _released:  BindingReleased
+}
+impl QuiescencePlan
+{
+    /// Must run outside Desktop/metadata gates. Refusal returns the SAME plan.
+    pub(crate) fn acquire(self) -> Result<QuiescedDefinition, (Status, Self)>
+    {
+        let prepared = (|| {
+            let SourceBinding::Image(source) = &self.definition.source
+            else
+            {
+                return Err(ACCESS_DENIED);
+            };
+            if source.owner().owner().kind() != mac_object_table::domain::DomainKind::Process
+            {
+                return Err(ACCESS_DENIED);
+            }
+            if self.definition.owner.accepting()
+            {
+                return Err(SERVICE_BUSY);
+            }
+            let quiescence = crate::machine::scheduler::callbacks::source_quiescence(source)?;
+            if quiescence.owner().owner() != self.definition.owner.owner()
+               || quiescence.image() != source.binding()
+            {
+                return Err(ACCESS_DENIED);
+            }
+            // Register before testing exclusion, so a concurrent last reader or
+            // other proof release cannot pass between refusal and the wake flag.
+            WAITING_READERS.store(true, Ordering::Release);
+            let loading = self.definition.execution.begin_load().map_err(|_| SERVICE_BUSY)?;
+            // Owner closure and no canonical rows are monotonic; Loading now
+            // excludes admitted calls. The original Definition Arc keeps Read.
+            drop(quiescence);
+            Ok(loading)
+        })();
+        match prepared
+        {
+            Ok(loading) =>
+            {
+                let Self { definition,
+                           reference,
+                           _released } = self;
+                Ok(QuiescedDefinition { _loading: loading,
+                                        definition,
+                                        reference,
+                                        _released })
+            }
+            Err(status) => Err((status, self))
+        }
+    }
+}
+impl QuiescedDefinition
+{
+    pub(crate) fn matches(&self, binding: &BoundDefinition) -> bool
+    {
+        self.reference.same(binding.reference)
+        && Arc::ptr_eq(&self.definition, &binding._definition)
     }
 }
 struct BindingReleased;
@@ -114,6 +314,7 @@ impl Drop for BindingReleased
         let claims = WAITING_CLAIM_READERS.swap(false, Ordering::AcqRel);
         if readers || claims
         {
+            crate::kernel::window_sources_changed();
             crate::machine::paging::modules::changed();
             crate::toolbox::processes::retirement::resources_released();
         }
@@ -161,7 +362,7 @@ pub(super) enum SourceBinding
 }
 impl SourceBinding
 {
-    fn owner(&self) -> &OwnerRef
+    pub(super) fn owner(&self) -> &OwnerRef
     {
         match self
         {
@@ -196,11 +397,16 @@ impl SourceBinding
         }
     }
 
-    fn mapping_target(&self) -> DefinitionTarget
+    fn mapping_target(&self) -> DefinitionTarget<'_>
     {
         match self
         {
             Self::System(s) => DefinitionTarget::System(*s),
+            Self::Image(s)
+                if s.owner().owner().kind() == mac_object_table::domain::DomainKind::Process =>
+            {
+                DefinitionTarget::Process(s)
+            }
             Self::Image(s) => DefinitionTarget::Owner(s.allocation().clone())
         }
     }
@@ -227,8 +433,14 @@ struct Cell
 {
     busy:    bool,
     closing: bool,
-    entry:   Option<mac_abi::DefinitionEntry>,
+    entry:   Option<Entry>,
     mapping: Option<Arc<Mapping>>
+}
+#[derive(Clone, Copy)]
+enum Entry
+{
+    Trusted(mac_abi::DefinitionEntry),
+    User(u64)
 }
 struct Definition
 {
@@ -659,7 +871,16 @@ fn finish(key: CompletionKey, preparation: &Preparation, mapping: &Arc<Mapping>)
     {
         return Err(Error::Source);
     }
-    let function: mac_abi::DefinitionEntry = unsafe { core::mem::transmute(entry as usize) };
+    let function = if preparation.definition.owner.owner().kind()
+                      == mac_object_table::domain::DomainKind::Process
+    {
+        Entry::User(entry)
+    }
+    else
+    {
+        // Only authentic System/Module sources may become resident callables.
+        Entry::Trusted(unsafe { core::mem::transmute(entry as usize) })
+    };
     InvocationGate::run(|| preparation.definition.state.lock().entry = Some(function));
     Ok(DefinitionRef(key))
 }
@@ -711,12 +932,12 @@ impl Drop for Invocation
         }
     }
 }
-fn pin(reference: DefinitionRef, call: &DefinitionCall, disposal: bool)
-       -> Result<(Invocation, mac_abi::DefinitionEntry), Status>
+fn pin(reference: DefinitionRef, kind: u32, id: i16, disposal: bool)
+       -> Result<(Invocation, Entry), Status>
 {
     state(|s| {
         let d = s.store.completing(&reference.0).ok_or(NOT_FOUND)?;
-        if d.identity.kind != call.kind.to_be_bytes() || d.identity.id != call.id
+        if d.identity.kind != kind.to_be_bytes() || d.identity.id != id
         {
             return Err(BAD_ARGUMENT);
         }
@@ -763,10 +984,17 @@ pub(crate) fn invoke_disposal(permit: crate::toolbox::windows::manager::Definiti
 
 fn invoke_admitted(reference: DefinitionRef, call: &mut DefinitionCall, disposal: bool) -> i64
 {
-    let (_pin, entry) = match pin(reference, call, disposal)
+    let (_pin, entry) = match pin(reference, call.kind, call.id, disposal)
     {
         Ok(v) => v,
         Err(e) => return e as i64
+    };
+    let Entry::Trusted(entry) = entry
+    else
+    {
+        // A Process definition is never an S-mode callable. Its manager must
+        // yield an owned callback turn, ending Desktop before user execution.
+        return SERVICE_BUSY as i64;
     };
     crate::context::current_thread_context().definitions
                                             .with(call.kind, call.id, call.surface, || unsafe {
@@ -1132,13 +1360,17 @@ pub(crate) fn visibility_snapshot() -> Result<Vec<Range>, Error>
                 {
                     return false;
                 }
-                ranges.push(Range { base:  d.base.load(Ordering::Acquire),
-                                    limit: d.limit.load(Ordering::Acquire),
-                                    owner: d.owner.owner(),
+                ranges.push(Range { base:             d.base.load(Ordering::Acquire),
+                                    limit:            d.limit.load(Ordering::Acquire),
+                                    owner:            d.owner.owner(),
                                     // Scalar demand from the actual canonical
                                     // Mapping; no execution/account pin escapes.
-                                    retirement_pages: d.state.lock().mapping.as_ref()
-                                        .map_or(0, |mapping| mapping.retirement_pages()) })
+                                    retirement_pages:
+                                        d.state
+                                         .lock()
+                                         .mapping
+                                         .as_ref()
+                                         .map_or(0, |mapping| mapping.retirement_pages()) })
             }
             true
         })?;

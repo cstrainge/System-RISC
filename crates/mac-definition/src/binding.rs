@@ -94,7 +94,6 @@ unsafe fn entry<F: Family>(pointer: *mut DefinitionCall,
         }
         let operation = if layout { Operation::Validate } else { operation::<F>(call.message)? };
         let services = SystemServices { header:       Header::for_type::<SystemServices>(),
-                                        trap:         call.gate,
                                         capabilities: 0 };
         let services = Services::new(mac_traps::Client::new(&services)?, reflow);
         if call.object.is_null()

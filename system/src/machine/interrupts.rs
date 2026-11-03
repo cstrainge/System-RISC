@@ -42,6 +42,8 @@ impl mac_object_table::shared::InvocationGate for NativeInvocationGate
     fn resource_released(_: mac_object_table::domain::DomainId)
     {
         crate::recovery::acknowledgement_changed();
+        crate::kernel::control_resource_acknowledged();
+        crate::toolbox::windows::manager::ack::acknowledgement_changed();
     }
 
     fn publication_released(owner: mac_object_table::domain::DomainId)

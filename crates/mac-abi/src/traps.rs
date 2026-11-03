@@ -16,6 +16,8 @@ pub const POWER: u32 = 0x10027;
 pub const APPLICATION_HEAP: u32 = 0x10028;
 pub const CPU_INFO: u32 = 0x10029;
 pub const ENTROPY: u32 = 0x1002d;
+/// Work delivery/completion for a canonical application callback thread.
+pub const USER_CALLBACK: u32 = 0x1002e;
 pub const PSTRING_SCROLL_BOX: u32 = SCROLL_BOX | PSTRING_BIT;
 pub const STANDARD_FILE: u32 = 0x10020;
 pub const PSTRING_STANDARD_FILE: u32 = STANDARD_FILE | PSTRING_BIT;

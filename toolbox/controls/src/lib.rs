@@ -143,7 +143,7 @@ impl<'a> Controls<'a>
         Part::from_code(call.result as i16)
     }
 
-    /// Draw directly into exclusive caller-owned RGB pixels, using resident CDEF0.
+    /// Draw directly into exclusive caller-owned RGB pixels, using selected CDEF0.
     pub fn draw_standard_pixels(&self, pixels: &mut [u32], width: usize, height: usize,
                                 kind: StandardKind, standard: StandardState)
                                 -> Result<()>
@@ -156,7 +156,7 @@ impl<'a> Controls<'a>
         self.client.control_pixels(&mut call, pixels, width, height)
     }
 
-    /// Draw directly into exclusive caller-owned RGB pixels, using resident CDEF1.
+    /// Draw directly into exclusive caller-owned RGB pixels, using selected CDEF1.
     pub fn draw_scrollbar_pixels(&self, pixels: &mut [u32], width: usize, height: usize,
                                  scrollbar: ScrollbarState)
                                  -> Result<()>
