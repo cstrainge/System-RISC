@@ -13,7 +13,7 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
-#![feature(allocator_api)]
+#![feature(allocator_ext)]
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 
 #[cfg(not(any(feature = "libm", feature = "std")))]

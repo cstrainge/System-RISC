@@ -70,7 +70,7 @@ impl Instance {
         coords: &[F2Dot14],
         target: Target,
         styles: Option<GlyphStyles>,
-        lazy_metrics: bool,
+        #[cfg(feature = "std")] lazy_metrics: bool,
     ) -> Self {
         let styles = styles.unwrap_or_else(|| GlyphStyles::new(outlines));
         #[cfg(feature = "std")]
@@ -103,7 +103,6 @@ impl Instance {
         path_style: PathStyle,
         pen: &mut impl OutlinePen,
     ) -> Result<AdjustedMetrics, DrawError> {
-        let font = glyph.font();
         let glyph_id = glyph.glyph_id();
         let style = self
             .styles
@@ -112,7 +111,16 @@ impl Instance {
             .ok_or(DrawError::GlyphNotFound(glyph_id))?;
         let metrics = self
             .metrics
-            .get(font, coords, SHAPER_MODE, &self.styles.0, glyph_id)
+            .get(
+                #[cfg(feature = "std")]
+                glyph.font(),
+                #[cfg(feature = "std")]
+                coords,
+                #[cfg(feature = "std")]
+                SHAPER_MODE,
+                &self.styles.0,
+                glyph_id,
+            )
             .ok_or(DrawError::GlyphNotFound(glyph_id))?;
         let units_per_em = glyph.units_per_em() as i32;
         let scale = Scale::new(

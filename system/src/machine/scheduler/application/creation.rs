@@ -89,7 +89,7 @@ fn prepare_child(executor: &crate::context::ApplicationExecutor<'_>,
                                        stage: "child canonical Process space" }
                                                          })?;
     let core=Arc::try_new(ThreadCore{
-        address:Mutex::new(None),backing:Mutex::new(Some(ThreadBacking{cpu,stack,image:Some(ApplicationImageUse::Child(code))})),
+        address:Mutex::new(None),backing:Mutex::new(Some(ThreadBacking{cpu,stack,image:Some(ApplicationImageUse::Child { _execution: code })})),
         launch:Mutex::new(None),context,release:Mutex::new(None),binding:executor.image(),space:Some(space),top,cleanup_refusal:Mutex::new(None),service_quarantine:spin::Once::new(),name:Mutex::new(None),
         application:Some(completion),pending_join:Mutex::new(None)
     }).map_err(|_|Error::Metadata("child Core"))?;

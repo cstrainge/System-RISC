@@ -100,7 +100,7 @@ pub(super) fn mark_dirty(rect: mac_abi::geometry::Rect)
     {
         return;
     }
-    let _ = DIRTY.fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
+    let _ = DIRTY.try_update(Ordering::AcqRel, Ordering::Acquire, |old| {
                      if old == 0
                      {
                          return Some(pack(rect));
