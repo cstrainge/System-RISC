@@ -75,11 +75,11 @@ pub struct Manager
     previous_cr:                     bool,
     info:                            CrashInfo,
     #[cfg(target_arch = "riscv64")]
-    pub(super) controls:             [Option<u64>; 6],
+    pub(super) controls:             [Option<u64>; 2],
     #[cfg(target_arch = "riscv64")]
-    pub(super) control_enabled:      [bool; 6],
+    pub(super) control_enabled:      [bool; 2],
     #[cfg(target_arch = "riscv64")]
-    pub(super) control_labels:       [u32; 6],
+    pub(super) control_labels:       [u32; 2],
     #[cfg(target_arch = "riscv64")]
     pub(super) tracking:             Option<usize>,
     #[cfg(target_arch = "riscv64")]
@@ -92,6 +92,10 @@ pub struct Manager
     pub(super) restart_terminal:     bool,
     #[cfg(target_arch = "riscv64")]
     pub(super) power_failure:        Option<(Status, u32)>,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) scrollbox:            Option<u64>,
+    #[cfg(target_arch = "riscv64")]
+    pub(super) scroll_tracking:      bool,
     #[cfg(target_arch = "riscv64")]
     pub(super) restart_detail:       Option<FailureDetail>,
     #[cfg(target_arch = "riscv64")]
@@ -168,13 +172,17 @@ impl Default for Manager
                    CrashInfo { page_lines: PAGE_LINES,
                                ..Default::default() },
                #[cfg(target_arch = "riscv64")]
-               controls:                                             [None; 6],
+               controls:                                             [None; 2],
                #[cfg(target_arch = "riscv64")]
-               control_enabled:                                      [false; 6],
+               control_enabled:                                      [false; 2],
                #[cfg(target_arch = "riscv64")]
-               control_labels:                                       [u32::MAX; 6],
+               control_labels:                                       [u32::MAX; 2],
                #[cfg(target_arch = "riscv64")]
                tracking:                                             None,
+               #[cfg(target_arch = "riscv64")]
+               scrollbox:                                            None,
+               #[cfg(target_arch = "riscv64")]
+               scroll_tracking:                                      false,
                #[cfg(target_arch = "riscv64")]
                copy_failed:                                          false,
                #[cfg(target_arch = "riscv64")]
@@ -473,15 +481,25 @@ impl Manager
         self.capture = Capture::SystemDiagnostic;
     }
 
+    /// The report owns both ordinary buttons and its managed row scrollbar.
+    /// Its real capture continues outside the window until release/cancel.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn tracks_input(&self) -> bool
+    {
+        self.tracking.is_some() || self.scroll_tracking
+    }
+
     pub fn set_window(&mut self, window: WindowId)
     {
         self.info.window = window;
         #[cfg(target_arch = "riscv64")]
         {
-            self.controls = [None; 6];
-            self.control_enabled = [false; 6];
-            self.control_labels = [u32::MAX; 6];
+            self.controls = [None; 2];
+            self.control_enabled = [false; 2];
+            self.control_labels = [u32::MAX; 2];
             self.tracking = None;
+            self.scrollbox = None;
+            self.scroll_tracking = false;
         }
     }
 

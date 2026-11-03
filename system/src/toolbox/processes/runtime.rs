@@ -714,13 +714,13 @@ impl Toolbox
         self.screen = bounds;
         let when = Self::when();
         let events = &mut self.events;
-        self.windows
-            .fit_to_screen(bounds, mac_abi::menus::MENU_BAR_HEIGHT as i16, |id| {
-                events.post_system(Event { kind: EventKind::OsEvent,
-                                           message: mac_abi::events::WINDOW_GEOMETRY_CHANGED,
-                                           window: id.0,
-                                           ..events.null_event(when) });
-            });
+        self.windows.fit_to_screen(bounds, mac_abi::menus::MENU_BAR_HEIGHT as i16, |id| {
+                        events.post_system(Event { kind: EventKind::OsEvent,
+                                                   message:
+                                                       mac_abi::events::WINDOW_GEOMETRY_CHANGED,
+                                                   window: id.0,
+                                                   ..events.null_event(when) });
+                    });
         self.presentation.redraw = true;
         let event = Event { kind: EventKind::OsEvent,
                             message: mac_abi::events::DISPLAY_CHANGED,
@@ -759,7 +759,11 @@ impl Toolbox
     {
         self.drag_tick();
         let now = Self::when();
-        let changed = if self.owner == self.foreground
+        let changed = if self.report_cursor_is_front()
+        {
+            false
+        }
+        else if self.owner == self.foreground
         {
             self.pointer.cursors.animation_tick(now)
         }
@@ -774,6 +778,89 @@ impl Toolbox
         changed
     }
 
+    /// Read the real active report Window without selecting or polling its app.
+    /// This affects only System cursor presentation, never author liveness.
+    pub(super) fn report_cursor_is_front(&self) -> bool
+    {
+        if self.system_report_is_front()
+        {
+            return true;
+        }
+        let manager = if self.owner == self.foreground
+        {
+            &self.crash
+        }
+        else if let Some(local) = self.locals.iter().find(|local| local.id == self.foreground)
+        {
+            &local.crash
+        }
+        else
+        {
+            return false;
+        };
+        let info = manager.info();
+        info.window.0 != 0
+        && info.dismissed == 0
+        && self.windows.active_window() == Some(info.window)
+        // Cursor presentation reads metadata through the existing recipient
+        // check; it never grants the timer mutation authority over a protected
+        // service Window or enters the stopped app's recovery Activity.
+        && self.windows.readable_by(info.window, self.foreground)
+        && self.windows.window(info.window).is_some_and(|window| !window.is_hidden())
+    }
+
+    /// Ordinary reports retain their original live Activity even after author
+    /// execution stops. Only a real foreground scrollbar capture pays for this
+    /// selection; idle apps are neither copied nor polled.
+    fn tick_crash_scroll(&mut self, when: u32) -> bool
+    {
+        match self.tick_system_report_scroll(when)
+        {
+            Ok(Some(changed)) => return changed,
+            Err(status) =>
+            {
+                super::note_recovery_input_refusal(self.foreground, status);
+                return false;
+            }
+            Ok(None) => ()
+        }
+        let tracking = if self.owner == self.foreground
+        {
+            self.crash.scroll_tracking
+        }
+        else
+        {
+            self.locals
+                .iter()
+                .find(|local| local.id == self.foreground)
+                .is_some_and(|local| local.crash.scroll_tracking)
+        };
+        if !tracking
+        {
+            return false;
+        }
+        let Some(activity) =
+            crate::recovery::active(self.foreground, crate::recovery::Kind::CrashReport)
+                .filter(|activity| !activity.closing() && !activity.is_system_report())
+        else
+        {
+            return false;
+        };
+        let caller = self.owner;
+        self.enter(self.foreground);
+        let result = activity.run(|| self.poll_crash_scroll(when));
+        self.enter(caller);
+        match result
+        {
+            Ok(changed) => changed,
+            Err(status) =>
+            {
+                super::note_recovery_input_refusal(activity.owner(), status);
+                false
+            }
+        }
+    }
+
     /// Read waiting queues in place. A timer tick must not swap each app's UI
     /// state just to find out whether its thread can remain asleep.
     pub fn wake_waiters(&mut self, waiting: &mut [crate::context::EventWaiter]) -> (u64, bool)
@@ -781,13 +868,16 @@ impl Toolbox
         let previous_activity = self.activity;
         let pointer_activity = self.poll_inputs();
         let fresh_input = previous_activity != self.activity;
-        let cursor_activity = self.tick_menu_feedback() | self.tick_cursor();
+        let cursor_activity =
+            self.tick_menu_feedback() | self.tick_cursor() | self.tick_crash_scroll(Self::when());
         let now = Self::when();
         self.presentation.cursor_dirty |=
-            self.pointer.responsiveness.tick(self.foreground,
-                                     now,
-                                     waiting.iter().any(|waiter| waiter.app == self.foreground));
-        if self.pointer.responsiveness.active()
+            self.pointer
+                .responsiveness
+                .tick(self.foreground,
+                      now,
+                      waiting.iter().any(|waiter| waiter.app == self.foreground));
+        if self.pointer.responsiveness.active() && !self.report_cursor_is_front()
         {
             self.presentation.cursor_dirty |= self.pointer.busy_cursor.animation_tick(now);
         }

@@ -26,9 +26,9 @@ fn main() -> mac_build::Result<()>
                                  .get(..2)
                                  .ok_or_else(|| mac_build::error("truncated panic STR# count"))?
                                  .try_into()?);
-    if count != 23
+    if count != 28
     {
-        return Err(mac_build::error("panic label contract changed: expected exactly 23 entries"));
+        return Err(mac_build::error("panic label contract changed: expected exactly 28 entries"));
     }
     let mut offset = 2;
     let mut replacement = None;
@@ -42,11 +42,11 @@ fn main() -> mac_build::Result<()>
         let text = labels.data
                          .get(offset + 1..end)
                          .ok_or_else(|| mac_build::error("truncated panic STR# value"))?;
-        if index == 9
+        if index == 5
         {
             if text != b"Report truncated"
             {
-                return Err(mac_build::error("panic label index 9 is not the TRUNCATED warning"));
+                return Err(mac_build::error("panic label index 5 is not the TRUNCATED warning"));
             }
             replacement = Some(offset..end);
         }

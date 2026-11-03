@@ -38,6 +38,35 @@ pub(crate) enum Kind
     CrashReport
 }
 
+/// The actual Window and owners authenticated at a managed ScrollBox birth.
+/// Retained cleanup uses this provenance even after Window ACK/slot reuse.
+#[derive(Clone)]
+pub(crate) struct ScrollBoxOrigin
+{
+    activity:  Activity,
+    recipient: mac_object_table::domain::DomainId,
+    storage:   mac_object_table::domain::DomainId,
+    window:    mac_abi::WindowId
+}
+impl ScrollBoxOrigin
+{
+    pub(crate) fn activity(&self) -> &Activity
+    {
+        &self.activity
+    }
+
+    pub(crate) fn recipient(&self) -> mac_object_table::domain::DomainId
+    {
+        self.recipient
+    }
+}
+#[derive(Clone, Copy)]
+pub(crate) enum ScrollBoxAccess
+{
+    Live,
+    Cleanup
+}
+
 struct Modal
 {
     opening: bool,
@@ -202,7 +231,7 @@ struct ReportFrames
     window: Option<(mac_abi::WindowId, bool)>,
     limit:  usize,
     ready:  [Option<crate::toolbox::quickdraw::retained::ReportFrame>; 4],
-    ports:  [ReportPortSlot; 3]
+    port:   ReportPortSlot
 }
 struct ReportPortSlot
 {
@@ -215,26 +244,6 @@ impl ReportPortSlot
     {
         Ok(Self { port: Arc::try_new(crate::toolbox::quickdraw::service::Port::default())
                     .map_err(|_| NO_MEMORY)?, captured: false })
-    }
-}
-/// Roles of the actual native report's three real port transitions.
-#[derive(Clone, Copy)]
-pub(crate) enum ReportPortKind
-{
-    Reset,
-    Viewport,
-    Footer
-}
-impl ReportPortKind
-{
-    fn index(self) -> usize
-    {
-        match self
-        {
-            Self::Reset => 0,
-            Self::Viewport => 1,
-            Self::Footer => 2
-        }
     }
 }
 /// Lexical native paint view. Actual Port readers drop before Activity wakes
@@ -257,9 +266,7 @@ impl ReportFrames
                           Some(ReportFrame::prepare(limit, text_count, text_bytes)?),
                           Some(ReportFrame::prepare(limit, text_count, text_bytes)?),
                           Some(ReportFrame::prepare(limit, text_count, text_bytes)?)],
-                  ports: [ReportPortSlot::prepare()?,
-                          ReportPortSlot::prepare()?,
-                          ReportPortSlot::prepare()?] })
+                  port: ReportPortSlot::prepare()? })
     }
 
     fn returned(&mut self) -> Result<(), Status>
@@ -268,19 +275,13 @@ impl ReportFrames
         {
             frame.as_mut().ok_or(SERVICE_BUSY)?.validate(self.limit)?;
         }
-        for slot in &mut self.ports
-        {
-            Arc::get_mut(&mut slot.port).ok_or(SERVICE_BUSY)?;
-        }
+        Arc::get_mut(&mut self.port.port).ok_or(SERVICE_BUSY)?;
         Ok(())
     }
 
-    fn reset_ports(&mut self)
+    fn reset_port(&mut self)
     {
-        for slot in &mut self.ports
-        {
-            slot.captured = false;
-        }
+        self.port.captured = false;
     }
 }
 
@@ -299,7 +300,6 @@ impl ReportFrameLease
     }
 
     pub(crate) fn capture_port(&self, activity: &Activity, window: mac_abi::WindowId,
-                               kind: ReportPortKind,
                                actual: &crate::toolbox::quickdraw::service::Port)
                                -> Result<ReportPortView, Status>
     {
@@ -307,7 +307,7 @@ impl ReportFrameLease
         {
             return Err(ACCESS_DENIED);
         }
-        activity.capture_report_port(window, self.slot, kind, actual)
+        activity.capture_report_port(window, self.slot, actual)
     }
 
     pub(crate) fn text_port(&self, view: &ReportPortView, window: mac_abi::WindowId,
@@ -550,6 +550,73 @@ impl Activity
         Arc::ptr_eq(&self.session, &other.session)
     }
 
+    pub(crate) fn scroll_box_origin(&self, recipient: &OwnerRef, storage: &OwnerRef,
+                                    window: mac_abi::WindowId)
+                                    -> Result<ScrollBoxOrigin, Status>
+    {
+        self.validate_scroll_box_access(recipient.owner(),
+                                        storage.owner(),
+                                        window,
+                                        ScrollBoxAccess::Live)?;
+        Ok(ScrollBoxOrigin { activity: self.clone(),
+                             recipient: recipient.owner(),
+                             storage: storage.owner(),
+                             window })
+    }
+
+    pub(crate) fn validate_scroll_box_origin(&self, origin: &ScrollBoxOrigin,
+                                             recipient: mac_object_table::domain::DomainId,
+                                             storage: mac_object_table::domain::DomainId,
+                                             window: mac_abi::WindowId, access: ScrollBoxAccess)
+                                             -> Result<(), Status>
+    {
+        if !self.same_session(&origin.activity)
+           || recipient != origin.recipient
+           || storage != origin.storage
+           || window != origin.window
+        {
+            return Err(ACCESS_DENIED);
+        }
+        self.validate_scroll_box_access(recipient, storage, window, access)
+    }
+
+    fn validate_scroll_box_access(&self, recipient: mac_object_table::domain::DomainId,
+                                  storage: mac_object_table::domain::DomainId,
+                                  window: mac_abi::WindowId, access: ScrollBoxAccess)
+                                  -> Result<(), Status>
+    {
+        InvocationGate::run(|| {
+            let modal = MODAL.lock();
+            if window.0 == 0
+               || !modal.session.as_ref().is_some_and(|session| Arc::ptr_eq(session, &self.session))
+               || self.session.recipient.lock().owner() != recipient
+               || self.session.storage_owner.owner() != storage
+               || storage.kind() != mac_object_table::domain::DomainKind::System
+               || !crate::context::io_subject().is_some_and(|subject| {
+                                                   subject.scope()
+                                                          .same_scope(self.session.subject.scope())
+                                               })
+            {
+                return Err(ACCESS_DENIED);
+            }
+            if matches!(access, ScrollBoxAccess::Live)
+               && (CLOSING.load(Ordering::Acquire)
+                   || !self.session.recipient.lock().accepting()
+                   || !self.session.storage_owner.accepting()
+                   || !self.session
+                           .windows
+                           .lock()
+                           .iter()
+                           .any(|(id, closed)| *id == window.0 && !*closed))
+            {
+                return Err(ACCESS_DENIED);
+            }
+            // Cleanup's Window provenance was sealed by live birth. Do not
+            // demand a still-live/current Window after genuine ACK progress.
+            Ok(())
+        })
+    }
+
     /// Admission for the same genuine Opening before Standard File birth.
     /// Retained origin metadata or a matching recipient ID cannot substitute
     /// for the active Session, live owners and its still-empty protocol slot.
@@ -705,13 +772,13 @@ impl Activity
             // A genuine old Window ACK plus ALL original inert buffers is
             // required before a Finder-to-System same-Session rebind.
             frames.returned()?;
-            frames.reset_ports();
+            frames.reset_port();
             frames.window = Some((window, false));
             Ok(())
         })
     }
 
-    fn capture_report_port(&self, window: mac_abi::WindowId, frame: usize, kind: ReportPortKind,
+    fn capture_report_port(&self, window: mac_abi::WindowId, frame: usize,
                            actual: &crate::toolbox::quickdraw::service::Port)
                            -> Result<ReportPortView, Status>
     {
@@ -726,7 +793,9 @@ impl Activity
             {
                 return Err(mac_abi::BAD_ABI);
             }
-            let slot = &mut frames.ports[kind.index()];
+            // Managed rows do not mutate the parent Port. Header, warnings
+            // and footer all share the actual state established by QD_RESET.
+            let slot = &mut frames.port;
             if slot.captured
             {
                 if slot.port.origin != actual.origin || slot.port.state != actual.state
@@ -1236,7 +1305,7 @@ fn reap()
             if returned.is_ok()
             {
                 unique.report_frames.get_mut().window = None;
-                unique.report_frames.get_mut().reset_ports();
+                unique.report_frames.get_mut().reset_port();
                 let owner = unique.storage_owner.clone();
                 let old = core::mem::replace(unique.recipient.get_mut(), owner);
                 drop(old);

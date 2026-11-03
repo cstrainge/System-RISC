@@ -523,13 +523,45 @@ impl Toolbox
         Some((slot.session.as_ref()?, &slot.saved.crash))
     }
 
+    /// Only the actual report Session may poll its retained scrollbar. Idle
+    /// ticks do not hit-test windows, invent input, or select another recipient.
+    pub(in crate::toolbox::runtime) fn tick_system_report_scroll(&mut self, when: u32)
+                                                                 -> Result<Option<bool>, Status>
+    {
+        let Some((session, manager)) = self.system_report_input_state()
+        else
+        {
+            return Ok(None);
+        };
+        if session.close_requested || session.activity.closing() || !manager.scroll_tracking
+        {
+            return Ok(None);
+        }
+        let activity = session.activity.clone();
+        self.with_system_report_activity(&activity, |toolbox| toolbox.poll_crash_scroll(when))
+            .map(Some)
+    }
+
+    /// Presentation policy only: the visible native report owns its cursor,
+    /// independently of its stopped beneficiary's event-loop responsiveness.
+    pub(in crate::toolbox::runtime) fn system_report_is_front(&self) -> bool
+    {
+        self.system_report_input_state().is_some_and(|(_, manager)| {
+                                            let info = manager.info();
+                                            info.window.0 != 0
+                                            && info.dismissed == 0
+                                            && self.windows.active_window() == Some(info.window)
+                                            && self.windows.window(info.window).is_some()
+                                        })
+    }
+
     pub(in crate::toolbox::runtime) fn system_report_needs_hit(&self) -> bool
     {
         self.system_report_input_state().is_some_and(|(session, manager)| {
                                             !session.close_requested
                                             && !session.activity.closing()
                                             && !session.frame_tracking
-                                            && manager.tracking.is_none()
+                                            && !manager.tracks_input()
                                             && manager.info().window.0 != 0
                                         })
     }
@@ -564,7 +596,7 @@ impl Toolbox
         }
         // Frame capture is recorded only when THIS report's authenticated hit
         // started it. An unrelated background Command-drag cannot become ours.
-        let captured = session.frame_tracking || manager.tracking.is_some();
+        let captured = session.frame_tracking || manager.tracks_input();
         let targeted = match input
         {
             Input::Key { .. } => self.windows.active_window() == Some(report),
