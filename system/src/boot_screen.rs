@@ -17,9 +17,10 @@ pub struct BootScreen
     state:      ControlDefinitionState,
     extensions: strip::Strip
 }
-fn failed(_: Status) -> Error
+fn failed(stage: &'static str, status: Status) -> Error
 {
-    Error::Malformed("boot Progress Bar control failed")
+    serial!("BOOT_PROGRESS_REFUSED stage={stage} status={status}");
+    Error::Malformed("boot Progress Bar control failed; see stage and status in boot log")
 }
 impl BootScreen
 {
@@ -74,15 +75,15 @@ impl BootScreen
                                      procedure: PROGRESS_BAR_PROCEDURE,
                                      standard: state,
                                      ..Default::default() };
-        let owner = crate::toolbox::handles::system_owner().map_err(failed)?;
+        let owner = crate::toolbox::handles::system_owner().map_err(|s| failed("owner", s))?;
         controls.request(&owner, &owner, &mut call, entry, crate::machine::traps::gateway)
-                .map_err(failed)?;
+                .map_err(|s| failed("create", s))?;
         call.operation = DRAW_OBJECT;
         let drawing =
             controls.request(&owner, &owner, &mut call, entry, crate::machine::traps::gateway)
-                    .map_err(failed)?
+                    .map_err(|s| failed("draw", s))?
                     .ok_or(Error::Malformed("boot Progress Bar drawing is missing"))?;
-        drawing.paint_clipped(&mut canvas).map_err(failed)?;
+        drawing.paint_clipped(&mut canvas).map_err(|s| failed("paint", s))?;
         crate::platform::present(pixels);
         Ok(Self { id: call.id,
                   entry,
@@ -234,10 +235,10 @@ impl BootScreen
                                      procedure: PROGRESS_BAR_PROCEDURE,
                                      standard: next,
                                      ..Default::default() };
-        let owner = crate::toolbox::handles::system_owner().map_err(failed)?;
+        let owner = crate::toolbox::handles::system_owner().map_err(|s| failed("owner", s))?;
         let drawing =
             controls.request(&owner, &owner, &mut call, self.entry, crate::machine::traps::gateway)
-                    .map_err(failed)?;
+                    .map_err(|s| failed("configure", s))?;
         self.state = next;
         if let Some(drawing) = drawing
         {
@@ -247,7 +248,7 @@ impl BootScreen
             for rect in damage.into_iter().filter(|rect| !rect.is_empty())
             {
                 canvas.set_clip(rect);
-                drawing.paint_clipped(&mut canvas).map_err(failed)?;
+                drawing.paint_clipped(&mut canvas).map_err(|s| failed("paint", s))?;
             }
             crate::platform::present_rects(pixels,
                                            damage.into_iter().filter(|rect| !rect.is_empty()),
@@ -266,12 +267,12 @@ impl BootScreen
         {
             return Ok(());
         }
-        let owner = crate::toolbox::handles::system_owner().map_err(failed)?;
+        let owner = crate::toolbox::handles::system_owner().map_err(|s| failed("owner", s))?;
         let mut call = ControlCall { id: self.id,
                                      operation: DISPOSE_OBJECT,
                                      ..Default::default() };
         controls.request(&owner, &owner, &mut call, self.entry, crate::machine::traps::gateway)
-                .map_err(failed)?;
+                .map_err(|s| failed("dispose", s))?;
         self.id = 0;
         Ok(())
     }

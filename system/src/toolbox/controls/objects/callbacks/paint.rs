@@ -70,10 +70,14 @@ impl Manager
 {
     fn paint_origin(&self, id: u64, window: u64) -> Result<ManagedPaintOrigin, Status>
     {
-        if id == 0 || window == 0
+        if id == 0
         {
             return Err(BAD_ARGUMENT);
         }
+        // A real managed control can be windowless, including the System boot
+        // progress bar before Desktop exists. Its full CTRL completion key is
+        // still provenance. This does not mint a Window canvas claim: callers
+        // must independently admit their actual drawing target.
         let key = self.objects.completion_key(id).ok_or(NOT_FOUND)?;
         let object = self.objects.get(id).ok_or(NOT_FOUND)?;
         if object.window != window
