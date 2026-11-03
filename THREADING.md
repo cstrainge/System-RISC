@@ -37,8 +37,10 @@ Registered, fallibly grown thread records own independent page-backed stacks
 (4 MiB by default, selected by checked platform policy within 64 KiB–8 MiB),
 separately page-backed complete integer/FP/vector state sized to actual VLEN,
 and trusted execution contexts. Each hart has its own guarded 4 MiB System
-service stack and affine idle executor. Application stacks still use trusted
-physmap aliases; shared supervisor mappings do not provide process isolation.
+service stack and affine idle executor. Application stacks use guarded user
+mappings in their owning Process root. Retained kernel aliases support checked
+access to the same backing; applications cannot use those supervisor aliases.
+System/module mappings remain privileged within each Process root.
 
 The shared scheduler owns cross-CPU running claims. Local interrupt masking
 protects a CPU's bounded entry/metadata turns; shared atomic locks provide
@@ -102,12 +104,27 @@ outside resource payloads and the application stack. Selection uses one set/diff
 path, cached text dimensions and a row index. Marquee outlines share the cursor's
 temporary presentation path and never accumulate retained paint history.
 
-Sv39 is active in S mode, but applications still share trusted flat code
-arenas and resident mappings. There is no U-mode process protection boundary. Owner checks prevent accidental cross-application object access through
-services; they cannot constrain arbitrary application pointers or machine code.
+Native applications enter U-mode with private Sv39 roots and private writable
+image, heap and guarded stack mappings. Read/execute code, read-only data and
+non-executable writable mappings have distinct permissions. Checked syscall
+copies and retained mapping pins protect the resident request boundary; opaque
+owner/generation checks remain necessary for service objects. System and trusted
+module code remain privileged.
 
-[P13](docs/PROCESS-ISOLATION.md) tracks the replacement with protected app address
-spaces, user-mode execution, checked syscall copies and fault-local cleanup.
+[P13](docs/PROCESS-ISOLATION.md) tracks the remaining qualification. Finite private
+QEMU observations on source `262db951`, with one active hart, include selected
+user-fault reports, checked span refusals followed by valid requests, and paired
+process-local writable-state observations. The host driver was interrupted during
+the paired-state scenario; those per-case observations were recovered after guest
+adoption, not recorded as an uninterrupted completed batch. Source `4b166fed` in
+a private 2 GiB, four-CPU, one-active-hart release guest completed a custom CDEF
+disposal/reuse workload through normal process exit. Stock and app-owned
+offscreen controls produced matching finite pixel hashes. WDEF entry, draw and
+calculation faults reached the System report and process exit. Other cases failed:
+WDEF lifecycle mutation returned Busy, and CDEF panic/live-control abort cleanup
+retained resources after thread reclamation. Those failures remain open. These
+observations do not qualify SMP, pressure, arbitrary privileged-fault recovery,
+general account closure or every callback/cleanup path.
 [P11 CLAPs](docs/TERMINAL.md) have their own process/OS-thread identities inside a
 Terminal session; they never execute on the Terminal app's UI thread. P6/P14
 extensions and drivers intentionally remain trusted kernel code.
@@ -552,7 +569,7 @@ privileged-fault containment is **unproven** and a **required future gate**.
 | Scrap Manager | One shared guarded System clipboard. Native edits stage fallible changes before publication. Original private scraps and process suspend/resume transfer remain unimplemented. |
 | Memory Manager | One synchronized resident store owns registered MMBL blocks and MMST per-domain arena/projection/MemErr state. The scheduler binds the authentic OwnerRef; traps never select memory by scheduler slot. Shared boot-wide projection generations reject stale/foreign 32-bit IDs, including after zone destruction. The generic walk owns block and backing release. |
 | File Manager | One mounted catalog/device service with owner-tagged fork marks. The native trap captures AppId before I/O handoff; handle read/seek/tell/close checks that identity. Exit closes only its owner's marks. Internal loader requests use reserved owner zero. |
-| Framebuffer, input and allocator | Display/input and current Host/service bodies remain primary-owned; native routing moves the same calling continuation before borrowing requests. Application and Automatic worker bodies may run on admitted peers. Shared heap/account/ledger/buddy metadata uses its actual atomic locks with local IRQ discipline, not a global invocation lock. This does not qualify every concurrent device path or add blocking mutexes. |
+| Framebuffer, input and allocator | Display/input and current Host/service bodies remain primary-owned; native routing moves the same calling continuation before borrowing requests. The current isolation configuration caps application and Automatic worker scheduling at one active hart; broader peer execution needs its separate qualification. Shared heap/account/ledger/buddy metadata uses its actual atomic locks with local IRQ discipline, not a global invocation lock. This does not qualify every concurrent device path or add blocking mutexes. |
 | Firmware `BootVolume` and disk callbacks | The original boot call remains live. `machine/io.rs` masks interrupts and selects the permanent bootstrap executor on the shared per-hart System stack, carrying the original resource/allocation/I/O selections across the handoff. It is not an independently runnable I/O thread or an asynchronous queue, and the opaque firmware context is not given a Send implementation. |
 | Host test-support | Host TLS, allocation/synchronization and substituted gates do not establish native RV64 trap, preemption, allocator or cleanup behavior. They provide no OS acceptance evidence. |
 
@@ -616,7 +633,7 @@ address-space/object translation rather than access to resident Rust addresses.
 | --- | --- |
 | Boundary hardening | One-shot publication, bounded guards, owner-tagged file marks and trusted context routing exist. Host-linked fixtures do not establish native exclusion/cleanup contracts; scenario-specific target-runtime evidence is required. |
 | Scheduler foundation | Supervisor timer preemption, growable registered thread records, independent full frames/stacks, trusted identities and claim-aware reclamation exist. Per-hart policy loans and joint active-generation/THRD commitment support eligible peers; primary service routing and target-owned draining preserve their real lifetimes. Bounded native app/worker migration and policy lifecycle observations are recorded in SCHEDULING.md. General application blocking/thread APIs, sustained stress and timing qualification remain open. |
-| Application launch | Finder and disk-loaded native APPLs have independent application threads, app-local UI/resource/memory state and exit cleanup. The shared runtime binds page-backed heaps to the original process before entry. Exact native growth/refusal/reuse, account settlement, normal exit and System-owned cleanup observations are recorded in [Application runtime](docs/APPLICATION-RUNTIME.md). Host SDK outcomes do not qualify native ownership, allocator, trap or scheduling paths. Private process roots and privilege separation remain open. |
+| Application launch | Finder and disk-loaded native APPLs have independent application threads, app-local UI/resource/memory state and exit cleanup. The shared runtime binds page-backed heaps to the original process before entry. Exact native growth/refusal/reuse, account settlement, normal exit and System-owned cleanup observations are recorded in [Application runtime](docs/APPLICATION-RUNTIME.md). Host SDK outcomes do not qualify native ownership, allocator, trap or scheduling paths. Private Sv39 roots and U-mode entry are implemented; the latest custom definition cleanup correction and broader P13 qualification remain open. |
 | Application switching | Resident right-hand menu and Process Manager activation/hide/restore paths exist. Private SDK and actual Finder/two-app activation/hide/input/exit tests pass, including first-click activation and background dragging. The original popup comparison passes with explicit icon/cursor masks; this establishes the captured profile, not all application behavior. |
 | Interactive latency | Window/file drag and selection feedback use bounded frontbuffer-only XOR without scene replays or a tracking-mask scan. Canonical captures retain every decoded move, including the first; strict all-samples sub-millisecond qualification remains open on fresh Windows and Linux guests. Shared instruction paths and perimeter-intersection early-outs reduce work but do not establish a hard latency guarantee. Interrupt-masked resident calls and cold execution still need their own bounds. |
 | Reentrant service work | Existing definition-to-Surface/font/resource nesting remains supported. Stateful recursive manager calls still return Busy. General app callbacks require snapshot/callback/commit and cancellation tests. |

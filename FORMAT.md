@@ -367,20 +367,21 @@ Application entry:
 unsafe extern "C" fn(*const SystemServices) -> i32
 ```
 
-An application validates the table before calling the loader-supplied trap gate.
-ABI 1's `SystemServices` is 24 bytes on RV64:
+An application validates its immutable, process-readable descriptor before using
+the SDK-local trap stub. ABI 1's `SystemServices` is 16 bytes on RV64:
 
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 8 | ABI version 1 and structure size |
-| 8 | 8 | `TrapGate` function pointer |
-| 16 | 8 | Capability bits |
+| 8 | 8 | Capability bits |
 
-The gate's C signature is
+The descriptor contains no resident function pointer. Callable code remains in
+the SDK, whose gate has the C signature
 `unsafe extern "C" fn(number: u32, request: *mut (), size: usize) -> i64`.
-The resident RV64 gate places the number in `a7`, payload address in `a0`, and
-payload size in `a1`, then executes `ecall`. System validates the request layout
-and dispatches it to its internal manager modules. The result is returned in
+The user RV64 stub places the number in `a7`, payload address in `a0`, and payload
+size in `a1`, then executes `ecall`. System authenticates the current execution
+claim and validates the request and user-memory spans before dispatching to its
+internal manager modules. The result is returned in
 `a0`; individual payload contracts describe output fields. Native trap numbers
 and payloads are defined in `mac-abi/src/traps.rs`. Stateful services reject
 recursive runtime access; drawing/font services can be called from a loaded
@@ -389,12 +390,13 @@ WDEF/CDEF while the Window Manager is dispatching that definition.
 Finder opens its startup-volume catalog window and runs its event loop when graphics is available;
 it logs and returns zero for the headless ABI harness. There is one foreground
 application; independently scheduled application OS threads enter services with
-trusted app/thread identities and virtualized legacy globals. All code currently
-runs in S-mode with Sv39 active but trusted shared mappings and without
-user-process isolation. Payload pointers must obey their
-trusted native ABI contracts; size/alignment checks do not establish memory
-protection. Public request/event structures use their declared `repr(C)` layout,
-without an implicit header.
+authenticated app/thread identities and virtualized legacy globals. Native apps
+run in U-mode with private Sv39 roots; System and trusted modules remain
+privileged. Payload pointers cross checked copy/pin boundaries with validated
+permissions, lengths, overflow and alignment. These transport and mapping
+contracts do not establish qualification of every callback or cleanup path.
+Public request/event structures use their declared `repr(C)` layout, without an
+implicit header.
 
 The CLASSIC payload carries an original A-line trap number, 32-bit registers and
 a checked guest-memory slice. The initial adapter supports SetRect, OffsetRect,
@@ -441,8 +443,8 @@ definition resources through its resident filesystem service. Normal disk-boot c
 for `DESKTOP_READY`. Rebuild the complete unreleased system on format changes.
 See [CODE-RESOURCES.md](CODE-RESOURCES.md) for executable resource families.
 
-The current BootInfo is 176 bytes on RV64; SystemServices remains24bytes. BootInfo
-contains RAM/log information, firmware disk-info/read/write/flush callbacks,
+The current BootInfo is 176 bytes on RV64; SystemServices is an immutable 16-byte
+descriptor. BootInfo contains RAM/log information, firmware disk-info/read/write/flush callbacks,
 startup disk/partition identity and flags. Device ordinals remain stable while
 System runs; NOT_FOUND ends enumeration. Each read/write transfers exactly512
 bytes; flush is an explicit durability barrier. Callback contexts and DMA queues
