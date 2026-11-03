@@ -453,6 +453,26 @@ struct Definition
     retiring:  AtomicBool,
     source:    SourceBinding
 }
+impl Definition
+{
+    /// The SAME original cleanup dependency gate applies before requesting
+    /// retirement and again under its owned Loading/manager exclusion.
+    fn objects_drained(&self) -> bool
+    {
+        // User DDEF Regions pin their parent SPCE until real unmap/TLB ACK.
+        // SPCE/SPST cannot be a prerequisite for retiring those same children.
+        // Other resources and completion faults still block both stages.
+        const ROOTS: [KindCode; crate::images::ROOT_KINDS.len() + 2] =
+            [crate::images::ROOT_KINDS[0],
+             crate::images::ROOT_KINDS[1],
+             crate::images::ROOT_KINDS[2],
+             crate::images::ROOT_KINDS[3],
+             KindCode(*b"SPCE"),
+             KindCode(*b"SPST")];
+        !self.owner.has_resources_outside(&ROOTS)
+    }
+}
+
 struct State
 {
     store:   Store<Arc<Definition>>,
@@ -1004,6 +1024,7 @@ fn invoke_admitted(reference: DefinitionRef, call: &mut DefinitionCall, disposal
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Drain
 {
+    AdmissionOpen,
     Objects,
     Threads,
     Invocations,
@@ -1078,18 +1099,7 @@ impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> fo
             _ => return Err(Failure::context_unavailable(ticket, "definition registry"))
         };
         definition.retiring.store(true, Ordering::Release);
-        // A User definition Region owns a genuine SPCE pin until its mapping
-        // unmap/TLB ACK. Requiring SPCE to disappear here would prevent that
-        // same DDEF mapping from ever releasing its parent. All other objects
-        // still drain first; actual THRD/readers/Loading checks remain below.
-        const DEFINITION_DRAIN_ROOTS: [KindCode; crate::images::ROOT_KINDS.len() + 2] =
-            [crate::images::ROOT_KINDS[0],
-             crate::images::ROOT_KINDS[1],
-             crate::images::ROOT_KINDS[2],
-             crate::images::ROOT_KINDS[3],
-             KindCode(*b"SPCE"),
-             KindCode(*b"SPST")];
-        if definition.owner.has_resources_outside(&DEFINITION_DRAIN_ROOTS)
+        if !definition.objects_drained()
         {
             return Err(Failure::definition_pending(ticket, owner, Drain::Objects));
         }
@@ -1237,13 +1247,21 @@ impl MappingRetirement
         // Revalidate before any PTE effect, outside all manager guards. Closing
         // prevents new invocation/preparation; the retained Loading excludes
         // calls already in flight, and busy excludes a second retirement turn.
+        let owner = definition.owner.owner();
         if definition.owner.accepting()
-           || !crate::images::Manager::root_only(&definition.owner)
-           || InvocationGate::run(|| {
-               crate::machine::scheduler::has_threads(definition.owner.owner().incarnation())
-           })
         {
-            return Err(Error::Closed);
+            return Err(Error::DefinitionRetirement { owner,
+                                                     drain: Drain::AdmissionOpen });
+        }
+        if !definition.objects_drained()
+        {
+            return Err(Error::DefinitionRetirement { owner,
+                                                     drain: Drain::Objects });
+        }
+        if InvocationGate::run(|| crate::machine::scheduler::has_threads(owner.incarnation()))
+        {
+            return Err(Error::DefinitionRetirement { owner,
+                                                     drain: Drain::Threads });
         }
         let mapping = InvocationGate::run(|| {
             let cell = definition.state.lock();
