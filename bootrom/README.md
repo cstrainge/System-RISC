@@ -59,6 +59,24 @@ search continues. If nothing boots, `BOOT_NO_SYSTEM` is printed and the ROM
 shows the original question-mark disk and parks. Traps, allocation failures and panics have distinct diagnostic markers.
 An original 68k System file does not satisfy this native executable contract.
 
+The serial ROM launcher (`cargo xtask boot`) attaches VirtIO GPU, keyboard,
+tablet and RNG devices in distinct MMIO slots, as required by native std startup.
+Up to four disks use the remaining slots; excess disks are refused before QEMU
+starts. GPU rendering uses the VirtIO 2D create/backing/scanout and
+transfer/flush protocol described in the
+[VirtIO specification](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html).
+After the initial background, boot icon changes transfer only their 32×32
+rectangle. Boot firmware does not implement host-window resizing, 3D or EDID;
+the independently loaded runtime GPU driver handles display changes.
+
+`BOOT_VIDEO_READY` identifies the actual backend. `BOOT_VISUAL_HAPPY` and
+`BOOT_VISUAL_MISSING` mean a real backend completed the update; their
+`_UNAVAILABLE` counterparts identify headless continuation. GPU rejection logs
+retain the operation and device cause. `BOOT_VIRTIO_GPU_RESET_ACK` records actual
+status-zero observation, not elapsed-time reclamation. The handoff marker binds
+the original device, queue and framebuffer reservation; it is not a fabricated
+runtime device-service claim or allocation receipt.
+
 ## Hardware and initial limits
 
 - QEMU `virt`, RVA23, at least 128 MiB discovered RAM, one active hart.
@@ -71,8 +89,20 @@ An original 68k System file does not satisfy this native executable contract.
   module arena, display scratch and the FDT tail are disjoint reservations.
   System currently retains its 10 MiB static heap inside the executable
   reservation. Page-backed heap/account/reserve migration remains separate.
-- ROM owns an 800×600 RAM framebuffer in the checked display reservation until
-  System takes over. Both use explicit bus addresses for fw_cfg DMA.
+- ROM prefers a modern VirtIO GPU for its 800×600 boot image. A fixed control
+  page in firmware RAM and pixels in the checked display reservation remain
+  pinned across System entry. No large framebuffer is added to a module image.
+  Commands use physical bus addresses, fenced completions, checked used-ring
+  metadata and deadlines from the admitted device-tree timebase. The final
+  Happy Mac remains visible until the runtime GPU driver performs its genuine
+  acknowledged reset and installs independently owned DMA storage.
+- After handing off, ROM never touches the GPU again, including during firmware
+  disk callbacks. Boot reservations are not reclaimed while the device may
+  reference them. A failed GPU command retains its first cause and attempts a
+  bounded reset; a refused reset prevents System entry and buffer reuse. The
+  existing RAMFB bootstrap is selected when no GPU exists or after a safe GPU
+  refusal. System's separate RAMFB terminal diagnostic floor remains intact;
+  the normal configuration still attaches that device.
 - System builds independent PageBox-owned kernel and firmware roots and a
   guarded 4 MiB System stack. Firmware code is absent from the kernel root;
   bounded synchronous callback scopes select the firmware root and restore it.

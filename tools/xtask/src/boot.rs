@@ -44,8 +44,15 @@ pub fn disk_format(path: &Path) -> Result<&'static str>
     Ok(if magic == *b"QFI\xfb" { "qcow2" } else { "raw" })
 }
 
-fn command(workspace: &Workspace, disks: &[(&Path, &str)]) -> Command
+fn command(workspace: &Workspace, disks: &[(&Path, &str)]) -> Result<Command>
 {
+    // Input, entropy and GPU have fixed nonoverlapping platform slots. Keep
+    // the public ROM launcher on the same real devices as normal std startup.
+    let slots = [0, 3, 4, 7];
+    if disks.len() > slots.len()
+    {
+        return Err(error("ROM launcher supports at most four disks alongside input, RNG and GPU"));
+    }
     let mut command = Command::new("qemu-system-riscv64");
     let harts = workspace.platform.qemu_harts.to_string();
     command.args(["-machine",
@@ -62,23 +69,27 @@ fn command(workspace: &Workspace, disks: &[(&Path, &str)]) -> Command
            .arg(format!("if=pflash,unit=0,format=raw,readonly=on,file={}",
                         workspace.build.join("dist/bootrom.bin").display()))
            .args(["-global", "virtio-mmio.force-legacy=false", "-display", "none", "-monitor",
-                  "none", "-nic", "none", "-device", "ramfb", "-device",
-                  "virtio-keyboard-device", "-device", "virtio-tablet-device"]);
+                  "none", "-nic", "none", "-device", "virtio-gpu-device,bus=virtio-mmio-bus.6",
+                  "-device", "ramfb", "-device", "virtio-keyboard-device,bus=virtio-mmio-bus.1",
+                  "-device", "virtio-tablet-device,bus=virtio-mmio-bus.2", "-object",
+                  "rng-builtin,id=system-rng", "-device",
+                  "virtio-rng-device,rng=system-rng,bus=virtio-mmio-bus.5"]);
     for (index, (path, format)) in disks.iter().enumerate()
     {
         command.arg("-drive")
                .arg(format!("if=none,id=disk{index},readonly=on,format={format},file={}",
                             path.display()))
                .arg("-device")
-               .arg(format!("virtio-blk-device,drive=disk{index},bus=virtio-mmio-bus.{index}"));
+               .arg(format!("virtio-blk-device,drive=disk{index},bus=virtio-mmio-bus.{}",
+                            slots[index]));
     }
-    command
+    Ok(command)
 }
 
 pub fn interactive(workspace: &Workspace, path: &Path, format: &str) -> Result<()>
 {
     println!("Booting read-only disk through flash ROM. Ctrl+C stops QEMU.");
-    run(command(workspace, &[(path, format)]).args(["-serial", "stdio"]))
+    run(command(workspace, &[(path, format)])?.args(["-serial", "stdio"]))
 }
 
 struct Guest(Child);
@@ -100,7 +111,7 @@ fn case(workspace: &Workspace, directory: &Path, name: &str, disks: &[(&Path, &s
     // Do not accept a readiness marker left by a previous invocation while the
     // new QEMU process is still opening its serial backend.
     File::create(&serial)?;
-    let mut command = command(workspace, disks);
+    let mut command = command(workspace, disks)?;
     command.arg("-serial")
            .arg(format!("file:{}", serial.display()))
            .stdin(Stdio::null())
