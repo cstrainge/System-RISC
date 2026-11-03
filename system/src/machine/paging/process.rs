@@ -18,7 +18,6 @@ pub(crate) mod lifetime;
 type Store = mac_object_table::store::Store<Arc<Root>, InvocationGate>;
 static MANAGER: spin::Once<Spinlock<Store>> = spin::Once::new();
 static ROOTS: Spinlock<Option<Arc<Root>>> = Spinlock::new(None);
-static WAITING_PINS: AtomicBool = AtomicBool::new(false);
 static WAITING_MONITOR: AtomicBool = AtomicBool::new(false);
 static RETIREMENT_PENDING: AtomicBool = AtomicBool::new(false);
 pub(super) fn monitor_released()
@@ -272,7 +271,10 @@ pub(crate) struct Root
     retired:               AtomicBool,
     retirement_requested:  AtomicBool,
     retirement_claimed:    AtomicBool,
-    retirement_failure:    Spinlock<Option<CleanupCause>>
+    retirement_failure:    Spinlock<Option<CleanupCause>>,
+    // Separate notification storage carries no Root/Space/source backreference.
+    // A Pin's last field can consult it only AFTER both real owners drop.
+    pin_waiters:           Arc<AtomicBool>
 }
 impl Root
 {
@@ -313,12 +315,15 @@ pub(crate) struct Pin
     root:      Arc<Root>,
     _released: PinReleased
 }
-struct PinReleased;
+struct PinReleased(Arc<AtomicBool>);
 impl Drop for PinReleased
 {
     fn drop(&mut self)
     {
-        if WAITING_PINS.swap(false, Ordering::AcqRel)
+        // Paired with the original Root's AcqRel arm. Do not test before the
+        // actual Space/Root fields drop, or upgrade a Weak<Root> observer here:
+        // either would let a waiter see a count still held by its own signal.
+        if self.0.swap(false, Ordering::AcqRel)
         {
             retirement_changed();
             crate::toolbox::processes::retirement::resources_released();
@@ -329,6 +334,7 @@ impl Pin
 {
     fn try_new(root: Arc<Root>, retirement_snapshot: bool) -> Result<Self, Error>
     {
+        let released = PinReleased(root.pin_waiters.clone());
         let space = interrupts::with_masked(|| {
             let backing = root.backing.lock();
             if root.retirement_claimed.load(Ordering::Acquire)
@@ -347,14 +353,14 @@ impl Pin
             {
                 Ok(Self { space,
                           root,
-                          _released: PinReleased })
+                          _released: released })
             }
             Err(cause) =>
             {
                 // This actual temporary Arc may have blocked a concurrent
                 // claim. Notify only after it is really released.
                 drop(root);
-                drop(PinReleased);
+                drop(released);
                 Err(cause)
             }
         }
@@ -371,7 +377,7 @@ impl Clone for Pin
     {
         Self { space:     self.space.clone(),
                root:      self.root.clone(),
-               _released: PinReleased }
+               _released: PinReleased(self._released.0.clone()) }
     }
 }
 impl core::ops::Deref for Pin
@@ -635,6 +641,10 @@ fn admit_with_source(owner: &OwnerRef, allocation: &AllocationAuthority,
                   let user = super::user::Registry::image(image.user_read()
                       .map_err(|status|Error::DefinitionVisibility{status})?,image.range())
                       .map_err(|status|Error::DefinitionVisibility{status})?;
+                  // Preadmit the original root's post-release signal before any
+                  // publication/translation effects, under this same account.
+                  let pin_waiters =
+                      Arc::try_new(AtomicBool::new(false)).map_err(|_| Error::Metadata)?;
                   let permit = permit(owner)?;
                   let lease = crate::machine::monitor::prepare_translation_invalidation()
                 .map_err(Error::Monitor)?;
@@ -643,22 +653,21 @@ fn admit_with_source(owner: &OwnerRef, allocation: &AllocationAuthority,
                   // Move the sole backing Arc into canonical Root. No unobserved local
                   // Space clone survives publication or a failed execution-pin admission.
                   let space = Arc::try_new(space).map_err(|_| Error::Metadata)?;
-                  let root = Arc::try_new(Root {
-                backing: Spinlock::new(Some(space)),
-                register,
-                owner: owner.clone(),
-                allocation: allocation.clone(),
-                image: image.binding(),
-                user: Spinlock::new(user),
-                user_ready: AtomicBool::new(false),
-                next: Spinlock::new(None),
-                closing: AtomicBool::new(false),
-                registered: AtomicBool::new(false),
-                retired: AtomicBool::new(false),
-                retirement_requested: AtomicBool::new(false),
-                retirement_claimed: AtomicBool::new(false),
-                retirement_failure: Spinlock::new(None)
-            }).map_err(|_| Error::Metadata)?;
+                  let root = Arc::try_new(Root { backing: Spinlock::new(Some(space)),
+                                                 register,
+                                                 owner: owner.clone(),
+                                                 allocation: allocation.clone(),
+                                                 image: image.binding(),
+                                                 user: Spinlock::new(user),
+                                                 user_ready: AtomicBool::new(false),
+                                                 next: Spinlock::new(None),
+                                                 closing: AtomicBool::new(false),
+                                                 registered: AtomicBool::new(false),
+                                                 retired: AtomicBool::new(false),
+                                                 retirement_requested: AtomicBool::new(false),
+                                                 retirement_claimed: AtomicBool::new(false),
+                                                 retirement_failure: Spinlock::new(None),
+                                                 pin_waiters }).map_err(|_| Error::Metadata)?;
                   match interrupts::with_masked(|| {
                             manager.lock().publish_prepared(permit, root.clone())
                         })
@@ -874,7 +883,7 @@ impl Retirement
         {
             return Err(Error::Retirement(cause));
         }
-        WAITING_PINS.store(true, Ordering::Release);
+        root.pin_waiters.swap(true, Ordering::AcqRel);
         if interrupts::with_masked(|| crate::machine::scheduler::has_threads(self.owner))
         {
             return Err(Error::Threads);
@@ -1004,7 +1013,7 @@ pub(crate) fn retirement() -> Option<Retirement>
                      // Readiness is observed before taking any command lease. Arm
                      // genuine pin releases before checking; skip each blocked row so
                      // one old owner cannot starve another ready canonical root.
-                     WAITING_PINS.store(true, Ordering::Release);
+                     root.pin_waiters.swap(true, Ordering::AcqRel);
                      if crate::machine::scheduler::has_threads(root.owner.owner().incarnation())
                      {
                          return false;

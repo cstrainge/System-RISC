@@ -243,8 +243,7 @@ impl<G: InvocationGate> Account<G>
                 return Err(Error::Closed { owner });
             }
             Ok(AccountUse { inner:    self.inner.clone(),
-                            _release: ReleaseWake { owner,
-                                                    _gate: core::marker::PhantomData } })
+                            _release: ReleaseWake { owner: self.inner.owner.clone() } })
         })
     }
 
@@ -343,8 +342,7 @@ impl<G: InvocationGate> Clone for AccountUse<G>
     fn clone(&self) -> Self
     {
         Self { inner:    self.inner.clone(),
-               _release: ReleaseWake { owner: self._release.owner,
-                                       _gate: core::marker::PhantomData } }
+               _release: ReleaseWake { owner: self._release.owner.clone() } }
     }
 }
 /// Allocation authority for the continuation of one admitted resource root.
@@ -389,8 +387,9 @@ impl<G: InvocationGate> OperationAccountUse<G>
 
 struct ReleaseWake<G: InvocationGate>
 {
-    owner: DomainId,
-    _gate: core::marker::PhantomData<fn() -> G>
+    // Independent ledger authority is not an account Arc: it cannot keep the
+    // just-released account pin alive while the observer checks that barrier.
+    owner: OwnerRef<G>
 }
 impl<G: InvocationGate> Drop for ReleaseWake<G>
 {
@@ -398,7 +397,7 @@ impl<G: InvocationGate> Drop for ReleaseWake<G>
     {
         // AccountUse's Arc has already been dropped, and neither an account
         // lock nor an owner lock is held across the notification.
-        G::released(self.owner);
+        G::released(&self.owner);
     }
 }
 impl<G: InvocationGate> Inner<G>
@@ -494,12 +493,13 @@ impl<G: InvocationGate> Drop for Receipt<G>
             }
             // No counter lock is held over backing/owner destruction. Release
             // this pin before waking a reaper that will inspect strong_count.
+            let owner = inner.owner.clone();
             drop(inner);
-            Some(self.owner)
+            Some(owner)
         });
         if let Some(owner) = owner
         {
-            G::released(owner);
+            G::released(&owner);
         }
     }
 }
@@ -658,12 +658,12 @@ mod tests
             operation()
         }
 
-        fn released(owner: DomainId)
+        fn released(owner: &OwnerRef<Self>)
         {
             WAKES.with(|wakes| wakes.set(wakes.get() + 1));
             PROBE.with(|probe| {
                      if let Some(account) = probe.borrow().as_ref().and_then(Weak::upgrade)
-                        && account.owner() == owner
+                        && account.owner() == owner.owner()
                      {
                          // The wake may acquire metadata immediately. It must see
                          // neither the refund lock nor the just-disposed Arc pin.
