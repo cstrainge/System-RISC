@@ -52,11 +52,18 @@ pixels or rerasterizing unchanged text. Configuration and invalidation allocate
 no full-viewport pixel buffer; blank and partial trailing rows use the retained
 background color. The
 compositor replays viewport blits directly instead of keeping a duplicate
-whole-window cache. Viewport double-buffer reserves and whole-window caches
-share a 2 MiB budget; allocation failures return `NO_MEMORY`. Shared row/table
-ownership uses `Arc::try_new`, including the small reference-count allocation.
-Fault-injected public calls verify both allocation stages return an error and
-leave the control usable; they cannot abort the kernel on shared-owner OOM.
+whole-window cache. Ordinary scroll boxes have no separate viewport-size memory
+quota: actual row tables, tiles and shared owners use the existing allocation
+accounts and ordinary heap budget. Allocation failures return `NO_MEMORY`.
+System recovery retains its separately admitted protected storage and its
+resource-derived viewport allowance; ordinary controls cannot borrow it.
+The compositor may reduce optional whole-window caching using a conservative
+viewport estimate, but that estimate neither reserves memory nor refuses scroll
+boxes. Shared row/table ownership uses `Arc::try_new`, including the small
+reference-count allocation.
+Both shared-owner allocation stages must return `NO_MEMORY` and preserve the
+previous control state on refusal. Native pressure and exhaustion coverage
+remains a separate qualification gate.
 
 A stable DRAW damages only the viewport and scrollbar, never the parent window
 or neighboring controls. Moving/reconfiguring or disposing a published control
@@ -65,9 +72,10 @@ fixed headers remain outside it, and bitmap text outside the damaged vertical
 span is rejected before glyph rendering. Present-time cursor compositing is independent of
 the scroll-box raster.
 
-Current limits are 96 controls, dimensions up to 2048 pixels subject to that
-shared budget, a 16-pixel scrollbar, positive fixed row height, and 768 UTF8 bytes
-per supplied row. Apps may choose fonts, padding and normal/selected colors.
+Object storage grows until actual memory admission refuses it. Geometry limits
+are dimensions up to 2048 pixels, a 16-pixel scrollbar, positive fixed row height,
+and 768 UTF8 bytes per supplied row. Apps may choose fonts, padding and
+normal/selected colors.
 The resident interface is native trap `SCROLL_BOX` (`0x10021`), with a companion
 `PSTRING_SCROLL_BOX` trap for MacRoman Pascal row text. Public Rust APIs expose
 only UTF8. This adds no classic 68k adapter or claim of complete TrackControl
