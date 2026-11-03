@@ -28,6 +28,16 @@ dependencies across the two discovered package sets through the common module
 registry, rather than treating directory enumeration order as startup order.
 The built-in bootstrap block provider does not require a disk package.
 
+Installed module identities must be unique within each loading namespace.
+Drivers and System extension parts share the System registry (`EABI/0`);
+Finder extension parts use the separate Finder namespace (`EABI/1`). The build
+and image installer inspect the actual packaged EABI contracts and refuse a
+collision with both package names and the identity before preparing user state
+or changing the image. Keep persistent module identities stable: they also
+select each module's own preference file.
+Use `cargo xtask modules-check --build-dir /path/to/build` to validate an already
+packaged installation without rebuilding it.
+
 Boot discovery takes one bounded snapshot of the platform's device inventory.
 A structurally valid, otherwise admissible package with declared device matches
 is loaded only when at least one match is present. A package with no matches is
