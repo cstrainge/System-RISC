@@ -8,6 +8,7 @@ use mac_abi::{geometry::{Point, Rect},
 use mac_object_table::domain::{CompletionError, DomainId, PoolError, ReleasedResource};
 
 use crate::toolbox::{handles::{KindLease, OwnerRef, Store},
+                     processes::menu::ApplicationMenu,
                      quickdraw::{Canvas, SurfaceExt},
                      resources::{definitions::DefinitionRef, manager::Manager as Resources}};
 pub(crate) mod lifetime;
@@ -50,6 +51,7 @@ struct Menu
 #[derive(Clone, Copy)]
 struct Layout
 {
+    bar:   Rect,
     title: Rect,
     popup: Rect,
     rows:  [Rect; MAX_ITEMS]
@@ -58,13 +60,15 @@ impl Layout
 {
     fn read(state: &MenuDefinitionState) -> Self
     {
-        Self { title: state.title_bounds,
+        Self { bar:   state.bar_bounds,
+               title: state.title_bounds,
                popup: state.popup_bounds,
                rows:  core::array::from_fn(|i| state.items[i].bounds) }
     }
 
     fn apply(&self, state: &mut MenuDefinitionState)
     {
+        state.bar_bounds = self.bar;
         state.title_bounds = self.title;
         state.popup_bounds = self.popup;
         for (item, bounds) in state.items.iter_mut().zip(self.rows)
@@ -103,6 +107,35 @@ impl Bar
         Ok(Self { order,
                   scratch,
                   reflow })
+    }
+}
+/// One actual borrowed Menu Manager/System-menu transaction. Native MDEF
+/// measurement and storage admission finish before the device mode can change.
+pub(crate) struct PreparedDisplay<'a>
+{
+    manager:            &'a mut Manager,
+    system:             &'a mut SystemBar,
+    applications:       &'a mut ApplicationMenu,
+    menus:              Vec<(u64, Layout)>,
+    system_layouts:     [Layout; 3],
+    application_layout: Layout
+}
+impl PreparedDisplay<'_>
+{
+    pub(crate) fn commit(self)
+    {
+        self.manager.cancel_tracking();
+        for (id, layout) in self.menus
+        {
+            // Owner stop may invalidate an ordinary menu while the foreign
+            // driver runs. Only its still-live canonical payload is mutated.
+            if let Some(menu) = self.manager.objects.get_mut(id)
+            {
+                layout.apply(&mut menu.state);
+            }
+        }
+        self.system.apply_display(self.system_layouts);
+        self.application_layout.apply(self.applications.state_mut());
     }
 }
 pub struct Manager
@@ -166,6 +199,42 @@ impl Manager
                                          })
     }
 
+    pub(crate) fn prepare_display<'a>(&'a mut self, system: &'a mut SystemBar,
+                                      applications: &'a mut ApplicationMenu, width: i16)
+                                      -> Result<PreparedDisplay<'a>, Status>
+    {
+        let mut menus = Vec::new();
+        menus.try_reserve_exact(self.objects.iter().count()).map_err(|_| NO_MEMORY)?;
+        let (entry, gate) = (self.entry, self.gate);
+        for menu in self.objects.values_mut()
+        {
+            let layout = Self::prepare_layout(entry, gate, &mut menu.state, width)?;
+            menus.push((menu.id, layout));
+        }
+        let system_layouts = system.prepare_display(width)?;
+        let application_layout =
+            Self::prepare_layout(entry, gate, applications.state_mut(), width)?;
+        Ok(PreparedDisplay { manager: self,
+                             system,
+                             applications,
+                             menus,
+                             system_layouts,
+                             application_layout })
+    }
+
+    fn prepare_layout(entry: DefinitionRef, gate: TrapGate, state: &mut MenuDefinitionState,
+                      width: i16)
+                      -> Result<Layout, Status>
+    {
+        let previous = Layout::read(state);
+        let measured = Self::measure_width(entry, gate, state, width);
+        let layout = Layout::read(state);
+        // Preparation publishes no changed geometry, even on typed refusal.
+        previous.apply(state);
+        measured?;
+        Ok(layout)
+    }
+
     fn measure(&self, state: &mut MenuDefinitionState) -> Result<(), Status>
     {
         Self::measure_with(self.entry, self.gate, state)
@@ -174,7 +243,14 @@ impl Manager
     fn measure_with(entry: DefinitionRef, gate: TrapGate, state: &mut MenuDefinitionState)
                     -> Result<(), Status>
     {
-        state.bar_bounds = Rect::new(0, 0, crate::display::width() as i16, 20);
+        Self::measure_width(entry, gate, state, crate::display::width() as i16)
+    }
+
+    fn measure_width(entry: DefinitionRef, gate: TrapGate, state: &mut MenuDefinitionState,
+                     width: i16)
+                     -> Result<(), Status>
+    {
+        state.bar_bounds = Rect::new(0, 0, width, 20);
         let mut pixel = [0u32];
         let mut canvas = Canvas::new(&mut pixel, 1, 1);
         let mut surface = Surface::from_canvas(&mut canvas);

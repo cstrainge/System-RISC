@@ -5,7 +5,8 @@
 #![no_std]
 #![deny(unsafe_code)]
 use mac_driver::{Completion, Error, Phase, Request, Result};
-use mac_video_interface::{APPLY, ATTACH, Attach, CLASS, Damage, Outcome, Poll, SERVICE, Size, Surface};
+use mac_video_interface::{ABORT, APPLY, ATTACH, Attach, CLASS, COMMIT, Damage, Outcome, Poll,
+                          Prepared, RELEASE, SERVICE, Size, Surface};
 
 /// The host window must keep one size this long before it is reported. Window
 /// dragging produces a configuration change per mouse movement; only the size
@@ -14,16 +15,22 @@ pub const QUIET_MICROSECONDS: u64 = 250_000;
 
 pub trait Hardware
 {
-    /// Map the driver-owned framebuffer, create the initial resource and scan
+    /// Allocate the driver-owned framebuffer, create the initial resource and scan
     /// it out. Reports the buffer and the host's preferred size.
-    fn attach(&mut self, attach: &Attach) -> Result<Surface>;
+    fn attach(&mut self, attach: &Attach, generation: u64) -> Result<Surface>;
     /// `Some` when the host reported a display change since the last call.
     fn host_size(&mut self) -> Result<Option<Size>>;
     /// Present the changed rectangle of the current mode.
     fn present(&mut self, damage: Damage) -> Result<()>;
-    /// Create, scan out and present a new framebuffer resource. The previous
-    /// mode stays active unless this returns `Outcome::Applied`.
-    fn apply(&mut self, size: Size) -> Result<Outcome>;
+    /// Prepare a resource without changing scanout. COMMIT switches the device;
+    /// RELEASE follows System's old CPU-pin retirement. Refusal retains custody.
+    fn prepare(&mut self, size: Size, generation: u64) -> Result<Prepared>;
+    fn commit(&mut self, allocation: u64, generation: u64) -> Result<Outcome>;
+    fn abort(&mut self, allocation: u64, generation: u64) -> Result<()>;
+    fn release(&mut self, allocation: u64, generation: u64) -> Result<()>;
+    /// Nested VDEV work retains its original outer broker scope until ACK.
+    fn pending(&self) -> bool;
+    fn cancel(&mut self, generation: u64) -> Result<()>;
     fn microseconds(&mut self) -> Result<u64>;
 }
 
@@ -87,23 +94,27 @@ impl Debounce
 #[derive(Clone, Copy)]
 struct Limits
 {
-    min:      Size,
-    max:      Size,
-    capacity: u64
+    min: Size,
+    max: Size
 }
 pub struct Engine
 {
-    attached: Option<(Limits, Debounce)>
+    attached: Option<(Limits, Debounce)>,
+    pending:  Option<(Size, u64, u64)>,
+    failure:  Option<(u64, Error)>,
+    initial:  Option<(Attach, Surface)>
 }
 impl Engine
 {
     pub const fn new() -> Self
     {
-        Self { attached: None }
+        Self { attached: None,
+               pending:  None,
+               failure:  None,
+               initial:  None }
     }
 
-    pub fn request(&mut self, device: &mut impl Hardware, request: Request<'_>,
-                   output: &mut [u8])
+    pub fn request(&mut self, device: &mut impl Hardware, request: Request<'_>, output: &mut [u8])
                    -> Result<Completion>
     {
         if request.class != CLASS
@@ -112,26 +123,77 @@ impl Engine
         }
         if request.phase == Phase::Cancel
         {
-            // Every operation completes synchronously; nothing can be cancelled.
+            // A cancellation is terminal only after the SAME real nested
+            // tickets and candidate finish. Refusal preserves the outer scope.
+            if device.cancel(request.ticket).is_err()
+            {
+                return Ok(Completion::Pending);
+            }
+            if self.pending.is_some_and(|(_, _, generation)| generation == request.ticket)
+            {
+                self.pending = None;
+            }
+            if self.failure.is_some_and(|(generation, _)| generation == request.ticket)
+            {
+                self.failure = None;
+            }
             return Ok(Completion::Complete(0));
+        }
+        if request.phase == Phase::Poll
+        {
+            let (generation, failure) = self.failure.ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+            if generation != request.ticket
+            {
+                return Err(Error(mac_abi::BAD_ARGUMENT));
+            }
+            if device.cancel(generation).is_err()
+            {
+                return Ok(Completion::Pending);
+            }
+            self.failure = None;
+            return Err(failure);
         }
         if request.phase != Phase::Start
         {
             return Err(Error(mac_abi::BAD_ARGUMENT));
         }
-        match request.operation
+        let result = match request.operation
         {
-            ATTACH => self.attach(device, request.input, output),
+            ATTACH => self.attach(device, request.input, output, request.ticket),
             SERVICE => self.service(device, request.input, output),
-            APPLY => self.apply(device, request.input, output),
+            APPLY => self.prepare(device, request.input, output, request.ticket),
+            COMMIT | ABORT | RELEASE =>
+            {
+                self.transition(device, request.operation, request.input, output)
+            }
             _ => Err(Error(mac_abi::NOT_SUPPORTED))
+        };
+        match result
+        {
+            Err(failure) if device.pending() =>
+            {
+                self.failure = Some((request.ticket, failure));
+                Ok(Completion::Pending)
+            }
+            completed => completed
         }
     }
 
-    fn attach(&mut self, device: &mut impl Hardware, input: &[u8], output: &mut [u8])
+    fn attach(&mut self, device: &mut impl Hardware, input: &[u8], output: &mut [u8],
+              generation: u64)
               -> Result<Completion>
     {
         let attach = Attach::decode(input).ok_or(Error(mac_abi::BAD_ARGUMENT))?;
+        if let Some((original, surface)) = self.initial
+           && original == attach
+        {
+            if output.len() < Surface::BYTES
+            {
+                return Err(Error(mac_abi::BAD_ARGUMENT));
+            }
+            output[..Surface::BYTES].copy_from_slice(&surface.encode());
+            return Ok(Completion::Complete(Surface::BYTES));
+        }
         if self.attached.is_some()
         {
             return Err(Error(mac_abi::SERVICE_BUSY));
@@ -142,11 +204,11 @@ impl Engine
                          height: attach.max_height };
         let current = Size { width:  attach.width,
                              height: attach.height };
-        if output.len() < Surface::BYTES || !within(current, min, max)
+        if generation == 0 || output.len() < Surface::BYTES || !within(current, min, max)
         {
             return Err(Error(mac_abi::BAD_ARGUMENT));
         }
-        let surface = device.attach(&attach)?;
+        let surface = device.attach(&attach, generation)?;
         if bytes(current).is_none_or(|needed| needed > surface.capacity)
         {
             return Err(Error(mac_abi::BAD_ABI));
@@ -155,9 +217,9 @@ impl Engine
         let mut debounce = Debounce::new(current);
         debounce.observe(surface.preferred, now);
         self.attached = Some((Limits { min,
-                                       max,
-                                       capacity: surface.capacity },
+                                       max },
                               debounce));
+        self.initial = Some((attach, surface));
         output[..Surface::BYTES].copy_from_slice(&surface.encode());
         Ok(Completion::Complete(Surface::BYTES))
     }
@@ -185,34 +247,108 @@ impl Engine
         Ok(Completion::Complete(Poll::BYTES))
     }
 
-    fn apply(&mut self, device: &mut impl Hardware, input: &[u8], output: &mut [u8])
-             -> Result<Completion>
+    fn prepare(&mut self, device: &mut impl Hardware, input: &[u8], output: &mut [u8],
+               generation: u64)
+               -> Result<Completion>
     {
         let size = Size::decode(input).ok_or(Error(mac_abi::BAD_ARGUMENT))?;
-        let (limits, debounce) = self.attached.as_mut().ok_or(Error(mac_abi::NOT_FOUND))?;
+        let (limits, _) = self.attached.as_ref().ok_or(Error(mac_abi::NOT_FOUND))?;
+        if generation == 0 || output.len() < Prepared::BYTES
+        {
+            return Err(Error(mac_abi::BAD_ARGUMENT));
+        }
+        if self.pending.is_some()
+        {
+            return Err(Error(mac_abi::SERVICE_BUSY));
+        }
+        let refused = if size.width < limits.min.width || size.height < limits.min.height
+        {
+            Some(Outcome::TooSmall)
+        }
+        else if size.width > limits.max.width || size.height > limits.max.height
+        {
+            Some(Outcome::TooLarge)
+        }
+        else
+        {
+            None
+        };
+        let prepared = if let Some(outcome) = refused
+        {
+            Prepared { outcome,
+                       surface: None }
+        }
+        else
+        {
+            match device.prepare(size, generation)
+            {
+                Ok(prepared) => prepared,
+                Err(Error(mac_abi::NO_MEMORY)) =>
+                {
+                    Prepared { outcome: Outcome::InsufficientMemory,
+                               surface: None }
+                }
+                Err(error) => return Err(error)
+            }
+        };
+        if prepared.outcome == Outcome::Applied
+        {
+            let surface = prepared.surface.ok_or(Error(mac_abi::BAD_ABI))?;
+            self.pending = Some((size, surface.allocation, surface.generation));
+        }
+        output[..Prepared::BYTES].copy_from_slice(&prepared.encode());
+        Ok(Completion::Complete(Prepared::BYTES))
+    }
+
+    fn transition(&mut self, device: &mut impl Hardware, operation: u32, input: &[u8],
+                  output: &mut [u8])
+                  -> Result<Completion>
+    {
+        if input.len() != 16
+        {
+            return Err(Error(mac_abi::BAD_ARGUMENT));
+        }
+        let allocation =
+            u64::from_le_bytes(input[..8].try_into().map_err(|_| Error(mac_abi::BAD_ARGUMENT))?);
+        let generation =
+            u64::from_le_bytes(input[8..].try_into().map_err(|_| Error(mac_abi::BAD_ARGUMENT))?);
+        if operation == RELEASE
+        {
+            device.release(allocation, generation)?;
+            return Ok(Completion::Complete(0));
+        }
+        let Some((size, expected, expected_generation)) = self.pending
+        else
+        {
+            // A retried ABORT can acknowledge only the hardware adapter's exact
+            // previously completed token, never a different allocation/reuse.
+            if operation == ABORT
+            {
+                device.abort(allocation, generation)?;
+                return Ok(Completion::Complete(0));
+            }
+            return Err(Error(mac_abi::NOT_FOUND));
+        };
+        if expected != allocation || expected_generation != generation
+        {
+            return Err(Error(mac_abi::BAD_ARGUMENT));
+        }
+        if operation == ABORT
+        {
+            device.abort(allocation, generation)?;
+            self.pending = None;
+            return Ok(Completion::Complete(0));
+        }
         if output.len() < Outcome::BYTES
         {
             return Err(Error(mac_abi::BAD_ARGUMENT));
         }
-        let outcome = if size.width < limits.min.width || size.height < limits.min.height
-        {
-            Outcome::TooSmall
-        }
-        else if size.width > limits.max.width || size.height > limits.max.height
-        {
-            Outcome::TooLarge
-        }
-        else if bytes(size).is_none_or(|needed| needed > limits.capacity)
-        {
-            Outcome::ExceedsReservation
-        }
-        else
-        {
-            device.apply(size)?
-        };
+        let outcome = device.commit(allocation, generation)?;
         if outcome == Outcome::Applied
         {
-            debounce.applied(size);
+            self.initial = None;
+            self.attached.as_mut().ok_or(Error(mac_abi::NOT_FOUND))?.1.applied(size);
+            self.pending = None;
         }
         output[..Outcome::BYTES].copy_from_slice(&outcome.code().to_le_bytes());
         Ok(Completion::Complete(Outcome::BYTES))

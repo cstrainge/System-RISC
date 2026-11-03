@@ -218,7 +218,7 @@ COUNT, PROBE, CLAIM, MAP, UNMAP and RELEASE use the broker's strictly synchronou
 resident phase: authorization and contention checks precede the operation, no
 request ticket is allocated, and no deferred effect can survive the return. A
 busy result is safe to retry with the same arguments. This phase rejects external
-module providers and reset before dispatch. RESET alone uses START/POLL/CANCEL;
+module providers and deferred operations before dispatch. RESET and ALLOCATE use START/POLL/CANCEL;
 its caller retains the explicit broker ticket through terminal acknowledgement.
 All packages must be rebuilt for the fingerprint's synchronous-contract bit;
 the development ABI remains version 1.
@@ -301,20 +301,34 @@ settled size. System then asks the driver to apply it (new 2D resource, scanout,
 flush) and announces the new bounds through the native-only display-changed
 event; legacy applications never see it.
 
-- The driver owns the frame memory (module DMA is limited to the module image);
-  System renders into it as its frontbuffer and sends damage rectangles with
-  each service call. Capacity bounds the maximum mode (1920x1200); out-of-range
-  requests get a typed `Outcome` refusal.
-- ramfb remains the ROM, early-boot strip, emergency screen and the fallback
-  when no video driver is installed. In GPU mode (`SYSTEM7_VIRTIO_GPU=1` for
-  the launcher) those early screens are not visible.
-- Remaining gates: runtime loading of the large frame, present cost, and
-  scheduling behavior of the service call are not yet qualified on target.
+The GPU allocates the initial XRGB32 buffer for the actual mode through VDEV,
+under its authenticated original module Kernel account. The maximum supported
+mode remains 1920x1200; it is a geometry limit, not an image/BSS reservation.
+Only the bounded 4 KiB queue page remains in the relocatable module image.
 
-The Virtio GPU package owns its 1920×1200 XRGB32 DMA framebuffer (9,216,000
-bytes) and a separate 4 KiB control page inside its relocatable image. These
-zero-filled buffers are runtime backing, not stored code. Package validation
-does not impose a separate image-size ceiling; the resident loader selects a
-free virtual extent and admits actual rounded backing against the module's
-original account and available physical memory before publishing executable
-mappings. DMA remains restricted to that live module-owned mapping.
+For resize, APPLY prepares a resource and returns its registered allocation and
+the original request generation. System authenticates the provider's DMAP owner
+and pins the actual backing before COMMIT changes scanout. Both compositor
+pixel capacities and native MDEF menu geometry are admitted beforehand; their
+actual mutable preparation guards span the device transaction. It then publishes
+front pointer and geometry together, drops the old CPU pin, and sends RELEASE.
+The driver waits for actual RESOURCE_UNREF completion before freeing old memory.
+A sufficiently large buffer is reused. A larger mode allocates a new buffer
+while retaining the old one; account or memory refusal leaves the old mode live.
+ABORT and release refusals retain the exact candidate/retired buffer for retry.
+Stale generations cannot acknowledge a different handoff using the same buffer.
+
+VDEV ALLOCATE uses the canonical broker ticket and zeroes at most 64 KiB per
+service callback before publishing CPU and bus addresses. Backing uses the real
+resident heap with checked contiguous bus translation and the original allocator
+receipt. It does not map arbitrary caller pointers, promise scatter/gather or
+raise the module's budget. Device-specific completion is an explicit unsafe
+SDK obligation for FREE_COMPLETED; System independently refuses CPU-pinned
+buffers. Canonical owner cleanup requires acknowledged device reset, no actual
+module execution/worker pins, and drainage of System's frontbuffer pin. A refusal
+retains the original cleanup ticket and storage, never a timed release.
+
+ramfb remains the ROM/emergency/fallback path. With SYSTEM7_VIRTIO_GPU=1,
+early ramfb screens are not visible. Compilation alone does not qualify DMA,
+resize, cancellation, reset or hardware timing; exact native artifacts and
+observed paths are required for those claims. Additional CPU harts remain parked.

@@ -1,9 +1,9 @@
 //! Device-neutral video-output contract for external kernel drivers.
 //!
-//! System owns the framebuffer memory and every policy decision (limits,
-//! accepted modes, repaint). A driver only presents that memory on a display,
-//! reports the host's preferred size and, after its own debounce, tells System
-//! when that size has settled. System polls; the driver never calls upward.
+//! System owns mode policy and renderer publication. The driver owns runtime
+//! DMA allocations and device resources. PREPARE returns a pinned candidate;
+//! COMMIT switches scanout, and RELEASE drains the old surface only after
+//! System has switched CPU views. Failed preparation preserves the active mode.
 //! All integers are little-endian.
 #![no_std]
 #![forbid(unsafe_code)]
@@ -15,6 +15,9 @@ pub const RESIZE: u64 = 1;
 pub const ATTACH: u32 = 1;
 pub const SERVICE: u32 = 2;
 pub const APPLY: u32 = 3;
+pub const COMMIT: u32 = 4;
+pub const ABORT: u32 = 5;
+pub const RELEASE: u32 = 6;
 
 fn word(bytes: &[u8], at: usize) -> Option<u32>
 {
@@ -22,8 +25,7 @@ fn word(bytes: &[u8], at: usize) -> Option<u32>
 }
 
 /// ATTACH input: System's initial mode and the limits it enforces. The driver
-/// owns the scan-out memory inside its own DMA-capable image; it cannot map
-/// System memory.
+/// allocates scan-out memory through the authenticated Device DMA service.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Attach
 {
@@ -41,12 +43,9 @@ impl Attach
     pub fn encode(&self) -> [u8; Self::BYTES]
     {
         let mut bytes = [0; Self::BYTES];
-        for (index, value) in [self.width,
-                               self.height,
-                               self.min_width,
-                               self.min_height,
-                               self.max_width,
-                               self.max_height].into_iter().enumerate()
+        for (index, value) in [self.width, self.height, self.min_width, self.min_height,
+                               self.max_width, self.max_height].into_iter()
+                                                               .enumerate()
         {
             bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
         }
@@ -69,25 +68,31 @@ impl Attach
 }
 
 /// ATTACH reply: the driver-owned framebuffer System draws into (XRGB32,
-/// stride = width * 4, valid for the driver's lifetime) and the host's
+/// stride = width * 4, retained until an explicit surface handoff) and the host's
 /// preferred size (0x0 when it expressed none).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Surface
 {
-    pub address:   u64,
-    pub capacity:  u64,
-    pub preferred: Size
+    /// Original canonical broker request ticket, used only to reject stale
+    /// handoff acknowledgments. Allocation ownership is validated separately.
+    pub generation: u64,
+    pub allocation: u64,
+    pub address:    u64,
+    pub capacity:   u64,
+    pub preferred:  Size
 }
 impl Surface
 {
-    pub const BYTES: usize = 24;
+    pub const BYTES: usize = 40;
 
     pub fn encode(&self) -> [u8; Self::BYTES]
     {
         let mut bytes = [0; Self::BYTES];
-        bytes[0..8].copy_from_slice(&self.address.to_le_bytes());
-        bytes[8..16].copy_from_slice(&self.capacity.to_le_bytes());
-        bytes[16..24].copy_from_slice(&self.preferred.encode());
+        bytes[0..8].copy_from_slice(&self.generation.to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.allocation.to_le_bytes());
+        bytes[16..24].copy_from_slice(&self.address.to_le_bytes());
+        bytes[24..32].copy_from_slice(&self.capacity.to_le_bytes());
+        bytes[32..40].copy_from_slice(&self.preferred.encode());
         bytes
     }
 
@@ -97,12 +102,60 @@ impl Surface
         {
             return None;
         }
-        Some(Self { address:   u64::from_le_bytes(bytes[0..8].try_into().ok()?),
-                    capacity:  u64::from_le_bytes(bytes[8..16].try_into().ok()?),
-                    preferred: Size::decode(&bytes[16..24])? })
+        Some(Self { generation: u64::from_le_bytes(bytes[0..8].try_into().ok()?),
+                    allocation: u64::from_le_bytes(bytes[8..16].try_into().ok()?),
+                    address:    u64::from_le_bytes(bytes[16..24].try_into().ok()?),
+                    capacity:   u64::from_le_bytes(bytes[24..32].try_into().ok()?),
+                    preferred:  Size::decode(&bytes[32..40])? })
     }
 }
-/// A 0x0 size means "unknown".
+/// PREPARE result. Only Applied contains a candidate; it is not displayed
+/// until COMMIT succeeds. Padding and absent-surface bytes are canonical zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Prepared
+{
+    pub outcome: Outcome,
+    pub surface: Option<Surface>
+}
+impl Prepared
+{
+    pub const BYTES: usize = 8 + Surface::BYTES;
+
+    pub fn encode(self) -> [u8; Self::BYTES]
+    {
+        let mut bytes = [0; Self::BYTES];
+        bytes[..4].copy_from_slice(&self.outcome.code().to_le_bytes());
+        if let Some(surface) = self.surface
+        {
+            bytes[8..].copy_from_slice(&surface.encode());
+        }
+        bytes
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Self>
+    {
+        if bytes.len() != Self::BYTES || bytes[4..8] != [0; 4]
+        {
+            return None;
+        }
+        let outcome = Outcome::from_code(word(bytes, 0)?)?;
+        let surface = if outcome == Outcome::Applied
+        {
+            Some(Surface::decode(&bytes[8..])?)
+        }
+        else
+        {
+            if bytes[8..].iter().any(|byte| *byte != 0)
+            {
+                return None;
+            }
+            None
+        };
+        Some(Self { outcome,
+                    surface })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Size
 {
@@ -215,8 +268,8 @@ pub enum Outcome
     Applied,
     TooSmall,
     TooLarge,
-    /// The mode needs more bytes than System's framebuffer reservation.
-    ExceedsReservation,
+    /// The original module account or available DMA storage refused the mode.
+    InsufficientMemory,
     /// The device rejected or failed to complete the mode change.
     DeviceRefused
 }
@@ -231,7 +284,7 @@ impl Outcome
             Self::Applied => 0,
             Self::TooSmall => 1,
             Self::TooLarge => 2,
-            Self::ExceedsReservation => 3,
+            Self::InsufficientMemory => 3,
             Self::DeviceRefused => 4
         }
     }
@@ -243,7 +296,7 @@ impl Outcome
             0 => Some(Self::Applied),
             1 => Some(Self::TooSmall),
             2 => Some(Self::TooLarge),
-            3 => Some(Self::ExceedsReservation),
+            3 => Some(Self::InsufficientMemory),
             4 => Some(Self::DeviceRefused),
             _ => None
         }
@@ -256,9 +309,9 @@ impl Outcome
             Self::Applied => "display mode applied",
             Self::TooSmall => "requested display mode is below the minimum size",
             Self::TooLarge => "requested display mode exceeds the maximum size",
-            Self::ExceedsReservation =>
+            Self::InsufficientMemory =>
             {
-                "requested display mode needs more memory than the framebuffer reservation"
+                "requested display mode could not allocate framebuffer memory"
             }
             Self::DeviceRefused => "the video device refused or failed the mode change"
         }

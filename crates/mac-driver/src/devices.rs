@@ -1,7 +1,7 @@
 //! Thin checked access to the resident device/DMA service. Claims and mappings
 //! remain pinned in System until explicit reset, unmap and release succeed.
 //! Hardware adapters retain their DMA storage throughout pending cancellation.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 use interface as wire;
 use mac_abi::{BAD_ABI, BAD_ARGUMENT};
 pub use mac_device_interface as interface;
@@ -75,6 +75,54 @@ impl DeviceService
         let mut output = [0; wire::MAPPING_BYTES];
         let length = self.synchronous(wire::MAP, &input, &mut output)?;
         Mapping::decode(&output[..length]).ok_or(Error(BAD_ABI))
+    }
+
+    /// Allocate pinned module-owned DMA storage through the real request
+    /// ticket. Initialization advances in bounded resident turns. A Pending or
+    /// pre-dispatch refusal retains a nonzero ticket for Poll/Cancel. Terminal
+    /// completion clears it. A completed allocation may win cancellation:
+    /// Cancel can return Some(buffer), which the caller must retain and release.
+    pub fn allocate(self, device: u64, bytes: u64, ticket: &mut u64, phase: Phase)
+                    -> Result<(Completion, Option<wire::Allocation>)>
+    {
+        let mut input = [0; 16];
+        input[..8].copy_from_slice(&device.to_le_bytes());
+        input[8..].copy_from_slice(&bytes.to_le_bytes());
+        let mut output = [0; wire::ALLOCATION_BYTES];
+        let completion = self.provider.invoke(ticket,
+                                               phase,
+                                               wire::ALLOCATE,
+                                               if phase == Phase::Start { &input } else { &[] },
+                                               &mut output)?;
+        let buffer = match completion
+        {
+            Completion::Complete(0) if phase == Phase::Cancel => None,
+            Completion::Complete(wire::ALLOCATION_BYTES) =>
+            {
+                Some(wire::Allocation::decode(&output).ok_or(Error(BAD_ABI))?)
+            }
+            Completion::Pending => None,
+            _ => return Err(Error(BAD_ABI))
+        };
+        Ok((completion, buffer))
+    }
+
+    /// Release a completed hardware allocation. The resident also refuses while
+    /// System holds any CPU surface pins. Refusal retains the original handle.
+    ///
+    /// # Safety
+    /// The driver must have actual device-specific acknowledgment that no
+    /// outstanding or future DMA can access this allocation (for example a
+    /// completed resource detach/unref), or an acknowledged full device reset.
+    /// All module CPU borrows/access must have ended as well. The driver owns
+    /// synchronization of its workers; raw addresses are not CPU reader leases.
+    /// Elapsed time and submitting a command do not establish completion.
+    #[allow(unsafe_code)]
+    pub unsafe fn free_completed(self, allocation: &mut wire::Allocation) -> Result<()>
+    {
+        self.synchronous(wire::FREE_COMPLETED, &allocation.handle.to_le_bytes(), &mut [])?;
+        allocation.handle = 0;
+        Ok(())
     }
 
     /// START uses ticket zero. Pending retains that live ticket; POLL/CANCEL use

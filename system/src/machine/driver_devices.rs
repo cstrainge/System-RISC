@@ -166,9 +166,49 @@ pub(crate) fn initialize() -> Result<(), Status>
                                           Some(request))?;
     Ok(())
 }
-fn request(call: ResidentCall<'_>, _: &mut [u8]) -> Result<ResidentCompletion, Status>
+fn request(call: ResidentCall<'_>, output: &mut [u8]) -> Result<ResidentCompletion, Status>
 {
     let owner = drivers::module_authority(call.caller)?;
+    if call.operation == wire::ALLOCATE
+    {
+        if call.phase == abi::START
+        {
+            if call.input.len() != 16 || output.len() < wire::ALLOCATION_BYTES
+            {
+                return Err(BAD_ARGUMENT);
+            }
+            let device = token(&call.input[..8])?;
+            let bytes = token(&call.input[8..])?;
+            let account = drivers::module_allocation(call.caller)?;
+            crate::allocation::with_kernel_allocation(account, || {
+                with(|devices| devices.start_allocate(&owner, device, bytes, call.ticket))
+            })??;
+        }
+        else if !matches!(call.phase, abi::POLL | abi::CANCEL) || !call.input.is_empty()
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        if call.phase != abi::CANCEL && output.len() < wire::ALLOCATION_BYTES
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        let result = with(|devices| {
+            devices.advance_allocate(&owner, call.ticket, call.phase == abi::CANCEL)
+        })?;
+        if call.phase == abi::CANCEL
+        {
+            return Ok(ResidentCompletion::Complete(0));
+        }
+        return Ok(match result
+        {
+            Some(buffer) =>
+            {
+                output[..wire::ALLOCATION_BYTES].copy_from_slice(&buffer.encode());
+                ResidentCompletion::Complete(wire::ALLOCATION_BYTES)
+            }
+            None => ResidentCompletion::Pending
+        });
+    }
     if call.operation == wire::RESET && matches!(call.phase, abi::POLL | abi::CANCEL)
     {
         if !call.input.is_empty()
@@ -238,9 +278,10 @@ pub(crate) fn synchronous(caller: u64, operation: u32, input: &[u8], output: &mu
                 drivers::device_allowed(caller, description.bus, description.key)?;
                 // The retained claim belongs to this module even when the
                 // device is first opened by an application-owned request.
+                let frame = drivers::module_frame(caller)?;
                 let account = drivers::module_allocation(caller)?;
                 crate::allocation::with_kernel_allocation(account, || {
-                    with(|devices| devices.claim(&owner, ordinal, description))
+                    with(|devices| devices.claim(&owner, ordinal, description, frame))
                 })??
             }
             else
@@ -268,6 +309,12 @@ pub(crate) fn synchronous(caller: u64, operation: u32, input: &[u8], output: &mu
             })??;
             output[..wire::MAPPING_BYTES].copy_from_slice(&mapping.encode());
             Ok(wire::MAPPING_BYTES)
+        }
+        wire::FREE_COMPLETED =>
+        {
+            let id = token(input)?;
+            with(|devices| devices.free_completed(&owner, id))?;
+            Ok(0)
         }
         wire::UNMAP =>
         {
@@ -298,4 +345,13 @@ pub(crate) fn cleanup(ticket: mac_object_table::domain::ReleasedResource,
            .unwrap_or_else(|(error, ticket)| {
                Err(crate::toolbox::handles::cleanup::Failure::devices_unavailable(ticket, error))
            })
+}
+
+/// System display publication authenticates the provider's real module and pins
+/// the exact registered allocation, never an arbitrary reported CPU address.
+pub(crate) fn pin_buffer(module: u64, id: u64)
+                         -> Result<alloc::sync::Arc<super::dma::Buffer>, Status>
+{
+    let owner = drivers::module_authority(module)?;
+    with(|devices| devices.pin_buffer(&owner, id))
 }

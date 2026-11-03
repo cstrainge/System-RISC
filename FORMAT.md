@@ -1372,6 +1372,8 @@ Stale packages must be rebuilt, rather than decoded through a second layout.
 | 4 Unmap | mapping u64 | empty; refused while DMA can still run |
 | 5 Release | claim u64 | empty; requires no mappings/pending reset and stopped device |
 | 6 Count | empty | inventory slot count u32; slots may be empty |
+| 7 Allocate | START: claim u64, bytes u64; POLL/CANCEL: empty | 32-byte allocation; Pending until zero-initialized |
+| 8 FreeCompleted | allocation u64 | empty; unsafe driver contract requires actual DMA completion, refuses CPU pins |
 
 Physical targets belong to the System domain (`DVOB`/`DVOS`); modules receive
 facility-owned aliases (`DVAL`/`DVAB`), never global target IDs. DMA mappings
@@ -1390,12 +1392,28 @@ a late reset callback cannot reset or bind a replacement claim. Losing the
 manager quarantines its claims, maps and System targets; destruction is never
 a hardware acknowledgement. No operation spins waiting for hardware.
 
-DMA ranges remain restricted to the caller's retained native module image.
+MAP ranges remain restricted to the caller's retained native module image.
 The bus resolves actual segment physical backing and checks owned ancestor/leaf
 PTEs. A range must fit one contiguous physical segment; holes and unrepresentable
 spans fail. Device maps and their positive stop/reset barriers must drain before
 image retirement. This does not grant arbitrary heap DMA, an IOMMU or broader
 SMP qualification.
+
+ALLOCATE is a separate authenticated runtime allocation, not a relaxation of
+MAP. Its reply has allocation ID u64, CPU address u64, device address u64 and
+requested byte length u64. It retains the original claim receipt and actual
+module Kernel allocation account. Each real callback initializes at most 64 KiB;
+no address is exposed before initialization completes. CANCEL retains its original
+broker scope/ticket through acknowledgment. Completion may win cancellation;
+a returned allocation remains owned by the caller and must be released, even
+when the request phase was CANCEL. Current QEMU backing uses checked
+contiguous resident-heap storage. No IOMMU or scatter allocator is implied.
+FREE_COMPLETED is synchronous and privileged: the driver must hold actual
+resource-completion or reset acknowledgment. System separately rejects a buffer
+still pinned by a CPU client. Owner cleanup additionally excludes the actual
+module image's execution/worker gate before freeing runtime storage; device
+reset alone does not make a running CPU user's pointer safe to reclaim.
+All coupled VDEV/VIDO producers and consumers must be rebuilt together.
 
 The board bus class is `VMMI`; its match key is device ID u32, vendor ID u32,
 then eight zero bytes. Probe ordinals 0..7 describe the board's eight 4 KiB

@@ -193,6 +193,27 @@ pub(crate) fn module_authority(module: u64) -> Result<crate::toolbox::handles::O
            .map_err(crate::state::AccessError::status)?
 }
 
+/// Capture the actual admitted image instance, never an address supplied by a
+/// module. DMA cleanup uses its original execution gate after owner stop.
+pub(crate) fn module_frame(module: u64) -> Result<crate::images::ModuleFrame, Status>
+{
+    crate::context::authenticate_module(module)?;
+    let image = RUNTIME.with(|runtime| {
+                           runtime.bindings
+                                  .iter()
+                                  .find(|binding| binding.module == module)
+                                  .map(|binding| binding.image)
+                                  .ok_or(ACCESS_DENIED)
+                       })
+                       .map_err(crate::state::AccessError::status)??;
+    let execution = crate::kernel::module_execution(image)?;
+    if execution.module() != module
+    {
+        return Err(ACCESS_DENIED);
+    }
+    Ok(execution.frame())
+}
+
 pub(crate) fn module_allocation(module: u64) -> Result<super::registry::ModuleAllocation, Status>
 {
     RUNTIME.with(|runtime| runtime.registry.module_allocation(module).map_err(status))
