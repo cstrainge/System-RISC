@@ -57,7 +57,13 @@ fn run(system: System) -> ToolboxResult<()>
 
     loop
     {
-        let (event, position) = system.wait_positioned(EventMask::ALL, 30)?.into_parts();
+        let (event, position) = system.wait_positioned(EventMask::ALL, 30)
+                                      .map_err(|error| {
+                                          eprintln!("Control Suite event/layout wait failed: \
+                                                     {error}");
+                                          error
+                                      })?
+                                      .into_parts();
 
         if let Some(selection) = system.menus().selection(&event)?
         {
@@ -91,9 +97,19 @@ fn run(system: System) -> ToolboxResult<()>
                                .. } if target == id =>
             {
                 let local = position.in_window(id)?;
-                if let Some(hit) = grid.hit_test(local.point()?)?
+                if let Some(hit) =
+                    grid.hit_test(local.point()?).map_err(|error| {
+                                                      eprintln!("Control Suite table child hit \
+                                                                 test failed: {error}");
+                                                      error
+                                                  })?
                 {
-                    hit.control.track_at(local, |_| Ok(()))?;
+                    hit.control.track_at(local, |_| Ok(())).map_err(|error| {
+                                                                eprintln!("Control Suite managed \
+                                                                           control tracking \
+                                                                           failed: {error}");
+                                                                error
+                                                            })?;
                 }
             }
 

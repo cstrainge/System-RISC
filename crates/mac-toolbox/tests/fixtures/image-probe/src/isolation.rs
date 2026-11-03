@@ -140,6 +140,145 @@ fn writable_state(system: &System<'_>, owner: mac_toolbox::ProcessId) -> Result<
     Ok(())
 }
 
+/// A genuine managed capture is cancelled by real Process deactivation.
+/// This is intentionally not cancellation of a broker-pending syscall envelope.
+fn capture_cancel(system: &System<'_>) -> Result<(), Error>
+{
+    use mac_toolbox::{Point, Rect, TypeCode,
+                      controls::{Part, Reflow, StandardKind, StandardState},
+                      resources::ResourceKey,
+                      windows::WindowSpec};
+
+    let mut stage = "capture-process";
+    let result = (|| -> Result<(), Error> {
+        let processes = system.processes();
+        let process = processes.current()?;
+        let image = process.image.ok_or(Error::BadAbi)?;
+        stage = "capture-resource";
+        let resource =
+            system.resources().image(image).get(ResourceKey { kind: TypeCode::new(*b"CDEF"),
+                                                               id:   0 })?;
+        if resource.size() == 0
+        {
+            return Err(Error::BadAbi);
+        }
+        drop(resource);
+        stage = "capture-window";
+        let mut window = system.windows()
+                               .create_owned(WindowSpec::new(Rect::new(100, 100, 460, 280),
+                                                             "Capture cancellation"))?;
+        processes.activate(process.id)?;
+        window.select()?;
+        let controls = system.controls();
+        stage = "capture-create";
+        let state = StandardState::new(Rect::new(12, 12, 180, 44), "Cancel capture");
+        let button =
+            controls.create_standard(window.id(), StandardKind::Button, state, Reflow::No)?;
+        stage = "capture-draw";
+        button.control().draw()?;
+        stage = "capture-original-source";
+        // No app WDEF is packaged for this selector; this first requested
+        // executable resource must be the original app-owned production CDEF.
+        super::owned_definition(system, 1)?;
+        stage = "capture-geometry";
+        let info = button.control().info()?;
+        let bounds = info.standard.bounds;
+        if info.window != window.id() || bounds.is_empty()
+        {
+            return Err(Error::BadAbi);
+        }
+        let point = Point { h: i16::try_from((i32::from(bounds.left) + i32::from(bounds.right))
+                                             / 2).map_err(|_| Error::BadAbi)?,
+                            v: i16::try_from((i32::from(bounds.top) + i32::from(bounds.bottom))
+                                             / 2).map_err(|_| Error::BadAbi)? };
+        stage = "capture-begin";
+        let begin = button.control().begin_tracking(point, system.events().uptime_ticks()?)?;
+        stage = "capture-begin-result";
+        if !begin.tracking
+           || !begin.handled
+           || begin.part != Part::Button
+           || begin.standard.highlighted == 0
+        {
+            return Err(Error::BadAbi);
+        }
+        stage = "capture-hide";
+        processes.hide(process.id)?;
+        stage = "capture-hidden-owner";
+        let hidden = processes.current()?;
+        if hidden.id != process.id || !hidden.hidden || hidden.foreground
+        {
+            return Err(Error::BadAbi);
+        }
+        stage = "capture-hidden-poll";
+        let cancelled =
+            button.control().poll_tracking(point, true, system.events().uptime_ticks()?)?;
+        stage = "capture-cancel-result";
+        if cancelled.tracking
+           || cancelled.action
+           || cancelled.part != Part::None
+           || cancelled.standard.highlighted != 0
+        {
+            return Err(Error::BadAbi);
+        }
+        stage = "capture-cancel-state";
+        let after = button.control().info()?;
+        if after.tracking || after.standard.highlighted != 0
+        {
+            return Err(Error::BadAbi);
+        }
+        stage = "capture-reactivate";
+        processes.show_all()?;
+        processes.activate(process.id)?;
+        window.select()?;
+        let restored = processes.current()?;
+        if restored.id != process.id || restored.hidden || !restored.foreground
+        {
+            return Err(Error::BadAbi);
+        }
+        stage = "capture-reuse-begin";
+        let again = button.control().begin_tracking(point, system.events().uptime_ticks()?)?;
+        if !again.tracking || !again.handled || again.part != Part::Button
+        {
+            return Err(Error::BadAbi);
+        }
+        stage = "capture-reuse-release";
+        let released =
+            button.control().poll_tracking(point, false, system.events().uptime_ticks()?)?;
+        if released.tracking || !released.action || released.standard.highlighted != 0
+        {
+            return Err(Error::BadAbi);
+        }
+        stage = "capture-dispose";
+        let original = button.into_id();
+        controls.control(original).dispose()?;
+        super::stale_control(system, original)?;
+        stage = "capture-recreate";
+        let replacement =
+            controls.create_standard(window.id(), StandardKind::Button, state, Reflow::No)?;
+        if replacement.id() == original
+        {
+            return Err(Error::BadAbi);
+        }
+        replacement.control().draw()?;
+        super::stale_control(system, original)?;
+        replacement.control().info()?;
+        stage = "capture-replacement-dispose";
+        let next = replacement.into_id();
+        controls.control(next).dispose()?;
+        super::stale_control(system, original)?;
+        super::stale_control(system, next)?;
+        stage = "capture-close";
+        window.close()?;
+        system.log("IMAGE_PROBE_CAPTURE_CANCEL_PASS deactivated=true reuse=true \
+                    stale=refused\nIMAGE_PROBE_PASS\n")
+    })();
+    if let Err(error) = result
+    {
+        log_failure(system, stage, error);
+    }
+    result
+}
+
 /// Missing selector preserves the existing public-SDK image/CDEF workload.
 /// The host packager selects exactly one destructive scenario per private app.
 pub(super) fn run(system: &System<'_>) -> Result<bool, Error>
@@ -163,6 +302,11 @@ pub(super) fn run(system: &System<'_>) -> Result<bool, Error>
     if mode == "state"
     {
         return writable_state(system, process.id).map(|()| true);
+    }
+    if mode == "capture-cancel"
+    {
+        capture_cancel(system)?;
+        return Ok(true);
     }
     if mode == "checked-transport"
     {
@@ -208,6 +352,11 @@ pub(super) fn run(system: &System<'_>) -> Result<bool, Error>
                    {
                        "ISOLATION_CDEF_DISPOSE_UNEXPECTED_RETURN result=ERR\n"
                    })?;
+        if let Err(error) = result
+        {
+            log_failure(system, "cdef-dispose-unexpected-return", error);
+            return Err(error);
+        }
         return Err(Error::BadAbi);
     }
     if mode == "control-definition-panic"
