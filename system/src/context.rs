@@ -1466,8 +1466,8 @@ mod definition_tests
         let other = DefinitionInvocations::new();
         assert_eq!(first.current(), None);
         first.with(mac_abi::definitions::WDEF, 0, core::ptr::null_mut(), || {
-                 first.with(mac_abi::definitions::CDEF, -32759, core::ptr::null_mut(), || {
-                          assert_eq!(first.current(), Some((mac_abi::definitions::CDEF, -32759)));
+                 first.with(mac_abi::definitions::CDEF, 18, core::ptr::null_mut(), || {
+                          assert_eq!(first.current(), Some((mac_abi::definitions::CDEF, 18)));
                           assert_eq!(other.current(), None);
                       });
                  assert_eq!(first.current(), Some((mac_abi::definitions::WDEF, 0)));

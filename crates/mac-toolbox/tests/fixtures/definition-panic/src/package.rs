@@ -14,7 +14,7 @@ fn main() -> mac_build::Result<()>
     let elf = PathBuf::from(&args[0]);
     let compiled = manifest.compile_resources(&manifest_path, &fs::read(&elf)?, elf.parent())?;
     let replacement = compiled.into_iter()
-                              .find(|r| r.kind == *b"CDEF" && r.id == -32759)
+                              .find(|r| r.kind == *b"CDEF" && r.id == 18)
                               .ok_or_else(|| mac_build::error("probe CDEF did not compile"))?;
     let mut system = mac_formats::macbinary::decode(&fs::read(&args[1])?)?;
     let mut resources = mac_formats::resource::decode(&system.resources)?;
@@ -61,7 +61,7 @@ fn main() -> mac_build::Result<()>
     let mut unchanged = 0;
     for resource in &resources
     {
-        let is_replaced = resource.kind == *b"CDEF" && resource.id == -32759
+        let is_replaced = resource.kind == *b"CDEF" && resource.id == 18
                           || args.len() == 5
                              && resource.id == 0
                              && [*b"RV64", *b"NABI", *b"RLOC"].contains(&resource.kind);

@@ -34,19 +34,18 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
     classic.control().draw()?;
     drop(classic);
     system.log("REFLOW_NATIVE legacy-options=no variation=window-font refusal=NotSupported\n")?;
-    for kind in [StandardKind::Button,
-                 StandardKind::Checkbox,
-                 StandardKind::Radio,
-                 StandardKind::WindowFontButton,
-                 StandardKind::WindowFontCheckbox,
-                 StandardKind::WindowFontRadio,
-                 StandardKind::ProgressBar,
-                 StandardKind::MonochromeProgressBar,
-                 StandardKind::StaticText,
-                 StandardKind::Table]
+    for (kind, flags) in [(StandardKind::Button, 0),
+                          (StandardKind::Checkbox, 0),
+                          (StandardKind::Radio, 0),
+                          (StandardKind::WindowFontButton, 0),
+                          (StandardKind::WindowFontCheckbox, 0),
+                          (StandardKind::WindowFontRadio, 0),
+                          (StandardKind::ProgressBar, 0),
+                          (StandardKind::ProgressBar, mac_abi::controls::PROGRESS_MONOCHROME),
+                          (StandardKind::StaticText, 0),
+                          (StandardKind::Table, 0)]
     {
-        let passive_progress =
-            matches!(kind, StandardKind::ProgressBar | StandardKind::MonochromeProgressBar);
+        let passive_progress = kind == StandardKind::ProgressBar;
         let mut state = StandardState::new(original,
                                            if passive_progress || kind == StandardKind::Table
                                            {
@@ -56,6 +55,7 @@ pub fn run(system: &System<'_>) -> Result<(), Failure>
                                            {
                                                "Leaf"
                                            });
+        state.flags = flags;
         if kind == StandardKind::StaticText
         {
             state.maximum = 0;

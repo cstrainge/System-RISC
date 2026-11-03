@@ -46,7 +46,7 @@ fn change(before: &Progress, after: &Progress, damage: &mut [Rect; 2]) -> Result
     let r = next.interior;
     let new = next.edge;
     *damage = [Rect::ZERO; 2];
-    if before.bounds != after.bounds
+    if before.bounds != after.bounds || before.style != after.style
     {
         *damage = [after.bounds, Rect::ZERO];
     }

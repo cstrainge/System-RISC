@@ -53,8 +53,7 @@ pub enum ProgressStyle
 pub struct ProgressBar<'a>
 {
     control: Control<'a>,
-    state:   StandardState,
-    kind:    StandardKind
+    state:   StandardState
 }
 impl ProgressBar<'_>
 {
@@ -67,12 +66,13 @@ impl ProgressBar<'_>
     /// coalesced by the CDEF and never trigger a compositor update.
     pub fn set(&mut self, progress: Progress) -> Result<()>
     {
-        let next = progress.state(self.state.bounds)?;
+        let mut next = progress.state(self.state.bounds)?;
+        next.flags = self.state.flags;
         if self.state == next
         {
             return Ok(());
         }
-        self.control.control().configure(self.kind, next)?;
+        self.control.control().configure(StandardKind::ProgressBar, next)?;
         self.state = next;
         Ok(())
     }
@@ -259,15 +259,17 @@ impl<'a> Controls<'a>
                                           progress: Progress, style: ProgressStyle)
                                           -> Result<ProgressBar<'a>>
     {
-        let state = progress.state(bounds)?;
-        let kind = match style
+        let mut state = progress.state(bounds)?;
+        state.flags = match style
         {
-            ProgressStyle::Color => StandardKind::ProgressBar,
-            ProgressStyle::Monochrome => StandardKind::MonochromeProgressBar
+            ProgressStyle::Color => 0,
+            ProgressStyle::Monochrome => mac_abi::controls::PROGRESS_MONOCHROME
         };
-        Ok(ProgressBar { control: self.create_standard(window, kind, state, crate::Reflow::No)?,
-                         state,
-                         kind })
+        Ok(ProgressBar { control: self.create_standard(window,
+                                                       StandardKind::ProgressBar,
+                                                       state,
+                                                       crate::Reflow::No)?,
+                         state })
     }
 
     pub fn create_static_text(&self, window: WindowId, bounds: Rect, text: &str,

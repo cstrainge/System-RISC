@@ -17,7 +17,16 @@ pub const NATIVE_SEGMENT_RECORD_BYTES: usize = 28;
 /// Native descriptors carry this fingerprint so stale packages fail before
 /// entry rather than interpreting new payloads with an older struct layout.
 pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
-    let words = [core::mem::size_of::<entropy::Call>(),
+    let words = [controls::CDEF_PROGRESS_BAR as usize,
+                 controls::CDEF_STATIC_TEXT as usize,
+                 controls::CDEF_TABLE as usize,
+                 controls::CDEF_SPLITTER as usize,
+                 controls::PROGRESS_BAR_PROCEDURE as usize,
+                 controls::STATIC_TEXT_PROCEDURE as usize,
+                 controls::TABLE_PROCEDURE as usize,
+                 controls::SPLITTER_PROCEDURE as usize,
+                 controls::PROGRESS_MONOCHROME as usize,
+                 core::mem::size_of::<entropy::Call>(),
                  core::mem::align_of::<entropy::Call>(),
                  core::mem::offset_of!(entropy::Call, output),
                  core::mem::offset_of!(entropy::Call, capacity),

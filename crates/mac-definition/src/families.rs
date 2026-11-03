@@ -314,14 +314,14 @@ impl Family for ProgressFamily
 
     fn variation(value: i16) -> Result<()>
     {
-        if matches!(value, 0 | 1) { Ok(()) } else { Err(Error::NotSupported) }
+        if value == 0 { Ok(()) } else { Err(Error::NotSupported) }
     }
 
-    fn decode(wire: &Self::Wire, variation: i16) -> Result<Progress>
+    fn decode(wire: &Self::Wire, _variation: i16) -> Result<Progress>
     {
         if wire.progress.reserved != 0
            || wire.progress.determinate > 1
-           || wire.flags != 0
+           || wire.flags & !controls::PROGRESS_MONOCHROME != 0
            || wire.highlighted != 0
            || wire.title_length != 0
         {
@@ -332,7 +332,7 @@ impl Family for ProgressFamily
                                                 in_progress: wire.progress.in_progress,
                                                 total:       wire.progress.total,
                                                 determinate: wire.progress.determinate != 0 },
-                      style:    if variation == 0
+                      style:    if wire.flags & controls::PROGRESS_MONOCHROME == 0
                       {
                           ProgressStyle::Color
                       }

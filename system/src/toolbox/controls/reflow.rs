@@ -16,7 +16,7 @@ pub(super) fn invoke(state: &mut ControlCall, payload: &mut mac_abi::controls::r
     let mut call = DefinitionCall { header: Header::for_type::<DefinitionCall>(),
                                     kind: CDEF,
                                     id,
-                                    variation: variation(state.procedure, id),
+                                    variation: variation(state.procedure),
                                     message: payload.message,
                                     reserved: 0,
                                     param: (payload as *mut mac_abi::controls::reflow::Payload)

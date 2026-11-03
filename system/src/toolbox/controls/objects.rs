@@ -765,9 +765,7 @@ impl Manager
                 // Validate through the real resource before publishing or mutating.
                 super::validate(&mut spec, entry, gate)?;
             }
-            if !scrollbar
-               && !matches!(spec.procedure,
-                            PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE)
+            if !scrollbar && spec.procedure != PROGRESS_BAR_PROCEDURE
             {
                 let previous = if operation == CONFIGURE_OBJECT
                 {
