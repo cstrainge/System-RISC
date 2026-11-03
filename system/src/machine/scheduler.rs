@@ -547,8 +547,15 @@ struct ThreadBacking
 }
 enum ApplicationImageUse
 {
-    Main(crate::kernel::LoadedImage),
-    Child(crate::images::ApplicationExecution)
+    // These guards retain executable mappings until the thread backing is dropped.
+    Main
+    {
+        _image: crate::kernel::LoadedImage
+    },
+    Child
+    {
+        _execution: crate::images::ApplicationExecution
+    }
 }
 struct ThreadCore
 {
@@ -699,7 +706,7 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
             };
             match storage.backing.get_mut().as_mut()
             {
-                Some(backing) => backing.image = Some(ApplicationImageUse::Main(loaded)),
+                Some(backing) => backing.image = Some(ApplicationImageUse::Main { _image: loaded }),
                 None =>
                 {
                     return Err(PrepareFailure { status: mac_abi::BAD_ABI,
@@ -822,10 +829,10 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
     };
     storage.top = stack.top();
     let stack = stack_preparation.finish(stack);
-    *storage.backing.get_mut() = Some(ThreadBacking { cpu,
-                                                      stack,
-                                                      image:
-                                                          Some(ApplicationImageUse::Main(loaded)) });
+    *storage.backing.get_mut() =
+        Some(ThreadBacking { cpu,
+                             stack,
+                             image: Some(ApplicationImageUse::Main { _image: loaded }) });
     Ok(PreparedThread { owner,
                         core: mac_object_table::retained::Read::new(core, context_released),
                         allocation,

@@ -501,7 +501,6 @@ impl Checked
              ("FIRMWARE_HEAP_BYTES", self.firmware_heap.end - self.firmware_heap.start),
              ("MONITOR_STACK_BYTES", self.monitor_stack_bytes),
              ("MONITOR_CONTROL_BYTES", mac_abi::boot::monitor::CONTROL_BYTES as u64),
-             ("FDT_TAIL_BYTES", self.fdt_tail_bytes),
              ("APPLICATION_RELOCATION_BASE", self.application_relocation_base),
              ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
              ("APPLICATION_PRIMARY_LIMIT", self.definitions.start),

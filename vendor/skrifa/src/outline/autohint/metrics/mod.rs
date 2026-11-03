@@ -164,9 +164,9 @@ impl UnscaledStyleMetricsSet {
     /// identifier.
     pub fn get(
         &self,
-        font: &FontRef,
-        coords: &[F2Dot14],
-        shaper_mode: ShaperMode,
+        #[cfg(feature = "std")] font: &FontRef,
+        #[cfg(feature = "std")] coords: &[F2Dot14],
+        #[cfg(feature = "std")] shaper_mode: ShaperMode,
         style_map: &GlyphStyleMap,
         glyph_id: GlyphId,
     ) -> Option<UnscaledStyleMetrics> {

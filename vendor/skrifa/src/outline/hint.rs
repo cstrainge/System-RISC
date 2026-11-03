@@ -398,6 +398,7 @@ impl HintingInstance {
                     &self.coords,
                     self.target,
                     styles,
+                    #[cfg(feature = "std")]
                     true,
                 );
                 self.kind = HinterKind::Auto(instance);

@@ -366,7 +366,7 @@ impl<B: Bus> Devices<B>
         #[cfg(target_arch = "riscv64")]
         if map.buffer
               .as_ref()
-              .is_some_and(|buffer| (!buffer.ready() || Arc::strong_count(buffer) != 1))
+              .is_some_and(|buffer| !buffer.ready() || Arc::strong_count(buffer) != 1)
         {
             return Err(SERVICE_BUSY);
         }

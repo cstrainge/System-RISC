@@ -536,6 +536,7 @@ impl<'a> OutlineGlyph<'a> {
         }
     }
 
+    #[cfg(feature = "std")]
     pub(crate) fn font(&self) -> &FontRef<'a> {
         match &self.kind {
             OutlineKind::Glyf(glyf, ..) => &glyf.font,

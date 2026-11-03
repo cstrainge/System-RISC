@@ -16,7 +16,7 @@ fn main()
     let template = Path::new(env!("CARGO_MANIFEST_DIR")).join("link.ld");
     println!("cargo:rerun-if-changed={}", template.display());
     let (platform_constants, symbols) =
-        mac_build::platform::guest_artifacts().expect("checked platform symbols");
+        mac_build::platform::firmware_artifacts().expect("checked platform symbols");
     let (_, constants) = mac_build::platform::memory_artifacts().expect("checked boot memory map");
     let out = env::var("OUT_DIR").unwrap();
     let out = Path::new(&out);
