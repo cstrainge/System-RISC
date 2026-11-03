@@ -75,6 +75,14 @@ fn main()
     assert!(args.len() >= 4 && args.len() <= 6,
             "expected IMAGE_PROBE_ELF OUTPUT_DIR CDEF_PANIC_ELF [MODE [TARGET]] \
              [--window-definition WDEF_ELF] [--controls ARTIFACT_DIR]");
+    if args.get(4).is_some_and(|mode| mode == "capture-cancel")
+    {
+        assert!(controls.is_some(),
+                "capture-cancel requires paired production --controls ARTIFACT_DIR");
+        assert!(window_definition.is_none(),
+                "capture-cancel uses a stock WDEF so its first owned definition proves the CDEF \
+                 source");
+    }
     let output = std::path::Path::new(&args[2]);
     mac_build::package::build(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources.json"),
         std::path::Path::new(&args[1]), output).expect("package private image probe");
@@ -187,7 +195,8 @@ fn main()
     {
         let mode = mode.to_str().expect("isolation mode must be UTF-8");
         assert!(matches!(mode,
-                         "checked-transport"
+                         "capture-cancel"
+                         | "checked-transport"
                          | "state"
                          | "window-definition"
                          | "window-definition-fault"
