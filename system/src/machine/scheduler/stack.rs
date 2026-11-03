@@ -9,16 +9,26 @@ use super::*;
 pub(super) struct StackBacking
 {
     // Real backing leaves before its original-account charge (Charged's order).
-    stack:     spin::Once<accounting::Charged<super::super::pages::Stack>>,
+    stack:     spin::Once<Arc<accounting::Charged<super::super::pages::Stack>>>,
+    user:      Mutex<UserSlot>,
     owner:     OwnerRef,
     identity:  spin::Once<CompletionKey>,
     accepting: AtomicBool
+}
+struct UserSlot
+{
+    mapping: Option<super::super::paging::user::Mapping>,
+    busy:    bool,
+    waiting: bool
 }
 impl StackBacking
 {
     pub(super) fn prepay(owner: &OwnerRef) -> Result<PrepaidStack, mac_abi::Status>
     {
         let backing = Arc::try_new(Self { stack:     spin::Once::new(),
+                                          user:      Mutex::new(UserSlot { mapping: None,
+                                                                           busy:    false,
+                                                                           waiting: false }),
                                           owner:     owner.clone(),
                                           identity:  spin::Once::new(),
                                           accepting: AtomicBool::new(true) }).map_err(|_| {
@@ -30,7 +40,81 @@ impl StackBacking
     pub(super) fn prepare(owner: &OwnerRef, stack: accounting::Charged<super::super::pages::Stack>)
                           -> Result<Arc<Self>, mac_abi::Status>
     {
-        Ok(Self::prepay(owner)?.finish(stack))
+        Self::prepay(owner)?.finish(stack, None)
+    }
+
+    pub(super) fn prepare_user(owner: &OwnerRef,
+                               stack: accounting::Charged<super::super::pages::Stack>,
+                               space: &super::super::paging::process::Pin)
+                               -> Result<Arc<Self>, mac_abi::Status>
+    {
+        Self::prepay(owner)?.finish(stack, Some(space))
+    }
+
+    fn mapping_turn(&self,
+                    operation: impl FnOnce(&mut super::super::paging::user::Mapping)
+                           -> Result<(), super::super::paging::user::Error>)
+                    -> Result<(), super::user::retirement::Failure>
+    {
+        let mapping = {
+            let mut slot = self.user.lock();
+            if slot.busy
+            {
+                slot.waiting = true;
+                return Err(super::user::retirement::Failure::rejected(mac_abi::SERVICE_BUSY));
+            }
+            let mapping = slot.mapping.take();
+            if mapping.is_some()
+            {
+                slot.busy = true;
+            }
+            mapping
+        };
+        let Some(mut mapping) = mapping
+        else
+        {
+            return Ok(());
+        };
+        // No stack/scheduler lock spans page-table writes or monitor ACK.
+        let result = operation(&mut mapping).map_err(|cause| {
+                                                super::user::retirement::Failure::mapping(cause,
+                                                                                          &mapping)
+                                            });
+        let waiting = {
+            let mut slot = self.user.lock();
+            slot.mapping = Some(mapping);
+            slot.busy = false;
+            core::mem::take(&mut slot.waiting)
+        };
+        if waiting
+        {
+            super::context_released();
+        }
+        result
+    }
+
+    pub(super) fn publish_user(&self) -> Result<(), super::user::retirement::Failure>
+    {
+        self.mapping_turn(|mapping| mapping.publish())
+    }
+
+    pub(super) fn retire_user(&self) -> Result<(), super::user::retirement::Failure>
+    {
+        self.mapping_turn(|mapping| mapping.retire())
+    }
+
+    pub(super) fn user_top(&self) -> Result<usize, mac_abi::Status>
+    {
+        let slot = self.user.lock();
+        if slot.busy
+        {
+            return Err(mac_abi::SERVICE_BUSY);
+        }
+        slot.mapping
+            .as_ref()
+            .map(|mapping| mapping.user_top())
+            .filter(|top| *top != 0)
+            .ok_or(mac_abi::BAD_ABI)
     }
 
     pub(super) fn bind(&self, identity: CompletionKey) -> Result<(), mac_abi::Status>
@@ -55,8 +139,9 @@ impl StackBacking
 
     fn visible_bounds(&self) -> Option<Range<usize>>
     {
-        let stack = self.stack.get()?;
-        Some(stack.top() - stack.bytes() as usize..stack.top())
+        let slot = self.user.lock();
+        let mapping = slot.mapping.as_ref()?;
+        Some(mapping.user_base()..mapping.user_top())
     }
 }
 impl Deref for StackBacking
@@ -65,7 +150,10 @@ impl Deref for StackBacking
 
     fn deref(&self) -> &Self::Target
     {
-        self.stack.get().expect("published ThreadBacking owns a completed unique stack preparation")
+        self.stack
+            .get()
+            .expect("published ThreadBacking owns a completed unique stack preparation")
+            .as_ref()
     }
 }
 /// Unique unpublished Arc allocation; no caller can obtain a backing reference
@@ -76,11 +164,28 @@ pub(super) struct PrepaidStack
 }
 impl PrepaidStack
 {
-    pub(super) fn finish(self, stack: accounting::Charged<super::super::pages::Stack>)
-                         -> Arc<StackBacking>
+    pub(super) fn finish(self, stack: accounting::Charged<super::super::pages::Stack>,
+                         space: Option<&super::super::paging::process::Pin>)
+                         -> Result<Arc<StackBacking>, mac_abi::Status>
     {
+        use super::super::paging::user::{Access, Kind, Mapping};
+        if (self.backing.owner.owner().kind() == mac_object_table::domain::DomainKind::Process)
+           != space.is_some()
+        {
+            return Err(mac_abi::ACCESS_DENIED);
+        }
+        let stack = Arc::try_new(stack).map_err(|_| mac_abi::NO_MEMORY)?;
+        let mapping = match space
+        {
+            Some(space) =>
+            {
+                Some(Mapping::prepare(space, stack.clone(), Kind::Stack, Access::ReadWrite)?)
+            }
+            None => None
+        };
         self.backing.stack.call_once(|| stack);
-        self.backing
+        self.backing.user.lock().mapping = mapping;
+        Ok(self.backing)
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -202,7 +307,12 @@ pub(crate) fn pin_application_stack(executor: &crate::context::ApplicationExecut
                 return Err(StackPinError::Stopping);
             }
             let identity = *stack.identity.get().ok_or(StackPinError::Unbound)?;
-            return Ok(Some(StackWaitPin { backing:mac_object_table::retained::Read::new(stack.clone(),context_released),identity,address }));
+            let cpu = stack.top()
+                           .checked_sub(stack.bytes() as usize)
+                           .and_then(|base| base.checked_add(address - bounds.start))
+                           .ok_or(StackPinError::InvalidSpan { address,
+                                                               length })?;
+            return Ok(Some(StackWaitPin { backing:mac_object_table::retained::Read::new(stack.clone(),context_released),identity,address:cpu }));
         }
     }
     Ok(None)

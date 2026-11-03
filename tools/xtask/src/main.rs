@@ -202,22 +202,9 @@ impl Workspace
                                           Some(&self.build.join("dist")))?);
         }
         authority::install(self, &mut reports)?;
-        for (index, a) in reports.iter().enumerate()
-        {
-            for b in &reports[index + 1..]
-            {
-                // Relocatable modules/definitions share link origins, not
-                // execution storage. Only current flat application/System
-                // mappings still need pairwise preferred-placement exclusion.
-                if a["role"] != "code_resource"
-                   && b["role"] != "code_resource"
-                   && a["load_base"].as_u64() < b["load_limit"].as_u64()
-                   && b["load_base"].as_u64() < a["load_limit"].as_u64()
-                {
-                    return Err(error("native executable memory reservations overlap"));
-                }
-            }
-        }
+        // Applications occupy independent Process roots; their shared link
+        // origin does not reserve global or physical memory. Module/definition
+        // execution admission remains separate below and in the loader.
         let module_bytes =
             modules::footprint(&reports, self.platform.virtual_memory()?.module_capacity())?;
         println!("Resident module execution spans: {module_bytes} of {} virtual bytes; payload \

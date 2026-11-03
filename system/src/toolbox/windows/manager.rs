@@ -15,12 +15,30 @@ use crate::toolbox::{events::*,
                      handles::{InvocationGate, KindLease, OwnerRef, Store, cleanup::Failure},
                      quickdraw::{Canvas, Point, Rect, SurfaceExt,
                                  geometry::{sect_rect, union_rect},
-                                 presentation::{Outline, indexed_tracking_xor},
+                                 presentation::Outline,
                                  region::{BooleanOp, Region, RegionError}},
                      resources::definitions::{BoundDefinition, DefinitionRef}};
 #[cfg(target_arch = "riscv64")]
 #[path = "admission.rs"]
 mod admission;
+#[cfg(target_arch = "riscv64")]
+#[path = "operations.rs"]
+pub(crate) mod operations;
+#[cfg(target_arch = "riscv64")]
+#[path = "birth.rs"]
+pub(crate) mod birth;
+#[cfg(target_arch = "riscv64")]
+#[path = "paint.rs"]
+pub(crate) mod paint;
+#[cfg(target_arch = "riscv64")]
+#[path = "canvas.rs"]
+pub(crate) mod canvas;
+#[cfg(target_arch = "riscv64")]
+#[path = "trusted.rs"]
+pub(crate) mod trusted;
+#[cfg(target_arch = "riscv64")]
+#[path = "ack.rs"]
+pub(crate) mod ack;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use admission::{PreparedWindow, WindowCommit, WindowPlan};
 /// First content scan line below the menu bar.
@@ -111,9 +129,45 @@ impl DefinitionDisposal<'_>
 /// not. Failed Dispose keeps only its ABI-mutated state for the same ticket.
 struct OwnedWindow
 {
-    window:         Window,
-    disposal_state: Cell<Option<WindowDefinitionState>>,
-    binding:        BoundDefinition
+    window:            Window,
+    disposal_state:    Cell<Option<WindowDefinitionState>>,
+    disposal_complete: Cell<bool>,
+    binding:           BoundDefinition,
+    revision:          Option<u64>,
+    content_revision:  Option<u64>,
+    #[cfg(target_arch = "riscv64")]
+    cleanup_job:       Option<alloc::sync::Arc<operations::WindowJob>>,
+    #[cfg(target_arch = "riscv64")]
+    paint:             Option<alloc::sync::Arc<paint::PaintOwner>>,
+    #[cfg(target_arch = "riscv64")]
+    trusted_close:     Option<trusted::TrustedCloseHandle>
+}
+/// Same-exclusion outline publication; preparation changes no Window state.
+/// The original full-key payload stays borrowed through retained CTRL commit.
+#[cfg(target_arch = "riscv64")]
+pub(crate) struct ControlOutlinePermit<'a>
+{
+    outline:      &'a mut Option<Rect>,
+    revision:     &'a mut Option<u64>,
+    hit_revision: &'a mut Option<u64>,
+    next:         Option<Rect>,
+    revisions:    Option<(u64, u64)>
+}
+#[cfg(target_arch = "riscv64")]
+impl ControlOutlinePermit<'_>
+{
+    pub(crate) fn commit(self) -> bool
+    {
+        let Some((revision, hit_revision)) = self.revisions
+        else
+        {
+            return false;
+        };
+        *self.outline = self.next;
+        *self.revision = Some(revision);
+        *self.hit_revision = Some(hit_revision);
+        true
+    }
 }
 impl OwnedWindow
 {
@@ -125,6 +179,7 @@ impl OwnedWindow
     {
         Self { window: Window { id: WindowId(0),
                                 initialized: false,
+                                user_initialization: UserInitialization::None,
                                 bounds,
                                 owner,
                                 #[cfg(target_arch = "riscv64")]
@@ -149,7 +204,16 @@ impl OwnedWindow
                                 stay_in_back,
                                 updating: false },
                disposal_state: Cell::new(None),
-               binding }
+               disposal_complete: Cell::new(false),
+               binding,
+               revision: Some(1),
+               content_revision: Some(1),
+               #[cfg(target_arch = "riscv64")]
+               cleanup_job: None,
+               #[cfg(target_arch = "riscv64")]
+               paint: None,
+               #[cfg(target_arch = "riscv64")]
+               trusted_close: None }
     }
 }
 impl core::ops::Deref for OwnedWindow
@@ -174,6 +238,7 @@ pub struct Window
 {
     pub id:              WindowId,
     initialized:         bool,
+    user_initialization: UserInitialization,
     pub bounds:          Rect,
     pub owner:           u64,
     #[cfg(target_arch = "riscv64")]
@@ -194,6 +259,13 @@ pub struct Window
     hidden:              bool,
     stay_in_back:        bool,
     pub(crate) updating: bool
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UserInitialization
+{
+    None,
+    New,
+    Ready
 }
 impl Window
 {
@@ -287,6 +359,21 @@ impl Window
         self.state.grow_box
     }
 
+    pub(crate) fn zoom_box(&self) -> Rect
+    {
+        self.state.zoom_box
+    }
+
+    pub(crate) fn frame_rects(&self) -> [Rect; 4]
+    {
+        let structure = self.structure();
+        let content = self.bounds;
+        [Rect::new(structure.left, structure.top, structure.right, content.top),
+         Rect::new(structure.left, content.bottom, structure.right, structure.bottom),
+         Rect::new(structure.left, content.top, content.left, content.bottom),
+         Rect::new(content.right, content.top, structure.right, content.bottom)]
+    }
+
     /// Definition-owned content adornments are above retained application
     /// drawing. Preserve the compositor's damage clip, including grow-strip
     /// restrictions supplied by applications that do not use both scrollbars.
@@ -369,7 +456,59 @@ impl Window
     }
 }
 
-#[derive(Clone, Copy)]
+// Shared native geometry producers. User plans stage the same policy before
+// author execution; trusted definitions keep their original synchronous tail.
+fn drag_geometry(bounds: Rect, start: Point, point: Point, screen: Rect) -> Option<Rect>
+{
+    Rect::new(0, 21, screen.right, screen.bottom).contains(point).then(|| {
+                    let dx = i32::from(point.h) - i32::from(start.h);
+                    let dy = i32::from(point.v) - i32::from(start.v);
+                    Rect::new((i32::from(bounds.left) + dx) as i16,
+                              (i32::from(bounds.top) + dy) as i16,
+                              (i32::from(bounds.right) + dx) as i16,
+                              (i32::from(bounds.bottom) + dy) as i16)
+                })
+}
+fn grow_geometry(w: &Window, bounds: Rect, start: Point, point: Point, screen: Rect) -> Rect
+{
+    let structure = w.structure();
+    let width = (i32::from(bounds.right - bounds.left) + i32::from(point.h)
+                             - i32::from(start.h)).clamp(i32::from(w.min_width),
+                                                       i32::from(screen.right
+                                                                 - (structure.right - w.bounds.right)
+                                                                 - bounds.left).max(i32::from(w.min_width)))
+                            as i16;
+    let height = (i32::from(bounds.bottom - bounds.top) + i32::from(point.v)
+                              - i32::from(start.v)).clamp(i32::from(w.min_height),
+                                                         i32::from(screen.bottom
+                                                                   - (structure.bottom - w.bounds.bottom)
+                                                                   - bounds.top).max(i32::from(w.min_height)))
+                             as i16;
+    Rect::new(bounds.left, bounds.top, bounds.left + width, bounds.top + height)
+}
+fn zoom_geometry(w: &mut Window, screen: Rect)
+{
+    if let Some(user) = w.user_bounds.take()
+    {
+        w.bounds = user;
+        w.state.zoomed = 0;
+    }
+    else
+    {
+        w.user_bounds = Some(w.bounds);
+        let structure = w.structure();
+        w.bounds = w.standard_bounds.unwrap_or_else(|| {
+                                        Rect::new(w.bounds.left - structure.left,
+                                                  25 + w.bounds.top - structure.top,
+                                                  screen.right - (structure.right - w.bounds.right),
+                                                  (screen.bottom - 21)
+                                                  - (structure.bottom - w.bounds.bottom))
+                                    });
+        w.state.zoomed = 1;
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Tracking
 {
     Zoom
@@ -393,6 +532,32 @@ enum Tracking
         window: WindowId, armed: bool
     }
 }
+/// Read-only tracking pixels/dependencies. This is presentation metadata, not
+/// a Window mutation capability or a new input identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TrackingVisual
+{
+    pub(crate) tracking: bool,
+    pub(crate) outline:  Option<Outline>,
+    pub(crate) chrome:   Option<TrackingChrome>
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrackingChrome
+{
+    Grow
+    {
+        window: WindowId, structure: Rect, preview: Rect
+    },
+    Close
+    {
+        window: WindowId, structure: Rect
+    },
+    Zoom
+    {
+        window: WindowId, structure: Rect
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action
 {
@@ -612,6 +777,13 @@ pub struct WindowManager
     windows:               Store<OwnedWindow>,
     /// Main-screen bounds that interactive drag, grow and zoom stay within.
     screen:                Rect,
+    hit_revision:          Option<u64>,
+    #[cfg(target_arch = "riscv64")]
+    removals:              VecDeque<operations::RemovalDebt>,
+    #[cfg(target_arch = "riscv64")]
+    removal_readers:       alloc::sync::Arc<operations::RemovalReaders>,
+    #[cfg(target_arch = "riscv64")]
+    work_notice: alloc::sync::Arc<crate::toolbox::resources::definitions::callbacks::Notice>,
     retained_failures:     VecDeque<mac_object_table::domain::CompletionError>,
     // One guaranteed modal service has one main window and one auxiliary
     // sheet. Keep their guards outside the Copy geometry payload, keyed by
@@ -621,6 +793,8 @@ pub struct WindowManager
     #[cfg(target_arch = "riscv64")]
     recovery_publications:
         Option<[mac_object_table::store::PublicationReservation<InvocationGate>; 2]>,
+    #[cfg(target_arch = "riscv64")]
+    recovery_closes:       Vec<alloc::sync::Arc<trusted::TrustedCloseHeader>>,
     order:                 Vec<WindowId>,
     len:                   usize,
     active:                Option<WindowId>,
@@ -631,6 +805,7 @@ pub struct WindowManager
     #[cfg(test)]
     test_owners:           Vec<(u64, OwnerRef)>,
     gate:                  mac_abi::TrapGate,
+    tracking_revision:     Option<u64>,
     tracking:              Option<Tracking>
 }
 #[cfg(test)]
@@ -661,16 +836,28 @@ impl WindowManager
     pub(crate) fn with_kinds(kinds: (KindLease, KindLease), gate: mac_abi::TrapGate)
                              -> Result<Self, Status>
     {
+        #[cfg(target_arch = "riscv64")]
+        let work_notice = crate::toolbox::resources::definitions::callbacks::Notice::new()?;
         Ok(Self { visibility: RefCell::new(Default::default()),
                   front_cache: Cell::new(None),
                   windows: Store::owned_prepared(kinds.0, kinds.1).map_err(|cause| {
                       crate::toolbox::handles::registry_status(&mac_object_table::registry::Error::Pool(cause))
                   })?,
                   retained_failures: VecDeque::new(),
+                  hit_revision: Some(1),
+                  #[cfg(target_arch = "riscv64")]
+                  removals: VecDeque::new(),
+                  #[cfg(target_arch = "riscv64")]
+                  removal_readers: alloc::sync::Arc::try_new(operations::RemovalReaders::new(work_notice.clone()))
+                      .map_err(|_| mac_abi::NO_MEMORY)?,
+                  #[cfg(target_arch = "riscv64")]
+                  work_notice,
                   #[cfg(target_arch = "riscv64")]
                   recovery_windows: core::array::from_fn(|_| None),
                   #[cfg(target_arch = "riscv64")]
                   recovery_publications: None,
+                  #[cfg(target_arch = "riscv64")]
+                  recovery_closes: Vec::new(),
                   screen: Rect::new(0, 0, crate::display::width() as i16, crate::display::height() as i16),
                   order: Vec::new(),
                   len: 0,
@@ -678,6 +865,7 @@ impl WindowManager
                   order_scratch: Vec::new(),
                   geometry_order: Vec::new(),
                   gate,
+                  tracking_revision: Some(1),
                   tracking: None,
                   #[cfg(test)]
                   test_registry: None,
@@ -803,12 +991,25 @@ impl WindowManager
         }
         let tokens = [self.windows.reserve_publication(storage).map_err(|_| mac_abi::NO_MEMORY)?,
                       self.windows.reserve_publication(storage).map_err(|_| mac_abi::NO_MEMORY)?];
+        let source = crate::kernel::system_resources(storage)?;
+        let mut closes = Vec::new();
+        closes.try_reserve_exact(tokens.len()).map_err(|_| mac_abi::NO_MEMORY)?;
+        for _ in 0..tokens.len()
+        {
+            closes.push(trusted::TrustedCloseHeader::prepare_system(source,
+                                                                    self.work_notice.clone())?);
+        }
         let required = self.len.checked_add(tokens.len()).ok_or(mac_abi::NO_MEMORY)?;
         self.visibility.get_mut().prepare(required).map_err(|_| mac_abi::NO_MEMORY)?;
         self.order.try_reserve(tokens.len()).map_err(|_| mac_abi::NO_MEMORY)?;
         self.order_scratch.try_reserve(required).map_err(|_| mac_abi::NO_MEMORY)?;
         self.geometry_order.try_reserve(required).map_err(|_| mac_abi::NO_MEMORY)?;
         self.retained_failures.try_reserve(required).map_err(|_| mac_abi::NO_MEMORY)?;
+        self.removals
+            .try_reserve(self.removal_capacity_required(tokens.len())
+                             .map_err(|_| mac_abi::NO_MEMORY)?)
+            .map_err(|_| mac_abi::NO_MEMORY)?;
+        self.recovery_closes = closes;
         self.recovery_publications = Some(tokens);
         Ok(())
     }
@@ -944,6 +1145,13 @@ impl WindowManager
         self.windows.releasing(ticket).map(|window| window.id)
     }
 
+    pub(crate) fn releasing_uses_process_definition(&self,
+                                                    ticket: &mac_object_table::domain::ReleasedResource)
+                                                    -> Option<bool>
+    {
+        self.windows.releasing(ticket).map(|window| window.binding.is_process_source())
+    }
+
     fn quarantine_or_retain(&mut self, ticket: mac_object_table::domain::ReleasedResource)
     {
         if let Err(error) = self.windows.quarantine(ticket)
@@ -982,19 +1190,13 @@ impl WindowManager
         self.windows.release_storage(ticket).map_err(Failure::from)
     }
 
-    pub(crate) fn release(&mut self, ticket: mac_object_table::domain::ReleasedResource)
-                          -> Result<WindowId, Failure>
+    fn retire_window_ui(&mut self, window: &Window)
     {
-        use mac_object_table::registry::CleanupFailure;
-        let Some(window) = self.windows.releasing(&ticket).map(|owned| owned.window)
-        else
-        {
-            return Err(Failure::registration_mismatch(ticket));
-        };
         let id = window.id;
         if let Some(index) = self.order.iter().position(|other| *other == id)
         {
             self.front_cache.set(None);
+            self.hit_revision = self.hit_revision.and_then(|revision| revision.checked_add(1));
             self.order.remove(index);
             self.len -= 1;
             if !window.hidden
@@ -1010,6 +1212,90 @@ impl WindowManager
         {
             self.tracking = None;
         }
+    }
+
+    pub(crate) fn release(&mut self, ticket: mac_object_table::domain::ReleasedResource)
+                          -> Result<WindowId, Failure>
+    {
+        use mac_object_table::registry::CleanupFailure;
+        let Some(window) = self.windows.releasing(&ticket).map(|owned| owned.window)
+        else
+        {
+            return Err(Failure::registration_mismatch(ticket));
+        };
+        let id = window.id;
+        #[cfg(target_arch = "riscv64")]
+        {
+            if let Some(owned) = self.windows.releasing(&ticket)
+               && (owned.initialized
+                   || owned.cleanup_job.is_some()
+                   || owned.trusted_close.is_some())
+            {
+                match owned.canvas_guardian().and_then(|guardian| guardian.close())
+                {
+                    Ok(()) => (),
+                    Err(mac_abi::SERVICE_BUSY) =>
+                    {
+                        return Err(Failure::window_paint_pending(ticket));
+                    }
+                    Err(status) =>
+                    {
+                        return Err(Failure::window_definition(ticket,
+                                                              id.0,
+                                                              window.procedure,
+                                                              i64::from(status)));
+                    }
+                }
+            }
+            match crate::toolbox::resources::definitions::is_user(window.entry)
+            {
+                Ok(true) =>
+                {
+                    if !window.initialized && window.user_initialization == UserInitialization::None
+                    {
+                        return self.abort_uninitialized_user(ticket);
+                    }
+                    return self.defer_user_release(ticket);
+                }
+                Err(status) =>
+                {
+                    return Err(Failure::window_definition(ticket,
+                                                          id.0,
+                                                          window.procedure,
+                                                          i64::from(status)));
+                }
+                Ok(false) => ()
+            }
+            if self.removals.len() == self.removals.capacity()
+            {
+                return Err(Failure::window_retirement_storage(ticket,
+                                                              self.removals.len(),
+                                                              self.removals.capacity()));
+            }
+        }
+        #[cfg(target_arch = "riscv64")]
+        if self.windows.releasing(&ticket).is_some_and(|owned| owned.trusted_close.is_some())
+        {
+            return self.defer_trusted_release(ticket);
+        }
+        self.release_trusted_now(ticket,
+                                 #[cfg(target_arch = "riscv64")]
+                                 None)
+    }
+
+    fn release_trusted_now(&mut self, ticket: mac_object_table::domain::ReleasedResource,
+                           #[cfg(target_arch = "riscv64")]
+                           trusted: Option<trusted::TrustedCloseHandle>)
+                           -> Result<WindowId, Failure>
+    {
+        use mac_object_table::registry::CleanupFailure;
+        let Some(window) = self.windows.releasing(&ticket).map(|owned| owned.window)
+        else
+        {
+            return Err(Failure::registration_mismatch(ticket));
+        };
+        let id = window.id;
+        self.retire_window_ui(&window);
         let Some(owned) = self.windows.releasing(&ticket)
         else
         {
@@ -1029,7 +1315,14 @@ impl WindowManager
         }
         let permit = DefinitionDisposal { binding: &owned.binding,
                                           _ticket: &ticket };
-        let reply = disposal.call(definition::DISPOSE, 0, core::ptr::null_mut(), Some(permit));
+        let reply = if owned.disposal_complete.get()
+        {
+            0
+        }
+        else
+        {
+            disposal.call(definition::DISPOSE, 0, core::ptr::null_mut(), Some(permit))
+        };
         // The ABI only mutates WindowDefinitionState. Retain those actual
         // effects before returning a refusal; retry uses the same original
         // canonical object/binding/ticket, with no mutable non-Copy extraction.
@@ -1038,6 +1331,27 @@ impl WindowManager
         {
             return Err(Failure::window_definition(ticket, id.0, window.procedure, reply));
         }
+        owned.disposal_complete.set(true);
+        #[cfg(target_arch = "riscv64")]
+        {
+            let removed = self.windows.release(ticket).map_err(Failure::from)?;
+            let debt = match trusted
+            {
+                Some(handle) =>
+                {
+                    operations::RemovalDebt::completed_trusted(removed,
+                                                               self.removal_readers.clone(),
+                                                               handle)
+                }
+                None =>
+                {
+                    operations::RemovalDebt::completed(removed, self.removal_readers.clone(), None)
+                }
+            };
+            self.removals.push_back(debt);
+            self.work_notice.request();
+        }
+        #[cfg(not(target_arch = "riscv64"))]
         drop(self.windows.release(ticket).map_err(Failure::from)?);
         #[cfg(target_arch = "riscv64")]
         {
@@ -1106,6 +1420,26 @@ impl WindowManager
         self.active
     }
 
+    /// Actual committed-content mutation only (including direct caret XOR).
+    /// Callback completion/replay and unrelated input must not increment it.
+    pub(crate) fn content_changed(&mut self, id: WindowId) -> Result<(), Status>
+    {
+        let owned = self.windows.get_mut(id.0).ok_or(NOT_FOUND)?;
+        owned.content_revision =
+            owned.content_revision.and_then(|revision| revision.checked_add(1));
+        owned.content_revision.map(|_| ()).ok_or(mac_abi::BAD_ABI)
+    }
+
+    pub(crate) fn content_revision(&self, id: WindowId) -> Result<u64, Status>
+    {
+        self.windows
+            .get(id.0)
+            .filter(|owned| owned.initialized)
+            .ok_or(NOT_FOUND)?
+            .content_revision
+            .ok_or(mac_abi::BAD_ABI)
+    }
+
     pub fn window(&self, id: WindowId) -> Option<&Window>
     {
         self.windows.get(id.0).filter(|window| window.initialized).map(|owned| &owned.window)
@@ -1113,7 +1447,13 @@ impl WindowManager
 
     fn window_mut(&mut self, id: WindowId) -> Option<&mut Window>
     {
-        self.windows.get_mut(id.0).map(|owned| &mut owned.window)
+        self.hit_revision = self.hit_revision.and_then(|revision| revision.checked_add(1));
+        self.windows.get_mut(id.0).map(|owned| {
+                                      owned.revision =
+                                          owned.revision
+                                               .and_then(|revision| revision.checked_add(1));
+                                      &mut owned.window
+                                  })
     }
 
     pub fn back_to_front(&self) -> impl Iterator<Item = &Window>
@@ -1146,7 +1486,9 @@ impl WindowManager
     {
         let owner = self.test_owner(owner);
         self.new_window_with_activation(bounds, title, &owner, minimum, procedure, entry, events,
-                                        when, true, false)
+                                        when, true, false,
+                                        #[cfg(target_arch = "riscv64")]
+                                        None)
             .ok()
     }
 
@@ -1183,7 +1525,11 @@ impl WindowManager
                          tokens.iter()
                                .enumerate()
                                .find(|(index, token)| {
-                                   token.ready() && self.recovery_windows[*index].is_none()
+                                   token.ready()
+                                   && self.recovery_windows[*index].is_none()
+                                   && self.recovery_closes
+                                          .get(*index)
+                                          .is_some_and(|header| header.available())
                                })
                                .map(|(index, _)| index)
                      })
@@ -1228,7 +1574,8 @@ impl WindowManager
                                              owner: &OwnerRef, minimum: (i16, i16),
                                              procedure: i16, entry: DefinitionRef,
                                              events: &mut EventManager, when: u32, activate: bool,
-                                             stay_in_back: bool)
+                                             stay_in_back: bool,
+                                             #[cfg(target_arch = "riscv64")] owner_close: Option<trusted::TrustedBinding>)
                                              -> Result<WindowId, CreationError>
     {
         #[cfg(target_arch = "riscv64")]
@@ -1256,7 +1603,12 @@ impl WindowManager
                 .map_err(|_| CreationError::NoMemory)?;
             self.geometry_order
                 .try_reserve(required.saturating_sub(self.geometry_order.len()))
-                .map_err(|_| CreationError::NoMemory)
+                .map_err(|_| CreationError::NoMemory)?;
+            #[cfg(target_arch = "riscv64")]
+            self.removals
+                .try_reserve(self.removal_capacity_required(1 + padding)?)
+                .map_err(|_| CreationError::NoMemory)?;
+            Ok(())
         })?;
         #[cfg(target_arch = "riscv64")]
         let source = if owner.owner().kind() == mac_object_table::domain::DomainKind::System
@@ -1271,6 +1623,24 @@ impl WindowManager
         {
             WindowSource::Application
         };
+        #[cfg(target_arch = "riscv64")]
+        let trusted_binding = if crate::toolbox::resources::definitions::is_user(entry)
+            .map_err(CreationError::Binding)? { None }
+        else if let Some(slot) = recovery_slot
+        {
+            Some(self.recovery_closes.get(slot).ok_or(CreationError::RecoveryBusy)?
+                .prepare_binding().map_err(|_| CreationError::RecoveryBusy)?)
+        }
+        else if let WindowSource::System { resources, .. } = source
+        {
+            let header = crate::context::without_recovery(|| {
+                crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                    trusted::TrustedCloseHeader::prepare_system(resources, self.work_notice.clone())
+                })
+            }).map_err(CreationError::Binding)?;
+            Some(header.prepare_binding().map_err(CreationError::Binding)?)
+        }
+        else { owner_close };
         let mut logical_owner = owner.owner().incarnation();
         #[cfg(target_arch = "riscv64")]
         if let Some(activity) = &recovery
@@ -1326,7 +1696,9 @@ impl WindowManager
                                #[cfg(target_arch = "riscv64")]
                                recovery,
                                #[cfg(target_arch = "riscv64")]
-                               recovery_slot)
+                               recovery_slot,
+                               #[cfg(target_arch = "riscv64")]
+                               trusted_binding)
     }
 
     /// One WDEF lifecycle for ordinary prepared and System-reserved births.
@@ -1336,14 +1708,15 @@ impl WindowManager
                          when: u32, activate: bool,
                          #[cfg(target_arch = "riscv64")]
                          recovery: Option<crate::recovery::Activity>,
-                         #[cfg(target_arch = "riscv64")] recovery_slot: Option<usize>)
+                         #[cfg(target_arch = "riscv64")] recovery_slot: Option<usize>,
+                         #[cfg(target_arch = "riscv64")]
+                         trusted_binding: Option<trusted::TrustedBinding>)
                          -> Result<WindowId, CreationError>
     {
         // The canonical slot exists, but public lookup deliberately hides it
         // until NEW and CALCULATE have completed below.
-        let stay_in_back = self.windows.get(id.0)
-                               .ok_or(CreationError::Binding(NOT_FOUND))?
-                               .window.stay_in_back;
+        let stay_in_back =
+            self.windows.get(id.0).ok_or(CreationError::Binding(NOT_FOUND))?.window.stay_in_back;
         let previous = self.active;
         let mut guard = InitializingWindow { manager: self,
                                              id,
@@ -1357,8 +1730,29 @@ impl WindowManager
                                                                          retry: None,
                                                                          disposed: false });
         }
+        #[cfg(target_arch = "riscv64")]
+        if let Some(binding) = trusted_binding
+        {
+            let (storage, _) = guard.manager
+                                    .windows
+                                    .get_with_owner(id.0)
+                                    .ok_or(CreationError::Binding(NOT_FOUND))?;
+            let owned =
+                guard.manager.windows.get_mut(id.0).ok_or(CreationError::Binding(NOT_FOUND))?;
+            let handle = binding.bind(owned.window,
+                                      storage,
+                                      owned.revision
+                                           .ok_or(CreationError::Binding(mac_abi::BAD_ABI))?)
+                                .map_err(CreationError::Binding)?;
+            owned.trusted_close = Some(handle);
+        }
+        let user_ready = guard.value()?.user_initialization == UserInitialization::Ready;
         for operation in [definition::NEW, definition::CALCULATE]
         {
+            if user_ready
+            {
+                continue;
+            }
             let reply = guard.value()?.call(operation, 0, core::ptr::null_mut(), None);
             if reply < 0
             {
@@ -1381,6 +1775,7 @@ impl WindowManager
         // Stay-in-back windows sit below every ordinary window, whatever the
         // creation order; among themselves creation order applies.
         let position = if stay_in_back { self.back_prefix() } else { self.len };
+        self.hit_revision = self.hit_revision.and_then(|revision| revision.checked_add(1));
         self.order.insert(position, id);
         self.len += 1;
         self.front_cache.set(None);
@@ -1455,6 +1850,7 @@ impl WindowManager
         old_order.clear();
         old_order.extend_from_slice(&self.order);
         self.front_cache.set(None);
+        self.hit_revision = self.hit_revision.and_then(|revision| revision.checked_add(1));
         self.order.copy_within(index + 1..self.len, index);
         self.order[self.len - 1] = id;
         self.active = Some(id);
@@ -1573,6 +1969,7 @@ impl WindowManager
             return;
         }
         self.front_cache.set(None);
+        self.hit_revision = self.hit_revision.and_then(|revision| revision.checked_add(1));
         core::mem::swap(&mut self.order, &mut order);
         self.invalidate_order_exposure(&order);
         self.order_scratch = order;
@@ -1933,12 +2330,63 @@ impl WindowManager
         Ok(true)
     }
 
+    /// Resolve the actual original full-key payload without window_mut's
+    /// revision side effects. Only changed scalar commit advances dependencies.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn prepare_control_outline(&mut self, id: WindowId, next: Option<Rect>)
+                                          -> Result<ControlOutlinePermit<'_>, mac_abi::Status>
+    {
+        let owned = self.windows
+                        .get_mut(id.0)
+                        .filter(|owned| owned.window.initialized)
+                        .ok_or(mac_abi::NOT_FOUND)?;
+        let revisions = if owned.window.control_outline == next
+        {
+            None
+        }
+        else
+        {
+            Some((owned.revision.and_then(|n| n.checked_add(1)).ok_or(mac_abi::BAD_ABI)?,
+                  self.hit_revision.and_then(|n| n.checked_add(1)).ok_or(mac_abi::BAD_ABI)?))
+        };
+        Ok(ControlOutlinePermit { outline: &mut owned.window.control_outline,
+                                  revision: &mut owned.revision,
+                                  hit_revision: &mut self.hit_revision,
+                                  next,
+                                  revisions })
+    }
+
     #[cfg(target_arch = "riscv64")]
     pub(crate) fn control_outline(&mut self, id: WindowId, next: Option<Rect>)
                                   -> Result<bool, mac_abi::Status>
     {
         let window = self.window_mut(id).ok_or(mac_abi::NOT_FOUND)?;
         Ok(core::mem::replace(&mut window.control_outline, next) != next)
+    }
+
+    /// Advisory cursor/drag-hover geometry only. Input admission still runs the
+    /// actual definition HIT operation. This never invokes application code or
+    /// grants a click/drop target from a cached rectangle.
+    pub(crate) fn cached_content_window(&self, point: Point) -> Option<WindowId>
+    {
+        if point.v >= 0 && point.v < 25
+        {
+            return None;
+        }
+        for id in self.order[..self.len].iter().rev()
+        {
+            let Some(window) = self.window(*id)
+            else
+            {
+                continue;
+            };
+            if window.hidden || !window.structure_pieces().iter().any(|rect| rect.contains(point))
+            {
+                continue;
+            }
+            return window.bounds.contains(point).then_some(*id);
+        }
+        None
     }
 
     pub fn find_window(&self, point: Point) -> Hit
@@ -1983,16 +2431,87 @@ impl WindowManager
         self.start_tracking_with_modifiers(hit, point, 0);
     }
 
+    /// Original captured go-away target; neither front-window state nor mouse
+    /// position can substitute for this gesture's actual close admission.
+    pub(crate) fn tracking_close_window(&self) -> Option<WindowId>
+    {
+        match self.tracking
+        {
+            Some(Tracking::Close { window,
+                                   armed: true })
+                if self.window(window).is_some() =>
+            {
+                Some(window)
+            }
+            _ => None
+        }
+    }
+
+    /// Cancel only the original close capture after a refused child preflight.
+    /// No synthetic input, author call, geometry/content invalidation or release
+    /// occurs. The caller schedules this window's changed chrome presentation.
+    pub(crate) fn cancel_close_tracking(&mut self, id: WindowId) -> bool
+    {
+        if !matches!(self.tracking, Some(Tracking::Close { window, .. }) if window == id)
+        {
+            return false;
+        }
+        self.tracking = None;
+        self.tracking_revision =
+            self.tracking_revision.and_then(|revision| revision.checked_add(1));
+        if let Some(window) = self.window_mut(id)
+        {
+            window.state.close_pressed = 0;
+        }
+        true
+    }
+
     pub fn is_tracking(&self) -> bool
     {
         self.tracking.is_some()
     }
 
-    /// Only grow/pressed chrome still belongs to the scene compositor.
+    pub(crate) fn tracking_visual(&self) -> TrackingVisual
+    {
+        let chrome = match self.tracking
+        {
+            Some(Tracking::Grow { window,
+                                  preview,
+                                  .. }) =>
+            {
+                self.window(window).map(|actual| {
+                                       TrackingChrome::Grow { window,
+                                                              structure: actual.structure(),
+                                                              preview }
+                                   })
+            }
+            Some(Tracking::Close { window,
+                                   armed: true }) =>
+            {
+                self.window(window).map(|actual| {
+                                       TrackingChrome::Close { window,
+                                                               structure: actual.structure() }
+                                   })
+            }
+            Some(Tracking::Zoom { window,
+                                  armed: true }) =>
+            {
+                self.window(window).map(|actual| {
+                                       TrackingChrome::Zoom { window,
+                                                              structure: actual.structure() }
+                                   })
+            }
+            _ => None
+        };
+        TrackingVisual { tracking: self.is_tracking(),
+                         outline: self.drag_outline(),
+                         chrome }
+    }
+
+    /// Pressed close/zoom chrome belongs to the scene compositor; GROW is an overlay.
     pub fn tracking_repaints_scene(&self) -> bool
     {
-        matches!(self.tracking,
-                 Some(Tracking::Grow { .. } | Tracking::Close { .. } | Tracking::Zoom { .. }))
+        matches!(self.tracking, Some(Tracking::Close { .. } | Tracking::Zoom { .. }))
     }
 
     pub(crate) fn drag_outline(&self) -> Option<Outline>
@@ -2019,6 +2538,8 @@ impl WindowManager
         {
             return;
         };
+        self.tracking_revision =
+            self.tracking_revision.and_then(|revision| revision.checked_add(1));
         self.tracking = match hit.part
         {
             WindowPart::Drag =>
@@ -2114,26 +2635,9 @@ impl WindowManager
                    && let Some(mut next) = self.window(window).copied()
                 {
                     let w = &mut next;
-                    if let Some(user) = w.user_bounds.take()
-                    {
-                        w.bounds = user;
-                        w.state.zoomed = 0;
-                    }
-                    else
-                    {
-                        w.user_bounds = Some(w.bounds);
-                        let structure = w.structure();
-                        w.bounds =
-                            w.standard_bounds.unwrap_or_else(|| {
-                                                 Rect::new(w.bounds.left - structure.left,
-                                                           25 + w.bounds.top - structure.top,
-                                                           self.screen.right
-                                                           - (structure.right - w.bounds.right),
-                                                           (self.screen.bottom - 21)
-                                                           - (structure.bottom - w.bounds.bottom))
-                                             });
-                        w.state.zoomed = 1;
-                    }
+                    zoom_geometry(w, self.screen);
+                    #[cfg(target_arch = "riscv64")]
+                    self.preflight_geometry(window)?;
                     if !w.calculate()
                     {
                         return Err(BAD_ARGUMENT);
@@ -2158,14 +2662,7 @@ impl WindowManager
             {
                 // DragWindow constrains the cursor, not the entire window. A
                 // release outside the desktop cancels, including activation.
-                let preview = Rect::new(0, 21, self.screen.right, self.screen.bottom).contains(point).then(|| {
-                    let dx = i32::from(point.h) - i32::from(start.h);
-                    let dy = i32::from(point.v) - i32::from(start.v);
-                    Rect::new((i32::from(bounds.left) + dx) as i16,
-                              (i32::from(bounds.top) + dy) as i16,
-                              (i32::from(bounds.right) + dx) as i16,
-                              (i32::from(bounds.bottom) + dy) as i16)
-                });
+                let preview = drag_geometry(bounds, start, point, self.screen);
                 self.tracking = Some(Tracking::Drag { window,
                                                       start,
                                                       bounds,
@@ -2173,13 +2670,19 @@ impl WindowManager
                                                       activate });
                 if released && let Some(next) = preview
                 {
-                    if let Some(w) = self.window_mut(window)
-                       && next != w.bounds
+                    if let Some(mut staged) = self.window(window).copied()
+                       && next != staged.bounds
                     {
-                        w.bounds = next;
-                        w.user_bounds = None;
-                        w.state.zoomed = 0;
-                        w.calculate();
+                        staged.bounds = next;
+                        staged.user_bounds = None;
+                        staged.state.zoomed = 0;
+                        #[cfg(target_arch = "riscv64")]
+                        self.preflight_geometry(window)?;
+                        if !staged.calculate()
+                        {
+                            return Err(BAD_ARGUMENT);
+                        }
+                        *self.window_mut(window).ok_or(NOT_FOUND)? = staged;
                         action = Some(Action::Drag(window));
                     }
                     if activate
@@ -2194,21 +2697,7 @@ impl WindowManager
                              .. } =>
             {
                 let w = self.window(window).ok_or(NOT_FOUND)?;
-                let structure = w.structure();
-                let width = (i32::from(bounds.right - bounds.left) + i32::from(point.h)
-                             - i32::from(start.h)).clamp(i32::from(w.min_width),
-                                                       i32::from(self.screen.right
-                                                                 - (structure.right - w.bounds.right)
-                                                                 - bounds.left).max(i32::from(w.min_width)))
-                            as i16;
-                let height = (i32::from(bounds.bottom - bounds.top) + i32::from(point.v)
-                              - i32::from(start.v)).clamp(i32::from(w.min_height),
-                                                         i32::from(self.screen.bottom
-                                                                   - (structure.bottom - w.bounds.bottom)
-                                                                   - bounds.top).max(i32::from(w.min_height)))
-                             as i16;
-                let next =
-                    Rect::new(bounds.left, bounds.top, bounds.left + width, bounds.top + height);
+                let next = grow_geometry(w, bounds, start, point, self.screen);
                 self.tracking = Some(Tracking::Grow { window,
                                                       start,
                                                       bounds,
@@ -2219,6 +2708,8 @@ impl WindowManager
                     staged.bounds = next;
                     staged.user_bounds = None;
                     staged.state.zoomed = 0;
+                    #[cfg(target_arch = "riscv64")]
+                    self.preflight_geometry(window)?;
                     if !staged.calculate()
                     {
                         return Err(BAD_ARGUMENT);
@@ -2491,6 +2982,8 @@ impl WindowManager
         {
             return Ok(None);
         }
+        #[cfg(target_arch = "riscv64")]
+        self.preflight_geometry(id)?;
         let mut staged = *current;
         staged.bounds = bounds;
         staged.user_bounds = None;
@@ -2504,10 +2997,58 @@ impl WindowManager
         Ok(Some(Action::Resize(id)))
     }
 
+    fn screen_fit_bounds(window: &Window, screen: Rect, bar: i16) -> Option<Rect>
+    {
+        let structure = window.structure();
+        let mut dx = (screen.right - structure.right).min(0);
+        dx = dx.max(screen.left - (structure.left + dx));
+        let mut dy = (screen.bottom - structure.bottom).min(0);
+        dy = dy.max(screen.top + bar - (structure.top + dy));
+        (dx != 0 || dy != 0).then(|| {
+                                Rect::new(window.bounds.left + dx,
+                                          window.bounds.top + dy,
+                                          window.bounds.right + dx,
+                                          window.bounds.bottom + dy)
+                            })
+    }
+
+    /// Before device or geometry effects, in the SAME Desktop exclusion as
+    /// fit_to_screen. No author executes here. Actual claimed painters are
+    /// cancelled to drain, and the caller retains the original settled size.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn preflight_fit_to_screen(&self, screen: Rect, bar: i16) -> Result<(), Status>
+    {
+        for &id in &self.order[..self.len]
+        {
+            let Some(window) = self.window(id).filter(|window| !window.stay_in_back)
+            else
+            {
+                continue;
+            };
+            if Self::screen_fit_bounds(window, screen, bar).is_none()
+            {
+                continue;
+            }
+            let owned = self.windows.get(window.id.0).ok_or(NOT_FOUND)?;
+            if !owned.binding.matches(window.entry)
+            {
+                return Err(mac_abi::BAD_ABI);
+            }
+            if crate::toolbox::resources::definitions::is_user(window.entry)?
+            {
+                return Err(mac_abi::NOT_SUPPORTED);
+            }
+            owned.canvas_guardian()?.preflight_geometry()?;
+        }
+        Ok(())
+    }
+
     /// Adopt new main-screen bounds and move every ordinary window back onto
     /// them without changing stacking: whole window when it fits, otherwise at
     /// least its title bar, below the menu bar. Enlarging moves nothing.
     /// Stay-in-back windows are left to their owner, who resizes them normally.
+    /// Shipping callers must preflight_fit_to_screen in this SAME Desktop turn
+    /// before changing the device. The commit never silently skips a claim.
     pub(crate) fn fit_to_screen(&mut self, screen: Rect, bar: i16, mut moved: impl FnMut(WindowId))
     {
         self.screen = screen;
@@ -2522,20 +3063,13 @@ impl WindowManager
             {
                 continue;
             };
-            let structure = previous.structure();
-            let mut dx = (screen.right - structure.right).min(0);
-            dx = dx.max(screen.left - (structure.left + dx));
-            let mut dy = (screen.bottom - structure.bottom).min(0);
-            dy = dy.max(screen.top + bar - (structure.top + dy));
-            if dx == 0 && dy == 0
+            let Some(bounds) = Self::screen_fit_bounds(&previous, screen, bar)
+            else
             {
                 continue;
-            }
+            };
             let mut staged = previous;
-            staged.bounds = Rect::new(previous.bounds.left + dx,
-                                      previous.bounds.top + dy,
-                                      previous.bounds.right + dx,
-                                      previous.bounds.bottom + dy);
+            staged.bounds = bounds;
             staged.user_bounds = None;
             staged.state.zoomed = 0;
             if !staged.calculate()
@@ -2555,11 +3089,13 @@ impl WindowManager
     pub fn set_standard_bounds(&mut self, id: WindowId, bounds: Option<Rect>)
                                -> Result<(), Status>
     {
-        let window = self.window_mut(id).ok_or(NOT_FOUND)?;
-        if window.standard_bounds == bounds
+        if self.window(id).ok_or(NOT_FOUND)?.standard_bounds == bounds
         {
             return Ok(());
         }
+        #[cfg(target_arch = "riscv64")]
+        self.preflight_geometry(id)?;
+        let window = self.window_mut(id).ok_or(NOT_FOUND)?;
         if let Some(bounds) = bounds
         {
             if i32::from(bounds.right) - i32::from(bounds.left) < i32::from(window.min_width)
@@ -2597,30 +3133,9 @@ impl WindowManager
         true
     }
 
-    /// Content is clipped to visible fragments; the callback may be called more
-    /// than once per window. Retained application content makes these paints cheap.
-    pub fn draw(&self, c: &mut Canvas, mut paint: impl FnMut(&Window, &mut Canvas))
-    {
-        self.draw_with_scratch(c, None, &mut paint);
-    }
-
-    /// The resident compositor supplies a reusable mask. Other renderers can
-    /// omit scratch and retain the ordinary independently owned drawing path.
-    pub fn draw_with_scratch(&self, c: &mut Canvas, scratch: Option<&mut [u32]>,
-                             mut paint: impl FnMut(&Window, &mut Canvas))
-    {
-        let _frame = self.draw_layer(c,
-                                     |_| true,
-                                     |window, canvas| {
-                                         paint(window, canvas);
-                                         Ok(())
-                                     });
-        self.draw_tracking(c, scratch);
-    }
-
     /// Draw one selected layer through the same definitions/content renderer.
     /// Occlusion comes only from included windows. Transient tracking belongs
-    /// on the final backbuffer and is deliberately excluded from this pass.
+    /// to the present-time overlay and is excluded from the scene buffer.
     pub(crate) fn draw_layer(&self, c: &mut Canvas, include: impl Fn(&Window) -> bool,
                              mut paint: impl FnMut(&Window, &mut Canvas) -> Result<(), Status>)
                              -> Result<(), Status>
@@ -2731,70 +3246,6 @@ impl WindowManager
         result
     }
 
-    /// Tracking overlays never mutate window geometry, retained content or damage.
-    /// Grow geometry belongs to the loaded definition, not to the manager.
-    pub(crate) fn draw_tracking(&self, canvas: &mut Canvas, scratch: Option<&mut [u32]>)
-    {
-        self.draw_tracking_at(canvas, scratch, 21.min(canvas.height));
-    }
-
-    fn draw_tracking_at(&self, canvas: &mut Canvas, scratch: Option<&mut [u32]>, mask_top: usize)
-    {
-        let Some(Tracking::Grow { window,
-                                  preview,
-                                  .. }) = self.tracking
-        else
-        {
-            return;
-        };
-        let mask_height = canvas.height - mask_top;
-        if mask_height == 0
-        {
-            return;
-        }
-        let count = canvas.width * mask_height;
-        let mut owned = alloc::vec::Vec::new();
-        let mask = if let Some(scratch) = scratch.filter(|scratch| scratch.len() >= count)
-        {
-            &mut scratch[..count]
-        }
-        else
-        {
-            if InvocationGate::with_system_allocation(|| owned.try_reserve_exact(count)).is_err()
-            {
-                return;
-            }
-            owned.resize(count, 0);
-            &mut owned
-        };
-        mask.fill(0xffffff);
-        let Some(mut window) = self.window(window).copied()
-        else
-        {
-            return;
-        };
-        let mut target = Canvas::new(mask, canvas.width, mask_height);
-        target.set_origin(0, -(mask_top as i16));
-        let mut surface = Surface::from_canvas(&mut target);
-        if window.call(definition::GROW, (&preview as *const Rect) as i64, &mut surface, None) < 0
-        {
-            return;
-        }
-        // Classic gray pen pattern, XORed over the composed desktop. Rebuilding
-        // the retained scene erases old outlines without damaging covered ports.
-        for y in 21..canvas.height
-        {
-            for x in 0..canvas.width
-            {
-                let index = y * canvas.width + x;
-                if mask[(y - mask_top) * canvas.width + x] != 0xffffff && (x + y) & 1 == 1
-                {
-                    canvas.pixels[index] = indexed_tracking_xor(canvas.pixels[index]);
-                }
-            }
-        }
-    }
-
     /// Enumerate non-overlapping global content rectangles after subtracting
     /// higher windows' structure regions. Rectangular regions are the first cut.
     pub fn for_each_visible_rect(&self, id: WindowId, visit: impl FnMut(Rect))
@@ -2835,6 +3286,37 @@ impl WindowManager
                                                window.structure_pieces().iter().copied()
                                            });
         self.visibility.borrow_mut().visit(window.bounds, rectangles, visit);
+    }
+
+    /// The same visibility sweep for bounded frame damage. Content visibility
+    /// alone excludes the title bar, so it cannot be used for Close/Zoom paint.
+    pub(crate) fn for_each_layer_frame_rect(&self, id: WindowId, bounds: Rect,
+                                            include: &impl Fn(&Window) -> bool,
+                                            visit: impl FnMut(Rect))
+    {
+        let Some(index) = self.order[..self.len].iter().position(|other| *other == id)
+        else
+        {
+            return;
+        };
+        let Some(window) = self.window(id).filter(|window| include(window))
+        else
+        {
+            return;
+        };
+        let mut target = Rect::ZERO;
+        if !sect_rect(bounds, window.structure(), &mut target)
+        {
+            return;
+        }
+        let higher =
+            self.order[index + 1..self.len].iter()
+                                           .filter_map(|id| self.window(*id))
+                                           .filter(|window| !window.hidden && include(window))
+                                           .flat_map(|window| {
+                                               window.structure_pieces().iter().copied()
+                                           });
+        self.visibility.borrow_mut().visit(target, higher, visit);
     }
 
     /// Copy committed ordinary pixels only where no genuine System source

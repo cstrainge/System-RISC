@@ -20,6 +20,10 @@ pub(crate) mod address;
 pub(crate) use address::changed as address_wait_changed;
 mod stack;
 pub(crate) use stack::{StackPinError, StackWaitPin, pin_application_stack};
+mod user;
+pub(crate) mod callbacks;
+pub(crate) use user::{Fault as UserFault, FaultSnapshot, capture_definition_panic, capture_fault,
+                      current_user_space, pump_faults};
 mod worker;
 pub(crate) mod service;
 pub(crate) mod wake;
@@ -431,6 +435,8 @@ impl Thread
 #[derive(Clone, Copy)]
 enum Wait
 {
+    Callback,
+    Desktop,
     Address
     {
         deadline: Option<u64>
@@ -449,7 +455,8 @@ enum Wait
     },
     Events
     {
-        mask: u16, deadline: u64
+        mask:     u16,
+        deadline: u64
     },
     Io
     {
@@ -516,6 +523,7 @@ pub(crate) fn context_released()
         RECLAIM_PENDING.store(true, Ordering::Release);
         wake::request();
     }
+    user::faults_changed();
     worker::context_released();
 }
 pub fn switches(app: u64) -> u64
@@ -571,12 +579,20 @@ struct ThreadCore
     // Only impossible service binding uncertainty fills this prepaid slot.
     // It intentionally retains the original core/ticket until reset.
     service_quarantine: spin::Once<(Arc<ThreadCore>, mac_abi::Status)>,
+    user_fault:         Mutex<Option<user::Fault>>,
+    runtime:            Option<Arc<user::Runtime>>,
+    callback_queue:     Option<Arc<crate::toolbox::resources::definitions::callbacks::Queue>>,
     name:               Mutex<Option<ThreadName>>,
     application:        Option<Arc<application::Completion>>,
     pending_join:       Mutex<Option<application::PendingJoin>>
 }
 impl ThreadCore
 {
+    fn publish_user_backing(&self) -> Result<(), mac_abi::Status>
+    {
+        user::retirement::publish(self)
+    }
+
     fn cpu_frame(&self) -> Option<*mut TrapFrame>
     {
         let backing = self.backing.lock();
@@ -657,22 +673,20 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                        drop(slots);
                                        cause.status()
                                    })?;
-        let (stack, cpu, allocation) = charges.allocate(&owner, |top| {
-                                                  let mut initial = TrapFrame::default();
-                                                  initial.pc = app_start as *const () as usize;
-                                                  initial.status = super::traps::INITIAL_STATUS;
-                                                  initial.registers[8] = loaded.entry();
-                                                  initial.stack_pointer = top;
-                                                  // gp is unused by the freestanding PC-relative
-                                                  // executable contract.
-                                                  initial
-                                              })
-                                              .map_err(|error| {
-                                                  serial!("THREAD_BACKING_REFUSED: {error}");
-                                                  error.status()
-                                              })?;
-        let top = stack.top();
-        let stack = stack::StackBacking::prepare(&owner, stack)?;
+        let runtime = user::Runtime::prepare(&owner, &loaded, &space)?;
+        let (stack, mut cpu, allocation) = charges.allocate(&owner, |_| TrapFrame::default())
+                                                  .map_err(|cause| {
+                                                      serial!("THREAD_BACKING_REFUSED: {cause}");
+                                                      cause.status()
+                                                  })?;
+        let stack = stack::StackBacking::prepare_user(&owner, stack, &space)?;
+        let top = stack.user_top()?;
+        let mut initial = TrapFrame::default();
+        initial.pc = loaded.entry();
+        initial.status = super::traps::USER_STATUS;
+        initial.stack_pointer = top;
+        initial.registers[8] = runtime.descriptor();
+        cpu.initialize(initial).map_err(|cause| cause.status())?;
         let core = Arc::try_new(ThreadCore { address: Mutex::new(None),
                                              backing:
                                                  Mutex::new(Some(ThreadBacking { cpu,
@@ -686,6 +700,9 @@ pub(crate) fn prepare(owner: crate::toolbox::handles::OwnerRef,
                                              top,
                                              cleanup_refusal: Mutex::new(None),
                                              service_quarantine: spin::Once::new(),
+                                             user_fault: Mutex::new(None),
+                                             runtime: Some(runtime),
+                                             callback_queue: None,
                                              name: Mutex::new(None),
                                              application: None,
                                              pending_join: Mutex::new(None) }).map_err(|_| {
@@ -731,10 +748,11 @@ pub(crate) struct RecoveryPrepareFailure
 {
     pub(crate) status: mac_abi::Status,
     pub(crate) loaded: crate::kernel::LoadedImage,
-    pub(crate) loan:   FinderBackingLoan
+    pub(crate) loan:   Option<FinderBackingLoan>
 }
 /// The same process entry, CPU frame and THRD publication use boot-held native
-/// backing. All fallible control-block work precedes consumption of the loan.
+/// backing. A refused post-loan mapping/metadata preparation returns its real
+/// backing through owned retirement; it never fabricates a restored loan.
 pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
                                charges: accounting::ThreadCharges, loan: FinderBackingLoan,
                                heap: crate::toolbox::application_heap::RootBinding,
@@ -764,6 +782,7 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
                                     owner.owner().incarnation());
                             cause.status()
                         })?;
+            let runtime = user::Runtime::prepare(&owner, &loaded, &space)?;
             let context = Arc::try_new(ThreadContext::new()).map_err(|_| mac_abi::NO_MEMORY)?;
             let slots =
                 crate::toolbox::native_threads::prepare_slots(&owner, &tls).map_err(|cause| {
@@ -785,6 +804,9 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
                                     top: 0,
                                     cleanup_refusal: Mutex::new(None),
                                     service_quarantine: spin::Once::new(),
+                                    user_fault: Mutex::new(None),
+                                    runtime: Some(runtime),
+                                    callback_queue: None,
                                     name: Mutex::new(None),
                                     application: None,
                                     pending_join: Mutex::new(None) };
@@ -799,7 +821,7 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
         {
             return Err(RecoveryPrepareFailure { status,
                                                 loaded,
-                                                loan });
+                                                loan: Some(loan) });
         }
     };
     let Some(storage) = Arc::get_mut(&mut core)
@@ -807,32 +829,47 @@ pub(crate) fn prepare_recovery(owner: OwnerRef, loaded: crate::kernel::LoadedIma
     {
         return Err(RecoveryPrepareFailure { status: mac_abi::BAD_ABI,
                                             loaded,
-                                            loan });
+                                            loan: Some(loan) });
     };
-    let backing = charges.allocate_recovery(&owner, loan, |top| {
-                             let mut frame = TrapFrame::default();
-                             frame.pc = app_start as *const () as usize;
-                             frame.status = super::traps::INITIAL_STATUS;
-                             frame.registers[8] = loaded.entry();
-                             frame.stack_pointer = top;
-                             frame
-                         });
-    let (stack, cpu, allocation) = match backing
+    let backing = charges.allocate_recovery(&owner, loan, |_| TrapFrame::default());
+    let (stack, mut cpu, allocation) = match backing
     {
         Ok(backing) => backing,
-        Err((error, loan)) =>
+        Err((cause, loan)) =>
         {
-            return Err(RecoveryPrepareFailure { status: error.status(),
+            return Err(RecoveryPrepareFailure { status: cause.status(),
                                                 loaded,
-                                                loan });
+                                                loan: Some(loan) });
         }
     };
-    storage.top = stack.top();
-    let stack = stack_preparation.finish(stack);
-    *storage.backing.get_mut() =
-        Some(ThreadBacking { cpu,
-                             stack,
-                             image: Some(ApplicationImageUse::Main { _image: loaded }) });
+    let prepared = (|| -> Result<_, mac_abi::Status> {
+        let space = storage.space.as_ref().ok_or(mac_abi::BAD_ABI)?;
+        let runtime = storage.runtime.as_ref().ok_or(mac_abi::BAD_ABI)?;
+        let stack = stack_preparation.finish(stack, Some(space))?;
+        let top = stack.user_top()?;
+        let mut frame = TrapFrame::default();
+        frame.pc = loaded.entry();
+        frame.status = super::traps::USER_STATUS;
+        frame.stack_pointer = top;
+        frame.registers[8] = runtime.descriptor();
+        cpu.initialize(frame).map_err(|cause| cause.status())?;
+        Ok((stack, top))
+    })();
+    let (stack, top) = match prepared
+    {
+        Ok(value) => value,
+        Err(status) =>
+        {
+            return Err(RecoveryPrepareFailure { status,
+                                                loaded,
+                                                loan: None });
+        }
+    };
+    storage.top = top;
+    *storage.backing.get_mut() = Some(ThreadBacking { cpu,
+                                                      stack,
+                                                      image:
+                                                          Some(ApplicationImageUse::Main { _image: loaded }) });
     Ok(PreparedThread { owner,
                         core: mac_object_table::retained::Read::new(core, context_released),
                         allocation,
@@ -844,7 +881,9 @@ pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
                              -> Result<u64, SpawnFailure>
 {
     let mut disposition = SpawnRefusal::RetryableAdmission;
-    let published = match admission::publish(&prepared, runnable)
+    // Publication creates an inert canonical THRD first. No hart may select
+    // user code until both actual stack and descriptor PTE ACKs are complete.
+    let published = match admission::publish(&prepared, false)
     {
         Err(cause) =>
         {
@@ -856,7 +895,27 @@ pub(crate) fn spawn_prepared(prepared: PreparedThread, runnable: bool)
         {
             match publication.assigned
             {
-                Ok(()) => Ok(publication.id),
+                Ok(()) =>
+                {
+                    match prepared.core.publish_user_backing().and_then(|()| {
+                        if runnable { start_prepared(publication.id, &prepared.owner) }
+                        else { Ok(()) }
+                    })
+                    {
+                        Ok(()) => Ok(publication.id),
+                        Err(status) =>
+                        {
+                            disposition = SpawnRefusal::TerminalBinding;
+                            let scheduler = SCHEDULER.lock();
+                            if let Some((_, thread)) = scheduler.iter()
+                                .find(|(_, thread)| thread.id == publication.id)
+                            {
+                                retire(thread);
+                            }
+                            Err(status)
+                        }
+                    }
+                }
                 Err(status) =>
                 {
                     disposition = SpawnRefusal::TerminalBinding;
@@ -970,83 +1029,6 @@ pub(crate) fn spawn(owner: OwnerRef, loaded: crate::kernel::LoadedImage,
     spawn_prepared(prepared, true).map_err(|failure| failure.status)
 }
 
-extern "C" fn app_start(entry: usize) -> !
-{
-    let function: mac_abi::ApplicationEntry = unsafe { core::mem::transmute(entry) };
-    let status = unsafe { function(crate::kernel::services()) };
-    if status != mac_abi::OK
-    {
-        app_return_log(format_args!("APPLICATION_ENTRY_RETURNED entry={entry:#x} \
-                                     status={status}\n"));
-    }
-    // Entry Status describes the CRT service contract, not the program's
-    // signed main result. A failed entry aborts with a distinct diagnostic;
-    // ordinary main/explicit exit carries its own result through NativeExitCall.
-    let mut call =
-        mac_abi::processes::NativeExitCall { code:     if status == mac_abi::OK { 0 } else { 101 },
-                                             flags:    if status == mac_abi::OK
-                                             {
-                                                 mac_abi::processes::NATIVE_EXIT_NORMAL
-                                             }
-                                             else
-                                             {
-                                                 mac_abi::processes::NATIVE_EXIT_ABORT
-                                             },
-                                             reserved: 0 };
-    let exit_status = unsafe {
-        super::traps::gateway(mac_abi::traps::PROCESS,
-                              (&mut call as *mut mac_abi::processes::NativeExitCall).cast(),
-                              core::mem::size_of_val(&call))
-    };
-    app_return_log(format_args!("APPLICATION_EXIT_RETURNED entry={entry:#x} \
-                                 status={exit_status}; nonreturning System contract lost\n"));
-    // EXIT must consume this canonical continuation. Its unexpected return is
-    // an unrecoverable platform contract failure, reported by the real trap's
-    // loud terminal path. Do not silently retain a spinning app (M-D04).
-    unsafe {
-        core::arch::asm!("unimp", options(noreturn, nostack));
-    }
-}
-
-fn app_return_log(arguments: core::fmt::Arguments<'_>)
-{
-    use core::fmt::Write;
-    struct Text
-    {
-        bytes: [u8; 256],
-        used:  usize
-    }
-    impl Write for Text
-    {
-        fn write_str(&mut self, text: &str) -> core::fmt::Result
-        {
-            if text.len() > self.bytes.len() - self.used
-            {
-                return Err(core::fmt::Error);
-            }
-            self.bytes[self.used..self.used + text.len()].copy_from_slice(text.as_bytes());
-            self.used += text.len();
-            Ok(())
-        }
-    }
-    let mut text = Text { bytes: [0; 256],
-                          used:  0 };
-    if text.write_fmt(arguments).is_err()
-    {
-        let fallback = b"APPLICATION_RETURN_DIAGNOSTIC_OVERFLOW\n";
-        text.bytes[..fallback.len()].copy_from_slice(fallback);
-        text.used = fallback.len();
-    }
-    let mut call = mac_abi::traps::LogCall { bytes:  text.bytes.as_ptr(),
-                                             length: text.used };
-    // The returning app may be on a peer. The actual LOG trap routes the same
-    // continuation before touching fixed-owner firmware; no direct peer UART.
-    let _ = unsafe {
-        super::traps::gateway(mac_abi::traps::LOG,
-                              core::ptr::from_mut(&mut call).cast(),
-                              core::mem::size_of_val(&call))
-    };
-}
 fn arm()
 {
     arm_ticks(timer_interval());
@@ -1518,117 +1500,7 @@ pub(crate) fn retire_owner(owner: u64)
 /// outside the scheduler lock before acknowledging that unique ticket.
 pub(crate) fn reclaim_retired()
 {
-    if critical_active()
-    {
-        return;
-    }
-    if !RECLAIM_PENDING.swap(false, Ordering::AcqRel)
-    {
-        return;
-    }
-    address::release_retired();
-    let mut after = 0;
-    loop
-    {
-        let removed = {
-            let mut scheduler = SCHEDULER.lock();
-            let found = scheduler.iter().find_map(|(slot, thread)| {
-                                            if slot < after
-                                               || !thread.state.get().retired
-                                               || !thread.state.get().service.quiescent()
-                                            {
-                                                return None;
-                                            }
-                                            after = slot + 1;
-                                            if thread.state.get().claimed_by.is_some()
-                                            {
-                                                // The actual handoff rearms reap after releasing
-                                                // this claim, independent of this reaper's hart.
-                                                return None;
-                                            }
-                                            if Arc::strong_count(&thread.core) != 1
-                                               || Arc::strong_count(&thread.core.context) != 1
-                                               || thread.core
-                                                        .backing
-                                                        .lock()
-                                                        .as_ref()
-                                                        .is_none_or(|backing| {
-                                                            Arc::strong_count(&backing.stack) != 1
-                                                        })
-                                            {
-                                                return None;
-                                            }
-                                            thread.core.release.lock().take().map(|ticket| {
-                                                                                 (slot,
-                                                                                  thread.id,
-                                                                                  ticket,
-                                                                                  thread.core
-                                                                                        .clone())
-                                                                             })
-                                        });
-            let Some((slot, id, ticket, core)) = found
-            else
-            {
-                break;
-            };
-            // This exact store/receipt was checked above under the same lock.
-            let result = match scheduler.records.as_mut()
-            {
-                Some(store) =>
-                {
-                    match store.release(ticket)
-                    {
-                        Ok(removed) => Ok(removed),
-                        Err(error) =>
-                        {
-                            serial!("THREAD_RECLAIM_REFUSED: {error}; retaining backing in the \
-                                     common owner quarantine");
-                            match store.quarantine(error.into_ticket())
-                            {
-                                Ok(()) => Err(None),
-                                Err(error) =>
-                                {
-                                    serial!("THREAD_QUARANTINE_REFUSED: {error}; original ticket \
-                                             remains with its actual thread backing");
-                                    Err(Some(error.into_ticket()))
-                                }
-                            }
-                        }
-                    }
-                }
-                None => Err(Some(ticket))
-            };
-            match result
-            {
-                Ok(removed) =>
-                {
-                    scheduler.threads[slot] = None;
-                    RETIRED_COUNT.fetch_sub(1, Ordering::AcqRel);
-                    // The temporary read must leave before Removed destroys
-                    // its payload and acknowledges stack/code quiescence.
-                    let context = core.context.clone();
-                    let app = context.identity().app.0;
-                    drop(core);
-                    Some((removed, context, app, id))
-                }
-                Err(ticket) =>
-                {
-                    // Restore through the retained real backing, never a
-                    // second lookup which could discard the cleanup ticket.
-                    *core.release.lock() = ticket;
-                    None
-                }
-            }
-        };
-        if let Some((removed, context, app, id)) = removed
-        {
-            context.release();
-            drop(context);
-            drop(removed);
-            serial!("PROCESS_THREAD_RECLAIMED app={app} thread={id}");
-            crate::toolbox::processes::retirement::thread_reclaimed();
-        }
-    }
+    user::retirement::reclaim();
 }
 
 fn claim_lost(hart: HartKey, slot: usize, reason: &str) -> !

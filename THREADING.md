@@ -23,8 +23,15 @@ and Abort run no user TLS callbacks. See [the std status](docs/RUST-STD.md).
 
 The RV64 implementation schedules Finder, separately loaded APPLs and native
 module workers on the core-admitted eligible CPUs. The normal QemuRISC-V image
-has four physical CPUs and installs Multi-Scheduler; without an active policy,
-boot scheduling stays on the primary. Supervisor timer interrupts preempt
+has four physical CPUs and installs Multi-Scheduler. The checked platform
+`scheduling.maximum_active_harts` currently caps scheduling at one active hart
+while the new U-mode application isolation awaits SMP qualification. Physical CPU
+inspection still reports all four CPUs; peers retain their real idle/readiness
+owners. Policy limits expose the lesser of this configured cap and discovered
+CPU count, and the core rejects requests above the cap before eligibility edits.
+Changing the cap requires rebuilding the platform; a policy request cannot
+override it. Without an active policy, boot scheduling stays on the primary.
+Supervisor timer interrupts preempt
 application and admitted worker bodies independently of Toolbox calls.
 Registered, fallibly grown thread records own independent page-backed stacks
 (4 MiB by default, selected by checked platform policy within 64 KiB–8 MiB),
@@ -45,11 +52,12 @@ input, compositor/firmware work and maintenance remain primary-owned. Idle peers
 use genuine readiness wakes rather than periodic author scheduling.
 
 General application-thread creation and broader blocking APIs remain open.
-Bounded optimized native observations include same-stack migration of two apps
+Earlier optimized native observations include same-stack migration of two apps
 and two Automatic workers, overlapping bodies on four CPUs, real services and
 policy demotion/repromotion/retirement. These scenarios do not prove absence of
 races, timing bounds or whole-OS correctness. [SCHEDULING.md](SCHEDULING.md) records
-the exact artifacts, observations and remaining gates. Earlier single-hart
+the exact artifacts, observations and remaining gates. They do not qualify the
+new U-mode application isolation for multi-hart scheduling. Earlier single-hart
 captures below retain their narrower historical scope.
 
 Each scheduling boundary services physical input, cursor presentation and event

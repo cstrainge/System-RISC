@@ -1,6 +1,7 @@
 //! Registered immutable sources and private flat execution reservations.
 #![forbid(unsafe_code)]
 mod recovery;
+mod user_runtime;
 pub(crate) use recovery::{PendingRecoveryImage, RecoveryDisposition, RecoveryImageFailure};
 mod sharing;
 mod interning;
@@ -145,6 +146,26 @@ impl Read
     pub(crate) fn shared_source(&self) -> Arc<Source>
     {
         self.source.clone()
+    }
+
+    fn user_alias(&self, address: usize, bytes: usize, write: bool) -> Result<usize, Status>
+    {
+        self.instance
+            .mapping
+            .get()
+            .ok_or(SERVICE_BUSY)?
+            .user_alias(address, bytes, write)
+            .map_err(|e| e.status())
+    }
+
+    pub(crate) fn user_spans(&self) -> Result<Vec<crate::machine::paging::user::Span>, Status>
+    {
+        if self.instance.module
+           || self.instance.owner.owner().kind() != mac_object_table::domain::DomainKind::Process
+        {
+            return Err(ACCESS_DENIED);
+        }
+        self.instance.mapping.get().ok_or(SERVICE_BUSY)?.user_spans().map_err(|e| e.status())
     }
 
     pub(crate) fn binding(&self) -> Binding
@@ -469,6 +490,11 @@ impl Loaded
         Ok(ModuleExecution(self._execution))
     }
 
+    pub(crate) fn user_read(&self) -> Result<Read, Status>
+    {
+        self._execution._source.retain()
+    }
+
     pub(crate) fn range(&self) -> core::ops::Range<u64>
     {
         self._execution._source.instance.base..self._execution._source.instance.limit
@@ -558,22 +584,27 @@ impl Manager
                                                         (object, object_backing)).map_err(status)? })
     }
 
-    fn free_placement(&self, base: u64, extent: u64, limit: u64) -> bool
+    fn free_placement(&self, owner: mac_object_table::domain::DomainId, base: u64, extent: u64,
+                      limit: u64)
+                      -> bool
     {
         base.checked_add(extent).is_some_and(|end| {
                                     end <= limit
-                                    && !self.sources
-                                            .retained()
-                                            .any(|(_, instance)| {
-                                                base < instance.limit && instance.base < end
-                                            })
+                                    && !self.sources.retained().any(|(_, instance)| {
+                                                                   (instance.module
+                                                                    || instance.owner.owner()
+                                                                       == owner)
+                                                                   && base < instance.limit
+                                                                   && instance.base < end
+                                                               })
                                 })
     }
 
-    fn placement(&self, preferred: u64, extent: u64, relocation_base: u64, limit: u64)
+    fn placement(&self, owner: mac_object_table::domain::DomainId, preferred: u64, extent: u64,
+                 relocation_base: u64, limit: u64)
                  -> Result<u64, Status>
     {
-        let base = if self.free_placement(preferred, extent, limit)
+        let base = if self.free_placement(owner, preferred, extent, limit)
         {
             preferred
         }
@@ -586,7 +617,11 @@ impl Manager
                     candidate.checked_add(extent).filter(|end| *end <= limit).ok_or(NO_MEMORY)?;
                 let next = self.sources
                                .retained()
-                               .filter(|(_, i)| candidate < i.limit && i.base < end)
+                               .filter(|(_, i)| {
+                                   (i.module || i.owner.owner() == owner)
+                                   && candidate < i.limit
+                                   && i.base < end
+                               })
                                .map(|(_, i)| i.limit)
                                .max();
                 match next
@@ -672,12 +707,13 @@ impl Manager
             return Err(ACCESS_DENIED);
         }
         let offset = start.checked_sub(instance.base).ok_or(BAD_ABI)?;
+        let cpu = execution.0._source.user_alias(address, core::mem::size_of::<u32>(), true)?;
         Ok(ApplicationAtomic32 { key: ApplicationAtomic32Key { image: execution.0
                                                                                ._source
                                                                                .binding,
                                                                offset },
                                  execution,
-                                 address })
+                                 address: cpu })
     }
 
     pub(crate) fn execute_module(&self, binding: Binding) -> Result<ModuleExecution, Status>

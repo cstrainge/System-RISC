@@ -1,6 +1,8 @@
 //! App-local state is swapped only at the interrupt-masked service boundary.
 //! The compositor/window registry are shared; applications never select identity.
 #![forbid(unsafe_code)]
+#[path = "runtime/callback.rs"]
+mod callback;
 use alloc::{boxed::Box, vec::Vec};
 
 use mac_abi::{events::{Event, EventKind},
@@ -1250,6 +1252,7 @@ impl Toolbox
         self.menus.cancel_tracking();
         self.enter(caller);
         self.processes.activate(id)?;
+        self.cancel_window_input();
         self.foreground = id;
         self.presentation.cursor_dirty |= self.pointer.responsiveness.foreground(id, Self::when());
         self.windows.set_owner_hidden(id, false);

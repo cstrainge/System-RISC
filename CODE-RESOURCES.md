@@ -20,9 +20,14 @@ buddy-backed RX/R/RW mappings with original-account charges. Their original imag
 cleanup ticket remains pending until owned PTE removal, real translation ACKs and
 physical refund. Bounded module observations and remaining gaps are recorded in
 [the memory model](docs/MEMORY-APP-RESOURCE-MODEL.md#module-mapping-observations--2026-11-01). Application and
-definition physical migration, immutable frame sharing and private application
-roots remain separate gates.
-Application placement fields remain transitional until private process spaces.
+definition physical migration and immutable frame sharing remain separate
+qualification gates. Application build manifests also omit placement fields:
+the checked private Process layout supplies their common link origin (4 MiB on
+QemuRISC-V), and packaging keeps only the actual page-rounded segment extent.
+This link geometry neither reserves physical RAM nor excludes another Process
+from the same virtual addresses. The NABI geometry remains mandatory. All
+packages must be rebuilt together; this format change does not establish runtime
+isolation or callback qualification.
 
 ## Building a native definition
 
@@ -37,8 +42,8 @@ unsafe extern "C" fn(*mut mac_abi::DefinitionCall) -> i64
 
 The System manifest embeds them with `format: "native_code"` and only the Cargo
 binary name in `artifact`. Neither the definition manifest nor its embedding
-payload supplies `load_base`/`load_limit`; those keys are rejected for System
-and code-resource build manifests. Artifacts resolve beside the actual input ELF in
+payload supplies `load_base`/`load_limit`; those keys are rejected for every executable
+build manifest and lossless archive project. Artifacts resolve beside the actual input ELF in
 this build's target/profile directory. Build-script dependency tracking uses the
 same selected directory; private checks never read a regular desktop artifact.
 Each payload is a 40-byte `RVN1` descriptor
@@ -147,3 +152,24 @@ See [the Window Manager notes](system/src/toolbox/windows/README.md) for reprodu
 the limits of the verified device profile. Custom palettes, alternate fonts,
 rounded WDEF 1 and the original 68k ABI remain future work. No Apple executable
 bytes are embedded in the native definitions; the original font assets are data.
+
+## Native WDEF grow feedback footprint
+
+A native WDEF's reversible `GROW` feedback is confined to its own validated
+`CALCULATE` structure for the proposed content rectangle. System copies the
+original Window state, sets the proposed content, and calls the same original
+WDEF's `CALCULATE`. An invalid structure or failed call refuses that preview
+before any mask is allocated or published. `GROW` then receives the accepted
+state and the original proposed rectangle, with a white surface clipped to that
+structure and the screen below the menu bar. Global pattern alignment is
+preserved. Pixels outside this footprint are neither writable nor replayed.
+This contract does not change the classic 68k adapter.
+
+For a user definition these are two real staged callbacks under the same
+Window/source/tracking claim. System retains the first reply through scratch
+refusal, and coalesces later motion while the original callback drains. Accepted
+feedback is a present-time XOR overlay, never part of retained window content or
+the scene. The previous mask and its original storage account remain alive until
+its frontbuffer overlay has been erased. Release/cancellation cannot activate a
+late preview; admitted author work retains its claims until actual return or
+source stop. Trusted native definitions use the same footprint rule inline.

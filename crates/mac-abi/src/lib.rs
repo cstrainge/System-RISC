@@ -17,7 +17,70 @@ pub const NATIVE_SEGMENT_RECORD_BYTES: usize = 28;
 /// Native descriptors carry this fingerprint so stale packages fail before
 /// entry rather than interpreting new payloads with an older struct layout.
 pub const NATIVE_LAYOUT_FINGERPRINT: u32 = {
-    let words = [core::mem::size_of::<entropy::Call>(),
+    let words = [core::mem::size_of::<SystemServices>(),
+                 core::mem::size_of::<definitions::UserCall>(),
+                 core::mem::align_of::<definitions::UserCall>(),
+                 core::mem::offset_of!(definitions::UserCall, header),
+                 core::mem::offset_of!(definitions::UserCall, kind),
+                 core::mem::offset_of!(definitions::UserCall, id),
+                 core::mem::offset_of!(definitions::UserCall, variation),
+                 core::mem::offset_of!(definitions::UserCall, message),
+                 core::mem::offset_of!(definitions::UserCall, reserved),
+                 core::mem::offset_of!(definitions::UserCall, reflow),
+                 core::mem::offset_of!(definitions::UserCall, param),
+                 core::mem::offset_of!(definitions::UserCall, object),
+                 core::mem::offset_of!(definitions::UserCall, surface),
+                 core::mem::offset_of!(definitions::UserCall, result),
+                 definitions::CALLBACK_OPAQUE as usize,
+                 core::mem::align_of::<SystemServices>(),
+                 core::mem::offset_of!(SystemServices, header),
+                 core::mem::offset_of!(SystemServices, capabilities),
+                 core::mem::size_of::<definitions::CallbackCall>(),
+                 core::mem::align_of::<definitions::CallbackCall>(),
+                 core::mem::offset_of!(definitions::CallbackCall, header),
+                 core::mem::offset_of!(definitions::CallbackCall, operation),
+                 core::mem::offset_of!(definitions::CallbackCall, reserved),
+                 core::mem::offset_of!(definitions::CallbackCall, buffer),
+                 core::mem::offset_of!(definitions::CallbackCall, length),
+                 core::mem::offset_of!(definitions::CallbackCall, required),
+                 core::mem::offset_of!(definitions::CallbackCall, present),
+                 core::mem::offset_of!(definitions::CallbackCall, reserved2),
+                 core::mem::offset_of!(definitions::CallbackCall, result),
+                 core::mem::size_of::<definitions::CallbackRange>(),
+                 core::mem::align_of::<definitions::CallbackRange>(),
+                 core::mem::offset_of!(definitions::CallbackRange, offset),
+                 core::mem::offset_of!(definitions::CallbackRange, length),
+                 core::mem::size_of::<definitions::CallbackPacket>(),
+                 core::mem::align_of::<definitions::CallbackPacket>(),
+                 core::mem::offset_of!(definitions::CallbackPacket, header),
+                 core::mem::offset_of!(definitions::CallbackPacket, entry),
+                 core::mem::offset_of!(definitions::CallbackPacket, kind),
+                 core::mem::offset_of!(definitions::CallbackPacket, id),
+                 core::mem::offset_of!(definitions::CallbackPacket, variation),
+                 core::mem::offset_of!(definitions::CallbackPacket, message),
+                 core::mem::offset_of!(definitions::CallbackPacket, reserved),
+                 core::mem::offset_of!(definitions::CallbackPacket, reflow),
+                 core::mem::offset_of!(definitions::CallbackPacket, param),
+                 core::mem::offset_of!(definitions::CallbackPacket, argument_kind),
+                 core::mem::offset_of!(definitions::CallbackPacket, flags),
+                 core::mem::offset_of!(definitions::CallbackPacket, object),
+                 core::mem::offset_of!(definitions::CallbackPacket, arguments),
+                 core::mem::offset_of!(definitions::CallbackPacket, auxiliary),
+                 core::mem::offset_of!(definitions::CallbackPacket, pixels),
+                 core::mem::offset_of!(definitions::CallbackPacket, surface_width),
+                 core::mem::offset_of!(definitions::CallbackPacket, surface_height),
+                 core::mem::offset_of!(definitions::CallbackPacket, surface_origin),
+                 core::mem::offset_of!(definitions::CallbackPacket, surface_clip),
+                 core::mem::offset_of!(definitions::CallbackPacket, reserved2),
+                 traps::USER_CALLBACK as usize,
+                 definitions::CALLBACK_NEXT as usize,
+                 definitions::CALLBACK_RETURN as usize,
+                 definitions::CALLBACK_SCALAR as usize,
+                 definitions::CALLBACK_BYTES as usize,
+                 definitions::CALLBACK_GRID_AXIS as usize,
+                 definitions::CALLBACK_GRID_PAINT as usize,
+                 definitions::CALLBACK_SURFACE as usize,
+                 core::mem::size_of::<entropy::Call>(),
                  core::mem::align_of::<entropy::Call>(),
                  core::mem::offset_of!(entropy::Call, output),
                  core::mem::offset_of!(entropy::Call, capacity),
@@ -399,14 +462,15 @@ const _: () = assert!(core::mem::size_of::<BootInfo>() == 176
                       && core::mem::offset_of!(BootInfo, monitor_layout) == 168
                       && core::mem::size_of::<boot::topology::Cpu>() == 8);
 
-/// Resident in System memory for the entire application lifetime.
+/// Immutable process-readable service descriptor. Callable code stays local to the SDK.
 #[repr(C)]
 pub struct SystemServices
 {
     pub header:       Header,
-    pub trap:         TrapGate,
     pub capabilities: u64
 }
+const _: () = assert!(core::mem::size_of::<SystemServices>() == 16
+                      && core::mem::offset_of!(SystemServices, capabilities) == 8);
 pub type TrapGate = unsafe extern "C" fn(number: u32, request: *mut (), size: usize) -> i64;
 pub const CAP_GRAPHICS: u64 = 1;
 pub const CAP_EVENT_WAIT: u64 = 2;
@@ -546,8 +610,8 @@ mod tests
         assert_eq!(core::mem::offset_of!(BootInfo, startup_partition_start), 80);
         assert_eq!(core::mem::offset_of!(BootInfo, ram_regions), 88);
         assert_eq!(core::mem::offset_of!(BootInfo, reservations), 104);
-        assert_eq!(core::mem::offset_of!(SystemServices, trap), 8);
-        assert_eq!(core::mem::size_of::<SystemServices>(), 24);
+        assert_eq!(core::mem::offset_of!(SystemServices, capabilities), 8);
+        assert_eq!(core::mem::size_of::<SystemServices>(), 16);
         assert!(Header::for_type::<SystemServices>().supports::<SystemServices>());
         assert!(!Header { version: ABI_VERSION + 1,
                           size:    16 }.supports::<SystemServices>());

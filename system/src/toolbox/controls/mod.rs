@@ -3,6 +3,9 @@ use crate::toolbox::resources::definitions::DefinitionRef;
 mod snapshot;
 mod tracking;
 mod reflow;
+mod effects;
+pub(crate) mod offscreen;
+pub(crate) mod paint;
 use alloc::sync::Arc;
 
 pub use mac_abi::definitions::{CDEF, ControlDefinitionState};
@@ -41,18 +44,25 @@ impl State
 pub struct Drawing
 {
     pub id:    u64,
+    origin:    Option<objects::ManagedPaintOrigin>,
     state:     State,
-    entry:     DefinitionRef,
     gate:      TrapGate,
     variation: i16,
     damage:    [Rect; 2],
     reflow:    u32,
     visible:   Option<Rect>,
     grid:      Option<Arc<snapshot::Grid>>,
-    bars:      Option<alloc::boxed::Box<snapshot::Bars>>
+    bars:      Option<alloc::boxed::Box<snapshot::Bars>>,
+    // All retained appearance/auxiliary payloads precede this original reader.
+    source:    crate::toolbox::resources::definitions::RetainedDefinition
 }
 impl Drawing
 {
+    pub(crate) fn managed_origin(&self) -> Option<objects::ManagedPaintOrigin>
+    {
+        self.origin
+    }
+
     /// Clear a retained capture highlight without executing a definition.
     pub fn cancel_tracking(&mut self) -> bool
     {
@@ -107,30 +117,24 @@ impl Drawing
     /// CDEF-owned delta geometry. A changed value need not change a pixel.
     pub fn change_from(&mut self, before: ControlDefinitionState) -> Result<(), Status>
     {
+        let author = effects::Author::trusted(self.gate);
+        effects::immediate(self.change_from_with(before, &author))
+    }
+
+    async fn change_from_with(&mut self, before: ControlDefinitionState, author: &effects::Author)
+                              -> Result<(), Status>
+    {
         if !matches!(self.variation, PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE)
         {
             return Ok(());
         }
         let after = self.state.standard().ok_or(BAD_ABI)?;
-        let mut change = ControlChange { before,
-                                         after,
-                                         damage: [Rect::ZERO; 2] };
-        let mut call = DefinitionCall { reflow:    self.reflow,
-                                        header:    Header::for_type::<DefinitionCall>(),
-                                        kind:      CDEF,
-                                        id:        CDEF_PROGRESS_BAR,
-                                        variation: 0,
-                                        message:   CHANGE_BOUNDS_DEFINITION,
-                                        reserved:  0,
-                                        param:     0,
-                                        object:    (&mut change as *mut ControlChange).cast(),
-                                        gate:      self.gate,
-                                        surface:   core::ptr::null_mut() };
-        let status = super::resources::definitions::invoke(self.entry, &mut call);
-        if status < 0
-        {
-            return Err(status as Status);
-        }
+        let change = author.change(self.source.reference(),
+                                   self.reflow,
+                                   ControlChange { before,
+                                                   after,
+                                                   damage: [Rect::ZERO; 2] })
+                           .await?;
         for r in change.damage
         {
             // A definition cannot invalidate its parent or another object.
@@ -176,6 +180,16 @@ impl Drawing
         }
     }
 
+    pub(crate) fn has_user_sources(&self) -> bool
+    {
+        self.source.is_process_source()
+        || self.bars.as_ref().is_some_and(|bars| bars.definition.is_process_source())
+        || self.grid
+               .as_ref()
+               .and_then(|grid| grid.dividers.as_ref())
+               .is_some_and(|dividers| dividers.definition.is_process_source())
+    }
+
     pub fn paint(&self, canvas: &mut Canvas)
     {
         let _ = self.paint_clipped(canvas);
@@ -183,152 +197,19 @@ impl Drawing
 
     pub fn paint_clipped(&self, canvas: &mut Canvas) -> Result<(), Status>
     {
-        let mut bounds = self.visible_bounds();
-        bounds.offset(canvas.origin().h, canvas.origin().v);
-        let mut clip = Rect::ZERO;
-        if !crate::toolbox::quickdraw::geometry::sect_rect(bounds, canvas.clip(), &mut clip)
+        // The immediate production path uses the same ordered cursor. User
+        // work is honestly deferred until a canonical owner can retain it.
+        match paint::run(self, &mut paint::Cursor::default(), canvas, false)?
         {
-            return Ok(());
+            paint::Progress::Complete => Ok(()),
+            paint::Progress::User(_) => Err(SERVICE_BUSY)
         }
-        let previous = canvas.clip();
-        clip.offset(-canvas.origin().h, -canvas.origin().v);
-        canvas.set_clip(clip);
-        let result = self.paint_checked(canvas);
-        let mut restore = previous;
-        restore.offset(-canvas.origin().h, -canvas.origin().v);
-        canvas.set_clip(restore);
-        result
     }
 
-    fn paint_checked(&self, canvas: &mut Canvas) -> Result<(), Status>
+    pub(crate) fn paint_step(&self, cursor: &mut paint::Cursor, canvas: &mut Canvas)
+                             -> Result<paint::Progress, Status>
     {
-        self.paint_body(canvas)?;
-        if let Some(dividers) = self.grid.as_ref().and_then(|g| g.dividers.as_ref())
-        {
-            let enabled = self.state.standard().is_some_and(|s| s.enabled != 0);
-            for divider in &dividers.segments
-            {
-                let mut state = divider.state(dividers.viewport, enabled);
-                let mut surface = Surface::from_canvas(canvas);
-                let mut call =
-                    DefinitionCall { reflow:    1,
-                                     header:    Header::for_type::<DefinitionCall>(),
-                                     kind:      CDEF,
-                                     id:        CDEF_SPLITTER,
-                                     variation: 0,
-                                     message:   0,
-                                     reserved:  0,
-                                     param:     0,
-                                     object:    (&mut state as *mut ControlDefinitionState).cast(),
-                                     gate:      self.gate,
-                                     surface:   &mut surface };
-                let status = super::resources::definitions::invoke(dividers.definition.reference(),
-                                                                   &mut call);
-                if status < 0
-                {
-                    return Err(status as Status);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn paint_body(&self, canvas: &mut Canvas) -> Result<(), Status>
-    {
-        let Some(bars) = &self.bars
-        else
-        {
-            return self.paint_content(canvas, None, false);
-        };
-        let previous = canvas.clip();
-        let mut previous_local = previous;
-        previous_local.offset(-canvas.origin().h, -canvas.origin().v);
-        canvas.set_clip(intersection(previous_local, bars.viewport));
-        let result = self.paint_content(canvas, Some(bars.viewport), false);
-        canvas.set_clip(previous_local);
-        result?;
-        for state in bars.bars.iter().flatten()
-        {
-            let drawing = Drawing { id:        self.id,
-                                    state:     State::Scrollbar(*state),
-                                    entry:     bars.definition.reference(),
-                                    gate:      self.gate,
-                                    variation: 0,
-                                    damage:    [Rect::ZERO; 2],
-                                    reflow:    1,
-                                    visible:   self.visible,
-                                    grid:      None,
-                                    bars:      None };
-            drawing.paint_clipped(canvas)?;
-        }
-        if bars.bars.iter().all(Option::is_some)
-        {
-            let bounds = self.bounds();
-            let corner =
-                Rect::new(bars.viewport.right, bars.viewport.bottom, bounds.right, bounds.bottom);
-            canvas.set_clip(intersection(previous_local, corner));
-            let result = self.paint_content(canvas, Some(corner), true);
-            canvas.set_clip(previous_local);
-            result?;
-        }
-        Ok(())
-    }
-
-    fn paint_content(&self, canvas: &mut Canvas, bounds: Option<Rect>, corner: bool)
-                     -> Result<(), Status>
-    {
-        let mut surface = Surface::from_canvas(canvas);
-        let mut standard = self.state.standard();
-        if let (Some(state), Some(bounds)) = (&mut standard, bounds)
-        {
-            state.bounds = bounds;
-            if corner
-            {
-                state.flags = TABLE_LINE_FLAGS;
-            }
-        }
-        let mut scrollbar = match &self.state
-        {
-            State::Scrollbar(s) => Some(*s),
-            _ => None
-        };
-        let (id, object) = if let Some(s) = standard.as_mut()
-        {
-            (standard_definition(self.variation)?, (s as *mut ControlDefinitionState).cast())
-        }
-        else
-        {
-            let Some(scrollbar) = scrollbar.as_mut()
-            else
-            {
-                return Err(BAD_ABI);
-            };
-            (1, (scrollbar as *mut ScrollbarState).cast())
-        };
-        let grid =
-            self.grid.as_ref().filter(|_| !corner).map(|g| {
-                                  mac_abi::controls::reflow::GridPaint { cells: g.cells.as_ptr(),
-                                                                         count: g.cells.len() }
-                              });
-        let mut call =
-            DefinitionCall { reflow: self.reflow,
-                             header: Header::for_type::<DefinitionCall>(),
-                             kind: CDEF,
-                             id,
-                             variation: variation(self.variation, id),
-                             message: 0,
-                             reserved: 0,
-                             param:
-                                 grid.as_ref().map_or(0, |g| {
-                                                  (g as *const mac_abi::controls::reflow::GridPaint)
-                                                  as usize
-                                                  as i64
-                                              }),
-                             object,
-                             gate: self.gate,
-                             surface: &mut surface };
-        let result = super::resources::definitions::invoke(self.entry, &mut call);
-        if result < 0 { Err(result as Status) } else { Ok(()) }
+        paint::run(self, cursor, canvas, true)
     }
 }
 fn standard_definition(procedure: i16) -> Result<i16, Status>
@@ -454,6 +335,97 @@ pub(crate) fn validate(call: &mut ControlCall, entry: DefinitionRef, gate: TrapG
     }
     Ok(())
 }
+
+/// Select a creation's genuine definition through its corresponding draw
+/// family, retaining CREATE as the canonical manager publication intent.
+pub(crate) fn creation_definition_id(call: &ControlCall) -> Result<i16, Status>
+{
+    if !matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR)
+    {
+        return Err(BAD_ARGUMENT);
+    }
+    definition_id(&validation_state(call))
+}
+fn validation_state(call: &ControlCall) -> ControlCall
+{
+    let mut state = *call;
+    state.operation = match call.operation
+    {
+        CREATE_STANDARD => DRAW_STANDARD,
+        CREATE_SCROLLBAR => DRAW_SCROLLBAR,
+        other => other
+    };
+    state
+}
+
+pub(crate) fn user_validation_request(
+    call: &ControlCall)
+    -> Result<crate::toolbox::resources::definitions::callbacks::packet::Request, Status>
+{
+    use crate::toolbox::resources::definitions::callbacks::packet::{Arguments, Object, Request};
+    let id = preflight(&validation_state(call))?;
+    Ok(Request { kind: CDEF,
+                 id,
+                 variation: variation(call.procedure, id),
+                 message: VALIDATE_DEFINITION,
+                 reflow: call.reflow,
+                 object: if id == 1
+                 {
+                     Object::Scrollbar(call.scrollbar)
+                 }
+                 else
+                 {
+                     Object::Control(call.standard)
+                 },
+                 arguments: Arguments::Scalar(0),
+                 surface: None })
+}
+
+/// Canonical retained state (a DRAW-shaped call) disposed through the author.
+pub(crate) fn user_disposal_request(
+    call: &ControlCall, id: i16)
+    -> crate::toolbox::resources::definitions::callbacks::packet::Request
+{
+    use crate::toolbox::resources::definitions::callbacks::packet::{Arguments, Object, Request};
+    Request { kind: CDEF,
+              id,
+              variation: variation(call.procedure, id),
+              message: mac_abi::definitions::DISPOSE,
+              reflow: call.reflow,
+              object: if id == 1
+              {
+                  Object::Scrollbar(call.scrollbar)
+              }
+              else
+              {
+                  Object::Control(call.standard)
+              },
+              arguments: Arguments::Scalar(0),
+              surface: None }
+}
+
+pub(crate) fn apply_user_validation(call: &ControlCall,
+                                    reply: &crate::toolbox::resources::definitions::callbacks::packet::Reply)
+                                    -> Result<ControlCall, Status>
+{
+    let id = preflight(&validation_state(call))?;
+    if reply.result < 0
+    {
+        return Err(Status::try_from(reply.result).unwrap_or(BAD_ABI));
+    }
+    let mut validated = *call;
+    validated.operation = if id == 1 { DRAW_SCROLLBAR } else { DRAW_STANDARD };
+    if id == 1
+    {
+        validated.scrollbar = reply.scrollbar()?;
+    }
+    else
+    {
+        validated.standard = reply.control()?;
+    }
+    preflight(&validated)?;
+    Ok(validated)
+}
 /// Validate and resolve a typed request. No per-control geometry lives here.
 pub(crate) fn prepare(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGate)
                       -> Result<Option<Drawing>, Status>
@@ -468,37 +440,7 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGa
     if matches!(call.operation, DRAW_SCROLLBAR | DRAW_STANDARD)
     {
         validate(call, entry, gate)?;
-        return Ok(Some(Drawing { id: 0,
-                                 reflow: call.reflow,
-                                 visible: None,
-                                 grid: None,
-                                 bars: None,
-                                 state: if id == 1
-                                 {
-                                     State::Scrollbar(call.scrollbar)
-                                 }
-                                 else if id == CDEF_PROGRESS_BAR
-                                 {
-                                     State::Progress { bounds:   call.standard.bounds,
-                                                       progress: call.standard.progress }
-                                 }
-                                 else
-                                 {
-                                     State::Standard(snapshot::Standard::new(&call.standard,
-                                                                             title)?)
-                                 },
-                                 entry,
-                                 gate,
-                                 variation: if id != 1 { call.procedure } else { 0 },
-                                 damage: [if id == 1
-                                          {
-                                              call.scrollbar.bounds
-                                          }
-                                          else
-                                          {
-                                              call.standard.bounds
-                                          },
-                                          Rect::ZERO] }));
+        return drawing_validated(call, entry, gate, title).map(Some);
     }
     validate_state(call, id)?;
     let object = if id == 1
@@ -540,6 +482,38 @@ fn prepare_with_title(call: &mut ControlCall, entry: DefinitionRef, gate: TrapGa
     }
     call.result = result as i32;
     Ok(None)
+}
+/// Shared construction after the actual definition VALIDATE has completed.
+fn drawing_validated(call: &ControlCall, entry: DefinitionRef, gate: TrapGate,
+                     title: Option<&Arc<snapshot::Title>>)
+                     -> Result<Drawing, Status>
+{
+    let id = definition_id(call)?;
+    let source = super::resources::definitions::bind(entry)?.into_retained_source();
+    Ok(Drawing { id: 0,
+                 origin: None,
+                 reflow: call.reflow,
+                 visible: None,
+                 grid: None,
+                 bars: None,
+                 state: if id == 1
+                 {
+                     State::Scrollbar(call.scrollbar)
+                 }
+                 else if id == CDEF_PROGRESS_BAR
+                 {
+                     State::Progress { bounds:   call.standard.bounds,
+                                       progress: call.standard.progress }
+                 }
+                 else
+                 {
+                     State::Standard(snapshot::Standard::new(&call.standard, title)?)
+                 },
+                 source,
+                 gate,
+                 variation: if id != 1 { call.procedure } else { 0 },
+                 damage: [if id == 1 { call.scrollbar.bounds } else { call.standard.bounds },
+                          Rect::ZERO] })
 }
 /// Draw into the checked exclusive borrowed surface, preserving clipping/origin.
 /// # Safety

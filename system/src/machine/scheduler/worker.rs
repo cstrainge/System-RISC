@@ -45,10 +45,17 @@ pub(super) fn service_quarantined(thread: &Thread)
     worker.set(state);
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(super) enum ReapState
 {
     Refused(mac_abi::Status),
+    UserMapping
+    {
+        stage:                  super::user::retirement::Stage,
+        cause:                  super::user::retirement::Failure,
+        terminal:               bool,
+        retired_count_released: bool
+    },
     NativeService(mac_abi::Status),
     Running
     {
@@ -191,6 +198,9 @@ pub(crate) fn prepare_worker(launch: crate::drivers::WorkerLaunch)
                                 top,
                                 cleanup_refusal: Mutex::new(None),
                                 service_quarantine: spin::Once::new(),
+                                user_fault: Mutex::new(None),
+                                runtime: None,
+                                callback_queue: None,
                                 name: Mutex::new(Some(name)),
                                 application: None,
                                 pending_join: Mutex::new(None) };
@@ -913,12 +923,22 @@ pub(super) fn reclaim_workers()
         };
         if let Some(wait) = wait
         {
-            let previous = core.cleanup_refusal.lock().replace(wait);
-            if previous != Some(wait)
+            let same = {
+                let prior = core.cleanup_refusal.lock();
+                matches!((prior.as_ref(), &wait),
+                    (Some(ReapState::NativeService(a)),ReapState::NativeService(b)) if a==b)
+                || matches!((prior.as_ref(), &wait),
+                    (Some(ReapState::Running {hart:a}),ReapState::Running {hart:b}) if a==b)
+                || matches!((prior.as_ref(), &wait),
+                    (Some(ReapState::Readers {core:a,context:c}),ReapState::Readers {core:b,context:d}) if a==b && c==d)
+            };
+            if !same
             {
                 serial!("MODULE_WORKER_RETIRE_WAIT thread={id} module={} reason={wait:?}",
                         core.binding.owner());
             }
+            let previous = core.cleanup_refusal.lock().replace(wait);
+            drop(previous);
             // A real claim release, not a repeated timer scan, rearms this wait.
             continue;
         }
@@ -943,7 +963,7 @@ pub(super) fn reclaim_workers()
             if let Err(status) = result
             {
                 let previous = core.cleanup_refusal.lock().replace(ReapState::Refused(status));
-                if previous != Some(ReapState::Refused(status))
+                if !matches!(previous,Some(ReapState::Refused(value)) if value==status)
                 {
                     serial!("MODULE_WORKER_CLEANUP_RETAINED thread={id} status={status}");
                 }
@@ -964,7 +984,7 @@ pub(super) fn reclaim_workers()
             // not proof that its unique walk ticket may be acknowledged.
             let previous =
                 core.cleanup_refusal.lock().replace(ReapState::Refused(mac_abi::BAD_ABI));
-            if previous != Some(ReapState::Refused(mac_abi::BAD_ABI))
+            if !matches!(previous,Some(ReapState::Refused(value)) if value==mac_abi::BAD_ABI)
             {
                 serial!("MODULE_WORKER_CLEANUP_RETAINED thread={id} status={} \
                          reason=missing_launch",
@@ -997,7 +1017,7 @@ pub(super) fn reclaim_workers()
                                 let previous = core.cleanup_refusal
                                                    .lock()
                                                    .replace(ReapState::Refused(mac_abi::BAD_ABI));
-                                if previous != Some(ReapState::Refused(mac_abi::BAD_ABI))
+                                if !matches!(previous,Some(ReapState::Refused(value)) if value==mac_abi::BAD_ABI)
                                 {
                                     serial!("MODULE_WORKER_RELEASE_RETAINED thread={id} \
                                              reason={error}");

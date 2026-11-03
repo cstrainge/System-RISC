@@ -251,7 +251,7 @@ impl Platform
 {
     pub fn scheduling(&self) -> Result<scheduling::Checked>
     {
-        self.scheduling.check()
+        self.scheduling.check(self.qemu_harts)
     }
 
     fn device_artifacts(&self, include_restart: bool) -> Result<(String, String)>
@@ -273,7 +273,8 @@ impl Platform
     }
 
     /// Build-time origins are not runtime destinations. Every independently
-    /// loadable definition/driver/extension shares the same checked link range.
+    /// loadable definition/driver/extension shares the code-resource range; apps
+    /// share the checked private Process image origin.
     pub fn link_range(&self, role: mac_formats::native::Role) -> Result<std::ops::Range<u64>>
     {
         match role
@@ -282,8 +283,7 @@ impl Platform
             mac_formats::native::Role::CodeResource => Ok(self.memory()?.code_link_range()),
             mac_formats::native::Role::Application =>
             {
-                Err(error("application link range still comes from its manifest until private \
-                           mappings are active"))
+                Ok(self.virtual_memory()?.application_image_range())
             }
         }
     }
@@ -318,7 +318,13 @@ impl Platform
         }
         else
         {
-            self.memory()?.validate_image_storage(role, base, limit)
+            let expected = self.virtual_memory()?.application_image_range();
+            if base != expected.start || limit != expected.end
+            {
+                return Err(error("application link geometry differs from the checked private \
+                                  Process layout; rebuild with the current SDK"));
+            }
+            Ok(())
         }
     }
 }

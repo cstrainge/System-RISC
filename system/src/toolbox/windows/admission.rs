@@ -71,7 +71,8 @@ pub(crate) struct WindowCapacityPlan
     order:          usize,
     order_scratch:  usize,
     geometry_order: usize,
-    failures:       usize
+    failures:       usize,
+    removals:       usize
 }
 /// On return from installation, moved-out arrays own no live windows/tickets.
 #[must_use = "dispose fresh or displaced WM arrays outside Desktop"]
@@ -81,7 +82,8 @@ pub(crate) struct WindowCapacity
     order:          Vec<WindowId>,
     order_scratch:  Vec<WindowId>,
     geometry_order: Vec<WindowId>,
-    failures:       VecDeque<mac_object_table::domain::CompletionError>
+    failures:       VecDeque<mac_object_table::domain::CompletionError>,
+    removals:       VecDeque<super::operations::RemovalDebt>
 }
 /// Returned on both successful WDEF initialization and postbirth rollback.
 /// Actual rollback still uses InitializingWindow's existing Dispose/quarantine
@@ -160,6 +162,177 @@ impl WindowPreparation
 }
 impl PreparedWindow
 {
+    pub(crate) fn prepare_trusted_cleanup(&mut self,
+                                          notice: alloc::sync::Arc<crate::toolbox::resources::definitions::callbacks::Notice>)
+                                          -> Result<(), Status>
+    {
+        if self.window.trusted_close.is_some()
+        {
+            return Ok(());
+        }
+        if self.user_definition().map_err(|_| mac_abi::BAD_ABI)?.is_some()
+        {
+            return Ok(());
+        }
+        let mut window = self.window.window;
+        window.id = WindowId(self.permit.id());
+        let plan = super::trusted::TrustedClosePlan::from_birth(window,
+                                                                self.owner.owner(),
+                                                                self.window
+                                                                    .revision
+                                                                    .ok_or(mac_abi::BAD_ABI)?);
+        self.window.trusted_close =
+            Some(plan.prepare(&self.owner, &self.allocation, notice, None)?);
+        Ok(())
+    }
+
+    /// Guard-free, fallible cleanup stock before any author NEW side effects.
+    pub(crate) fn prepare_user_cleanup(&mut self,
+                                       notice: alloc::sync::Arc<crate::toolbox::resources::definitions::callbacks::Notice>)
+                                       -> Result<(), Status>
+    {
+        if self.user_definition()
+               .map_err(|cause| {
+                   match cause
+                   {
+                       CreationError::Binding(status) => status,
+                       _ => mac_abi::BAD_ABI
+                   }
+               })?
+               .is_none()
+        {
+            return Ok(());
+        }
+        if self.window.cleanup_job.is_none()
+        {
+            let job = crate::allocator::with_target(crate::allocator::Target::Owner {
+                account: self.allocation.clone(), class: mac_kernel_model::policy::MemoryClass::Kernel
+            }, || super::operations::WindowJob::prepare_cleanup(self.window.window,
+                WindowId(self.permit.id()), &self.owner, notice.clone()))?;
+            self.window.cleanup_job = Some(job);
+        }
+        if self.window.paint.is_none()
+        {
+            let guardian = self.window.canvas_guardian()?;
+            self.window.paint = Some(crate::allocator::with_target(crate::allocator::Target::Owner {
+                account: self.allocation.clone(), class: mac_kernel_model::policy::MemoryClass::Kernel
+            }, || super::paint::PaintOwner::prepare(WindowId(self.permit.id()),
+                self.owner.owner(), self.allocation.clone(), notice, guardian))?);
+        }
+        Ok(())
+    }
+
+    pub(super) fn birth_allocation(&self) -> AllocationAuthority
+    {
+        self.allocation.clone()
+    }
+
+    pub(super) fn birth_window(&self) -> Window
+    {
+        let mut window = self.window.window;
+        window.id = WindowId(self.permit.id());
+        window
+    }
+
+    pub(super) fn birth_cleanup(&self)
+                                -> Result<alloc::sync::Arc<super::operations::WindowJob>, Status>
+    {
+        self.window.cleanup_job.as_ref().cloned().ok_or(mac_abi::BAD_ABI)
+    }
+
+    pub(super) fn birth_quiescence(&self)
+                                   -> crate::toolbox::resources::definitions::QuiescencePlan
+    {
+        self.window.binding.quiescence_plan()
+    }
+
+    pub(super) fn birth_matches(&self,
+                                proof: &crate::toolbox::resources::definitions::QuiescedDefinition)
+                                -> bool
+    {
+        proof.matches(&self.window.binding)
+    }
+
+    pub(super) fn retain_author_state(&mut self,
+                                      reply: &crate::toolbox::resources::definitions::callbacks::packet::Reply)
+                                      -> Result<(), Status>
+    {
+        self.window.state = reply.window()?;
+        Ok(())
+    }
+
+    pub(crate) fn user_definition(&self) -> Result<Option<DefinitionRef>, CreationError>
+    {
+        let entry = self.window.binding.reference();
+        if crate::toolbox::resources::definitions::is_user(entry).map_err(CreationError::Binding)?
+        {
+            Ok(Some(entry))
+        }
+        else
+        {
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn user_request(
+        &self, operation: i16)
+        -> Result<crate::toolbox::resources::definitions::callbacks::packet::Request, CreationError>
+    {
+        use crate::toolbox::resources::definitions::callbacks::packet::{Arguments, Object, Request};
+        self.user_definition()?.ok_or(CreationError::InvalidRequest)?;
+        let expected = match self.window.user_initialization
+        {
+            UserInitialization::None => definition::NEW,
+            UserInitialization::New => definition::CALCULATE,
+            UserInitialization::Ready => return Err(CreationError::InvalidRequest)
+        };
+        if operation != expected
+        {
+            return Err(CreationError::InvalidRequest);
+        }
+        Ok(Request { kind:      definition::WDEF,
+                     id:        self.window.procedure >> 4,
+                     variation: self.window.procedure & 15,
+                     message:   operation,
+                     reflow:    0,
+                     object:    Object::Window(self.window.state),
+                     arguments: Arguments::Scalar(0),
+                     surface:   None })
+    }
+
+    pub(crate) fn apply_user_reply(&mut self, operation: i16,
+                                   reply: &crate::toolbox::resources::definitions::callbacks::packet::Reply)
+                                   -> Result<(), CreationError>
+    {
+        self.user_request(operation)?;
+        if reply.result < 0
+        {
+            return Err(CreationError::Definition { procedure: self.window.procedure,
+                                                   operation,
+                                                   reply: reply.result });
+        }
+        let state = reply.window().map_err(CreationError::Binding)?;
+        if operation == definition::CALCULATE
+           && (state.structure.is_empty()
+               || state.structure.left < 0
+               || state.structure.top < if self.window.stay_in_back { MENU_BAR_BOTTOM } else { 25 }
+               || state.structure.right > crate::display::width() as i16
+               || state.structure.bottom > crate::display::height() as i16)
+        {
+            return Err(CreationError::Geometry { procedure: self.window.procedure });
+        }
+        self.window.state = state;
+        self.window.user_initialization = if operation == definition::NEW
+        {
+            UserInitialization::New
+        }
+        else
+        {
+            UserInitialization::Ready
+        };
+        Ok(())
+    }
+
     pub(crate) fn owner(&self) -> &OwnerRef
     {
         &self.owner
@@ -197,13 +370,16 @@ impl WindowCapacityPlan
             }
             let mut failures = VecDeque::new();
             failures.try_reserve_exact(self.failures).map_err(|_| CreationError::NoMemory)?;
+            let mut removals = VecDeque::new();
+            removals.try_reserve_exact(self.removals).map_err(|_| CreationError::NoMemory)?;
             Ok(WindowCapacity { visibility: self.visibility
                                                 .prepare()
                                                 .map_err(|_| CreationError::NoMemory)?,
                                 order: array(self.order)?,
                                 order_scratch: array(self.order_scratch)?,
                                 geometry_order: array(self.geometry_order)?,
-                                failures })
+                                failures,
+                                removals })
         })
     }
 }
@@ -279,6 +455,7 @@ impl WindowManager
     fn plan_process_capacity(&self) -> Result<WindowCapacityPlan, CreationError>
     {
         let (required, failures) = self.capacity_requirements()?;
+        let removals = self.removal_capacity_required(1 + self.recovery_spare())?;
         let missing = |current, wanted| if current < wanted { wanted } else { 0 };
         Ok(WindowCapacityPlan { visibility:     self.visibility
                                                     .borrow()
@@ -288,14 +465,17 @@ impl WindowManager
                                 order_scratch:  missing(self.order_scratch.capacity(), required),
                                 geometry_order: missing(self.geometry_order.capacity(), required),
                                 failures:       missing(self.retained_failures.capacity(),
-                                                        failures) })
+                                                        failures),
+                                removals:       missing(self.removals.capacity(), removals) })
     }
 
     fn install_process_capacity(&mut self, capacity: &mut WindowCapacity)
                                 -> Result<(), CreationError>
     {
         let (required, failures) = self.capacity_requirements()?;
-        if (self.order.capacity() < required && capacity.order.capacity() < required)
+        let removals = self.removal_capacity_required(1 + self.recovery_spare())?;
+        if (self.removals.capacity() < removals && capacity.removals.capacity() < removals)
+           || (self.order.capacity() < required && capacity.order.capacity() < required)
            || (self.order_scratch.capacity() < required
                && capacity.order_scratch.capacity() < required)
            || (self.geometry_order.capacity() < required
@@ -314,6 +494,11 @@ impl WindowManager
             .get_mut()
             .install_capacity(required, &mut capacity.visibility)
             .map_err(|_| CreationError::CapacityChanged)?;
+        if self.removals.capacity() < removals
+        {
+            capacity.removals.extend(self.removals.drain(..));
+            core::mem::swap(&mut self.removals, &mut capacity.removals);
+        }
         if self.order.capacity() < required
         {
             capacity.order.extend(self.order.drain(..));
@@ -379,6 +564,34 @@ impl WindowManager
         }
     }
 
+    /// Canonical unpublished custody installed before any author NEW.
+    pub(crate) fn admit_birth_owner(&mut self, owner: &alloc::sync::Arc<super::birth::BirthOwner>,
+                                    request: &mac_abi::WindowRequest)
+                                    -> Result<(), CreationError>
+    {
+        if !owner.same_notice(&self.work_notice) || owner.registered()
+        {
+            return Err(CreationError::InvalidRequest);
+        }
+        let mut loan = owner.checkout().map_err(CreationError::Binding)?;
+        let prepared = loan.prepared.as_mut().ok_or(CreationError::InvalidRequest)?;
+        if !prepared.matches_request(request)
+           || prepared.owner.owner() != owner.storage_owner()
+           || prepared.birth_window().id != owner.window_id()
+        {
+            return Err(CreationError::InvalidRequest);
+        }
+        self.validate_process_intent(&prepared.owner, &prepared.intent)?;
+        self.install_process_capacity(&mut prepared.capacity)?;
+        if self.removals.len() == self.removals.capacity()
+        {
+            return Err(CreationError::CapacityChanged);
+        }
+        self.removals.push_back(super::operations::RemovalDebt::Birth(owner.clone()));
+        owner.register();
+        Ok(())
+    }
+
     /// Outer refusal is prebirth and retains input. Finished always returns
     /// retired metadata, including when genuine WDEF initialization rolls back.
     pub(crate) fn commit_process_window(&mut self, input: &mut Option<PreparedWindow>,
@@ -387,6 +600,11 @@ impl WindowManager
     {
         let prepared = input.as_ref().ok_or(CreationError::InvalidRequest)?;
         self.validate_process_intent(&prepared.owner, &prepared.intent)?;
+        if prepared.user_definition()?.is_some()
+           && prepared.window.user_initialization != UserInitialization::Ready
+        {
+            return Err(CreationError::Binding(mac_abi::SERVICE_BUSY));
+        }
         self.retry_retained_quarantines();
         let prepared = input.as_mut().ok_or(CreationError::InvalidRequest)?;
         self.install_process_capacity(&mut prepared.capacity)?;
@@ -422,6 +640,7 @@ impl WindowManager
                                                     events,
                                                     when,
                                                     activate,
+                                                    None,
                                                     None,
                                                     None);
                 Ok(WindowCommit { result,

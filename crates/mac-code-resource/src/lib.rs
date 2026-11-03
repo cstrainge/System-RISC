@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 pub mod image;
 pub mod code_types;
+pub mod runtime;
 
 pub const FORMAT_VERSION: u16 = 1;
 pub const ABI_VERSION: u32 = 1;

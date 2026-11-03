@@ -16,8 +16,8 @@ use crate::allocator::foundation::{self, Foundation};
 type Pool = BuddyPool<'static, NativeInvocationGate>;
 type Block = PageBlock<'static, 'static, NativeInvocationGate>;
 mod application;
-pub(crate) use application::{ApplicationExtentError, application_wait_extent,
-                             prepare_application_extent};
+pub(crate) use application::{ApplicationExtentError, application_extent_physical,
+                             application_wait_extent, prepare_application_extent};
 struct Bank
 {
     pool: Pool,

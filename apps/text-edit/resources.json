@@ -5,8 +5,6 @@
   "creator": "TEDT",
   "role": "application",
   "abi_version": 1,
-  "load_base": "0x84000000",
-  "load_limit": "0x85000000",
   "description": "System RISC Text Edit",
   "resources": [
     {

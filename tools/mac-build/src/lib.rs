@@ -35,7 +35,8 @@ pub fn write_if_changed(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> s
 }
 
 /// Called by each guest crate's build.rs. The manifest is the single source
-/// for resource IDs, the ABI descriptor, and the linker memory reservation.
+/// for resource IDs and image role. Checked platform policy supplies link
+/// geometry; packaging derives actual application/code-resource memory extent.
 pub fn build_guest() -> Result<()>
 {
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FEATURE");
@@ -115,6 +116,7 @@ pub fn build_guest() -> Result<()>
                                                               "VM_SYSTEM_IMAGE_LIMIT",
                                                               "VM_MODULE_START",
                                                               "VM_MODULE_END",
+                                                              "VM_APPLICATION_IMAGE_BASE",
                                                               "VM_APPLICATION_START",
                                                               "VM_APPLICATION_END",
                                                               "VM_PHYSMAP_START",
@@ -130,6 +132,13 @@ pub fn build_guest() -> Result<()>
                                  .replace("@LENGTH@",
                                           &format!("0x{:x}",
                                                    descriptor.load_limit - descriptor.load_base));
+    if descriptor.role == mac_formats::native::Role::Application
+    {
+        // KEEP retains a selected section but cannot extract an unreferenced
+        // CRT archive member. Both exclusive application runtimes export this
+        // actual table; trusted System/modules must not pull a user CRT.
+        script.push_str("\nEXTERN(__system_risc_user_runtime_v1)\n");
+    }
     script.push_str(&platform_symbols);
     let script_path = out.join("native.ld");
     write_if_changed(&script_path, script)?;

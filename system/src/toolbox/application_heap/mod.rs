@@ -55,6 +55,8 @@ pub(crate) enum Error
     Unavailable,
     AlreadyInitialized,
     Authority,
+    User(Status),
+    UserMapping(crate::machine::paging::user::Error),
     Root,
     Layout,
     Pointer,
@@ -85,6 +87,8 @@ impl Error
             Self::Unavailable=>NOT_SUPPORTED,
             Self::AlreadyInitialized|Self::Root=>BAD_ABI,
             Self::Authority=>ACCESS_DENIED,
+            Self::User(status)=>*status,
+            Self::UserMapping(error)=>error.status(),
             Self::Layout|Self::Pointer=>BAD_ARGUMENT,
             Self::Busy=>SERVICE_BUSY,
             Self::Metadata{..}=>NO_MEMORY,
@@ -104,6 +108,8 @@ impl fmt::Display for Error
     {
         match self
         {
+            Self::User(status) => write!(out, "Process user mapping refused: {status}"),
+            Self::UserMapping(error) => error.fmt(out),
             Self::Unavailable => out.write_str("Application heap service has not been initialized"),
             Self::AlreadyInitialized =>
             {

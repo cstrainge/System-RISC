@@ -7,6 +7,13 @@ use core::{alloc::Layout,
 use mac_abi::*;
 use spin::Once;
 
+mod desktop;
+mod window_work;
+mod control_work;
+pub(crate) use desktop::{Epoch as DesktopEpoch, arm_control_acknowledgement,
+                         control_resource_acknowledged, epoch as window_desktop_epoch,
+                         source_returned as window_sources_changed};
+
 use crate::state::{AccessError, OwnerState, TryState};
 
 pub(crate) struct Serial;
@@ -25,10 +32,10 @@ static HEAP: crate::allocator::ResidentHeap = crate::allocator::ResidentHeap::em
 static BOOT_LOG: Once<Option<LogFn>> = Once::new();
 static RESOURCE_FILES: Once<crate::toolbox::resources::manager::Files> = Once::new();
 static FONTS: Once<alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>> = Once::new();
-static INSTALLED_FONTS: spinning_top::Spinlock<
-    Option<alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>>> =
+static INSTALLED_FONTS:
+    spinning_top::Spinlock<Option<alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>>> =
     spinning_top::Spinlock::new(None);
-static TOOLBOX: TryState<crate::toolbox::runtime::Toolbox> = TryState::new();
+static TOOLBOX: desktop::Desktop = desktop::Desktop::new();
 static SCRAP: TryState<crate::toolbox::scrap::Manager> = TryState::new();
 static MEMORY: TryState<crate::toolbox::memory::Manager> = TryState::new();
 // SAFETY: storage executes on hart0's fixed-owner service stack, with interrupts
@@ -208,8 +215,8 @@ fn prepare_shared_image(owner: &crate::toolbox::handles::OwnerRef,
                                         layout.preferred,
                                         layout.preferred,
                                         layout.extent,
-                                        crate::machine::memory::APPLICATION_RELOCATION_BASE,
-                                        crate::machine::memory::IMAGE_LIMIT,
+                                        crate::machine::memory::VM_APPLICATION_IMAGE_BASE,
+                                        crate::machine::memory::VM_APPLICATION_END,
                                         layout.executable,
                                         layout.writable)?;
     // The original alias already reserves its destination and retains its
@@ -355,6 +362,9 @@ pub(crate) fn module_dma_address(cpu: u64, bytes: u64) -> Result<u64, Status>
 /// owner walk through PTE removal, genuine target ACK and physical refund.
 pub(crate) fn pump_module_images()
 {
+    crate::machine::paging::user::pump();
+    window_work::pump();
+    control_work::pump();
     // Consume independent real notices without short-circuiting either one.
     let mappings = crate::machine::paging::modules::take_pending();
     let spaces = crate::machine::paging::process::take_retirement_pending();
@@ -542,20 +552,24 @@ fn policy_authority(system: &[mac_formats::resource::Resource],
     let identity = mac_formats::authority::image_digest(resources).map_err(crate::loader::status)?;
     mac_formats::authority::granted(&policy.data, identity).map_err(crate::loader::status)
 }
-pub(crate) fn services() -> *const SystemServices
+/// Fieldwise bytes for a separate readonly user mapping. No resident address
+/// or potentially uninitialized Rust padding is copied into the application.
+pub(crate) fn user_service_descriptor() -> [u8; 16]
 {
-    &SERVICES
+    let mut bytes = [0; 16];
+    bytes[..4].copy_from_slice(&SERVICES.header.version.to_ne_bytes());
+    bytes[4..8].copy_from_slice(&SERVICES.header.size.to_ne_bytes());
+    bytes[8..].copy_from_slice(&SERVICES.capabilities.to_ne_bytes());
+    bytes
 }
 static STARTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 static SERVICES: SystemServices =
     SystemServices { header:       Header::for_type::<SystemServices>(),
-                     trap:         crate::machine::traps::gateway,
                      capabilities: CAP_GRAPHICS | CAP_EVENT_WAIT | CAP_MONOTONIC_CLOCK };
-static HEADLESS_SERVICES: SystemServices =
-    SystemServices { header:       Header::for_type::<SystemServices>(),
-                     trap:         crate::machine::traps::gateway,
-                     capabilities: CAP_MONOTONIC_CLOCK };
+static HEADLESS_SERVICES: SystemServices = SystemServices { header:
+                                                                Header::for_type::<SystemServices>(),
+                                                            capabilities: CAP_MONOTONIC_CLOCK };
 
 pub(crate) unsafe extern "C" fn log(bytes: *const u8, length: usize) -> Status
 {
@@ -602,6 +616,20 @@ pub(crate) fn with_toolbox<R>(call: impl FnOnce(&mut crate::toolbox::runtime::To
     TOOLBOX.with(|toolbox| {
                toolbox.enter_caller();
                call(toolbox)
+           })
+}
+
+/// Window continuations keep their original capability on Desktop refusal.
+/// The successful holder's actual return, not Busy itself, posts availability.
+pub(crate) fn with_window_toolbox_owned<A, R>(value: A,
+                                              call: impl FnOnce(A,
+                                                     &mut crate::toolbox::runtime::Toolbox)
+                                                     -> R)
+                                              -> Result<R, (AccessError, A)>
+{
+    TOOLBOX.with_window_owned(value, |value, toolbox| {
+               toolbox.enter_caller();
+               call(value, toolbox)
            })
 }
 
@@ -688,9 +716,9 @@ pub(crate) fn fonts() -> Option<alloc::sync::Arc<crate::toolbox::quickdraw::font
     })
 }
 
-pub(crate) fn publish_fonts(
-    baseline: &alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>,
-    fonts: alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>) -> Result<(), Status>
+pub(crate) fn publish_fonts(baseline: &alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>,
+                            fonts: alloc::sync::Arc<crate::toolbox::quickdraw::fonts::FontManager>)
+                            -> Result<(), Status>
 {
     use mac_object_table::shared::InvocationGate;
     let retired = crate::toolbox::handles::InvocationGate::run(|| {
@@ -1144,8 +1172,10 @@ fn initialize_desktop(
     serial!("FONTS_READY: families={} resources loaded from System", fonts.catalog().len());
     // Progress uses the real loaded CDEF before any application loop exists.
     let fonts = alloc::sync::Arc::try_new(fonts).map_err(|_| {
-        recovery_boot_error("System font snapshot admission failed", NO_MEMORY)
-    })?;
+                                                    recovery_boot_error("System font snapshot \
+                                                                         admission failed",
+                                                                        NO_MEMORY)
+                                                })?;
     let fonts = FONTS.call_once(|| fonts);
     let files = RESOURCE_FILES.call_once(|| crate::toolbox::resources::manager::Files { system });
     crate::toolbox::standard_file::prepare_templates().map_err(|status| {
@@ -1261,7 +1291,10 @@ fn initialize_desktop(
             return Err(mac_formats::Error::Malformed("no display: install a video driver or \
                                                       enable ramfb").into());
         }
-        Err(status) if ramfb => serial!("VIDEO_DRIVER_UNAVAILABLE status={status}; staying on ramfb"),
+        Err(status) if ramfb =>
+        {
+            serial!("VIDEO_DRIVER_UNAVAILABLE status={status}; staying on ramfb")
+        }
         Err(status) =>
         {
             return Err(recovery_boot_error("video driver attach refused and ramfb is absent",
@@ -1354,7 +1387,7 @@ pub(crate) fn finish_initial_finder(finder_admission: &mut crate::toolbox::proce
     let allocations = crate::allocator::statistics();
     serial!("RESIDENT_ALLOCATION_READY capacity={} admitted={} foundation={} system={} \
              domains={} header_bytes={} owned_app_heap=true module_heap=false \
-             process_isolation=false",
+             isolation_qualification=pending",
             allocations.capacity,
             allocations.admitted,
             allocations.foundation,

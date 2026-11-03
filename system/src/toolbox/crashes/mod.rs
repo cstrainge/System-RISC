@@ -63,6 +63,15 @@ enum Capture
     SystemDiagnostic
 }
 
+/// Trusted capture identity, retained independently of caller-supplied flags.
+#[derive(Clone, Copy)]
+enum NativeFailure
+{
+    AccessFault,
+    Exception,
+    DefinitionPanic
+}
+
 pub struct Manager
 {
     capture:                         Capture,
@@ -73,6 +82,7 @@ pub struct Manager
     columns:                         usize,
     column:                          usize,
     previous_cr:                     bool,
+    native_fault:                    Option<NativeFailure>,
     info:                            CrashInfo,
     #[cfg(target_arch = "riscv64")]
     pub(super) controls:             [Option<u64>; 2],
@@ -107,26 +117,28 @@ pub struct Manager
 #[cfg(any(target_arch = "riscv64", test))]
 pub(crate) struct Snapshot
 {
-    capture:     Capture,
-    superseded:  bool,
-    payload:     Payload,
-    columns:     usize,
-    column:      usize,
-    previous_cr: bool,
-    info:        CrashInfo
+    capture:      Capture,
+    superseded:   bool,
+    payload:      Payload,
+    columns:      usize,
+    column:       usize,
+    previous_cr:  bool,
+    native_fault: Option<NativeFailure>,
+    info:         CrashInfo
 }
 #[cfg(target_arch = "riscv64")]
 impl Snapshot
 {
     pub(crate) fn retain(&self) -> Result<Self, Status>
     {
-        Ok(Self { capture:     self.capture,
-                  superseded:  self.superseded,
-                  payload:     self.payload.snapshot()?,
-                  columns:     self.columns,
-                  column:      self.column,
-                  previous_cr: self.previous_cr,
-                  info:        self.info })
+        Ok(Self { capture:      self.capture,
+                  superseded:   self.superseded,
+                  payload:      self.payload.snapshot()?,
+                  columns:      self.columns,
+                  column:       self.column,
+                  previous_cr:  self.previous_cr,
+                  native_fault: self.native_fault,
+                  info:         self.info })
     }
 
     pub(crate) fn add_flags(&mut self, flags: u32)
@@ -156,6 +168,37 @@ pub(crate) fn queue_dismissal(binding: crate::toolbox::processes::ResourceBindin
     pending::queue_dismissal(binding, activity, snapshot, window)
 }
 
+impl Manager
+{
+    pub(in crate::toolbox) fn title_label(&self) -> u32
+    {
+        match self.native_fault
+        {
+            Some(NativeFailure::AccessFault) => 28,
+            Some(NativeFailure::Exception) => 30,
+            Some(NativeFailure::DefinitionPanic) => 0,
+            None if self.info.flags & MAIN_ERROR != 0 => 26,
+            None => 0
+        }
+    }
+
+    pub(in crate::toolbox) fn description_label(&self, finder: bool) -> u32
+    {
+        if finder
+        {
+            return 4;
+        }
+        match self.native_fault
+        {
+            Some(NativeFailure::AccessFault) => 29,
+            Some(NativeFailure::Exception) => 31,
+            Some(NativeFailure::DefinitionPanic) => 7,
+            None if self.info.flags & MAIN_ERROR != 0 => 27,
+            None => 7
+        }
+    }
+}
+
 impl Default for Manager
 {
     fn default() -> Self
@@ -168,6 +211,7 @@ impl Default for Manager
                columns:                                              DEFAULT_COLUMNS,
                column:                                               0,
                previous_cr:                                          false,
+               native_fault:                                         None,
                info:
                    CrashInfo { page_lines: PAGE_LINES,
                                ..Default::default() },
@@ -258,6 +302,7 @@ impl Manager
                columns: self.columns,
                column: self.column,
                previous_cr: self.previous_cr,
+               native_fault: self.native_fault,
                info,
                ..Self::default() }
     }
@@ -326,6 +371,7 @@ impl Manager
                       columns: self.columns,
                       column: self.column,
                       previous_cr: self.previous_cr,
+                      native_fault: self.native_fault,
                       info: self.info() })
     }
 
@@ -342,6 +388,7 @@ impl Manager
                columns: snapshot.columns,
                column: snapshot.column,
                previous_cr: snapshot.previous_cr,
+               native_fault: snapshot.native_fault,
                info,
                ..Default::default() }
     }
@@ -479,6 +526,94 @@ impl Manager
     pub(crate) fn seal_system_diagnostic(&mut self)
     {
         self.capture = Capture::SystemDiagnostic;
+    }
+
+    /// Preserve trusted fault scalars even if the author filled its diagnostic
+    /// allowance first. A bounded tail replaces only the necessary app suffix;
+    /// TRUNCATED then explicitly prevents a complete-report claim.
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn append_native_fault(&mut self, fault: crate::machine::scheduler::FaultSnapshot,
+                                      application_label: &str, application_name: &str)
+                                      -> Result<(), Status>
+    {
+        if self.native_fault.is_some()
+        {
+            return Ok(());
+        }
+        // One bounded line per captured scalar/register, with ample space for
+        // names, 64-bit hexadecimal values and the fixed explanatory header.
+        const BYTES: usize = (30 + 12) * 64
+                             + 2 * mac_abi::INLINE_STRING_BYTES
+                             + core::mem::size_of::<mac_abi::definitions::DefinitionPanic>();
+        struct Text
+        {
+            bytes: [u8; BYTES],
+            used:  usize
+        }
+        impl core::fmt::Write for Text
+        {
+            fn write_str(&mut self, text: &str) -> core::fmt::Result
+            {
+                let end = self.used.checked_add(text.len()).ok_or(core::fmt::Error)?;
+                self.bytes
+                    .get_mut(self.used..end)
+                    .ok_or(core::fmt::Error)?
+                    .copy_from_slice(text.as_bytes());
+                self.used = end;
+                Ok(())
+            }
+        }
+        let mut text = Text { bytes: [0; BYTES],
+                              used:  0 };
+        core::fmt::write(&mut text, format_args!("\n{application_label} {application_name}\n{fault}")).map_err(|_| BAD_ARGUMENT)?;
+        let text = core::str::from_utf8(&text.bytes[..text.used]).map_err(|_| BAD_ARGUMENT)?;
+        let data = self.payload.data_mut()?;
+        let previous = data.report.len();
+        let mut keep =
+            previous.min(MAX_REPORT_BYTES.checked_sub(text.len()).ok_or(BAD_ARGUMENT)?);
+        while !data.report.is_char_boundary(keep)
+        {
+            keep -= 1;
+        }
+        let starts = data.starts.partition_point(|offset| *offset as usize <= keep);
+        let required = starts.checked_add(text.len()).ok_or(BAD_ARGUMENT)?;
+        if data.report.capacity() < keep + text.len() || data.starts.capacity() < required
+        {
+            return Err(NO_MEMORY);
+        }
+        // Every fallible admission precedes mutation. The existing protected
+        // String and row-directory capacities cover this entire bounded tail.
+        data.report.truncate(keep);
+        data.starts.truncate(starts);
+        self.column = 0;
+        self.previous_cr = data.report.ends_with('\r');
+        data.report.push_str(text);
+        for (offset, character) in text.char_indices()
+        {
+            layout(&mut data.starts,
+                   &mut self.column,
+                   &mut self.previous_cr,
+                   self.columns,
+                   keep + offset,
+                   character);
+        }
+        if keep != previous
+        {
+            self.info.flags |= TRUNCATED;
+        }
+        self.native_fault = Some(if fault.is_definition_panic()
+                                 {
+                                     NativeFailure::DefinitionPanic
+                                 }
+                                 else if fault.is_access_fault()
+                                 {
+                                     NativeFailure::AccessFault
+                                 }
+                                 else
+                                 {
+                                     NativeFailure::Exception
+                                 });
+        Ok(())
     }
 
     /// The report owns both ordinary buttons and its managed row scrollbar.

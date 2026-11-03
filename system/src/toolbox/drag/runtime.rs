@@ -139,7 +139,14 @@ impl super::super::runtime::Toolbox
 {
     pub(super) fn drag_hot(&self, point: Point) -> Option<u32>
     {
-        let hit = self.windows.find_window(point);
+        // Advisory hover uses committed occlusion/content geometry only.
+        // Actual release supplies its independently admitted WDEF HIT.
+        self.windows.cached_content_window(point).and_then(|window| self.drag.receiver_at(window.0))
+    }
+
+    pub(in crate::toolbox::runtime) fn drag_hot_with_hit(&self, hit: crate::toolbox::windows::Hit)
+                                                         -> Option<u32>
+    {
         match hit.part
         {
             WindowPart::Content => self.drag.receiver_at(hit.window?.0),
@@ -169,26 +176,33 @@ impl super::super::runtime::Toolbox
         self.drag_effects(before);
     }
 
-    pub(super) fn drag_input(&mut self, input: Input, when: u32) -> bool
+    pub(super) fn drag_input_observed(&mut self, input: Input, when: u32,
+                                      admitted: Option<crate::toolbox::windows::Hit>,
+                                      modifiers: u16)
+                                      -> bool
     {
         if !self.drag.is_tracking()
         {
             return false;
         }
         let before = self.drag.feedback();
-        let point = self.events.mouse;
-        let hot = self.drag_hot(point);
+        let point = match input
+        {
+            Input::Move(point)
+            | Input::Button { point,
+                            .. } => point,
+            Input::Key { .. } => self.events.mouse
+        };
+        let hot =
+            admitted.map(|hit| self.drag_hot_with_hit(hit)).unwrap_or_else(|| self.drag_hot(point));
         let result = match input
         {
             Input::Key { mac_code: 0x35,
                          down: true,
                          .. } => self.drag.escape(when).map(|_| ()),
             Input::Button { point,
-                            down: false } =>
-            {
-                self.drag.release(point, self.events.modifiers, hot, when)
-            }
-            _ => self.drag.motion(point, self.events.modifiers, hot, when)
+                            down: false } => self.drag.release(point, modifiers, hot, when),
+            _ => self.drag.motion(point, modifiers, hot, when)
         };
         if let Err(status) = result
         {

@@ -261,6 +261,9 @@ pub struct ThreadContext
     io_subject:        selection::ScopedSelection<crate::drivers::jobs::subjects::Subject>,
     module:            selection::ScopedSelection<crate::images::ModuleFrame>,
     tls:               spinning_top::Spinlock<Option<crate::toolbox::native_threads::ThreadSlots>>,
+    user_call:         spinning_top::Spinlock<Option<crate::machine::traps::user::Call>>,
+    callback_stock:
+        spinning_top::Spinlock<Option<alloc::sync::Arc<crate::machine::traps::user::stock::Cell>>>,
     pub traps:         ThreadTrapState,
     pub definitions:   DefinitionInvocations
 }
@@ -285,8 +288,76 @@ impl ThreadContext
                io_subject:        selection::ScopedSelection::new(BOOT_THREAD),
                module:            selection::ScopedSelection::new(BOOT_THREAD),
                tls:               spinning_top::Spinlock::new(None),
+               user_call:         spinning_top::Spinlock::new(None),
+               callback_stock:    spinning_top::Spinlock::new(None),
                traps:             ThreadTrapState::new(),
                definitions:       DefinitionInvocations::new() }
+    }
+
+    /// Only callback worker preparation installs this cell, before publication.
+    pub(crate) fn install_callback_stock(&self) -> Result<(), mac_abi::Status>
+    {
+        let stock = crate::machine::traps::user::stock::Cell::prepare()?;
+        let surplus = crate::machine::interrupts::with_masked(|| {
+            let mut slot = self.callback_stock.lock();
+            if slot.is_some()
+            {
+                Some(stock)
+            }
+            else
+            {
+                *slot = Some(stock);
+                None
+            }
+        });
+        if let Some(stock) = surplus
+        {
+            drop(stock);
+            return Err(mac_abi::SERVICE_BUSY);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn callback_stock(
+        &self)
+        -> Option<alloc::sync::Arc<crate::machine::traps::user::stock::Cell>>
+    {
+        crate::machine::interrupts::with_masked(|| self.callback_stock.lock().clone())
+    }
+
+    /// The actual outer request owns one stable snapshot across suspension. A
+    /// mismatch leaves the original envelope and every mapping pin untouched.
+    pub(crate) fn take_user_call(
+        &self, identity: crate::machine::scheduler::service::RequestIdentity, number: u32,
+        pointer: usize, bytes: usize)
+        -> Result<Option<crate::machine::traps::user::Call>, mac_abi::Status>
+    {
+        let mut slot = self.user_call.lock();
+        if slot.as_ref().is_some_and(|call| !call.matches(identity, number, pointer, bytes))
+        {
+            return Err(mac_abi::ACCESS_DENIED);
+        }
+        Ok(slot.take())
+    }
+
+    pub(crate) fn park_user_call(
+        &self, call: crate::machine::traps::user::Call)
+        -> Result<(), (mac_abi::Status, crate::machine::traps::user::Call)>
+    {
+        let mut slot = self.user_call.lock();
+        if slot.is_some()
+        {
+            return Err((mac_abi::SERVICE_BUSY, call));
+        }
+        *slot = Some(call);
+        Ok(())
+    }
+
+    /// Stop/cancel takes custody before mapping retirement. The caller destroys
+    /// the returned envelope outside scheduler, manager and mapping locks.
+    pub(crate) fn abandon_user_call(&self) -> Option<crate::machine::traps::user::Call>
+    {
+        self.user_call.lock().take()
     }
 
     /// Preparation owns this backing before any canonical THRD becomes runnable.

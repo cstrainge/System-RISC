@@ -127,9 +127,51 @@ impl Heap
         })
     }
 
+    pub(super) fn user_address(&self, cpu: usize, bytes: usize) -> Result<usize, Error>
+    {
+        self.with(|state| {
+                for entry in state.extents.values()
+                {
+                    let base = entry.extent.base();
+                    if cpu >= base
+                       && cpu.checked_add(bytes)
+                             .is_some_and(|end| end <= base + entry.region.bytes() as usize)
+                    {
+                        return entry.region.user_address(cpu, bytes);
+                    }
+                }
+                Err(Error::Pointer)
+            })
+    }
+
+    pub(super) fn cpu_address(&self, user: usize, bytes: usize) -> Result<usize, Error>
+    {
+        self.try_cpu_address(user, bytes)?.ok_or(Error::Pointer)
+    }
+
+    pub(super) fn try_cpu_address(&self, user: usize, bytes: usize)
+                                  -> Result<Option<usize>, Error>
+    {
+        self.with(|state| {
+                for entry in state.extents.values()
+                {
+                    if let Some(cpu) = entry.region.cpu_address(user, bytes)?
+                    {
+                        return Ok(Some(cpu));
+                    }
+                }
+                Ok(None)
+            })
+    }
+
     pub(super) fn wait_accepting(&self) -> bool
     {
         self.owner.accepting() && !self.closing.load(Ordering::Acquire)
+    }
+
+    pub(super) fn has_retirement(&self) -> bool
+    {
+        self.retiring_count.load(Ordering::Acquire) != 0
     }
 
     /// Mark only real deferred physical retirement; never scan/reap in Drop.
@@ -238,6 +280,10 @@ impl Heap
                         let mut metadata = None;
                         for entry in state.extents.values()
                         {
+                            if !entry.region.accepting()
+                            {
+                                continue;
+                            }
                             let extent = &entry.extent;
                             match Extent::reserve(extent, layout)
                             {
@@ -319,7 +365,8 @@ impl Heap
                                                                                     "extent owner",
                                                                                 requested: 1 }
                                                           })?;
-        let region = this.kernel(|| super::wait::Region::prepare(bytes))?;
+        let mapping = this.kernel(|| super::native::map_extent(this, extent.clone(), bytes))?;
+        let region = this.kernel(|| super::wait::Region::prepare(bytes, mapping))?;
         let mut spare = HashMap::new();
         loop
         {
@@ -359,8 +406,11 @@ impl Heap
                 Ok(()) =>
                 {
                     drop(spare);
+                    // Canonical heap entry owns both actual extent and mapping
+                    // before publication. Every refusal stays anchored for reap.
+                    let result = region.publish();
                     drop(extent);
-                    return Ok(());
+                    return result;
                 }
                 Err(required) =>
                 {
@@ -469,20 +519,30 @@ impl Heap
                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                .is_err()
         {
-            // A concurrent turn owns the detached list. Preserve this real
-            // release's notification until that turn has returned its owners.
-            self.notify_wait_release();
+            // Preserve a real retry while the detached owner is unavailable.
+            // Its actual return publishes the notice; do not self-wake while
+            // the same exclusive turn remains active. Recheck covers return
+            // between failed CAS and arming this flag.
+            self.wait_dirty.store(true, Ordering::Release);
+            if !self.reap_running.load(Ordering::Acquire)
+            {
+                super::wait::request_reap();
+            }
             return;
         }
-        struct Turn<'a>(&'a AtomicBool);
+        struct Turn<'a>(&'a Heap);
         impl Drop for Turn<'_>
         {
             fn drop(&mut self)
             {
-                self.0.store(false, Ordering::Release);
+                self.0.reap_running.store(false, Ordering::Release);
+                if self.0.wait_dirty.load(Ordering::Acquire)
+                {
+                    super::wait::request_reap();
+                }
             }
         }
-        let _turn = Turn(&self.reap_running);
+        let _turn = Turn(self);
         if self.unused_extent.load(Ordering::Acquire)
            && self.unused_extent.swap(false, Ordering::AcqRel)
         {
@@ -557,6 +617,21 @@ impl Heap
                     continue;
                 }
             };
+            if let Some(held) = &region
+            {
+                if held.retire_mapping().is_err()
+                {
+                    node.work = Work::Retiring { extent,
+                                                 detached,
+                                                 region };
+                    self.with(|state| {
+                            node.next = state.retiring.take();
+                            state.retiring = Some(node);
+                        });
+                    self.pending_retirement.store(true, Ordering::Release);
+                    continue;
+                }
+            }
             drop(detached);
             match extent.try_retire()
             {
@@ -602,6 +677,19 @@ impl Heap
                         _ => heap::Error::State
                     };
                     return Some(CleanupCause::Fault(cause));
+                }
+                let mut pending = state.retiring.as_deref();
+                while let Some(node) = pending
+                {
+                    if let Work::Retiring { region: Some(region),
+                                            .. } = &node.work
+                    {
+                        if let Some(cause) = region.quarantine_cause()
+                        {
+                            return Some(CleanupCause::UserMapping(cause));
+                        }
+                    }
+                    pending = node.next.as_deref();
                 }
                 if let Some(cause) = state.fault
                 {

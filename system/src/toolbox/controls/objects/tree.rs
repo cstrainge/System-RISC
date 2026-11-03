@@ -5,7 +5,7 @@ use mac_abi::{controls::reflow as wire, geometry::Rect};
 
 use super::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Node
 {
     pub parent:       u64,
@@ -20,6 +20,16 @@ pub(super) struct Node
 }
 impl Node
 {
+    pub(super) fn previous_sibling(&self) -> u64
+    {
+        self.previous
+    }
+
+    pub(super) fn last_child(&self) -> u64
+    {
+        self.last
+    }
+
     pub(super) fn new(order: u64) -> Self
     {
         Self { parent: 0,
@@ -123,10 +133,15 @@ impl Manager
 
     pub(crate) fn dispose(&mut self, id: u64, owner: u64) -> Result<(), Status>
     {
+        if self.request_tree_disposal(id, owner)?
+        {
+            return Err(SERVICE_BUSY);
+        }
         if self.get(id, owner)?.tree.parent != 0
         {
             return Err(ACCESS_DENIED);
         }
+        self.no_claims_on_tree(id)?;
         self.remove_tree(id)
     }
 
@@ -582,6 +597,22 @@ impl Manager
         0
     }
 
+    /// Pre-order ids of a subtree, children after their parent.
+    pub(super) fn subtree(&self, root: u64) -> Result<Vec<u64>, Status>
+    {
+        let mut ids = Vec::new();
+        ids.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        ids.push(root);
+        let mut id = self.objects.get(root).ok_or(NOT_FOUND)?.tree.first;
+        while id != 0
+        {
+            ids.try_reserve(1).map_err(|_| NO_MEMORY)?;
+            ids.push(id);
+            id = self.next_in(root, id);
+        }
+        Ok(ids)
+    }
+
     pub(super) fn remove_tree(&mut self, root: u64) -> Result<(), Status>
     {
         let mut id = root;
@@ -594,10 +625,16 @@ impl Manager
                 continue;
             }
             let parent = o.tree.parent;
+            let cell = o.disposal.clone();
             self.detach(id);
+            if let Some(cell) = cell
+            {
+                self.retire_idle_metadata(&cell);
+            }
             // Store::remove keeps an invalidate-first walk's payload/ticket if
             // that walk already owns disposal; never synthesize a second ticket.
             drop(self.objects.remove(id));
+            crate::kernel::window_sources_changed();
             if id == root
             {
                 break;
@@ -700,73 +737,5 @@ impl Manager
             b = y.tree.parent;
         }
         core::cmp::Ordering::Equal
-    }
-
-    pub(crate) fn hit_children(&self, root: u64, owner: u64, point: Point, gate: TrapGate,
-                               mut hit: impl FnMut(&ControlCall) -> Result<i16, Status>)
-                               -> Result<(u64, i16), Status>
-    {
-        self.table(root, owner)?;
-        let mut id = root;
-        while let Some(o) = self.objects.get(id)
-        {
-            if o.tree.last == 0
-            {
-                break;
-            }
-            id = o.tree.last;
-        }
-        while id != root
-        {
-            let o = self.get(id, owner)?;
-            if self.visible_clip(id).is_none_or(|clip| clip.contains(point))
-            {
-                if o.state.divider_hit(point, gate)?.is_some()
-                {
-                    return Ok((id, SPLITTER_PART));
-                }
-                if let Some((_, part)) = o.state.scroll_hit(point, gate)?
-                {
-                    return Ok((id, part));
-                }
-                let mut call = o.state.spec.draw();
-                call.operation =
-                    if o.state.spec.scrollbar().is_some() { HIT_SCROLLBAR } else { HIT_STANDARD };
-                call.point = point;
-                call.reflow = 1;
-                let part = hit(&call)?;
-                if part != 0 && part != 254
-                {
-                    return Ok((id, part));
-                }
-            }
-            if o.tree.previous != 0
-            {
-                id = o.tree.previous;
-                while let Some(o) = self.objects.get(id)
-                {
-                    if o.tree.last == 0
-                    {
-                        break;
-                    }
-                    id = o.tree.last;
-                }
-            }
-            else
-            {
-                id = o.tree.parent;
-            }
-        }
-        if self.visible_clip(root).is_none_or(|c| c.contains(point))
-           && self.get(root, owner)?.state.divider_hit(point, gate)?.is_some()
-        {
-            return Ok((root, SPLITTER_PART));
-        }
-        if self.visible_clip(root).is_none_or(|c| c.contains(point))
-           && let Some((_, part)) = self.get(root, owner)?.state.scroll_hit(point, gate)?
-        {
-            return Ok((root, part));
-        }
-        Ok((0, 0))
     }
 }

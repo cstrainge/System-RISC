@@ -238,6 +238,13 @@ pub struct CompletionKey
 }
 impl CompletionKey
 {
+    /// The same original full resource identity, for authenticated late
+    /// completion observation. This does not construct a release ticket.
+    pub fn resource_key(self) -> ResourceKey
+    {
+        self.key
+    }
+
     pub fn id(self) -> u64
     {
         self.id
@@ -1204,6 +1211,34 @@ impl<T, G: InvocationGate, S> Store<T, G, S>
     pub fn iter(&self) -> impl Iterator<Item = (u64, &T)>
     {
         self.owners.iter().flat_map(Values::iter)
+    }
+
+    /// Read only the original canonical owner backing. An absent owner is an
+    /// empty view; an incarnation collision or stale offered backing is refused.
+    /// Identity/generation validation remains the SAME Values::iter path.
+    pub fn iter_owner(&self, owner: &OwnerRef<G>)
+                      -> Result<impl Iterator<Item = (u64, &T)>, PoolError>
+    {
+        let values = match self.owner_index(owner.owner())
+        {
+            Ok(at) =>
+            {
+                let values = &self.owners[at];
+                if values.claim.owner.owner() != owner.owner()
+                {
+                    return Err(PoolError::ForeignOwner { expected: values.claim.owner.owner(),
+                                                         actual:   owner.owner() });
+                }
+                if let Some(storage) = &*values.storage
+                   && !owner.contains(storage.key)
+                {
+                    return Err(PoolError::Stale { key: storage.key });
+                }
+                Some(values)
+            }
+            Err(_) => None
+        };
+        Ok(values.into_iter().flat_map(Values::iter))
     }
 
     /// Trusted retained metadata, including invalidated payloads awaiting their

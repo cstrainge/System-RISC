@@ -171,7 +171,7 @@ pub(crate) fn prepare_application_extent(owner: &OwnerRef,
                                                                                         reservation } });
         }
     };
-    let backing = match Backing::reserve_uninitialized(requested_backing)
+    let backing = match Backing::allocate(requested_backing)
     {
         Ok(backing) => backing,
         Err(cause) =>
@@ -243,4 +243,18 @@ pub(crate) fn application_wait_extent<T>(address: usize,
         bytes = next;
     }
     Ok(None)
+}
+
+/// Derive the permanent supervisor alias's physical coordinates from the real
+/// native extent factory. This does not mint backing or an allocation receipt.
+pub(crate) fn application_extent_physical(
+    extent: &Extent, bytes: u64)
+    -> Result<mac_kernel_model::pages::PhysicalAddress, super::Error>
+{
+    super::POOLS.get()
+                .ok_or(super::Error::Unavailable)?
+                .ram
+                .physical_address(mac_kernel_model::pages::VirtualAddress(extent.base() as u64),
+                                  bytes)
+                .map_err(super::Error::Mapping)
 }
