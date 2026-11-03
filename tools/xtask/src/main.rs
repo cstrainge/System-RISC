@@ -183,6 +183,7 @@ impl Workspace
                      report["resources"].as_array().unwrap().len());
             reports.push(report);
         }
+        disk::validate_modules(self)?;
         for app in ["finder", "quickdraw-test", "text-edit", "cursor-test", "panic-test",
                     "resedit", "reactor", "control-suite"]
         {
@@ -527,6 +528,11 @@ fn execute() -> Result<()>
         {
             workspace.build()?;
         }
+        [command] if command == "modules-check" =>
+        {
+            disk::validate_modules(&workspace)?;
+            println!("Installed module identities are unique within each loading namespace.");
+        }
         [command] if command == "doc" => docs::generate(&workspace)?,
         [command] if command == "image" =>
         {
@@ -600,6 +606,8 @@ fn help()
     println!("  cargo xtask sdk app Cargo.toml  Build a std application with the private SDK");
     println!("  cargo xtask doc            Generate Rust library documentation in docs/api");
     println!("  cargo xtask resource-map FILE  Inspect checked resource metadata as JSON");
+    println!("  cargo xtask modules-check     Validate packaged module identities without \
+              rebuilding");
     println!("System7 build tools\n\n  cargo xtask rebuild MANIFEST OUT  Rebuild a ResEdit \
               resource archive\n  cargo xtask build          Build System, Finder, applications \
               and boot ROM\n  cargo xtask image          Build a separate 500 MiB HFS-B disk and \
