@@ -16,7 +16,6 @@ use super::tracking::{Action, Tracking};
 use crate::toolbox::{handles::{CapacityPolicy, KindCode, KindLease, OwnerRef, Store},
                      quickdraw::{Canvas, fonts::FontManager, fonts_service},
                      resources::definitions::{BoundDefinition, DefinitionRef}};
-const PIXEL_BUDGET: usize = 2 * 1024 * 1024;
 struct Row
 {
     pixels: Vec<u32>
@@ -63,7 +62,6 @@ pub struct Manager
 {
     objects:      Store<Object>,
     raster_bytes: usize,
-    recovery_raster_bytes: usize,
     reserved_raster_bytes: usize,
     publication: Option<mac_object_table::store::PublicationReservation<crate::toolbox::handles::InvocationGate>>
 }
@@ -116,10 +114,6 @@ impl<C: ScrollBoxHost> mac_object_table::registry::Release<C> for ReleaseScrollB
         let manager = context.managed_scroll_boxes();
         let object = manager.objects.release(ticket)?;
         manager.raster_bytes -= object.view.raster.pixels() * 8;
-        if object.recovery
-        {
-            manager.recovery_raster_bytes -= object.view.raster.pixels() * 8;
-        }
         drop(object);
         Ok(())
     }
@@ -138,7 +132,6 @@ impl Manager
     {
         Ok(Self { objects:               Store::owned(objects, storage).map_err(|_| BAD_ARGUMENT)?,
                   raster_bytes:          0,
-                  recovery_raster_bytes: 0,
                   reserved_raster_bytes: 0,
                   publication:           None })
     }
@@ -517,20 +510,15 @@ impl Manager
         paint_row(&mut self.get_mut_live(id, owner)?.view, row, draw)
     }
 
-    /// Reserve both committed and staging rasters against the compositor's
-    /// shared cache budget, so viewport acceleration cannot starve file I/O.
+    /// Retain the viewport allowance derived from the admitted recovery UI.
+    /// Its protected allocation stock is independent of ordinary row tiles,
+    /// whose actual allocations retain their original account/budget receipts.
     pub(crate) fn prepare_recovery(&mut self, storage: &OwnerRef, bytes: usize)
                                    -> Result<(), Status>
     {
-        if storage.owner().kind() != mac_object_table::domain::DomainKind::System
-           || bytes == 0
-           || bytes > PIXEL_BUDGET
+        if storage.owner().kind() != mac_object_table::domain::DomainKind::System || bytes == 0
         {
             return Err(BAD_ARGUMENT);
-        }
-        if self.raster_bytes - self.recovery_raster_bytes > PIXEL_BUDGET - bytes
-        {
-            return Err(NO_MEMORY);
         }
         if self.publication.is_none()
         {
@@ -563,20 +551,18 @@ impl Manager
 
     pub fn raster_storage(&self) -> usize
     {
+        // Conservative compositor cache-pressure estimate only. Row tables and
+        // tiles allocate lazily; this is not a memory reservation or admission
+        // limit. The allocator accounts actual backing, including shared rows.
         self.raster_bytes
     }
 
     pub fn remove_window(&mut self, window: u64)
     {
         let bytes = &mut self.raster_bytes;
-        let recovery_bytes = &mut self.recovery_raster_bytes;
         self.objects.remove_where_with(|_, object| object.window == window,
                                        |object| {
                                            *bytes -= object.view.raster.pixels() * 8;
-                                           if object.recovery
-                                           {
-                                               *recovery_bytes -= object.view.raster.pixels() * 8;
-                                           }
                                            drop(object);
                                        });
     }
@@ -690,15 +676,6 @@ impl Manager
         {
             let (w, h, _) = dimensions(call.spec)?;
             fonts.metrics(fonts_service::selection(call.spec.font))?;
-            let previous = if call.operation == CONFIGURE
-            {
-                self.get(call.id, owner)?.view.raster.pixels() * 8
-            }
-            else
-            {
-                0
-            };
-            let used = self.raster_bytes;
             let recovery = if call.operation == CREATE
             {
                 #[cfg(target_arch = "riscv64")]
@@ -720,11 +697,6 @@ impl Manager
                 {
                     return Err(NO_MEMORY);
                 }
-            }
-            else if used - self.recovery_raster_bytes - previous + w * h * 8
-                      > PIXEL_BUDGET - self.reserved_raster_bytes
-            {
-                return Err(NO_MEMORY);
             }
         }
         Ok(if call.operation == CREATE
@@ -820,10 +792,6 @@ impl Manager
                     call.id = self.objects.insert(storage, object).map_err(pool_status)?;
                 }
                 self.raster_bytes = used + w * h * 8;
-                if recovery
-                {
-                    self.recovery_raster_bytes += w * h * 8;
-                }
             }
             else
             {
@@ -859,11 +827,6 @@ impl Manager
                     object.view.tracking = None;
                     object.view.highlight = 0;
                     self.raster_bytes = used - previous + w * h * 8;
-                    if recovery
-                    {
-                        self.recovery_raster_bytes =
-                            self.recovery_raster_bytes - previous + w * h * 8;
-                    }
                 }
             }
         }
@@ -873,10 +836,6 @@ impl Manager
             if let Some(object) = self.objects.remove(call.id)
             {
                 self.raster_bytes -= object.view.raster.pixels() * 8;
-                if object.recovery
-                {
-                    self.recovery_raster_bytes -= object.view.raster.pixels() * 8;
-                }
             }
             return Ok(None);
         }
