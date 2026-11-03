@@ -188,6 +188,31 @@ impl PaintPlan
                      surface })
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PaintFailure
+{
+    Service(Status),
+    Enqueue(callbacks::EnqueueError)
+}
+impl From<Status> for PaintFailure
+{
+    fn from(status: Status) -> Self
+    {
+        Self::Service(status)
+    }
+}
+impl PaintFailure
+{
+    pub(crate) fn status(self) -> Status
+    {
+        match self
+        {
+            Self::Service(s) => s,
+            Self::Enqueue(c) => c.status()
+        }
+    }
+}
+
 struct Data
 {
     plan:        PaintPlan,
@@ -195,7 +220,7 @@ struct Data
     snapshot:    Option<SurfaceSnapshot>,
     pending:     Option<Pending>,
     reply:       Option<Reply>,
-    failure:     Option<Status>,
+    failure:     Option<PaintFailure>,
     attempted:   bool,
     replayed:    bool,
     // The actual CALCULATE reply stays owned until GROW has really drained.
@@ -354,7 +379,7 @@ impl PaintLoan
     /// Guard-free. A cancelled owner still polls its SAME admitted Pending to
     /// actual RETURN/stopped before releasing the target claim. Pending::Drop
     /// alone is deliberately not treated as author completion.
-    pub(crate) fn advance(&mut self) -> Result<PaintProgress, Status>
+    pub(crate) fn advance(&mut self) -> Result<PaintProgress, PaintFailure>
     {
         let data = self.data.as_mut().ok_or(BAD_ABI)?;
         if let Some(pending) = data.pending.as_ref()
@@ -373,7 +398,7 @@ impl PaintLoan
                     {
                         drop(data.pending.take());
                     }
-                    data.failure = Some(status);
+                    data.failure = Some(status.into());
                 }
             }
         }
@@ -391,7 +416,7 @@ impl PaintLoan
         }
         if data.attempted
         {
-            return Err(BAD_ABI);
+            return Err(BAD_ABI.into());
         }
         let calculating =
             data.plan.domain == PaintDomain::TrackingGrow && data.calculated.is_none();
@@ -413,10 +438,11 @@ impl PaintLoan
                 data.pending = Some(pending);
                 Ok(PaintProgress::Pending)
             }
-            Err(status) =>
+            Err(cause) =>
             {
-                data.failure = Some(status);
-                Err(status)
+                let failure = PaintFailure::Enqueue(cause);
+                data.failure = Some(failure);
+                Err(failure)
             }
         }
     }

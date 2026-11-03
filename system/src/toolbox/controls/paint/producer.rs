@@ -32,7 +32,7 @@ pub(crate) enum PaintFailure
     Prepare(Status),
     Capture(Status),
     Validation(Status),
-    Enqueue(Status),
+    Enqueue(callbacks::EnqueueError),
     Poll(Status),
     Author(i64),
     Replay(Status),
@@ -48,10 +48,10 @@ impl PaintFailure
             | Self::Prepare(s)
             | Self::Capture(s)
             | Self::Validation(s)
-            | Self::Enqueue(s)
             | Self::Poll(s)
             | Self::Replay(s)
             | Self::State(s) => s,
+            Self::Enqueue(cause) => cause.status(),
             Self::Author(result) => Status::try_from(result).unwrap_or(BAD_ABI)
         }
     }

@@ -296,13 +296,15 @@ impl<G: InvocationGate> OwnerRef<G>
     /// a manager excludes only its own root/backing, never a cleanup roll call.
     pub fn has_resources_outside(&self, excluded: &[KindCode]) -> bool
     {
-        self.access(|index| {
-                index.pools().any(|pool| {
-                                 !excluded.contains(&pool.kind())
-                                 && (pool.live() != 0 || pool.pending() != 0)
-                             })
-                || index.summary().completion_faults != 0
-            })
+        self.resource_blocker_outside(excluded).is_some()
+    }
+
+    /// Read the first actual root-release barrier under the same gate as the
+    /// predicate. Counts describe this observation and grant no cleanup right.
+    pub fn resource_blocker_outside(&self, excluded: &[KindCode])
+                                    -> Option<crate::domain::ResourceBlocker>
+    {
+        self.access(|index| index.resource_blocker_outside(excluded))
     }
 
     /// The revision check and value copy share the same invocation/metadata

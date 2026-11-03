@@ -1151,7 +1151,8 @@ enum ServiceFailure
 {
     Desktop(crate::state::AccessError),
     Callback(Status),
-    Control(control_producer::PaintFailure)
+    Control(control_producer::PaintFailure),
+    Window(crate::toolbox::windows::manager::paint::PaintFailure)
 }
 impl From<Status> for ServiceFailure
 {
@@ -1167,6 +1168,13 @@ impl From<control_producer::PaintFailure> for ServiceFailure
         Self::Control(failure)
     }
 }
+impl From<crate::toolbox::windows::manager::paint::PaintFailure> for ServiceFailure
+{
+    fn from(failure: crate::toolbox::windows::manager::paint::PaintFailure) -> Self
+    {
+        Self::Window(failure)
+    }
+}
 impl ServiceFailure
 {
     fn status(&self) -> Status
@@ -1175,7 +1183,8 @@ impl ServiceFailure
         {
             Self::Desktop(cause) => cause.status(),
             Self::Callback(status) => *status,
-            Self::Control(cause) => cause.status()
+            Self::Control(cause) => cause.status(),
+            Self::Window(cause) => cause.status()
         }
     }
 }
