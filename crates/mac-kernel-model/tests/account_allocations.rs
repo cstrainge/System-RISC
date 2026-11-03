@@ -17,7 +17,7 @@ impl InvocationGate for HostGate
         operation()
     }
 
-    fn released(_: mac_kernel_model::DomainId)
+    fn released(_: &OwnerRef<Self>)
     {
         WAKES.fetch_add(1, Ordering::Relaxed);
     }

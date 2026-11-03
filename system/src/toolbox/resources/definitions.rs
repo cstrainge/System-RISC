@@ -1078,7 +1078,18 @@ impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> fo
             _ => return Err(Failure::context_unavailable(ticket, "definition registry"))
         };
         definition.retiring.store(true, Ordering::Release);
-        if !crate::images::Manager::root_only(&definition.owner)
+        // A User definition Region owns a genuine SPCE pin until its mapping
+        // unmap/TLB ACK. Requiring SPCE to disappear here would prevent that
+        // same DDEF mapping from ever releasing its parent. All other objects
+        // still drain first; actual THRD/readers/Loading checks remain below.
+        const DEFINITION_DRAIN_ROOTS: [KindCode; crate::images::ROOT_KINDS.len() + 2] =
+            [crate::images::ROOT_KINDS[0],
+             crate::images::ROOT_KINDS[1],
+             crate::images::ROOT_KINDS[2],
+             crate::images::ROOT_KINDS[3],
+             KindCode(*b"SPCE"),
+             KindCode(*b"SPST")];
+        if definition.owner.has_resources_outside(&DEFINITION_DRAIN_ROOTS)
         {
             return Err(Failure::definition_pending(ticket, owner, Drain::Objects));
         }

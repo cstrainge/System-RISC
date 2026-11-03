@@ -397,7 +397,9 @@ impl Manager
         if !call.surface.is_null() || call.reserved != 0
            || !crate::toolbox::resources::definitions::is_user(entry).map_err(CreationError::Binding)?
         { return Err(CreationError::InvalidRequest); }
-        let id = super::super::preflight(call).map_err(CreationError::Validation)?;
+        // The admitted intent remains CREATE; the returned state is DRAW-shaped.
+        // Select the original family without reinterpreting that constructor.
+        let id = super::super::creation_definition_id(call).map_err(CreationError::Validation)?;
         if super::super::preflight(validated).map_err(CreationError::Validation)? != id
         {
             return Err(CreationError::InvalidRequest);

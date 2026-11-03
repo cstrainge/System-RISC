@@ -40,10 +40,14 @@ pub trait InvocationGate
         operation()
     }
 
-    /// A stopped ledger has actually completed cleanup. Called after payload
-    /// destruction and metadata unlock; the resident adapter may post a cheap,
-    /// coalesced retirement wake. This must not allocate or run cleanup itself.
-    fn released(_owner: DomainId)
+    /// An actual account pin/refund or stopped-ledger completion released its
+    /// original ownership. Called after pin/payload destruction and metadata
+    /// unlock; the adapter may post a cheap retirement wake. This is not an ACK.
+    /// The original ledger permits an adapter to
+    /// distinguish a stopped owner from unrelated live-owner budget traffic.
+    /// This must not allocate or run cleanup itself.
+    fn released(_owner: &OwnerRef<Self>)
+        where Self: Sized
     {
     }
 
@@ -234,7 +238,7 @@ impl<G: InvocationGate> OwnerRef<G>
                           })?;
         if stopped
         {
-            G::released(self.owner());
+            G::released(self);
         }
         Ok(())
     }
@@ -253,7 +257,7 @@ impl<G: InvocationGate> OwnerRef<G>
         G::resource_released(self.owner());
         if !self.accepting()
         {
-            G::released(self.owner());
+            G::released(self);
         }
     }
 
