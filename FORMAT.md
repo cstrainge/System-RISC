@@ -194,10 +194,13 @@ retained. Classic68k control records/procIDs remain at their existing adapter.
 
 System's native controls have descriptive resource names and independent Cargo
 artifacts: CDEF0 “Buttons, Checkboxes and Radio Buttons” (`CDEF_BUTTONS`), CDEF1
-“Scroll Bar” (`CDEF_SCROLL_BAR`), CDEF-32760 “Progress Bar”
-(`CDEF_PROGRESS_BAR`), and CDEF-32759 “Static Text” (`CDEF_STATIC_TEXT`). The
-negative IDs and native-only procedure discriminators are declared in
-`mac_abi::controls`; they do not change the classic procID dispatch contract.
+“Scroll Bar” (`CDEF_SCROLL_BAR`), CDEF5 “Progress Bar”
+(`CDEF_PROGRESS_BAR`), CDEF18 “Static Text” (`CDEF_STATIC_TEXT`), CDEF27
+“Table” (`CDEF_TABLE`), and CDEF28 “Splitter” (`CDEF_SPLITTER`). System controls
+use resource IDs 0–127 and classic-style procedure IDs (`resource ID * 16 +
+variation`); they do not use negative resource or procedure sentinels. The
+resource and procedure constants are declared together in `mac_abi::controls`.
+The native state ABI retains typed full-width counters and UTF-8 text.
 Progress Bar message6 takes a borrowed `ControlChange` (before/after typed
 standard states and two output rectangles) and returns only its own changed fill
 bounds. Empty rectangles mean no pixel change. System validates that damage stays

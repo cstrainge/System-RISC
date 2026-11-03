@@ -266,7 +266,7 @@
     },
     {
       "type": "CDEF",
-      "id": -32760,
+      "id": 5,
       "symbol": "CDEF_PROGRESS_BAR",
       "name": "Progress Bar",
       "payload": {
@@ -276,7 +276,7 @@
     },
     {
       "type": "CDEF",
-      "id": -32759,
+      "id": 18,
       "symbol": "CDEF_STATIC_TEXT",
       "name": "Static Text",
       "payload": {
@@ -286,7 +286,7 @@
     },
     {
       "type": "CDEF",
-      "id": -32758,
+      "id": 27,
       "symbol": "CDEF_TABLE",
       "name": "Table",
       "payload": {
@@ -296,7 +296,7 @@
     },
     {
       "type": "CDEF",
-      "id": -32757,
+      "id": 28,
       "symbol": "CDEF_SPLITTER",
       "name": "Splitter",
       "payload": {

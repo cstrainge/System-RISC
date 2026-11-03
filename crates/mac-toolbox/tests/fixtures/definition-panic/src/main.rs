@@ -12,6 +12,10 @@ fn main<'a>(message: Message<'a, StaticText<'a>>, _: Services<'a>) -> Result<Rep
             panic!("DEFINITION_PANIC_PROBE: safe author body reached; platform must report and \
                     offer terminal Restart")
         }
+        Message::CalculateGridAxis(_) | Message::DrawGrid { .. } | Message::Reflow { .. } =>
+        {
+            Err(mac_definition::Error::NotSupported)
+        }
         Message::Draw { .. }
         | Message::HitTest { .. }
         | Message::CalculateRegions(_)

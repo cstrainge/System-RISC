@@ -284,9 +284,9 @@ pub fn author_families(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(
     use mac_toolbox::{Error, abi::controls::ProgressRange, quickdraw::SurfacePort};
     let theme = mac_toolbox::quickdraw::theme::current(system.client())?;
     let bounds = Rect::new(2, 2, 24, 10);
-    for (kind, fill, track) in
-        [(StandardKind::ProgressBar, theme.progress_fill, theme.progress_track),
-         (StandardKind::MonochromeProgressBar, theme.control_outline, theme.content)]
+    for (flags, fill, track) in
+        [(0, theme.progress_fill, theme.progress_track),
+         (mac_toolbox::abi::controls::PROGRESS_MONOCHROME, theme.control_outline, theme.content)]
     {
         let mut pixels = [0xff00ff; 26 * 12];
         for (completed, in_progress, total, edge) in [(0, 10, 20, 3),
@@ -297,13 +297,18 @@ pub fn author_families(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(
                                                       (0, 0, 0, 23)]
         {
             let state = StandardState { bounds,
+                                        flags,
                                         progress: ProgressRange { completed,
                                                                   in_progress,
                                                                   total,
                                                                   determinate: 1,
                                                                   reserved: 0 },
                                         ..Default::default() };
-            system.controls().draw_standard_pixels(&mut pixels, 26, 12, kind, state)?;
+            system.controls().draw_standard_pixels(&mut pixels,
+                                                    26,
+                                                    12,
+                                                    StandardKind::ProgressBar,
+                                                    state)?;
             for y in 0..12
             {
                 for x in 0..26
@@ -331,13 +336,16 @@ pub fn author_families(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(
         }
         let before = pixels;
         let invalid = StandardState { bounds,
+                                      flags,
                                       progress: ProgressRange { completed: 2,
                                                                 total: 1,
                                                                 determinate: 1,
                                                                 ..Default::default() },
                                       ..Default::default() };
         let error =
-            system.controls().draw_standard_pixels(&mut pixels, 26, 12, kind, invalid).err();
+            system.controls()
+                  .draw_standard_pixels(&mut pixels, 26, 12, StandardKind::ProgressBar, invalid)
+                  .err();
         require(error == Some(Error::BadArgument), "loaded progress CDEF invalid range cause")?;
         struct Diagnostic
         {
@@ -366,11 +374,16 @@ pub fn author_families(system: &System<'_>, gate: mac_abi::TrapGate) -> Result<(
                 "invalid progress diagnostic")?;
         require(pixels == before, "invalid progress changed pixels")?;
         let valid = StandardState { bounds,
+                                    flags,
                                     progress: ProgressRange { total: 1,
                                                               determinate: 1,
                                                               ..Default::default() },
                                     ..Default::default() };
-        system.controls().draw_standard_pixels(&mut pixels, 26, 12, kind, valid)?;
+        system.controls().draw_standard_pixels(&mut pixels,
+                                                26,
+                                                12,
+                                                StandardKind::ProgressBar,
+                                                valid)?;
     }
     let width = 96;
     let height = 32;

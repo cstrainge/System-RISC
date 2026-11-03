@@ -187,7 +187,7 @@ fn run(malformed: bool)
                16,
                "all probes must draw through their application-owned CDEF: {serial}");
     let definitions: Vec<_> = serial.lines()
-                                    .filter(|line| line.starts_with("CODE_LOADED CDEF-32759 "))
+                                    .filter(|line| line.starts_with("CODE_LOADED CDEF18 "))
                                     .filter_map(|line| {
                                         let (_, tail) = line.split_once(" origin=")?;
                                         let (origin, tail) = tail.split_once(" linked=")?;

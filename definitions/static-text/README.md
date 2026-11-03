@@ -1,6 +1,6 @@
 # Static Text CDEF
 
-`CDEF_STATIC_TEXT` is System resource `CDEF -32759`, named **Static Text**.
+`CDEF_STATIC_TEXT` is System resource `CDEF 18`, named **Static Text**.
 It owns UTF-8 text drawing, font metrics, justification and clipping. The
 resident Control Manager owns its generation-tagged identity and lifetime.
 It never captures input or advertises a clickable part.
@@ -11,6 +11,5 @@ Left, centre and right justification are typed. A changed label invalidates
 its own rectangle; it cannot invalidate its parent window. An explicit window
 update can replay its retained drawing under the current damage/occlusion clip.
 
-Native procedure `STATIC_TEXT_PROCEDURE` is not a classic procID. The original
-68k adapter is unchanged. Implementation verification is deferred with the
-rest of the transfer milestone.
+`STATIC_TEXT_PROCEDURE` is classic procID 288 (resource 18, variation 0).
+The native UTF-8/state ABI remains separate from a classic 68k ControlRecord.

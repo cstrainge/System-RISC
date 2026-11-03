@@ -203,7 +203,7 @@ fn standalone_fixtures_share_dependencies_without_sharing_final_binaries_or_nati
                          data:      Vec::new(),
                          resources:
                              resource::encode_native(&[Resource { kind:       *b"CDEF",
-                                                                  id:         -32759,
+                                                                  id:         18,
                                                                   name:       None,
                                                                   attributes: 0,
                                                                   data:       vec![0] }]).unwrap() };
@@ -220,7 +220,7 @@ fn standalone_fixtures_share_dependencies_without_sharing_final_binaries_or_nati
                                                                     &fs::read(&final_elf).unwrap(),
                                                                     final_elf.parent())
                                                  .unwrap();
-    let expected = expected.iter().find(|r| r.kind == *b"CDEF" && r.id == -32759).unwrap();
+    let expected = expected.iter().find(|r| r.kind == *b"CDEF" && r.id == 18).unwrap();
     let file = macbinary::decode(&fs::read(packaged).unwrap()).unwrap();
     assert_eq!(resource::decode(&file.resources).unwrap(), [expected.clone()]);
     let mut watches = Vec::new();

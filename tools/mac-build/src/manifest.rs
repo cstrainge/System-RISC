@@ -420,6 +420,15 @@ impl Manifest
         }
         for definition in &self.resources
         {
+            if !self.archive
+               && self.role == "system"
+               && definition.kind == "CDEF"
+               && !(0..=127).contains(&definition.id)
+            {
+                return Err(error(format!("System CDEF {} ({}) must use system resource ID \
+                                          0..=127",
+                                         definition.id, definition.symbol)));
+            }
             if !self.archive && definition.kind == "NREQ"
             {
                 return Err(error("NREQ is generated from required_services; remove the \

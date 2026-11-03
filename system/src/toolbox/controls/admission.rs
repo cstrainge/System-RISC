@@ -196,8 +196,7 @@ impl ControlPlan
         }, || {
             let validated = self.validated.draw();
             let title = if !self.scrollbar
-                           && !matches!(validated.procedure,
-                                        PROGRESS_BAR_PROCEDURE | MONOCHROME_PROGRESS_BAR_PROCEDURE)
+                           && validated.procedure != PROGRESS_BAR_PROCEDURE
             {
                 Some(super::super::snapshot::Title::admit(&validated.standard, None)
                      .map_err(CreationError::Title)?)
