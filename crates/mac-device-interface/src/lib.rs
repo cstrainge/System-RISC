@@ -12,6 +12,12 @@ pub const RESET: u32 = 3;
 pub const UNMAP: u32 = 4;
 pub const RELEASE: u32 = 5;
 pub const COUNT: u32 = 6;
+/// Deferred allocation/initialization; Poll and Cancel retain its real ticket.
+pub const ALLOCATE: u32 = 7;
+/// Privileged driver asserts device-specific completion before explicit release.
+/// Owner cleanup instead requires the Device Manager's actual reset ACK.
+pub const FREE_COMPLETED: u32 = 8;
+pub const ALLOCATION_BYTES: usize = 32;
 pub const DESCRIPTION_BYTES: usize = 52;
 pub const MAPPING_BYTES: usize = 24;
 pub const COHERENT_DMA: u32 = 1;
@@ -22,7 +28,7 @@ pub const RESIDENT_OWNED: u32 = 4;
 /// its explicit request ticket until hardware acknowledges quiescence.
 pub const fn synchronous(operation: u32) -> bool
 {
-    matches!(operation, PROBE | CLAIM | MAP | UNMAP | RELEASE | COUNT)
+    matches!(operation, PROBE | CLAIM | MAP | UNMAP | RELEASE | COUNT | FREE_COMPLETED)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,5 +117,47 @@ impl Mapping
             return None;
         }
         Some(mapping)
+    }
+}
+
+/// Owned DMA allocation. CPU and device addresses are distinct; neither an
+/// address nor a copied handle grants another module ownership.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Allocation
+{
+    pub handle:         u64,
+    pub cpu_address:    u64,
+    pub device_address: u64,
+    pub length:         u64
+}
+impl Allocation
+{
+    pub fn encode(self) -> [u8; ALLOCATION_BYTES]
+    {
+        let mut out = [0; ALLOCATION_BYTES];
+        for (slot, value) in
+            out.chunks_exact_mut(8)
+               .zip([self.handle, self.cpu_address, self.device_address, self.length])
+        {
+            slot.copy_from_slice(&value.to_le_bytes());
+        }
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Self>
+    {
+        if bytes.len() != ALLOCATION_BYTES
+        {
+            return None;
+        }
+        let value = Self { handle:         u64::from_le_bytes(bytes[0..8].try_into().ok()?),
+                           cpu_address:    u64::from_le_bytes(bytes[8..16].try_into().ok()?),
+                           device_address: u64::from_le_bytes(bytes[16..24].try_into().ok()?),
+                           length:         u64::from_le_bytes(bytes[24..32].try_into().ok()?) };
+        (value.handle > u32::MAX as u64
+         && value.cpu_address != 0
+         && value.length != 0
+         && value.cpu_address.checked_add(value.length).is_some()
+         && value.device_address.checked_add(value.length).is_some()).then_some(value)
     }
 }

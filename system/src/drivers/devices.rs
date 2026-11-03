@@ -2,6 +2,8 @@
 //! Only a positive hardware stop acknowledgement permits reclamation. The bus
 //! adapter owns registers; this policy layer contains no hardware or unsafe code.
 #![forbid(unsafe_code)]
+#[cfg(target_arch = "riscv64")]
+use alloc::sync::Arc;
 use core::cell::Cell;
 
 use mac_abi::{ACCESS_DENIED, BAD_ABI, BAD_ARGUMENT, NO_MEMORY, NOT_FOUND, SERVICE_BUSY, Status};
@@ -30,16 +32,22 @@ struct Physical
 }
 struct Claim
 {
+    #[cfg(target_arch = "riscv64")]
+    frame:      crate::images::ModuleFrame,
     owner:      OwnerRef,
     receipt:    Cell<Option<CompletionKey>>,
     maps:       Cell<usize>,
     reset:      Cell<Option<u64>>,
     cleanup:    Cell<bool>,
-    reset_sent: Cell<bool>
+    reset_sent: Cell<bool>,
+    #[cfg(target_arch = "riscv64")]
+    allocation: Cell<Option<(u64, CompletionKey)>>
 }
 struct Dma
 {
-    claim: CompletionKey
+    claim:  CompletionKey,
+    #[cfg(target_arch = "riscv64")]
+    buffer: Option<Arc<crate::machine::dma::Buffer>>
 }
 pub struct Devices<B>
 {
@@ -66,7 +74,8 @@ impl<B: Bus> Devices<B>
 
     /// The caller checked the exact bus/key against its admitted contract.
     /// A pending or quarantined claim remains exclusive, even after invalidation.
-    pub(crate) fn claim(&mut self, owner: &OwnerRef, ordinal: u32, expected: Description)
+    pub(crate) fn claim(&mut self, owner: &OwnerRef, ordinal: u32, expected: Description,
+                        #[cfg(target_arch = "riscv64")] frame: crate::images::ModuleFrame)
                         -> Result<Description, Status>
     {
         if expected.handle != 0 || expected.flags & mac_device_interface::RESIDENT_OWNED != 0
@@ -85,12 +94,16 @@ impl<B: Bus> Devices<B>
                               .insert_with_receipt(owner,
                                                    Physical { ordinal,
                                                               description: expected },
-                                                   Claim { owner:      owner.clone(),
-                                                           receipt:    Cell::new(None),
-                                                           maps:       Cell::new(0),
-                                                           reset:      Cell::new(None),
-                                                           cleanup:    Cell::new(false),
-                                                           reset_sent: Cell::new(false) })
+                                                   Claim { #[cfg(target_arch = "riscv64")]
+                                                           frame,
+                                                           owner: owner.clone(),
+                                                           receipt: Cell::new(None),
+                                                           maps: Cell::new(0),
+                                                           reset: Cell::new(None),
+                                                           cleanup: Cell::new(false),
+                                                           reset_sent: Cell::new(false),
+                                                           #[cfg(target_arch = "riscv64")]
+                                                           allocation: Cell::new(None) })
                               .map_err(alias_status)?;
         let (id, receipt) = publication.into_parts();
         // Use the authenticated publication, including if a concurrent walk
@@ -129,12 +142,155 @@ impl<B: Bus> Devices<B>
         let count = claim.maps.get().checked_add(1).ok_or(NO_MEMORY)?;
         let receipt = claim.receipt.get().ok_or(BAD_ABI)?;
         let publication = self.maps
-                              .insert_with_receipt(owner, |_| Dma { claim: receipt })
+                              .insert_with_receipt(owner, |_| {
+                                  Dma { claim:                                  receipt,
+                                        #[cfg(target_arch = "riscv64")]
+                                        buffer:                                 None }
+                              })
                               .map_err(pool_status)?;
         claim.maps.set(count);
         Ok(Mapping { handle: publication.id(),
                      address: bus_address,
                      length })
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn start_allocate(&mut self, owner: &OwnerRef, device: u64, bytes: u64, ticket: u64)
+                                 -> Result<(), Status>
+    {
+        let (physical, claim) = self.claims.get(owner, device).map_err(alias_status)?;
+        if ticket == 0 || bytes == 0
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        if claim.reset.get().is_some() || claim.cleanup.get() || claim.allocation.get().is_some()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        if physical.description.flags & mac_device_interface::COHERENT_DMA == 0
+        {
+            return Err(mac_abi::NOT_SUPPORTED);
+        }
+        let count = claim.maps.get().checked_add(1).ok_or(NO_MEMORY)?;
+        let receipt = claim.receipt.get().ok_or(BAD_ABI)?;
+        let buffer = Arc::try_new(crate::machine::dma::Buffer::new(bytes)?).map_err(|_| NO_MEMORY)?;
+        // Prove the actual resident heap bus alias before storing any handle.
+        buffer.device_address()?;
+        let publication = self.maps
+                              .insert_with_receipt(owner, |_| {
+                                  Dma { claim:  receipt,
+                                        buffer: Some(buffer) }
+                              })
+                              .map_err(pool_status)?;
+        claim.maps.set(count);
+        claim.allocation.set(Some((ticket, publication.into_parts().1)));
+        Ok(())
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn advance_allocate(&mut self, owner: &OwnerRef, ticket: u64, cancel: bool)
+                                   -> Result<Option<mac_device_interface::Allocation>, Status>
+    {
+        // Physical claim count is bounded by actual device inventory; no new
+        // allocation-job registry or copied ownership token is introduced.
+        let Some((_, claim)) =
+            self.claims.retained().find(|(_, claim)| {
+                                      claim.owner.owner() == owner.owner()
+                                      && claim.allocation.get().is_some_and(|(t, _)| t == ticket)
+                                  })
+        else
+        {
+            // Canonical broker cancellation may precede the first service turn.
+            // No matching flight means no allocation effect from this request.
+            return if cancel { Ok(None) } else { Err(NOT_FOUND) };
+        };
+        let (_, completion) = claim.allocation.get().ok_or(BAD_ABI)?;
+        let id = completion.id();
+        if cancel
+        {
+            let count = claim.maps.get().checked_sub(1).ok_or(BAD_ABI)?;
+            // Unpublished storage was never exposed to DMA or a CPU client.
+            if let Some(removed) = self.maps.remove(id)
+            {
+                claim.allocation.set(None);
+                claim.maps.set(count);
+                drop(removed);
+            }
+            else
+            {
+                // Invalidation may already belong to the canonical walk. The
+                // original completion key proves retained payload identity;
+                // cancelling publication does not free or refund that backing.
+                let retained = self.maps.completing(&completion).ok_or(NOT_FOUND)?;
+                if retained.buffer.as_ref().is_none_or(|buffer| buffer.ready())
+                {
+                    return Err(BAD_ABI);
+                }
+                claim.allocation.set(None);
+            }
+            return Ok(None);
+        }
+        if !owner.accepting()
+        {
+            return Err(mac_abi::OPERATION_CANCELLED);
+        }
+        let map = self.maps.get_mut(id).ok_or(NOT_FOUND)?;
+        let buffer = Arc::get_mut(map.buffer.as_mut().ok_or(BAD_ABI)?).ok_or(SERVICE_BUSY)?;
+        if !buffer.advance()
+        {
+            return Ok(None);
+        }
+        let result = mac_device_interface::Allocation { handle:         id,
+                                                        cpu_address:    buffer.address(),
+                                                        device_address: buffer.device_address()?,
+                                                        length:         buffer.length() };
+        claim.allocation.set(None);
+        serial!("DEVICE_DMA_ALLOCATED owner={} allocation={} bytes={} cpu=0x{:x} bus=0x{:x}",
+                owner.owner().incarnation(),
+                id,
+                result.length,
+                result.cpu_address,
+                result.device_address);
+        Ok(Some(result))
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn pin_buffer(&self, owner: &OwnerRef, id: u64)
+                             -> Result<Arc<crate::machine::dma::Buffer>, Status>
+    {
+        let map = self.owned_map(owner, id)?;
+        let (_, claim) = self.claims.completing(&map.claim).ok_or(BAD_ABI)?;
+        if claim.cleanup.get() || claim.reset.get().is_some()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let buffer = map.buffer.as_ref().ok_or(BAD_ARGUMENT)?;
+        if !buffer.ready()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        Ok(buffer.clone())
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) fn free_completed(&mut self, owner: &OwnerRef, id: u64) -> Result<(), Status>
+    {
+        let map = self.owned_map(owner, id)?;
+        let (_, claim) = self.claims.completing(&map.claim).ok_or(BAD_ABI)?;
+        let buffer = map.buffer.as_ref().ok_or(BAD_ARGUMENT)?;
+        if !buffer.ready()
+           || Arc::strong_count(buffer) != 1
+           || claim.cleanup.get()
+           || claim.reset.get().is_some()
+        {
+            return Err(SERVICE_BUSY);
+        }
+        let count = claim.maps.get().checked_sub(1).ok_or(BAD_ABI)?;
+        let removed = self.maps.remove(id).ok_or(NOT_FOUND)?;
+        claim.maps.set(count);
+        drop(removed);
+        serial!("DEVICE_DMA_FREED owner={} allocation={id}", owner.owner().incarnation());
+        Ok(())
     }
 
     pub(crate) fn start_reset(&mut self, owner: &OwnerRef, device: u64, ticket: u64)
@@ -207,6 +363,13 @@ impl<B: Bus> Devices<B>
     pub(crate) fn unmap(&mut self, owner: &OwnerRef, mapping: u64) -> Result<(), Status>
     {
         let map = self.owned_map(owner, mapping)?;
+        #[cfg(target_arch = "riscv64")]
+        if map.buffer
+              .as_ref()
+              .is_some_and(|buffer| (!buffer.ready() || Arc::strong_count(buffer) != 1))
+        {
+            return Err(SERVICE_BUSY);
+        }
         let (physical, claim) = self.claims.completing(&map.claim).ok_or(BAD_ABI)?;
         if claim.reset.get().is_some() || claim.cleanup.get()
         {
@@ -265,6 +428,19 @@ impl<B: Bus> Devices<B>
                     return Err(Failure::registration_mismatch(ticket));
                 };
                 let ordinal = physical.ordinal;
+                #[cfg(target_arch = "riscv64")]
+                let _execution = match claim.frame.exclude_execution()
+                {
+                    Ok(exclusion) => exclusion,
+                    Err(_) =>
+                    {
+                        return Err(Failure::device_pending(ticket,
+                                                           ordinal,
+                                                           false,
+                                                           claim.maps.get(),
+                                                           claim.reset.get()));
+                    }
+                };
                 let stopped = match Self::stop(&mut self.bus, physical, claim)
                 {
                     Ok(stopped) => stopped,
@@ -293,6 +469,19 @@ impl<B: Bus> Devices<B>
                     return Err(Failure::context_unavailable(ticket, "retained device claim"));
                 };
                 let ordinal = physical.ordinal;
+                #[cfg(target_arch = "riscv64")]
+                let _execution = match claim.frame.exclude_execution()
+                {
+                    Ok(exclusion) => exclusion,
+                    Err(_) =>
+                    {
+                        return Err(Failure::device_pending(ticket,
+                                                           ordinal,
+                                                           false,
+                                                           claim.maps.get(),
+                                                           claim.reset.get()));
+                    }
+                };
                 match Self::stop(&mut self.bus, physical, claim)
                 {
                     Ok(true) => (),
@@ -305,6 +494,15 @@ impl<B: Bus> Devices<B>
                                                            claim.reset.get()));
                     }
                     Err(status) => return Err(Failure::device_stop(ticket, ordinal, status))
+                }
+                #[cfg(target_arch = "riscv64")]
+                if map.buffer.as_ref().is_some_and(|buffer| Arc::strong_count(buffer) != 1)
+                {
+                    return Err(Failure::device_pending(ticket,
+                                                       ordinal,
+                                                       true,
+                                                       claim.maps.get(),
+                                                       claim.reset.get()));
                 }
                 let Some(count) = claim.maps.get().checked_sub(1)
                 else

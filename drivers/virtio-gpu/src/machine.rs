@@ -1,8 +1,8 @@
 //! Audited modern coherent VirtIO MMIO GPU boundary (VirtIO 1.3 section 5.7,
 //! 2D commands only). One control queue and its command/response buffers fit
-//! in one pinned page; the scan-out framebuffer is a second pinned static.
-//! System cannot lend this driver its own memory (module DMA covers only the
-//! module image), so the driver owns the framebuffer and reports its address.
+//! in one pinned image page. Framebuffers are runtime Device-service allocations
+//! charged to this module, with GPU completion and System CPU-view pins governing
+//! release. No maximum-sized image/BSS framebuffer is embedded.
 //! Device-shared storage is accessed only through raw pointers; no Rust
 //! reference aliases DMA.
 #![allow(unsafe_code)]
@@ -14,13 +14,11 @@ use core::{cell::UnsafeCell,
 use mac_abi::{BAD_ABI, IO_ERROR, NOT_FOUND, NOT_SUPPORTED, SERVICE_BUSY};
 use mac_driver::{Client, Completion, Error, Phase, Result,
                  devices::{DeviceService, interface}};
-use mac_video_interface::{Attach, Damage, Outcome, Size, Surface};
+use mac_video_interface::{Attach, Damage, Outcome, Prepared, Size, Surface};
 
 use crate::Hardware;
 
 const QUEUE: usize = 8;
-/// Largest scan-out the driver reserves memory for (1920x1200 XRGB32).
-const FRAME_BYTES: usize = 1920 * 1200 * 4;
 /// Command completion deadline; the host services the queue from its main loop.
 const COMMAND_TIMEOUT_MICROSECONDS: u64 = 2_000_000;
 const RESET_TIMEOUT_MICROSECONDS: u64 = 1_000_000;
@@ -81,21 +79,20 @@ struct Control
     response:    [u8; RESPONSE_BYTES]
 }
 const _: () = assert!(size_of::<Control>() == 4096);
-#[repr(C, align(4096))]
-struct Frame([u8; FRAME_BYTES]);
 struct Shared<T>(UnsafeCell<T>);
 // SAFETY: the module's unique Device is protected by DEVICE in lib.rs. Quiesce
 // removes that Device only after reset/unmap/release. No other path touches
-// these statics; the framebuffer is additionally written by System through the
-// address reported at ATTACH, which is the contract's purpose.
+// this control page. Framebuffer storage is allocated separately through VDEV
+// and remains owned/pinned until actual GPU and CPU retirement.
 unsafe impl<T> Sync for Shared<T>
 {
 }
 static CONTROL: Shared<Control> =
     Shared(UnsafeCell::new(Control { descriptors: [Descriptor { address: 0,
-                                                                length:  0,
-                                                                flags:   0,
-                                                                next:    0 }; QUEUE],
+                                                               length:  0,
+                                                               flags:   0,
+                                                               next:    0 };
+                                                   QUEUE],
                                      available:   Available { flags: 0,
                                                               index: 0,
                                                               ring:  [0; QUEUE],
@@ -103,12 +100,11 @@ static CONTROL: Shared<Control> =
                                      used:        Used { flags: 0,
                                                          index: 0,
                                                          ring:  [UsedEntry { id:     0,
-                                                                             length: 0 };
+                                                                            length: 0 };
                                                                  QUEUE],
                                                          event: 0 },
                                      command:     [0; COMMAND_BYTES],
                                      response:    [0; RESPONSE_BYTES] }));
-static FRAME: Shared<Frame> = Shared(UnsafeCell::new(Frame([0; FRAME_BYTES])));
 
 fn fence()
 {
@@ -158,24 +154,55 @@ impl Command
     }
 }
 
+#[derive(Clone, Copy)]
+struct Frame
+{
+    generation:        u64,
+    memory:            interface::Allocation,
+    size:              Size,
+    resource:          u32,
+    created:           bool,
+    released:          bool,
+    release_requested: bool,
+    offered_to_system: bool
+}
+impl Frame
+{
+    fn surface(self, preferred: Size) -> Surface
+    {
+        Surface { generation: self.generation,
+                  allocation: self.memory.handle,
+                  address: self.memory.cpu_address,
+                  capacity: self.memory.length,
+                  preferred }
+    }
+}
+
 pub(super) struct Device
 {
-    host:           Client,
-    service:        DeviceService,
-    claim:          u64,
-    control_map:    u64,
-    frame_map:      u64,
-    reset_ticket:   u64,
-    reset_complete: bool,
-    registers:      usize,
-    control_dma:    u64,
-    frame_dma:      u64,
-    running:        bool,
-    wedged:         bool,
-    offered:        u16,
-    consumed:       u16,
-    current:        Size,
-    resource:       u32
+    host:                  Client,
+    service:               DeviceService,
+    claim:                 u64,
+    control_map:           u64,
+    invocation_generation: u64,
+    allocation_ticket:     u64,
+    allocation_bytes:      u64,
+    cancelled_allocation:  Option<interface::Allocation>,
+    active:                Option<Frame>,
+    candidate:             Option<Frame>,
+    retired:               Option<Frame>,
+    last_released:         Option<(u64, u64)>,
+    last_aborted:          Option<(u64, u64)>,
+    reset_ticket:          u64,
+    reset_complete:        bool,
+    registers:             usize,
+    control_dma:           u64,
+    running:               bool,
+    wedged:                bool,
+    offered:               u16,
+    consumed:              u16,
+    current:               Size,
+    resource:              u32
 }
 impl Device
 {
@@ -185,12 +212,19 @@ impl Device
                   service: DeviceService::new(host)?,
                   claim: 0,
                   control_map: 0,
-                  frame_map: 0,
+                  invocation_generation: 0,
+                  allocation_ticket: 0,
+                  allocation_bytes: 0,
+                  cancelled_allocation: None,
+                  active: None,
+                  candidate: None,
+                  retired: None,
+                  last_released: None,
+                  last_aborted: None,
                   reset_ticket: 0,
                   reset_complete: false,
                   registers: 0,
                   control_dma: 0,
-                  frame_dma: 0,
                   running: false,
                   wedged: false,
                   offered: 0,
@@ -234,7 +268,7 @@ impl Device
         {
             return Ok(());
         }
-        let deadline = self.now()?.saturating_add(RESET_TIMEOUT_MICROSECONDS);
+        let deadline = self.now()?.checked_add(RESET_TIMEOUT_MICROSECONDS).ok_or(Error(BAD_ABI))?;
         loop
         {
             let phase = if self.reset_ticket == 0 { Phase::Start } else { Phase::Poll };
@@ -329,7 +363,8 @@ impl Device
         // owns the complete pinned control page, including padding.
         unsafe { core::ptr::write_bytes(CONTROL.0.get().cast::<u8>(), 0, size_of::<Control>()) };
         let control =
-            self.service.map(self.claim, CONTROL.0.get() as usize as u64, size_of::<Control>() as u64)?;
+            self.service
+                .map(self.claim, CONTROL.0.get() as usize as u64, size_of::<Control>() as u64)?;
         // Retain the exact handle before validating any returned property.
         self.control_map = control.handle;
         if control.length != size_of::<Control>() as u64 || control.address % 4096 != 0
@@ -337,15 +372,6 @@ impl Device
             return Err(Error(BAD_ABI));
         }
         self.control_dma = control.address;
-        let frame = self.service.map(self.claim, FRAME.0.get() as usize as u64, FRAME_BYTES as u64)?;
-        self.frame_map = frame.handle;
-        if frame.length != FRAME_BYTES as u64
-           || frame.address % 4096 != 0
-           || frame.address.checked_add(frame.length).is_none()
-        {
-            return Err(Error(BAD_ABI));
-        }
-        self.frame_dma = frame.address;
         self.write(0x30, 0);
         if self.read(0x34) < QUEUE as u32 || self.read(0x44) != 0
         {
@@ -381,6 +407,8 @@ impl Device
             return Err(Error(IO_ERROR));
         }
         debug_assert!(response_bytes <= RESPONSE_BYTES && command.length <= COMMAND_BYTES);
+        let deadline =
+            self.now()?.checked_add(COMMAND_TIMEOUT_MICROSECONDS).ok_or(Error(BAD_ABI))?;
         let control = CONTROL.0.get();
         let command_dma = self.control_dma + offset_of!(Control, command) as u64;
         let response_dma = self.control_dma + offset_of!(Control, response) as u64;
@@ -402,23 +430,20 @@ impl Device
                                         length:  (response_bytes as u32).to_le(),
                                         flags:   2u16.to_le(),
                                         next:    0 });
-            write_volatile(addr_of_mut!((*control).available.ring[usize::from(self.offered) % QUEUE]),
+            write_volatile(addr_of_mut!((*control).available.ring
+                                            [usize::from(self.offered) % QUEUE]),
                            0);
         }
         fence();
         self.offered = self.offered.wrapping_add(1);
         // SAFETY: publishing the ring index hands the chain to the device.
-        unsafe {
-            write_volatile(addr_of_mut!((*control).available.index), self.offered.to_le())
-        };
+        unsafe { write_volatile(addr_of_mut!((*control).available.index), self.offered.to_le()) };
         fence();
         self.write(0x50, 0);
-        let deadline = self.now()?.saturating_add(COMMAND_TIMEOUT_MICROSECONDS);
         loop
         {
             // SAFETY: volatile read of the device-shared used index.
-            let used =
-                unsafe { u16::from_le(read_volatile(addr_of_mut!((*control).used.index))) };
+            let used = unsafe { u16::from_le(read_volatile(addr_of_mut!((*control).used.index))) };
             if used != self.consumed
             {
                 fence();
@@ -430,17 +455,20 @@ impl Device
                 self.consumed = used;
                 break;
             }
-            if self.now()? >= deadline
+            match self.now()
             {
-                self.wedged = true;
-                return Err(Error(IO_ERROR));
+                Ok(now) if now < deadline => (),
+                observed =>
+                {
+                    self.wedged = true;
+                    return Err(observed.err().unwrap_or(Error(IO_ERROR)));
+                }
             }
         }
         // SAFETY: the used entry returned the chain, so the device no longer
         // writes the response; the first word is the response type.
-        let kind = unsafe {
-            u32::from_le(read_volatile(addr_of_mut!((*control).response).cast::<u32>()))
-        };
+        let kind =
+            unsafe { u32::from_le(read_volatile(addr_of_mut!((*control).response).cast::<u32>())) };
         Ok(kind)
     }
 
@@ -464,47 +492,179 @@ impl Device
         };
         // Scanout 0: rect at 24 (x, y, width, height), enabled at 40.
         Ok(if word(40) != 0
-        {
-            Size { width:  word(32),
-                   height: word(36) }
-        }
-        else
-        {
-            Size { width:  0,
-                   height: 0 }
-        })
+           {
+               Size { width:  word(32),
+                      height: word(36) }
+           }
+           else
+           {
+               Size { width:  0,
+                      height: 0 }
+           })
     }
 
     /// Create `resource` for `size`, back it with the framebuffer and fill it.
-    /// On any failure the resource is released and the old mode is untouched.
-    fn create(&mut self, resource: u32, size: Size) -> Result<bool>
+    /// Refusal retains the candidate until its actual unref/reset completion;
+    /// no scanout change is submitted here.
+    fn create_candidate(&mut self) -> Result<bool>
     {
+        let frame = self.candidate.ok_or(Error(BAD_ABI))?;
         let mut create = Command::new(RESOURCE_CREATE_2D);
-        create.word(resource);
+        create.word(frame.resource);
         create.word(FORMAT_XRGB);
-        create.word(size.width);
-        create.word(size.height);
+        create.word(frame.size.width);
+        create.word(frame.size.height);
         if !self.expect_ok(&create)?
         {
             return Ok(false);
         }
+        self.candidate.as_mut().ok_or(Error(BAD_ABI))?.created = true;
         let mut backing = Command::new(RESOURCE_ATTACH_BACKING);
-        backing.word(resource);
+        backing.word(frame.resource);
         backing.word(1);
-        backing.quad(self.frame_dma);
-        backing.word(size.width * size.height * 4);
+        backing.quad(frame.memory.device_address);
+        let bytes = u64::from(frame.size.width).checked_mul(u64::from(frame.size.height))
+                                               .and_then(|n| n.checked_mul(4))
+                                               .ok_or(Error(BAD_ABI))?;
+        backing.word(u32::try_from(bytes).map_err(|_| Error(BAD_ABI))?);
         backing.word(0);
         let mut transfer = Command::new(TRANSFER_TO_HOST_2D);
-        transfer.rect(0, 0, size.width, size.height);
+        transfer.rect(0, 0, frame.size.width, frame.size.height);
         transfer.quad(0);
-        transfer.word(resource);
+        transfer.word(frame.resource);
         transfer.word(0);
-        if !self.expect_ok(&backing)? || !self.expect_ok(&transfer)?
+        Ok(self.expect_ok(&backing)? && self.expect_ok(&transfer)?)
+    }
+
+    fn allocate_frame(&mut self, size: Size) -> Result<interface::Allocation>
+    {
+        let bytes = u64::from(size.width).checked_mul(u64::from(size.height))
+                                         .and_then(|n| n.checked_mul(4))
+                                         .filter(|n| *n != 0)
+                                         .ok_or(Error(BAD_ABI))?;
+        if let Some(active) = self.active
+           && bytes <= active.memory.length
         {
-            self.unref(resource)?;
-            return Ok(false);
+            return Ok(active.memory);
         }
-        Ok(true)
+        if self.allocation_ticket != 0
+        {
+            return Err(Error(SERVICE_BUSY));
+        }
+        let deadline =
+            self.now()?.checked_add(COMMAND_TIMEOUT_MICROSECONDS).ok_or(Error(BAD_ABI))?;
+        self.allocation_bytes = bytes;
+        loop
+        {
+            let phase = if self.allocation_ticket == 0 { Phase::Start } else { Phase::Poll };
+            match self.service.allocate(self.claim, bytes, &mut self.allocation_ticket, phase)
+            {
+                Ok((Completion::Complete(_), Some(buffer))) if self.allocation_ticket == 0 =>
+                {
+                    self.allocation_bytes = 0;
+                    return Ok(buffer);
+                }
+                Ok((Completion::Pending, None)) if self.allocation_ticket != 0 => (),
+                Err(Error(SERVICE_BUSY)) if self.allocation_ticket != 0 => (),
+                Err(error) =>
+                {
+                    if self.allocation_ticket != 0
+                    {
+                        let _ = self.cancel_allocation();
+                    }
+                    return Err(error);
+                }
+                _ => return Err(Error(BAD_ABI))
+            }
+            match self.now()
+            {
+                Ok(now) if now < deadline => (),
+                result =>
+                {
+                    let _ = self.cancel_allocation();
+                    return Err(result.err().unwrap_or(Error(IO_ERROR)));
+                }
+            }
+        }
+    }
+
+    fn cancel_allocation(&mut self) -> Result<()>
+    {
+        if self.allocation_ticket != 0
+        {
+            let (completion, buffer) = self.service.allocate(self.claim,
+                                                              self.allocation_bytes,
+                                                              &mut self.allocation_ticket,
+                                                              Phase::Cancel)?;
+            match (completion, buffer)
+            {
+                (Completion::Complete(0), None) if self.allocation_ticket == 0 => (),
+                (Completion::Complete(interface::ALLOCATION_BYTES), Some(buffer))
+                    if self.allocation_ticket == 0 =>
+                {
+                    // Completion can win cancellation. Retain the ACTUAL reply
+                    // before any fallible free; it was never exposed to GPU/CPU.
+                    self.cancelled_allocation = Some(buffer);
+                }
+                _ => return Err(Error(SERVICE_BUSY))
+            }
+            self.allocation_bytes = 0;
+        }
+        if let Some(mut buffer) = self.cancelled_allocation
+        {
+            // SAFETY: this late completed allocation was never attached to a
+            // resource or lent to System. Refusal retains the original handle.
+            unsafe {
+                self.service.free_completed(&mut buffer)?;
+            }
+            self.cancelled_allocation = None;
+        }
+        Ok(())
+    }
+
+    fn release_frame(&mut self, mut frame: Frame) -> core::result::Result<(), (Error, Frame)>
+    {
+        if !frame.released && frame.created && !self.reset_complete
+        {
+            if let Err(error) = self.unref(frame.resource)
+            {
+                return Err((error, frame));
+            }
+            frame.released = true;
+        }
+        let shared =
+            self.active.is_some_and(|active| active.memory.handle == frame.memory.handle)
+            || self.candidate
+                   .is_some_and(|candidate| candidate.memory.handle == frame.memory.handle);
+        if !shared
+        {
+            // SAFETY: either no backing command was submitted (created=false),
+            // RESOURCE_UNREF completed on this single ordered control queue, or
+            // the actual Device service acknowledged reset. CPU pins are still
+            // checked independently by FREE_COMPLETED.
+            if let Err(error) = unsafe { self.service.free_completed(&mut frame.memory) }
+            {
+                return Err((error, frame));
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_retired(&mut self) -> Result<()>
+    {
+        if self.retired.is_some_and(|frame| !frame.release_requested) && !self.reset_complete
+        {
+            return Err(Error(SERVICE_BUSY));
+        }
+        if let Some(frame) = self.retired.take()
+        {
+            if let Err((error, frame)) = self.release_frame(frame)
+            {
+                self.retired = Some(frame);
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     fn unref(&mut self, resource: u32) -> Result<()>
@@ -512,7 +672,7 @@ impl Device
         let mut command = Command::new(RESOURCE_UNREF);
         command.word(resource);
         command.word(0);
-        self.expect_ok(&command).map(|_| ())
+        if self.expect_ok(&command)? { Ok(()) } else { Err(Error(IO_ERROR)) }
     }
 
     fn scan_out(&mut self, resource: u32, size: Size) -> Result<bool>
@@ -541,10 +701,23 @@ impl Device
             self.service.unmap(self.control_map)?;
             self.control_map = 0;
         }
-        if self.frame_map != 0
+        self.cancel_allocation()?;
+        if let Some(frame) = self.candidate.take()
         {
-            self.service.unmap(self.frame_map)?;
-            self.frame_map = 0;
+            if let Err((error, frame)) = self.release_frame(frame)
+            {
+                self.candidate = Some(frame);
+                return Err(error);
+            }
+        }
+        self.collect_retired()?;
+        if let Some(frame) = self.active.take()
+        {
+            if let Err((error, frame)) = self.release_frame(frame)
+            {
+                self.active = Some(frame);
+                return Err(error);
+            }
         }
         if self.claim != 0
         {
@@ -557,27 +730,40 @@ impl Device
 
 impl Hardware for Device
 {
-    fn attach(&mut self, attach: &Attach) -> Result<Surface>
+    fn attach(&mut self, attach: &Attach, generation: u64) -> Result<Surface>
     {
+        self.invocation_generation = generation;
         if self.claim != 0
         {
-            return Err(Error(SERVICE_BUSY));
+            self.quiesce()?;
         }
         let size = Size { width:  attach.width,
                           height: attach.height };
         self.discover()?;
         self.configure()?;
         let preferred = self.display_info()?;
-        self.resource = 1;
-        if !self.create(1, size)? || !self.scan_out(1, size)?
+        let memory = self.allocate_frame(size)?;
+        self.candidate = Some(Frame { generation,
+                                      memory,
+                                      size,
+                                      resource: 1,
+                                      created: false,
+                                      released: false,
+                                      release_requested: false,
+                                      offered_to_system: false });
+        if !self.create_candidate()? || !self.scan_out(1, size)?
         {
             return Err(Error(IO_ERROR));
         }
+        let frame = self.candidate.take().ok_or(Error(BAD_ABI))?;
+        self.active = Some(frame);
         self.current = size;
-        self.flush(1, 0, 0, size.width, size.height)?;
-        Ok(Surface { address: FRAME.0.get() as usize as u64,
-                     capacity: FRAME_BYTES as u64,
-                     preferred })
+        self.resource = 1;
+        if !self.flush(1, 0, 0, size.width, size.height)?
+        {
+            return Err(Error(IO_ERROR));
+        }
+        Ok(frame.surface(preferred))
     }
 
     fn host_size(&mut self) -> Result<Option<Size>>
@@ -602,10 +788,12 @@ impl Hardware for Device
         let (width, height) = (right - damage.x, bottom - damage.y);
         let mut transfer = Command::new(TRANSFER_TO_HOST_2D);
         transfer.rect(damage.x, damage.y, width, height);
-        transfer.quad((u64::from(damage.y) * u64::from(self.current.width) + u64::from(damage.x)) * 4);
+        transfer.quad((u64::from(damage.y) * u64::from(self.current.width) + u64::from(damage.x))
+                      * 4);
         transfer.word(self.resource);
         transfer.word(0);
-        if self.expect_ok(&transfer)? && self.flush(self.resource, damage.x, damage.y, width, height)?
+        if self.expect_ok(&transfer)?
+           && self.flush(self.resource, damage.x, damage.y, width, height)?
         {
             Ok(())
         }
@@ -615,27 +803,145 @@ impl Hardware for Device
         }
     }
 
-    fn apply(&mut self, size: Size) -> Result<Outcome>
+    fn prepare(&mut self, size: Size, generation: u64) -> Result<Prepared>
     {
-        let old = self.resource;
-        let new = if old == 1 { 2 } else { 1 };
-        if !self.create(new, size)?
+        self.invocation_generation = generation;
+        self.cancel_allocation()?;
+        if self.candidate.is_some_and(|frame| !frame.offered_to_system)
+        {
+            let frame = self.candidate.take().ok_or(Error(BAD_ABI))?;
+            if let Err((error, frame)) = self.release_frame(frame)
+            {
+                self.candidate = Some(frame);
+                return Err(error);
+            }
+        }
+        if self.candidate.is_some()
+        {
+            return Err(Error(SERVICE_BUSY));
+        }
+        self.collect_retired()?;
+        let memory = self.allocate_frame(size)?;
+        let resource = if self.resource == 1 { 2 } else { 1 };
+        self.candidate = Some(Frame { generation,
+                                      memory,
+                                      size,
+                                      resource,
+                                      created: false,
+                                      released: false,
+                                      release_requested: false,
+                                      offered_to_system: false });
+        if !self.create_candidate()?
+        {
+            let candidate = self.candidate.take().ok_or(Error(BAD_ABI))?;
+            if let Err((error, candidate)) = self.release_frame(candidate)
+            {
+                self.candidate = Some(candidate);
+                return Err(error);
+            }
+            return Ok(Prepared { outcome: Outcome::DeviceRefused,
+                                 surface: None });
+        }
+        self.candidate.as_mut().ok_or(Error(BAD_ABI))?.offered_to_system = true;
+        Ok(Prepared { outcome: Outcome::Applied,
+                      surface: Some(self.candidate.ok_or(Error(BAD_ABI))?.surface(size)) })
+    }
+
+    fn commit(&mut self, allocation: u64, generation: u64) -> Result<Outcome>
+    {
+        let frame =
+            self.candidate
+                .filter(|frame| frame.memory.handle == allocation && frame.generation == generation)
+                .ok_or(Error(BAD_ABI))?;
+        if self.retired.is_some()
+        {
+            return Err(Error(SERVICE_BUSY));
+        }
+        if !self.scan_out(frame.resource, frame.size)?
         {
             return Ok(Outcome::DeviceRefused);
         }
-        if !self.scan_out(new, size)?
-        {
-            self.unref(new)?;
-            return Ok(Outcome::DeviceRefused);
-        }
-        self.resource = new;
-        self.current = size;
-        // The host now shows the new resource. A failed flush or unref leaves
-        // it consistent: the next presented damage retries the flush, and a
-        // leaked old resource is released by the reset on quiesce.
-        let _ = self.flush(new, 0, 0, size.width, size.height);
-        let _ = self.unref(old);
+        self.retired = self.active.take();
+        self.active = self.candidate.take();
+        self.current = frame.size;
+        self.resource = frame.resource;
+        // Scanout ACK is the commit point. Presentation may be retried by the
+        // ordinary damage path; it cannot retroactively refuse the mode.
+        let _ = self.flush(frame.resource, 0, 0, frame.size.width, frame.size.height);
         Ok(Outcome::Applied)
+    }
+
+    fn abort(&mut self, allocation: u64, generation: u64) -> Result<()>
+    {
+        if self.last_aborted == Some((allocation, generation))
+        {
+            return Ok(());
+        }
+        let frame =
+            self.candidate
+                .filter(|frame| frame.memory.handle == allocation && frame.generation == generation)
+                .ok_or(Error(BAD_ABI))?;
+        self.candidate = None;
+        if let Err((error, frame)) = self.release_frame(frame)
+        {
+            self.candidate = Some(frame);
+            return Err(error);
+        }
+        self.last_aborted = Some((allocation, generation));
+        Ok(())
+    }
+
+    fn release(&mut self, allocation: u64, generation: u64) -> Result<()>
+    {
+        if self.last_released == Some((allocation, generation))
+        {
+            return Ok(());
+        }
+        if self.retired.is_some_and(|frame| {
+                           frame.memory.handle == allocation && frame.generation == generation
+                       })
+        {
+            self.retired.as_mut().ok_or(Error(BAD_ABI))?.release_requested = true;
+            self.collect_retired()?;
+            self.last_released = Some((allocation, generation));
+            Ok(())
+        }
+        else
+        {
+            Err(Error(BAD_ABI))
+        }
+    }
+
+    fn pending(&self) -> bool
+    {
+        self.allocation_ticket != 0 || self.reset_ticket != 0 || self.cancelled_allocation.is_some()
+    }
+
+    fn cancel(&mut self, generation: u64) -> Result<()>
+    {
+        if generation != self.invocation_generation
+        {
+            return Ok(());
+        }
+        self.cancel_allocation()?;
+        if self.reset_ticket != 0
+        {
+            match self.service.reset(self.claim, &mut self.reset_ticket, Phase::Cancel)?
+            {
+                Completion::Complete(0) if self.reset_ticket == 0 =>
+                {
+                    self.reset_complete = true;
+                    self.running = false;
+                }
+                _ => return Err(Error(SERVICE_BUSY))
+            }
+        }
+        if let Some(frame) = self.candidate
+           && frame.generation == generation
+        {
+            self.abort(frame.memory.handle, generation)?;
+        }
+        Ok(())
     }
 
     fn microseconds(&mut self) -> Result<u64>

@@ -28,7 +28,9 @@ impl MenuBarCache
                     draw: impl FnOnce(&mut Canvas<'_>) -> Result<(), E>)
                     -> Result<(), E>
     {
-        let count = BYTES / 4;
+        // Cache shape follows the active stride, never the maximum reserved
+        // geometry. A width change cannot replay old row layout.
+        let count = canvas.width * mac_abi::menus::MENU_BAR_HEIGHT as usize;
         if self.key == Some(key) && self.pixels.len() == count
         {
             canvas.pixels[..count].copy_from_slice(&self.pixels);
@@ -37,9 +39,11 @@ impl MenuBarCache
         self.key = None;
         draw(canvas)?;
         self.paints = self.paints.wrapping_add(1);
-        if self.pixels.is_empty()
+        if self.pixels.len() != count
         {
-            if InvocationGate::with_system_allocation(|| self.pixels.try_reserve_exact(count)).is_err()
+            if InvocationGate::with_system_allocation(|| {
+                   self.pixels.try_reserve_exact(count.saturating_sub(self.pixels.len()))
+               }).is_err()
             {
                 return Ok(());
             }

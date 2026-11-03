@@ -65,6 +65,20 @@ impl SystemBar
         })
     }
 
+    pub(super) fn prepare_display(&mut self, width: i16) -> Result<[Layout; 3], Status>
+    {
+        Ok([Manager::prepare_layout(self.entry, self.gate, &mut self.template, width)?,
+            Manager::prepare_layout(self.entry, self.gate, &mut self.state, width)?,
+            Manager::prepare_layout(self.entry, self.gate, &mut self.scratch, width)?])
+    }
+
+    pub(super) fn apply_display(&mut self, layouts: [Layout; 3])
+    {
+        layouts[0].apply(&mut self.template);
+        layouts[1].apply(&mut self.state);
+        layouts[2].apply(&mut self.scratch);
+    }
+
     pub(crate) fn title_bounds(&self) -> Rect
     {
         self.template.title_bounds

@@ -3014,6 +3014,43 @@ impl Toolbox
         }
         let size = Size { width:  width as u32,
                           height: height as u32 };
+        let pixel_count = width * height;
+        // These existing compositor Vecs are System ordinary backing. Admit
+        // their new capacities before the device can change scanout. Keep the
+        // actual mutable borrow until commit; failure preserves the old scene.
+        let prepared = match crate::context::without_recovery(|| {
+                  crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                      self.presentation.ordinary_underlay.prepare_mode(pixel_count)
+                  })
+              })
+        {
+            Ok(prepared) => prepared,
+            Err(status) =>
+            {
+                serial!("VIDEO_MODE_ADMISSION_REFUSED {}x{}: compositor memory could not be \
+                         prepared; status={status}",
+                        width,
+                        height);
+                return false;
+            }
+        };
+        let menu_layout = match crate::context::without_recovery(|| {
+                  crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
+                      self.menus
+                          .prepare_display(&mut self.system_bar, &mut self.app_menu, width as i16)
+                  })
+              })
+        {
+            Ok(layout) => layout,
+            Err(status) =>
+            {
+                serial!("VIDEO_MODE_ADMISSION_REFUSED {}x{}: menu geometry could not be \
+                         prepared; status={status}",
+                        width,
+                        height);
+                return false;
+            }
+        };
         match crate::machine::video::apply(size)
         {
             Ok(Outcome::Applied) => (),
@@ -3028,11 +3065,9 @@ impl Toolbox
                 return false;
             }
         }
-        if let Err(refusal) = crate::machine::display::apply_mode(width, height)
-        {
-            serial!("VIDEO_MODE_SYSTEM_REFUSED {}x{}: {:?}", width, height, refusal);
-            return false;
-        }
+        prepared.commit();
+        menu_layout.commit();
+        self.presentation.menu_cache.invalidate();
         serial!("DISPLAY_MODE_CHANGED {}x{}", width, height);
         self.display_changed(mac_abi::geometry::Rect::new(0, 0, width as i16, height as i16));
         true

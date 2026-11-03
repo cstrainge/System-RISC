@@ -19,7 +19,8 @@ const MAX_TRACKING_PIXELS: usize = crate::display::MAX_WIDTH * (crate::display::
 const _: () =
     assert!(super::memory::DISPLAY_TRACKING_BASE + (MAX_TRACKING_PIXELS * size_of::<u32>()) as u64
             <= super::memory::DISPLAY_SCRATCH_BASE + super::memory::DISPLAY_SCRATCH_BYTES);
-const _: () = assert!(super::memory::DISPLAY_BACKBUFFER_BASE + (crate::display::MAX_PIXELS * size_of::<u32>()) as u64
+const _: () = assert!(super::memory::DISPLAY_BACKBUFFER_BASE
+                      + (crate::display::MAX_PIXELS * size_of::<u32>()) as u64
                       <= super::memory::DISPLAY_SCRATCH_BASE
                          + super::memory::DISPLAY_SCRATCH_BYTES);
 
@@ -56,6 +57,28 @@ pub(super) fn use_driver_front(address: usize)
 {
     FRONT.store(address, Ordering::Release);
     VIDEO_ATTACHED.store(true, Ordering::Release);
+}
+
+/// Caller holds the authenticated new allocation pin and compositor admission.
+/// No data reference escapes this one scene copy.
+pub(super) fn copy_front_to(address: usize)
+{
+    if address != front_cpu()
+    {
+        // SAFETY: source is the current pinned front, destination is a distinct
+        // validated runtime allocation covering the current complete mode.
+        unsafe {
+            core::ptr::copy_nonoverlapping(front_cpu() as *const u32,
+                                           address as *mut u32,
+                                           pixels());
+        }
+    }
+}
+
+pub(super) fn use_boot_front()
+{
+    FRONT.store(FRONT_CPU, Ordering::Release);
+    VIDEO_ATTACHED.store(false, Ordering::Release);
 }
 
 pub(super) fn video_attached() -> bool
@@ -169,19 +192,18 @@ pub fn back_buffer() -> &'static mut [u32]
     }
     unsafe { core::slice::from_raw_parts_mut(pointer, pixels()) }
 }
-/// Switches the live mode: publishes the geometry, then clears the back buffer and window-tracking mask so no stale-stride pixels survive.
-/// The caller is the serialized compositor and must fully damage the scene afterwards.
-pub(crate) fn apply_mode(width: usize, height: usize) -> Result<(), crate::display::ModeRefusal>
+/// The compositor owns these temporary borrows. Pointer/geometry publication
+/// is a separate bounded metadata transaction, never a large IRQ-off clear.
+pub(super) fn clear_mode_buffers()
 {
-    crate::display::set_mode(width, height)?;
-    // SAFETY: the serialized compositor owns the reservations; both ranges
-    // are sized for the platform maximum and the new mode never exceeds it.
+    // SAFETY: current front is held by video::CURRENT or permanent ramfb;
+    // all spans admit the current validated geometry, and Desktop serializes
+    // painting. The front-buffer pin is retained through this entire clear.
     unsafe {
         core::ptr::write_bytes(BACK_CPU as *mut u32, 0, pixels());
         core::ptr::write_bytes(TRACKING_CPU as *mut u32, 0, tracking_pixels());
         core::ptr::write_bytes(front_cpu() as *mut u32, 0, pixels());
     }
-    Ok(())
 }
 pub fn setup_framebuffer() -> bool
 {
@@ -242,7 +264,8 @@ pub fn present(back: &[u32])
 }
 
 /// Copy real scene damage and apply frontbuffer-only cursor/drag transitions.
-pub(crate) fn present_rects(back: &[u32], rects: impl IntoIterator<Item = mac_abi::geometry::Rect>,
+pub(crate) fn present_rects(back: &[u32],
+                            rects: impl IntoIterator<Item = mac_abi::geometry::Rect>,
                             overlays: crate::toolbox::quickdraw::presentation::Overlays<'_>)
 {
     use crate::toolbox::quickdraw::presentation::{PresentEvent, present_frame};

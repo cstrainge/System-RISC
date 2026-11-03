@@ -193,6 +193,14 @@ impl ModuleExecution
 pub(crate) struct ModuleFrame(Arc<Instance>);
 impl ModuleFrame
 {
+    /// The authentic instance gate excludes every actual module invocation and
+    /// worker stack while cleanup reclaims runtime DMA memory. This is not a
+    /// new execution protocol or permission to retarget an allocation receipt.
+    pub(crate) fn exclude_execution(&self) -> Result<mac_kernel_model::image::Loading, Status>
+    {
+        self.0.execution.begin_load().map_err(|_| SERVICE_BUSY)
+    }
+
     pub(crate) fn authenticate(&self, module: u64) -> Result<(), Status>
     {
         if self.0.owner.owner().incarnation() == module { Ok(()) } else { Err(ACCESS_DENIED) }

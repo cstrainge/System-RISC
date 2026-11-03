@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use mac_abi::*;
 
-use super::{Canvas, Toolbox, RenderCommand, SceneTarget, WHITE, background, paint};
+use super::{Canvas, RenderCommand, SceneTarget, Toolbox, WHITE, background, paint};
 use crate::toolbox::quickdraw::{geometry::{Rect, sect_rect, union_rect},
                                 region::{BooleanOp, Region}};
 
@@ -25,8 +25,44 @@ pub(super) struct OrdinaryUnderlay
     refused_available:        Option<usize>,
     refusal:                  Option<Status>
 }
+/// Actual admitted compositor storage; refusal/drop leaves live lengths and
+/// pixels unchanged. The exclusive borrow spans the real GPU transaction.
+pub(super) struct PreparedPixels<'a>
+{
+    underlay: &'a mut OrdinaryUnderlay,
+    count:    usize
+}
+impl PreparedPixels<'_>
+{
+    pub(super) fn commit(self)
+    {
+        // prepare_mode reserved both exact capacities while this mutable borrow
+        // excludes mutation. These resizes cannot allocate or refuse.
+        self.underlay.committed.resize(self.count, 0);
+        self.underlay.staging.resize(self.count, 0);
+        self.underlay.valid = false;
+        self.underlay.full_deferred = true;
+        self.underlay.previous_system.clear();
+        self.underlay.refused_available = None;
+        self.underlay.refusal = None;
+    }
+}
 impl OrdinaryUnderlay
 {
+    pub(super) fn prepare_mode(&mut self, count: usize) -> Result<PreparedPixels<'_>, Status>
+    {
+        if count == 0 || count > crate::display::MAX_PIXELS
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        for pixels in [&mut self.committed, &mut self.staging]
+        {
+            pixels.try_reserve_exact(count.saturating_sub(pixels.len())).map_err(|_| NO_MEMORY)?;
+        }
+        Ok(PreparedPixels { underlay: self,
+                            count })
+    }
+
     pub(super) fn prepare(&mut self, system_windows: usize, scenes: usize) -> Result<(), Status>
     {
         for pixels in [&mut self.committed, &mut self.staging]
@@ -147,7 +183,8 @@ impl Toolbox
         let result = crate::context::without_recovery(|| {
             crate::allocator::with_system(crate::allocator::SystemClass::Ordinary, || {
                 if staging.len() != crate::display::pixels()
-                   || self.presentation.ordinary_underlay.committed.len() != crate::display::pixels()
+                   || self.presentation.ordinary_underlay.committed.len()
+                      != crate::display::pixels()
                 {
                     return Err(NOT_SUPPORTED);
                 }
@@ -155,8 +192,8 @@ impl Toolbox
                     .saturating_sub(self.scroll_boxes.raster_storage())
                     .saturating_sub(crate::toolbox::quickdraw::menu_cache::BYTES);
                 self.presentation.content_cache.preserve_headroom(crate::kernel::heap_available(),
-                                                     2 * 1024 * 1024,
-                                                     cache_budget);
+                                                                  2 * 1024 * 1024,
+                                                                  cache_budget);
                 self.paint_ordinary_full(&mut staging)
             })
         });
@@ -189,10 +226,8 @@ impl Toolbox
     /// retained commands. This is not a protected-pool-fit assertion.
     pub(super) fn retained_admission(&self, id: SceneTarget) -> (usize, usize)
     {
-        super::window_layout::scene_admission(&self.windows,
-                                              &self.presentation.content,
-                                              &self.presentation.pending_content,
-                                              id)
+        super::window_layout::scene_admission(&self.windows, &self.presentation.content,
+                                              &self.presentation.pending_content, id)
     }
 
     fn paint_ordinary_full(&mut self, pixels: &mut [u32]) -> Result<(), Status>
@@ -204,16 +239,20 @@ impl Toolbox
         let cdef = self.cdef;
         self.presentation.content_cache.begin_frame();
         self.presentation.content_cache.retain(|id| {
-                              id.window().ok().and_then(|id| self.windows.window(id)).is_some()
-                              && !self.presentation.content
-                                      .iter()
-                                      .find(|content| content.id == id)
-                                      .is_some_and(|content| {
-                                          content.iter_commands().any(|command| {
+                                           id.window()
+                                             .ok()
+                                             .and_then(|id| self.windows.window(id))
+                                             .is_some()
+                                           && !self.presentation
+                                                   .content
+                                                   .iter()
+                                                   .find(|content| content.id == id)
+                                                   .is_some_and(|content| {
+                                                       content.iter_commands().any(|command| {
                                               matches!(command, RenderCommand::ScrollBox(_))
                                           })
-                                      })
-                          });
+                                                   })
+                                       });
         let content = &self.presentation.content;
         let cache = &mut self.presentation.content_cache;
         self.windows.draw_layer(
@@ -245,7 +284,8 @@ impl Toolbox
                                      }
                                  }
         )?;
-        self.presentation.menu_cache
+        self.presentation
+            .menu_cache
             .paint(&mut canvas,
                    (self.foreground,
                     self.menus.selected_menu(),
@@ -285,7 +325,8 @@ impl Toolbox
                 {
                     continue;
                 };
-                let Some(content) = self.presentation.content.iter().find(|content| content.id == *id)
+                let Some(content) =
+                    self.presentation.content.iter().find(|content| content.id == *id)
                 else
                 {
                     continue;
@@ -361,10 +402,13 @@ impl Toolbox
         let deferred = core::mem::take(&mut self.presentation.ordinary_underlay.deferred);
         changed.clear();
         let requested_full = full;
-        let full = full || self.presentation.ordinary_underlay.full_deferred || !self.presentation.ordinary_underlay.valid;
+        let full = full
+                   || self.presentation.ordinary_underlay.full_deferred
+                   || !self.presentation.ordinary_underlay.valid;
         let mut copy_full = full;
         let result = if staging.len() != crate::display::pixels()
-                        || self.presentation.ordinary_underlay.committed.len() != crate::display::pixels()
+                        || self.presentation.ordinary_underlay.committed.len()
+                           != crate::display::pixels()
         {
             Err(NOT_SUPPORTED)
         }
@@ -426,7 +470,8 @@ impl Toolbox
         }
         else
         {
-            if self.presentation.ordinary_underlay.valid && staging.len() == crate::display::pixels()
+            if self.presentation.ordinary_underlay.valid
+               && staging.len() == crate::display::pixels()
             {
                 copy_rect(&self.presentation.ordinary_underlay.committed, &mut staging, screen());
                 if requested_full
@@ -452,7 +497,8 @@ impl Toolbox
             }
             self.presentation.ordinary_underlay.full_deferred |= full;
             self.presentation.ordinary_underlay.refused_available = Some(available);
-            self.presentation.ordinary_underlay.attempted_generation = self.presentation.ordinary_underlay.generation;
+            self.presentation.ordinary_underlay.attempted_generation =
+                self.presentation.ordinary_underlay.generation;
             let mut index = 0;
             while index < damage.len()
             {

@@ -29,3 +29,5 @@ pub(crate) mod power;
 pub(crate) mod paging;
 pub(crate) mod monitor;
 pub(crate) mod emergency;
+
+pub(crate) mod dma;
