@@ -458,6 +458,9 @@ fn main() -> Result<(), Error>
         {
             deferred_command.take().or_else(|| browser.next_deferred_pointer())
         };
+        // A queued physical release must be dispatched once, never captured
+        // into the pending-click queue again while that same queue drains.
+        let replayed_pointer = deferred.is_some();
         let (event, position) = if let Some(input) = deferred
         {
             input
@@ -646,7 +649,9 @@ fn main() -> Result<(), Error>
         if browser.marquee_tracking()
            && matches!(event, Event::Idle { .. } | Event::MouseUp { .. } | Event::KeyDown { .. })
         {
-            let _ = try_action(system, &mut alerts, browser.track(system, &event, position))?;
+            let _ = try_action(system,
+                               &mut alerts,
+                               browser.track(system, &event, position, replayed_pointer))?;
             if !browser.marquee_tracking()
             {
                 startup.update_menus(system, &mut alerts, &browser, &info)?;
@@ -767,7 +772,9 @@ fn main() -> Result<(), Error>
         {
             continue;
         }
-        let _ = try_action(system, &mut alerts, browser.track(system, &event, position))?;
+        let _ = try_action(system,
+                           &mut alerts,
+                           browser.track(system, &event, position, replayed_pointer))?;
         if alerts.active()
         {
             continue;

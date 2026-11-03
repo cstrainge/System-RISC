@@ -2578,15 +2578,20 @@ impl Browser
         Ok(())
     }
 
-    pub fn track(&mut self, system: &System<'_>, event: &Event, position: PointerPosition)
+    pub fn track(&mut self, system: &System<'_>, event: &Event, position: PointerPosition,
+                 replayed_pointer: bool)
                  -> Result<(), Error>
     {
         if self.track_desktop(system, event)?
         {
             return Ok(());
         }
-        if let Some(folder) =
-            self.windows.iter_mut().flatten().find(|folder| folder.pending_clicks[0].is_some())
+        // Only newly delivered input can extend a deferred gesture. Replaying
+        // one release while another remains queued must not append it again:
+        // that would keep the dispatcher busy forever and starve cache/idle work.
+        if !replayed_pointer
+           && let Some(folder) =
+               self.windows.iter_mut().flatten().find(|folder| folder.pending_clicks[0].is_some())
         {
             if matches!(event, Event::MouseUp { .. })
             {

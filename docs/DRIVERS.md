@@ -328,7 +328,8 @@ buffers. Canonical owner cleanup requires acknowledged device reset, no actual
 module execution/worker pins, and drainage of System's frontbuffer pin. A refusal
 retains the original cleanup ticket and storage, never a timed release.
 
-ramfb remains the ROM/emergency/fallback path. With SYSTEM7_VIRTIO_GPU=1,
-early ramfb screens are not visible. Compilation alone does not qualify DMA,
+The QEMU launcher enables VirtIO GPU by default. Set SYSTEM7_VIRTIO_GPU=0
+for an explicit fixed-resolution ramfb-only launch. ramfb remains attached for
+ROM/emergency setup; early ramfb screens are not visible on the GPU console. Compilation alone does not qualify DMA,
 resize, cancellation, reset or hardware timing; exact native artifacts and
 observed paths are required for those claims. Additional CPU harts remain parked.
