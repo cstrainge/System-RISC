@@ -970,6 +970,21 @@ pub struct LedgerSummary
     pub accepting:         bool
 }
 
+/// The first actual resource barrier observed under an owner's metadata gate.
+/// This is a read-only diagnostic snapshot, not a resource key or cleanup right.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResourceBlocker
+{
+    Pool
+    {
+        kind: KindCode, live: usize, pending: usize
+    },
+    CompletionFaults
+    {
+        count: usize
+    }
+}
+
 /// An atomic view of one prepared per-domain pool, not a global kind
 /// registration. No payload or generation-array scan is required.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1633,6 +1648,24 @@ impl OwnerIndex
     pub(crate) fn admission(&self) -> Arc<AtomicBool>
     {
         self.admission.clone()
+    }
+
+    /// The root-release barrier and its first genuine cause share one pool
+    /// walk. Unknown future kinds block automatically; completion faults block
+    /// even if their original pool is among the excluded structural roots.
+    pub fn resource_blocker_outside(&self, excluded: &[KindCode]) -> Option<ResourceBlocker>
+    {
+        for pool in self.pools()
+        {
+            if !excluded.contains(&pool.kind()) && (pool.live() != 0 || pool.pending() != 0)
+            {
+                return Some(ResourceBlocker::Pool { kind:    pool.kind(),
+                                                    live:    pool.live(),
+                                                    pending: pool.pending() });
+            }
+        }
+        let count = self.completions.len();
+        (count != 0).then_some(ResourceBlocker::CompletionFaults { count })
     }
 
     pub fn pools(&self) -> impl Iterator<Item = &DomainSlots>

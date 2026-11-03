@@ -160,7 +160,7 @@ impl Author
         let pending = callbacks::enqueue_shared_for_object(reference,
                                                            request,
                                                            completion.clone(),
-                                                           allocation)?;
+                                                           allocation).map_err(callbacks::EnqueueError::status)?;
         wait.register(&pending)?;
         let reply = poll_fn(|_| {
                         match pending.poll()

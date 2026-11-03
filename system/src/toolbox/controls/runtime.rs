@@ -239,7 +239,7 @@ impl UserBirth
             crate::toolbox::resources::definitions::callbacks::enqueue_for_object(entry,
                                                                                   request,
                                                                                   waiter.into(),
-                                                                                  &allocation)?;
+                                                                                  &allocation).map_err(crate::toolbox::resources::definitions::callbacks::EnqueueError::status)?;
         Ok(Self { entry,
                   pending,
                   cleanup: Some(cleanup) })

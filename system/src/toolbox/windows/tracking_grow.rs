@@ -429,7 +429,8 @@ enum Failure
 {
     Desktop(crate::state::AccessError),
     Status(Status),
-    Author(Status)
+    Author(Status),
+    Paint(crate::toolbox::windows::manager::paint::PaintFailure)
 }
 impl From<Status> for Failure
 {
@@ -492,7 +493,8 @@ pub(crate) fn pump_tracking_grow()
                                             {
                                                 Failure::Desktop(cause) => cause.status(),
                                                 Failure::Status(status)
-                                                | Failure::Author(status) => status
+                                                | Failure::Author(status) => status,
+                                                Failure::Paint(cause) => cause.status()
                                             });
                         serial!("TRACKING_GROW_FAILED window={} cause={cause:?}; original author \
                                  retained until drain",
@@ -660,7 +662,7 @@ fn service_user(state: &State, work: &mut Work, author: &mut PaintLoan) -> Resul
 {
     if work.stage == Stage::Calculate
     {
-        match author.advance().map_err(Failure::Author)?
+        match author.advance().map_err(Failure::Paint)?
         {
             PaintProgress::Pending =>
             {
@@ -720,7 +722,7 @@ fn service_user(state: &State, work: &mut Work, author: &mut PaintLoan) -> Resul
     }
     if work.stage == Stage::Advance
     {
-        match author.advance().map_err(Failure::Author)?
+        match author.advance().map_err(Failure::Paint)?
         {
             PaintProgress::Pending =>
             {

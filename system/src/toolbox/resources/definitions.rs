@@ -457,7 +457,7 @@ impl Definition
 {
     /// The SAME original cleanup dependency gate applies before requesting
     /// retirement and again under its owned Loading/manager exclusion.
-    fn objects_drained(&self) -> bool
+    fn object_blocker(&self) -> Option<mac_object_table::domain::ResourceBlocker>
     {
         // User DDEF Regions pin their parent SPCE until real unmap/TLB ACK.
         // SPCE/SPST cannot be a prerequisite for retiring those same children.
@@ -469,7 +469,7 @@ impl Definition
              crate::images::ROOT_KINDS[3],
              KindCode(*b"SPCE"),
              KindCode(*b"SPST")];
-        !self.owner.has_resources_outside(&ROOTS)
+        self.owner.resource_blocker_outside(&ROOTS)
     }
 }
 
@@ -1025,7 +1025,7 @@ fn invoke_admitted(reference: DefinitionRef, call: &mut DefinitionCall, disposal
 pub(crate) enum Drain
 {
     AdmissionOpen,
-    Objects,
+    Objects(mac_object_table::domain::ResourceBlocker),
     Threads,
     Invocations,
     Preparation,
@@ -1099,9 +1099,9 @@ impl Release<dyn crate::toolbox::handles::cleanup::context::Context, Failure> fo
             _ => return Err(Failure::context_unavailable(ticket, "definition registry"))
         };
         definition.retiring.store(true, Ordering::Release);
-        if !definition.objects_drained()
+        if let Some(blocker) = definition.object_blocker()
         {
-            return Err(Failure::definition_pending(ticket, owner, Drain::Objects));
+            return Err(Failure::definition_pending(ticket, owner, Drain::Objects(blocker)));
         }
         if InvocationGate::run(|| crate::machine::scheduler::has_threads(owner))
         {
@@ -1253,10 +1253,10 @@ impl MappingRetirement
             return Err(Error::DefinitionRetirement { owner,
                                                      drain: Drain::AdmissionOpen });
         }
-        if !definition.objects_drained()
+        if let Some(blocker) = definition.object_blocker()
         {
             return Err(Error::DefinitionRetirement { owner,
-                                                     drain: Drain::Objects });
+                                                     drain: Drain::Objects(blocker) });
         }
         if InvocationGate::run(|| crate::machine::scheduler::has_threads(owner.incarnation()))
         {

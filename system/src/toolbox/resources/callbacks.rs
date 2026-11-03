@@ -272,13 +272,48 @@ impl Drop for Pending
     }
 }
 
+/// Admission identity is retained until the service's actual status boundary.
+/// Variants name executed stages, never infer a cause from a numeric Busy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EnqueueError
+{
+    Definition(Status),
+    EntryKind,
+    DefinitionState,
+    Source,
+    OpaqueOwner,
+    Worker(Status),
+    WorkerBinding,
+    SelfQueue,
+    Packet(Status),
+    Storage(Status),
+    Queue(Status)
+}
+impl EnqueueError
+{
+    pub(crate) fn status(self) -> Status
+    {
+        match self
+        {
+            Self::Definition(s)
+            | Self::Worker(s)
+            | Self::Packet(s)
+            | Self::Storage(s)
+            | Self::Queue(s) => s,
+            Self::EntryKind | Self::DefinitionState => BAD_ARGUMENT,
+            Self::Source | Self::OpaqueOwner | Self::WorkerBinding => ACCESS_DENIED,
+            Self::SelfQueue => SERVICE_BUSY
+        }
+    }
+}
+
 /// Called only after a manager has detached an owned typed operation. The real
 /// caller ThreadId is captured by the outer service, never read from user wire.
 pub(crate) fn enqueue(reference: super::DefinitionRef, request: Request,
                       completion: impl Into<CompletionTarget>)
                       -> Result<Pending, Status>
 {
-    enqueue_with(reference, request, completion.into(), None, Ok)
+    enqueue_with(reference, request, completion.into(), None, Ok).map_err(EnqueueError::status)
 }
 
 /// A real object producer lends its original storage authority. Code ownership
@@ -287,7 +322,7 @@ pub(crate) fn enqueue(reference: super::DefinitionRef, request: Request,
 pub(crate) fn enqueue_for_object(reference: super::DefinitionRef, request: Request,
                                  completion: CompletionTarget,
                                  storage: &crate::machine::scheduler::accounting::AllocationAuthority)
-                                 -> Result<Pending, Status>
+                                 -> Result<Pending, EnqueueError>
 {
     enqueue_with(reference, request, completion, Some(storage), Ok)
 }
@@ -296,7 +331,7 @@ pub(crate) fn enqueue_for_object(reference: super::DefinitionRef, request: Reque
 pub(crate) fn enqueue_shared_for_object(reference: super::DefinitionRef, request: Request,
                                         completion: CompletionTarget,
                                         storage:&crate::machine::scheduler::accounting::AllocationAuthority)
-                                        -> Result<Arc<Pending>, Status>
+                                        -> Result<Arc<Pending>, EnqueueError>
 {
     enqueue_with(reference, request, completion, Some(storage), |pending| {
         Arc::try_new(pending).map_err(|_| NO_MEMORY)
@@ -307,31 +342,32 @@ fn enqueue_with<T>(reference: super::DefinitionRef, request: Request,
                    completion: CompletionTarget,
                    storage: Option<&crate::machine::scheduler::accounting::AllocationAuthority>,
                    wrap: impl FnOnce(Pending) -> Result<T, Status>)
-                   -> Result<T, Status>
+                   -> Result<T, EnqueueError>
 {
-    let (invocation, entry) = super::pin(reference, request.kind(), request.id(), false)?;
+    let (invocation, entry) = super::pin(reference, request.kind(), request.id(), false).map_err(EnqueueError::Definition)?;
     let super::Entry::User(entry) = entry
     else
     {
-        return Err(BAD_ARGUMENT);
+        return Err(EnqueueError::EntryKind);
     };
-    let definition = invocation.definition.as_ref().ok_or(BAD_ARGUMENT)?;
+    let definition = invocation.definition.as_ref().ok_or(EnqueueError::DefinitionState)?;
     let super::SourceBinding::Image(source) = &definition.source
     else
     {
-        return Err(ACCESS_DENIED);
+        return Err(EnqueueError::Source);
     };
     if request.opaque_owner().is_some_and(|(owner, image)| {
                                  source.owner().owner() != owner || source.binding().id() != image
                              })
     {
-        return Err(ACCESS_DENIED);
+        return Err(EnqueueError::OpaqueOwner);
     }
-    let worker = crate::machine::scheduler::callbacks::prepare(source)?;
+    let worker =
+        crate::machine::scheduler::callbacks::prepare(source).map_err(EnqueueError::Worker)?;
     if worker.owner().owner() != definition.owner.owner()
        || worker.image_id() != source.binding().id()
     {
-        return Err(ACCESS_DENIED);
+        return Err(EnqueueError::WorkerBinding);
     }
     if crate::machine::scheduler::callbacks::authenticate_current().is_ok_and(|current| {
                                                                        Arc::ptr_eq(current.queue(),
@@ -340,7 +376,7 @@ fn enqueue_with<T>(reference: super::DefinitionRef, request: Request,
     {
         // The sole callback thread cannot wait for work that only it can run.
         // Ordinary nested font/theme/surface services do not enqueue work.
-        return Err(SERVICE_BUSY);
+        return Err(EnqueueError::SelfQueue);
     }
     let identity = PanicIdentity { reference,
                                    kind: definition.identity.kind,
@@ -351,7 +387,7 @@ fn enqueue_with<T>(reference: super::DefinitionRef, request: Request,
         crate::allocator::Target::Owner { account: account.clone(), class: mac_kernel_model::policy::MemoryClass::Kernel }
     });
     let (job, pending) = crate::allocator::with_target(allocation, || {
-        let packet = Arc::try_new(request.prepare(entry)?).map_err(|_| NO_MEMORY)?;
+        let packet = Arc::try_new(request.prepare(entry).map_err(EnqueueError::Packet)?).map_err(|_| EnqueueError::Storage(NO_MEMORY))?;
         let job = Arc::try_new(Job {
             identity,
             completion,
@@ -366,12 +402,12 @@ fn enqueue_with<T>(reference: super::DefinitionRef, request: Request,
                 return_storage: ReturnStorage::Ordinary,
             }),
         })
-        .map_err(|_| NO_MEMORY)?;
-        let pending = wrap(Pending { job: job.clone() })?;
-        Ok::<_, Status>((job, pending))
+        .map_err(|_| EnqueueError::Storage(NO_MEMORY))?;
+        let pending = wrap(Pending { job: job.clone() }).map_err(EnqueueError::Storage)?;
+        Ok::<_, EnqueueError>((job, pending))
     })?;
     let queue = worker.queue();
-    enqueue_job(queue, &job, &mut None)?;
+    enqueue_job(queue, &job, &mut None).map_err(EnqueueError::Queue)?;
     crate::machine::scheduler::callbacks::wake(&worker);
     Ok(pending)
 }
