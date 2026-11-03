@@ -455,7 +455,12 @@ impl<'a> Application<'a>
                 });
         let selection = system.menus().selection(&event)?;
         let command = selection.map(|selection| selection.command);
-        let update_policy = !matches!(event, Event::Idle { .. } | Event::KeyUp { .. });
+        let update_policy = match event
+        {
+            Event::Idle { .. } => self.menu_policy.clipboard_changed(system)?,
+            Event::KeyUp { .. } => false,
+            _ => true
+        };
         let keyboard = batch::is_keyboard(&event);
         let result = (|| {
             if let Some(selection) = selection

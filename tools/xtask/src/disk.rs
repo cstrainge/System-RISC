@@ -12,6 +12,37 @@ use crate::{Workspace, output, run, write_json};
 
 const DISK_SIZE: u64 = 500 * 1024 * 1024;
 
+const PACKAGES: &[(&str, &str)] = &[("System Folder", "System"),
+                                    ("System Folder", "Finder"),
+                                    ("Applications", "QuickDraw Test"),
+                                    ("Applications", "Text Edit"),
+                                    ("Applications", "Cursor Test"),
+                                    ("Applications", "Panic Test"),
+                                    ("Applications", "Res Edit"),
+                                    ("Applications", "Reactor Room"),
+                                    ("Applications", "Control Suite"),
+                                    ("System Folder/Drivers", "Host Transport"),
+                                    ("System Folder/Drivers", "VDAgent Channel"),
+                                    ("System Folder/Drivers", "VirtIO RNG"),
+                                    ("System Folder/Drivers", "Virtio Gpu"),
+                                    ("System Folder/Extensions", "Host Clipboard"),
+                                    ("System Folder/Extensions", "Multi-Scheduler"),
+                                    ("System Folder/Drivers", "Host Filesystem"),
+                                    ("System Folder/Drivers", "StuffIt Filesystem"),
+                                    ("System Folder/Drivers", "Qemu Power Device")];
+
+pub(super) fn validate_modules(workspace: &Workspace) -> Result<()>
+{
+    crate::modules::validate_identities(&workspace.build.join("dist"),
+                                        PACKAGES.iter()
+                                                .filter(|(directory, _)| {
+                                                    matches!(*directory,
+                                                             "System Folder/Drivers"
+                                                             | "System Folder/Extensions")
+                                                })
+                                                .map(|(_, name)| *name))
+}
+
 /// Serialize image builds without altering global hfsutils mount state.
 struct Scratch
 {
@@ -52,6 +83,9 @@ pub(super) fn edit<R>(image: &Path,
 
 pub fn image(workspace: &Workspace) -> Result<Value>
 {
+    // Refuse collisions before user-state preparation or any image mutation,
+    // including callers reusing an already packaged dist directory.
+    validate_modules(workspace)?;
     let started = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let scratch = Scratch::create(&workspace.build)?;
     if !workspace.checking
@@ -120,25 +154,16 @@ pub fn image(workspace: &Workspace) -> Result<Value>
         }
     }
     let mut verified = Vec::new();
-    for (parent, directory, name) in [(system, "System Folder", "System"),
-                                      (system, "System Folder", "Finder"),
-                                      (applications, "Applications", "QuickDraw Test"),
-                                      (applications, "Applications", "Text Edit"),
-                                      (applications, "Applications", "Cursor Test"),
-                                      (applications, "Applications", "Panic Test"),
-                                      (applications, "Applications", "Res Edit"),
-                                      (applications, "Applications", "Reactor Room"),
-                                      (applications, "Applications", "Control Suite"),
-                                      (drivers, "System Folder/Drivers", "Host Transport"),
-                                      (drivers, "System Folder/Drivers", "VDAgent Channel"),
-                                      (drivers, "System Folder/Drivers", "VirtIO RNG"),
-                                      (drivers, "System Folder/Drivers", "Virtio Gpu"),
-                                      (extensions, "System Folder/Extensions", "Host Clipboard"),
-                                      (extensions, "System Folder/Extensions", "Multi-Scheduler"),
-                                      (drivers, "System Folder/Drivers", "Host Filesystem"),
-                                      (drivers, "System Folder/Drivers", "StuffIt Filesystem"),
-                                      (drivers, "System Folder/Drivers", "Qemu Power Device")]
+    for &(directory, name) in PACKAGES
     {
+        let parent = match directory
+        {
+            "System Folder" => system,
+            "Applications" => applications,
+            "System Folder/Drivers" => drivers,
+            "System Folder/Extensions" => extensions,
+            _ => return Err(error("installed package has an unknown destination folder"))
+        };
         let bytes = fs::read(workspace.build.join("dist").join(format!("{name}.bin")))?;
         let original = macbinary::decode(&bytes)?;
         let entry = hfs_b::import_macbinary_at(&mut volume, parent, &original, name, when)?;

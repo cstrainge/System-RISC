@@ -1,8 +1,63 @@
 //! Installation geometry for the platform's supervisor module execution VAs.
 //! This is virtual reservation admission; real RAM and original module Kernel
 //! charges are admitted per actual memory segment at runtime.
+use std::{collections::BTreeMap, fs, path::Path};
+
 use mac_build::{Result, error};
 use serde_json::Value;
+
+/// Check the actual packaged contracts, including independently loaded INIT
+/// parts. System DRVR/INIT share one registry; Finder parts have their own.
+pub(super) fn validate_identities<'a>(dist: &Path, names: impl IntoIterator<Item = &'a str>)
+                                      -> Result<()>
+{
+    let mut installed = BTreeMap::new();
+    for name in names
+    {
+        let bytes = fs::read(dist.join(format!("{name}.bin")))?;
+        let file = mac_formats::macbinary::decode(&bytes)?;
+        if !matches!(&file.file_type, b"DRVR" | b"INIT")
+        {
+            continue;
+        }
+        let resources = mac_formats::resource::decode(&file.resources)?;
+        let mut register = |package: mac_formats::module::Package<'_>| -> Result<()> {
+            let key = (package.contract.code_id, package.contract.identity);
+            if let Some(previous) = installed.insert(key, name.to_owned())
+            {
+                let identity: String = key.1.iter().map(|byte| format!("{byte:02x}")).collect();
+                return Err(error(format!("installed modules '{previous}' and '{name}' both \
+                                          declare identity {identity} in EABI/{}; assign \
+                                          distinct module identities and rebuild the packages \
+                                          before creating the image",
+                                         key.0)));
+            }
+            Ok(())
+        };
+        if file.file_type == *b"DRVR"
+        {
+            register(mac_formats::module::Package::inspect(&resources, file.file_type)?)?;
+        }
+        else
+        {
+            let mut found = false;
+            for target in mac_module::ExtensionTarget::ALL
+            {
+                if resources.iter().any(|r| r.kind == *b"EABI" && r.id == target.resource_id())
+                {
+                    register(mac_formats::module::Package::inspect_extension(&resources, target)?)?;
+                    found = true;
+                }
+            }
+            if !found
+            {
+                // Keep the shared validator's actionable missing-EABI cause.
+                register(mac_formats::module::Package::inspect(&resources, file.file_type)?)?;
+            }
+        }
+    }
+    Ok(())
+}
 
 pub(super) fn footprint(reports: &[Value], capacity: u64) -> Result<u64>
 {
