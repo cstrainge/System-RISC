@@ -5,6 +5,7 @@
 extern crate alloc;
 mod virtio_blk;
 mod screen;
+mod virtio_gpu;
 mod supervisor;
 mod monitor;
 mod virtual_memory
@@ -569,8 +570,22 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
             root.leaf_count(),
             admitted.asid_mask(),
             stack_virtual);
-    screen::happy();
-    serial!("BOOT_VISUAL_HAPPY");
+    match screen::happy()
+    {
+        Ok(true) =>
+        {
+            serial!("BOOT_VISUAL_HAPPY");
+        }
+        Ok(false) =>
+        {
+            serial!("BOOT_VISUAL_HAPPY_UNAVAILABLE");
+        }
+        Err(error) =>
+        {
+            serial!("BOOT_VIDEO_OWNERSHIP_REJECTED: {error}; refusing System handoff");
+            fatal_shutdown();
+        }
+    }
     serial!("BOOT: entering System at {:#x} privilege=supervisor", plan.entry());
     // Keep every opaque firmware owner in this suspended physical frame. The
     // admitted callee has no owning payload below the captured stack boundary.
@@ -584,7 +599,9 @@ fn enter(startup: Startup, disks: &mut [virtio_blk::Disk], disk_index: usize,
         serial!("BOOT_MACHINE_IMAGE_SEAL_REFUSED: {error}");
         fatal_shutdown();
     }
-    // No fallible/retry path follows the unique image seal.
+    // No fallible/retry path follows the unique image seal. Original boot
+    // display buffers stay reserved until the runtime driver's actual reset.
+    screen::handoff();
     unsafe { admitted.enter(plan.entry(), info_virtual, stack_virtual) }
 }
 
@@ -675,9 +692,9 @@ extern "C" fn boot_main(tree_address: usize) -> !
             memory.ram.len(),
             memory.reserved.len());
     serial!("System RISC Boot ROM v1 at 0x{:x}", boot_main as *const () as usize);
-    if let Err(error) = screen::init()
+    if let Err(error) = screen::init(&memory, monitor.directory.timebase_hz)
     {
-        serial!("BOOT_RAMFB_OWNERSHIP_REJECTED: {error}; DMA quiescence is unproven; refusing \
+        serial!("BOOT_VIDEO_OWNERSHIP_REJECTED: {error}; DMA quiescence is unproven; refusing \
                  System handoff and requesting terminal shutdown");
         fatal_shutdown();
     }
@@ -734,8 +751,22 @@ extern "C" fn boot_main(tree_address: usize) -> !
             }
         }
     }
-    screen::missing();
-    serial!("BOOT_VISUAL_MISSING");
+    match screen::missing()
+    {
+        Ok(true) =>
+        {
+            serial!("BOOT_VISUAL_MISSING");
+        }
+        Ok(false) =>
+        {
+            serial!("BOOT_VISUAL_MISSING_UNAVAILABLE");
+        }
+        Err(error) =>
+        {
+            serial!("BOOT_VIDEO_OWNERSHIP_REJECTED: {error}; requesting terminal shutdown");
+            fatal_shutdown();
+        }
+    }
     serial!("BOOT_NO_SYSTEM: searched {} disk(s); no bootable native System found", disks.len());
     halt()
 }
