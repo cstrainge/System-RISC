@@ -87,6 +87,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
     {
         return Ok(());
     }
+    let mut stage = "current-process";
     let checked = (|| -> Result<(), Error> {
         let info = system.processes().current()?;
         let image = info.image.ok_or(Error::BadAbi)?;
@@ -94,10 +95,13 @@ fn run(system: &System<'_>) -> Result<(), Error>
         {
             return Err(Error::BadAbi);
         }
+        stage = "image-source-checks";
         image_lifetimes::stale(system, mac_toolbox::resources::ImageScope::from_raw(1)?)?;
         image_lifetimes::string(system, image, "image-probe")?;
+        stage = "window-create";
         let window = system.windows().create_owned(mac_toolbox::windows::WindowSpec::new(
             mac_toolbox::Rect::new(80, 80, 320, 180), "Image source probe"))?;
+        stage = "witness-create";
         let mut counts = system.controls().create_static_text_with(
             window.id(), mac_toolbox::controls::StaticTextSpec {
                 bounds: mac_toolbox::Rect::new(8, 80, 220, 100),
@@ -107,26 +111,33 @@ fn run(system: &System<'_>) -> Result<(), Error>
                 layout: mac_toolbox::controls::TextLayout::Ellipsis,
                 reflow: mac_toolbox::controls::Reflow::Yes
             })?;
+        stage = "witness-query-initial";
         witness(&mut counts, "dispose-probe/witness-first", 0, 0)?;
         witness(&mut counts, "dispose-probe/witness-second", 0, 0)?;
         witness(&mut counts, "dispose-probe/witness-duplicates", 0, 0)?;
+        stage = "first-control-create";
         let text = system.controls()
                          .create_static_text(window.id(),
                                              mac_toolbox::Rect::new(8, 8, 220, 28),
                                              "dispose-probe/first",
                                              Default::default(),
                                              mac_toolbox::controls::TextAlignment::Left)?;
+        stage = "first-control-draw";
         text.draw()?;
+        stage = "own-definition-ledger";
         owned_definition(system, 1)?;
         system.log("IMAGE_PROBE_OWNED_DDEF_PASS\n")?;
         // Transfer lifetime to the Window, then inspect the explicit Result.
         // Keeping the owned wrapper would implicitly retry in Drop on error.
         let original = text.into_control().into_id();
+        stage = "first-control-dispose";
         system.controls().control(original).dispose()?;
         stale_control(system, original)?;
+        stage = "witness-query-disposed";
         witness(&mut counts, "dispose-probe/witness-first", 1, 1)?;
         witness(&mut counts, "dispose-probe/witness-duplicates", 0, 0)?;
         system.log("IMAGE_PROBE_CDEF_DISPOSE_CHECKED\n")?;
+        stage = "replacement-create";
         let text = system.controls()
                          .create_static_text(window.id(),
                                              mac_toolbox::Rect::new(8, 40, 220, 60),
@@ -171,7 +182,7 @@ fn run(system: &System<'_>) -> Result<(), Error>
         Ok(()) => Ok(()),
         Err(error) =>
         {
-            let _ = system.log("PROCESS_FAIL image lifetime probe failed\n");
+            isolation::log_failure(system, stage, error);
             Err(error)
         }
     }

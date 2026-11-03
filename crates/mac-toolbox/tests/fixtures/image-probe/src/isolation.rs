@@ -102,6 +102,18 @@ pub(super) fn log_value(system: &System<'_>, owner: mac_toolbox::ProcessId, labe
     system.log(core::str::from_utf8(&line.bytes[..line.length]).map_err(|_| Error::BadAbi)?)
 }
 
+pub(super) fn log_failure(system: &System<'_>, stage: &str, error: Error)
+{
+    use core::fmt::Write;
+    let mut line = Line { bytes:  [0; 128],
+                          length: 0 };
+    if writeln!(&mut line, "PROCESS_FAIL stage={stage} status={} cause={error}", error.status()).is_ok()
+       && let Ok(text) = core::str::from_utf8(&line.bytes[..line.length])
+    {
+        let _ = system.log(text);
+    }
+}
+
 fn writable_state(system: &System<'_>, owner: mac_toolbox::ProcessId) -> Result<(), Error>
 {
     let before = STATE.load(Ordering::SeqCst);
