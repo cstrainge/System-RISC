@@ -24,6 +24,13 @@ pub struct Policy
 }
 impl Policy
 {
+    /// Imported host text can change Scrap without an application input event.
+    /// Only a changed revision needs the normal menu-policy refresh.
+    pub fn clipboard_changed(&self, system: &System<'_>) -> Result<bool, Error>
+    {
+        Ok(self.scrap != Some(system.scrap().info()?))
+    }
+
     pub fn update<'a>(&mut self, system: &System<'a>, editor: Option<&editor::Editor<'a>>)
                       -> Result<(), Error>
     {
