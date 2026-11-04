@@ -179,7 +179,7 @@ fn puthex(value: u64)
 #[unsafe(no_mangle)]
 pub extern "C" fn sdhci_probe() -> u64
 {
-    use mac_filesystem::BlockDevice;
+    use mac_block::BlockDevice;
     init_heap();
     // Peripheral addresses come from the generated tree, not from constants, so
     // the record remains the only place this board's hardware is written down.

@@ -17,7 +17,7 @@
 //! MMIO into the window the platform record declares for the controller.
 use core::ptr::{read_volatile, write_volatile};
 
-use mac_filesystem::{BlockDevice, Error, Result};
+use mac_block::{BlockDevice, Error, Result};
 
 const BLOCK_SIZE: usize = 0x04;
 const BLOCK_COUNT: usize = 0x06;
