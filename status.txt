@@ -816,3 +816,85 @@ class the driver supports, so it is provider semantics; Service is what the
 driver publishes; a consumer declares a Dependency. The provider/consumer
 distinction is therefore sound. Probe-and-claim, exclusive claims and the
 probe-refused markers are not implemented yet.
+
+systemrisc rename and gate classification - 2026-11-04
+-----------------------------------------------------
+cfg(guest) is renamed to cfg(systemrisc) in 67 files; the build predicate
+names the OS, not the emulator. build_guest(), the guest cargo feature,
+guest_profile and STAGE guest are build-time vocabulary and were not renamed;
+follow-up drift sites are listed below.
+
+The rename exposed a per-crate cfg bug: a driver's build script does not set
+the cfg for mac-driver/mac-definition, so runtime::panic disappeared and the
+guest build failed. crates/mac-definition, crates/mac-driver and
+crates/mac-toolbox now each emit check-cfg always and rustc-cfg only when
+TARGET differs from HOST.
+
+qemu_riscv boot-check after the rename and the library fix: 17/17 ROM checks,
+fresh raw-hfs-b.serial.log at 2026-11-04 15:14:58 with BOOT_VISUAL_HAPPY,
+BOOT_SYSTEM_READY: services=0xffffffd0008af4b8 and DESKTOP_READY: Finder and
+native Window Manager.
+
+Host tests: the pure-logic suites (mac-formats, mac-hfs-b, mac-kernel-model,
+mac-object-table) pass 193, fail 0, ignore 2 (mac-hfs-b large_forks and
+unicode). The mac-toolbox host build is not runnable in this checkout: the
+documented command points at System7/Cargo.toml, which does not exist, and a
+bare cargo check -p mac-toolbox --tests fails on the unmodified tree with
+"cannot find machine in the crate root" at system/src/lib.rs:24. That is the
+missing host harness, not the rename.
+
+Splash frame: captured at BOOT_VISUAL_HAPPY with TCP QMP screendump
+(scripts/capture_system7_boot.py uses AF_UNIX, unavailable on Windows
+Python). frame_report.py on happy.ppm: 800x600, 4 distinct colours, most
+common rgb(135,135,135) 49.9%, 478790 horizontal and 478637 vertical changes,
+exit 0, glyph with a centred blob. No pre-change capture exists, but the
+mac-boot-screen drawing code was not changed; only an error-message string in
+ramfb.rs.
+
+Classification
+--------------
+Category 1 (per-architecture selection, kept): crates/mac-definition/src/
+runtime.rs and crates/mac-driver/src/runtime.rs select riscv64/aarch64
+modules; the aarch64 siblings use svc x8/x0/x1 and brk. Also kept:
+mac-boot-screen/ramfb.rs (RISC-V display backend), mac-traps (ecall),
+mac-virtio-console (virtio console), mac-toolbox panic and application entry,
+and system/src/lib.rs machine/kernel.
+
+Category 2 (converted): 574 toolbox gates, the four context.rs items
+(ExecutionContext, bootstrap_thread, EventWaiter, the reported flags),
+allocation.rs and the allocation selection, and the mac-definition/
+mac-driver/mac-toolbox panic and worker paths.
+
+Category 3 (remaining, HAL inventory):
+- system/src/machine/** and system/src/kernel/** - the ISA/HAL boundary.
+- system/src/context.rs (59) - ThreadOwner/ThreadContext/DefaultAllocation
+  use crate::machine::traps, crate::kernel, crate::images and crate::allocator.
+- system/src/lib.rs images/allocator/recovery/trace and system/src/drivers/**
+  - guest-vs-host gates whose bodies use the RISC-V machine/kernel types.
+- crates/mac-definition/src/lib.rs:18 any(target_arch, test) and
+  mac-definition-macros/src/lib.rs (2) still use target_arch; they are
+  guest-vs-host and should become systemrisc.
+
+Answers
+-------
+Provider vs consumer: interfaces become Offer (the device class the driver
+supports), services become Service, a consumer declares a Dependency. VIDO in
+interfaces is provider semantics; the selection rule is sound.
+
+Stray virtio on BCM2837: the virtio modules match bus VMMI at 0x10000000;
+qemu_arm64 declares no virtio_mmio slots, so PlatformBus::probe returns
+NOT_FOUND and the driver refuses. Even a bad match would fail the virtio
+magic/version/device check. Harmless; the record's module list is a
+convenience, not a correctness requirement.
+
+Record name: qemu_arm64 names the run configuration the user types, not the
+shipped hardware. The image's identity is in the record's hardware/emulation
+fields and the module descriptions. Keeping the runner name is clearer than
+pretending the emulated BCM2837 is the same as a real board.
+
+Vocabulary drift follow-up: build_guest(), the guest cargo feature,
+guest_profile, STAGE guest, the drivers/qemu-power-device directory/package,
+mac-host-clipboard's Limits::qemu(), mac-vdagent-protocol's
+QEMU_MAX_MESSAGE_BYTES and qemu(), and platforms/qemu_arm64.json as a
+filename. None ship as product vocabulary.
+
