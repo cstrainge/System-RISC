@@ -2,11 +2,187 @@
   "name": "qemu_arm64",
   "rust_target": "aarch64-unknown-none",
   "toolchain": "rust/sdk.json",
+  "guest_linker": "platforms/linker/aarch64.ld",
+  "llvm_profile": "neon",
+  "profile_requires": [
+    "neon"
+  ],
   "install": {
     "description": "No aarch64 guest set is produced yet; this record describes the BCM2837-class machine, its SD medium and its boot path",
     "applications": [],
     "modules": []
   },
+  "memory": {
+    "page_bytes": 4096,
+    "ram_base": "0x0",
+    "minimum_ram_bytes": "0x3f000000",
+    "boot": {
+      "base": "0x80000",
+      "bytes": "0xb0000"
+    },
+    "firmware_heap": {
+      "base": "0x130000",
+      "bytes": "0x800000"
+    },
+    "images": {
+      "base": "0x930000",
+      "bytes": "0x10000000"
+    },
+    "display_scratch": {
+      "base": "0x10930000",
+      "bytes": "0x1b00000"
+    },
+    "display": {
+      "width": 800,
+      "height": 600,
+      "max_width": 1920,
+      "max_height": 1200
+    },
+    "application_relocation_base": "0x3100000",
+    "application_primary_base": "0x2000000",
+    "definitions": {
+      "base": "0x2100000",
+      "bytes": "0x1000000"
+    },
+    "fdt_tail_bytes": "0x200000",
+    "boot_stack_bytes": "0x40000",
+    "monitor_stack_bytes": "0x1000",
+    "system_heap_bytes": "0x20000000",
+    "system_recovery_bytes": "0x2000000",
+    "stacks": {
+      "system": {
+        "minimum": "0x40000",
+        "default": "0x400000",
+        "maximum": "0x800000"
+      },
+      "application": {
+        "minimum": "0x10000",
+        "default": "0x400000",
+        "maximum": "0x800000"
+      }
+    },
+    "application_heap": {
+      "minimum_extent_bytes": "0x10000"
+    },
+    "tls": {
+      "key_capacity": 256
+    },
+    "process_accounts": {
+      "kernel_bytes": "0x1000000",
+      "application_bytes": "0x4000000"
+    },
+    "module_accounts": {
+      "kernel_bytes": "0x1000000",
+      "worker_stack_bytes": "0x400000"
+    }
+  },
+  "virtual_memory": {
+    "mode": "aarch64",
+    "application": {
+      "start": "0x0000000000400000",
+      "end": "0x0000002000000000"
+    },
+    "process_kernel": {
+      "start": "0xffffffc000000000",
+      "end": "0xffffffc800000000"
+    },
+    "modules": {
+      "start": "0xffffffc800000000",
+      "end": "0xffffffd000000000"
+    },
+    "system": {
+      "start": "0xffffffd000000000",
+      "end": "0xfffffffffffff000"
+    },
+    "physmap": {
+      "start": "0xffffffe000000000",
+      "end": "0xfffffff000000000"
+    },
+    "application_image_base": "0x0000000000400000",
+    "system_image_base": "0xffffffd000200000",
+    "system_heap_base": "0xffffffd040000000",
+    "system_stacks": {
+      "start": "0xffffffd010000000",
+      "end": "0xffffffd020000000"
+    },
+    "physmap_physical_base": "0x0"
+  },
+  "scheduling": {
+    "maximum_active_harts": 1,
+    "quantum_microseconds": 250,
+    "callback_budget_microseconds": 1000
+  },
+  "fatal_shutdown": {
+    "device": "bcm2835-pm",
+    "offset": 28,
+    "failure_value": 1509949472,
+    "restart_value": 1509949488
+  },
+  "mmio_devices": [
+    {
+      "id": "bcm2835-pm",
+      "bus": "MMIO",
+      "key": "6272636d2c62636d323833352d706d00",
+      "address": "0x3f100000",
+      "bytes": 4096,
+      "interrupt": 0,
+      "flags": 2
+    },
+    {
+      "id": "pl011",
+      "bus": "MMIO",
+      "key": "61726d2c706c30313100000000000000",
+      "address": "0x3f201000",
+      "bytes": 4096,
+      "interrupt": 57,
+      "flags": 2
+    },
+    {
+      "id": "sdhci",
+      "bus": "MMIO",
+      "key": "6272636d2c7364686369000000000000",
+      "address": "0x3f300000",
+      "bytes": 4096,
+      "interrupt": 62,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-mbox",
+      "bus": "MMIO",
+      "key": "6272636d2c6d626f7800000000000000",
+      "address": "0x3f00b000",
+      "bytes": 4096,
+      "interrupt": 1,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-rng",
+      "bus": "MMIO",
+      "key": "6272636d2c62636d323833352d726e67",
+      "address": "0x3f104000",
+      "bytes": 4096,
+      "interrupt": 61,
+      "flags": 2
+    },
+    {
+      "id": "bcm2835-systimer",
+      "bus": "MMIO",
+      "key": "6272636d2c73797374696d6572000000",
+      "address": "0x3f003000",
+      "bytes": 4096,
+      "interrupt": 0,
+      "flags": 2
+    },
+    {
+      "id": "bcm2836-l1-intc",
+      "bus": "MMIO",
+      "key": "6272636d2c6c312d696e746300000000",
+      "address": "0x40000000",
+      "bytes": 4096,
+      "interrupt": 0,
+      "flags": 2
+    }
+  ],
   "storage": {
     "images": {
       "sd-card": {

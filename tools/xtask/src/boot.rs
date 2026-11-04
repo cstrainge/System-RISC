@@ -78,20 +78,26 @@ pub fn package_rom(workspace: &Workspace) -> Result<Option<Value>>
                                  elf.display())));
     }
     let memory = workspace.platform.memory()?;
-    let flattened = elf::flatten(&fs::read(&elf)?, memory.flash_bytes())?;
+    let flash = memory.flash().ok_or_else(|| {
+                                   error(format!("platform '{}' declares bootloader package '{}' \
+                                                  but no flash window to place it in",
+                                                 workspace.platform.name, bootloader.package))
+                               })?;
+    let flash_bytes = flash.end - flash.start;
+    let flattened = elf::flatten(&fs::read(&elf)?, flash_bytes)?;
     let rom = dist.join(format!("{}.bin", bootloader.artifact));
     fs::write(&rom, &flattened.bytes)?;
-    OpenOptions::new().write(true).open(&rom)?.set_len(memory.flash_bytes())?;
+    OpenOptions::new().write(true).open(&rom)?.set_len(flash_bytes)?;
     let elf_copy = dist.join(format!("{}.elf", bootloader.artifact));
     fs::copy(&elf, &elf_copy)?;
     let report = json!({"image": workspace.describe(&rom),
                         "elf": workspace.describe(&elf_copy),
                         "bootloader": bootloader.package,
-                        "flash_base": memory.flash_base(),
+                        "flash_base": flash.start,
                         "load_base": flattened.base,
                         "entry": flattened.entry,
                         "payload_size": flattened.bytes.len(),
-                        "flash_bank_size": memory.flash_bytes(),
+                        "flash_bank_size": flash_bytes,
                         "sha256": package::sha256(&fs::read(&rom)?),
                         "source": bootloader.package,
                         "execution": bootloader.description});
@@ -100,7 +106,7 @@ pub fn package_rom(workspace: &Workspace) -> Result<Option<Value>>
              bootloader.package,
              flattened.bytes.len(),
              flattened.base,
-             memory.flash_bytes() / (1024 * 1024));
+             flash_bytes / (1024 * 1024));
     Ok(Some(report))
 }
 

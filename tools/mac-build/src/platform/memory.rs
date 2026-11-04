@@ -85,9 +85,14 @@ pub(super) struct Definition
     page_bytes:                  u64,
     ram_base:                    String,
     minimum_ram_bytes:           String,
-    flash:                       Region,
-    fw_cfg:                      Region,
-    bootstrap_io:                io::Definition,
+    /// The boot payload's read-only medium. A board whose firmware loads its
+    /// payload from an SD card or another medium declares no flash window.
+    flash:                       Option<Region>,
+    /// QEMU's firmware-configuration device. A physical board has no fw_cfg.
+    fw_cfg:                      Option<Region>,
+    /// The bootstrap IO windows this platform's first stage drives. A board
+    /// booted by vendor firmware from removable media declares none.
+    bootstrap_io:                Option<io::Definition>,
     boot:                        Region,
     firmware_heap:               Region,
     images:                      Region,
@@ -99,7 +104,10 @@ pub(super) struct Definition
     fdt_tail_bytes:              String,
     boot_stack_bytes:            String,
     monitor_stack_bytes:         String,
-    machine_monitor:             MonitorPolicy,
+    /// The monitor's reset/transport binding. Only the RISC-V legacy CLINT
+    /// profile exists, so a board with a different interrupt controller omits
+    /// it rather than claiming a binding it does not have.
+    machine_monitor:             Option<MonitorPolicy>,
     system_heap_bytes:           String,
     system_recovery_bytes:       String,
     stacks:                      stacks::Definition,
@@ -114,9 +122,9 @@ pub struct Checked
 {
     pub(super) page_bytes:                  u64,
     pub(super) ram:                         Range<u64>,
-    pub(super) flash:                       Range<u64>,
-    pub(super) fw_cfg:                      Range<u64>,
-    bootstrap_io:                           io::Checked,
+    pub(super) flash:                       Option<Range<u64>>,
+    pub(super) fw_cfg:                      Option<Range<u64>>,
+    bootstrap_io:                           Option<io::Checked>,
     pub(super) boot:                        Range<u64>,
     pub(super) firmware_heap:               Range<u64>,
     pub(super) images:                      Range<u64>,
@@ -175,14 +183,23 @@ impl Definition
                          &Region { base:  self.ram_base.clone(),
                                    bytes: self.minimum_ram_bytes.clone() },
                          page)?;
-        let flash = region("flash", &self.flash, page)?;
-        let fw_cfg = region("fw_cfg", &self.fw_cfg, page)?;
-        if overlaps(&fw_cfg, &ram) || overlaps(&fw_cfg, &flash) || fw_cfg.end > 1 << 56
+        let flash = self.flash.as_ref().map(|window| region("flash", window, page)).transpose()?;
+        let fw_cfg =
+            self.fw_cfg.as_ref().map(|window| region("fw_cfg", window, page)).transpose()?;
+        if let Some(fw_cfg) = &fw_cfg
         {
-            return Err(error("platform memory fw_cfg must be a physical MMIO window outside \
-                              RAM and flash"));
+            if overlaps(fw_cfg, &ram)
+               || flash.as_ref().is_some_and(|flash| overlaps(fw_cfg, flash))
+               || fw_cfg.end > 1 << 56
+            {
+                return Err(error("platform memory fw_cfg must be a physical MMIO window \
+                                  outside RAM and flash"));
+            }
         }
-        let bootstrap_io = self.bootstrap_io.check(page, &ram, &flash, &fw_cfg)?;
+        let bootstrap_io = self.bootstrap_io
+                               .as_ref()
+                               .map(|io| io.check(page, &ram, flash.as_ref(), fw_cfg.as_ref()))
+                               .transpose()?;
         let boot = region("boot", &self.boot, page)?;
         let firmware_heap = region("firmware_heap", &self.firmware_heap, page)?;
         let images = region("images", &self.images, page)?;
@@ -253,14 +270,20 @@ impl Definition
                     return Err(error(format!("platform memory {name} overlaps {previous}")));
                 }
             }
-            if overlaps(range, &flash)
+            if let Some(flash) = &flash
             {
-                return Err(error(format!("platform memory flash overlaps {name}")));
+                if overlaps(range, flash)
+                {
+                    return Err(error(format!("platform memory flash overlaps {name}")));
+                }
             }
         }
-        if overlaps(&flash, &ram)
+        if let Some(flash) = &flash
         {
-            return Err(error("platform memory flash overlaps minimum RAM"));
+            if overlaps(flash, &ram)
+            {
+                return Err(error("platform memory flash overlaps minimum RAM"));
+            }
         }
         let application_relocation_base =
             address("application_relocation_base", &self.application_relocation_base)?;
@@ -290,7 +313,10 @@ impl Definition
             return Err(error("platform memory boot_stack_bytes must be nonzero, 16-byte \
                               aligned and smaller than boot RAM"));
         }
-        self.machine_monitor.check()?;
+        if let Some(monitor) = &self.machine_monitor
+        {
+            monitor.check()?;
+        }
         let monitor_stack_bytes = address("monitor_stack_bytes", &self.monitor_stack_bytes)?;
         if monitor_stack_bytes < page
            || !monitor_stack_bytes.is_multiple_of(page)
@@ -396,7 +422,8 @@ impl Checked
 
     pub(super) fn permits_mmio(&self, range: core::ops::Range<u64>) -> bool
     {
-        !overlaps(&range, &self.ram) && !overlaps(&range, &self.flash)
+        !overlaps(&range, &self.ram)
+        && self.flash.as_ref().is_none_or(|flash| !overlaps(&range, flash))
     }
 
     /// The platform's checked hardware mapping granularity.
@@ -413,46 +440,54 @@ impl Checked
         self.definitions.clone()
     }
 
-    pub fn flash_base(&self) -> u64
+    /// The read-only boot payload medium, when this platform has one. A board
+    /// whose firmware loads the payload from removable media has none.
+    pub fn flash(&self) -> Option<Range<u64>>
     {
-        self.flash.start
-    }
-
-    pub fn flash_bytes(&self) -> u64
-    {
-        self.flash.end - self.flash.start
+        self.flash.clone()
     }
 
     pub(super) fn linker_symbols(&self) -> String
     {
         let mut out = String::from("\n/* Generated from the checked platform memory record. */\n");
-        for (name, region) in [("FLASH", &self.flash),
-                               ("FW_CFG", &self.fw_cfg),
-                               ("BOOT", &self.boot),
-                               ("FIRMWARE_HEAP", &self.firmware_heap),
-                               ("IMAGES", &self.images),
-                               ("DISPLAY_SCRATCH", &self.display_scratch),
-                               ("DEFINITIONS", &self.definitions)]
+        let mut regions: Vec<(&str, &Range<u64>)> = Vec::new();
+        if let Some(flash) = &self.flash
+        {
+            regions.push(("FLASH", flash));
+        }
+        if let Some(fw_cfg) = &self.fw_cfg
+        {
+            regions.push(("FW_CFG", fw_cfg));
+        }
+        regions.extend([("BOOT", &self.boot),
+                        ("FIRMWARE_HEAP", &self.firmware_heap),
+                        ("IMAGES", &self.images),
+                        ("DISPLAY_SCRATCH", &self.display_scratch),
+                        ("DEFINITIONS", &self.definitions)]);
+        for (name, region) in regions
         {
             writeln!(out, "__platform_{name}_START = {:#x};", region.start).unwrap();
             writeln!(out, "__platform_{name}_END = {:#x};", region.end).unwrap();
         }
-        for (name, value) in
-            [("PAGE_BYTES", self.page_bytes),
-             ("RAM_BASE", self.ram.start),
-             ("MINIMUM_RAM_BYTES", self.ram.end - self.ram.start),
-             ("APPLICATION_RELOCATION_BASE", self.application_relocation_base),
-             ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
-             ("FDT_TAIL_BYTES", self.fdt_tail_bytes),
-             ("BOOT_STACK_BYTES", self.boot_stack_bytes),
-             ("MONITOR_STACK_BYTES", self.monitor_stack_bytes),
-             ("MONITOR_CONTROL_BYTES", mac_abi::boot::monitor::CONTROL_BYTES as u64),
-             ("SYSTEM_HEAP_BYTES", self.system_heap_bytes),
-             ("SYSTEM_RECOVERY_BYTES", self.system_recovery_bytes)].into_iter()
-                                                                   .chain(self.display_buffers())
-                                                                   .chain(self.stacks.constants())
-                                                                   .chain(self.bootstrap_io
-                                                                              .constants())
+        let mut values = vec![("PAGE_BYTES", self.page_bytes),
+                              ("RAM_BASE", self.ram.start),
+                              ("MINIMUM_RAM_BYTES", self.ram.end - self.ram.start),
+                              ("APPLICATION_RELOCATION_BASE", self.application_relocation_base),
+                              ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
+                              ("FDT_TAIL_BYTES", self.fdt_tail_bytes),
+                              ("BOOT_STACK_BYTES", self.boot_stack_bytes),
+                              ("MONITOR_STACK_BYTES", self.monitor_stack_bytes),
+                              ("MONITOR_CONTROL_BYTES",
+                               mac_abi::boot::monitor::CONTROL_BYTES as u64),
+                              ("SYSTEM_HEAP_BYTES", self.system_heap_bytes),
+                              ("SYSTEM_RECOVERY_BYTES", self.system_recovery_bytes)];
+        values.extend(self.display_buffers());
+        values.extend(self.stacks.constants());
+        if let Some(bootstrap_io) = &self.bootstrap_io
+        {
+            values.extend(bootstrap_io.constants());
+        }
+        for (name, value) in values
         {
             writeln!(out, "__platform_{name} = {value:#x};").unwrap();
         }
@@ -462,34 +497,47 @@ impl Checked
     pub(super) fn system_constants(&self) -> String
     {
         let mut out = String::from("// Generated from the checked platform memory record.\n");
-        for (name, value) in
-            [("PAGE_BYTES", self.page_bytes),
-             ("FLASH_BASE", self.flash.start),
-             ("FLASH_BYTES", self.flash.end - self.flash.start),
-             ("FW_CFG_BASE", self.fw_cfg.start),
-             ("IMAGE_BASE", self.images.start),
-             ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
-             ("DISPLAY_SCRATCH_BYTES", self.display_scratch.end - self.display_scratch.start),
-             ("FIRMWARE_HEAP_BASE", self.firmware_heap.start),
-             ("FIRMWARE_HEAP_BYTES", self.firmware_heap.end - self.firmware_heap.start),
-             ("MONITOR_STACK_BYTES", self.monitor_stack_bytes),
-             ("MONITOR_CONTROL_BYTES", mac_abi::boot::monitor::CONTROL_BYTES as u64),
-             ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
-             ("DEFINITION_BASE", self.definitions.start),
-             ("DEFINITION_LIMIT", self.definitions.end),
-             ("IMAGE_LIMIT", self.images.end)].into_iter()
-                                              .chain(self.display_buffers())
-                                              .chain(self.stacks.constants())
-                                              .chain(self.application_heap.constants())
-                                              .chain(self.tls.constants())
-                                              .chain(self.process_accounts.constants())
-                                              .chain(self.module_accounts.constants())
-                                              .chain(self.bootstrap_io.constants())
+        let mut values = vec![("PAGE_BYTES", self.page_bytes)];
+        if let Some(flash) = &self.flash
+        {
+            values.push(("FLASH_BASE", flash.start));
+            values.push(("FLASH_BYTES", flash.end - flash.start));
+        }
+        if let Some(fw_cfg) = &self.fw_cfg
+        {
+            values.push(("FW_CFG_BASE", fw_cfg.start));
+        }
+        values.extend([("IMAGE_BASE", self.images.start),
+                       ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
+                       ("DISPLAY_SCRATCH_BYTES",
+                        self.display_scratch.end - self.display_scratch.start),
+                       ("FIRMWARE_HEAP_BASE", self.firmware_heap.start),
+                       ("FIRMWARE_HEAP_BYTES", self.firmware_heap.end - self.firmware_heap.start),
+                       ("MONITOR_STACK_BYTES", self.monitor_stack_bytes),
+                       ("MONITOR_CONTROL_BYTES", mac_abi::boot::monitor::CONTROL_BYTES as u64),
+                       ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
+                       ("DEFINITION_BASE", self.definitions.start),
+                       ("DEFINITION_LIMIT", self.definitions.end),
+                       ("IMAGE_LIMIT", self.images.end)]);
+        values.extend(self.display_buffers());
+        values.extend(self.stacks.constants());
+        values.extend(self.application_heap.constants());
+        values.extend(self.tls.constants());
+        values.extend(self.process_accounts.constants());
+        values.extend(self.module_accounts.constants());
+        if let Some(bootstrap_io) = &self.bootstrap_io
+        {
+            values.extend(bootstrap_io.constants());
+        }
+        for (name, value) in values
         {
             writeln!(out, "pub const {name}: u64 = {value:#x};").unwrap();
         }
         out.push_str(&self.reservation_constant());
-        out.push_str(&self.bootstrap_io.ranges_source(&self.fw_cfg));
+        if let Some(bootstrap_io) = &self.bootstrap_io
+        {
+            out.push_str(&bootstrap_io.ranges_source(self.fw_cfg.as_ref()));
+        }
         writeln!(out, "pub const SYSTEM_HEAP_BYTES: usize = {:#x};",self.system_heap_bytes).unwrap();
         writeln!(out,
                  "pub const SYSTEM_RECOVERY_BYTES: usize = {:#x};",
@@ -544,26 +592,40 @@ impl Checked
     pub(super) fn boot_constants(&self) -> String
     {
         let mut out = self.boot_admission_constants();
-        for (name, value) in [("MINIMUM_RAM_BYTES", self.ram.end - self.ram.start),
-                              ("FLASH_BASE", self.flash.start),
-                              ("FLASH_BYTES", self.flash.end - self.flash.start),
-                              ("FW_CFG_BASE", self.fw_cfg.start),
-                              ("FIRMWARE_HEAP_BASE", self.firmware_heap.start),
-                              ("FIRMWARE_HEAP_BYTES", self.firmware_heap.end - self.firmware_heap.start),
-                              ("MONITOR_STACK_BYTES", self.monitor_stack_bytes),
-                              ("MONITOR_CONTROL_BYTES", mac_abi::boot::monitor::CONTROL_BYTES as u64),
-                              ("DISPLAY_WIDTH", self.display_width),
-                              ("DISPLAY_HEIGHT", self.display_height),
-                              ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
-                              ("DISPLAY_SCRATCH_BYTES",
-                               self.display_scratch.end - self.display_scratch.start),
-                              ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
-                              ("APPLICATION_PRIMARY_LIMIT", self.definitions.start),
-                              ("APPLICATION_RELOCATION_BASE", self.application_relocation_base)].into_iter().chain(self.bootstrap_io.constants())
+        let mut values = vec![("MINIMUM_RAM_BYTES", self.ram.end - self.ram.start)];
+        if let Some(flash) = &self.flash
+        {
+            values.push(("FLASH_BASE", flash.start));
+            values.push(("FLASH_BYTES", flash.end - flash.start));
+        }
+        if let Some(fw_cfg) = &self.fw_cfg
+        {
+            values.push(("FW_CFG_BASE", fw_cfg.start));
+        }
+        values.extend([("FIRMWARE_HEAP_BASE", self.firmware_heap.start),
+                       ("FIRMWARE_HEAP_BYTES", self.firmware_heap.end - self.firmware_heap.start),
+                       ("MONITOR_STACK_BYTES", self.monitor_stack_bytes),
+                       ("MONITOR_CONTROL_BYTES", mac_abi::boot::monitor::CONTROL_BYTES as u64),
+                       ("DISPLAY_WIDTH", self.display_width),
+                       ("DISPLAY_HEIGHT", self.display_height),
+                       ("DISPLAY_SCRATCH_BASE", self.display_scratch.start),
+                       ("DISPLAY_SCRATCH_BYTES",
+                        self.display_scratch.end - self.display_scratch.start),
+                       ("APPLICATION_PRIMARY_BASE", self.application_primary_base),
+                       ("APPLICATION_PRIMARY_LIMIT", self.definitions.start),
+                       ("APPLICATION_RELOCATION_BASE", self.application_relocation_base)]);
+        if let Some(bootstrap_io) = &self.bootstrap_io
+        {
+            values.extend(bootstrap_io.constants());
+        }
+        for (name, value) in values
         {
             writeln!(out, "pub const {name}: u64 = {value:#x};").unwrap();
         }
-        out.push_str(&self.bootstrap_io.ranges_source(&self.fw_cfg));
+        if let Some(bootstrap_io) = &self.bootstrap_io
+        {
+            out.push_str(&bootstrap_io.ranges_source(self.fw_cfg.as_ref()));
+        }
         out
     }
 }
@@ -583,22 +645,22 @@ mod tests
         let original = definition();
         original.check().unwrap();
         let mut bad = original.clone();
-        bad.fw_cfg.base = original.ram_base.clone();
+        bad.fw_cfg.as_mut().unwrap().base = original.ram_base.clone();
         assert!(bad.check()
                    .unwrap_err()
                    .to_string()
                    .contains("fw_cfg must be a physical MMIO window outside RAM and flash"));
         let mut bad = original.clone();
-        bad.fw_cfg.base = original.flash.base.clone();
+        bad.fw_cfg.as_mut().unwrap().base = original.flash.as_ref().unwrap().base.clone();
         assert!(bad.check().unwrap_err().to_string().contains("outside RAM and flash"));
         let mut bad = original.clone();
-        bad.fw_cfg.base = "0x10100001".into();
+        bad.fw_cfg.as_mut().unwrap().base = "0x10100001".into();
         assert!(bad.check()
                    .unwrap_err()
                    .to_string()
                    .contains("fw_cfg must be nonempty and page aligned"));
         let mut bad = original.clone();
-        bad.fw_cfg.base = "0x100000000000000".into();
+        bad.fw_cfg.as_mut().unwrap().base = "0x100000000000000".into();
         assert!(bad.check().unwrap_err().to_string().contains("physical MMIO window"));
         let mut bad = original.clone();
         bad.display_scratch.base = original.firmware_heap.base.clone();
@@ -692,8 +754,9 @@ mod tests
         assert!(checked.display_constants().contains("DEFAULT_WIDTH: usize = 800;"));
         assert!(checked.display_constants().contains("DEFAULT_HEIGHT: usize = 600;"));
         assert!(checked.boot_constants().contains("(0x86a81000,0x87000000)"));
-        assert_eq!(checked.flash_base(), checked.flash.start);
-        assert_eq!(checked.flash_bytes(), checked.flash.end - checked.flash.start);
+        let flash = checked.flash().expect("the RISC-V record declares flash");
+        assert_eq!(flash.start, 0x20000000);
+        assert_eq!(flash.end - flash.start, 0x2000000);
     }
     #[test]
     fn physical_image_definition_regions_cannot_overlap()

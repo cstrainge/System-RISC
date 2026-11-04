@@ -37,8 +37,20 @@ pub fn stage(workspace: &Workspace, name: &str) -> Result<()>
     {
         "definitions" =>
         {
-            guest_build(workspace,
-                        &names(&Crates::read(workspace)?.in_stage(crates::Stage::Definitions)))?
+            // Definitions are resources of the resident System. A platform
+            // that installs no guest module has no System to consume them, so
+            // there is nothing to compile; building another architecture's
+            // definition set would fail on its own RISC-V-only runtime gate.
+            let crates = Crates::read(workspace)?;
+            let packages = if workspace.platform.install.modules.is_empty()
+            {
+                Vec::new()
+            }
+            else
+            {
+                names(&crates.in_stage(crates::Stage::Definitions))
+            };
+            guest_build(workspace, &packages)?
         }
         "guest" => guest_build(workspace, &guest_packages(workspace)?)?,
         "apps" =>
@@ -240,7 +252,13 @@ pub fn package_all(workspace: &Workspace) -> Result<()>
     // The receipts carry the role beside each report; packaging only needs the
     // report itself.
     reports.extend(application_reports(workspace)?.into_iter().map(|(_, report)| report));
-    authority::install(workspace, &mut reports)?;
+    // The application authority policy is a resource of the resident System.
+    // A platform that installs no System has no policy to bind and no
+    // System.bin to attach it to.
+    if reports.iter().any(|report| report["role"] == "system")
+    {
+        authority::install(workspace, &mut reports)?;
+    }
     // No pairwise preferred-placement exclusion here, and that is a resolved
     // merge rather than a deletion. It used to compare every pair of mappings
     // and refuse overlapping reservations, excluding `code_resource`. User-mode

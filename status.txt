@@ -580,74 +580,115 @@ qemu_arm64 platform lane - 2026-11-04
 =====================================
 [Platform lane / qemu_arm64 agent]
 
-Added platforms/qemu_arm64.json and removed the retired ARM virt record. The record
-describes a BCM2837-class SoC machine: 4x Cortex-A53, 1 GiB RAM, PL011 UART
-console, sdhci SD storage, bcm2835 RNG and a VideoCore mailbox framebuffer.
-The emulation schema gained:
-  - boot_medium.kind "sd" for a machine whose firmware boots from the SD medium;
-  - disks.transport "sdhci" (one card slot, attached with QEMU's if=sd);
-  - display.kind "videocore-mailbox" with framebuffer "videocore-mailbox"
-    (integrated; no transport);
-  - entropy.kind "bcm2835-rng" (integrated; no transport);
-  - firmware "disabled" for a machine whose built-in firmware must be
-    suppressed. "none" now means the machine's own default. qemu_riscv states
-    "disabled" and still renders -bios none.
-A display or entropy device integrated into the SoC omits its transport; the
-loader rejects a virtio device without one and a SoC device with one. A record
-that boots from SD must name the sdhci transport, and an sdhci attachment must
-omit its slot.
+State: the record is complete and validates; the build reaches the storage
+image and refuses there because the image builder cannot emit the partitioned
+SD medium. No aarch64 boot was run (no qemu-system-aarch64 on this host).
 
-Verified on this host (Windows, pinned nightly-2026-10-05):
+Record
+------
+platforms/qemu_arm64.json describes a BCM2837-class SoC machine: 4x Cortex-A53,
+1 GiB DRAM, PL011 UART, sdhci SD storage, bcm2835 RNG and a VideoCore mailbox
+framebuffer. The board maps peripherals at 0x3f000000..0x40000000, so the
+kernel's guaranteed linear window is 0x0..0x3f000000; the 1 GiB total is stated
+in hardware.ram.bytes. The record declares:
+  - memory: 4096-byte pages, boot at 0x80000, firmware heap, image arena,
+    display scratch, FDT tail, heaps, stacks and process accounts;
+  - virtual_memory: mode "aarch64", the 39-bit four-level windows the OS
+    already uses for its user/kernel split;
+  - llvm_profile "neon" with profile_requires ["neon"] (the ARMv8-A Advanced
+    SIMD baseline the target enables);
+  - scheduling: one active hart until the SMP gate passes;
+  - fatal_shutdown: the BCM2835 PM reset register at 0x3f10001c, with the
+    documented full-reset commands 0x5a000020 and 0x5a000030;
+  - mmio_devices: PM, PL011, sdhci, mailbox, RNG, system timer and the ARM
+    local interrupt controller at their BCM2837 addresses;
+  - guest_linker: platforms/linker/aarch64.ld.
+The record omits flash, fw_cfg, bootstrap_io and machine_monitor: the board
+has no pflash, no QEMU fw_cfg, no CLINT and no virtio-mmio. Those fields are
+optional in the memory schema.
+
+Build-system refactor
+---------------------
+tools/mac-build/src/platform/virtual_memory.rs: the RISC-V-only Mode enum and
+literal target check are replaced by a Layout trait. Sv39Layout and
+Aarch64Layout each declare NAME, TARGET, TARGET_DESCRIPTION and ROOT_BYTES and
+own their canonical-range validation; check_layout<L: Layout> validates the
+target against the selected layout. Aarch64 is a 39-bit, four-level, 4 KiB
+layout with the aarch64 user/kernel canonical halves.
+tools/mac-build/src/native.ld is gone. The RISC-V script moved to
+platforms/linker/riscv64.ld and platforms/linker/aarch64.ld is new. The
+platform record's guest_linker field selects the script, and
+tools/mac-build/src/lib.rs reads it and registers it with
+cargo:rerun-if-changed instead of include_str!.
+tools/mac-build/src/platform/memory.rs: flash, fw_cfg, bootstrap_io and
+machine_monitor are optional; qemu_riscv declares all of them, qemu_arm64
+declares none. The fixed bootstrap_io inner window set is unchanged and
+remains a known limitation for a future board that has a UART but no CLINT.
+tools/xtask/src/build.rs: the definitions stage builds only when the platform
+installs guest modules, and the application authority policy is applied only
+when a System report exists.
+
+Verified
+--------
   cargo check -p mac-build -p xtask                         exit 0
   cargo fmt -p mac-build -p xtask --check                   exit 0
-  cargo xtask platforms                                     lists qemu_arm64 and
-                                                            qemu_riscv; the
-                                                            retired record is
-                                                            absent
+  cargo xtask platforms                                     qemu_arm64 and
+                                                            qemu_riscv, both
+                                                            validated
   cargo xtask build --platform qemu_riscv                   exit 0; guest,
                                                             package and 500 MiB
                                                             image stages passed
-  cargo xtask boot-check --platform qemu_riscv              exit 0; 17 of 17,
-                                                            no skips; fresh
-                                                            serial logs at
-                                                            dist/qemu_riscv/
-                                                            boot-checks contain
+  cargo xtask boot-check --platform qemu_riscv              17 of 17 cases, 0
+                                                            skipped; fresh
+                                                            13:14 serial logs
+                                                            contain
                                                             BOOT_SYSTEM_READY:
-                                                            and DESKTOP_READY:
-  results/system7/boot-checks.json                          status passed, 17
-                                                            cases, qcow2 unchanged
-  qemu_arm64 rendered invocation (real emulator path; a     -machine <QEMU id>
-  stand-in process only because qemu-system-aarch64 is       -m 1G -smp 4
-  absent)                                                    -monitor none
-                                                             -nic none
-                                                             -display none
-                                                             -serial stdio
-                                                             -drive if=sd,...
-  cargo xtask build --platform qemu_arm64                   exit 1, by design:
-                                                            prints the resolved
-                                                            machine, then the
-                                                            definitions stage
-                                                            fails with
-                                                            "platform
-                                                            'qemu_arm64' declares
-                                                            no memory section".
-                                                            No aarch64 guest set
-                                                            or Sv39 layout exists
-                                                            to link against.
+                                                            and DESKTOP_READY:;
+                                                            results/system7/
+                                                            boot-checks.json
+                                                            status passed,
+                                                            qcow2 unchanged
+  cargo xtask build --platform qemu_arm64                   exit 1 at the
+                                                            storage image:
+                                                            "this build produces
+                                                            a single unpartitioned
+                                                            system7-filesystem
+                                                            volume, not a Table
+                                                            { kind: Mbr, ... }
+                                                            partition table".
+                                                            Definitions, guest,
+                                                            apps and package
+                                                            stages passed (the
+                                                            platform installs no
+                                                            guest set).
+  aarch64 linker script                                     rustc linked a
+                                                            minimal no_std
+                                                            aarch64 binary with
+                                                            platforms/linker/
+                                                            aarch64.ld; exit 0,
+                                                            ELF produced
+  aarch64 virtual memory                                    validated by the
+                                                            record load and
+                                                            platform catalogue
 
-Blocked and not claimed:
-  - qemu-system-aarch64 is not installed; the QEMU 10.1.0 directory contains
-    only qemu-system-m68k.exe and qemu-system-riscv64.exe, and
-    `qemu-system-aarch64 --version` is not recognised. No qemu_arm64 boot was
-    run.
-  - The storage image is an MBR with a FAT32 boot partition and a System7
-    partition. The image builder supports only a whole-medium System7 volume,
-    so `cargo xtask build --platform qemu_arm64` cannot produce it. The record
-    validates; the medium is not produced.
-  - No VideoCore mailbox/framebuffer driver exists, so this platform cannot
-    draw a desktop. No virtio fallback was added.
-  - No aarch64 System, drivers or applications exist; the definitions stage
-    fails before packaging.
+Remaining boot blockers
+-----------------------
+  1. Guest entry/trap runtime: guest crates gate no_std/no_main on
+     target_arch = "riscv64" (for example
+     definitions/buttons/src/main.rs:3-4), mac-traps::invoke has an ecall path
+     and NOT_SUPPORTED otherwise (crates/mac-traps/src/lib.rs:32-50), and
+     there is no aarch64 equivalent of platforms/riscv64-entry.S.
+  2. MMU/page tables: the build-system aarch64 layout is implemented, but no
+     aarch64 page-table builder or activation exists; mac-riscv-pages is
+     Sv39-only.
+  3. SD image: tools/xtask/src/disk.rs produces only a whole-medium System7
+     volume; the MBR/FAT32 partitioned SD medium is not emitted.
+  4. VideoCore mailbox framebuffer driver: none exists, so this platform
+     cannot draw a desktop. No virtio fallback was added.
+  5. qemu-system-aarch64 is not installed; the QEMU directory contains only
+     qemu-system-m68k.exe and qemu-system-riscv64.exe, and
+     `qemu-system-aarch64 --version` is not recognised. The aarch64 layout and
+     linker script are structurally validated, not executed.
 
 Naming: the only authored text match for the product-name pattern is the QEMU
 machine field in platforms/qemu_arm64.json. The other text match is Python's
