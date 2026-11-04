@@ -266,6 +266,14 @@ impl Manager
                                 .as_ref()
                                 .is_some_and(|capture| capture.boundary.is_some())
         {
+            // A releasing POLL ends this control's own capture before it assigns
+            // the released geometry, so the plan must carry that post-release
+            // state. A stale capture left in the plan makes the assignment walk
+            // find this control tracking and refuse it as though some other
+            // control were mid-gesture, which is what the walk is there to stop.
+            let mut released = root.state.clone();
+            released.tracking = None;
+            released.splitter = None;
             let assignment=ControlCall{id:call.id,operation:REFLOW_OBJECT,
                 layout:mac_abi::controls::reflow::Payload{message:mac_abi::controls::reflow::ASSIGN_RECT,
                     rect:root.state.spec.bounds(),..Default::default()},..Default::default()};
@@ -274,7 +282,7 @@ impl Manager
                                              false,
                                              None,
                                              None,
-                                             Some(root.state.clone()))
+                                             Some(released))
                      .map_err(|status| {
                          TrackingStage::refusal(diagnostic, TrackingStage::SnapshotRelease, status)
                      })?)
