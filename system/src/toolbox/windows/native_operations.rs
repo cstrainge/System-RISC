@@ -41,9 +41,22 @@ impl From<Status> for BeginError
     }
 }
 
+/// Captured from the ORIGINAL native caller before guard-free preparation.
+/// It limits waiting; it grants no target or definition authority.
+#[derive(Clone, Copy)]
+enum CallerRole
+{
+    NativeProcess,
+    NativeCallback,
+    SystemInput
+}
+
 pub(crate) struct UserWindowOperation
 {
     operation:       WindowOperation,
+    admitted:        bool,
+    geometry_wait:   Option<crate::toolbox::windows::manager::canvas::GeometryAdmission>,
+    caller_role:     CallerRole,
     kind:            u32,
     when:            u32,
     completion:      Option<Completion>,
@@ -136,6 +149,18 @@ impl UserWindowOperation
             return Ok(None);
         };
         let thread = crate::context::current_thread_context().identity().thread;
+        let caller_role = match crate::machine::scheduler::callbacks::authenticate_current()
+        {
+            Ok(execution) =>
+            {
+                if execution.thread_id() != thread
+                {
+                    return Err(ACCESS_DENIED.into());
+                }
+                CallerRole::NativeCallback
+            }
+            Err(_) => CallerRole::NativeProcess
+        };
         let prepare = || WindowOperation::prepare(plan, thread, notice.clone());
         let operation = match &allocation
         {
@@ -144,8 +169,10 @@ impl UserWindowOperation
             }, prepare)?,
             None => prepare()?
         };
-        let epoch = crate::kernel::window_desktop_epoch();
-        input_callbacks::with_window_toolbox(|toolbox| {
+        if kind == CLOSE_WINDOW
+        {
+            let epoch = crate::kernel::window_desktop_epoch();
+            input_callbacks::with_window_toolbox(|toolbox| {
             if !toolbox.owns(plan.window_id())
             {
                 return Err(ACCESS_DENIED);
@@ -157,16 +184,16 @@ impl UserWindowOperation
                 toolbox.windows.admit_user_close(operation.job(), &mut toolbox.events, when)?;
                 toolbox.observe_dialog_window_close(super::DialogCloseObserver::User(operation.job().clone()));
             }
-            else
-            {
-                toolbox.windows.admit_operation(operation.job())?;
-            }
             Ok(())
         }).map_err(|cause| {
               BeginError::Desktop { cause,
                                     epoch }
           })??;
+        }
         Ok(Some(Self { operation,
+                       admitted: kind == CLOSE_WINDOW,
+                       geometry_wait: None,
+                       caller_role,
                        kind,
                        when,
                        completion: None,
@@ -265,6 +292,28 @@ impl UserWindowOperation
 
     fn advance_inner(&mut self) -> Result<Option<Status>, Status>
     {
+        if !self.admitted
+        {
+            let epoch = crate::kernel::window_desktop_epoch();
+            let job = self.operation.job();
+            let caller = self.caller;
+            let callback_caller = matches!(self.caller_role, CallerRole::NativeCallback);
+            let admission = &mut self.geometry_wait;
+            let attempt = input_callbacks::with_window_toolbox(|toolbox| {
+                if toolbox.owner != caller || !toolbox.owns(job.window_id())
+                {
+                    return Err(ACCESS_DENIED);
+                }
+                toolbox.windows.admit_geometry_wait(job, admission, callback_caller)
+            });
+            if !self.desktop_result(epoch, attempt)??
+            {
+                return Ok(None);
+            }
+            self.admitted = true;
+            // Original registration/header pins return only outside Desktop.
+            drop(self.geometry_wait.take());
+        }
         if let Some(status) = self.terminal
         {
             self.cleanup()?;
@@ -398,6 +447,9 @@ impl UserWindowOperation
             Ok(())
         }).map_err(|cause| cause.status())??;
         Ok(Self { operation,
+                  admitted: true,
+                  geometry_wait: None,
+                  caller_role: CallerRole::SystemInput,
                   kind: if close { CLOSE_WINDOW } else { SET_WINDOW_BOUNDS },
                   when: observation.when,
                   completion: None,
@@ -575,6 +627,10 @@ impl UserWindowOperation
 
     pub(super) fn ready(&self) -> bool
     {
+        if !self.admitted && self.desktop_wait.is_none()
+        {
+            return self.operation.job().wait_ready();
+        }
         if self.ui_wait
         {
             return self.operation.job().wait_ready();

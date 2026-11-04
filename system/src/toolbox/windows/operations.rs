@@ -683,6 +683,20 @@ impl WindowJob
         self.waiter
     }
 
+    /// Clear before the actual original guardian check/registration. A real
+    /// return after this point survives the scheduler park handshake.
+    pub(super) fn arm_geometry_admission(&self)
+    {
+        self.available.take();
+    }
+
+    /// The actual return edge extracts this original target, drops its temporary
+    /// Job/source reader, then notifies outside all manager/SCHED guards.
+    pub(super) fn geometry_return_target(&self) -> (Arc<Notice>, Option<ThreadId>)
+    {
+        (self.available.clone(), self.waiter)
+    }
+
     /// Pure Acquire hint for the authenticated scheduler park handshake. Never
     /// an acknowledgement/authority, and never acquires a Window/job mutex.
     pub(crate) fn wait_ready(&self) -> bool
@@ -1218,6 +1232,41 @@ impl WindowManager
     /// before enqueue. A second job from the same copied plan cannot also win.
     pub(crate) fn admit_operation(&mut self, job: &Arc<WindowJob>) -> Result<(), Status>
     {
+        self.admit_operation_inner(job, None)
+    }
+
+    pub(crate) fn admit_geometry_wait(&mut self, job: &Arc<WindowJob>,
+                                      admission: &mut Option<super::canvas::GeometryAdmission>,
+                                      callback_caller: bool)
+                                      -> Result<bool, Status>
+    {
+        if !matches!(job.plan().purpose, Purpose::Geometry { .. })
+        {
+            return Err(BAD_ARGUMENT);
+        }
+        self.validate_seal(job.plan().seal)?;
+        if !Arc::ptr_eq(&job.notice, &self.work_notice)
+        {
+            return Err(ACCESS_DENIED);
+        }
+        let guardian = self.canvas_guardian(job.window_id())?;
+        if admission.is_none()
+        {
+            *admission = Some(guardian.reserve_geometry(job, callback_caller)?);
+        }
+        let held = admission.as_mut().ok_or(BAD_ABI)?;
+        if !held.ready(&guardian, job)?
+        {
+            return Ok(false);
+        }
+        self.admit_operation_inner(job, Some(held))?;
+        Ok(true)
+    }
+
+    fn admit_operation_inner(&mut self, job: &Arc<WindowJob>,
+                             mut admission: Option<&mut super::canvas::GeometryAdmission>)
+                             -> Result<(), Status>
+    {
         if matches!(job.plan().purpose, Purpose::Dispose | Purpose::Initialize(_))
         {
             return Err(BAD_ARGUMENT);
@@ -1227,7 +1276,7 @@ impl WindowManager
             return Err(ACCESS_DENIED);
         }
         self.validate_seal(job.plan().seal)?;
-        if matches!(job.plan().purpose, Purpose::Geometry { .. })
+        if matches!(job.plan().purpose, Purpose::Geometry { .. }) && admission.is_none()
         {
             self.exclude_paint(job.plan().seal.id)?;
         }
@@ -1252,7 +1301,13 @@ impl WindowManager
                let owned = self.windows.get_mut(job.plan().seal.id.0).ok_or(NOT_FOUND)?;
                if matches!(job.plan().purpose, Purpose::Geometry { .. })
                {
-                   state.paint_exclusion = Some(owned.canvas_guardian()?.geometry()?);
+                   let guardian = owned.canvas_guardian()?;
+                   state.paint_exclusion =
+                       Some(match admission.as_deref_mut()
+                            {
+                                Some(held) => guardian.geometry_reserved(held, job)?,
+                                None => guardian.geometry()?
+                            });
                }
                owned.revision = Some(next);
                state.admitted = true;

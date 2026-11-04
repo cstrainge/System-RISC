@@ -1,7 +1,7 @@
 //! Original WIND target exclusion, independent of the author definition family.
 //! Headers are prepaid at real Window admission (or original recovery stock).
 #![forbid(unsafe_code)]
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use mac_abi::{ACCESS_DENIED, BAD_ABI, NOT_FOUND, SERVICE_BUSY, Status};
@@ -20,17 +20,19 @@ const CLOSING: u8 = 3;
 /// current painter; it carries no definition, control or completion authority.
 pub(super) struct CanvasState
 {
-    mode:      AtomicU8,
-    cancelled: AtomicBool,
-    notice:    Spinlock<Option<Arc<Notice>>>
+    mode:            AtomicU8,
+    cancelled:       AtomicBool,
+    notice:          Spinlock<Option<Arc<Notice>>>,
+    geometry_waiter: Spinlock<Option<Weak<operations::WindowJob>>>
 }
 impl CanvasState
 {
     pub(super) fn new() -> Self
     {
-        Self { mode:      AtomicU8::new(IDLE),
-               cancelled: AtomicBool::new(false),
-               notice:    Spinlock::new(None) }
+        Self { mode:            AtomicU8::new(IDLE),
+               cancelled:       AtomicBool::new(false),
+               notice:          Spinlock::new(None),
+               geometry_waiter: Spinlock::new(None) }
     }
 
     fn cancel(&self)
@@ -57,12 +59,18 @@ impl CanvasState
 
     pub(super) fn preflight_close(&self) -> Result<(), Status>
     {
-        self.exclude_canvas()?;
-        if !matches!(self.mode.load(Ordering::Acquire), IDLE | CLOSING)
-        {
-            return Err(SERVICE_BUSY);
-        }
-        Ok(())
+        InvocationGate::run(|| {
+            if self.geometry_waiter.lock().is_some()
+            {
+                return Err(SERVICE_BUSY);
+            }
+            self.exclude_canvas()?;
+            if !matches!(self.mode.load(Ordering::Acquire), IDLE | CLOSING)
+            {
+                return Err(SERVICE_BUSY);
+            }
+            Ok(())
+        })
     }
 
     /// Same Desktop turn, only AFTER canonical begin_release succeeds. A
@@ -74,21 +82,33 @@ impl CanvasState
 
     pub(super) fn close(&self) -> Result<(), Status>
     {
-        self.preflight_close()?;
-        self.closed();
-        Ok(())
+        InvocationGate::run(|| {
+            self.preflight_close()?;
+            self.closed();
+            Ok(())
+        })
+    }
+
+    fn available(&self) -> bool
+    {
+        InvocationGate::run(|| {
+            self.mode.load(Ordering::Acquire) == IDLE && self.geometry_waiter.lock().is_none()
+        })
     }
 
     /// Only the original idle/ACKed+UI-done+unique recovery header may reset.
     pub(super) fn reset(&self) -> Result<(), Status>
     {
-        if matches!(self.mode.load(Ordering::Acquire), CANVAS | GEOMETRY)
-        {
-            return Err(SERVICE_BUSY);
-        }
-        self.mode.store(IDLE, Ordering::Release);
-        self.cancelled.store(false, Ordering::Release);
-        Ok(())
+        InvocationGate::run(|| {
+            if self.geometry_waiter.lock().is_some()
+               || matches!(self.mode.load(Ordering::Acquire), CANVAS | GEOMETRY)
+            {
+                return Err(SERVICE_BUSY);
+            }
+            self.mode.store(IDLE, Ordering::Release);
+            self.cancelled.store(false, Ordering::Release);
+            Ok(())
+        })
     }
 }
 #[derive(Clone)]
@@ -211,22 +231,92 @@ impl WindowCanvasGuardian
 
     pub(super) fn preflight_geometry(&self) -> Result<(), Status>
     {
-        self.state().exclude_canvas()?;
-        if self.state().mode.load(Ordering::Acquire) != IDLE
-        {
-            return Err(SERVICE_BUSY);
-        }
-        Ok(())
+        InvocationGate::run(|| {
+            if self.state().geometry_waiter.lock().is_some()
+            {
+                return Err(SERVICE_BUSY);
+            }
+            self.state().exclude_canvas()?;
+            if self.state().mode.load(Ordering::Acquire) != IDLE
+            {
+                return Err(SERVICE_BUSY);
+            }
+            Ok(())
+        })
     }
 
     pub(super) fn geometry(&self) -> Result<GeometryClaim, Status>
     {
-        self.state().exclude_canvas()?;
-        self.state()
-            .mode
-            .compare_exchange(IDLE, GEOMETRY, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| SERVICE_BUSY)?;
-        Ok(GeometryClaim(self.clone(), ReturnEdge(None)))
+        InvocationGate::run(|| {
+            if self.state().geometry_waiter.lock().is_some()
+            {
+                return Err(SERVICE_BUSY);
+            }
+            self.state().exclude_canvas()?;
+            self.state()
+                .mode
+                .compare_exchange(IDLE, GEOMETRY, Ordering::AcqRel, Ordering::Acquire)
+                .map_err(|_| SERVICE_BUSY)?;
+            Ok(GeometryClaim(self.clone(), ReturnEdge(None)))
+        })
+    }
+
+    pub(super) fn reserve_geometry(&self, job: &Arc<operations::WindowJob>, callback_caller: bool)
+                                   -> Result<GeometryAdmission, Status>
+    {
+        let weak = Arc::downgrade(job);
+        InvocationGate::run(|| {
+            job.arm_geometry_admission();
+            let state = self.state();
+            let mut waiting = state.geometry_waiter.lock();
+            if waiting.is_some()
+            {
+                return Err(SERVICE_BUSY);
+            }
+            match state.mode.load(Ordering::Acquire)
+            {
+                CANVAS if callback_caller =>
+                {
+                    // Preserve prior exclusion/cancellation, but never park a
+                    // live author behind a RETURN it may itself owe.
+                    drop(waiting);
+                    state.cancel();
+                    return Err(SERVICE_BUSY);
+                }
+                IDLE | CANVAS => (),
+                _ => return Err(SERVICE_BUSY)
+            }
+            *waiting = Some(weak.clone());
+            drop(waiting);
+            state.cancel();
+            Ok(())
+        })?;
+        Ok(GeometryAdmission { guardian: Some(self.clone()),
+                               job:      weak,
+                               active:   true })
+    }
+
+    pub(super) fn geometry_reserved(&self, admission: &mut GeometryAdmission,
+                                    job: &Arc<operations::WindowJob>)
+                                    -> Result<GeometryClaim, Status>
+    {
+        admission.validate(self, job)?;
+        InvocationGate::run(|| {
+            let state = self.state();
+            let mut waiting = state.geometry_waiter.lock();
+            if !waiting.as_ref().is_some_and(|actual| Weak::ptr_eq(actual, &admission.job))
+            {
+                return Err(ACCESS_DENIED);
+            }
+            state.mode
+                 .compare_exchange(IDLE, GEOMETRY, Ordering::AcqRel, Ordering::Acquire)
+                 .map_err(|_| SERVICE_BUSY)?;
+            // SAME job/token retain weak references, so this cannot destroy a
+            // Job/author or deallocate its storage beneath the short gate.
+            *waiting = None;
+            admission.active = false;
+            Ok(GeometryClaim(self.clone(), ReturnEdge(None)))
+        })
     }
 
     pub(super) fn geometry_active(&self) -> bool
@@ -234,14 +324,123 @@ impl WindowCanvasGuardian
         self.state().mode.load(Ordering::Acquire) == GEOMETRY
     }
 }
+/// This owns a single reservation on the ORIGINAL header. It carries no
+/// author completion and cannot refresh a stale Window seal.
+pub(crate) struct GeometryAdmission
+{
+    guardian: Option<WindowCanvasGuardian>,
+    job:      Weak<operations::WindowJob>,
+    active:   bool
+}
+impl GeometryAdmission
+{
+    fn validate(&self, guardian: &WindowCanvasGuardian, job: &Arc<operations::WindowJob>)
+                -> Result<(), Status>
+    {
+        if !self.active
+           || !self.guardian.as_ref().is_some_and(|actual| actual.same(guardian))
+           || !Weak::ptr_eq(&self.job, &Arc::downgrade(job))
+        {
+            return Err(ACCESS_DENIED);
+        }
+        Ok(())
+    }
+
+    pub(super) fn ready(&self, guardian: &WindowCanvasGuardian, job: &Arc<operations::WindowJob>)
+                        -> Result<bool, Status>
+    {
+        self.validate(guardian, job)?;
+        InvocationGate::run(|| {
+            job.arm_geometry_admission();
+            let state = guardian.state();
+            if !state.geometry_waiter
+                     .lock()
+                     .as_ref()
+                     .is_some_and(|actual| Weak::ptr_eq(actual, &self.job))
+            {
+                return Err(ACCESS_DENIED);
+            }
+            match state.mode.load(Ordering::Acquire)
+            {
+                IDLE => Ok(true),
+                CANVAS =>
+                {
+                    state.cancel();
+                    Ok(false)
+                }
+                _ => Err(SERVICE_BUSY)
+            }
+        })
+    }
+}
+impl Drop for GeometryAdmission
+{
+    fn drop(&mut self)
+    {
+        let returned = if self.active
+        {
+            self.guardian.as_ref().is_some_and(|guardian| {
+                                      InvocationGate::run(|| {
+                                          let mut waiting = guardian.state().geometry_waiter.lock();
+                                          if waiting.as_ref().is_some_and(|actual| {
+                                                                 Weak::ptr_eq(actual, &self.job)
+                                                             })
+                                          {
+                                              *waiting = None;
+                                              true
+                                          }
+                                          else
+                                          {
+                                              false
+                                          }
+                                      })
+                                  })
+        }
+        else
+        {
+            false
+        };
+        // Even an abandoned Job's last Weak allocation/account storage leaves
+        // before the actual reservation-return notification.
+        drop(core::mem::replace(&mut self.job, Weak::new()));
+        // Header/source pins leave BEFORE advertising actual reservation return.
+        drop(self.guardian.take());
+        if returned
+        {
+            crate::kernel::window_sources_changed();
+            crate::toolbox::processes::retirement::resources_released();
+        }
+    }
+}
+struct GeometryReturn(Option<Weak<operations::WindowJob>>);
+impl Drop for GeometryReturn
+{
+    fn drop(&mut self)
+    {
+        if let Some(job) = self.0.as_ref().and_then(Weak::upgrade)
+        {
+            let (notice, waiter) = job.geometry_return_target();
+            // No temporary Job/source/metadata owner survives its wake.
+            drop(job);
+            drop(self.0.take());
+            notice.request();
+            if let Some(waiter) = waiter
+            {
+                crate::machine::scheduler::callbacks::wake_waiter(waiter);
+            }
+        }
+    }
+}
+
 /// Keep this in the canonical family owner AFTER its source/packet/readers.
 /// Drop is valid only after actual RETURN/stopped (or never-enqueued failure).
 /// The manager cannot derive author completion merely from this target lease.
 #[must_use = "retain the target claim until the actual author and readers drain"]
 pub(crate) struct CanvasClaim
 {
-    guardian: WindowCanvasGuardian,
-    returned: ReturnEdge
+    guardian:          WindowCanvasGuardian,
+    returned:          ReturnEdge,
+    geometry_returned: GeometryReturn
 }
 impl CanvasClaim
 {
@@ -296,6 +495,8 @@ impl Drop for CanvasClaim
         // Readers precede this field in its canonical family owner. Notify only
         // actual claim return, never a retry of an unchanged refusal.
         self.returned.0 = notice;
+        self.geometry_returned.0 =
+            InvocationGate::run(|| self.guardian.state().geometry_waiter.lock().clone());
     }
 }
 pub(super) struct GeometryClaim(WindowCanvasGuardian, ReturnEdge);
@@ -356,14 +557,19 @@ impl WindowManager
         }
         InvocationGate::run(|| {
             let state = guardian.state();
+            if state.geometry_waiter.lock().is_some()
+            {
+                return Err(SERVICE_BUSY);
+            }
             let mut target = state.notice.lock();
             state.mode
                  .compare_exchange(IDLE, CANVAS, Ordering::AcqRel, Ordering::Acquire)
                  .map_err(|_| SERVICE_BUSY)?;
             state.cancelled.store(false, Ordering::Release);
             *target = Some(notice);
-            Ok(CanvasClaim { guardian: guardian.clone(),
-                             returned: ReturnEdge(None) })
+            Ok(CanvasClaim { guardian:          guardian.clone(),
+                             returned:          ReturnEdge(None),
+                             geometry_returned: GeometryReturn(None) })
         })
     }
 
@@ -376,7 +582,7 @@ impl WindowManager
         {
             return Err(ACCESS_DENIED);
         }
-        Ok(held.state().mode.load(Ordering::Acquire) == IDLE)
+        Ok(held.state().available())
     }
 
     pub(crate) fn validate_canvas_claim(&self, claim: &CanvasClaim) -> Result<(), Status>
