@@ -1084,7 +1084,15 @@ fn pump_ordinary_paint_inner()
     };
     if let Err(failure) = service_paint(&owner, &mut loan)
     {
-        if !matches!(failure, ServiceFailure::Desktop(crate::state::AccessError::Busy))
+        // A window paint loan refuses with SERVICE_BUSY while its canvas still
+        // carries an outstanding geometry claim, and the common Window return is
+        // that refusal's retry edge. It is the same not-yet admission as a busy
+        // Desktop, so the elected author stays in place and is serviced again
+        // when it is ready. Cancelling here discarded an owned definition's
+        // whole frame and left the scene stamp frozen.
+        let retryable = matches!(failure, ServiceFailure::Desktop(crate::state::AccessError::Busy))
+                        || matches!(failure, ServiceFailure::Callback(SERVICE_BUSY));
+        if !retryable
         {
             owner.cancel();
             let fresh = desktop(|toolbox| {
