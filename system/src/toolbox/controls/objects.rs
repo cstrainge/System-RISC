@@ -765,10 +765,14 @@ impl Manager
         let recovery = recovery_mode(recipient, storage)?;
         let creation = matches!(call.operation, CREATE_STANDARD | CREATE_SCROLLBAR);
         if creation
-           && self.objects
-                  .iter()
-                  .any(|(_, object)| object.window == call.window && object.window_claimed())
+           && (self.disposal_pending_window(call.window)
+               || self.objects
+                      .iter()
+                      .any(|(_, object)| object.window == call.window && object.window_claimed()))
         {
+            // A window whose definition objects are being disposed must not
+            // accept new children: the drain retires the set it captured, so a
+            // late object would outlive the close that removed its window.
             return Err(SERVICE_BUSY);
         }
         if creation && (!recipient.accepting() || !storage.accepting())
